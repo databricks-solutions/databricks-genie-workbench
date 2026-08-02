@@ -21,6 +21,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | <span className="badge badge--info">POST</span> | `/api/space/parse` | <span className="badge badge--secondary">None</span> | Parse pasted Genie API JSON (client-side data, no auth needed) |
 | <span className="badge badge--success">GET</span> | `/api/debug/auth` | <span className="badge badge--primary">OBO</span> | Dev-only auth debug endpoint (404 on Databricks Apps) |
 | <span className="badge badge--success">GET</span> | `/api/settings` | <span className="badge badge--secondary">None</span> | Read-only app settings (LLM model, warehouse, host) |
+| <span className="badge badge--success">GET</span> | `/api/models` | <span className="badge badge--secondary">None</span> | Curated chat serving endpoints selectable per Create Agent / Auto-Optimize run |
 
 ## Spaces Router (`/api`)
 
@@ -51,10 +52,12 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
+| <span className="badge badge--success">GET</span> | `/api/create/preflight` | <span className="badge badge--primary">OBO</span> | Pre-check that the user can create Genie Agents |
 | <span className="badge badge--success">GET</span> | `/api/create/discover/catalogs` | <span className="badge badge--primary">OBO</span> | List Unity Catalog catalogs |
 | <span className="badge badge--success">GET</span> | `/api/create/discover/schemas` | <span className="badge badge--primary">OBO</span> | List schemas in a catalog |
 | <span className="badge badge--success">GET</span> | `/api/create/discover/tables` | <span className="badge badge--primary">OBO</span> | List tables in a catalog.schema |
 | <span className="badge badge--success">GET</span> | `/api/create/discover/columns` | <span className="badge badge--primary">OBO</span> | List columns for a table |
+| <span className="badge badge--success">GET</span> | `/api/create/discover/search` | <span className="badge badge--primary">OBO</span> | Keyword search for candidate tables across Unity Catalog |
 | <span className="badge badge--info">POST</span> | `/api/create/validate` | <span className="badge badge--primary">OBO</span> | Validate serialized space config (errors/warnings) |
 | <span className="badge badge--info">POST</span> | `/api/create` | <span className="badge badge--primary">OBO</span> | Create Genie Agent from wizard payload |
 | <span className="badge badge--info">POST</span> | `/api/create/agent/chat` | <span className="badge badge--primary">OBO</span> | **SSE** — Create agent conversational flow |
@@ -80,11 +83,42 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | <span className="badge badge--danger">DELETE</span> | `/api/auto-optimize/runs/{run_id}/history-entry` | <span className="badge badge--warning">Mixed</span> | Hide a terminal run from Workbench history after OBO `CAN_EDIT`/`CAN_MANAGE` authorization; preserves the workflow run and GSO audit data |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/current-version` | <span className="badge badge--warning">Mixed</span> | Match live config and benchmarks independently to history-visible captured baselines/champions; report matched, mixed, component drift, or incomplete history (`refresh=true` bypasses the live-state cache) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/iterations` | <span className="badge badge--secondary">SP</span> | Per-iteration evaluation rows |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/loop-state` | <span className="badge badge--secondary">SP</span> | Optimizer controller loop state for the run |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/publish` | <span className="badge badge--secondary">SP</span> | Publish record and champion outcome |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/debug-data` | <span className="badge badge--secondary">SP</span> | Diagnostics for Lakebase vs Delta data |
-| <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/asi-results` | <span className="badge badge--secondary">SP</span> | ASI judge results (requires `iteration` param) |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/eval-results` | <span className="badge badge--secondary">SP</span> | Native Eval-Run rows (requires `iteration` param) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/question-results` | <span className="badge badge--secondary">SP</span> | Per-question results (requires `iteration` param) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/patches` | <span className="badge badge--secondary">SP</span> | All patches for the run |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/benchmark-changes` | <span className="badge badge--secondary">SP</span> | Benchmark mutation ledger plus QC window, structured quality findings, semantic-review coverage, and proposed repairs |
+
+## GenieWatch Routers (`/api/watch`)
+
+GenieWatch reads Databricks **system tables**, which are not OBO-readable. Every
+route below therefore executes as the **service principal**, with results served
+from an in-process TTL cache. Registered separately from the workbench routers in
+`main.py`.
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces` | <span className="badge badge--secondary">SP</span> | List watched Genie Agents with cost/usage summaries |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}` | <span className="badge badge--secondary">SP</span> | Watch detail for one Agent |
+| <span className="badge badge--info">POST</span> | `/api/watch/spaces/refresh` | <span className="badge badge--secondary">SP</span> | Refresh the watched-space cache |
+| <span className="badge badge--success">GET</span> | `/api/watch/overview` | <span className="badge badge--secondary">SP</span> | Org-wide cost overview |
+| <span className="badge badge--success">GET</span> | `/api/watch/cost/top` | <span className="badge badge--secondary">SP</span> | Highest-cost Agents |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/cost` | <span className="badge badge--secondary">SP</span> | Per-Agent cost breakdown |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/cost/top-queries` | <span className="badge badge--secondary">SP</span> | Most expensive queries for an Agent |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/cost/conversations` | <span className="badge badge--secondary">SP</span> | Cost attributed per conversation |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/usage` | <span className="badge badge--secondary">SP</span> | Query volume and usage trend |
+| <span className="badge badge--success">GET</span> | `/api/watch/feedback` | <span className="badge badge--secondary">SP</span> | Org-wide feedback signals |
+| <span className="badge badge--success">GET</span> | `/api/watch/feedback/comments` | <span className="badge badge--secondary">SP</span> | Feedback comment text |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/feedback` | <span className="badge badge--secondary">SP</span> | Per-Agent feedback |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/resources` | <span className="badge badge--secondary">SP</span> | Tables actually executed by an Agent |
+| <span className="badge badge--success">GET</span> | `/api/watch/resources/rollup` | <span className="badge badge--secondary">SP</span> | Executed-resource rollup |
+| <span className="badge badge--success">GET</span> | `/api/watch/resources/spaces` | <span className="badge badge--secondary">SP</span> | Agents grouped by executed resource |
+| <span className="badge badge--success">GET</span> | `/api/watch/resources/graph` | <span className="badge badge--secondary">SP</span> | Agent-to-resource lineage graph |
+| <span className="badge badge--success">GET</span> | `/api/watch/settings/health` | <span className="badge badge--secondary">SP</span> | Watch health: system-table access and cache state |
+| <span className="badge badge--info">POST</span> | `/api/watch/settings/cache/refresh` | <span className="badge badge--secondary">SP</span> | Force a cache refresh |
+| <span className="badge badge--info">POST</span> | `/api/watch/admin/refresh-rollup` | <span className="badge badge--secondary">SP</span> | Rebuild usage rollups (admin-gated via `require_admin`) |
 
 ## Static File Serving (`main.py`)
 

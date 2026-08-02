@@ -209,7 +209,7 @@ def test_all_steps_have_prompts_and_summaries():
 # --- GSL instruction schema conformance (near-term, epic #87) ---
 # The Create Agent's plan-step prompt and the parallel-generation prompt both
 # must reference the 5 canonical GSL section headers so the agent emits
-# text_instructions that Fix Agent can preserve. See docs/archives/gsl-instruction-schema.md.
+# text_instructions that Fix Agent can preserve. See docs/docs/platform/gsl-instruction-schema.md.
 
 CANONICAL_GSL_SECTIONS = [
     "## PURPOSE",
@@ -225,7 +225,7 @@ def test_plan_step_prompt_uses_canonical_gsl_sections():
     for section in CANONICAL_GSL_SECTIONS:
         assert section in plan_prompt, (
             f"Plan-step prompt missing canonical GSL section header: {section!r}. "
-            f"See docs/archives/gsl-instruction-schema.md."
+            f"See docs/docs/platform/gsl-instruction-schema.md."
         )
 
 
@@ -238,7 +238,7 @@ def test_plan_step_prompt_does_not_teach_legacy_sections():
     for legacy in ["## Terminology", "## Default Assumptions", "## Fiscal Calendar", "## Data Quality Warnings"]:
         assert legacy not in plan_prompt, (
             f"Plan-step prompt still teaches legacy section header {legacy!r}. "
-            f"Replace with canonical GSL vocabulary from docs/archives/gsl-instruction-schema.md."
+            f"Replace with canonical GSL vocabulary from docs/docs/platform/gsl-instruction-schema.md."
         )
 
 

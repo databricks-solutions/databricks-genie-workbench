@@ -82,6 +82,22 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 | `create.py` | `/api/create` | Create agent chat, UC discovery, wizard, session management |
 | `auto_optimize.py` | `/api/auto-optimize` | GSO trigger, run management, results, patches, and benchmark changes |
 
+### GenieWatch subsystem (`backend/watch/`)
+
+`backend/watch/` is a self-contained observability subsystem, registered separately in `main.py` and mounted under `/api/watch/*`:
+
+| Router | Prefix | Purpose |
+|--------|--------|---------|
+| `spaces.py` | `/api/watch/spaces` | Per-Agent watch listing and detail |
+| `cost.py` | `/api/watch` | Cost overview, per-Agent cost, top queries and conversations |
+| `usage.py` | `/api/watch` | Per-Agent query volume and usage trends |
+| `feedback.py` | `/api/watch` | User feedback signals and comments |
+| `resources.py` | `/api/watch` | Executed-resource lineage, rollups, and graph |
+| `settings.py` | `/api/watch/settings` | Watch health and cache refresh |
+| `admin.py` | `/api/watch/admin` | Admin-gated rollup refresh |
+
+GenieWatch queries Databricks **system tables** (`system.query.history`, `system.billing.usage`, `system.access.audit`, `system.access.table_lineage`). System tables are **not** OBO-readable, so `watch/services/system_tables.py` always runs as the **service principal** and caches results in an in-process TTL cache. The SP needs `USE CATALOG system` plus schema/SELECT grants — `scripts/grant_permissions.py` is the source of truth for that list.
+
 See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint list.
 
 ### Services
@@ -99,6 +115,8 @@ See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint l
 | UC Client | `services/uc_client.py` | Unity Catalog browsing (catalogs, schemas, tables) |
 | Lakebase | `services/lakebase.py` | PostgreSQL persistence with in-memory fallback |
 | GSO Lakebase | `services/gso_lakebase.py` | GSO synced table reads from Lakebase |
+| Model Catalog | `services/model_catalog.py` | Curated chat serving endpoints exposed via `/api/models`; `validate_chat_model()` guards per-run overrides |
+| SQL Executor | `sql_executor.py` | SQL execution via the Databricks SQL warehouse |
 
 ### Prompt Templates
 
@@ -112,20 +130,22 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 
 ### Navigation
 
-`App.tsx` uses React state (not a router library) to switch between four views:
+`App.tsx` uses React state (not a router library) to switch between five views:
 
 | View | Component | Description |
 |------|-----------|-------------|
 | `list` | `SpaceList` | Browse and search Genie Agents with IQ scores |
 | `detail` | `SpaceDetail` | Space detail with tabs: Score, Optimize, History |
-| `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts |
+| `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts, plus lazy-loaded GenieWatch sub-tabs |
 | `create` | `CreateAgentChat` | Conversational agent for building new Genie Agents |
+| `how-it-works` | `HowItWorks` | In-app explanation of the Workbench workflow |
 
 ### Component Organization
 
 - `components/ui/` — design system primitives (button, card, badge, etc.) using `class-variance-authority`
-- `components/auto-optimize/` — 24 components for the GSO optimization UI
-- `pages/` — `SpaceList`, `SpaceDetail`, `AdminDashboard`, `HistoryTab`, `IQScoreTab`
+- `components/auto-optimize/` — components for the GSO optimization UI
+- `pages/` — `SpaceList`, `SpaceDetail`, `AdminDashboard`, `HowItWorks`, `HistoryTab`, `IQScoreTab`
+- `watch/` — GenieWatch UI with its own `api.ts` (base `/api/watch`), types, components, and pages; namespaced to avoid colliding with the workbench API surface, and lazy-loaded as `AdminDashboard` sub-tabs
 - `hooks/` — `useAnalysis`, `useTheme`
 - `lib/api.ts` — all API calls and SSE streaming helpers
 - `types/index.ts` — TypeScript mirrors of backend Pydantic models
@@ -166,7 +186,7 @@ For SSE endpoints, the OBO `ContextVar` is **not** cleared after `call_next` in 
 
 | Store | Technology | Contents |
 |-------|-----------|----------|
-| Lakebase | PostgreSQL (asyncpg) | `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions` |
+| Lakebase | PostgreSQL (asyncpg) | `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `hidden_optimization_runs`, `agent_sessions`, and the GenieWatch caches (`watch_space_cache`, `watch_conversation_cache`, `watch_message_cache`, `watch_sync_watermark`, `watch_daily_usage_rollup`) |
 | Delta Tables | Unity Catalog | GSO optimization state plus the direct `genie_benchmarks_<domain>` corpus handoff under `GSO_CATALOG.GSO_SCHEMA` |
 | MLflow | Tracing | LLM call traces only; no Dataset, run-tracking, model-registry, or evaluation dependency |
 
@@ -176,7 +196,7 @@ Lakebase degrades gracefully to in-memory dictionaries when `LAKEBASE_HOST` is n
 
 1. **No local dev server** — the app depends on Databricks OBO auth, Lakebase, and model serving endpoints that are only available inside a Databricks App environment. All testing is done by deploying to a real workspace.
 
-2. **Two deployment mechanisms** — `deploy.sh` manages the app (create, sync, `databricks apps deploy`); the GSO optimization job is managed by DABs (`databricks bundle deploy -t app`). They coexist but are independent.
+2. **Two install paths** — the recommended notebook path (`notebooks/install.py`) provisions the app and the GSO job entirely through the SDK/Jobs API, deploying from a generated workspace source folder. The local terminal path uses `deploy.sh` for the app (create, sync, `databricks apps deploy`) with the GSO job managed by DABs (`databricks bundle deploy -t app`). Do not mix the two paths for one app instance. See the [Deployment Guide](/docs/getting-started/deployment-guide).
 
 3. **Pydantic/TypeScript model sync** — `backend/models.py` and `frontend/src/types/index.ts` must be kept in sync manually. There is no code generation step.
 

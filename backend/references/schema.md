@@ -206,7 +206,7 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 
 ### Size limits
 - `version`: Required. Must be `2`.
-- `text_instructions`: Max **1** entry per space. Each content element **must end with `\n`** (the API concatenates without separators — omitting `\n` jams text together). For section vocabulary and format rules (PURPOSE / DISAMBIGUATION / DATA QUALITY NOTES / CONSTRAINTS / summary-behavior), see `docs/archives/gsl-instruction-schema.md`.
+- `text_instructions`: Max **1** entry per space. Each content element **must end with `\n`** (the API concatenates without separators — omitting `\n` jams text together). For section vocabulary and format rules (PURPOSE / DISAMBIGUATION / DATA QUALITY NOTES / CONSTRAINTS / summary-behavior), see `docs/docs/platform/gsl-instruction-schema.md`.
 - Max **100** total instructions (each example SQL + each function + 1 for text block).
 - Table identifiers: three-level namespace `catalog.schema.table`.
 - Individual strings: max 25,000 characters.

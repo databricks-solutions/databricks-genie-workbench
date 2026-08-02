@@ -7,19 +7,23 @@ description: "Common issues, causes, and fixes."
 
 ## Common Issues
 
+"Re-run your install path" below means rerunning `notebooks/install.py` from the
+top (notebook path, recommended) or `./scripts/deploy.sh --update` (local
+terminal path). Use whichever path you originally installed with — don't mix
+them for the same app instance.
+
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| App shows blank page | `frontend/dist/` missing (gitignored, not synced) | Re-run `./scripts/deploy.sh --update` |
-| `Could not import module "backend.main"` | Source files missing on workspace | Re-run `./scripts/deploy.sh --update` (full sync) |
-| `No dependencies file found` | `requirements.txt` not on workspace | Re-run `./scripts/deploy.sh --update` |
-| "Failed to list spaces" | Lakebase not attached | Attach a `postgres` resource in Apps UI |
-| `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
+| App shows blank page | `frontend/dist/` missing (gitignored, not synced) | Re-run your install path |
+| `Could not import module "backend.main"` | Source files missing on workspace | Re-run your install path (full sync) |
+| `No dependencies file found` | `pyproject.toml` / `uv.lock` not on workspace | Re-run your install path |
+| "Failed to list spaces" | Lakebase not attached | Attach a `postgres` resource in Apps UI, or re-run your install path |
+| `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | Verify the `catalog` widget value (notebook) or `GENIE_CATALOG` (terminal); `databricks catalogs list --profile <profile>` |
 | `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
-| Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled | Contact workspace admin to enable MLflow Prompt Registry |
-| Unresolved `__GSO_*__` placeholders | `deploy.sh` couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
-| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
-| Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
+| Unresolved `__GSO_*__` placeholders | The installer couldn't patch `app.yaml` | Ensure the catalog is set; check installer output for warnings |
+| GSO job creation fails during deploy | Notebook path: Jobs API error or wheel build failure. Terminal path: bundle deploy failed (CLI version, auth, build) | Notebook: check the install cell output. Terminal: check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
+| Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | Upload path not writable by deployer | Check workspace-level permissions on the upload path |
 
 ## Permission Errors
 
@@ -35,9 +39,9 @@ description: "Common issues, causes, and fixes."
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Failed to list spaces" on first load | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
+| "Failed to list spaces" on first load | Lakebase not attached | Re-run your install path to auto-attach the postgres resource |
 | Connection timeouts after ~1 hour | Credential refresh failed | Check logs for `generate_database_credential` errors |
-| Tables not created on startup | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
+| Tables not created on startup | SP lacks CONNECT or CREATE ON DATABASE | Re-run your install path to re-create the SP role and grants |
 | Scan results not persisting | Lakebase write failed | Check logs for `Failed to persist scan result` |
 | Agent sessions lost on restart | Lakebase not configured | Without Lakebase, sessions use in-memory storage (ephemeral) |
 
@@ -45,13 +49,14 @@ description: "Common issues, causes, and fixes."
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "GSO not configured" in health check | `GSO_JOB_ID` or `GSO_CATALOG` not set | Re-run `./scripts/deploy.sh` (patches `app.yaml` with values from bundle state) |
+| "GSO not configured" in health check | `GSO_JOB_ID` or `GSO_CATALOG` not set | Re-run your install path (patches `app.yaml` with the resolved job ID and catalog) |
 | Optimization job never starts | Job doesn't exist or SP can't run it | Check job exists in workspace; verify SP has CAN_MANAGE on job |
 | Job stuck in QUEUED | No available cluster or warehouse | Check cluster policies and warehouse availability |
-| "Baseline Evaluation" fails | Benchmark questions reference inaccessible tables | Grant SP `SELECT` on all referenced schemas |
-| "FEATURE_DISABLED" during preflight | MLflow Prompt Registry not enabled | Contact workspace admin to enable it |
+| Baseline evaluation fails | Benchmark questions reference inaccessible tables | Grant SP `SELECT` on all referenced schemas |
+| Run ends `SKIPPED` with `INSUFFICIENT_VALID_BENCHMARKS` | Fewer than 15 valid benchmarks survived QC | Add or repair benchmark questions, or enable "Allow GSO to repair and add benchmarks" on the next run |
+| Run ends `FAILED` with `EVAL_INVALID` | Native Eval-Run API returned an unusable result after retries | Check the Eval-Run status in the run page; verify SP access to referenced tables |
 | Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review suggestions for manual improvements |
-| `__GSO_*__` values in running app | `deploy.sh` didn't patch `app.yaml` before deploy | Check `GENIE_CATALOG` in `.env.deploy`; re-run deploy |
+| `__GSO_*__` values in running app | The installer didn't patch `app.yaml` before deploy | Verify the catalog value and re-run your install path |
 
 ## Debug Commands
 

@@ -436,3 +436,13 @@ html.docs-doc-id-features\/auto-optimize
     overflow-y: auto;
   }
 }
+
+/* Prism's markdown grammar tags table syntax with `.token.table`, which collides
+   with Tailwind's `.table { display: table }` utility. That turned every cell of
+   a markdown table inside a code block into a block-level box, stacking the row
+   vertically (one `|` and one cell per line). Prism tokens are inline spans, so
+   force them back — scoped to code blocks only, leaving real `.table` usage and
+   rendered Markdown tables untouched. */
+.theme-code-block .token.table {
+  display: inline;
+}

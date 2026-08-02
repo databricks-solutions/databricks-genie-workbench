@@ -39,5 +39,6 @@ processing).
 - `src/css/custom.css` — Databricks color tokens and font overrides.
 - `docusaurus.config.ts` — site config, navbar, plugins (Mermaid, search, image zoom).
 
-Source markdown is ported from the repo's top-level `docs/*.md`. See
-`docs/docs/` for the site copy.
+`docs/docs/` is the canonical source for all documentation. The earlier flat
+markdown files it was ported from have been removed, along with the `docs/archives/`
+directory that held them.

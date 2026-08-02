@@ -1,16 +1,45 @@
-# Best Practices: Patching a Genie Agent After Poor Benchmark Results
+---
+sidebar_position: 5
+description: "Practitioner playbook for diagnosing benchmark failures and choosing the right fix surface."
+---
+
+# Optimization Guide
+
+**Best practices for patching a Genie Agent after poor benchmark results.**
+
+This is a hands-on playbook for the human work that surrounds an optimization
+run: reading benchmark results, clustering failures into themes, mapping each
+theme to a root cause, and choosing the right configuration surface for the fix.
+
+It complements the automated pipeline rather than describing it:
+
+- [Auto-Optimize (GSO)](/docs/features/auto-optimize) — how the automated pipeline measures accuracy and applies patches
+- [Debug GSO runs with Genie Code](/docs/reference/gso-run-debugger) — reconstructing a specific run from its Delta audit tables
+- [IQ Scanner](/docs/features/iq-scanner) — the deterministic checks that catch many of the metadata gaps below before you benchmark
+- [GSL Instruction Schema](/docs/platform/gsl-instruction-schema) — the required section vocabulary for `text_instructions`
+
+:::note
+The placement rules in Phase 4 and the metadata guidance in Phase 5 apply
+whether you patch by hand or let Auto-Optimize propose changes. Expected
+benchmark SQL is evaluation truth — never copy it into instructions, examples,
+or descriptions. See [leakage safety](/docs/features/auto-optimize#evaluation-and-leakage-safety).
+:::
 
 ## Phase 1: Diagnosis — Understand What Failed and Why
 
 ### 1.1 Pull and classify benchmark results
 
-Start by reading the benchmark run results. Every evaluation falls into one of three buckets:
+Start by reading the benchmark run results. Genie's native Eval-Run API assigns
+every question one of three assessments:
 
-* **Passed** (score = 100) — no action needed
-* **Failed** (score = 0) — Genie produced clearly wrong SQL
-* **Needs review** (score = 50) — Genie produced partially correct SQL or the judge couldn't decide; this is NOT passing
+* **`GOOD`** — passed; no action needed
+* **`BAD`** — Genie produced clearly wrong SQL
+* **`NEEDS_REVIEW`** — partially correct SQL, or the evaluation couldn't decide; this is **NOT** passing
 
-Report the summary verbatim (e.g. "8/15 passed, 4 failed, 3 need review") and work on all non-passing evals together.
+Headline accuracy counts only `GOOD` (`num_correct / num_questions`), so
+`NEEDS_REVIEW` rows drag your score down exactly like failures do. Report the
+summary verbatim (e.g. "8/15 good, 4 bad, 3 need review") and work on all
+non-`GOOD` questions together.
 
 ### 1.2 Cluster failures into themes (3–6 themes)
 
@@ -63,7 +92,7 @@ The question requires capabilities Genie doesn't support (ML forecasting, Python
 ## Phase 3: Fix Strategies — Concrete Actions Per Root Cause
 
 ### For Incorrect SQL Logic:
-1. **Add a SQL measure or derived expression** — e.g. a `sql_measure` snippet named "total_messages_sent" with content `COUNT(DISTINCT message_id)`. Measures get picked up across all matching questions.
+1. **Add a SQL measure or derived expression** — e.g. a `measures` snippet named "total_messages_sent" with content `COUNT(DISTINCT message_id)`. Measures get picked up across all matching questions.
 2. **Add synonyms to the snippet** — so varied phrasings ("total messages", "message count") all route to the same expression.
 3. **Add an example SQL pair** — a complete question/SQL pair demonstrating the correct usage for complex multi-step logic.
 
@@ -78,13 +107,13 @@ The question requires capabilities Genie doesn't support (ML forecasting, Python
 2. **Add column synonyms** — so "close date" maps to `cls_date`, not `opp_date`.
 3. **Enable entity matching (value indexing)** — on low-cardinality categorical columns whose values users reference by name.
 4. **Add a SQL filter snippet** — for standardized filtering logic (e.g. "Active customers" → `status = 'active'`).
-5. **Add or fix JOIN snippets** — if Genie joins on the wrong key, add a `join` knowledge snippet with the correct ON condition and relationship type.
+5. **Add or fix join specs** — if Genie joins on the wrong key, add a `join_specs` entry with the correct ON condition and relationship type.
 6. **Hide noise columns** — internal IDs, audit fields, and debug columns that create ambiguity.
 
 ### For Ignored Instructions:
 1. **Rephrase instructions more directly** — vague instructions ("be careful", "use the right column") are ignored. Be specific.
 2. **Resolve instruction conflicts** — an example SQL may contradict a text instruction; remove or align the conflicting item.
-3. **Move logic from text to SQL expressions** — SQL expressions are applied more reliably than prose. Convert "always use COUNT DISTINCT for messages" into an actual `sql_measure`.
+3. **Move logic from text to SQL expressions** — SQL expressions are applied more reliably than prose. Convert "always use COUNT DISTINCT for messages" into an actual `measures` entry.
 4. **Reduce text instruction volume** — too many text instructions dilute each other. Consolidate related rules.
 5. **Add an example SQL pair** — examples teach more reliably than text for complex behaviors.
 
@@ -104,13 +133,17 @@ The question requires capabilities Genie doesn't support (ML forecasting, Python
 | Content type | Correct surface | Wrong surface |
 | --- | --- | --- |
 | Business term definition (natural language) | Text instruction | SQL example |
-| Reusable aggregate metric (`SUM(revenue)`) | `sql_measure` snippet | Text instruction or SQL example |
-| Calculated column (`revenue - cost`) | `sql_derived` snippet | Text instruction |
-| Standard filter (`status = 'active'`) | `sql_filter` snippet or entity matching | Text instruction |
-| Table JOIN relationship | `join` snippet | Text instruction or SQL expression |
-| Complete Q&A pair (complex multi-step query) | SQL example (title = question, content = SQL) | Text instruction |
+| Reusable aggregate metric (`SUM(revenue)`) | `sql_snippets.measures` | Text instruction or SQL example |
+| Calculated column (`revenue - cost`) | `sql_snippets.expressions` | Text instruction |
+| Standard filter (`status = 'active'`) | `sql_snippets.filters` or entity matching | Text instruction |
+| Table JOIN relationship | `join_specs` | Text instruction or SQL expression |
+| Complete Q&A pair (complex multi-step query) | `example_question_sqls` (question + SQL) | Text instruction |
 | Column disambiguation | Column descriptions + synonyms | Text instruction |
 | Categorical value recognition | Entity matching (value indexing) | Text instruction or filter |
+
+Field names above match the `serialized_space` schema in
+`backend/references/schema.md`. Note that `sql_snippets` entries require
+table-qualified column references (`table_alias.column_name`).
 
 **Key principle:** SQL expressions (measures, derived columns, filters) are composable building blocks that Genie can reuse across many questions. SQL examples only fire on close text-match to their title. Text instructions are the weakest signal — use them only for guidance that can't be expressed as SQL.
 
@@ -125,7 +158,7 @@ Before adding instructions, ensure your metadata baseline is solid:
 3. **Column synonyms** — add alternative names users might type (e.g. "close date", "closed date", "cls date" all map to `cls_date`).
 4. **Column visibility** — hide internal columns (audit IDs, ETL timestamps, debug flags) that add noise.
 5. **Entity matching** — enable on low-cardinality categorical columns (status, region, tier, product_type) whose values users reference by name.
-6. **JOIN relationships** — add `join` snippets for every FK relationship between tables in the space. These are the most reliably applied context type.
+6. **JOIN relationships** — add `join_specs` entries for every FK relationship between tables in the space. These are the most reliably applied context type.
 
 ---
 
@@ -135,11 +168,11 @@ Before adding instructions, ensure your metadata baseline is solid:
 
 | Type | When to use | Content format | Example |
 | --- | --- | --- | --- |
-| `sql_measure` | Aggregate metrics (SUM, COUNT, AVG, MAX, MIN) | Bare aggregate expression — no `SELECT`, no `FROM` | `COUNT(DISTINCT message_id)` |
-| `sql_derived` | Row-level calculated columns | Bare expression — Genie inserts it into the SELECT list | `revenue - cost` |
-| `sql_filter` | Standard WHERE clause conditions | Bare condition — no `WHERE` keyword | `status = 'active' AND is_deleted = false` |
+| `measures` | Aggregate metrics (SUM, COUNT, AVG, MAX, MIN) | Bare aggregate expression — no `SELECT`, no `FROM` | `COUNT(DISTINCT message_id)` |
+| `expressions` | Row-level calculated columns | Bare expression — Genie inserts it into the SELECT list | `revenue - cost` |
+| `filters` | Standard WHERE clause conditions | Bare condition — no `WHERE` keyword | `status = 'active' AND is_deleted = false` |
 
-**Rule of thumb:** if the expression contains an aggregate function, it's a `sql_measure`. If it's a row-level calculation, it's a `sql_derived`. If it's a boolean condition meant for filtering, it's a `sql_filter`.
+**Rule of thumb:** if the expression contains an aggregate function, it's a `measures` entry. If it's a row-level calculation, it's an `expressions` entry. If it's a boolean condition meant for filtering, it's a `filters` entry.
 
 ### 6.2 Naming and title
 
@@ -193,7 +226,7 @@ A vague or empty description forces Genie to infer scope from tables alone — l
 
 Before writing fixes from scratch, mine these sources for pre-existing knowledge:
 
-* **Declared primary keys and foreign keys** → free JOIN snippets with correct ON conditions
+* **Declared primary keys and foreign keys** → free `join_specs` entries with correct ON conditions
 * **`topJoins`** from UC table metadata → observed JOIN patterns from actual query history
 * **Column comments** already in UC → candidate column descriptions (copy into the space if missing)
 
@@ -205,9 +238,9 @@ Before writing fixes from scratch, mine these sources for pre-existing knowledge
 
 | What you see | Why it fails | What to do instead |
 | --- | --- | --- |
-| Text instruction containing SQL keywords (`SELECT`, `WHERE`, `CASE WHEN`) | Text instructions are weakest signal; SQL logic buried in prose gets ignored | Convert to `sql_measure`, `sql_filter`, or `sql_derived` snippet |
-| SQL example whose title is a single business term and body is one aggregate | Examples only fire on close title text-match; a measure applies broadly | Convert to a `sql_measure` snippet with synonyms |
-| SQL example whose body is a single derived expression (`revenue - cost`) | Same issue — too narrow a match surface | Convert to a `sql_derived` snippet |
+| Text instruction containing SQL keywords (`SELECT`, `WHERE`, `CASE WHEN`) | Text instructions are weakest signal; SQL logic buried in prose gets ignored | Convert to `measures`, `filters`, or `expressions` snippet |
+| SQL example whose title is a single business term and body is one aggregate | Examples only fire on close title text-match; a measure applies broadly | Convert to a `measures` snippet with synonyms |
+| SQL example whose body is a single derived expression (`revenue - cost`) | Same issue — too narrow a match surface | Convert to a `expressions` snippet |
 | Vague text instructions ("be careful", "consider context", "use the right column") | No actionable signal for Genie to follow | Rewrite with specifics or delete entirely |
 | Vague example-SQL titles (≤4 generic words like "Get sales", "Show numbers") | Never match real user questions | Rewrite title as the full natural-language question the example answers |
 
@@ -217,7 +250,7 @@ Fixes should generalize beyond the specific benchmark set:
 
 * Benchmark questions are not exhaustive — extract patterns that help many question shapes, not just the ones that failed
 * If a fix only helps one benchmark but wouldn't help a rephrased version of the same question, it's too narrow (e.g. adding an example SQL whose title is the exact benchmark question verbatim, with no synonyms)
-* Prefer `sql_measure`/`sql_derived` snippets (broad applicability) over example SQL pairs (narrow title-match) when the logic is a single expression
+* Prefer `measures`/`expressions` snippets (broad applicability) over example SQL pairs (narrow title-match) when the logic is a single expression
 
 ### 9.3 Raw/bronze table attachment
 
@@ -233,9 +266,9 @@ Attaching raw or bronze-layer tables degrades performance because:
 
 A space is almost guaranteed to produce poor benchmark results if it has:
 
-* **0 SQL expressions** (`sql_measure`/`sql_derived`/`sql_filter`/`join` snippets) but multiple tables and benchmark questions
+* **0 SQL expressions** (`measures`/`expressions`/`filters`/`join_specs`) but multiple tables and benchmark questions
 * **0 example SQL** but the benchmark set covers ≥3 distinct question shapes
-* Columns heavily referenced in benchmarks or popular queries but **no corresponding `sql_measure`/`sql_derived` snippet** giving them a business semantic
+* Columns heavily referenced in benchmarks or popular queries but **no corresponding `measures`/`expressions` snippet** giving them a business semantic
 
 ---
 
@@ -243,7 +276,7 @@ A space is almost guaranteed to produce poor benchmark results if it has:
 
 When time is limited, apply fixes in this priority order (highest impact per effort):
 
-1. **Add missing JOIN snippets** — most reliably applied, unblocks multi-table questions
+1. **Add missing `join_specs`** — most reliably applied, unblocks multi-table questions
 2. **Add SQL measures/derived expressions** — composable across many questions
 3. **Fix column descriptions and synonyms** — resolves misapplied semantics at the root
 4. **Enable entity matching on categorical columns** — resolves value-recognition failures

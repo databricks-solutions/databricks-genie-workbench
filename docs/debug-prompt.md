@@ -19,363 +19,231 @@ action. Do not modify the Space, the benchmarks, or any table.
 
 Ask me for any missing required value before querying. The run ID, log catalog,
 and log schema are required. The schema is not necessarily named
-`genie_space_optimizer`.
+`genie_space_optimizer`. Below, `<S>` means `<LOG_CATALOG>.<LOG_SCHEMA>`.
 
 ## Non-negotiable rules
 
-1. Be read-only. Execute only `SHOW`, `DESCRIBE`, `SELECT`, and read-only CTEs.
-   Never run `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `ALTER`, `CREATE`, `DROP`,
-   `OPTIMIZE`, `VACUUM`, grants, or Genie configuration APIs.
-2. Discover the installed schema before forming conclusions. Columns are added
-   over time, so use only columns confirmed by `DESCRIBE TABLE`. If a documented
-   column is missing, say `not available in this install`; do not invent a value
-   or silently substitute an unrelated field.
-3. Treat these six tables as the current debugging surface:
-   `genie_opt_runs`, `genie_opt_stages`, `genie_opt_artifacts`,
-   `genie_opt_iterations`, `genie_opt_patches`, and
-   `genie_opt_benchmark_mutations`.
-4. The current job has four tasks, in order: `intake_and_snapshot`,
-   `benchmark_qc_and_repair`, `optimize`, and `publish_and_audit`. Delta rows,
-   not notebook-local state, are the durable source of truth.
-5. Cite evidence for every conclusion using the table plus its identifying row,
-   for example `[genie_opt_iterations: iteration=2, eval_scope=full]` or
-   `[genie_opt_artifacts: artifact_kind=publish_record, created_at=...]`.
-6. Do not print benchmark expected SQL or full configuration JSON by default.
-   Expected SQL is evaluation truth and must not be copied into instructions,
-   examples, descriptions, or proposed patches. Inspect the minimum fragment
-   only when it is essential to explain a specific question-level mismatch.
-7. Separate facts from hypotheses. Label an inference as `Hypothesis` and state
-   what evidence would confirm it.
+1. **Read-only.** Only `SHOW`, `DESCRIBE`, `SELECT`, and read-only CTEs. Never
+   `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `ALTER`, `CREATE`, `DROP`, `OPTIMIZE`,
+   `VACUUM`, grants, or Genie configuration APIs.
+2. **Discover the schema before concluding.** Columns are added over time. Use
+   only columns confirmed by `DESCRIBE TABLE`. If a column named below is
+   missing, say `not available in this install` — never invent a value or
+   substitute an unrelated field.
+3. **Six current tables** are the debugging surface: `genie_opt_runs`,
+   `genie_opt_stages`, `genie_opt_artifacts`, `genie_opt_iterations`,
+   `genie_opt_patches`, `genie_opt_benchmark_mutations`. A missing table is
+   evidence about the install, not permission to query a retired one.
+4. **Four tasks, in order:** `intake_and_snapshot`, `benchmark_qc_and_repair`,
+   `optimize`, `publish_and_audit`. Delta rows, not notebook-local state, are
+   the durable truth.
+5. **Cite every conclusion** as table + identifying row, e.g.
+   `[genie_opt_iterations: iteration=2, eval_scope=full]`.
+6. **Never print benchmark expected SQL or full config JSON by default.**
+   Expected SQL is evaluation truth and must not reach instructions, examples,
+   descriptions, or patches. Quote the minimum fragment only when it is the only
+   way to explain a specific question-level mismatch.
+7. **Separate facts from inference.** Label inferences `Hypothesis` and state
+   what evidence would confirm them.
 
-## 1. Discover tables and columns
-
-Run this first and report which of the six current tables exist:
+## Step 1 — Discover tables and columns
 
 ```sql
-SHOW TABLES IN <LOG_CATALOG>.<LOG_SCHEMA>
+SHOW TABLES IN <S>
 ```
 
-Then run all six descriptions. A missing table is evidence about the install;
-it is not permission to query a similarly named retired table.
+Then `DESCRIBE TABLE <S>.<t>` for each of the six tables in rule 3. Build an
+availability map (table, present/missing, notable missing columns) and adapt
+every projection below to what you actually find.
+
+## Step 2 — Establish the run envelope
+
+Read the run row. If none exists, stop and re-verify catalog, schema, and run
+ID. If `<SPACE_ID>` was given and differs, flag the mismatch.
+
+`config_snapshot` is excluded from the projection on purpose — it holds the full
+Space config JSON, which rule 6 forbids printing. Only its presence and size are
+selected.
 
 ```sql
-DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_runs
+SELECT * EXCEPT (config_snapshot),
+       config_snapshot IS NOT NULL AS has_config_snapshot,
+       LENGTH(config_snapshot) AS config_snapshot_chars
+FROM <S>.genie_opt_runs WHERE run_id = '<RUN_ID>'
 ```
 
-```sql
-DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_stages
-```
+Report: `status`, `started_at`/`completed_at`, `space_id`, `job_id`/`job_run_id`,
+run settings (`max_iterations`, `levers`, `apply_mode`, `llm_model`,
+`max_benchmark_count`), `benchmarks_generated`, `best_iteration`,
+`best_accuracy`, `convergence_reason`, and `triggered_by`. State whether the
+trigger-time `config_snapshot` is present and its size — never print its body.
+
+## Step 3 — Reconstruct the four-task timeline
 
 ```sql
-DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_artifacts
-```
-
-```sql
-DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_iterations
-```
-
-```sql
-DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_patches
-```
-
-```sql
-DESCRIBE TABLE <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_benchmark_mutations
-```
-
-Build a small availability map before continuing: table, present/missing, and
-important missing columns. Adapt the projections below to the described schema.
-
-## 2. Establish the run envelope
-
-Read the exact run row. If no row exists, stop and verify the catalog, schema,
-and run ID. If `<SPACE_ID>` was supplied, flag a mismatch.
-
-```sql
-SELECT
-  run_id,
-  space_id,
-  domain,
-  catalog,
-  uc_schema,
-  status,
-  started_at,
-  completed_at,
-  job_run_id,
-  job_id,
-  max_iterations,
-  levers,
-  apply_mode,
-  llm_model,
-  deploy_target,
-  benchmarks_generated,
-  best_iteration,
-  best_accuracy,
-  convergence_reason,
-  triggered_by,
-  warehouse_id,
-  max_benchmark_count,
-  updated_at,
-  config_snapshot IS NOT NULL AS has_config_snapshot,
-  LENGTH(config_snapshot) AS config_snapshot_chars
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_runs
-WHERE run_id = '<RUN_ID>'
-```
-
-Extract the status, timestamps, Space and Job identifiers, run settings,
-trigger-time `config_snapshot` presence, benchmark settings, best iteration and
-accuracy, and `convergence_reason`. Do not display the full `config_snapshot`;
-report whether it is present and, if useful, its size.
-
-## 3. Reconstruct the four-task timeline
-
-```sql
-SELECT
-  task_key,
-  stage,
-  status,
-  started_at,
-  completed_at,
-  duration_seconds,
-  lever,
-  iteration,
-  detail_json,
-  error_message
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_stages
-WHERE run_id = '<RUN_ID>'
+SELECT task_key, stage, status, started_at, completed_at, duration_seconds,
+       lever, iteration, detail_json, error_message
+FROM <S>.genie_opt_stages WHERE run_id = '<RUN_ID>'
 ORDER BY started_at, completed_at, stage
 ```
 
-Identify:
+Identify the last completed stage; the first failure and its exact error; any
+`STARTED` row with no completion; skipped or rolled-back work; and gaps that
+dominate wall-clock time. Parse `detail_json` as JSON and describe only keys
+actually present.
 
-- the last completed task or nested stage;
-- the first failed stage and its exact error;
-- a `STARTED` row with no completion;
-- skipped or rolled-back work;
-- gaps between stages that dominate wall-clock time.
+## Step 4 — Load the latest artifact per kind
 
-Parse `detail_json` as JSON. Describe only keys actually present. Do not rely on
-a fixed catalog of legacy stage names.
+Artifacts are append-only; a retry can write the same kind twice. Take the
+latest per kind, but keep older revisions that explain a retry.
 
-## 4. Load the latest artifact of each kind
-
-Artifacts are append-only and a retry may write the same kind more than once.
-Use the latest row per `artifact_kind`, while retaining older revisions when
-they explain a retry or changed outcome.
+Inventory the artifacts first — `artifact_json` bodies can be large, so fetch
+them per kind afterwards rather than all at once:
 
 ```sql
 WITH ranked AS (
-  SELECT
-    artifact_id,
-    run_id,
-    stage_name,
-    iteration,
-    artifact_kind,
-    artifact_json,
-    content_hash,
-    parent_artifact_id,
-    source_notebook,
-    created_at,
-    ROW_NUMBER() OVER (
-      PARTITION BY artifact_kind
-      ORDER BY created_at DESC, artifact_id DESC
-    ) AS recency
-  FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_artifacts
-  WHERE run_id = '<RUN_ID>'
+  SELECT artifact_id, stage_name, iteration, artifact_kind, content_hash,
+         parent_artifact_id, source_notebook, created_at,
+         LENGTH(artifact_json) AS json_chars,
+         ROW_NUMBER() OVER (PARTITION BY artifact_kind
+           ORDER BY created_at DESC, artifact_id DESC) AS recency
+  FROM <S>.genie_opt_artifacts WHERE run_id = '<RUN_ID>'
 )
-SELECT *
-FROM ranked
-ORDER BY artifact_kind, recency
+SELECT * FROM ranked ORDER BY artifact_kind, recency
 ```
-
-Prioritize these artifact kinds when present:
-
-- `run_manifest`: intake parameters, snapshot/hash, and handoff identifiers;
-- `benchmark_qc`: validity counts, finding codes, repair use, semantic-review
-  coverage, and the final benchmark window;
-- `space_quality_enrichment` and `space_metadata`: pre-loop metadata changes;
-- `publish_record`: authoritative publish outcome, champion, final status,
-  concerns, audit summary, and improvement trajectory.
-
-Also use wide-schema artifacts when the failure concerns asset discovery,
-profiling, or selection. Do not assume an artifact kind exists.
-
-## 5. Build the evaluation and decision ladder
-
-Select only described columns. The following projection is valid for the
-current schema; remove a field rather than guessing if an older install lacks
-it.
 
 ```sql
-SELECT
-  iteration,
-  attempt_no,
-  attempt_mode,
-  eval_scope,
-  timestamp,
-  overall_accuracy,
-  total_questions,
-  correct_count,
-  evaluated_count,
-  excluded_count,
-  thresholds_met,
-  num_needs_review,
-  eval_run_id,
-  eval_run_status,
-  is_champion,
-  rolled_back,
-  rollback_reason,
-  current_hypothesis,
-  reflection_json,
-  decision,
-  decision_reason,
-  best_accuracy,
-  do_not_repeat,
-  next_hypothesis,
-  remaining_failures,
-  rows_json,
-  terminal_reason,
-  surgical_attempts_used,
-  target_accuracy,
-  max_attempts
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_iterations
-WHERE run_id = '<RUN_ID>'
-ORDER BY iteration, eval_scope, timestamp
+SELECT artifact_kind, artifact_json FROM <S>.genie_opt_artifacts
+WHERE artifact_id = '<ARTIFACT_ID>'
 ```
 
-Interpret the rows as follows:
+Prioritize when present: `run_manifest` (intake parameters, snapshot hash,
+handoff IDs); `benchmark_qc` (validity counts, finding codes, repair use,
+semantic-review coverage, final window); `space_quality_enrichment` and
+`space_metadata` (pre-loop metadata changes); `publish_record` (authoritative
+publish outcome, champion, final status, concerns, audit summary). The
+`wide_schema_*` kinds matter when the failure concerns asset discovery,
+profiling, or column selection. Do not assume a kind exists.
 
-- `iteration=0, eval_scope=full` is the baseline.
-- Later full rows are patch attempts. An enrichment row, when present, is
-  supporting evidence and not a replacement for the full-evaluation ladder.
+## Step 5 — Build the evaluation and decision ladder
+
+Read the ladder first without `rows_json`, which can be large and contains
+question text and expected SQL:
+
+```sql
+SELECT * EXCEPT (rows_json) FROM <S>.genie_opt_iterations
+WHERE run_id = '<RUN_ID>' ORDER BY iteration, eval_scope, timestamp
+```
+
+Then pull `rows_json` only for the iterations you actually need to explain:
+
+```sql
+SELECT iteration, eval_scope, rows_json FROM <S>.genie_opt_iterations
+WHERE run_id = '<RUN_ID>' AND iteration IN (<ITERATIONS_OF_INTEREST>)
+```
+
+Read the ladder as follows:
+
+- `iteration=0, eval_scope=full` is the baseline; later full rows are patch
+  attempts. An enrichment row is supporting evidence, not a substitute for the
+  full-evaluation ladder.
 - `decision`, `decision_reason`, `current_hypothesis`, `reflection_json`,
   `do_not_repeat`, and `next_hypothesis` explain the controller's choices.
-- `rolled_back=true` and `rollback_reason` show rejected candidates.
-- `is_champion=true` identifies the champion. Its `terminal_reason` is the
-  authoritative loop stop reason. Compare it with the run row and
-  `publish_record`; report disagreement as a state-consistency defect.
-- Accuracy uses the persisted denominator. Do not recalculate it from
-  `total_questions` when `evaluated_count` or exclusions indicate otherwise.
+- `rolled_back=true` plus `rollback_reason` marks rejected candidates.
+- `is_champion=true` identifies the champion; its `terminal_reason` is the
+  authoritative stop reason. Compare it against the run row and
+  `publish_record` — report disagreement as a state-consistency defect.
+- Accuracy uses the persisted denominator. Do not recompute from
+  `total_questions` when `evaluated_count` or `excluded_count` disagree.
+- A transient eval status (`EVALUATION_TIMEOUT`, `EVALUATION_CANCELLED`) is
+  retried up to twice before failing, and terminal stamping falls back to the
+  best persisted iteration. Check for retries before calling an eval blip fatal.
 
-Parse every non-null `rows_json` value as a JSON array. Inspect the keys before
-aggregating because native-evaluation payloads can evolve. At minimum, build a
-per-iteration count of `assessment` values (`GOOD`, `BAD`, `NEEDS_REVIEW`, plus
-unknown/null) and summarize recurring `assessment_reasons`. Tie each claimed
-failure cluster to question identifiers and iteration evidence. Do not display
-the question text or expected SQL unless needed for the specific root cause.
+Parse each non-null `rows_json` as a JSON array; inspect its keys before
+aggregating, since native-evaluation payloads evolve. At minimum, count
+`assessment` values per iteration (`GOOD`, `BAD`, `NEEDS_REVIEW`, unknown/null)
+and summarize recurring `assessment_reasons`. Tie every claimed failure cluster
+to question IDs. Do not print question text or expected SQL unless it is
+essential to one root cause.
 
-## 6. Connect hypotheses to patches and rollbacks
+## Step 6 — Connect hypotheses to patches
 
 ```sql
-SELECT
-  iteration,
-  lever,
-  patch_index,
-  patch_type,
-  scope,
-  risk_level,
-  target_object,
-  rolled_back,
-  rollback_reason,
-  proposal_id,
-  cluster_id,
-  provenance_json,
-  applied_at,
-  rolled_back_at
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_patches
-WHERE run_id = '<RUN_ID>'
+SELECT iteration, lever, patch_index, patch_type, scope, risk_level,
+       target_object, rolled_back, rollback_reason, proposal_id, cluster_id,
+       provenance_json, applied_at, rolled_back_at
+FROM <S>.genie_opt_patches WHERE run_id = '<RUN_ID>'
 ORDER BY iteration, lever, patch_index
 ```
 
-Parse `provenance_json` and connect each patch to the relevant hypothesis,
-failure cluster, and question-level assessment evidence. Use the iteration
-row's `decision` and `decision_reason` for the aggregate accept/reject decision.
-Do not infer that a proposal improved the Space merely because a patch row
-exists; confirm acceptance and accuracy movement in `genie_opt_iterations`.
+Parse `provenance_json` to link each patch to its hypothesis, failure cluster,
+and question-level evidence. A patch row does **not** mean the Space improved —
+confirm acceptance and accuracy movement in `genie_opt_iterations`. Per attempt,
+report: hypothesis, patch types and targets, accuracy change vs. the previous
+champion, decision, rollback status, and the evidence behind the decision.
 
-For each attempt, report: hypothesis, patch types and targets, evaluation
-change from the previous champion, decision, rollback status, and the evidence
-that caused the decision.
-
-## 7. Explain benchmark QC and mutations
+## Step 7 — Explain benchmark QC and mutations
 
 ```sql
-SELECT
-  question_id,
-  op,
-  reason,
-  before IS NOT NULL AS has_before,
-  after IS NOT NULL AS has_after,
-  SHA2(COALESCE(before, ''), 256) AS before_hash,
-  SHA2(COALESCE(after, ''), 256) AS after_hash,
-  logged_at
-FROM <LOG_CATALOG>.<LOG_SCHEMA>.genie_opt_benchmark_mutations
-WHERE run_id = '<RUN_ID>'
+SELECT question_id, op, reason, logged_at,
+       before IS NOT NULL AS has_before, after IS NOT NULL AS has_after,
+       SHA2(COALESCE(before, ''), 256) AS before_hash,
+       SHA2(COALESCE(after, ''), 256) AS after_hash
+FROM <S>.genie_opt_benchmark_mutations WHERE run_id = '<RUN_ID>'
 ORDER BY logged_at, question_id
 ```
 
-Use the latest `benchmark_qc` artifact together with this ledger. Summarize
-counts and reason codes for added, removed, changed, and advisory mutations.
-Distinguish these cases:
+Combine with the latest `benchmark_qc` artifact. Summarize counts and reason
+codes for added, removed, changed, and advisory mutations, distinguishing:
+question-quality or question-to-SQL semantic findings; SQL validation or
+execution failure; semantic review not run or degraded; duplicate removal;
+repair/regeneration exhausted; and corpus below the minimum or outside the
+target window. `before`/`after` hold question and SQL text — report hashes, IDs,
+op, and reason by default; expose content only for a specific RCA.
 
-- question-quality or question-to-SQL semantic finding;
-- SQL validation or execution failure;
-- semantic review was not run or was degraded;
-- duplicate removal;
-- repair/regeneration exhausted;
-- corpus below the minimum or outside the target window.
+## Step 8 — Reconcile the terminal and publish outcome
 
-The `before` and `after` fields can contain question and SQL text. Report hashes,
-IDs, operation, and reason by default; expose content only when it is necessary
-for a specific RCA.
-
-## 8. Reconcile the terminal and publish outcome
-
-Use three sources together:
-
-1. champion `genie_opt_iterations.terminal_reason`;
-2. latest `publish_record` artifact;
-3. `genie_opt_runs.status` and `convergence_reason`.
-
-Current expected mappings are:
+Cross-check three sources: champion `genie_opt_iterations.terminal_reason`; the
+latest `publish_record` artifact; and `genie_opt_runs.status` plus
+`convergence_reason`. Expected mappings:
 
 | Terminal reason | Run status | Published |
 |---|---|---|
 | `TARGET_REACHED` | `CONVERGED` | yes |
 | `MAX_ATTEMPTS` | `MAX_ITERATIONS` | yes |
 | `NO_NEW_HYPOTHESIS` | `STALLED` | no |
+| `EVAL_BUDGET_EXHAUSTED` | `STALLED` | no |
 | `EVAL_INVALID` | `FAILED` | no |
 | `CONFIG_VALIDATION_FAILED` | `FAILED` | no |
 | `LOOP_STATE_INVALID` | `FAILED` | no |
-| `EVAL_BUDGET_EXHAUSTED` | `STALLED` | no |
+| `INSUFFICIENT_VALID_BENCHMARKS` | `SKIPPED` | no; Optimize never ran |
 | missing or unknown | `STALLED` | no, fail closed |
 
-If the run stopped during Benchmark QC, there may be no iteration or publish
-record. Use the failed stage, `benchmark_qc`, mutation ledger, and run row; do
-not manufacture an Optimize outcome.
+If the run stopped during Benchmark QC there may be no iteration or publish
+record. Use the failed stage, `benchmark_qc`, the mutation ledger, and the run
+row — do not manufacture an Optimize outcome.
 
-## 9. Produce the debugging report
+## Step 9 — Produce the report
 
-Return this structure:
-
-1. **Executive diagnosis** — one paragraph: final outcome, failing task or
-   limiting factor, champion/publish state, and confidence.
-2. **Four-task story** — one concise subsection per task. Say `not reached` or
-   `no durable evidence` when appropriate.
-3. **Attempt ladder** — a table with iteration/scope, accuracy, assessment
-   counts, hypothesis, patch summary, decision, rollback, and champion marker.
-4. **Primary root cause** — facts first, then explicitly labeled hypotheses.
-   Explain why the controller accepted, rejected, retried, or stopped.
+1. **Executive diagnosis** — one paragraph: outcome, failing task or limiting
+   factor, champion/publish state, confidence.
+2. **Four-task story** — one short subsection per task; say `not reached` or
+   `no durable evidence` where true.
+3. **Attempt ladder** — table: iteration/scope, accuracy, assessment counts,
+   hypothesis, patch summary, decision, rollback, champion marker.
+4. **Primary root cause** — facts first, then labeled hypotheses. Explain why
+   the controller accepted, rejected, retried, or stopped.
 5. **State consistency checks** — terminal mapping, champion pointer, artifact
-   recency, missing schema fields, and contradictions.
-6. **Recommended next actions** — ordered, specific, and non-destructive.
-   Distinguish benchmark fixes, Space metadata/instruction fixes, permissions or
-   evaluation infrastructure fixes, and code defects.
-7. **Evidence appendix** — every cited table row and identifier. Include query
+   recency, missing schema fields, contradictions.
+6. **Recommended next actions** — ordered, specific, non-destructive. Separate
+   benchmark fixes, Space metadata/instruction fixes, permission or eval
+   infrastructure fixes, and code defects.
+7. **Evidence appendix** — every cited row and identifier, plus query
    limitations and missing data.
 
-Do not merely dump rows. Stitch them into a chronological causal story. Never
-claim a root cause from a status string alone when iteration, artifact, patch,
-or question-level evidence can confirm or refute it.
+Stitch the rows into a chronological causal story rather than dumping them.
+Never claim a root cause from a status string alone when iteration, artifact,
+patch, or question-level evidence can confirm or refute it.
 
 ---
 

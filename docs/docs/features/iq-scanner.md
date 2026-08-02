@@ -7,7 +7,7 @@ description: "Deterministic 12-check quality scoring with three maturity tiers."
 
 The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Agent configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings with recommended next steps.
 
-Unlike the LLM-based analysis tools, the scanner runs instantly with no LLM calls — it inspects the `serialized_space` JSON directly.
+Unlike [Auto-Optimize](/docs/features/auto-optimize), which runs a benchmark-driven job against the live Agent, the scanner runs instantly with no LLM calls — it inspects the `serialized_space` JSON directly. It is the only analysis path in the Workbench.
 
 ### Unity Catalog Enrichment
 
@@ -35,22 +35,29 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 
 | # | Check | Pass Criteria | On Failure |
 |---|-------|--------------|------------|
-| 1 | **Data sources exist** | At least 1 table or metric view configured | "No tables or metric views configured" |
+| 1 | **Agent description** | Top-level Agent description present and meaningful (≥30 chars, ≥5 words) | "Missing or placeholder agent description" |
 | 2 | **Table descriptions** | ≥80% of tables have descriptions | Finding + next step to add descriptions |
 | 3 | **Column descriptions** | ≥50% of columns have descriptions | Finding + next step to add descriptions |
-| 4 | **Text instructions** | Present and >50 characters total | Finding to add business context instructions |
+| 4 | **Text instructions (>50 chars)** | Present and >50 characters total | Finding to add business context instructions |
 | 5 | **Join specifications** | At least 1 join spec when multiple ordinary tables are configured; metric views do not require join specs | Finding to add join specs |
 | 6 | **Data source count 1–12** | Between 1 and 12 tables + metric views | Finding to reduce data sources or use multi-room architecture |
-| 7 | **8+ example SQLs** | At least 8 example question-SQL pairs | Finding to add more examples |
-| 8 | **SQL snippets** | At least 1 function, expression, measure, or filter | Finding to add SQL snippets |
-| 9 | **Entity/format matching** | At least 1 column with entity matching or format assistance | Finding to enable on categorical/date/number columns |
-| 10 | **10+ benchmark questions** | At least 10 benchmark questions | Finding to add benchmarks |
+| 7 | **SQL guidance artifacts** | At least 1 of: SQL function, expression, measure, filter, or example SQL | "No SQL guidance artifacts configured" |
+| 8 | **Entity/format matching** | At least 1 column with entity matching or format assistance | Finding to enable on categorical/date/number columns |
+| 9 | **10+ benchmark questions** | At least 10 benchmark questions | Finding to add benchmarks |
+| 10 | **Column visibility / noise control** | Not (≥20 visible columns **and** ≥30% of them look internal/noisy) | Finding to hide noisy internal, audit, raw, and opaque technical columns |
+
+:::note
+Checks 1, 7, and 10 replaced earlier versions of this table. There is no longer a
+standalone "data sources exist" check (an empty Agent fails check 6), and example
+SQLs and SQL snippets are now scored together as one **SQL guidance artifacts**
+check rather than as two separate checks.
+:::
 
 ### Optimization Checks (11–12)
 
 | # | Check | Pass Criteria | On Failure |
 |---|-------|--------------|------------|
-| 11 | **Optimization workflow completed** | A terminal optimization run exists (`CONVERGED`, `STALLED`, or `MAX_ITERATIONS`) | "Agent has not been through the optimization workflow" |
+| 11 | **Optimization workflow completed** | A terminal optimization run exists (`CONVERGED`, `STALLED`, `MAX_ITERATIONS`, or `APPLIED`) | "Agent has not been through the optimization workflow" |
 | 12 | **Optimization accuracy ≥ 85%** | Best accuracy from optimization is ≥ 0.85 | "Optimization accuracy is X% — target ≥ 85%" |
 
 ## Severity Levels
@@ -75,7 +82,7 @@ The scanner returns:
   "total": 12,
   "maturity": "Not Ready",
   "checks": [
-    {"label": "Data sources exist", "passed": true, "detail": "5 table(s) configured", "severity": "pass"},
+    {"label": "Agent description", "passed": true, "detail": "142 chars", "severity": "pass"},
     ...
   ],
   "findings": ["No join specifications for multi-table agent", ...],
@@ -96,16 +103,20 @@ Beyond the 12 scored checks, the scanner emits additional warnings for edge case
 
 | Condition | Warning |
 |-----------|---------|
+| Agent description under 100 chars | "Add domain, audience, and scope details" |
 | Column descriptions at 50–80% | "Higher coverage improves SQL generation accuracy" |
 | No column synonyms defined | "Add synonyms for columns with abbreviated or technical names" |
 | Text instructions > 2,000 chars | "Keep under 2,000 to avoid pushing out higher-value SQL context" |
-| SQL patterns in text instructions | "Move to Example SQLs or SQL Expressions" |
-| Data source count 9–12 | "Consider splitting into focused rooms for >8 data sources" |
-| Example SQLs 8–14 | "10-15 is the sweet spot for largest accuracy jump" |
+| SQL patterns in text instructions | "Move to Example SQLs or SQL Expressions" (structure-aware detection, not a keyword regex) |
+| Join specs fewer than `tables − 1` | "Relationship coverage may be incomplete" |
+| Data source count 9–12 | "Consider focused agents for broad domains" |
 | Missing `usage_guidance` on >50% of example SQLs | "Add descriptions of when each example should be applied" |
 | Missing measures or filters in SQL snippets | "Add missing SQL snippet types for better coverage" |
-| Entity matching columns > 100 | "Approaching 120/agent limit" |
+| Benchmark questions 10–19 | "Add more for broader coverage" |
+| Entity matching columns > 100 | "Approaching 120/agent limit" (>120: excess is ignored) |
 | Row-level security on tables with entity matching | "Entity matching is silently disabled for these" |
+| ≥20 visible columns with ≥15% noisy | "Review noisy internal columns" |
+| A single table exposes >75 visible columns | Names the table's visible-column count |
 
 ## Integration with Auto-Optimize
 
@@ -116,7 +127,12 @@ Checks 11 and 12 evaluate optimization results. The scanner reads from two sourc
 
 The scanner normalizes accuracy values (GSO stores 0–100, scanner expects 0.0–1.0) and uses the best accuracy across both sources.
 
-Only terminal GSO run statuses count: `CONVERGED`, `STALLED`, `MAX_ITERATIONS`. In-progress or failed runs are ignored.
+Only terminal GSO run statuses count: `CONVERGED`, `STALLED`, `MAX_ITERATIONS`, and `APPLIED`. In-progress runs are ignored, as are:
+
+- `FAILED` / `CANCELLED` — `best_accuracy` is absent or unreliable.
+- `DISCARDED` — a discard reverts the live config, so the run's accuracy no longer describes what is deployed; the score falls back to baseline instead.
+
+`APPLIED` **is** counted: applying an optimization flips the run status to `APPLIED` while preserving `best_accuracy`, and the applied champion is the live config, so its measured accuracy is what the header should report.
 
 ## Persistence
 
@@ -130,7 +146,8 @@ Historical scans are available via `GET /api/spaces/{id}/history`.
 
 ## Source Files
 
-- `backend/services/scanner.py` — scoring engine
+- `packages/genie-space-optimizer/src/genie_space_optimizer/iq_scan/scoring.py` — the scoring rules (`calculate_score`, `get_maturity_label`, `CONFIG_CHECK_COUNT`), extracted from the backend so the GSO optimizer preflight shares one source of truth
+- `backend/services/scanner.py` — backend-specific IO: UC metadata enrichment, Lakebase persistence, and the async `scan_space()` orchestration
 - `backend/routers/spaces.py` — `POST /api/spaces/{id}/scan` endpoint
 - `backend/services/lakebase.py` — persistence
 - `backend/services/gso_lakebase.py` — GSO run data for checks 11–12

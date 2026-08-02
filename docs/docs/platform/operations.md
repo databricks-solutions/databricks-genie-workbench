@@ -36,11 +36,15 @@ If `LAKEBASE_HOST` is not configured (no Lakebase attached), the app falls back 
 
 ### Troubleshooting Lakebase
 
+Re-running your install path re-provisions the Lakebase resource, SP role, and
+grants: rerun `notebooks/install.py` (notebook path) or
+`./scripts/deploy.sh --update` (local terminal path).
+
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Failed to list spaces" | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
+| "Failed to list spaces" | Lakebase not attached | Re-run your install path to auto-attach the postgres resource |
 | Connection errors after ~1 hour | Token refresh failed | Check app logs for credential generation errors |
-| Tables not created | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
+| Tables not created | SP lacks CONNECT or CREATE ON DATABASE | Re-run your install path to re-create the SP role and grants |
 
 ## MLflow
 
@@ -50,9 +54,11 @@ LLM calls in the create agent and optimization pipeline are traced via MLflow. T
 
 At startup, the app validates that the experiment ID exists in the workspace. If it doesn't, tracing is silently disabled (the variable is cleared).
 
-### Prompt Registry
-
-Auto-Optimize requires MLflow Prompt Registry for versioned judge prompts. If Prompt Registry is not enabled on the workspace, the optimization preflight task will fail with `FEATURE_DISABLED`.
+Tracing is the **only** MLflow dependency. Auto-Optimize does not use MLflow for
+dataset persistence, run tracking, model registration, or evaluation — the
+benchmark corpus is written directly to Delta and evaluation uses Genie's native
+Eval-Run API. MLflow Prompt Registry is not required, and there is no
+`MLFLOW_REGISTRY_URI` setting.
 
 ### Configuration
 
@@ -60,8 +66,6 @@ Auto-Optimize requires MLflow Prompt Registry for versioned judge prompts. If Pr
 # In app.yaml
 - name: MLFLOW_TRACKING_URI
   value: "databricks"
-- name: MLFLOW_REGISTRY_URI
-  value: "databricks-uc"
 - name: MLFLOW_EXPERIMENT_ID
   value: "<your-experiment-id>"
 ```
@@ -103,22 +107,25 @@ databricks workspace list /Workspace/Users/<email>/<app-name>/backend --profile 
 
 ### Job Creation
 
-The optimization job is created automatically during `deploy.sh` via `databricks bundle deploy -t app`. It uses Terraform state scoped to the deployer.
+The optimization job (`<app-name>-gso-optimization-job`) is created automatically by both install paths:
+
+- **Notebook path (recommended):** `notebooks/install.py` creates or updates the job through the SDK/Jobs API (`jobs/reset` upsert semantics via `scripts/deploy_lib/gso_job.py`). No Terraform state is involved.
+- **Local terminal path:** `deploy.sh` uses DABs (`databricks bundle deploy -t app`), with Terraform state scoped to the deployer.
 
 ### Job Reuse
 
-If the job already exists (from a previous deploy), it is reused. To force recreation:
+If a job with matching settings already exists, it is reused rather than duplicated. To force recreation:
 
 1. Delete the job in the Databricks UI
-2. Re-run `./scripts/deploy.sh --update`
+2. Rerun `notebooks/install.py`, or `./scripts/deploy.sh --update` for the local terminal path
 
 ### `ensure_job_run_as` Self-Healing
 
 At app startup, `_ensure_gso_job_run_as()` checks that the optimization job's `run_as` matches the current app SP. If they don't match (e.g., the app was redeployed with a different SP), the job is automatically updated. This avoids manual reconfiguration when the app identity changes.
 
-### Bundle Management
+### Bundle Management (local terminal path only)
 
-The GSO job is managed by Databricks Asset Bundles (DABs):
+On the local terminal path, the GSO job is managed by Databricks Asset Bundles (DABs):
 
 ```bash
 # Deploy/update the job (done automatically by deploy.sh)
@@ -129,11 +136,13 @@ databricks bundle deploy -t app --profile <profile>
 
 The `app` target uses `mode: development` for per-deployer Terraform state with `presets.name_prefix: ""` for clean job names.
 
+The notebook installer does not use DABs at all — it manages the job through the Jobs API, so there is no bundle or Terraform state to maintain. Do not mix the two paths for the same app instance.
+
 ### Post-Deploy: Genie Agent Access
 
 After deploying, the app's SP needs access to Genie Agents for API fallback and optimization:
 
-1. The installer grants SP access to your existing Genie Agents
+1. Both installers grant SP access to your existing visible Genie Agents
 2. For agents created after install, share them with the SP (`CAN_MANAGE`)
 3. Grant SP `SELECT` on referenced schemas:
 

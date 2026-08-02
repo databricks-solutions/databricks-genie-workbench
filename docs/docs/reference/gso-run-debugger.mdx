@@ -1,9 +1,29 @@
 ---
 sidebar_position: 4
+title: Debug GSO runs with Genie Code
+sidebar_label: Debug GSO runs with Genie Code
 description: "Use Genie Code and GSO's Delta audit tables to reconstruct an optimization run."
 ---
 
-# Debug GSO runs with Genie Code
+import CodeBlock from '@theme/CodeBlock';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+
+{/*
+  Renders docs/debug-prompt.md verbatim. The text is read by docusaurus.config.ts
+  and passed through customFields, so this is not a copy and cannot drift — edit
+  docs/debug-prompt.md to change the prompt.
+
+  Keep that file where it is: docusaurus.config.ts reads it at load time (the
+  build fails with ENOENT without it), and its SQL is guarded by
+  packages/genie-space-optimizer/tests/unit/test_debug_prompt_contract.py, which
+  pins the path and asserts read-only statements, current tables only, and no
+  retired columns.
+*/}
+export const DebugPrompt = () => (
+  <CodeBlock language="markdown" title="docs/debug-prompt.md">
+    {useDocusaurusContext().siteConfig.customFields.debugPrompt}
+  </CodeBlock>
+);
 
 GSO notebook output now provides a concise first-response summary: run and log
 identifiers, benchmark quality counts, baseline and attempt decisions, terminal
@@ -12,11 +32,10 @@ bounded; it does not dump benchmark SQL, prompts, full configurations, or every
 question result.
 
 For a complete root-cause analysis, invoke Genie Code in the same Databricks
-workspace and give it the repository's
-[GSO Run Debugger prompt](https://github.com/databricks-solutions/databricks-genie-workbench/blob/main/docs/debug-prompt.md).
-The prompt is read-only and current-schema aware. It starts by discovering the
-installed tables and columns, then reconstructs the four-task run from durable
-Delta evidence.
+workspace and give it the prompt in [The prompt](#the-prompt) below. It is
+read-only and current-schema aware: it starts by discovering the installed
+tables and columns, then reconstructs the four-task run from durable Delta
+evidence.
 
 ## Values to collect
 
@@ -68,8 +87,16 @@ instructions, examples, descriptions, or proposed patches. The debugger prompt
 defaults to IDs, counts, reason codes, and bounded evidence, and only permits
 the minimum SQL fragment needed for a specific root-cause analysis.
 
+## The prompt
+
+Use the copy button in the top-right of the block below, then paste it into
+Genie Code and fill in the angle-bracket placeholders before asking it to begin.
+
+<DebugPrompt />
+
 ## Related documentation
 
 - [Auto-Optimize (GSO)](/docs/features/auto-optimize)
+- [Optimization Guide](/docs/reference/optimization-guide) — what to change once you know why a run underperformed
 - [Troubleshooting](/docs/reference/troubleshooting)
 - [Operations Guide](/docs/platform/operations)

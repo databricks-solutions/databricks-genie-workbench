@@ -7,7 +7,7 @@ description: "Full reference for app.yaml and .env.deploy variables."
 
 ## App Environment Variables (`app.yaml`)
 
-These variables are defined in `app.yaml` and injected into the app runtime. Placeholder values (e.g., `__GSO_CATALOG__`) are patched by `deploy.sh` before deployment.
+These variables are defined in `app.yaml` and injected into the app runtime. Placeholder values (e.g., `__GSO_CATALOG__`) are patched before deployment — by `notebooks/install.py` into its generated workspace source folder (recommended path), or in place by `deploy.sh` (local terminal path).
 
 ### MLflow Tracing
 
@@ -60,7 +60,9 @@ These variables are defined in `app.yaml` and injected into the app runtime. Pla
 
 ## Deploy Configuration Variables (`.env.deploy`)
 
-These variables are used by `deploy.sh` and `install.sh` at deploy time. They are **not** injected into the app runtime directly — instead, deploy scripts use them to patch `app.yaml` placeholders and configure resources.
+These variables apply to the **local terminal path only** — they are read by `deploy.sh` and written by `install.sh`. They are **not** injected into the app runtime directly; the deploy scripts use them to patch `app.yaml` placeholders and configure resources.
+
+On the recommended notebook path there is no `.env.deploy` file. The equivalent values come from `notebooks/install.py` widgets (`app_name`, `catalog`, `warehouse_id`, `lakebase_mode`, `lakebase_project_name`).
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -75,14 +77,14 @@ These variables are used by `deploy.sh` and `install.sh` at deploy time. They ar
 
 ```mermaid
 flowchart LR
-    env[".env.deploy<br/>GENIE_CATALOG · GENIE_WAREHOUSE_ID · ..."] -->|"deploy.sh patches placeholders"| tmpl["app.yaml (template)<br/>__GSO_CATALOG__ · __LLM_MODEL__"]
+    src["Notebook widgets<br/>or .env.deploy"] -->|"installer patches placeholders"| tmpl["app.yaml (template)<br/>__GSO_CATALOG__ · __LLM_MODEL__"]
     tmpl --> deployed["app.yaml (deployed)<br/>real values"]
     deployed --> runtime["App Runtime<br/>env vars injected"]
 ```
 
-1. `install.sh` collects values and writes `.env.deploy`
-2. `deploy.sh` reads `.env.deploy` and patches `__PLACEHOLDER__` strings in `app.yaml`
-3. `databricks apps deploy` uploads the patched `app.yaml`
+1. The installer collects values — notebook widgets on the notebook path, or `install.sh` writing `.env.deploy` on the terminal path
+2. The installer patches `__PLACEHOLDER__` strings in `app.yaml`. The notebook path writes the patched copy into its generated workspace source folder and leaves the Git folder's `app.yaml` untouched; the terminal path patches the file in place
+3. `databricks apps deploy` (or the notebook's equivalent SDK call) uploads the patched `app.yaml`
 4. The Databricks Apps platform injects env vars into the running container
 5. `valueFrom` variables (e.g., `LAKEBASE_HOST`, `SQL_WAREHOUSE_ID`) are resolved from app resources at runtime
 

@@ -254,17 +254,28 @@ Python dependencies use `uv sync` on the platform (because `requirements.txt` is
 
 ## Documentation
 
-The canonical documentation is the Docusaurus site under `docs/` (see below).
-Earlier flat-markdown docs are retained as historical snapshots under `docs/archives/`:
+The canonical documentation is the Docusaurus site under `docs/docs/` (see below).
+It is the **only** source of documentation truth — when modifying auth, agents, or
+optimization code, consult the relevant page there and update it in the same change.
 
-- `docs/archives/00-index.md` — Documentation hub and table of contents
-- `docs/archives/03-authentication-and-permissions.md` — Deep dive on OBO + SP dual auth model
-- `docs/archives/04-create-agent.md` — Create Agent: multi-turn tool-calling flow
-- `docs/archives/07-auto-optimize.md` — GSO optimization pipeline (6-stage DAG)
-- `docs/archives/appendices/A-api-reference.md` — All API endpoints with auth identity
+There is no `docs/archives/` directory. Earlier flat-markdown snapshots and dated
+one-off artifacts (run postmortems, investigations) were deleted; the site fully
+carries the content worth keeping. Do not recreate a parallel copy of the docs
+outside `docs/docs/` — that split is what let the two versions drift before.
 
-See `docs/archives/00-index.md` for the full listing. When modifying auth, agents, or
-optimization code, consult the relevant doc for design rationale.
+`docs/debug-prompt.md` is the one file outside `docs/docs/`: the verbatim
+copy-paste prompt for the GSO Run Debugger. Its SQL is guarded by
+`packages/genie-space-optimizer/tests/unit/test_debug_prompt_contract.py`
+(read-only statements, current tables only, no retired columns), which pins that
+path — so edit that file directly.
+
+It is **not** duplicated into the site. `docs/docs/reference/gso-run-debugger.mdx`
+embeds it at build time: `docusaurus.config.ts` reads the file with `fs` and
+exposes it as `customFields.debugPrompt`, which the page renders in a
+`<CodeBlock>` with a copy button. A plain `import '...md?raw'` does not work —
+Docusaurus's MDX loader claims every `.md` import and compiles it to JS. Editing
+`docs/debug-prompt.md` updates the page on the next build; there is no second
+copy to keep in sync.
 
 ### Docs site (`docs/`)
 
@@ -295,11 +306,9 @@ npm run typecheck      # tsc
   previewed from the `documentation` branch. `npm run deploy` (`docusaurus deploy`)
   pushes the build to `gh-pages` once Pages is re-enabled.
 
-**The site originated as a port of the flat docs, now archived under `docs/archives/`.**
-The Docusaurus site under `docs/docs/` is the canonical source — edit it directly.
-The `docs/archives/*.md` files are frozen historical snapshots and are no longer kept in
-sync (e.g. `docs/docs/features/create-agent.md` supersedes
-`docs/archives/04-create-agent.md`).
+The site originated as a port of earlier flat markdown files. Those snapshots have
+been removed — `docs/docs/` is the single canonical source, so edit it directly
+rather than looking for a second copy to keep in sync.
 
 ## References
 
@@ -311,5 +320,5 @@ sync (e.g. `docs/docs/features/create-agent.md` supersedes
   - Read before modifying: `genie_creator.py`, `create_agent_tools.py`
 - **Genie Agent best practices**: https://docs.databricks.com/aws/en/genie/best-practices — official guidance on space design, table selection, instructions, and SQL snippets.
   - Read before modifying: `scanner.py` (scoring rules), `prompts_create/`, `plan_builder.py`
-- **GSL instruction schema (near-term)**: `docs/archives/gsl-instruction-schema.md` — section vocabulary and format rules for `instructions.text_instructions[0].content` that the Create Agent must follow. You MUST read this before modifying Create Agent prompts.
+- **GSL instruction schema (near-term)**: `docs/docs/platform/gsl-instruction-schema.md` — section vocabulary and format rules for `instructions.text_instructions[0].content` that the Create Agent must follow. You MUST read this before modifying Create Agent prompts.
   - Read before modifying: `backend/services/plan_builder.py` (Create Agent parallel-generation prompts), `backend/prompts_create/_plan.py` (Create Agent plan-step prompt template), `backend/services/create_agent_tools.py`

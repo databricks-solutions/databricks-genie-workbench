@@ -38,9 +38,9 @@ def format_mlflow_template(template: str, **kwargs: Any) -> str:
 
     return re.sub(r"\{\{\s*(\w+)\s*\}\}", _replacer, template)
 
-# ── 0. Canonical Instruction Schema (PR #178 — docs/archives/gsl-instruction-schema.md) ──
+# ── 0. Canonical Instruction Schema (PR #178 — docs/docs/platform/gsl-instruction-schema.md) ──
 #
-# Keep in sync with docs/archives/gsl-instruction-schema.md introduced by PR #178.
+# Keep in sync with docs/docs/platform/gsl-instruction-schema.md introduced by PR #178.
 # Consolidation into a shared Python module tracked under epic #173 / issue #174;
 # until that lands, this is the authoritative source for GSO. Once the shared
 # module exists, delete these constants in a follow-up PR and import instead.

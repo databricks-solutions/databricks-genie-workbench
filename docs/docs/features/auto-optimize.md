@@ -60,12 +60,17 @@ repair limit are preserved in the live Agent and excluded only from the current
 run's evaluation corpus. Failed generated replacement candidates remain in the
 repair-sweep telemetry; they are never presented as live benchmark exclusions.
 
-Generation targets 30 valid questions. A run may proceed with fewer when
-generation or bounded repair cannot reach that ideal. At least 15 valid
-questions are required to optimize; 15–29 is accepted with 30 still treated as
-the target. If fewer than 15 remain, Optimize performs no evaluation or
-configuration mutation and Publish & Audit records a terminal `SKIPPED` summary
-with reason `INSUFFICIENT_VALID_BENCHMARKS`.
+Generation targets 30 valid questions and the working set is capped at 40 — no
+evaluation ever runs on more than 40 questions, and an already-valid corpus of
+30–40 is retained and evaluated in full. A run may proceed with fewer when
+generation or bounded repair cannot reach the 30 target. At least 15 valid
+questions are required to optimize. If fewer than 15 remain, Optimize performs
+no evaluation or configuration mutation and Publish & Audit records a terminal
+`SKIPPED` summary with reason `INSUFFICIENT_VALID_BENCHMARKS`.
+
+These bounds come from `TARGET_BENCHMARK_COUNT` (30), `MAX_BENCHMARK_COUNT`
+(40), and `MIN_VALID_BENCHMARK_COUNT` (15). Setting `GSO_NEW_SIZING=0` restores
+the legacy 24/29 target and ceiling.
 
 The `benchmark_qc` artifact records structured findings, review coverage,
 quality counts, and proposed repairs. The **Benchmark Changes** panel surfaces
@@ -116,8 +121,11 @@ The strategist selects from the configured levers for each attempt:
 | 2 | Metric views | Governed metric definitions and routing |
 | 3 | Table-valued functions | Parameterized query patterns |
 | 4 | Join specifications | Preferred relationships and join keys |
-| 5 | Instructions | Business vocabulary, routing rules, constraints, examples |
+| 5 | Instructions & examples | Business vocabulary, routing rules, constraints, examples |
 | 6 | SQL expressions | Reusable filters, measures, expressions, and worked SQL |
+
+Lever 0 (**Proactive Enrichment**) is a preparatory stage that always runs before
+the adaptive lever loop. It is not user-selectable and is not shown as a toggle.
 
 Before baseline evaluation, a narrow Agent-quality phase may also fill low-risk curation gaps such as an empty top-level Agent description, thin instructions, and prompt-matching flags. Format assistance is enabled on visible columns, while entity matching is allocated deterministically to eligible string columns using UC types, cardinality, benchmark references, and RLS safeguards. These flags are not proposed by the LLM lever loop. The post-enrichment description is persisted separately because Genie stores `description` as Agent metadata, outside `serialized_space`.
 
@@ -135,6 +143,13 @@ Current runs use Genie's native benchmark Eval-Run API as the sole evaluation
 harness and persist the official evaluation run identifiers, status, question
 counts, correctness counts, and needs-review counts. Headline accuracy is
 `num_correct / num_questions` for native evaluation rows.
+
+A transient eval-service fault does not sink a run that has already committed
+real improvement. `EVALUATION_TIMEOUT` and `EVALUATION_CANCELLED` are retried up
+to two extra times (three attempts total) before the loop surfaces a failure,
+and terminal stamping falls back to the best persisted iteration so a late blip
+cannot overwrite a committed champion with the baseline. `EVALUATION_FAILED` is
+not retried — it means the evaluation genuinely failed.
 
 Benchmark expected SQL is evaluation truth and must never become inference-visible configuration. The optimizer's leakage firewall blocks patches that copy or closely echo benchmark answer material into instructions, examples, descriptions, or other Agent content.
 
@@ -223,7 +238,7 @@ The main current-run sources of truth are:
 | `genie_opt_patches` | Applied and rolled-back patch records |
 | `genie_opt_benchmark_mutations` | Benchmark QC additions, removals, and changes |
 | `genie_benchmarks_<domain>` | Direct Delta handoff of the deduplicated benchmark corpus to Optimize |
-| `genie_opt_artifacts` | `run_manifest`, `benchmark_qc`, `space_quality_enrichment`, and `publish_record` payloads |
+| `genie_opt_artifacts` | Typed JSON payloads keyed by artifact kind — `run_manifest`, `space_metadata`, `benchmark_qc`, `space_quality_enrichment`, `publish_record`, and the six `wide_schema_*` kinds (`inventory`, `evidence`, `selection_plan`, `audit`, `profile_telemetry`, `prompt_telemetry`) |
 | `genie_opt_scan_snapshots` | Optional paired preflight/postflight IQ snapshots |
 
 Workbench stores removed-history tombstones separately in Lakebase table
@@ -250,6 +265,7 @@ The Workbench prefers Lakebase synced reads for UI views and falls back to direc
 
 ## Related documentation
 
+- [Optimization Guide](/docs/reference/optimization-guide) — practitioner playbook for diagnosing benchmark failures and choosing the right fix surface
 - [Debug GSO runs with Genie Code](/docs/reference/gso-run-debugger)
 - [Authentication & Permissions](/docs/platform/authentication)
 - [IQ Scanner](/docs/features/iq-scanner)

@@ -17,14 +17,14 @@ The recommended install path is the Databricks notebook installer.
 
 1. Clone this repo into a Databricks Git folder.
 2. Open `notebooks/install.py`.
-3. Set the notebook widgets:
+3. Attach a Serverless compute session (environment v5).
+4. Set the notebook widgets:
    - `app_name`
    - `catalog`
    - `warehouse_id`
-   - `llm_model`
-   - `lakebase_mode`
+   - `lakebase_mode` (`create` / `existing` / `skip`)
    - `lakebase_project_name`
-4. Run the notebook from the top.
+5. Run the notebook from the top.
 
 The notebook uses notebook-native `WorkspaceClient()` auth, creates a generated deployment source folder under `/Workspace/Users/<you>/.genie-workbench-deploy/<app-name>/app`, patches `app.yaml` there, provisions UC/Lakebase/GSO resources, and deploys the Databricks App from that generated source. The Git folder remains unchanged.
 
