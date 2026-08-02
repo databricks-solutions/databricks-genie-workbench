@@ -2026,8 +2026,8 @@ async def apply_run(run_id: RunId):
     config = _build_gso_config()
 
     try:
-        result = apply_optimization(run_id, ws, config)
-        _invalidate_live_fingerprint_for_run(run_id)
+        result = await _offload(apply_optimization, run_id, ws, config)
+        await _offload(_invalidate_live_fingerprint_for_run, run_id)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -2046,8 +2046,8 @@ async def discard_run(run_id: RunId):
     config = _build_gso_config()
 
     try:
-        result = discard_optimization(run_id, ws, sp_ws, config)
-        _invalidate_live_fingerprint_for_run(run_id)
+        result = await _offload(discard_optimization, run_id, ws, sp_ws, config)
+        await _offload(_invalidate_live_fingerprint_for_run, run_id)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -2105,7 +2105,8 @@ async def revert_run(
     config = _build_gso_config()
 
     try:
-        result = revert_optimization(
+        result = await _offload(
+            revert_optimization,
             run_id,
             ws,
             sp_ws,
@@ -2113,7 +2114,7 @@ async def revert_run(
             target=resolved_config_target,
             benchmark_target=benchmark_target,
         )
-        _invalidate_live_fingerprint_for_run(run_id)
+        await _offload(_invalidate_live_fingerprint_for_run, run_id)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

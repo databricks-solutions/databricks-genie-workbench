@@ -223,6 +223,7 @@ def _assert_no_active_space_runs(
     space_id: str,
     sp_ws: WorkspaceClient,
     config: IntegrationConfig,
+    action: str = "revert",
 ) -> None:
     """Reconcile and reject every active run for the target Space.
 
@@ -269,7 +270,7 @@ def _assert_no_active_space_runs(
     if active:
         active_id, active_status = active[0]
         raise ValueError(
-            "Cannot revert while an optimization is active for this Genie "
+            f"Cannot {action} while an optimization is active for this Genie "
             f"Space (run {active_id}, status={active_status}). Wait for it to finish."
         )
 

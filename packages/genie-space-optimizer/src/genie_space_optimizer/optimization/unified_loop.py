@@ -1875,17 +1875,20 @@ def _best_persisted_iteration(
     Selection mirrors ``select_champion_row``'s accuracy fallback: highest
     ``overall_accuracy`` among non-rolled-back full-scope rows. A failed/timed-out
     row scores 0.0 accuracy (see ``build_eval_output_from_official``) so it can
-    never win. Returns ``None`` on read failure or no rows, so the caller keeps
-    its current in-memory behavior.
+    never win. Returns ``None`` only when no eligible rows exist. Read failures
+    propagate so callers fail closed instead of overwriting a durable champion
+    with incomplete in-memory state.
     """
     try:
         rows = load_all_scored_iterations(spark, run_id, catalog, schema)
     except Exception:
-        logger.warning(
-            "Could not load persisted iterations for run %s; terminal stamp "
-            "falls back to in-memory best", run_id, exc_info=True,
+        logger.error(
+            "Could not load persisted iterations for run %s; refusing to "
+            "overwrite durable champion state",
+            run_id,
+            exc_info=True,
         )
-        return None
+        raise
 
     best_iter: int | None = None
     best_acc = float("-inf")
@@ -2317,14 +2320,6 @@ def run_unified_optimization_loop(
             config=current_config,
         ),
     )
-    update_run_status(
-        spark,
-        run_id,
-        catalog,
-        schema,
-        best_iteration=0,
-        best_accuracy=best_accuracy,
-    )
     _emit_diagnostic(
         "Baseline evaluated",
         attempt=0,
@@ -2384,6 +2379,15 @@ def run_unified_optimization_loop(
             "levers_accepted": [],
             "levers_rolled_back": [],
         }
+
+    update_run_status(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        best_iteration=0,
+        best_accuracy=best_accuracy,
+    )
 
     if best_accuracy >= target_accuracy:
         terminal_reason = "TARGET_REACHED"

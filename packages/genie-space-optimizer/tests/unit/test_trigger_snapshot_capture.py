@@ -151,6 +151,62 @@ def test_trigger_capture_rejects_empty_snapshots_and_never_persists_them(
     assert "Rejecting empty Genie Agent snapshot" in caplog.text
 
 
+def test_trigger_recovers_post_submit_handoff_with_service_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = _client("obo")
+    sp_ws = _client("sp")
+    _patch_trigger_happy_path(monkeypatch)
+    monkeypatch.setattr(
+        _genie_client,
+        "fetch_space_config",
+        lambda *_args, **_kwargs: _snapshot(1),
+    )
+    writes: list[tuple[MagicMock, str]] = []
+
+    def write_handoff(client: MagicMock, _warehouse_id: str, sql: str) -> None:
+        writes.append((client, sql))
+        if client is ws:
+            raise RuntimeError("transient OBO warehouse failure")
+
+    monkeypatch.setattr(trigger, "sql_warehouse_execute", write_handoff)
+
+    result = _trigger(ws, sp_ws)
+
+    assert result.status == "IN_PROGRESS"
+    assert result.job_run_id == "987"
+    assert [client for client, _sql in writes] == [ws, sp_ws]
+    assert all("job_run_id = '987'" in sql for _client, sql in writes)
+    assert all("status = 'IN_PROGRESS'" in sql for _client, sql in writes)
+
+
+def test_trigger_never_marks_submitted_job_failed_when_handoff_cannot_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = _client("obo")
+    sp_ws = _client("sp")
+    _patch_trigger_happy_path(monkeypatch)
+    monkeypatch.setattr(
+        _genie_client,
+        "fetch_space_config",
+        lambda *_args, **_kwargs: _snapshot(1),
+    )
+    writes: list[str] = []
+
+    def fail_handoff(_client: MagicMock, _warehouse_id: str, sql: str) -> None:
+        writes.append(sql)
+        raise RuntimeError("warehouse unavailable")
+
+    monkeypatch.setattr(trigger, "sql_warehouse_execute", fail_handoff)
+
+    with pytest.raises(RuntimeError, match="tracking metadata could not be recorded"):
+        _trigger(ws, sp_ws)
+
+    assert len(writes) == 2
+    assert all("status = 'IN_PROGRESS'" in sql for sql in writes)
+    assert not any("status = 'FAILED'" in sql for sql in writes)
+
+
 def test_warehouse_run_insert_preserves_nested_serialized_space_escapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -19,6 +19,7 @@ from genie_space_optimizer.common.warehouse import (
 )
 
 from .config import IntegrationConfig
+from .revert import _ACTIVE_RUN_STATUSES, _assert_no_active_space_runs
 from .types import ActionResult
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,12 @@ def discard_optimization(
     if not run_data:
         raise ValueError(f"Run not found: {run_id}")
 
-    status = str(run_data.get("status") or "")
+    status = str(run_data.get("status") or "").upper()
+    if status in _ACTIVE_RUN_STATUSES:
+        raise ValueError(
+            f"Cannot discard a run that is still in progress (status={status}). "
+            "Wait for the run to finish first."
+        )
     if status in ("DISCARDED", "APPLIED"):
         raise ValueError(f"Run already {status.lower()}.")
     if status == "SKIPPED":
@@ -71,6 +77,13 @@ def discard_optimization(
             "You need CAN_EDIT or CAN_MANAGE permission on this Genie Agent "
             "to discard optimization changes."
         )
+
+    _assert_no_active_space_runs(
+        space_id=str(space_id),
+        sp_ws=sp_ws,
+        config=config,
+        action="discard",
+    )
 
     original_snapshot = run_data.get("config_snapshot")
     if isinstance(original_snapshot, str):

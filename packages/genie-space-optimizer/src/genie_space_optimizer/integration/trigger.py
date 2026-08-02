@@ -296,38 +296,6 @@ def trigger_optimization(
             workload_warehouse_ids=workload_warehouse_ids_str,
             benchmark_policy=requested_benchmark_policy,
         )
-
-        sql_warehouse_execute(
-            ws,
-            config.warehouse_id,
-            f"UPDATE {config.catalog}.{config.schema_name}.genie_opt_runs "
-            f"SET status = 'IN_PROGRESS', job_run_id = '{job_run_id}', "
-            f"job_id = '{job_id}', "
-            f"updated_at = current_timestamp() "
-            f"WHERE run_id = '{run_id}'",
-        )
-
-        host = (sp_ws.config.host or "").rstrip("/")
-        workspace_id: int | None = None
-        if host:
-            try:
-                workspace_id = sp_ws.get_workspace_id()
-            except Exception:
-                workspace_id = None
-        if host and workspace_id is not None:
-            job_url = f"{host}/jobs/{job_id}/runs/{job_run_id}?o={workspace_id}"
-        elif host:
-            job_url = f"{host}/jobs/{job_id}/runs/{job_run_id}"
-        else:
-            job_url = None
-
-        return TriggerResult(
-            run_id=run_id,
-            job_run_id=str(job_run_id),
-            job_url=job_url,
-            status="IN_PROGRESS",
-        )
-
     except Exception as exc:
         logger.exception("Job submission failed for run %s", run_id)
         try:
@@ -343,3 +311,61 @@ def trigger_optimization(
         except Exception:
             logger.warning("Failed to update run status to FAILED for %s", run_id)
         raise RuntimeError(f"Job submission failed: {exc}") from exc
+
+    # Submission succeeded, so this run must remain non-terminal even if the
+    # first warehouse UPDATE fails.  Retry the idempotent handoff with the app
+    # service principal; never misclassify a live job as a submission failure.
+    handoff_sql = (
+        f"UPDATE {config.catalog}.{config.schema_name}.genie_opt_runs "
+        f"SET status = 'IN_PROGRESS', job_run_id = '{job_run_id}', "
+        f"job_id = '{job_id}', "
+        f"updated_at = current_timestamp() "
+        f"WHERE run_id = '{run_id}'"
+    )
+    try:
+        sql_warehouse_execute(ws, config.warehouse_id, handoff_sql)
+    except Exception as first_exc:
+        logger.warning(
+            "OBO job handoff write failed for run %s; retrying with the service principal",
+            run_id,
+            exc_info=True,
+        )
+        try:
+            sql_warehouse_execute(sp_ws, config.warehouse_id, handoff_sql)
+        except Exception as recovery_exc:
+            logger.exception(
+                "Job %s was submitted for run %s but its tracking metadata could not be persisted",
+                job_run_id,
+                run_id,
+            )
+            raise RuntimeError(
+                "Optimization job was submitted, but its tracking metadata could not "
+                f"be recorded (run {run_id}, job run {job_run_id}). The run remains "
+                "queued to block another optimization; retry after checking the job."
+            ) from recovery_exc
+        logger.info(
+            "Recovered job handoff persistence for run %s after OBO failure: %s",
+            run_id,
+            type(first_exc).__name__,
+        )
+
+    host = (sp_ws.config.host or "").rstrip("/")
+    workspace_id: int | None = None
+    if host:
+        try:
+            workspace_id = sp_ws.get_workspace_id()
+        except Exception:
+            workspace_id = None
+    if host and workspace_id is not None:
+        job_url = f"{host}/jobs/{job_id}/runs/{job_run_id}?o={workspace_id}"
+    elif host:
+        job_url = f"{host}/jobs/{job_id}/runs/{job_run_id}"
+    else:
+        job_url = None
+
+    return TriggerResult(
+        run_id=run_id,
+        job_run_id=str(job_run_id),
+        job_url=job_url,
+        status="IN_PROGRESS",
+    )

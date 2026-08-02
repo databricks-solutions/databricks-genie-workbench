@@ -4,6 +4,8 @@ import copy
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from genie_space_optimizer.optimization import unified_loop
 
 
@@ -126,6 +128,73 @@ def test_baseline_observation_is_captured_after_native_evaluation(monkeypatch) -
         "attempts_used": 0,
         "max_attempts": 1,
     }
+
+
+def test_failed_baseline_read_error_preserves_prior_champion_metadata(
+    monkeypatch,
+) -> None:
+    """A restart must fail closed when durable champion state is unreadable."""
+    baseline_config = _config(["PURPOSE:\n- Help users"])
+    update_status = MagicMock(name="update_run_status")
+    stamp_terminal = MagicMock(name="stamp_terminal")
+
+    monkeypatch.setattr(
+        unified_loop,
+        "fetch_space_config",
+        lambda *_args, **_kwargs: {"_parsed_space": copy.deepcopy(baseline_config)},
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "run_space_quality_enrichment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            current_config=copy.deepcopy(baseline_config)
+        ),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "_native_eval",
+        lambda *_args, **_kwargs: {
+            "overall_accuracy": 0.0,
+            "total_questions": 1,
+            "correct_count": 0,
+            "scores": {},
+            "failures": ["q1"],
+            "remaining_failures": ["q1"],
+            "thresholds_met": False,
+            "rows": [],
+            "eval_run_failed": True,
+            "eval_run_status": "FAILED",
+        },
+    )
+    monkeypatch.setattr(
+        unified_loop, "write_iteration", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(unified_loop, "update_run_status", update_status)
+    monkeypatch.setattr(unified_loop, "_stamp_terminal", stamp_terminal)
+    load_persisted = MagicMock(
+        side_effect=RuntimeError("transient Delta read failure")
+    )
+    monkeypatch.setattr(
+        unified_loop, "load_all_scored_iterations", load_persisted,
+    )
+
+    with pytest.raises(RuntimeError, match="transient Delta read failure"):
+        unified_loop.run_unified_optimization_loop(
+            MagicMock(),
+            MagicMock(),
+            run_id="run-restarted",
+            space_id="space-1",
+            benchmarks=[],
+            catalog="catalog",
+            schema="schema",
+            levers=[1],
+            max_attempts=1,
+            target_accuracy=0.9,
+        )
+
+    update_status.assert_not_called()
+    stamp_terminal.assert_not_called()
+    load_persisted.assert_called_once()
 
 
 def test_accepted_attempt_emits_bounded_decision_diagnostics(monkeypatch) -> None:

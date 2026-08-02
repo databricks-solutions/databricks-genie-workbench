@@ -2230,6 +2230,57 @@ def test_resolve_run_knobs_null_for_legacy_terminal_run(monkeypatch) -> None:
     sp_ws.jobs.get_run.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("path_suffix", "operation_name", "result_status"),
+    [
+        ("apply", "apply_optimization", "applied"),
+        ("discard", "discard_optimization", "discarded"),
+        ("revert", "revert_optimization", "reverted"),
+    ],
+)
+def test_mutation_routes_offload_operations_and_fingerprint_lookup(
+    client,
+    monkeypatch,
+    mock_sp_ws,
+    mock_user_ws,
+    path_suffix: str,
+    operation_name: str,
+    result_status: str,
+) -> None:
+    run_id = "12345678-1234-1234-1234-1234567890ab"
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(
+        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws,
+    )
+    operation = MagicMock(
+        return_value=MagicMock(
+            status=result_status,
+            run_id=run_id,
+            message="ok",
+        )
+    )
+    invalidate = MagicMock()
+    monkeypatch.setattr(auto_optimize, operation_name, operation)
+    monkeypatch.setattr(
+        auto_optimize, "_invalidate_live_fingerprint_for_run", invalidate,
+    )
+    offloaded: list[object] = []
+
+    async def record_offload(fn, *args, **kwargs):
+        offloaded.append(fn)
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(auto_optimize, "_offload", record_offload)
+
+    response = client.post(f"/api/auto-optimize/runs/{run_id}/{path_suffix}")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == result_status
+    assert offloaded == [operation, invalidate]
+    operation.assert_called_once()
+    invalidate.assert_called_once_with(run_id)
+
+
 # ── /runs/{run_id}/revert ───────────────────────────────────────────────
 
 
