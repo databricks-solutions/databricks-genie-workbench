@@ -16,6 +16,7 @@ description: "Common issues, causes, and fixes."
 | `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
 | `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
+| Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled | Contact workspace admin to enable MLflow Prompt Registry |
 | Unresolved `__GSO_*__` placeholders | `deploy.sh` couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
 | GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
 | Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
@@ -24,11 +25,11 @@ description: "Common issues, causes, and fixes."
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "You need CAN_EDIT or CAN_MANAGE permission" on optimize trigger | User lacks permission on the Genie Agent | Share the space with the user (CAN_EDIT or CAN_MANAGE) |
-| "The service principal does not have CAN_MANAGE" | SP not shared on the Genie Agent | Share the space with the app's SP (CAN_MANAGE) |
+| "You need CAN_EDIT or CAN_MANAGE permission" on optimize trigger | User lacks permission on the Genie Agent | Share the agent with the user (CAN_EDIT or CAN_MANAGE) |
+| "The service principal does not have CAN_MANAGE" | SP not shared on the Genie Agent | Share the agent with the app's SP (CAN_MANAGE) |
 | "OBO token lacks genie scope, retrying with service principal" (in logs) | User token missing `dashboards.genie` scope | This is handled automatically via SP fallback — no action needed unless SP also fails |
 | Optimization job fails with catalog/schema access errors | SP lacks UC permissions on referenced data | Grant `SELECT` on referenced schemas to the SP |
-| "Permission denied" on scan | User lacks access to the Genie Agent | Share the space with the user |
+| "Permission denied" on scan | User lacks access to the Genie Agent | Share the agent with the user |
 
 ## Lakebase Issues
 
@@ -42,18 +43,14 @@ description: "Common issues, causes, and fixes."
 
 ## GSO / Auto-Optimize Issues
 
-For a table-backed root-cause analysis, use the
-[GSO Run Debugger for Genie Code](/docs/reference/gso-run-debugger). It starts
-from the notebook diagnostics and reconstructs the run from current Delta
-tables without changing workspace state.
-
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "GSO not configured" in health check | `GSO_JOB_ID` or `GSO_CATALOG` not set | Re-run `./scripts/deploy.sh` (patches `app.yaml` with values from bundle state) |
 | Optimization job never starts | Job doesn't exist or SP can't run it | Check job exists in workspace; verify SP has CAN_MANAGE on job |
 | Job stuck in QUEUED | No available cluster or warehouse | Check cluster policies and warehouse availability |
 | "Baseline Evaluation" fails | Benchmark questions reference inaccessible tables | Grant SP `SELECT` on all referenced schemas |
-| Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review the attempt and patch details |
+| "FEATURE_DISABLED" during preflight | MLflow Prompt Registry not enabled | Contact workspace admin to enable it |
+| Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review suggestions for manual improvements |
 | `__GSO_*__` values in running app | `deploy.sh` didn't patch `app.yaml` before deploy | Check `GENIE_CATALOG` in `.env.deploy`; re-run deploy |
 
 ## Debug Commands
@@ -90,4 +87,3 @@ databricks apps get <app-name> --profile <profile> | grep service_principal
 - [Operations Guide](/docs/platform/operations) — monitoring and management
 - [Authentication & Permissions](/docs/platform/authentication) — permission model
 - [Environment Variables](/docs/reference/environment-variables) — full variable reference
-- [GSO Run Debugger](/docs/reference/gso-run-debugger) — read-only, cross-table Auto-Optimize diagnosis

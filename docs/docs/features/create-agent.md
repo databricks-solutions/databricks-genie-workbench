@@ -5,7 +5,7 @@ description: "Multi-turn, tool-calling LLM agent that builds Genie Agents from r
 
 # Create Agent
 
-The Create Agent is a multi-turn, tool-calling LLM agent that walks users from business requirements to a fully configured and deployed Genie Agent. It handles data discovery, profiling, plan generation, config assembly, validation, and space creation — all through a conversational interface.
+The Create Agent is a multi-turn, tool-calling LLM agent that walks users from business requirements to a fully configured and deployed Genie Agent. It handles data discovery, profiling, plan generation, config assembly, validation, and agent creation — all through a conversational interface.
 
 ## How It Works
 
@@ -13,7 +13,7 @@ The agent follows a structured progression through six steps. Each step focuses 
 
 ```mermaid
 flowchart LR
-    req["Requirements<br/>what does the space<br/>need to do?"] --> ds["Data Sources<br/>which tables and<br/>schemas?"]
+    req["Requirements<br/>what does the agent<br/>need to do?"] --> ds["Data Sources<br/>which tables and<br/>schemas?"]
     ds --> insp["Inspection<br/>profile columns ·<br/>assess quality"]
     insp --> plan["Plan<br/>generate and present<br/>the plan"]
     plan --> cfg["Config Create<br/>build · validate ·<br/>deploy"]
@@ -28,8 +28,8 @@ flowchart LR
 | `data_sources` | Discovering Data | Agent browses Unity Catalog (catalogs → schemas → tables) to find relevant tables |
 | `inspection` | Inspecting Tables | Agent profiles columns, assesses data quality, and checks table usage patterns |
 | `plan` | Building Plan | Agent generates a structured plan with tables, questions, example SQLs, benchmarks |
-| `config_create` | Creating Space | Agent builds the `serialized_space` config, validates it, and creates the Genie Agent |
-| `post_creation` | Done | Agent provides a summary, the space URL, and suggests next steps (e.g., run IQ Scan) |
+| `config_create` | Creating Agent | Agent builds the `serialized_space` config, validates it, and creates the Genie Agent |
+| `post_creation` | Done | Agent provides a summary, the agent URL, and suggests next steps (e.g., run IQ Scan) |
 
 Step detection is automatic — the agent infers the current step from conversation history using `detect_step()` in `backend/prompts_create/`.
 
@@ -68,7 +68,7 @@ The agent has access to 17 tools organized into six categories:
 | `get_config_schema` | Return the Genie Agent JSON schema reference |
 | `generate_config` | Build a `serialized_space` config from the plan |
 | `validate_config` | Validate a config against the Genie API schema (errors + warnings) |
-| `update_config` | Modify an existing space's config |
+| `update_config` | Modify an existing agent's config |
 
 ### Plan
 
@@ -91,7 +91,7 @@ When the agent calls `generate_plan`, the request is routed to `backend/services
 | Section | Content Generated |
 |---------|-------------------|
 | `tables` | Table selection, descriptions, column configs |
-| `questions` | Sample questions for the space |
+| `questions` | Sample questions for the agent |
 | `example_sqls` | Example question-SQL pairs with usage guidance |
 | `benchmarks` | Benchmark question-answer pairs for accuracy measurement |
 | `analytics` | Join specs, measures, filters, expressions |
@@ -104,7 +104,7 @@ When the user reviews the plan in the UI and clicks "Create" (sending `action: "
 
 1. Calls `generate_config` to build the `serialized_space` from the plan
 2. Calls `validate_config` to check for errors
-3. Calls `create_space` (or `update_space` if modifying an existing space)
+3. Calls `create_space` (or `update_space` if modifying an existing agent)
 
 This avoids unnecessary LLM inference and completes in seconds.
 
@@ -131,7 +131,7 @@ The create agent uses SSE (Server-Sent Events) to stream progress to the fronten
 | `message_delta` | Incremental text from the LLM (streamed token-by-token) |
 | `message` | Complete message from the agent |
 | `created` | Genie Agent was created (includes space ID and URL) |
-| `updated` | Existing space was updated |
+| `updated` | Existing agent was updated |
 | `heartbeat` | Keep-alive ping (every 15s to prevent proxy timeout) |
 | `error` | Something went wrong |
 | `done` | Stream complete (may include `needs_continuation: true`) |
@@ -162,5 +162,5 @@ Agent sessions are persisted across page refreshes:
 
 ## Related Documentation
 
-- [IQ Scanner](/docs/features/iq-scanner) — run after creating a space to assess quality
+- [IQ Scanner](/docs/features/iq-scanner) — run after creating an agent to assess quality
 - [Architecture Overview](/docs/getting-started/architecture-overview) — how the create agent fits in the app

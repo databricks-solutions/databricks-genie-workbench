@@ -11,7 +11,7 @@ Unlike the LLM-based analysis tools, the scanner runs instantly with no LLM call
 
 ### Unity Catalog Enrichment
 
-Before scoring, `scan_space()` fetches table and column descriptions from Unity Catalog via `WorkspaceClient.tables.get()` and merges them into the space config. This means checks 2 (table descriptions) and 3 (column descriptions) reflect metadata that exists in UC even if not inlined in the Genie Agent config. Existing inline descriptions are never overwritten. If UC metadata is unavailable (permissions, network), the scan continues with config-only data.
+Before scoring, `scan_space()` fetches table and column descriptions from Unity Catalog via `WorkspaceClient.tables.get()` and merges them into the agent config. This means checks 2 (table descriptions) and 3 (column descriptions) reflect metadata that exists in UC even if not inlined in the Genie Agent config. Existing inline descriptions are never overwritten. If UC metadata is unavailable (permissions, network), the scan continues with config-only data.
 
 ## Scoring Model
 
@@ -23,7 +23,7 @@ Each of the 12 checks is worth 1 point. A check either passes (1 point) or fails
 
 | Tier | Criteria | Meaning |
 |------|----------|---------|
-| <span className="badge badge--success">Trusted</span> | All 12 checks pass | Space is fully configured and has proven accuracy |
+| <span className="badge badge--success">Trusted</span> | All 12 checks pass | Agent is fully configured and has proven accuracy |
 | <span className="badge badge--warning">Ready to Optimize</span> | Checks 1–10 pass (config complete) | Configuration is solid; ready for benchmark-driven optimization |
 | <span className="badge badge--danger">Not Ready</span> | Any of checks 1–10 fail | Configuration gaps need to be addressed first |
 

@@ -43,9 +43,9 @@ For the Create Agent's Server-Sent Events endpoint, the `ContextVar` is **not** 
 
 Users can only interact with resources they have permission to access:
 - **Unity Catalog**: catalogs, schemas, tables visible to the user
-- **Genie Agents**: only spaces the user can manage
+- **Genie Agents**: only agents the user can manage
 - **SQL Warehouse**: queries execute under the user's identity
-- **Space creation/modification**: spaces are created and patched as the user
+- **Genie Agent creation/modification**: agents are created and patched as the user
 
 ## Service Principal (SP)
 
@@ -171,10 +171,10 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | Operation | Identity | Code Reference | Rationale |
 |-----------|----------|---------------|-----------|
 | Browse Genie Agents, UC catalogs/schemas/tables | OBO (user) | `services/uc_client.py`, `routers/create.py` | User sees only what they have access to |
-| Genie API — fetch/list spaces | OBO → SP fallback | `services/genie_client.py` `_is_scope_error()` | User token may lack `dashboards.genie` scope |
-| Create Agent — tools, SQL, space creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Space created under user identity |
+| Genie API — fetch/list agents | OBO → SP fallback | `services/genie_client.py` `_is_scope_error()` | User token may lack `dashboards.genie` scope |
+| Create Agent — tools, SQL, agent creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Agent created under user identity |
 | Trigger optimization — permission check | OBO (user) | `integration/trigger.py` `user_can_edit_space()` | Verify user has CAN_EDIT/CAN_MANAGE |
-| Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the space |
+| Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the agent |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
 | Optimization job execution (6-task DAG) | SP (run_as) | `backend/job_launcher.py` `ensure_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
 | GSO Delta table reads/writes | SP | `routers/auto_optimize.py` `_delta_query()` | Optimizer state tables owned by SP |
@@ -186,7 +186,7 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 
 1. **Authorization before execution** — the user must have `CAN_EDIT` or `CAN_MANAGE` on the Genie Agent before any optimization job is submitted. This check happens with the user's OBO token, not the SP.
 
-2. **SP entitlement validated** — even if the user is authorized, the SP must also have `CAN_MANAGE` on the space. If the SP lacks access, the trigger is rejected with a clear error.
+2. **SP entitlement validated** — even if the user is authorized, the SP must also have `CAN_MANAGE` on the agent. If the SP lacks access, the trigger is rejected with a clear error.
 
 3. **Minimum-privilege SP** — the SP only needs read access to referenced data schemas (for benchmarking) and manage access to the GSO state schema. It does not need workspace-admin privileges.
 

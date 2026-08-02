@@ -16,8 +16,8 @@ The app creates the `genie` schema and all tables on first startup (the SP owns 
 | Table | Purpose |
 |-------|---------|
 | `scan_results` | IQ scan history: score, maturity, checks, findings, timestamps |
-| `starred_spaces` | User-starred spaces for quick access |
-| `seen_spaces` | Tracks which spaces the user has visited |
+| `starred_spaces` | User-starred agents for quick access |
+| `seen_spaces` | Tracks which agents the user has visited |
 | `optimization_runs` | Legacy optimization accuracy records (used by scanner checks 11–12) |
 | `agent_sessions` | Create agent session persistence (message history, step state) |
 
@@ -30,7 +30,7 @@ Lakebase credentials are auto-generated via the Databricks SDK (`postgres.genera
 If `LAKEBASE_HOST` is not configured (no Lakebase attached), the app falls back to **in-memory dictionaries**. The app remains fully functional but:
 
 - Scan results are lost on restart
-- Starred spaces are lost on restart
+- Starred Genie Agents are lost on restart
 - Agent sessions are lost on restart
 - The Admin Dashboard shows no historical data
 
@@ -50,12 +50,18 @@ LLM calls in the create agent and optimization pipeline are traced via MLflow. T
 
 At startup, the app validates that the experiment ID exists in the workspace. If it doesn't, tracing is silently disabled (the variable is cleared).
 
+### Prompt Registry
+
+Auto-Optimize requires MLflow Prompt Registry for versioned judge prompts. If Prompt Registry is not enabled on the workspace, the optimization preflight task will fail with `FEATURE_DISABLED`.
+
 ### Configuration
 
 ```yaml
 # In app.yaml
 - name: MLFLOW_TRACKING_URI
   value: "databricks"
+- name: MLFLOW_REGISTRY_URI
+  value: "databricks-uc"
 - name: MLFLOW_EXPERIMENT_ID
   value: "<your-experiment-id>"
 ```
@@ -128,7 +134,7 @@ The `app` target uses `mode: development` for per-deployer Terraform state with 
 After deploying, the app's SP needs access to Genie Agents for API fallback and optimization:
 
 1. The installer grants SP access to your existing Genie Agents
-2. For spaces created after install, share them with the SP (`CAN_MANAGE`)
+2. For agents created after install, share them with the SP (`CAN_MANAGE`)
 3. Grant SP `SELECT` on referenced schemas:
 
 ```sql

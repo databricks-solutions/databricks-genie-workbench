@@ -10,12 +10,12 @@ description: "Shared section vocabulary and format rules for text_instructions c
 Two agents write `text_instructions`:
 
 - **Create Agent** — generates the initial block when a user builds a
-  new space.
+  new Genie Agent.
 - **Optimizer (GSO)** — rewrites the block as part of
   benchmark-driven optimization.
 
 Historically each used a different authoring convention, so a Create
-Agent space with `## Terminology` headers could be stripped by an
+Agent output with `## Terminology` headers could be stripped by an
 optimizer that expected `PURPOSE:` ALL-CAPS headers. This doc is the
 shared vocabulary the Create Agent targets so the output is
 coherent end-to-end. The optimizer migrates to this schema in
@@ -28,7 +28,7 @@ sections** — do not leave an empty header.
 
 | # | Header | What goes here |
 |---|---|---|
-| 1 | `## PURPOSE` | One or two bullets stating the space's scope and audience. |
+| 1 | `## PURPOSE` | One or two bullets stating the Genie Agent's scope and audience. |
 | 2 | `## DISAMBIGUATION` | Clarification-question triggers: "When the user asks about X without specifying Y, ask them to clarify Y." Also, term-resolution rules: "'Q1' means calendar Q1 unless the user says 'fiscal Q1'." |
 | 3 | `## DATA QUALITY NOTES` | Caveats about the data the model needs to know: NULL handling, known bad rows, column semantics that aren't in the column description. |
 | 4 | `## CONSTRAINTS` | Hard guardrails: what never to show (PII columns, secrets), what not to do (cross-join, ignore a required filter). |
@@ -97,7 +97,7 @@ Genie cannot infer from the structured config.
 
 ### Create Agent
 
-Emits the section vocabulary above when generating a new space. Each
+Emits the section vocabulary above when generating a new Genie Agent. Each
 section is one or more bullets. Output shape stays
 `content: list[str]` during this near-term pass; migration to the
 canonical single-item `[full_text]` shape is tracked in #177

@@ -21,7 +21,7 @@ A Databricks workspace with:
 - Apps enabled
 - A SQL Warehouse (Serverless recommended)
 - A Unity Catalog with CREATE SCHEMA permission
-- Lakebase Autoscaling available (optional but recommended for persistent scan history, starred spaces, and agent sessions)
+- Lakebase Autoscaling available (optional but recommended for persistent scan history, starred agents, and agent sessions)
 - Databricks Foundation Model APIs enabled for the curated Create Agent and Auto-Optimize model list
 
 ### Enable required preview features
@@ -82,7 +82,7 @@ Open `notebooks/install.py`, attach a **Serverless** compute session (**environm
 | `lakebase_project_name` | Conditional | Lakebase project name for `create` or `existing`; defaults to `<app-name>-lakebase` for `create`. Leave blank when `lakebase_mode` is `skip` |
 
 :::note
-The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible space they want the app to manage.
+The notebook user must hold the [installer permissions](/docs/platform/authentication). The notebook automatically grants visible Genie Agents to the app service principal, so the user needs `CAN_MANAGE` on each visible agent they want the app to manage.
 :::
 
 <!-- TODO(screenshot): the installer notebook open in the workspace with widgets visible -->
@@ -150,7 +150,7 @@ The installer will:
 
 ## Lakebase (automated)
 
-Lakebase provides persistent storage for scan history, starred spaces, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
+Lakebase provides persistent storage for scan history, starred agents, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
 
 **Lakebase setup is fully automated by both install paths:**
 - Creates a Lakebase Autoscaling project via the SDK

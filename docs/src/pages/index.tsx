@@ -13,7 +13,7 @@ const CAPABILITIES = [
   },
   {
     title: 'Score',
-    body: 'The rule-based IQ Scanner grades space quality across 12 checks and assigns a maturity tier.',
+    body: 'The rule-based IQ Scanner grades Genie Agent quality across 12 checks and assigns a maturity tier.',
     to: '/docs/features/iq-scanner',
   },
   {
@@ -38,7 +38,7 @@ const STATS = [
 const PERSONAS = [
   {
     title: 'Genie Agent developer',
-    body: 'Build and refine spaces. Start with the Create Agent and the IQ Scanner.',
+    body: 'Build and refine Genie Agents. Start with the Create Agent and the IQ Scanner.',
     to: '/docs/getting-started/introduction',
   },
   {
@@ -122,7 +122,7 @@ function Capabilities() {
       <Eyebrow>The continuous-improvement loop</Eyebrow>
       <h2 className="mt-1 text-3xl font-normal">Five capabilities, one workflow</h2>
       <p className="mt-2 max-w-2xl text-slate-600 dark:text-slate-400">
-        Enter the loop at any point and repeat as the space evolves — after
+        Enter the loop at any point and repeat as the Genie Agent evolves — after
         optimizing, re-scan to see the updated score.
       </p>
       <div className="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">

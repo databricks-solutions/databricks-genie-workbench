@@ -7,7 +7,7 @@ description: "Benchmark-driven Genie optimization with a four-task, auditable hi
 
 Auto-Optimize measures a Genie Agent against its benchmark corpus, diagnoses failures, and tests targeted configuration changes. It is powered by the Genie Space Optimizer package in `packages/genie-space-optimizer/`.
 
-Unlike the [IQ Scanner](/docs/features/iq-scanner), which produces an instant rule-based readiness score, Auto-Optimize runs a bounded optimization job against the live Space. Every attempt is evaluated, accepted only when accuracy improves, and persisted for audit.
+Unlike the [IQ Scanner](/docs/features/iq-scanner), which produces an instant rule-based readiness score, Auto-Optimize runs a bounded optimization job against the live Agent. Every attempt is evaluated, accepted only when accuracy improves, and persisted for audit.
 
 ## Four-task pipeline
 
@@ -24,7 +24,7 @@ flowchart LR
 |---|------|----------------|
 | 1 | **Intake & Snapshot** | Validate the run envelope, retain the trigger-time rollback snapshot, and write the `run_manifest` artifact. |
 | 2 | **Benchmark QC & Repair** | Review question clarity and question-to-SQL alignment, validate SQL and ground-truth data, and—only when allowed for the run—repair or replace hard failures before persisting `benchmark_qc`. |
-| 3 | **Optimize** | Apply low-risk Space quality enrichment, run the baseline evaluation, and execute the bounded patch/evaluation loop. |
+| 3 | **Optimize** | Apply low-risk Agent quality enrichment, run the baseline evaluation, and execute the bounded patch/evaluation loop. |
 | 4 | **Publish & Audit** | Resolve the stamped terminal reason, mark the champion when eligible, generate a best-effort audit summary, capture postflight IQ, and write terminal run state. |
 
 Each task receives the complete job parameter set and exchanges durable state through Delta by `run_id`. There is no notebook chaining or task-value handoff.
@@ -119,7 +119,7 @@ The strategist selects from the configured levers for each attempt:
 | 5 | Instructions | Business vocabulary, routing rules, constraints, examples |
 | 6 | SQL expressions | Reusable filters, measures, expressions, and worked SQL |
 
-Before baseline evaluation, a narrow Space-quality phase may also fill low-risk curation gaps such as an empty top-level Space description, thin instructions, and prompt-matching flags. Format assistance is enabled on visible columns, while entity matching is allocated deterministically to eligible string columns using UC types, cardinality, benchmark references, and RLS safeguards. These flags are not proposed by the LLM lever loop. The post-enrichment description is persisted separately because Genie stores `description` as Space metadata, outside `serialized_space`.
+Before baseline evaluation, a narrow Agent-quality phase may also fill low-risk curation gaps such as an empty top-level Agent description, thin instructions, and prompt-matching flags. Format assistance is enabled on visible columns, while entity matching is allocated deterministically to eligible string columns using UC types, cardinality, benchmark references, and RLS safeguards. These flags are not proposed by the LLM lever loop. The post-enrichment description is persisted separately because Genie stores `description` as Agent metadata, outside `serialized_space`.
 
 For wide schemas, column ranking can use workspace-scoped
 `system.query.history` after filtering to finished `SELECT` statements that
@@ -136,7 +136,7 @@ harness and persist the official evaluation run identifiers, status, question
 counts, correctness counts, and needs-review counts. Headline accuracy is
 `num_correct / num_questions` for native evaluation rows.
 
-Benchmark expected SQL is evaluation truth and must never become inference-visible configuration. The optimizer's leakage firewall blocks patches that copy or closely echo benchmark answer material into instructions, examples, descriptions, or other Space content.
+Benchmark expected SQL is evaluation truth and must never become inference-visible configuration. The optimizer's leakage firewall blocks patches that copy or closely echo benchmark answer material into instructions, examples, descriptions, or other Agent content.
 
 ## Terminal outcomes
 
@@ -154,7 +154,7 @@ The loop stamps one of the typed reasons below. Publish & Audit uses that stampe
 | `INSUFFICIENT_VALID_BENCHMARKS` | `SKIPPED` | No; Optimize does not run |
 | Missing or unknown | `STALLED` | No, fail closed |
 
-Publishing is an idempotent Delta champion mark. Accepted patches are already applied to the live Space by the loop; Publish & Audit does not replay them. Audit-summary generation and postflight IQ capture are soft-failing and cannot prevent the final status write.
+Publishing is an idempotent Delta champion mark. Accepted patches are already applied to the live Agent by the loop; Publish & Audit does not replay them. Audit-summary generation and postflight IQ capture are soft-failing and cannot prevent the final status write.
 
 ## History, revert, and discard
 
@@ -195,7 +195,7 @@ description, then marks the run `DISCARDED` only after rollback succeeds.
 
 Both paths snapshot live state before a two-part serialized-config/description mutation. If the description update fails after the serialized config succeeds, the optimizer attempts compensation and never reports success for the partial operation.
 
-History revert is disabled while any run for the same Space is active. The backend also reconciles all same-Space runs and returns a conflict if one remains `QUEUED`, `IN_PROGRESS`, or `RUNNING`.
+History revert is disabled while any run for the same Agent is active. The backend also reconciles all same-Agent runs and returns a conflict if one remains `QUEUED`, `IN_PROGRESS`, or `RUNNING`.
 
 Terminal runs also have **Remove from history**. After confirmation, the run
 disappears for everyone from Optimization History and the unified History
@@ -233,7 +233,7 @@ The Workbench prefers Lakebase synced reads for UI views and falls back to direc
 
 ## Triggering from the UI
 
-1. Open a Space and select **Optimize**.
+1. Open an Agent and select **Optimize**.
 2. Configure levers, target accuracy, attempt budget, model, and whether GSO may repair or add live benchmarks. Repair is off by default.
 3. Start the run. The UI submits `POST /api/auto-optimize/trigger` and polls the run status.
 4. Review the attempt ladder, question results, patches, benchmark QC, audit summary, and terminal outcome.

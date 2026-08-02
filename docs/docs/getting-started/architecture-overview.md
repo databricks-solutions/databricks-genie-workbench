@@ -91,7 +91,7 @@ See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint l
 | Auth | `services/auth.py` | OBO `ContextVar` management, SP singleton, `WorkspaceClient` factory |
 | Genie Client | `services/genie_client.py` | Genie API: fetch space, list spaces, SP fallback on scope error |
 | Scanner | `services/scanner.py` | Rule-based IQ scoring (12 checks, 3 maturity tiers) |
-| Create Agent | `services/create_agent.py` | Multi-turn tool-calling LLM agent for space creation |
+| Create Agent | `services/create_agent.py` | Multi-turn tool-calling LLM agent for agent creation |
 | Create Agent Tools | `services/create_agent_tools.py` | Tool definitions: UC discovery, SQL, config generation |
 | Create Agent Session | `services/create_agent_session.py` | Session persistence (L1 in-memory + L2 Lakebase) |
 | Plan Builder | `services/plan_builder.py` | Parallel LLM plan generation across 5 sections |
@@ -119,7 +119,7 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 | `list` | `SpaceList` | Browse and search Genie Agents with IQ scores |
 | `detail` | `SpaceDetail` | Space detail with tabs: Score, Optimize, History |
 | `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts |
-| `create` | `CreateAgentChat` | Conversational agent for building new spaces |
+| `create` | `CreateAgentChat` | Conversational agent for building new Genie Agents |
 
 ### Component Organization
 
