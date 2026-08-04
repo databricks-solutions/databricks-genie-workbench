@@ -126,7 +126,7 @@ fsspec==2026.2.0
     # via huggingface-hub
 gitdb==4.0.12
     # via gitpython
-gitpython==3.1.46
+gitpython==3.1.57
     # via mlflow-skinny
 google-api-core==2.30.0
     # via
