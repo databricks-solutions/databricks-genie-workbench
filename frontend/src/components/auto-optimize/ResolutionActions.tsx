@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Check, RotateCcw, Loader2, AlertCircle, ShieldCheck } from "lucide-react"
+import { RotateCcw, Loader2, AlertCircle, ShieldCheck } from "lucide-react"
 import { performResolution } from "@/components/auto-optimize/resolution"
 
 interface ResolutionActionsProps {
@@ -8,26 +8,19 @@ interface ResolutionActionsProps {
   status: string
   /**
    * Whether the run auto-published a champion to the live Genie Agent. The
-   * Keep/Discard affordance only makes sense once something was published —
-   * Discard rolls that back via the space_snapshot re-PATCH (arch §7.3 / D3).
+   * rollback affordance only makes sense once something was published.
    */
   published?: boolean | null
-  /** Fired after a successful Keep (APPLIED) or Discard (DISCARDED). */
+  /** Fired after a successful rollback (or a resolved state returned by the API). */
   onResolved?: (status: "APPLIED" | "DISCARDED") => void
 }
 
-type Pending = "apply" | "discard" | null
+type Pending = "discard" | null
 
 /**
- * GSO v2 Phase 13 (item 2) — wires the previously-unused ``applyAutoOptimize`` /
- * ``discardAutoOptimize`` client calls into a Keep / Discard-rollback
- * affordance on the post-run resolution surface.
- *
- * Auto-publish model: the champion config is already live, so **Keep** confirms
- * and marks the run APPLIED, while **Discard** re-PATCHes the original
- * ``space_snapshot`` to roll the live space back (the backend ``discard``
- * endpoint). Discard is guarded behind an inline confirm because it mutates the
- * live production space.
+ * Auto-publish model: the champion configuration is already live when the run
+ * completes. The post-run surface states that directly and offers rollback as
+ * an optional recovery action; there is no additional "Keep" step.
  */
 export function ResolutionActions({ runId, status, published, onResolved }: ResolutionActionsProps) {
   const [pending, setPending] = useState<Pending>(null)
@@ -44,8 +37,8 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
       <ResolvedBanner
         tone="success"
         icon={<ShieldCheck className="h-4 w-4" />}
-        title="Changes kept"
-        detail="The champion configuration is live in this Genie Agent."
+        title="Optimized configuration is live"
+        detail="This run's champion configuration is active in the Genie Agent."
       />
     )
   }
@@ -60,14 +53,13 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
     )
   }
 
-  // Nothing was published to the live space — there is nothing to keep or roll
-  // back from this surface.
+  // Nothing was published to the live space, so there is nothing to roll back.
   if (published === false) return null
 
-  async function run(action: "apply" | "discard") {
-    setPending(action)
+  async function rollBack() {
+    setPending("discard")
     setError(null)
-    const result = await performResolution(action, runId)
+    const result = await performResolution("discard", runId)
     if (result.kind === "resolved") {
       setResolved(result.status)
       onResolved?.(result.status)
@@ -84,38 +76,27 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
     <div className="rounded-xl border border-default bg-surface p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-primary">Keep or roll back</h3>
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+            <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            Optimized configuration is live
+          </h3>
           <p className="mt-0.5 text-xs text-muted">
-            The optimized configuration is live in this Genie Agent. Keep it, or discard the run to
-            roll the agent back to its pre-optimization snapshot.
+            GSO published the champion when this run completed. No action is required; roll back only
+            if you want to restore the pre-optimization snapshot.
           </p>
         </div>
         {!confirmingDiscard ? (
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={() => run("apply")}
-              disabled={busy}
-              className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {pending === "apply" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Check className="h-3.5 w-3.5" />
-              )}
-              Keep changes
-            </button>
-            <button
-              onClick={() => {
-                setError(null)
-                setConfirmingDiscard(true)
-              }}
-              disabled={busy}
-              className="flex items-center gap-1.5 rounded-md border border-default px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Discard &amp; roll back
-            </button>
-          </div>
+          <button
+            onClick={() => {
+              setError(null)
+              setConfirmingDiscard(true)
+            }}
+            disabled={busy}
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-default px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Roll back changes
+          </button>
         ) : (
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
@@ -123,7 +104,7 @@ export function ResolutionActions({ runId, status, published, onResolved }: Reso
             </p>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => run("discard")}
+                onClick={rollBack}
                 disabled={busy}
                 className="flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >

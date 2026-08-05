@@ -328,20 +328,21 @@ describe("selectCachedQuestions — run-scoped question cache (no cross-run leak
 })
 
 describe("ResolutionActions — rendered states", () => {
-  it("renders Keep + Discard when a champion was published", () => {
+  it("states that the published champion is live and offers optional rollback", () => {
     const markup = renderToStaticMarkup(
       <ResolutionActions runId="r" status="CONVERGED" published={true} />,
     )
-    expect(markup).toContain("Keep changes")
-    expect(markup).toContain("Discard")
-    expect(markup).toContain("roll the agent back")
+    expect(markup).toContain("Optimized configuration is live")
+    expect(markup).toContain("No action is required")
+    expect(markup).toContain("Roll back changes")
+    expect(markup).not.toContain("Keep changes")
   })
 
-  it("renders the kept banner when already APPLIED", () => {
+  it("renders the live banner when already APPLIED", () => {
     const markup = renderToStaticMarkup(
       <ResolutionActions runId="r" status="APPLIED" published={true} />,
     )
-    expect(markup).toContain("Changes kept")
+    expect(markup).toContain("Optimized configuration is live")
     expect(markup).not.toContain("Keep changes")
   })
 

@@ -169,7 +169,7 @@ The loop stamps one of the typed reasons below. Publish & Audit uses that stampe
 | `INSUFFICIENT_VALID_BENCHMARKS` | `SKIPPED` | No; Optimize does not run |
 | Missing or unknown | `STALLED` | No, fail closed |
 
-Publishing is an idempotent Delta champion mark. Accepted patches are already applied to the live Agent by the loop; Publish & Audit does not replay them. Audit-summary generation and postflight IQ capture are soft-failing and cannot prevent the final status write.
+Publishing is an idempotent Delta champion mark. Accepted patches are already applied to the live Agent by the loop; Publish & Audit does not replay them. The Workbench therefore presents the champion as live immediately and does not ask the user to keep or apply it. When live monitoring observes terminal state, it automatically runs and persists the full Workbench IQ scan so the Score tab reflects the current Agent. Audit-summary generation and the GSO-owned postflight IQ snapshot are soft-failing and cannot prevent the final status write.
 
 ## History, revert, and discard
 
@@ -204,9 +204,12 @@ For older runs that predate authoritative captures, the UI reports that history
 is incomplete instead of claiming an external change. Returning to the
 Workbench tab after a direct Genie UI edit forces a fresh live-state check.
 
-**Discard** remains the pre-Apply resolution action. It restores the complete
-trigger-time snapshot, including the original benchmark block and top-level
-description, then marks the run `DISCARDED` only after rollback succeeds.
+The post-run surface states that a published champion is already live and offers
+**Roll back changes** as an optional recovery action. Rollback restores the
+complete trigger-time snapshot, including the original benchmark block and
+top-level description, then marks the run `DISCARDED` only after restoration
+succeeds. The Workbench automatically refreshes the IQ score again after a
+successful rollback or History **Revert Options** action.
 
 Both paths snapshot live state before a two-part serialized-config/description mutation. If the description update fails after the serialized config succeeds, the optimizer attempts compensation and never reports success for the partial operation.
 
@@ -252,7 +255,7 @@ The Workbench prefers Lakebase synced reads for UI views and falls back to direc
 2. Configure levers, target accuracy, attempt budget, model, and whether GSO may repair or add live benchmarks. Repair is off by default.
 3. Start the run. The UI submits `POST /api/auto-optimize/trigger` and polls the run status.
 4. Review the attempt ladder, question results, patches, benchmark QC, audit summary, and terminal outcome.
-5. Keep the accepted state, discard it to the trigger snapshot, or later use **Revert Options** to choose a past config and benchmark scope independently.
+5. The accepted state is already live. Optionally roll it back to the trigger snapshot, or later use **Revert Options** to choose a past config and benchmark scope independently. The IQ score refreshes automatically when the run finishes.
 
 ### Refreshable Agent and run links
 

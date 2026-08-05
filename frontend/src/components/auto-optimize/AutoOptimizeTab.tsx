@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from "react"
-import { Info, Play, BarChart2, ExternalLink, ShieldCheck, Sparkles } from "lucide-react"
+import { useCallback, useEffect, useState, useRef } from "react"
+import { Info, Play, CheckCircle, AlertCircle, Loader2, ExternalLink, ShieldCheck, Sparkles } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { OptimizationConfig } from "@/components/auto-optimize/OptimizationConfig"
@@ -42,7 +42,8 @@ interface AutoOptimizeTabProps {
   spaceId: string
   requestedRunId?: string
   onRunChange?: (runId?: string) => void
-  onRescan?: () => void
+  onRefreshIqScore?: (runId: string, force?: boolean) => Promise<boolean>
+  onViewIqScore?: () => void
 }
 
 type View = "configure" | "monitoring" | "detail"
@@ -123,7 +124,18 @@ function ScoreComparisonCards({
   )
 }
 
-export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan }: AutoOptimizeTabProps) {
+type IqRefreshState = {
+  runId: string
+  status: "refreshing" | "complete" | "error"
+}
+
+export function AutoOptimizeTab({
+  spaceId,
+  requestedRunId,
+  onRunChange,
+  onRefreshIqScore,
+  onViewIqScore,
+}: AutoOptimizeTabProps) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [healthIssues, setHealthIssues] = useState<string[]>([])
   const [view, setView] = useState<View>(requestedRunId ? "monitoring" : "configure")
@@ -143,7 +155,31 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
   const [loopState, setLoopState] = useState<GSOLoopStateResponse | null>(null)
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
   const [benchmarkChanges, setBenchmarkChanges] = useState<GSOBenchmarkChanges | null>(null)
+  const [iqRefresh, setIqRefresh] = useState<IqRefreshState | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const refreshedIqRunIdsRef = useRef(new Set<string>())
+  const iqRefreshSequenceRef = useRef(new Map<string, number>())
+
+  const refreshIqScore = useCallback(async (runId: string, force = false): Promise<boolean> => {
+    if (!onRefreshIqScore) return false
+    if (!force && refreshedIqRunIdsRef.current.has(runId)) return true
+
+    const sequence = (iqRefreshSequenceRef.current.get(runId) ?? 0) + 1
+    iqRefreshSequenceRef.current.set(runId, sequence)
+    refreshedIqRunIdsRef.current.add(runId)
+    setIqRefresh({ runId, status: "refreshing" })
+    let refreshed = false
+    try {
+      refreshed = await onRefreshIqScore(runId, force)
+    } catch {
+      refreshed = false
+    }
+    if (iqRefreshSequenceRef.current.get(runId) === sequence) {
+      if (!refreshed) refreshedIqRunIdsRef.current.delete(runId)
+      setIqRefresh({ runId, status: refreshed ? "complete" : "error" })
+    }
+    return refreshed
+  }, [onRefreshIqScore])
 
   function resetRunSurfaces() {
     setRunStatus(null)
@@ -218,6 +254,7 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
               clearInterval(intervalRef.current)
               intervalRef.current = null
             }
+            void refreshIqScore(runId)
           }
         })
         .catch(() => {})
@@ -295,7 +332,7 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
         intervalRef.current = null
       }
     }
-  }, [view, activeRunId])
+  }, [view, activeRunId, refreshIqScore])
 
   // Loading state
   if (configured === null) {
@@ -377,6 +414,7 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
         />
         <RunHistoryTable
           spaceId={spaceId}
+          onLiveStateChanged={(runId) => refreshIqScore(runId, true)}
           onSelectRun={(runId) => {
             setSelectedRunId(runId)
             setView("detail")
@@ -419,8 +457,8 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
     // Baseline is champion only when terminal AND no attempt was flagged
     // champion (nothing beat it) — derived from explicit flags, never idxmax.
     const baselineIsChampion = isTerminal && hasAttempts && !attempts.some((a) => a.isChampion)
-    // Keep / Discard-rollback is available once a champion was published to the
-    // live space (or the run is already resolved). Published comes from the
+    // The live-state / rollback surface is available once a champion was
+    // published (or the run is already resolved). Published comes from the
     // publish record; fall back to the published-terminal statuses for runs
     // that predate the artifact.
     const resolutionPublished = publishRecordForRun ? publishRecordForRun.published : null
@@ -515,16 +553,17 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
             {/* Publish/audit summary headline — LLM paragraph + concerns callout. */}
             {isTerminal && <PublishAuditSummary publishRecord={publishRecordForRun} />}
 
-            {/* Keep / Discard-rollback affordance (auto-publish model). */}
+            {/* Live-state confirmation with optional rollback. */}
             {showResolution && (
               <ResolutionActions
                 key={activeRunId}
                 runId={activeRunId}
                 status={statusForRun?.status ?? ""}
                 published={resolutionPublished}
-                onResolved={(s) =>
+                onResolved={(s) => {
                   setRunStatus((prev) => (prev ? { ...prev, status: s } : prev))
-                }
+                  if (s === "DISCARDED") void refreshIqScore(activeRunId, true)
+                }}
               />
             )}
 
@@ -559,22 +598,48 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
 
             {legacyReason && <p className="text-sm text-muted">Reason: {legacyReason}</p>}
 
-            {/* Re-scan prompt when run reaches terminal state */}
-            {isTerminal && onRescan && (
+            {isTerminal && iqRefresh?.runId === activeRunId && (
               <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-primary">Optimization complete</h3>
-                  <p className="text-xs text-muted mt-0.5">
-                    Re-scan to see how your IQ score has changed.
-                  </p>
+                <div className="flex items-start gap-2.5">
+                  {iqRefresh.status === "refreshing" ? (
+                    <Loader2 className="mt-0.5 h-4 w-4 animate-spin text-blue-600" />
+                  ) : iqRefresh.status === "complete" ? (
+                    <CheckCircle className="mt-0.5 h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="mt-0.5 h-4 w-4 text-red-500" />
+                  )}
+                  <div>
+                    <h3 className="text-sm font-semibold text-primary">
+                      {iqRefresh.status === "refreshing"
+                        ? "Refreshing IQ score"
+                        : iqRefresh.status === "complete"
+                          ? "IQ score refreshed"
+                          : "IQ score refresh failed"}
+                    </h3>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {iqRefresh.status === "refreshing"
+                        ? "Running the post-optimization scan automatically."
+                        : iqRefresh.status === "complete"
+                          ? "The latest score now reflects the live Agent configuration."
+                          : "The optimization is complete, but the automatic scan could not finish."}
+                    </p>
+                  </div>
                 </div>
-                <button
-                  onClick={onRescan}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
-                >
-                  <BarChart2 className="w-3.5 h-3.5" />
-                  Re-scan IQ Score
-                </button>
+                {iqRefresh.status === "complete" && onViewIqScore ? (
+                  <button
+                    onClick={onViewIqScore}
+                    className="shrink-0 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                  >
+                    View IQ score
+                  </button>
+                ) : iqRefresh.status === "error" ? (
+                  <button
+                    onClick={() => void refreshIqScore(activeRunId)}
+                    className="shrink-0 rounded-md border border-default px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-elevated"
+                  >
+                    Retry scan
+                  </button>
+                ) : null}
               </div>
             )}
           </RunActivitySection>
@@ -605,7 +670,12 @@ export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan
   if (view === "detail" && selectedRunId) {
     return (
       <div className="space-y-4">
-        <RunDetailView key={selectedRunId} runId={selectedRunId} onBack={() => setView("configure")} />
+        <RunDetailView
+          key={selectedRunId}
+          runId={selectedRunId}
+          onBack={() => setView("configure")}
+          onRefreshIqScore={refreshIqScore}
+        />
       </div>
     )
   }

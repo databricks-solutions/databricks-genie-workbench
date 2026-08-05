@@ -48,6 +48,7 @@ import type {
 interface RunHistoryTableProps {
   spaceId: string
   onSelectRun: (runId: string) => void
+  onLiveStateChanged?: (runId: string) => Promise<boolean>
 }
 
 const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
@@ -70,7 +71,7 @@ const HISTORY_ACTION_BUTTON_CLASS =
 // Revert is a live-space mutation — only offer it on runs that are no longer
 // mutating the space. Reverting to a still-running run's snapshot would race
 // the active pipeline (and the backend refuses it with a 409 anyway).
-export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) {
+export function RunHistoryTable({ spaceId, onSelectRun, onLiveStateChanged }: RunHistoryTableProps) {
   const [runs, setRuns] = useState<GSORunSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [currentVersion, setCurrentVersion] = useState<CurrentVersionResponse | null>(null)
@@ -236,7 +237,10 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                         <RevertOptionsButton
                           run={run}
                           disabled={hasActiveRun}
-                          onReverted={refreshRuns}
+                          onReverted={() => {
+                            refreshRuns()
+                            void onLiveStateChanged?.(run.run_id)
+                          }}
                         />
                       )}
                       <RemoveHistoryButton

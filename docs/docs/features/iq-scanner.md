@@ -134,6 +134,12 @@ Only terminal GSO run statuses count: `CONVERGED`, `STALLED`, `MAX_ITERATIONS`, 
 
 `APPLIED` **is** counted: applying an optimization flips the run status to `APPLIED` while preserving `best_accuracy`, and the applied champion is the live config, so its measured accuracy is what the header should report.
 
+When the Optimize view observes a GSO run reach terminal state, Workbench
+automatically runs the full scanner and persists the result. No separate
+post-run re-scan action is required. A successful GSO rollback triggers another
+automatic scan so the Score tab reflects the restored configuration. History
+**Revert Options** actions trigger the same refresh.
+
 ## Persistence
 
 Scan results are persisted to Lakebase (table: `scan_results`) with:

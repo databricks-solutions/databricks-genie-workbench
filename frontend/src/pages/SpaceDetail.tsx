@@ -2,7 +2,7 @@
  * SpaceDetail - 3-tab detail view for a Genie Agent.
  * Tabs: Score (default) | Optimize | History
  */
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
@@ -13,6 +13,7 @@ import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
 import type { SpaceTab } from "@/lib/navigation"
+import { createScanCoordinator } from "@/lib/scan-coordinator"
 
 interface SpaceDetailProps {
   spaceId: string
@@ -41,6 +42,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
 
   // Guard against getSpaceDetail overwriting a fresh scan result
   const freshScanDoneRef = useRef(false)
+  const postOptimizationScansRef = useRef(new Map<string, Promise<boolean>>())
 
   // Load space data + persisted score on mount
   useEffect(() => {
@@ -79,23 +81,39 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
       .catch(() => {})
   }, [spaceId])
 
-  const handleScan = async () => {
-    setIsScanning(true)
-    try {
-      const result = await scanSpace(spaceId)
-      freshScanDoneRef.current = true
-      setScanResult(result)
-    } catch (e) {
-      console.error("Scan failed:", e)
-    } finally {
-      setIsScanning(false)
-    }
-  }
+  const scanCoordinator = useMemo(
+    () => createScanCoordinator(async () => {
+      setIsScanning(true)
+      try {
+        const result = await scanSpace(spaceId)
+        freshScanDoneRef.current = true
+        setScanResult(result)
+        return true
+      } catch (e) {
+        console.error("Scan failed:", e)
+        return false
+      } finally {
+        setIsScanning(false)
+      }
+    }),
+    [spaceId],
+  )
 
-  const handleRescanFromOptimize = () => {
-    onNavigate("score")
-    handleScan()
-  }
+  const handleScan = () => scanCoordinator.request()
+
+  const handlePostOptimizationScan = useCallback(async (completedRunId: string, force = false) => {
+    const scanKey = `${spaceId}:${completedRunId}`
+    const priorScan = postOptimizationScansRef.current.get(scanKey)
+    if (!force && priorScan) return priorScan
+
+    const request = scanCoordinator.request(force)
+    postOptimizationScansRef.current.set(scanKey, request)
+    const refreshed = await request
+    if (!refreshed && postOptimizationScansRef.current.get(scanKey) === request) {
+      postOptimizationScansRef.current.delete(scanKey)
+    }
+    return refreshed
+  }, [spaceId, scanCoordinator])
 
   const handleToggleStar = async () => {
     const newStarred = !isStarred
@@ -304,7 +322,8 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
             spaceId={spaceId}
             requestedRunId={runId}
             onRunChange={(nextRunId) => onNavigate("optimize", nextRunId)}
-            onRescan={handleRescanFromOptimize}
+            onRefreshIqScore={handlePostOptimizationScan}
+            onViewIqScore={() => onNavigate("score")}
           />
         )}
 

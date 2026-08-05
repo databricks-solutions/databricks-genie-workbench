@@ -22,6 +22,7 @@ import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord, GSOAttempt }
 interface RunDetailViewProps {
   runId: string
   onBack: () => void
+  onRefreshIqScore?: (runId: string, force?: boolean) => Promise<boolean>
 }
 
 const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
@@ -38,7 +39,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   QUEUED: "secondary",
 }
 
-export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
+export function RunDetailView({ runId, onBack, onRefreshIqScore }: RunDetailViewProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
@@ -130,14 +131,17 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         {/* Publish/audit summary headline (LLM paragraph + concerns). */}
         <PublishAuditSummary publishRecord={publishRecord} />
 
-        {/* Keep / Discard-rollback affordance (auto-publish model). */}
+        {/* Live-state confirmation with optional rollback. */}
         {showResolution && (
           <ResolutionActions
             key={runId}
             runId={runId}
             status={run.status}
             published={resolutionPublished}
-            onResolved={(s) => setRun((prev) => (prev ? { ...prev, status: s } : prev))}
+            onResolved={(s) => {
+              setRun((prev) => (prev ? { ...prev, status: s } : prev))
+              if (s === "DISCARDED") void onRefreshIqScore?.(runId, true)
+            }}
           />
         )}
 
