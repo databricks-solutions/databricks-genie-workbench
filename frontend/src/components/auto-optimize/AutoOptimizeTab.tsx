@@ -40,6 +40,8 @@ import type {
 
 interface AutoOptimizeTabProps {
   spaceId: string
+  requestedRunId?: string
+  onRunChange?: (runId?: string) => void
   onRescan?: () => void
 }
 
@@ -121,11 +123,11 @@ function ScoreComparisonCards({
   )
 }
 
-export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
+export function AutoOptimizeTab({ spaceId, requestedRunId, onRunChange, onRescan }: AutoOptimizeTabProps) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [healthIssues, setHealthIssues] = useState<string[]>([])
-  const [view, setView] = useState<View>("configure")
-  const [activeRunId, setActiveRunId] = useState<string | null>(null)
+  const [view, setView] = useState<View>(requestedRunId ? "monitoring" : "configure")
+  const [activeRunId, setActiveRunId] = useState<string | null>(requestedRunId ?? null)
   const [stepperOpen, setStepperOpen] = useState(false)
   const [stepperComplete, setStepperComplete] = useState(false)
   const [stepperError, setStepperError] = useState<string | null>(null)
@@ -143,6 +145,29 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   const [benchmarkChanges, setBenchmarkChanges] = useState<GSOBenchmarkChanges | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  function resetRunSurfaces() {
+    setRunStatus(null)
+    setRunDetail(null)
+    setIterations([])
+    setLoopState(null)
+    setPublishRecord(null)
+    setBenchmarkChanges(null)
+  }
+
+  function openMonitoring(runId: string) {
+    if (runId !== activeRunId) resetRunSurfaces()
+    setSelectedRunId(null)
+    setActiveRunId(runId)
+    setView("monitoring")
+    if (requestedRunId !== runId) onRunChange?.(runId)
+  }
+
+  function closeMonitoring(isTerminal: boolean) {
+    setView("configure")
+    if (isTerminal) setActiveRunId(null)
+    onRunChange?.(undefined)
+  }
+
   // Health check on mount
   useEffect(() => {
     getAutoOptimizeHealth()
@@ -157,16 +182,15 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   useEffect(() => {
     if (configured !== true) return
     getActiveRunForSpace(spaceId).then((res) => {
-      if (res.hasActiveRun && res.activeRunId) {
-        setActiveRunId(res.activeRunId)
-        // Stay on "configure" view — the banner there lets users click into monitoring
+      if (!requestedRunId) {
+        setActiveRunId(res.hasActiveRun ? res.activeRunId : null)
       }
     })
     getAutoOptimizePermissions(spaceId)
       .then(setPermissions)
       .catch(() => setPermissions(null))
       .finally(() => setPermsLoading(false))
-  }, [spaceId, configured])
+  }, [spaceId, configured, requestedRunId])
 
   function refreshPermissions() {
     setPermsLoading(true)
@@ -310,7 +334,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
                   </p>
                 </div>
                 <button
-                  onClick={() => setView("monitoring")}
+                  onClick={() => openMonitoring(activeRunId)}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
                 >
                   <Play className="w-3.5 h-3.5" />
@@ -348,7 +372,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
             setStepperOpen(false)
             setStepperComplete(false)
             setStepperError(null)
-            if (activeRunId) setView("monitoring")
+            if (activeRunId) openMonitoring(activeRunId)
           }}
         />
         <RunHistoryTable
@@ -431,10 +455,7 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => {
-                setView("configure")
-                if (isTerminal) setActiveRunId(null)
-              }}
+              onClick={() => closeMonitoring(isTerminal)}
               className="text-sm text-accent hover:underline"
             >
               &larr; Back to configuration

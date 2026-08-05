@@ -254,6 +254,17 @@ The Workbench prefers Lakebase synced reads for UI views and falls back to direc
 4. Review the attempt ladder, question results, patches, benchmark QC, audit summary, and terminal outcome.
 5. Keep the accepted state, discard it to the trigger snapshot, or later use **Revert Options** to choose a past config and benchmark scope independently.
 
+### Refreshable Agent and run links
+
+Workbench stores the current Agent, tab, and monitored optimization run in the
+page query string. Refreshing the browser therefore restores the same Optimize
+view instead of returning to the Agent list. Browser back and forward navigation
+also restore prior tabs and run views.
+
+The **View Run** action on an Agent's Score tab includes the active run ID and
+opens that run's live monitoring view directly. These links do not bypass normal
+Workbench or Databricks authorization checks.
+
 ## Source files
 
 - `packages/genie-space-optimizer/databricks.yml` — four-task job definition
