@@ -23,10 +23,15 @@ from genie_space_optimizer.common.config import (
 from genie_space_optimizer.optimization.benchmark_repair import (
     INSUFFICIENT_VALID_BENCHMARKS,
     DEFAULT_BENCHMARK_REPAIR_MAX_TRIES,
+    DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE,
+    DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS,
+    DEFAULT_BENCHMARK_TOP_UP_MAX_NO_PROGRESS,
     BenchmarkCorpusTooSmallError,
     BenchmarkRepairOutcome,
+    BenchmarkTopUpOutcome,
     require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
+    run_bounded_benchmark_top_up,
 )
 from genie_space_optimizer.optimization.benchmark_quality import (
     build_actionable_warning_repair,
@@ -47,6 +52,12 @@ def _validate_by_flag(benchmarks: list[dict]):
 
 def test_default_max_tries_is_three():
     assert DEFAULT_BENCHMARK_REPAIR_MAX_TRIES == 3
+
+
+def test_default_top_up_bounds_match_product_contract():
+    assert DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS == 3
+    assert DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE == 10
+    assert DEFAULT_BENCHMARK_TOP_UP_MAX_NO_PROGRESS == 2
 
 
 def test_default_corpus_uses_15_floor_30_target_and_40_ceiling():
@@ -382,3 +393,161 @@ def test_discovery_validation_is_not_a_try():
     # discovery (1) + one re-validation (1) = 2 validate calls, 0 tries used.
     assert validate_calls["n"] == 2
     assert out.tries_used == 0
+
+
+def test_top_up_recomputes_gap_and_reaches_target_in_three_calls():
+    initial = [_q(f"existing-{index}", True) for index in range(12)]
+    accepted_per_call = [7, 8, 3]
+    requests: list[int] = []
+
+    def generate_fn(_valid, requested):
+        call_index = len(requests)
+        requests.append(requested)
+        return [
+            _q(f"generated-{call_index}-{index}", True)
+            for index in range(accepted_per_call[call_index])
+        ]
+
+    out = run_bounded_benchmark_top_up(
+        initial,
+        generate_fn=generate_fn,
+        validate_fn=_validate_by_flag,
+    )
+
+    assert isinstance(out, BenchmarkTopUpOutcome)
+    assert requests == [10, 10, 3]
+    assert out.attempts_used == 3
+    assert out.accepted_count == 18
+    assert len(out.benchmarks) == 30
+    assert out.stop_reason == "target_reached"
+
+
+def test_top_up_returns_without_calls_when_target_is_already_met():
+    initial = [_q(f"existing-{index}", True) for index in range(30)]
+
+    def unexpected_generate(_valid, _requested):
+        pytest.fail("generate_fn must not run when the target is already met")
+
+    def unexpected_validate(_candidates):
+        pytest.fail("validate_fn must not run when the target is already met")
+
+    out = run_bounded_benchmark_top_up(
+        initial,
+        generate_fn=unexpected_generate,
+        validate_fn=unexpected_validate,
+    )
+
+    assert out.benchmarks == initial
+    assert out.attempts_used == 0
+    assert out.attempts == []
+    assert out.requested_count == 0
+    assert out.stop_reason == "target_already_met"
+
+
+def test_top_up_stops_after_two_consecutive_zero_progress_calls():
+    initial = [_q(f"existing-{index}", True) for index in range(12)]
+    requests: list[int] = []
+
+    def generate_fn(_valid, requested):
+        call_index = len(requests)
+        requests.append(requested)
+        return [
+            _q(f"invalid-{call_index}-{index}", False)
+            for index in range(requested)
+        ]
+
+    out = run_bounded_benchmark_top_up(
+        initial,
+        generate_fn=generate_fn,
+        validate_fn=_validate_by_flag,
+    )
+
+    assert requests == [10, 10]
+    assert out.attempts_used == 2
+    assert out.accepted_count == 0
+    assert out.rejected_count == 20
+    assert len(out.benchmarks) == 12
+    assert out.stop_reason == "no_progress"
+
+
+def test_top_up_records_generation_errors_as_zero_progress_attempts():
+    initial = [_q(f"existing-{index}", True) for index in range(12)]
+    error_message = "generation failed: " + ("x" * 400)
+    calls = 0
+
+    def generate_fn(_valid, _requested):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError(error_message)
+
+    out = run_bounded_benchmark_top_up(
+        initial,
+        generate_fn=generate_fn,
+        validate_fn=_validate_by_flag,
+    )
+
+    assert calls == 2
+    assert out.benchmarks == initial
+    assert out.attempts_used == 2
+    assert out.requested_count == 20
+    assert out.generated_count == 0
+    assert out.accepted_count == 0
+    assert out.stop_reason == "no_progress"
+    assert [attempt["error_type"] for attempt in out.attempts] == [
+        "RuntimeError",
+        "RuntimeError",
+    ]
+    assert [attempt["error_message"] for attempt in out.attempts] == [
+        error_message[:300],
+        error_message[:300],
+    ]
+
+
+def test_top_up_attempt_limit_preserves_eligible_partial_corpus():
+    initial = [_q(f"existing-{index}", True) for index in range(15)]
+    call_index = 0
+
+    def generate_fn(_valid, _requested):
+        nonlocal call_index
+        call_index += 1
+        return [
+            _q(f"generated-{call_index}-{index}", True)
+            for index in range(2)
+        ]
+
+    out = run_bounded_benchmark_top_up(
+        initial,
+        generate_fn=generate_fn,
+        validate_fn=_validate_by_flag,
+    )
+
+    assert out.attempts_used == 3
+    assert out.accepted_count == 6
+    assert len(out.benchmarks) == 21
+    assert out.stop_reason == "attempt_limit"
+    require_minimum_valid_benchmarks(out.benchmarks)
+
+
+def test_top_up_deduplicates_candidates_before_validation():
+    initial = [_q("existing", True)]
+    validated: list[list[str]] = []
+
+    def validate_fn(candidates):
+        validated.append([candidate["id"] for candidate in candidates])
+        return _validate_by_flag(candidates)
+
+    out = run_bounded_benchmark_top_up(
+        initial,
+        generate_fn=lambda _valid, _requested: [
+            _q("existing", True),
+            _q("new", True),
+            _q("new", True),
+        ],
+        validate_fn=validate_fn,
+        target_count=2,
+    )
+
+    assert validated == [["new"]]
+    assert out.accepted_count == 1
+    assert out.duplicate_count == 2
+    assert out.stop_reason == "target_reached"

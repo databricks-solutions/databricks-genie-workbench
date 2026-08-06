@@ -63,10 +63,18 @@ repair-sweep telemetry; they are never presented as live benchmark exclusions.
 Generation targets 30 valid questions and the working set is capped at 40 — no
 evaluation ever runs on more than 40 questions, and an already-valid corpus of
 30–40 is retained and evaluated in full. A run may proceed with fewer when
-generation or bounded repair cannot reach the 30 target. At least 15 valid
-questions are required to optimize. If fewer than 15 remain, Optimize performs
-no evaluation or configuration mutation and Publish & Audit records a terminal
-`SKIPPED` summary with reason `INSUFFICIENT_VALID_BENCHMARKS`.
+generation or bounded repair cannot reach the 30 target. For repair-enabled
+runs, GSO performs a final count-driven top-up after comprehensive review and
+deduplication: up to three LLM calls, each requesting at most 10 net-new
+questions. It stops early at 30 valid questions or after two consecutive calls
+add no valid unique questions. Review-only runs never enter this loop.
+
+At least 15 valid questions are required to optimize. When bounded top-up is
+exhausted, a corpus of 15–29 proceeds; fewer than 15 causes Optimize to perform
+no evaluation or configuration mutation, and Publish & Audit records a terminal
+`SKIPPED` summary with reason `INSUFFICIENT_VALID_BENCHMARKS`. The
+`benchmark_qc` artifact records each top-up call's requested, generated,
+accepted, rejected, and duplicate counts together with the final stop reason.
 
 These bounds come from `TARGET_BENCHMARK_COUNT` (30), `MAX_BENCHMARK_COUNT`
 (40), and `MIN_VALID_BENCHMARK_COUNT` (15). Setting `GSO_NEW_SIZING=0` restores

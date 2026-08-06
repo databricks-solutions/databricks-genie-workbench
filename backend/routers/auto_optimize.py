@@ -3237,6 +3237,20 @@ def _build_benchmark_qc(payload: dict) -> dict:
             repair_exhausted if isinstance(repair_exhausted, list) else []
         ),
         "repairExhaustedCount": _safe_int(payload.get("repair_exhausted_count")),
+        "topUpAttempts": (
+            payload.get("top_up_attempts")
+            if isinstance(payload.get("top_up_attempts"), list)
+            else []
+        ),
+        "topUpAttemptsUsed": _safe_int(payload.get("top_up_attempts_used")),
+        "topUpMaxAttempts": _safe_int(payload.get("top_up_max_attempts")),
+        "topUpBatchSize": _safe_int(payload.get("top_up_batch_size")),
+        "topUpStopReason": payload.get("top_up_stop_reason") or None,
+        "topUpRequestedCount": _safe_int(payload.get("top_up_requested_count")),
+        "topUpGeneratedCount": _safe_int(payload.get("top_up_generated_count")),
+        "topUpAcceptedCount": _safe_int(payload.get("top_up_accepted_count")),
+        "topUpRejectedCount": _safe_int(payload.get("top_up_rejected_count")),
+        "topUpDuplicateCount": _safe_int(payload.get("top_up_duplicate_count")),
         "qualityReviewVersion": payload.get("quality_review_version") or None,
         "qualityReviewStatus": payload.get("quality_review_status") or None,
         "semanticReviewCoverage": _safe_float(payload.get("semantic_review_coverage")),

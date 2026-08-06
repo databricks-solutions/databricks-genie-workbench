@@ -241,6 +241,24 @@ def test_review_only_policy_never_enters_generation_or_live_push():
     assert review_start < repair_start
 
 
+def test_top_up_generation_caps_each_pass_at_the_requested_gap():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+    helper_start = src.index("def _generate_top_up_candidates(")
+    helper_end = src.index("\n\n_optimization_eligible", helper_start)
+    helper = src[helper_start:helper_end]
+
+    expected_cap = (
+        "max_benchmark_count=min(effective_max, len(valid) + requested_count),"
+    )
+    assert expected_cap in helper
+
+
 def test_qc_keeps_candidate_churn_out_of_exclusion_ledger_and_legacy_alias():
     src = (
         _PKG_ROOT
@@ -284,6 +302,37 @@ def test_repair_task_enforces_corpus_floor_before_publish_and_optimize():
     assert floor_call in src
     assert push_call in src
     assert src.index(floor_call) < src.index(push_call)
+
+
+def test_repair_task_runs_count_driven_topup_before_floor_and_publish():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+
+    top_up_call = "        _top_up = run_bounded_benchmark_top_up("
+    floor_call = "        require_minimum_valid_benchmarks(\n            _benchmarks,"
+    push_call = "        _push = preflight_push_benchmarks_to_space("
+    assert top_up_call in src
+    assert src.index(top_up_call) < src.index(floor_call) < src.index(push_call)
+
+
+def test_review_only_policy_has_no_count_driven_topup_call():
+    src = (
+        _PKG_ROOT
+        / "src"
+        / "genie_space_optimizer"
+        / "jobs"
+        / "run_benchmark_qc_and_repair.py"
+    ).read_text()
+
+    review_start = src.index('if benchmark_policy == "review_only":')
+    repair_start = src.index("\nelse:\n    try:", review_start)
+    review_branch = src[review_start:repair_start]
+    assert "run_bounded_benchmark_top_up(" not in review_branch
 
 
 def test_optimize_and_publish_receive_loop_params():

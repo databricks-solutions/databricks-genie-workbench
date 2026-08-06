@@ -39,6 +39,11 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
   const [configExpanded, setConfigExpanded] = useState(false)
 
   const { state, actions } = useAnalysis()
+  // Pull the stable callback out of `actions` so the load effect can depend on
+  // it directly. `actions` is a fresh object every render, so depending on it
+  // would re-run the effect every render; `handleFetchSpace` is a useCallback
+  // with an empty dep array (see useAnalysis), so its identity is stable.
+  const { handleFetchSpace } = actions
 
   // Guard against getSpaceDetail overwriting a fresh scan result
   const freshScanDoneRef = useRef(false)
@@ -49,7 +54,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
     freshScanDoneRef.current = false
     setIsLoadingScan(true)
     if (spaceId) {
-      actions.handleFetchSpace(spaceId)
+      handleFetchSpace(spaceId)
       // Load latest persisted scan result (skip if a fresh scan already completed)
       getSpaceDetail(spaceId)
         .then((detail) => {
@@ -73,7 +78,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
         .catch((e) => console.error("Failed to load space detail:", e))
         .finally(() => setIsLoadingScan(false))
     }
-  }, [spaceId])
+  }, [spaceId, handleFetchSpace])
 
   useEffect(() => {
     getActiveRunForSpace(spaceId)
@@ -298,7 +303,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
                   </span>
                 </button>
                 <button
-                  onClick={() => actions.handleFetchSpace(spaceId)}
+                  onClick={() => handleFetchSpace(spaceId)}
                   disabled={state.isLoading}
                   className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
                   title="Reload agent configuration"

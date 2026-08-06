@@ -53,7 +53,7 @@ them for the same app instance.
 | Optimization job never starts | Job doesn't exist or SP can't run it | Check job exists in workspace; verify SP has CAN_MANAGE on job |
 | Job stuck in QUEUED | No available cluster or warehouse | Check cluster policies and warehouse availability |
 | Baseline evaluation fails | Benchmark questions reference inaccessible tables | Grant SP `SELECT` on all referenced schemas |
-| Run ends `SKIPPED` with `INSUFFICIENT_VALID_BENCHMARKS` | Fewer than 15 valid benchmarks survived QC | Add or repair benchmark questions, or enable "Allow GSO to repair and add benchmarks" on the next run |
+| Run ends `SKIPPED` with `INSUFFICIENT_VALID_BENCHMARKS` | Fewer than 15 valid benchmarks remained after QC and the bounded top-up budget | Review the top-up attempt telemetry and rejected findings, then add or repair benchmark questions before rerunning |
 | Run ends `FAILED` with `EVAL_INVALID` | Native Eval-Run API returned an unusable result after retries | Check the Eval-Run status in the run page; verify SP access to referenced tables |
 | Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review suggestions for manual improvements |
 | `__GSO_*__` values in running app | The installer didn't patch `app.yaml` before deploy | Verify the catalog value and re-run your install path |

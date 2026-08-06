@@ -1991,6 +1991,12 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
         "run_id": _RUN, "valid_count": 32, "persisted_count": 32,
         "repair_tries_used": 1, "benchmark_repair_max_tries": 3,
         "repair_exhausted_ids": [], "repair_exhausted_count": 0,
+        "top_up_attempts": [{"attempt_index": 1, "accepted_count": 2}],
+        "top_up_attempts_used": 1, "top_up_max_attempts": 3,
+        "top_up_batch_size": 10, "top_up_stop_reason": "target_reached",
+        "top_up_requested_count": 2, "top_up_generated_count": 2,
+        "top_up_accepted_count": 2, "top_up_rejected_count": 0,
+        "top_up_duplicate_count": 0,
         "repaired_ids": ["q5"], "repair_sweeps": 1, "final_validity": True,
         "benchmark_policy": "review_only", "benchmark_mutation_count": 0,
         "optimization_eligible": False, "minimum_valid_count": 15,
@@ -2032,6 +2038,12 @@ def test_benchmark_changes_includes_qc(monkeypatch) -> None:
     assert qc["repairMaxTries"] == 3
     assert qc["repairExhaustedIds"] == []
     assert qc["repairExhaustedCount"] == 0
+    assert qc["topUpAttemptsUsed"] == 1
+    assert qc["topUpMaxAttempts"] == 3
+    assert qc["topUpBatchSize"] == 10
+    assert qc["topUpStopReason"] == "target_reached"
+    assert qc["topUpAcceptedCount"] == 2
+    assert qc["topUpAttempts"][0]["attempt_index"] == 1
     assert qc["stillInvalidIds"] is None
     assert qc["finalValidity"] is True
     assert qc["benchmarkPolicy"] == "review_only"

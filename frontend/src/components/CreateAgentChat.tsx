@@ -229,6 +229,27 @@ interface PersistedState {
   selectedModel?: string | null
 }
 
+// Legacy persisted shapes that loadState() detects and migrates before
+// rehydrating into the current BuildProgress / EditablePlan. Only the fields
+// actually referenced by migration are declared here; everything else flows
+// through Partial<…> so `delete` and optional access type-check without `any`.
+interface LegacyProgress extends Partial<BuildProgress> {
+  schema?: string
+  sampleQuestions?: unknown[]
+  instructionCounts?: { measures?: number } & Record<string, unknown>
+  benchmarks?: unknown[]
+}
+
+interface LegacyEditablePlan extends Omit<Partial<EditablePlan>, 'text_instructions' | 'join_specs'> {
+  // Pre-migration text_instructions was a string[]; current shape is a single string.
+  text_instructions?: string[] | string
+  // join_specs is re-declared optional here so the joins->join_specs migration
+  // can assign to it; EditablePlan has it required.
+  join_specs?: Record<string, string>[]
+  // Pre-migration joins field was renamed to join_specs.
+  joins?: Record<string, string>[]
+}
+
 function saveState(s: PersistedState) {
   try {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(s))
@@ -243,7 +264,7 @@ function loadState(): PersistedState | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as PersistedState
     // Migrate old schema (string) -> schemas (string[])
-    const p = parsed.progress as any
+    const p = parsed.progress as LegacyProgress
     if (p && !Array.isArray(p.schemas)) {
       p.schemas = p.schema ? [p.schema] : []
       delete p.schema
@@ -253,7 +274,7 @@ function loadState(): PersistedState | null {
       p.inspectionDone = p.profilingDone ?? false
       p.inspectionSummary = p.inspectionSummary ?? { qualityIssues: 0, lineageCount: 0, columnsProfiled: 0 }
       p.businessContext = p.businessContext ?? []
-      p.planReady = p.planReady ?? (p.sampleQuestions?.length > 0 || p.instructionCounts?.measures > 0)
+      p.planReady = p.planReady ?? ((p.sampleQuestions?.length ?? 0) > 0 || (p.instructionCounts?.measures ?? 0) > 0)
       p.planSummary = p.planSummary ?? { ...EMPTY_PLAN_SUMMARY }
       delete p.profilingDone
       delete p.sampleQuestions
@@ -277,14 +298,15 @@ function loadState(): PersistedState | null {
     if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.metric_views)) {
       parsed.editedPlan.metric_views = []
     }
+    const ep = parsed.editedPlan as LegacyEditablePlan | null | undefined
     // Migrate text_instructions from string[] to single string
-    if (parsed.editedPlan && Array.isArray((parsed.editedPlan as any).text_instructions)) {
-      parsed.editedPlan.text_instructions = ((parsed.editedPlan as any).text_instructions as string[]).join("\n")
+    if (ep && Array.isArray(ep.text_instructions)) {
+      ep.text_instructions = ep.text_instructions.join("\n")
     }
     // Migrate joins → join_specs
-    if (parsed.editedPlan && (parsed.editedPlan as any).joins && !parsed.editedPlan.join_specs) {
-      parsed.editedPlan.join_specs = (parsed.editedPlan as any).joins
-      delete (parsed.editedPlan as any).joins
+    if (ep && ep.joins && !ep.join_specs) {
+      ep.join_specs = ep.joins
+      delete ep.joins
     }
     // Reconstruct editedPlan from messages if missing
     if (!parsed.editedPlan && parsed.messages) {
@@ -345,19 +367,24 @@ function groupMessages(msgs: AgentChatMessage[]): RenderItem[] {
 // ─── Component ─────────────────────────────────────────────────
 
 export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
-  const restored = useRef(loadState())
+  // Lazy-init the persisted session once (useState with a function initializer
+  // runs it only on first render). Previously this was a useRef(loadState()),
+  // which (a) called loadState() on every render and (b) read .current during
+  // render to seed state — both flagged by react-hooks/refs. A stable state
+  // value seeded once avoids both.
+  const [restored] = useState<PersistedState | null>(loadState)
 
-  const [messages, setMessages] = useState<AgentChatMessage[]>(restored.current?.messages ?? [])
+  const [messages, setMessages] = useState<AgentChatMessage[]>(restored?.messages ?? [])
   const [input, setInput] = useState("")
-  const [sessionId, setSessionId] = useState<string | null>(restored.current?.sessionId ?? null)
+  const [sessionId, setSessionId] = useState<string | null>(restored?.sessionId ?? null)
   const [isStreaming, setIsStreaming] = useState(false)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [copiedConfig, setCopiedConfig] = useState(false)
   const [usedElements, setUsedElements] = useState<Set<string>>(
-    new Set(restored.current?.usedElements ?? []),
+    new Set(restored?.usedElements ?? []),
   )
   const [multiSelections, setMultiSelections] = useState<Record<string, Set<string>>>({})
-  const [progress, setProgress] = useState<BuildProgress>(restored.current?.progress ?? EMPTY_PROGRESS)
+  const [progress, setProgress] = useState<BuildProgress>(restored?.progress ?? EMPTY_PROGRESS)
   const [panelOpen] = useState(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
@@ -365,7 +392,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   // businessContextDraft state removed — was only used for add/remove business context UI
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
-  const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
+  const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored?.editedPlan ?? null)
   const [editingPlanItem, setEditingPlanItem] = useState<string | null>(null)
   const [planTab, setPlanTab] = useState<"schema" | "instructions">("schema")
   const [expandedTableId, setExpandedTableId] = useState<string | null>(null)
@@ -373,7 +400,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
   const queuedMessageRef = useRef<string | null>(null)
   const [preflight, setPreflight] = useState<{ warehouses_available: boolean; obo_enabled: boolean; app_name: string } | null>(null)
-  const [selectedModel, setSelectedModel] = useState<string | null>(restored.current?.selectedModel ?? null)
+  const [selectedModel, setSelectedModel] = useState<string | null>(restored?.selectedModel ?? null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -465,6 +492,14 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   // ─── Send message + SSE streaming ─────────────────────────────
 
+  // sendMessage needs to schedule future calls to itself (reconnect after a
+  // dropped SSE connection, continuation rounds, queued-message drain).
+  // Referencing `sendMessage` inside its own useCallback captures the closure
+  // that existed when the timeout was scheduled, so a reconnect could fire a
+  // stale `sendMessage` with out-of-date deps. Routing through a ref keeps the
+  // scheduled calls pointing at the latest callback.
+  const sendMessageRef = useRef<(text: string, selections?: Record<string, unknown>) => void>(() => {})
+
   const sendMessage = useCallback(
     (text: string, selections?: Record<string, unknown>) => {
       const isContinuation = text === ""
@@ -530,7 +565,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
         onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid); reconnectCountRef.current = 0 },
         onStep: () => {},
-        onThinking: (message, _step, _round) => {
+        onThinking: (message) => {
           setAgentStatus(message)
         },
         onToolCall: (tool, args) => {
@@ -655,7 +690,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           if (tool === "describe_table" && result.table && !result.error) {
             const parts = (result.table as string).split(".")
             if (parts.length === 3) {
-              const [cat, sch, _tbl] = parts
+              const [cat, sch] = parts
               const fullName = result.table as string
               setProgress((p) => ({
                 ...p,
@@ -793,7 +828,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             if (reconnectCountRef.current <= MAX_AUTO_RECONNECTS) {
               const attempt = reconnectCountRef.current
               setAgentStatus(`Reconnecting (attempt ${attempt}/${MAX_AUTO_RECONNECTS})...`)
-              setTimeout(() => sendMessage(""), 2000 * attempt)
+              setTimeout(() => sendMessageRef.current(""), 2000 * attempt)
               return
             }
             // Exhausted retries — show error and stop
@@ -816,7 +851,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             // Keep isStreaming=true — the agent loop continues in the
             // next HTTP round.  sendMessage("") opens a new SSE stream.
             reconnectCountRef.current = 0  // successful round — reset reconnect counter
-            requestAnimationFrame(() => sendMessage(""))
+            requestAnimationFrame(() => sendMessageRef.current(""))
             return
           }
 
@@ -826,13 +861,19 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           queuedMessageRef.current = null
           setQueuedMessage(null)
           if (pending) {
-            requestAnimationFrame(() => sendMessage(pending))
+            requestAnimationFrame(() => sendMessageRef.current(pending))
           }
         },
       }, null, selectedModel)
     },
-    [sessionId, isStreaming, selectedModel],
+    [isStreaming, selectedModel],
   )
+  // Keep the ref in sync (in an effect, not during render) so scheduled
+  // self-calls — reconnect, continuation, queued-message drain — invoke the
+  // latest sendMessage closure rather than the one captured at schedule time.
+  useEffect(() => {
+    sendMessageRef.current = sendMessage
+  }, [sendMessage])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -1401,7 +1442,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   // ─── Plan card renderer ──────────────────────────────────────
 
-  const renderPlanCard = (_result: Record<string, unknown>) => {
+  const renderPlanCard = () => {
     const plan = editedPlan
     if (!plan) return null
 
@@ -2043,7 +2084,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       if (lastPlanMsg && msg.id !== lastPlanMsg.id) {
         return null // Skip earlier plan cards
       }
-      return <div key={msg.id} className="mx-4 my-2">{renderPlanCard(msg.tool_result)}</div>
+      return <div key={msg.id} className="mx-4 my-2">{renderPlanCard()}</div>
     }
     const isExpanded = expandedTools.has(msg.id)
     const isDone = !!msg.tool_result
@@ -2077,7 +2118,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             msg.tool_name === "describe_table"
               ? renderDescribeCard(msg.tool_result)
               : (msg.tool_name === "present_plan" || msg.tool_name === "generate_plan")
-                ? renderPlanCard(msg.tool_result)
+                ? renderPlanCard()
                 : msg.tool_name === "test_sql"
                   ? renderTestSqlCard(msg.tool_result)
                   : msg.tool_name === "assess_data_quality"

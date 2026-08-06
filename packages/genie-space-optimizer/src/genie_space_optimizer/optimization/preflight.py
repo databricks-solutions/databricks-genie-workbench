@@ -3375,7 +3375,7 @@ def _load_or_generate_benchmarks(
                         w, config, uc_columns, uc_tags, uc_routines,
                         domain, catalog, schema, spark,
                         target_count=target_benchmark_count,
-                        genie_space_benchmarks=genie_benchmarks,
+                        genie_space_benchmarks=[],
                         existing_benchmarks=valid_existing,
                         warehouse_id=warehouse_id,
                         max_benchmark_count=max_benchmark_count,

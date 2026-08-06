@@ -423,8 +423,8 @@ export interface GSOPipelineStep {
   status: string
   durationSeconds: number | null
   summary: string | null
-  inputs: Record<string, any> | null
-  outputs: Record<string, any> | null
+  inputs: Record<string, unknown> | null
+  outputs: Record<string, unknown> | null
 }
 
 export interface GSOStageEvent {
@@ -460,8 +460,8 @@ export interface GSOPatchDetail {
   targetObject: string | null
   rolledBack: boolean
   rollbackReason: string | null
-  command: Record<string, any> | string | null
-  patch: Record<string, any> | string | null
+  command: Record<string, unknown> | string | null
+  patch: Record<string, unknown> | string | null
   appliedAt: string | null
 }
 
@@ -544,7 +544,7 @@ export interface GSOIterationResult {
   // legacy in-process path).
   eval_run_id?: string | null
   eval_run_status?: string | null
-  reflection_json?: string | Record<string, any> | null
+  reflection_json?: string | Record<string, unknown> | null
   // GSO v2 (item 5 + Attempt Ledger) — the EXPLICIT champion flag + loop-state
   // fields, merged from genie_opt_iterations. The UI reads is_champion as
   // authoritative instead of re-deriving idxmax(accuracy). All optional: legacy
@@ -739,6 +739,16 @@ export interface GSOBenchmarkQC {
   stillInvalidIds: string[] | null
   repairExhaustedIds?: string[]
   repairExhaustedCount?: number | null
+  topUpAttempts?: Array<Record<string, unknown>>
+  topUpAttemptsUsed?: number | null
+  topUpMaxAttempts?: number | null
+  topUpBatchSize?: number | null
+  topUpStopReason?: string | null
+  topUpRequestedCount?: number | null
+  topUpGeneratedCount?: number | null
+  topUpAcceptedCount?: number | null
+  topUpRejectedCount?: number | null
+  topUpDuplicateCount?: number | null
   benchmarkPolicy?: "review_only" | "repair_allowed" | string | null
   benchmarkMutationCount?: number | null
   optimizationEligible?: boolean | null

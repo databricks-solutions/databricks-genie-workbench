@@ -54,6 +54,10 @@ INSUFFICIENT_VALID_BENCHMARKS = "INSUFFICIENT_VALID_BENCHMARKS"
 # Bound on the inline repair loop (arch §12 ``benchmark_repair_max_tries``).
 DEFAULT_BENCHMARK_REPAIR_MAX_TRIES = 3
 
+DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS = 3
+DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE = 10
+DEFAULT_BENCHMARK_TOP_UP_MAX_NO_PROGRESS = 2
+
 
 def default_id_of(benchmark: dict) -> str:
     """Stable benchmark identity for repair bookkeeping.
@@ -69,6 +73,7 @@ ValidateFn = Callable[[list[dict]], "tuple[list[dict], list[dict]]"]
 # ``repair_fn(invalid, valid) -> repaired_candidates`` — one repair sweep over
 # the still-invalid set. May fix in place, replace, or exclude (return fewer).
 RepairFn = Callable[[list[dict], list[dict]], list[dict]]
+TopUpGenerateFn = Callable[[list[dict], int], list[dict]]
 
 
 class BenchmarkUnrepairableError(RuntimeError):
@@ -171,6 +176,181 @@ class BenchmarkRepairOutcome:
     excluded_benchmarks: list[dict] = field(default_factory=list)
     repair_exhausted: bool = False
     sweeps: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class BenchmarkTopUpOutcome:
+    """Result of bounded, count-driven benchmark generation."""
+
+    benchmarks: list[dict]
+    attempts_used: int
+    stop_reason: str
+    attempts: list[dict] = field(default_factory=list)
+    requested_count: int = 0
+    generated_count: int = 0
+    accepted_count: int = 0
+    rejected_count: int = 0
+    duplicate_count: int = 0
+
+
+def _normalized_question(benchmark: dict) -> str:
+    question = benchmark.get("question")
+    if isinstance(question, list):
+        question = question[0] if question else ""
+    return " ".join(str(question or "").strip().lower().split())
+
+
+def run_bounded_benchmark_top_up(
+    benchmarks: list[dict],
+    *,
+    generate_fn: TopUpGenerateFn,
+    validate_fn: ValidateFn,
+    target_count: int = TARGET_BENCHMARK_COUNT,
+    max_attempts: int = DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS,
+    batch_size: int = DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE,
+    max_no_progress: int = DEFAULT_BENCHMARK_TOP_UP_MAX_NO_PROGRESS,
+) -> BenchmarkTopUpOutcome:
+    """Generate and validate toward ``target_count`` with bounded retries.
+
+    The input corpus is assumed to have already passed comprehensive QC.
+    ``generate_fn`` returns only net-new candidates; this controller still
+    defensively removes duplicate IDs and normalized question text before
+    calling ``validate_fn``. Generation and validation errors are recorded as
+    zero-progress attempts so an otherwise usable 15–29 question corpus can
+    continue after the bounded budget is exhausted.
+    """
+    valid = list(benchmarks)
+    attempts: list[dict] = []
+    requested_total = 0
+    generated_total = 0
+    accepted_total = 0
+    rejected_total = 0
+    duplicate_total = 0
+    no_progress = 0
+
+    seen_ids = {default_id_of(row) for row in valid if default_id_of(row)}
+    seen_questions = {
+        question for row in valid if (question := _normalized_question(row))
+    }
+
+    if len(valid) >= target_count:
+        return BenchmarkTopUpOutcome(
+            benchmarks=valid,
+            attempts_used=0,
+            stop_reason="target_already_met",
+        )
+
+    stop_reason = "attempt_limit"
+    for attempt_index in range(1, max_attempts + 1):
+        requested = min(batch_size, target_count - len(valid))
+        requested_total += requested
+        generated_count = 0
+        unique_count = 0
+        accepted_count = 0
+        rejected_count = 0
+        duplicate_count = 0
+        error_type: str | None = None
+        error_message: str | None = None
+
+        try:
+            candidates = list(generate_fn(list(valid), requested))
+            generated_count = len(candidates)
+            unique_candidates: list[dict] = []
+            pending_ids: set[str] = set()
+            pending_questions: set[str] = set()
+            for candidate in candidates:
+                candidate_id = default_id_of(candidate)
+                candidate_question = _normalized_question(candidate)
+                if (
+                    (candidate_id and (candidate_id in seen_ids or candidate_id in pending_ids))
+                    or (
+                        candidate_question
+                        and (
+                            candidate_question in seen_questions
+                            or candidate_question in pending_questions
+                        )
+                    )
+                ):
+                    duplicate_count += 1
+                    continue
+                unique_candidates.append(candidate)
+                if candidate_id:
+                    pending_ids.add(candidate_id)
+                if candidate_question:
+                    pending_questions.add(candidate_question)
+
+            unique_count = len(unique_candidates)
+            accepted, rejected = (
+                validate_fn(unique_candidates) if unique_candidates else ([], [])
+            )
+            accepted_rows: list[dict] = []
+            for candidate in accepted:
+                candidate_id = default_id_of(candidate)
+                candidate_question = _normalized_question(candidate)
+                if (
+                    (candidate_id and candidate_id in seen_ids)
+                    or (candidate_question and candidate_question in seen_questions)
+                ):
+                    duplicate_count += 1
+                    continue
+                accepted_rows.append(candidate)
+                if candidate_id:
+                    seen_ids.add(candidate_id)
+                if candidate_question:
+                    seen_questions.add(candidate_question)
+
+            accepted_count = len(accepted_rows)
+            rejected_count = len(rejected)
+            valid.extend(accepted_rows)
+        except Exception as exc:
+            error_type = type(exc).__name__
+            error_message = str(exc)[:300]
+            logger.warning(
+                "Benchmark top-up attempt %d/%d failed: %s: %s",
+                attempt_index,
+                max_attempts,
+                error_type,
+                error_message,
+            )
+
+        generated_total += generated_count
+        accepted_total += accepted_count
+        rejected_total += rejected_count
+        duplicate_total += duplicate_count
+        no_progress = no_progress + 1 if accepted_count == 0 else 0
+        attempts.append(
+            {
+                "attempt_index": attempt_index,
+                "requested_count": requested,
+                "generated_count": generated_count,
+                "unique_count": unique_count,
+                "accepted_count": accepted_count,
+                "rejected_count": rejected_count,
+                "duplicate_count": duplicate_count,
+                "valid_count_after": len(valid),
+                "error_type": error_type,
+                "error_message": error_message,
+            }
+        )
+
+        if len(valid) >= target_count:
+            stop_reason = "target_reached"
+            break
+        if no_progress >= max_no_progress:
+            stop_reason = "no_progress"
+            break
+
+    return BenchmarkTopUpOutcome(
+        benchmarks=valid,
+        attempts_used=len(attempts),
+        stop_reason=stop_reason,
+        attempts=attempts,
+        requested_count=requested_total,
+        generated_count=generated_total,
+        accepted_count=accepted_total,
+        rejected_count=rejected_total,
+        duplicate_count=duplicate_total,
+    )
 
 
 def run_bounded_benchmark_repair(

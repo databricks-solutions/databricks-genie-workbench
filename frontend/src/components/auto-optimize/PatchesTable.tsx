@@ -35,8 +35,17 @@ export function PatchesTable({ runId, iterations }: PatchesTableProps) {
   const [loading, setLoading] = useState(true)
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
 
-  useEffect(() => {
+  // Flip back to loading when runId changes. Adjusting state during render in
+  // response to a prop change avoids the cascading render that a setState in
+  // an effect would trigger.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [prevRunId, setPrevRunId] = useState(runId)
+  if (runId !== prevRunId) {
+    setPrevRunId(runId)
     setLoading(true)
+  }
+
+  useEffect(() => {
     getAutoOptimizePatches(runId)
       .then(setPatches)
       .finally(() => setLoading(false))

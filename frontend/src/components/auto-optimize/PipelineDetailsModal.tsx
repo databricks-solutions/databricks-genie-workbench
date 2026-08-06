@@ -74,13 +74,27 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Reset detail state when the modal opens or the viewed run changes. Doing
+  // this during render (adjusting state in response to prop changes) avoids
+  // the cascading render that resetting inside an effect would trigger, and
+  // means the user never sees the previous run's stale data mid-transition.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen)
+  const [prevRunId, setPrevRunId] = useState(runId)
+  if (isOpen !== prevIsOpen || runId !== prevRunId) {
+    setPrevIsOpen(isOpen)
+    setPrevRunId(runId)
+    if (isOpen) {
+      setRun(null)
+      setIterations([])
+      setPublishRecord(null)
+      setAttempts([])
+      setBenchmarkUnrepairable(false)
+    }
+  }
+
   useEffect(() => {
     if (!isOpen) return
-    setRun(null)
-    setIterations([])
-    setPublishRecord(null)
-    setAttempts([])
-    setBenchmarkUnrepairable(false)
 
     function fetchData() {
       getAutoOptimizeRun(runId).then(setRun).catch(() => {})

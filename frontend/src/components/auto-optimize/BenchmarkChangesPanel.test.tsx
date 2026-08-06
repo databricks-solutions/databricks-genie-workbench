@@ -73,6 +73,9 @@ describe("BenchmarkChangesPanel policy and gate summary", () => {
           persistedCount: 30,
           repairTriesUsed: 1,
           repairedIds: ["q1"],
+          topUpAttemptsUsed: 2,
+          topUpMaxAttempts: 3,
+          topUpAcceptedCount: 14,
           terminalReason: null,
           benchmarkPolicy: "repair_allowed",
           optimizationEligible: true,
@@ -82,6 +85,8 @@ describe("BenchmarkChangesPanel policy and gate summary", () => {
 
     expect(markup).toContain("Repair sweeps:")
     expect(markup).toContain(">1</span> repaired")
+    expect(markup).toContain("Top-up calls:")
+    expect(markup).toContain("14 accepted")
     expect(markup).not.toContain("Optimization was skipped")
   })
 

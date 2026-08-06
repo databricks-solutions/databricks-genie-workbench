@@ -165,6 +165,9 @@ function QcMeter({
   const repairExhausted = qc.repairExhaustedCount
     ?? qc.repairExhaustedIds?.length
     ?? 0
+  const topUpAttemptsUsed = qc.topUpAttemptsUsed ?? 0
+  const topUpMaxAttempts = qc.topUpMaxAttempts ?? 0
+  const topUpAcceptedCount = qc.topUpAcceptedCount ?? 0
   const reviewOnly = qc.benchmarkPolicy === "review_only"
   const minimum = qc.minimumValidCount
 
@@ -228,6 +231,16 @@ function QcMeter({
         {repairedCount > 0 && (
           <span className="text-muted">
             <span className="font-semibold text-primary">{repairedCount}</span> repaired
+          </span>
+        )}
+        {!reviewOnly && topUpAttemptsUsed > 0 && (
+          <span className="text-muted">
+            Top-up calls:{" "}
+            <span className="font-semibold text-primary">
+              {topUpAttemptsUsed}
+              {topUpMaxAttempts > 0 ? ` / ${topUpMaxAttempts}` : ""}
+            </span>
+            {` · ${topUpAcceptedCount} accepted`}
           </span>
         )}
         {qc.finalValidity != null && (

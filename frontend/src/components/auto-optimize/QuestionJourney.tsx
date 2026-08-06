@@ -21,7 +21,6 @@ interface QuestionRow {
 
 export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
   const [questionData, setQuestionData] = useState<Map<number, GSOQuestionDetail[]>>(new Map())
-  const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<FilterType>("all")
 
   const fullIterations = useMemo(
@@ -29,13 +28,23 @@ export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
     [iterations]
   )
 
-  useEffect(() => {
-    if (fullIterations.length === 0) {
-      setLoading(false)
-      return
-    }
+  // `loading` is true while a fetch is in flight. Seed it from whether there
+  // is anything to fetch, and re-flip it during render when the fetch key
+  // (runId / fullIterations) changes — not in an effect, to avoid cascading
+  // renders. The effect below only fetches and clears loading on completion.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [loading, setLoading] = useState(fullIterations.length > 0)
+  const [prevRunId, setPrevRunId] = useState(runId)
+  const [prevFullIterations, setPrevFullIterations] = useState(fullIterations)
+  if (runId !== prevRunId || fullIterations !== prevFullIterations) {
+    setPrevRunId(runId)
+    setPrevFullIterations(fullIterations)
+    setLoading(fullIterations.length > 0)
+  }
 
-    setLoading(true)
+  useEffect(() => {
+    if (fullIterations.length === 0) return
+
     Promise.all(
       fullIterations.map((it) =>
         getAutoOptimizeQuestionResults(runId, it.iteration).then(

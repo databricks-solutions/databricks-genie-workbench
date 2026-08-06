@@ -288,6 +288,85 @@ class TestPreflightGenerateBenchmarks:
         assert kwargs.get("warehouse_id") == "wh-456"
 
 
+class TestLoadOrGenerateBenchmarks:
+    def test_reuse_topup_does_not_double_count_curated_questions(self):
+        from genie_space_optimizer.optimization.preflight import (
+            _load_or_generate_benchmarks,
+        )
+
+        existing = [
+            {
+                "id": f"native-{index}",
+                "question": f"question {index}",
+                "expected_sql": "SELECT 1",
+                "source": "genie_benchmark",
+                "space_question_id": f"native-{index}",
+            }
+            for index in range(15)
+        ]
+        generated = existing + [
+            {
+                "id": f"synthetic-{index}",
+                "question": f"synthetic question {index}",
+                "expected_sql": "SELECT 1",
+            }
+            for index in range(15)
+        ]
+
+        with (
+            patch(
+                "genie_space_optimizer.optimization.preflight.extract_genie_space_benchmarks",
+                return_value=[dict(row) for row in existing],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.load_benchmark_corpus",
+                return_value=[dict(row) for row in existing],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.validate_benchmarks",
+                return_value=[{"valid": True}] * len(existing),
+            ),
+            patch(
+                "genie_space_optimizer.optimization.benchmarking._filter_example_sql_mirrored_benchmarks",
+                side_effect=lambda rows, _config: rows,
+            ),
+            patch(
+                "genie_space_optimizer.optimization.benchmarks.validate_question_sql_alignment",
+                side_effect=lambda rows: [
+                    {"question": row["question"], "aligned": True, "issues": []}
+                    for row in rows
+                ],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.generate_benchmarks",
+                return_value=generated,
+            ) as mock_generate,
+            patch("genie_space_optimizer.optimization.preflight.write_stage"),
+        ):
+            result, regenerated = _load_or_generate_benchmarks(
+                MagicMock(),
+                MagicMock(),
+                {},
+                [],
+                [],
+                [],
+                "default",
+                "cat",
+                "gold",
+                "cat.gold",
+                "run-1",
+            )
+
+        assert regenerated is False
+        assert len(result) == 30
+        assert mock_generate.call_args.kwargs["genie_space_benchmarks"] == []
+        passed_existing = mock_generate.call_args.kwargs["existing_benchmarks"]
+        assert [row["id"] for row in passed_existing] == [row["id"] for row in existing]
+        assert [row["question"] for row in passed_existing] == [
+            row["question"] for row in existing
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Step 4: preflight_validate_benchmarks
 # ---------------------------------------------------------------------------

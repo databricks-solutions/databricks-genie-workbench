@@ -49,6 +49,17 @@ function parseCsvSample(csv: string | null | undefined, columnNames?: string[]):
 }
 
 export function QuestionDetail({ question }: QuestionDetailProps) {
+  // Hooks must run unconditionally (Rules of Hooks). parseCsvSample already
+  // no-ops on null/undefined, so it is safe to compute before the early return.
+  const genieParsed = useMemo(
+    () => parseCsvSample(question?.genie_sample, question?.genie_columns),
+    [question?.genie_sample, question?.genie_columns],
+  )
+  const gtParsed = useMemo(
+    () => parseCsvSample(question?.gt_sample, question?.gt_columns),
+    [question?.gt_sample, question?.gt_columns],
+  )
+
   if (!question) {
     return (
       <div className="flex items-center justify-center h-64 text-muted text-sm">
@@ -57,14 +68,6 @@ export function QuestionDetail({ question }: QuestionDetailProps) {
     )
   }
 
-  const genieParsed = useMemo(
-    () => parseCsvSample(question.genie_sample, question.genie_columns),
-    [question.genie_sample, question.genie_columns],
-  )
-  const gtParsed = useMemo(
-    () => parseCsvSample(question.gt_sample, question.gt_columns),
-    [question.gt_sample, question.gt_columns],
-  )
   const hasResultTables = genieParsed.data.length > 0 || gtParsed.data.length > 0
   const state = questionState(question)
   const reasons = question.assessment_reasons ?? []

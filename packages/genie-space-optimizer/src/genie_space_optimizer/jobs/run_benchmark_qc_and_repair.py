@@ -58,10 +58,13 @@ from genie_space_optimizer.jobs._helpers import _diagnostic as _diagnostic_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.iq_scan import collect_rls_audit
 from genie_space_optimizer.optimization.benchmark_repair import (
+    DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE,
+    DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS,
     BenchmarkCorpusTooSmallError,
     default_id_of,
     require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
+    run_bounded_benchmark_top_up,
 )
 from genie_space_optimizer.optimization.benchmarks import (
     deduplicate_benchmark_corpus,
@@ -779,9 +782,56 @@ def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
     return warning_candidates + generated
 
 
+def _top_up_question_key(benchmark: dict) -> str:
+    question = benchmark.get("question")
+    if isinstance(question, list):
+        question = question[0] if question else ""
+    return " ".join(str(question or "").strip().lower().split())
+
+
+def _generate_top_up_candidates(
+    valid: list[dict],
+    requested_count: int,
+) -> list[dict]:
+    """Generate one synthetic-only batch and remove carried-forward rows."""
+    refilled = generate_benchmarks(
+        w, _config, _uc_columns, _uc_tags, _uc_routines, _domain,
+        catalog, schema, spark,
+        target_count=min(effective_target, len(valid) + requested_count),
+        existing_benchmarks=valid,
+        warehouse_id=warehouse_id,
+        max_benchmark_count=min(effective_max, len(valid) + requested_count),
+    )
+    existing_ids = {default_id_of(row) for row in valid if default_id_of(row)}
+    existing_questions = {
+        question for row in valid if (question := _top_up_question_key(row))
+    }
+    candidates = [
+        candidate
+        for candidate in refilled
+        if (
+            not default_id_of(candidate)
+            or default_id_of(candidate) not in existing_ids
+        )
+        and (
+            not _top_up_question_key(candidate)
+            or _top_up_question_key(candidate) not in existing_questions
+        )
+    ]
+    return candidates[:requested_count]
+
+
 _optimization_eligible = True
 _skip_reason: str | None = None
 _repair_exhausted_ids: list[str] = []
+_top_up_attempts: list[dict] = []
+_top_up_attempts_used = 0
+_top_up_stop_reason = "policy_disabled"
+_top_up_requested_count = 0
+_top_up_generated_count = 0
+_top_up_accepted_count = 0
+_top_up_rejected_count = 0
+_top_up_duplicate_count = 0
 if benchmark_policy == "review_only":
     _banner("Step 01b — Benchmark Review (no live repair)")
     _benchmarks, _excluded_benchmarks = _validate_fn(list(_benchmarks))
@@ -864,6 +914,21 @@ else:
             == "passed"
         ]
         _repair_sweeps = outcome.sweeps
+        _top_up = run_bounded_benchmark_top_up(
+            _benchmarks,
+            generate_fn=_generate_top_up_candidates,
+            validate_fn=_validate_fn,
+            target_count=effective_target,
+        )
+        _benchmarks = _top_up.benchmarks
+        _top_up_attempts = _top_up.attempts
+        _top_up_attempts_used = _top_up.attempts_used
+        _top_up_stop_reason = _top_up.stop_reason
+        _top_up_requested_count = _top_up.requested_count
+        _top_up_generated_count = _top_up.generated_count
+        _top_up_accepted_count = _top_up.accepted_count
+        _top_up_rejected_count = _top_up.rejected_count
+        _top_up_duplicate_count = _top_up.duplicate_count
         _final_validity = True
         require_minimum_valid_benchmarks(
             _benchmarks,
@@ -877,6 +942,9 @@ else:
             tries_used=_repair_tries_used,
             repaired=len(_repaired_ids),
             repair_exhausted=len(_repair_exhausted_ids),
+            top_up_attempts=_top_up_attempts_used,
+            top_up_accepted=_top_up_accepted_count,
+            top_up_stop_reason=_top_up_stop_reason,
         )
     except BenchmarkCorpusTooSmallError as exc:
         # An undersized but otherwise valid corpus is a business skip, not a job
@@ -1064,6 +1132,16 @@ _qc_payload: dict[str, Any] = {
     "repair_sweeps": _repair_sweeps,
     "repair_exhausted_ids": _repair_exhausted_ids,
     "repair_exhausted_count": len(_repair_exhausted_ids),
+    "top_up_attempts": _top_up_attempts,
+    "top_up_attempts_used": _top_up_attempts_used,
+    "top_up_max_attempts": DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS,
+    "top_up_batch_size": DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE,
+    "top_up_stop_reason": _top_up_stop_reason,
+    "top_up_requested_count": _top_up_requested_count,
+    "top_up_generated_count": _top_up_generated_count,
+    "top_up_accepted_count": _top_up_accepted_count,
+    "top_up_rejected_count": _top_up_rejected_count,
+    "top_up_duplicate_count": _top_up_duplicate_count,
     "warning_repair_rounds": dict(_warning_repair_rounds_by_id),
     "warning_repair_count": len(_warning_repairs_applied),
     "warning_repairs_applied": _warning_repairs_applied,
@@ -1142,6 +1220,9 @@ _diagnostic(
     minimum_valid_count=_qc_payload["minimum_valid_count"],
     target_count=_qc_payload["target_count"],
     repair_tries_used=_qc_payload["repair_tries_used"],
+    top_up_attempts_used=_qc_payload["top_up_attempts_used"],
+    top_up_accepted_count=_qc_payload["top_up_accepted_count"],
+    top_up_stop_reason=_qc_payload["top_up_stop_reason"],
     final_validity=_qc_payload["final_validity"],
     semantic_review_coverage=_qc_payload["semantic_review_coverage"],
     quality_counts=_qc_payload["quality_counts"],
@@ -1189,6 +1270,9 @@ write_stage(
         "valid_count": len(_benchmarks),
         "repair_tries_used": _repair_tries_used,
         "repair_exhausted_count": len(_repair_exhausted_ids),
+        "top_up_attempts_used": _top_up_attempts_used,
+        "top_up_accepted_count": _top_up_accepted_count,
+        "top_up_stop_reason": _top_up_stop_reason,
         "window_status": _window.get("status"),
         "benchmark_policy": benchmark_policy,
         "benchmark_mutation_count": _benchmark_mutation_count,
@@ -1203,6 +1287,9 @@ _diagnostic(
     log_schema=f"{catalog}.{schema}",
     valid_count=len(_benchmarks),
     repair_tries_used=_repair_tries_used,
+    top_up_attempts_used=_top_up_attempts_used,
+    top_up_accepted_count=_top_up_accepted_count,
+    top_up_stop_reason=_top_up_stop_reason,
     published_count=_push.get("published_count"),
     window_status=_window.get("status"),
     benchmark_policy=benchmark_policy,
@@ -1216,6 +1303,9 @@ dbutils.notebook.exit(json.dumps({
     "valid_count": len(_benchmarks),
     "repair_tries_used": _repair_tries_used,
     "repair_exhausted_count": len(_repair_exhausted_ids),
+    "top_up_attempts_used": _top_up_attempts_used,
+    "top_up_accepted_count": _top_up_accepted_count,
+    "top_up_stop_reason": _top_up_stop_reason,
     "optimization_eligible": _optimization_eligible,
     "terminal_reason": _skip_reason,
 }, default=str))
