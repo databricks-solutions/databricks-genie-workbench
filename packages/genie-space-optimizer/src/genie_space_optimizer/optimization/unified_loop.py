@@ -529,6 +529,87 @@ def _asset_for_prompt(
     }, column_summary
 
 
+def _normalized_identifier(value: Any) -> str:
+    return str(value or "").replace("`", "").strip().lower()
+
+
+def _data_profile_for_prompt(
+    profile: Any,
+    identifier: str,
+    prompt_columns: list[dict[str, Any]],
+    *,
+    max_columns: int = 12,
+    max_distinct_values: int = 12,
+) -> dict[str, Any] | None:
+    if not isinstance(profile, dict):
+        return None
+
+    normalized_identifier = _normalized_identifier(identifier)
+    matches = [
+        value
+        for key, value in profile.items()
+        if _normalized_identifier(key) == normalized_identifier and isinstance(value, dict)
+    ]
+    if not matches:
+        leaf = normalized_identifier.rsplit(".", 1)[-1]
+        leaf_matches = [
+            value
+            for key, value in profile.items()
+            if _normalized_identifier(key).rsplit(".", 1)[-1] == leaf
+            and isinstance(value, dict)
+        ]
+        if len(leaf_matches) == 1:
+            matches = leaf_matches
+    if len(matches) != 1:
+        return None
+
+    table_profile = matches[0]
+    raw_columns = table_profile.get("columns")
+    if not isinstance(raw_columns, dict):
+        raw_columns = {}
+    profile_columns = {
+        str(name).strip().lower(): (str(name).strip(), value)
+        for name, value in raw_columns.items()
+        if str(name).strip() and isinstance(value, dict)
+    }
+    ordered_prompt_columns = sorted(
+        (column for column in prompt_columns if isinstance(column, dict)),
+        key=lambda column: not bool(column.get("referenced_by_failures")),
+    )
+    rendered_columns: list[dict[str, Any]] = []
+    for prompt_column in ordered_prompt_columns:
+        column_name = str(prompt_column.get("column_name") or "").strip()
+        match = profile_columns.get(column_name.lower())
+        if not match:
+            continue
+        source_name, column_profile = match
+        rendered: dict[str, Any] = {"column_name": source_name}
+        if column_profile.get("cardinality") is not None:
+            rendered["cardinality"] = column_profile["cardinality"]
+        distinct_values = column_profile.get("distinct_values")
+        if isinstance(distinct_values, list) and distinct_values:
+            rendered["distinct_values"] = [
+                _short_text(value, limit=120)
+                for value in distinct_values[:max_distinct_values]
+            ]
+        if column_profile.get("min") is not None:
+            rendered["min"] = _short_text(column_profile["min"], limit=120)
+        if column_profile.get("max") is not None:
+            rendered["max"] = _short_text(column_profile["max"], limit=120)
+        if any(key in rendered for key in ("distinct_values", "min", "max")):
+            rendered_columns.append(rendered)
+        if len(rendered_columns) >= max_columns:
+            break
+
+    row_count = table_profile.get("row_count")
+    if row_count is None and not rendered_columns:
+        return None
+    return {
+        "row_count": row_count,
+        "columns": rendered_columns,
+    }
+
+
 def _function_identifier(function: dict[str, Any]) -> str:
     return str(function.get("identifier") or function.get("name") or function.get("function_name") or "").strip()
 
@@ -711,6 +792,13 @@ def _optimizer_context_pack(
         projected, col_summary = _asset_for_prompt(
             table, evidence_text, asset_type=asset_type, referenced=referenced,
         )
+        data_profile = _data_profile_for_prompt(
+            config.get("_proposal_data_profile") or config.get("_data_profile"),
+            projected["identifier"],
+            projected["columns"],
+        )
+        if data_profile is not None:
+            projected["data_profile"] = data_profile
         trial_assets = included_assets + [projected]
         context["space_context"]["assets"] = trial_assets
         if len(_pretty_json(context)) <= max_chars or referenced:
@@ -795,6 +883,15 @@ def _optimizer_context_pack(
             "included": len(included_join_specs),
             "omitted": omitted_join_specs,
         },
+        "data_profile": {
+            "profiled_assets": sum(
+                1 for asset in included_assets if asset.get("data_profile")
+            ),
+            "profiled_columns": sum(
+                len((asset.get("data_profile") or {}).get("columns") or [])
+                for asset in included_assets
+            ),
+        },
         "sql_snippets": snippet_summary,
         "instruction_sections": section_summary,
     }
@@ -822,6 +919,17 @@ def _optimizer_context_pack(
                 if isinstance(c, dict) and c.get("referenced_by_failures")
             ]
             asset["columns"] = cols[:25]
+            allowed_profile_columns = {
+                str(column.get("column_name") or "").strip().lower()
+                for column in asset["columns"]
+            }
+            if isinstance(asset.get("data_profile"), dict):
+                asset["data_profile"]["columns"] = [
+                    column
+                    for column in asset["data_profile"].get("columns") or []
+                    if str(column.get("column_name") or "").strip().lower()
+                    in allowed_profile_columns
+                ]
         context["space_context"]["join_specs"] = (context["space_context"].get("join_specs") or [])[:10]
         context_json = _pretty_json(context)
     if len(context_json) > max_chars:
@@ -871,6 +979,15 @@ def _optimizer_context_pack(
             "assets": len(context["space_context"]["assets"]),
             "functions": len(context["space_context"]["functions"]),
             "join_specs": len(context["space_context"]["join_specs"]),
+            "profiled_assets": sum(
+                1
+                for asset in context["space_context"]["assets"]
+                if asset.get("data_profile")
+            ),
+            "profiled_columns": sum(
+                len((asset.get("data_profile") or {}).get("columns") or [])
+                for asset in context["space_context"]["assets"]
+            ),
             "sql_snippets": sum(
                 len(v) for v in (context["space_context"].get("sql_snippets") or {}).values()
                 if isinstance(v, list)
@@ -2718,6 +2835,7 @@ def run_unified_optimization_loop(
         for runtime_key in (
             "_uc_columns",
             "_data_profile",
+            "_proposal_data_profile",
             "_rls_audit",
             "_asset_semantics",
             "_gso_top_level_description",

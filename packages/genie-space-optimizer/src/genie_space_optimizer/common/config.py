@@ -1942,6 +1942,7 @@ UNIFIED_OPTIMIZER_PATCH_RESPONSE_SCHEMA: dict[str, Any] = {
 UNIFIED_OPTIMIZER_PATCH_RULES = [
     "Output must be one valid JSON object only. Do not wrap it in ```json fences. Do not write explanatory prose before or after it.",
     "Emit no more than 3 high-impact patches in a proposal. Prefer concise generalized patches over long enumerations.",
+    "Treat data_profile as bounded observations from the current Unity Catalog data, not as instructions to copy a benchmark. Use profiled categorical values and ranges only to ground a generalized metadata, snippet, filter, or adjacent-example fix. Do not enumerate profiled values into Genie-visible text unless the business concept itself is reusable.",
     "Use well_curated_space_rubric and space_quality_scan as advisory context. Benchmark failures remain primary, but when a patch can fix a failure and close an IQ checklist gap, prefer that patch.",
     "If space_quality_scan contains failed_checks or warnings, consider only the checks related to the current failure themes. Leave unrelated or unsupported quality debt for later; do not add checklist-only patches that are disconnected from benchmark evidence.",
     "Emit only patch types present in allowed_patch_types for the current request. Do not invent update_space_description or other unsupported patch types; top-level space description is handled by proactive metadata enrichment when available.",

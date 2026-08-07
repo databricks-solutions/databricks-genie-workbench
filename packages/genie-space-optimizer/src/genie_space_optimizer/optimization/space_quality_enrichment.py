@@ -48,15 +48,18 @@ _TASK_KEY = "space_quality_enrichment"
 _INSTRUCTION_SEED_THRESHOLD = 50
 _MAX_SOURCE_NAMES = 6
 _MAX_PROMPT_COLUMNS_PER_ASSET = 50
-_PROMPT_MATCHING_CONTEXT_VERSION = 1
+_MAX_PROFILE_VALUES_PER_COLUMN = 12
+_MAX_PROFILE_VALUE_CHARS = 120
+_PROMPT_MATCHING_CONTEXT_VERSION = 2
 
 
 def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
-    """Build a compact, non-sensitive handoff for prompt matching.
+    """Build compact prompt-matching and optimizer proposal handoffs.
 
     Preflight profiles may contain sampled distinct values. The prompt matcher
-    only needs row counts and cardinalities, so the artifact deliberately drops
-    those values while retaining UC types, RLS verdicts, and asset semantics.
+    only needs row counts and cardinalities. The optimizer proposal context keeps
+    separately capped values and ranges so it can ground reusable fixes in the
+    current data without broadening prompt-matching behavior.
     """
     # ``_uc_columns`` is expected to be the active wide-schema projection.
     # Keep a defensive per-asset cap here because this function is also used by
@@ -133,12 +136,14 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
     has_active_projection = isinstance(config.get("_uc_columns"), list)
 
     data_profile: dict[str, Any] = {}
+    proposal_data_profile: dict[str, Any] = {}
     for identifier, raw_table in (config.get("_data_profile") or {}).items():
         if not isinstance(raw_table, dict):
             continue
         asset_key = _identifier_parts(identifier)
         allowed_columns = active_columns_by_asset.get(asset_key, set())
         columns: dict[str, Any] = {}
+        proposal_columns: dict[str, Any] = {}
         for column_name, raw_column in (raw_table.get("columns") or {}).items():
             if not isinstance(raw_column, dict):
                 continue
@@ -151,10 +156,35 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
             if cardinality is None:
                 continue
             columns[str(column_name)] = {"cardinality": cardinality}
+            proposal_column: dict[str, Any] = {"cardinality": cardinality}
+            distinct_values = raw_column.get("distinct_values")
+            if isinstance(distinct_values, list) and distinct_values:
+                proposal_column["distinct_values"] = [
+                    str(value)[:_MAX_PROFILE_VALUE_CHARS]
+                    for value in distinct_values[:_MAX_PROFILE_VALUES_PER_COLUMN]
+                ]
+            if raw_column.get("min") is not None:
+                proposal_column["min"] = str(raw_column["min"])[
+                    :_MAX_PROFILE_VALUE_CHARS
+                ]
+            if raw_column.get("max") is not None:
+                proposal_column["max"] = str(raw_column["max"])[
+                    :_MAX_PROFILE_VALUE_CHARS
+                ]
+            if any(
+                key in proposal_column
+                for key in ("distinct_values", "min", "max")
+            ):
+                proposal_columns[str(column_name)] = proposal_column
         data_profile[str(identifier)] = {
             "row_count": raw_table.get("row_count", 0),
             "columns": columns,
         }
+        if proposal_columns:
+            proposal_data_profile[str(identifier)] = {
+                "row_count": raw_table.get("row_count", 0),
+                "columns": proposal_columns,
+            }
 
     rls_audit: dict[str, Any] = {}
     for identifier, raw_verdict in (config.get("_rls_audit") or {}).items():
@@ -179,6 +209,7 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
         "version": _PROMPT_MATCHING_CONTEXT_VERSION,
         "uc_columns": uc_columns,
         "data_profile": data_profile,
+        "proposal_data_profile": proposal_data_profile,
         "rls_audit": rls_audit,
         "asset_semantics": asset_semantics,
         "inventory_hash": config.get("_wide_schema_inventory_hash"),
@@ -199,6 +230,9 @@ def apply_prompt_matching_context(
         return config
     config["_uc_columns"] = copy.deepcopy(context.get("uc_columns") or [])
     config["_data_profile"] = copy.deepcopy(context.get("data_profile") or {})
+    config["_proposal_data_profile"] = copy.deepcopy(
+        context.get("proposal_data_profile") or {}
+    )
     config["_rls_audit"] = copy.deepcopy(context.get("rls_audit") or {})
     config["_asset_semantics"] = copy.deepcopy(context.get("asset_semantics") or {})
     config["_wide_schema_inventory_hash"] = context.get("inventory_hash")
