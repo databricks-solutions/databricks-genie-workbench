@@ -38,6 +38,145 @@ def _eval_result() -> dict:
     }
 
 
+def _profiled_config() -> dict:
+    config = _config()
+    config["_proposal_data_profile"] = {
+        "cat.sch.orders": {
+            "row_count": 250,
+            "columns": {
+                "status": {
+                    "cardinality": 2,
+                    "distinct_values": ["ACTIVE", "CLOSED"],
+                },
+                "amount": {"min": "1.0", "max": "500.0"},
+            },
+        }
+    }
+    return config
+
+
+def test_profile_gate_drops_formula_like_unsupported_action_bundle() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "amount",
+                "new_text": "Use amount to identify the customer's preferred order.",
+            },
+            {
+                "type": "add_instruction",
+                "new_text": "Treat priorityId = 3 as an urgent order.",
+                "routing_evidence": [
+                    {
+                        "type": "structured_behavior",
+                        "reason": "This is a cross-cutting filter rule.",
+                    }
+                ],
+            },
+            {
+                "type": "add_join_spec",
+                "join_spec": {
+                    "left": {"identifier": "cat.sch.orders"},
+                    "right": {"identifier": "cat.sch.customers"},
+                    "sql": ["orders.customer_id = customers.customer_id"],
+                },
+            },
+            {
+                "type": "add_example_sql",
+                "example_question": "Which customers placed the largest orders?",
+                "example_sql": (
+                    "SELECT customer_id, MAX(amount) FROM orders GROUP BY customer_id"
+                ),
+                "usage_guidance": "Use for customer-level maximum order analysis.",
+                "source_failure_pattern": "customer order aggregation",
+                "affected_qids": ["q2"],
+                "semantic_delta_from_benchmark": "Uses a different aggregation shape.",
+                "why_not_benchmark_copy": "This is a novel generalized example.",
+            },
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert [patch["drop_reason"] for patch in dropped] == [
+        "profile_evidence_unsupported",
+        "profile_evidence_unsupported",
+        "profile_action_group_unsupported",
+        "profile_action_group_unsupported",
+    ]
+
+
+def test_profile_gate_keeps_directly_supported_categorical_guidance() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "add_instruction",
+                "new_text": (
+                    "Filter orders.status with the exact stored values: "
+                    "ACTIVE for open orders and CLOSED for closed orders."
+                ),
+                "routing_evidence": [
+                    {
+                        "type": "structured_behavior",
+                        "reason": "The same coded values apply across order questions.",
+                    }
+                ],
+            },
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "Stored values are ACTIVE and CLOSED.",
+            },
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert [patch["type"] for patch in kept] == [
+        "add_instruction",
+        "update_column_description",
+    ]
+
+
+def test_profile_gate_is_inactive_without_proposal_profile() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "add_join_spec",
+                "join_spec": {
+                    "left": {"identifier": "cat.sch.orders"},
+                    "right": {"identifier": "cat.sch.customers"},
+                    "sql": ["orders.customer_id = customers.customer_id"],
+                },
+            }
+        ],
+        current_config=_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert [patch["type"] for patch in kept] == ["add_join_spec"]
+
+
 def test_benchmark_question_copy_in_instruction_patch_is_dropped() -> None:
     patches = [
         {

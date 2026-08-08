@@ -1208,6 +1208,15 @@ _PROSE_LEAK_PATCH_FIELDS: dict[str, tuple[str, ...]] = {
     "update_example_sql": ("example_question", "example_sql", "sql", "new_text"),
 }
 
+_PROFILE_DIRECT_PATCH_TYPES: frozenset[str] = frozenset(
+    {
+        "update_column_description",
+        "add_instruction",
+        "update_instruction_section",
+        "add_sql_snippet_filter",
+    }
+)
+
 
 def _flatten_visible_values(value: Any) -> list[str]:
     if value is None:
@@ -1225,6 +1234,137 @@ def _flatten_visible_values(value: Any) -> list[str]:
             out.extend(_flatten_visible_values(item))
         return out
     return [str(value)]
+
+
+def _profile_support_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    profile = config.get("_proposal_data_profile")
+    if not isinstance(profile, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for table, table_profile in profile.items():
+        if not isinstance(table_profile, dict):
+            continue
+        columns = table_profile.get("columns")
+        if not isinstance(columns, dict):
+            continue
+        for column, column_profile in columns.items():
+            if not isinstance(column_profile, dict):
+                continue
+            distinct_values = [
+                str(value).strip()
+                for value in column_profile.get("distinct_values") or []
+                if str(value).strip()
+            ]
+            minimum = str(column_profile.get("min") or "").strip()
+            maximum = str(column_profile.get("max") or "").strip()
+            if not distinct_values and not (minimum and maximum):
+                continue
+            rows.append(
+                {
+                    "table": str(table).strip(),
+                    "column": str(column).strip(),
+                    "distinct_values": distinct_values,
+                    "min": minimum,
+                    "max": maximum,
+                }
+            )
+    return rows
+
+
+def _profile_patch_text(patch: dict[str, Any]) -> str:
+    fields_by_type = {
+        "update_column_description": ("new_text", "description", "structured_sections"),
+        "add_instruction": ("new_text", "proposed_value", "value"),
+        "update_instruction_section": ("new_text", "proposed_value", "value"),
+        "add_sql_snippet_filter": (
+            "sql",
+            "instruction",
+            "display_name",
+            "synonyms",
+        ),
+    }
+    values = [
+        visible
+        for field in fields_by_type.get(str(patch.get("type") or ""), ())
+        for visible in _flatten_visible_values(patch.get(field))
+    ]
+    return "\n".join(values).casefold()
+
+
+def _profile_column_mentioned(text: str, *, table: str, column: str) -> bool:
+    normalized_table = _normalized_identifier(table)
+    table_leaf = normalized_table.rsplit(".", 1)[-1]
+    normalized_column = _normalized_identifier(column)
+    aliases = {
+        normalized_column,
+        f"{table_leaf}.{normalized_column}",
+        f"{normalized_table}.{normalized_column}",
+    }
+    for alias in sorted(aliases, key=len, reverse=True):
+        if not alias:
+            continue
+        if re.search(rf"(?<![\w]){re.escape(alias)}(?![\w])", text):
+            return True
+    return False
+
+
+def _profile_observation_mentioned(text: str, support: dict[str, Any]) -> bool:
+    distinct_values = support.get("distinct_values") or []
+    if any(str(value).casefold() in text for value in distinct_values):
+        return True
+    minimum = str(support.get("min") or "").casefold()
+    maximum = str(support.get("max") or "").casefold()
+    return bool(minimum and maximum and minimum in text and maximum in text)
+
+
+def _validate_profile_supported_patch(
+    patch: dict[str, Any],
+    *,
+    current_config: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    support_rows = _profile_support_rows(current_config)
+    if not support_rows:
+        return patch, None
+
+    patch_type = str(patch.get("type") or "")
+    if patch_type not in _PROFILE_DIRECT_PATCH_TYPES:
+        dropped = dict(patch)
+        dropped["drop_reason"] = "profile_action_group_unsupported"
+        dropped["drop_detail"] = (
+            "Profile observations may only support a directly evidenced column "
+            "description, instruction, or filter snippet."
+        )
+        return None, dropped
+
+    text = _profile_patch_text(patch)
+    target_table = _normalized_identifier(
+        patch.get("table") or patch.get("target_table")
+    )
+    target_column = _normalized_identifier(patch.get("column"))
+    for support in support_rows:
+        support_table = _normalized_identifier(support["table"])
+        support_column = _normalized_identifier(support["column"])
+        if target_table and target_table != support_table:
+            continue
+        if target_column and target_column != support_column:
+            continue
+        structurally_targeted = bool(target_column)
+        if not structurally_targeted and not _profile_column_mentioned(
+            text,
+            table=support["table"],
+            column=support["column"],
+        ):
+            continue
+        if _profile_observation_mentioned(text, support):
+            return patch, None
+
+    dropped = dict(patch)
+    dropped["drop_reason"] = "profile_evidence_unsupported"
+    dropped["drop_detail"] = (
+        "Patch does not cite a profiled column together with its observed values "
+        "or complete observed range."
+    )
+    return None, dropped
 
 
 def _benchmark_forbidden_strings(
@@ -1799,6 +1939,17 @@ def _preapply_safety_screen(
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for patch in patches:
+        validated, validation_drop = _validate_profile_supported_patch(
+            patch,
+            current_config=current_config,
+        )
+        if validation_drop is not None:
+            dropped.append(validation_drop)
+            continue
+        if validated is None:
+            continue
+        patch = validated
+
         leaked, reason = _patch_has_benchmark_prose_leak(
             patch,
             prose_needles=prose_needles,
