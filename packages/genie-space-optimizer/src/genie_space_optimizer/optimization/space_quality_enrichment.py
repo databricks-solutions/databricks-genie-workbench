@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from genie_space_optimizer.common.config import (
+    PII_COLUMN_PATTERNS,
     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
     PROPAGATION_WAIT_SECONDS,
 )
@@ -123,7 +124,18 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
             break
         offset += 1
 
+    raw_columns_by_key = {
+        (
+            normalize_component(raw.get("catalog_name")),
+            normalize_component(raw.get("schema_name")),
+            normalize_component(raw.get("table_name")),
+            normalize_component(raw.get("column_name")),
+        ): raw
+        for raw in config.get("_uc_columns") or []
+        if isinstance(raw, dict)
+    }
     active_columns_by_asset: dict[tuple[str, str, str], set[str]] = {}
+    sensitive_columns_by_asset: dict[tuple[str, str, str], set[str]] = {}
     for column in uc_columns:
         asset_key = (
             normalize_component(column.get("catalog_name")),
@@ -133,7 +145,24 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
         column_name = normalize_component(column.get("column_name"))
         if all(asset_key) and column_name:
             active_columns_by_asset.setdefault(asset_key, set()).add(column_name)
+            raw_column = raw_columns_by_key.get((*asset_key, column_name), {})
+            description = " ".join(
+                str(raw_column.get(field) or "")
+                for field in ("comment", "description")
+            ).casefold()
+            if (
+                any(pattern in column_name for pattern in PII_COLUMN_PATTERNS)
+                or "pii" in description
+                or "sensitive" in description
+            ):
+                sensitive_columns_by_asset.setdefault(asset_key, set()).add(column_name)
     has_active_projection = isinstance(config.get("_uc_columns"), list)
+
+    rls_verdict_by_asset = {
+        _identifier_parts(identifier): str(raw_verdict.get("verdict") or "unknown")
+        for identifier, raw_verdict in (config.get("_rls_audit") or {}).items()
+        if isinstance(raw_verdict, dict)
+    }
 
     data_profile: dict[str, Any] = {}
     proposal_data_profile: dict[str, Any] = {}
@@ -142,6 +171,8 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
             continue
         asset_key = _identifier_parts(identifier)
         allowed_columns = active_columns_by_asset.get(asset_key, set())
+        sensitive_columns = sensitive_columns_by_asset.get(asset_key, set())
+        proposal_values_allowed = rls_verdict_by_asset.get(asset_key) == "clean"
         columns: dict[str, Any] = {}
         proposal_columns: dict[str, Any] = {}
         for column_name, raw_column in (raw_table.get("columns") or {}).items():
@@ -157,6 +188,11 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
                 continue
             columns[str(column_name)] = {"cardinality": cardinality}
             proposal_column: dict[str, Any] = {"cardinality": cardinality}
+            if (
+                not proposal_values_allowed
+                or normalize_component(column_name) in sensitive_columns
+            ):
+                continue
             distinct_values = raw_column.get("distinct_values")
             if isinstance(distinct_values, list) and distinct_values:
                 proposal_column["distinct_values"] = [

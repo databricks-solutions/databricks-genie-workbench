@@ -152,6 +152,141 @@ def test_profile_gate_keeps_directly_supported_categorical_guidance() -> None:
     ]
 
 
+def test_profile_gate_rejects_substring_and_inexact_range_evidence() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "Use INACTIVE for disabled orders.",
+            },
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "amount",
+                "new_text": "Observed amount range is 10.0 to 5000.0.",
+            },
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert [patch["drop_reason"] for patch in dropped] == [
+        "profile_evidence_unsupported",
+        "profile_evidence_unsupported",
+    ]
+
+
+def test_profile_gate_checks_filter_sql_not_explanatory_text() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "add_sql_snippet_filter",
+                "sql": "orders.status = 'INACTIVE'",
+                "instruction": "ACTIVE is an observed status value.",
+                "display_name": "Disabled orders",
+                "synonyms": ["disabled"],
+                "target_table": "cat.sch.orders",
+                "snippet_type": "filter",
+            }
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_requires_symbolic_values_to_be_quoted() -> None:
+    config = _profiled_config()
+    config["_proposal_data_profile"]["cat.sch.orders"]["columns"]["status"] = {
+        "cardinality": 1,
+        "distinct_values": ["="],
+    }
+
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "Use status = ACTIVE for active orders.",
+            },
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "The observed stored status is `=`.",
+            },
+        ],
+        current_config=config,
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert [patch["new_text"] for patch in kept] == [
+        "The observed stored status is `=`."
+    ]
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_keeps_validated_toxicology_symbol_mapping() -> None:
+    config = _profiled_config()
+    config["_proposal_data_profile"] = {
+        "cat.sch.bond": {
+            "row_count": 100,
+            "columns": {
+                "bond_type": {
+                    "cardinality": 3,
+                    "distinct_values": ["-", "=", "#"],
+                }
+            },
+        }
+    }
+    instruction = (
+        "bond.bond_type stores symbolic codes: single bond is '-', "
+        "double bond is '=', and triple bond is '#'."
+    )
+
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_instruction",
+            "new_text": instruction,
+            "routing_evidence": [{
+                "type": "structured_behavior",
+                "reason": "The same stored codes apply across bond questions.",
+            }],
+        }],
+        current_config=config,
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert kept[0]["new_text"] == instruction
+
+
 def test_profile_gate_is_inactive_without_proposal_profile() -> None:
     kept, dropped = _preapply_safety_screen(
         [

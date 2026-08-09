@@ -221,6 +221,72 @@ def test_failure_relevant_data_profile_is_included_and_bounded() -> None:
     assert stats["included_counts"]["profiled_columns"] == 2
 
 
+def test_optimizer_does_not_fall_back_to_raw_profile_values() -> None:
+    config = {
+        "data_sources": {"tables": [_table("orders", columns=["status"])]},
+        "instructions": {},
+        "_data_profile": {
+            "cat.sch.orders": {
+                "row_count": 2,
+                "columns": {
+                    "status": {
+                        "cardinality": 2,
+                        "distinct_values": ["ACTIVE", "CLOSED"],
+                    }
+                },
+            }
+        },
+    }
+
+    context, _stats, _text = _optimizer_context_pack(
+        config,
+        _eval("SELECT status FROM cat.sch.orders"),
+    )
+
+    assert "data_profile" not in context["space_context"]["assets"][0]
+
+
+def test_profile_compaction_honors_prompt_character_budget() -> None:
+    tables = [
+        _table(f"orders_{index}", columns=[f"status_{column}" for column in range(12)])
+        for index in range(8)
+    ]
+    profile = {
+        f"cat.sch.orders_{index}": {
+            "row_count": 1000,
+            "columns": {
+                f"status_{column}": {
+                    "cardinality": 12,
+                    "distinct_values": [
+                        f"value_{value}_" + ("x" * 100) for value in range(12)
+                    ],
+                }
+                for column in range(12)
+            },
+        }
+        for index in range(8)
+    }
+    config = {
+        "data_sources": {"tables": tables},
+        "instructions": {},
+        "_proposal_data_profile": profile,
+    }
+    referenced = ", ".join(
+        f"cat.sch.orders_{index}.status_{column}"
+        for index in range(8)
+        for column in range(12)
+    )
+
+    _context, stats, text = _optimizer_context_pack(
+        config,
+        _eval(f"SELECT {referenced}"),
+        max_chars=60_000,
+    )
+
+    assert len(text) <= 60_000
+    assert stats["prompt_context_chars"] <= 60_000
+
+
 def test_large_context_is_valid_json_with_omission_summary_and_no_raw_marker() -> None:
     config = {
         "description": "large config",

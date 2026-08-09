@@ -711,6 +711,131 @@ def _instruction_sections_for_prompt(
     }
 
 
+def _compact_profile_blocks(context: dict[str, Any], *, max_chars: int) -> str:
+    """Reduce sampled profile evidence before removing other prompt context."""
+    assets = context["space_context"].get("assets") or []
+    for value_cap in (4, 1):
+        for asset in assets:
+            profile = asset.get("data_profile") if isinstance(asset, dict) else None
+            if not isinstance(profile, dict):
+                continue
+            for column in profile.get("columns") or []:
+                if isinstance(column, dict) and isinstance(column.get("distinct_values"), list):
+                    column["distinct_values"] = column["distinct_values"][:value_cap]
+        context_json = _pretty_json(context)
+        if len(context_json) <= max_chars:
+            return context_json
+
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("data_profile"), dict):
+            continue
+        referenced_columns = {
+            str(column.get("column_name") or "").strip().casefold()
+            for column in asset.get("columns") or []
+            if isinstance(column, dict) and column.get("referenced_by_failures")
+        }
+        profile_columns = asset["data_profile"].get("columns") or []
+        asset["data_profile"]["columns"] = [
+            column
+            for column in profile_columns
+            if isinstance(column, dict)
+            and str(column.get("column_name") or "").strip().casefold()
+            in referenced_columns
+        ] or profile_columns[:1]
+    context_json = _pretty_json(context)
+    if len(context_json) <= max_chars:
+        return context_json
+
+    for asset in reversed(assets):
+        if isinstance(asset, dict):
+            asset.pop("data_profile", None)
+        context_json = _pretty_json(context)
+        if len(context_json) <= max_chars:
+            return context_json
+    return context_json
+
+
+def _enforce_prompt_budget(context: dict[str, Any], *, max_chars: int) -> str:
+    """Make the final JSON respect the configured hard prompt budget."""
+    def refresh_summary() -> None:
+        space_context = context["space_context"]
+        summary = context.get("omitted_context_summary") or {}
+        assets = space_context.get("assets") or []
+        functions = space_context.get("functions") or []
+        joins = space_context.get("join_specs") or []
+        if isinstance(summary.get("assets"), dict):
+            summary["assets"]["included"] = len(assets)
+            summary["assets"]["omitted"] = max(
+                0, int(summary["assets"].get("total") or 0) - len(assets)
+            )
+        if isinstance(summary.get("functions"), dict):
+            summary["functions"]["included"] = len(functions)
+            summary["functions"]["omitted"] = max(
+                0, int(summary["functions"].get("total") or 0) - len(functions)
+            )
+        if isinstance(summary.get("join_specs"), dict):
+            summary["join_specs"]["included"] = len(joins)
+            summary["join_specs"]["omitted"] = max(
+                0, int(summary["join_specs"].get("total") or 0) - len(joins)
+            )
+        if isinstance(summary.get("data_profile"), dict):
+            summary["data_profile"]["profiled_assets"] = sum(
+                1 for asset in assets if asset.get("data_profile")
+            )
+            summary["data_profile"]["profiled_columns"] = sum(
+                len((asset.get("data_profile") or {}).get("columns") or [])
+                for asset in assets
+            )
+
+    refresh_summary()
+    context_json = _pretty_json(context)
+    if len(context_json) <= max_chars:
+        return context_json
+
+    space_context = context["space_context"]
+    for key, empty in (
+        ("join_specs", []),
+        ("functions", []),
+        ("text_instruction_sections", []),
+        ("sql_snippets", {}),
+    ):
+        space_context[key] = empty
+        refresh_summary()
+        context_json = _pretty_json(context)
+        if len(context_json) <= max_chars:
+            return context_json
+
+    summary = context.get("omitted_context_summary") or {}
+    summary["columns_by_asset"] = {}
+    for section in ("assets", "functions"):
+        if isinstance(summary.get(section), dict):
+            summary[section]["omitted_identifiers"] = []
+    for section in ("sql_snippets", "instruction_sections"):
+        if isinstance(summary.get(section), dict):
+            summary[section]["omitted_sections"] = []
+            summary[section]["omitted_identifiers"] = []
+    context_json = _pretty_json(context)
+    if len(context_json) <= max_chars:
+        return context_json
+
+    assets = space_context.get("assets") or []
+    while assets and len(context_json) > max_chars:
+        assets.pop()
+        context_json = _pretty_json(context)
+    refresh_summary()
+
+    failures = (context.get("previous_eval") or {}).get("failures") or []
+    while failures and len(context_json) > max_chars:
+        failures.pop()
+        context_json = _pretty_json(context)
+
+    if len(context_json) > max_chars:
+        raise ValueError(
+            f"optimizer prompt context cannot fit max_chars={max_chars}"
+        )
+    return context_json
+
+
 def _optimizer_context_pack(
     config: dict[str, Any],
     eval_result: dict[str, Any],
@@ -793,7 +918,7 @@ def _optimizer_context_pack(
             table, evidence_text, asset_type=asset_type, referenced=referenced,
         )
         data_profile = _data_profile_for_prompt(
-            config.get("_proposal_data_profile") or config.get("_data_profile"),
+            config.get("_proposal_data_profile"),
             projected["identifier"],
             projected["columns"],
         )
@@ -898,6 +1023,8 @@ def _optimizer_context_pack(
 
     context_json = _pretty_json(context)
     if len(context_json) > max_chars:
+        context_json = _compact_profile_blocks(context, max_chars=max_chars)
+    if len(context_json) > max_chars:
         # Last-resort compaction keeps JSON valid by dropping non-referenced
         # optional context, never by slicing the serialized string.
         context["space_context"]["assets"] = [
@@ -969,7 +1096,7 @@ def _optimizer_context_pack(
         for fn in functions
         if _function_identifier(fn) not in final_function_ids
     ][:25]
-    context_json = _pretty_json(context)
+    context_json = _enforce_prompt_budget(context, max_chars=max_chars)
 
     stats = {
         "prompt_context_chars": len(context_json),
@@ -1291,6 +1418,12 @@ def _profile_patch_text(patch: dict[str, Any]) -> str:
     return "\n".join(values).casefold()
 
 
+def _profile_evidence_text(patch: dict[str, Any]) -> str:
+    if str(patch.get("type") or "") == "add_sql_snippet_filter":
+        return "\n".join(_flatten_visible_values(patch.get("sql"))).casefold()
+    return _profile_patch_text(patch)
+
+
 def _profile_column_mentioned(text: str, *, table: str, column: str) -> bool:
     normalized_table = _normalized_identifier(table)
     table_leaf = normalized_table.rsplit(".", 1)[-1]
@@ -1308,13 +1441,35 @@ def _profile_column_mentioned(text: str, *, table: str, column: str) -> bool:
     return False
 
 
+def _profile_literal_mentioned(text: str, value: Any) -> bool:
+    literal = str(value or "").strip().casefold()
+    if not literal:
+        return False
+    if not any(character.isalnum() for character in literal):
+        return any(
+            f"{quote}{literal}{quote}" in text
+            for quote in ("'", '"', "`")
+        )
+    return bool(
+        re.search(
+            rf"(?<![\w.]){re.escape(literal)}(?![\w.])",
+            text,
+        )
+    )
+
+
 def _profile_observation_mentioned(text: str, support: dict[str, Any]) -> bool:
     distinct_values = support.get("distinct_values") or []
-    if any(str(value).casefold() in text for value in distinct_values):
+    if any(_profile_literal_mentioned(text, value) for value in distinct_values):
         return True
-    minimum = str(support.get("min") or "").casefold()
-    maximum = str(support.get("max") or "").casefold()
-    return bool(minimum and maximum and minimum in text and maximum in text)
+    minimum = support.get("min")
+    maximum = support.get("max")
+    return bool(
+        str(minimum or "").strip()
+        and str(maximum or "").strip()
+        and _profile_literal_mentioned(text, minimum)
+        and _profile_literal_mentioned(text, maximum)
+    )
 
 
 def _validate_profile_supported_patch(
@@ -1326,6 +1481,9 @@ def _validate_profile_supported_patch(
     if not support_rows:
         return patch, None
 
+    # Proposal-profile mode is intentionally fail-closed for the whole patch
+    # set. Until other patch families have their own direct-evidence contract,
+    # benchmark context cannot be used to smuggle an unrelated profile action.
     patch_type = str(patch.get("type") or "")
     if patch_type not in _PROFILE_DIRECT_PATCH_TYPES:
         dropped = dict(patch)
@@ -1336,7 +1494,7 @@ def _validate_profile_supported_patch(
         )
         return None, dropped
 
-    text = _profile_patch_text(patch)
+    text = _profile_evidence_text(patch)
     target_table = _normalized_identifier(
         patch.get("table") or patch.get("target_table")
     )
