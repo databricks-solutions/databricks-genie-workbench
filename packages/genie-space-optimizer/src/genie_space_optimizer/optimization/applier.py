@@ -72,6 +72,7 @@ from genie_space_optimizer.optimization.applier_audit import (
     ApplierDecision,
     build_applier_decision,
 )
+from genie_space_optimizer.common.column_visibility import is_column_hidden
 
 logger = logging.getLogger(__name__)
 
@@ -1323,11 +1324,9 @@ def _semantic_measure_names(config: dict, identifier: str) -> set[str]:
 
 
 def _is_hidden(cc: dict) -> bool:
-    if cc.get("visible") is False:
-        return True
-    if cc.get("exclude") is True:
-        return True
-    return False
+    # Delegated to the shared visibility helper so the applier, IQ scan, and
+    # the SQL-generation / benchmark paths agree on what counts as hidden.
+    return is_column_hidden(cc)
 
 
 def _table_has_rls(tbl_dict: dict) -> bool:

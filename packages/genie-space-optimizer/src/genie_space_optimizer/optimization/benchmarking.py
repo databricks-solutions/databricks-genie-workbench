@@ -41,6 +41,8 @@ from genie_space_optimizer.common.config import (
     format_mlflow_template,
     scoring_v2_is_legacy,
 )
+from genie_space_optimizer.common.column_visibility import is_column_hidden
+from genie_space_optimizer.optimization.wide_schema import normalize_component
 
 from genie_space_optimizer.common.genie_client import (
     _extract_benchmark_sql_answer,
@@ -2386,14 +2388,81 @@ def _uc_column_table_candidates(row: dict) -> set[str]:
         candidates.update(_identifier_candidates(f"{schema_name}.{table_name}"))
     return {c for c in candidates if c}
 
+
+def _hidden_column_keys(config: dict) -> set[tuple[str, str, str, str]]:
+    """Return normalized ``(catalog, schema, table, column)`` keys for hidden columns.
+
+    A Genie Agent hides a column via ``exclude: true`` (or legacy
+    ``visible: false``) on its ``column_configs`` / ``columns`` entry. The
+    optimizer must keep such columns out of every LLM prompt allowlist and
+    the deterministic validation allowlist, otherwise it generates or accepts
+    SQL that references a column the Genie Agent is meant to keep hidden.
+
+    Keys are the precise 3-part identifier plus the normalized column name —
+    NOT the short-name candidates used for asset matching. Short-name keys
+    would collide across schemas (hiding ``sch1.orders.secret`` would also
+    drop a visible ``sch2.orders.secret``), so only the fully-qualified form is
+    used and UC rows are matched by their own 3-part key.
+    """
+    keys: set[tuple[str, str, str, str]] = set()
+    parsed = config.get("_parsed_space", config)
+    if not isinstance(parsed, dict):
+        return keys
+    ds = parsed.get("data_sources", {})
+    if not isinstance(ds, dict):
+        return keys
+    for source_key in ("tables", "metric_views"):
+        for asset in ds.get(source_key, []) or []:
+            if not isinstance(asset, dict):
+                continue
+            ident = str(asset.get("identifier") or "").replace("`", "").strip()
+            if not ident:
+                continue
+            parts = ident.split(".")
+            # Hidden-column filtering requires a 3-part identifier to match UC
+            # rows precisely. Non-3-part identifiers (rare/legacy) are skipped
+            # rather than fall back to short-name keys that could collide.
+            if len(parts) != 3:
+                continue
+            cat, sch, tbl = (normalize_component(p) for p in parts)
+            for cc in (asset.get("column_configs") or asset.get("columns") or []):
+                if not isinstance(cc, dict) or not is_column_hidden(cc):
+                    continue
+                col_name = str(cc.get("column_name") or cc.get("name") or "").strip()
+                if not col_name:
+                    continue
+                keys.add((cat, sch, tbl, normalize_component(col_name)))
+    return keys
+
+
 def _filter_uc_columns_to_space_assets(config: dict, uc_columns: list[dict]) -> list[dict]:
     allowed = _space_table_asset_candidates(config)
     if not allowed:
         return []
-    return [
-        col for col in uc_columns
-        if isinstance(col, dict) and (_uc_column_table_candidates(col) & allowed)
-    ]
+    hidden = _hidden_column_keys(config)
+    out: list[dict] = []
+    for col in uc_columns:
+        if not isinstance(col, dict):
+            continue
+        if not (_uc_column_table_candidates(col) & allowed):
+            continue
+        # Drop columns the Genie Agent hides so they never reach the LLM
+        # prompt allowlist or the deterministic validation allowlist. Match
+        # by the precise 3-part key so a hidden column in one schema cannot
+        # shadow a same-named visible column in another.
+        if hidden:
+            col_name = str(col.get("column_name") or col.get("column") or "").strip()
+            if col_name:
+                key = (
+                    normalize_component(col.get("catalog_name")),
+                    normalize_component(col.get("schema_name")),
+                    normalize_component(col.get("table_name") or col.get("table")),
+                    normalize_component(col_name),
+                )
+                if key in hidden:
+                    continue
+        out.append(col)
+    return out
 
 def _filter_uc_routines_to_space_functions(config: dict, uc_routines: list[dict]) -> list[dict]:
     allowed = _space_function_candidates(config)
@@ -2483,6 +2552,11 @@ def _build_schema_contexts(
         dimensions: list[str] = []
         for cc in mv.get("column_configs", []) or []:
             if not isinstance(cc, dict):
+                continue
+            # Hidden columns must not appear in the prompt's MV block any more
+            # than in the table column allowlist — skip them so the LLM never
+            # sees a hidden measure/dimension as available for SQL.
+            if is_column_hidden(cc):
                 continue
             col = cc.get("column_name", "")
             if not col:

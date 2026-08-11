@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+from genie_space_optimizer.common.column_visibility import is_column_hidden
+
 
 # First 10 checks are config checks; the last 2 are optimization checks.
 CONFIG_CHECK_COUNT = 10
@@ -115,7 +117,7 @@ def _visible_columns_for_table(table: dict) -> list[dict]:
     by_name: dict[str, dict] = {}
     unnamed: list[dict] = []
     for col in table.get("columns", []) + table.get("column_configs", []):
-        if col.get("exclude") is True:
+        if is_column_hidden(col):
             continue
         name = _column_name(col)
         if not name:

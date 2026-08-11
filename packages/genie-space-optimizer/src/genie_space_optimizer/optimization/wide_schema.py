@@ -16,6 +16,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from genie_space_optimizer.common.column_visibility import is_column_hidden
+
 SELECTOR_VERSION = "wide_schema_selector_v3"
 CONTRACT_VERSION = 1
 
@@ -369,6 +371,12 @@ def build_inventory(
             "constraint_roles": sorted(constraint_roles),
             "metric_role": metric_role,
             "ordinal": int(raw.get("ordinal_position") or raw.get("ordinal") or fallback_ordinal),
+            # Visibility is read from the serialized column config so the
+            # selection plan can keep hidden columns out of the prompt /
+            # profile working set. ``cfg`` is the matched column_config (or
+            # ``None`` when the column has no serialized config entry, in
+            # which case it is treated as visible).
+            "excluded": is_column_hidden(cfg),
         }
         if metric_role == "measure":
             column_payload["measure_expression"] = _metric_expression(
@@ -985,6 +993,9 @@ def build_selection_plan(
                 "structural_score": structural_score,
                 "reason_codes": reasons,
                 "structural_category": _structural_category(column),
+                # Carried from the inventory so selection can keep hidden
+                # columns out of the activatable working set.
+                "excluded": bool(column.get("excluded")),
             })
         ranked.sort(key=lambda item: (
             item["priority"],
@@ -1002,13 +1013,14 @@ def build_selection_plan(
         directly_required = [
             item for item in ranked
             if HARD_REQUIRED_REASONS & set(item["reason_codes"])
+            and not item.get("excluded")
         ]
         required_overflow_count = max(0, len(directly_required) - MAX_ACTIVE_COLUMNS_PER_ASSET)
         selected: list[dict[str, Any]] = directly_required[:MAX_ACTIVE_COLUMNS_PER_ASSET]
         selected_ids = {item["column_id"] for item in selected}
         if len(selected) < INITIAL_CORE_TARGET:
             for item in ranked:
-                if item["column_id"] in selected_ids or item["priority"] == 6:
+                if item["column_id"] in selected_ids or item["priority"] == 6 or item.get("excluded"):
                     continue
                 selected.append(item)
                 selected_ids.add(item["column_id"])
@@ -1016,7 +1028,7 @@ def build_selection_plan(
                     break
 
         exploration_slots = max(0, min(EXPLORATION_TARGET, INITIAL_ACTIVE_TARGET - len(selected)))
-        remaining = [item for item in ranked if item["column_id"] not in selected_ids]
+        remaining = [item for item in ranked if item["column_id"] not in selected_ids and not item.get("excluded")]
         chosen_categories = {item["structural_category"] for item in selected}
         def exploration_hash(item: dict[str, Any]) -> str:
             return hashlib.sha256(
@@ -1050,7 +1062,7 @@ def build_selection_plan(
         for item in ranked:
             if len(selected) >= minimum or len(selected) >= INITIAL_ACTIVE_TARGET:
                 break
-            if item["column_id"] not in selected_ids:
+            if item["column_id"] not in selected_ids and not item.get("excluded"):
                 selected.append(item)
                 selected_ids.add(item["column_id"])
 
@@ -1058,12 +1070,15 @@ def build_selection_plan(
         selected_ids = {item["column_id"] for item in selected}
         rows: list[dict[str, Any]] = []
         for item in ranked:
-            active = item["column_id"] in selected_ids
+            is_excluded = bool(item.get("excluded"))
+            # Hidden columns can never be activated, even if evidence ranked
+            # them as hard-required (e.g. a join key the Genie Agent hides).
+            active = (not is_excluded) and item["column_id"] in selected_ids
             rows.append({
                 **item,
                 "active": active,
                 "activation_reason": "initial_selection" if active else None,
-                "eviction_reason": None,
+                "eviction_reason": "hidden_column" if is_excluded else None,
                 "profile_status": "metadata_only" if active and item.get("metric_role") == "measure" else ("pending" if active else "not_selected"),
                 "available_metrics": [],
                 "cumulatively_value_profiled": False,
@@ -1219,6 +1234,15 @@ def revise_plan_for_column(
     _assets, columns = inventory_indexes(inventory)
     if column_key not in columns:
         raise ValueError(f"column is absent from full inventory: {render_identifier(column_key)}")
+    # Hidden columns can never be activated, even when failure text or a
+    # benchmark references them. Both callers
+    # (``unified_loop._reactivate_omitted`` and the benchmark QC job) catch
+    # ``ValueError`` and skip, so this guard keeps hidden columns out of the
+    # adaptive working set without disrupting the run.
+    if columns[column_key].get("excluded"):
+        raise ValueError(
+            f"cannot activate hidden column: {render_identifier(column_key)}"
+        )
     revised = copy.deepcopy(plan)
     parent_hash = revised.pop("plan_hash")
     revised["revision"] = int(revised.get("revision") or 0) + 1
