@@ -1,17 +1,33 @@
 """Spaces router - org-wide Genie Space listing with IQ scoring."""
 
 import asyncio
+import io
 import logging
+import zipfile
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 import json
 
 from backend.routers._validators import SpaceId
 
-from backend.services.auth import get_workspace_client, get_service_principal_client
-from backend.services.genie_client import list_genie_spaces, is_scope_error
+from backend.services.auth import (
+    get_workspace_client,
+    get_service_principal_client,
+    get_databricks_host,
+)
+from backend.services.genie_client import (
+    list_genie_spaces,
+    is_scope_error,
+    get_genie_space,
+)
+from backend.services.bundle_exporter import (
+    export_space_as_bundle,
+    pick_source_prefix,
+    table_identifiers,
+    _slug,
+)
 from backend.services.lakebase import (
     get_latest_score,
     get_latest_scores_batch,
@@ -160,6 +176,99 @@ async def get_space_detail(space_id: SpaceId) -> dict:
     except Exception as e:
         logger.exception(f"Failed to get space detail: {e}")
         raise HTTPException(status_code=500, detail="Failed to get space detail")
+
+
+@router.get("/spaces/{space_id}/export-bundle")
+async def export_bundle(
+    space_id: SpaceId,
+    prod_host: Optional[str] = Query(None, description="Optional prod target workspace host"),
+    prod_catalog: Optional[str] = Query(None, description="Optional prod target catalog"),
+    prod_schema: Optional[str] = Query(None, description="Optional prod target schema"),
+    prod_warehouse_id: Optional[str] = Query(None, description="Optional prod target warehouse ID"),
+):
+    """Export a Genie Space as a downloadable, parameterized Databricks Asset Bundle.
+
+    Fetches the space's ``serialized_space`` (via the user's OBO identity, so the
+    user must be able to read the space), rewrites every ``catalog.schema``
+    reference to ``${var.catalog}.${var.schema}``, and returns a .zip containing
+    ``databricks.yml``, ``resources/<key>.genie_space.yml``, and a README.
+
+    The ``dev`` target points back at this workspace + the space's own catalog/
+    schema/warehouse. Supplying the ``prod_*`` query params adds a second
+    ``prod`` target for cross-workspace promotion.
+    """
+    try:
+        # Fetch raw space (title, description, warehouse_id, serialized_space).
+        # get_genie_space handles the OBO->SP scope fallback internally.
+        try:
+            raw = await asyncio.to_thread(get_genie_space, space_id)
+        except Exception as e:
+            if "403" in str(e) or "permission" in str(e).lower():
+                raise HTTPException(status_code=403, detail="You do not have access to this space")
+            raise
+
+        serialized = raw.get("serialized_space")
+        if not serialized:
+            raise HTTPException(status_code=422, detail="Space has no serialized_space to export")
+        space = json.loads(serialized)
+
+        title = raw.get("title") or space_id
+        description = raw.get("description") or ""
+
+        # Detect the source catalog.schema prefix to parameterize away.
+        prefix = pick_source_prefix(space)
+        if prefix is None:
+            raise HTTPException(
+                status_code=422,
+                detail="No three-part (catalog.schema.table) references found — nothing to parameterize",
+            )
+        source_catalog, source_schema = prefix
+
+        # Surface multi-prefix spaces as a header rather than failing: the
+        # dominant prefix is parameterized; others are left as-is (the general
+        # multi-catalog mapping case is a future enhancement).
+        from backend.services.bundle_exporter import detect_prefixes
+        distinct = list(detect_prefixes(space))
+        multi_prefix = len(distinct) > 1
+
+        dev_host = get_databricks_host()
+        dev_warehouse_id = str(raw.get("warehouse_id") or "")
+
+        files = export_space_as_bundle(
+            space,
+            title=title,
+            description=description,
+            source_catalog=source_catalog,
+            source_schema=source_schema,
+            dev_host=dev_host,
+            dev_warehouse_id=dev_warehouse_id,
+            prod_host=prod_host,
+            prod_catalog=prod_catalog,
+            prod_schema=prod_schema,
+            prod_warehouse_id=prod_warehouse_id,
+        )
+
+        # Build the zip in memory.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for rel_path, contents in files.items():
+                zf.writestr(rel_path, contents)
+        buf.seek(0)
+
+        zip_name = f"{_slug(title, 'genie_space')}_bundle.zip"
+        headers = {
+            "Content-Disposition": f'attachment; filename="{zip_name}"',
+            "X-Export-Tables": str(len(table_identifiers(space))),
+            "X-Export-Source-Prefix": f"{source_catalog}.{source_schema}",
+            "X-Export-Multi-Prefix": "true" if multi_prefix else "false",
+        }
+        return Response(content=buf.getvalue(), media_type="application/zip", headers=headers)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to export bundle for {space_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to export bundle")
 
 
 @router.post("/spaces/{space_id}/scan")

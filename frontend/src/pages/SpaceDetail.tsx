@@ -3,8 +3,8 @@
  * Tabs: Score (default) | Optimize | History
  */
 import { useState, useEffect, useRef } from "react"
-import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
-import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw, Package } from "lucide-react"
+import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace, exportSpaceBundle } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
 import { IQScoreTab } from "./IQScoreTab"
@@ -12,6 +12,17 @@ import { HistoryTab } from "./HistoryTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
+import { Input } from "@/components/ui/input"
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog"
 
 type Tab = "score" | "optimize" | "history"
 const VALID_TABS: readonly string[] = ["score", "optimize", "history"]
@@ -37,6 +48,16 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
   const [configExpanded, setConfigExpanded] = useState(false)
+
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportMsg, setExportMsg] = useState<string | null>(null)
+  // Export-as-bundle dialog: collects the optional prod-target details that get
+  // baked into the bundle's databricks.yml. Leave them blank for a dev-only bundle.
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
+  const [prodHost, setProdHost] = useState("")
+  const [prodCatalog, setProdCatalog] = useState("")
+  const [prodSchema, setProdSchema] = useState("")
+  const [prodWarehouseId, setProdWarehouseId] = useState("")
 
   const { state, actions } = useAnalysis()
 
@@ -105,6 +126,48 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
       await toggleStar(spaceId, newStarred)
     } catch {
       setIsStarred(!newStarred)
+    }
+  }
+
+  // How many of the four prod fields are filled — used to enforce all-or-nothing.
+  const prodFilledCount = [prodHost, prodCatalog, prodSchema, prodWarehouseId].filter(
+    (v) => v.trim()
+  ).length
+
+  const handleExportBundle = async () => {
+    // Prod target is all-or-nothing: either supply all four or none (dev-only).
+    if (prodFilledCount > 0 && prodFilledCount < 4) {
+      setExportMsg("Fill in all four prod fields, or leave them all blank for a dev-only bundle.")
+      return
+    }
+    setIsExporting(true)
+    setExportMsg(null)
+    try {
+      const hasProd = prodFilledCount === 4
+      const { tables, multiPrefix } = await exportSpaceBundle(
+        spaceId,
+        hasProd
+          ? {
+              prodHost: prodHost.trim(),
+              prodCatalog: prodCatalog.trim(),
+              prodSchema: prodSchema.trim(),
+              prodWarehouseId: prodWarehouseId.trim(),
+            }
+          : undefined
+      )
+      const target = hasProd ? "dev + prod targets" : "dev target only"
+      setExportMsg(
+        multiPrefix
+          ? `Exported ${tables} tables (${target}). Note: multiple catalog.schema prefixes detected — only the dominant one was parameterized.`
+          : `Exported ${tables} tables (${target}).`
+      )
+      setExportDialogOpen(false)
+    } catch (e) {
+      console.error("Export failed:", e)
+      setExportMsg(e instanceof Error ? `Export failed: ${e.message}` : "Export failed")
+    } finally {
+      setIsExporting(false)
+      setTimeout(() => setExportMsg(null), 8000)
     }
   }
 
@@ -186,7 +249,96 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
             <button onClick={handleToggleStar}>
               <Star className={`w-5 h-5 ${isStarred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"} transition-colors`} />
             </button>
+            <button
+              onClick={() => { setExportMsg(null); setExportDialogOpen(true) }}
+              title="Export this space as a parameterized Databricks Asset Bundle (.zip)"
+              className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-default text-sm font-medium text-secondary hover:bg-surface-secondary hover:text-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Package className="w-4 h-4" />
+              Export as bundle
+            </button>
           </div>
+          {exportMsg && (
+            <div className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-surface-secondary text-secondary border border-default">
+              {exportMsg}
+            </div>
+          )}
+
+          <AlertDialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Export as Databricks Asset Bundle</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Downloads a <code>.zip</code> bundle with every table reference
+                  parameterized as <code>${'{'}var.catalog{'}'}.${'{'}var.schema{'}'}</code>. The
+                  <strong> dev</strong> target points back at this workspace automatically.
+                  To make the bundle deployable to another workspace, fill in the
+                  <strong> prod</strong> target below — all four fields, or leave them all
+                  blank for a dev-only bundle.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+
+              <div className="mt-4 space-y-3 text-left">
+                <div>
+                  <label className="text-sm font-medium text-secondary">Prod workspace host</label>
+                  <Input
+                    value={prodHost}
+                    onChange={(e) => setProdHost(e.target.value)}
+                    placeholder="https://your-prod-workspace.cloud.databricks.com"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-sm font-medium text-secondary">Prod catalog</label>
+                    <Input
+                      value={prodCatalog}
+                      onChange={(e) => setProdCatalog(e.target.value)}
+                      placeholder="prod_catalog"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-secondary">Prod schema</label>
+                    <Input
+                      value={prodSchema}
+                      onChange={(e) => setProdSchema(e.target.value)}
+                      placeholder="prod_schema"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-secondary">Prod SQL warehouse ID</label>
+                  <Input
+                    value={prodWarehouseId}
+                    onChange={(e) => setProdWarehouseId(e.target.value)}
+                    placeholder="0123456789abcdef"
+                  />
+                </div>
+                <p className="text-xs text-muted">
+                  Genie Workbench runs in one workspace, so it can&apos;t deploy across a
+                  boundary itself. It generates the bundle; you deploy it to the prod
+                  workspace with <code>databricks bundle deploy -t prod</code> using your own
+                  prod credentials. The included README has the exact steps.
+                </p>
+              </div>
+
+              <AlertDialogFooter>
+                <AlertDialogCancel onClick={() => setExportDialogOpen(false)} disabled={isExporting}>
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={handleExportBundle}
+                  disabled={isExporting}
+                  className="disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isExporting
+                    ? "Exporting…"
+                    : prodFilledCount === 4
+                    ? "Export dev + prod bundle"
+                    : "Export dev-only bundle"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           <div className="flex items-center gap-3 mt-2">
             {scanResult ? (
               <>

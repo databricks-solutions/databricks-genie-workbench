@@ -216,6 +216,77 @@ export async function scanSpace(spaceId: string): Promise<ScanResult> {
   )
 }
 
+/**
+ * Optional prod-target details for {@link exportSpaceBundle}. When all four are
+ * supplied, the generated bundle gets a second `prod` target pointing at that
+ * workspace; when omitted, the bundle is dev-only (a code backup of the space).
+ */
+export interface ExportProdTarget {
+  prodHost?: string
+  prodCatalog?: string
+  prodSchema?: string
+  prodWarehouseId?: string
+}
+
+/**
+ * Export a Genie Space as a parameterized Databricks Asset Bundle (.zip) and
+ * trigger a browser download. Returns lightweight metadata surfaced from the
+ * response headers (table count, detected source prefix, multi-prefix flag).
+ *
+ * Pass `prod` details to bake a deployable `prod` target into the bundle's
+ * databricks.yml. The backend only emits the prod target when all four values
+ * are present, so partial input is treated as dev-only.
+ *
+ * Unlike the other helpers, this reads a binary blob rather than JSON, so it
+ * uses fetch directly instead of fetchWithTimeout.
+ */
+export async function exportSpaceBundle(
+  spaceId: string,
+  prod?: ExportProdTarget
+): Promise<{
+  filename: string
+  tables: number
+  sourcePrefix: string
+  multiPrefix: boolean
+}> {
+  const query = new URLSearchParams()
+  if (prod?.prodHost) query.set("prod_host", prod.prodHost)
+  if (prod?.prodCatalog) query.set("prod_catalog", prod.prodCatalog)
+  if (prod?.prodSchema) query.set("prod_schema", prod.prodSchema)
+  if (prod?.prodWarehouseId) query.set("prod_warehouse_id", prod.prodWarehouseId)
+  const qs = query.toString()
+  const response = await fetch(
+    `${API_BASE}/spaces/${spaceId}/export-bundle${qs ? `?${qs}` : ""}`
+  )
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    const message = extractDetailMessage(error.detail, "Failed to export bundle")
+    throw new ApiError(message, response.status)
+  }
+
+  // Derive the filename from Content-Disposition, fall back to a sane default.
+  const disposition = response.headers.get("Content-Disposition") || ""
+  const match = disposition.match(/filename="?([^"]+)"?/)
+  const filename = match ? match[1] : `${spaceId}_bundle.zip`
+
+  const tables = Number(response.headers.get("X-Export-Tables") || "0")
+  const sourcePrefix = response.headers.get("X-Export-Source-Prefix") || ""
+  const multiPrefix = response.headers.get("X-Export-Multi-Prefix") === "true"
+
+  // Trigger the download.
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+
+  return { filename, tables, sourcePrefix, multiPrefix }
+}
+
 export async function getSpaceHistory(spaceId: string, days = 30): Promise<SpaceHistory> {
   return fetchWithTimeout<SpaceHistory>(
     `${API_BASE}/spaces/${spaceId}/history?days=${days}`,
