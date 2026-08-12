@@ -307,6 +307,7 @@ try:
     )
     _uc_columns = ctx_uc["uc_columns"]
     _uc_tags = ctx_uc["uc_tags"]
+    _config["_uc_tags"] = _uc_tags
     _uc_routines = ctx_uc["uc_routines"]
     _deterministic_uc_columns = project_full_inventory(_wide_schema_inventory)
 

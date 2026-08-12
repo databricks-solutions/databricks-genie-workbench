@@ -167,7 +167,7 @@ def test_scan_input_scores_top_level_description_without_mutating_serialized_spa
     assert raw["_parsed_space"] == parsed_before
 
 
-def test_prompt_matching_context_drops_profile_values() -> None:
+def test_prompt_matching_context_keeps_bounded_proposal_values() -> None:
     context = sqe.build_prompt_matching_context({
         "_uc_columns": [{
             "catalog_name": "main",
@@ -212,10 +212,22 @@ def test_prompt_matching_context_drops_profile_values() -> None:
             "columns": {"region": {"cardinality": 4}},
         },
     }
+    assert context["proposal_data_profile"] == {
+        "main.sales.orders": {
+            "row_count": 100,
+            "columns": {
+                "region": {
+                    "cardinality": 4,
+                    "distinct_values": ["East", "West"],
+                    "min": "East",
+                    "max": "West",
+                },
+            },
+        },
+    }
     assert context["rls_audit"] == {
         "main.sales.orders": {"verdict": "clean"},
     }
-    assert "East" not in str(context)
 
 
 def test_prompt_matching_context_drops_inactive_profile_columns() -> None:
@@ -244,6 +256,132 @@ def test_prompt_matching_context_drops_inactive_profile_columns() -> None:
             "columns": {"region": {"cardinality": 4}},
         },
     }
+    assert context["proposal_data_profile"] == {}
+
+
+def test_prompt_matching_context_caps_proposal_values() -> None:
+    context = sqe.build_prompt_matching_context({
+        "_uc_columns": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "orders",
+            "column_name": "status",
+            "data_type": "STRING",
+        }],
+        "_data_profile": {
+            "main.sales.orders": {
+                "row_count": 20,
+                "columns": {
+                    "status": {
+                        "cardinality": 20,
+                        "distinct_values": ["x" * 200] + [
+                            f"status_{index}" for index in range(20)
+                        ],
+                    },
+                },
+            },
+        },
+        "_rls_audit": {"main.sales.orders": {"verdict": "clean"}},
+    })
+
+    values = context["proposal_data_profile"]["main.sales.orders"]["columns"][
+        "status"
+    ]["distinct_values"]
+    assert len(values) == 12
+    assert len(values[0]) == 120
+
+
+def test_prompt_matching_context_excludes_values_without_clean_rls() -> None:
+    base = {
+        "_uc_columns": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "orders",
+            "column_name": "status",
+            "data_type": "STRING",
+        }],
+        "_data_profile": {
+            "main.sales.orders": {
+                "row_count": 2,
+                "columns": {
+                    "status": {
+                        "cardinality": 2,
+                        "distinct_values": ["ACTIVE", "CLOSED"],
+                    }
+                },
+            }
+        },
+    }
+
+    unknown = sqe.build_prompt_matching_context(base)
+    tainted = sqe.build_prompt_matching_context({
+        **base,
+        "_rls_audit": {"main.sales.orders": {"verdict": "tainted"}},
+    })
+
+    assert unknown["proposal_data_profile"] == {}
+    assert tainted["proposal_data_profile"] == {}
+
+
+def test_prompt_matching_context_excludes_sensitive_column_values() -> None:
+    context = sqe.build_prompt_matching_context({
+        "_uc_columns": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "customers",
+            "column_name": "customer_email",
+            "data_type": "STRING",
+            "comment": "Customer email address",
+        }],
+        "_data_profile": {
+            "main.sales.customers": {
+                "row_count": 1,
+                "columns": {
+                    "customer_email": {
+                        "cardinality": 1,
+                        "distinct_values": ["person@example.com"],
+                    }
+                },
+            }
+        },
+        "_rls_audit": {"main.sales.customers": {"verdict": "clean"}},
+    })
+
+    assert context["proposal_data_profile"] == {}
+
+
+def test_prompt_matching_context_excludes_governed_sensitive_column_values() -> None:
+    context = sqe.build_prompt_matching_context({
+        "_uc_columns": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "customers",
+            "column_name": "contact",
+            "data_type": "STRING",
+        }],
+        "_uc_tags": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "customers",
+            "column_name": "contact",
+            "tag_name": "classification",
+            "tag_value": "PII",
+        }],
+        "_data_profile": {
+            "main.sales.customers": {
+                "row_count": 1,
+                "columns": {
+                    "contact": {
+                        "cardinality": 1,
+                        "distinct_values": ["person@example.com"],
+                    }
+                },
+            }
+        },
+        "_rls_audit": {"main.sales.customers": {"verdict": "clean"}},
+    })
+
+    assert context["proposal_data_profile"] == {}
 
 
 def test_active_enrichment_applies_and_audits_prompt_matching(monkeypatch) -> None:

@@ -314,7 +314,7 @@ def get_tags_for_tables(
     spark: "SparkSession",
     refs: list[tuple[str, str, str]],
 ) -> "DataFrame":
-    """Fetch tags only for the specific tables referenced by a Genie Agent."""
+    """Fetch table and column tags for the referenced Genie Agent tables."""
     schema_groups: dict[tuple[str, str], list[str]] = {}
     for cat, sch, tbl in refs:
         if cat and sch and tbl:
@@ -323,10 +323,15 @@ def get_tags_for_tables(
     unions: list[str] = []
     for (cat, sch), tables in schema_groups.items():
         safe_tables = ", ".join(f"'{t.replace(chr(39), chr(39)+chr(39))}'" for t in tables)
-        unions.append(
-            f"SELECT * FROM {cat}.information_schema.table_tags "
-            f"WHERE schema_name = '{sch}' AND table_name IN ({safe_tables})"
-        )
+        unions.extend([
+            f"SELECT catalog_name, schema_name, table_name, "
+            f"CAST(NULL AS STRING) AS column_name, tag_name, tag_value "
+            f"FROM {cat}.information_schema.table_tags "
+            f"WHERE schema_name = '{sch}' AND table_name IN ({safe_tables})",
+            f"SELECT catalog_name, schema_name, table_name, column_name, "
+            f"tag_name, tag_value FROM {cat}.information_schema.column_tags "
+            f"WHERE schema_name = '{sch}' AND table_name IN ({safe_tables})",
+        ])
     if not unions:
         return spark.sql("SELECT CAST(NULL AS STRING) AS schema_name WHERE 1=0")
     return spark.sql(" UNION ALL ".join(unions))
@@ -453,12 +458,17 @@ def get_columns(spark: SparkSession, catalog: str, schema: str) -> DataFrame:
 
 
 def get_tags(spark: SparkSession, catalog: str, schema: str) -> DataFrame:
-    """Fetch table tags from ``information_schema.table_tags``.
+    """Fetch table and column tags from ``information_schema``.
 
-    Returns all columns from the ``table_tags`` view filtered to the given schema.
+    Table-level rows have a null ``column_name``.
     """
     return spark.sql(
-        f"SELECT * FROM {catalog}.information_schema.table_tags "
+        f"SELECT catalog_name, schema_name, table_name, "
+        f"CAST(NULL AS STRING) AS column_name, tag_name, tag_value "
+        f"FROM {catalog}.information_schema.table_tags "
+        f"WHERE schema_name = '{schema}' UNION ALL "
+        f"SELECT catalog_name, schema_name, table_name, column_name, "
+        f"tag_name, tag_value FROM {catalog}.information_schema.column_tags "
         f"WHERE schema_name = '{schema}'"
     )
 

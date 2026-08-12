@@ -529,6 +529,87 @@ def _asset_for_prompt(
     }, column_summary
 
 
+def _normalized_identifier(value: Any) -> str:
+    return str(value or "").replace("`", "").strip().lower()
+
+
+def _data_profile_for_prompt(
+    profile: Any,
+    identifier: str,
+    prompt_columns: list[dict[str, Any]],
+    *,
+    max_columns: int = 12,
+    max_distinct_values: int = 12,
+) -> dict[str, Any] | None:
+    if not isinstance(profile, dict):
+        return None
+
+    normalized_identifier = _normalized_identifier(identifier)
+    matches = [
+        value
+        for key, value in profile.items()
+        if _normalized_identifier(key) == normalized_identifier and isinstance(value, dict)
+    ]
+    if not matches:
+        leaf = normalized_identifier.rsplit(".", 1)[-1]
+        leaf_matches = [
+            value
+            for key, value in profile.items()
+            if _normalized_identifier(key).rsplit(".", 1)[-1] == leaf
+            and isinstance(value, dict)
+        ]
+        if len(leaf_matches) == 1:
+            matches = leaf_matches
+    if len(matches) != 1:
+        return None
+
+    table_profile = matches[0]
+    raw_columns = table_profile.get("columns")
+    if not isinstance(raw_columns, dict):
+        raw_columns = {}
+    profile_columns = {
+        str(name).strip().lower(): (str(name).strip(), value)
+        for name, value in raw_columns.items()
+        if str(name).strip() and isinstance(value, dict)
+    }
+    ordered_prompt_columns = sorted(
+        (column for column in prompt_columns if isinstance(column, dict)),
+        key=lambda column: not bool(column.get("referenced_by_failures")),
+    )
+    rendered_columns: list[dict[str, Any]] = []
+    for prompt_column in ordered_prompt_columns:
+        column_name = str(prompt_column.get("column_name") or "").strip()
+        match = profile_columns.get(column_name.lower())
+        if not match:
+            continue
+        source_name, column_profile = match
+        rendered: dict[str, Any] = {"column_name": source_name}
+        if column_profile.get("cardinality") is not None:
+            rendered["cardinality"] = column_profile["cardinality"]
+        distinct_values = column_profile.get("distinct_values")
+        if isinstance(distinct_values, list) and distinct_values:
+            rendered["distinct_values"] = [
+                _short_text(value, limit=120)
+                for value in distinct_values[:max_distinct_values]
+            ]
+        if column_profile.get("min") is not None:
+            rendered["min"] = _short_text(column_profile["min"], limit=120)
+        if column_profile.get("max") is not None:
+            rendered["max"] = _short_text(column_profile["max"], limit=120)
+        if any(key in rendered for key in ("distinct_values", "min", "max")):
+            rendered_columns.append(rendered)
+        if len(rendered_columns) >= max_columns:
+            break
+
+    row_count = table_profile.get("row_count")
+    if row_count is None and not rendered_columns:
+        return None
+    return {
+        "row_count": row_count,
+        "columns": rendered_columns,
+    }
+
+
 def _function_identifier(function: dict[str, Any]) -> str:
     return str(function.get("identifier") or function.get("name") or function.get("function_name") or "").strip()
 
@@ -630,6 +711,131 @@ def _instruction_sections_for_prompt(
     }
 
 
+def _compact_profile_blocks(context: dict[str, Any], *, max_chars: int) -> str:
+    """Reduce sampled profile evidence before removing other prompt context."""
+    assets = context["space_context"].get("assets") or []
+    for value_cap in (4, 1):
+        for asset in assets:
+            profile = asset.get("data_profile") if isinstance(asset, dict) else None
+            if not isinstance(profile, dict):
+                continue
+            for column in profile.get("columns") or []:
+                if isinstance(column, dict) and isinstance(column.get("distinct_values"), list):
+                    column["distinct_values"] = column["distinct_values"][:value_cap]
+        context_json = _pretty_json(context)
+        if len(context_json) <= max_chars:
+            return context_json
+
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("data_profile"), dict):
+            continue
+        referenced_columns = {
+            str(column.get("column_name") or "").strip().casefold()
+            for column in asset.get("columns") or []
+            if isinstance(column, dict) and column.get("referenced_by_failures")
+        }
+        profile_columns = asset["data_profile"].get("columns") or []
+        asset["data_profile"]["columns"] = [
+            column
+            for column in profile_columns
+            if isinstance(column, dict)
+            and str(column.get("column_name") or "").strip().casefold()
+            in referenced_columns
+        ] or profile_columns[:1]
+    context_json = _pretty_json(context)
+    if len(context_json) <= max_chars:
+        return context_json
+
+    for asset in reversed(assets):
+        if isinstance(asset, dict):
+            asset.pop("data_profile", None)
+        context_json = _pretty_json(context)
+        if len(context_json) <= max_chars:
+            return context_json
+    return context_json
+
+
+def _enforce_prompt_budget(context: dict[str, Any], *, max_chars: int) -> str:
+    """Make the final JSON respect the configured hard prompt budget."""
+    def refresh_summary() -> None:
+        space_context = context["space_context"]
+        summary = context.get("omitted_context_summary") or {}
+        assets = space_context.get("assets") or []
+        functions = space_context.get("functions") or []
+        joins = space_context.get("join_specs") or []
+        if isinstance(summary.get("assets"), dict):
+            summary["assets"]["included"] = len(assets)
+            summary["assets"]["omitted"] = max(
+                0, int(summary["assets"].get("total") or 0) - len(assets)
+            )
+        if isinstance(summary.get("functions"), dict):
+            summary["functions"]["included"] = len(functions)
+            summary["functions"]["omitted"] = max(
+                0, int(summary["functions"].get("total") or 0) - len(functions)
+            )
+        if isinstance(summary.get("join_specs"), dict):
+            summary["join_specs"]["included"] = len(joins)
+            summary["join_specs"]["omitted"] = max(
+                0, int(summary["join_specs"].get("total") or 0) - len(joins)
+            )
+        if isinstance(summary.get("data_profile"), dict):
+            summary["data_profile"]["profiled_assets"] = sum(
+                1 for asset in assets if asset.get("data_profile")
+            )
+            summary["data_profile"]["profiled_columns"] = sum(
+                len((asset.get("data_profile") or {}).get("columns") or [])
+                for asset in assets
+            )
+
+    refresh_summary()
+    context_json = _pretty_json(context)
+    if len(context_json) <= max_chars:
+        return context_json
+
+    space_context = context["space_context"]
+    for key, empty in (
+        ("join_specs", []),
+        ("functions", []),
+        ("text_instruction_sections", []),
+        ("sql_snippets", {}),
+    ):
+        space_context[key] = empty
+        refresh_summary()
+        context_json = _pretty_json(context)
+        if len(context_json) <= max_chars:
+            return context_json
+
+    summary = context.get("omitted_context_summary") or {}
+    summary["columns_by_asset"] = {}
+    for section in ("assets", "functions"):
+        if isinstance(summary.get(section), dict):
+            summary[section]["omitted_identifiers"] = []
+    for section in ("sql_snippets", "instruction_sections"):
+        if isinstance(summary.get(section), dict):
+            summary[section]["omitted_sections"] = []
+            summary[section]["omitted_identifiers"] = []
+    context_json = _pretty_json(context)
+    if len(context_json) <= max_chars:
+        return context_json
+
+    assets = space_context.get("assets") or []
+    while assets and len(context_json) > max_chars:
+        assets.pop()
+        context_json = _pretty_json(context)
+    refresh_summary()
+
+    failures = (context.get("previous_eval") or {}).get("failures") or []
+    while failures and len(context_json) > max_chars:
+        failures.pop()
+        context_json = _pretty_json(context)
+
+    if len(context_json) > max_chars:
+        raise ValueError(
+            f"optimizer prompt context cannot fit max_chars={max_chars}"
+        )
+    return context_json
+
+
 def _optimizer_context_pack(
     config: dict[str, Any],
     eval_result: dict[str, Any],
@@ -711,6 +917,13 @@ def _optimizer_context_pack(
         projected, col_summary = _asset_for_prompt(
             table, evidence_text, asset_type=asset_type, referenced=referenced,
         )
+        data_profile = _data_profile_for_prompt(
+            config.get("_proposal_data_profile"),
+            projected["identifier"],
+            projected["columns"],
+        )
+        if data_profile is not None:
+            projected["data_profile"] = data_profile
         trial_assets = included_assets + [projected]
         context["space_context"]["assets"] = trial_assets
         if len(_pretty_json(context)) <= max_chars or referenced:
@@ -795,11 +1008,22 @@ def _optimizer_context_pack(
             "included": len(included_join_specs),
             "omitted": omitted_join_specs,
         },
+        "data_profile": {
+            "profiled_assets": sum(
+                1 for asset in included_assets if asset.get("data_profile")
+            ),
+            "profiled_columns": sum(
+                len((asset.get("data_profile") or {}).get("columns") or [])
+                for asset in included_assets
+            ),
+        },
         "sql_snippets": snippet_summary,
         "instruction_sections": section_summary,
     }
 
     context_json = _pretty_json(context)
+    if len(context_json) > max_chars:
+        context_json = _compact_profile_blocks(context, max_chars=max_chars)
     if len(context_json) > max_chars:
         # Last-resort compaction keeps JSON valid by dropping non-referenced
         # optional context, never by slicing the serialized string.
@@ -822,6 +1046,17 @@ def _optimizer_context_pack(
                 if isinstance(c, dict) and c.get("referenced_by_failures")
             ]
             asset["columns"] = cols[:25]
+            allowed_profile_columns = {
+                str(column.get("column_name") or "").strip().lower()
+                for column in asset["columns"]
+            }
+            if isinstance(asset.get("data_profile"), dict):
+                asset["data_profile"]["columns"] = [
+                    column
+                    for column in asset["data_profile"].get("columns") or []
+                    if str(column.get("column_name") or "").strip().lower()
+                    in allowed_profile_columns
+                ]
         context["space_context"]["join_specs"] = (context["space_context"].get("join_specs") or [])[:10]
         context_json = _pretty_json(context)
     if len(context_json) > max_chars:
@@ -861,7 +1096,7 @@ def _optimizer_context_pack(
         for fn in functions
         if _function_identifier(fn) not in final_function_ids
     ][:25]
-    context_json = _pretty_json(context)
+    context_json = _enforce_prompt_budget(context, max_chars=max_chars)
 
     stats = {
         "prompt_context_chars": len(context_json),
@@ -871,6 +1106,15 @@ def _optimizer_context_pack(
             "assets": len(context["space_context"]["assets"]),
             "functions": len(context["space_context"]["functions"]),
             "join_specs": len(context["space_context"]["join_specs"]),
+            "profiled_assets": sum(
+                1
+                for asset in context["space_context"]["assets"]
+                if asset.get("data_profile")
+            ),
+            "profiled_columns": sum(
+                len((asset.get("data_profile") or {}).get("columns") or [])
+                for asset in context["space_context"]["assets"]
+            ),
             "sql_snippets": sum(
                 len(v) for v in (context["space_context"].get("sql_snippets") or {}).values()
                 if isinstance(v, list)
@@ -1091,6 +1335,15 @@ _PROSE_LEAK_PATCH_FIELDS: dict[str, tuple[str, ...]] = {
     "update_example_sql": ("example_question", "example_sql", "sql", "new_text"),
 }
 
+_PROFILE_DIRECT_PATCH_TYPES: frozenset[str] = frozenset(
+    {
+        "update_column_description",
+        "add_instruction",
+        "update_instruction_section",
+        "add_sql_snippet_filter",
+    }
+)
+
 
 def _flatten_visible_values(value: Any) -> list[str]:
     if value is None:
@@ -1108,6 +1361,208 @@ def _flatten_visible_values(value: Any) -> list[str]:
             out.extend(_flatten_visible_values(item))
         return out
     return [str(value)]
+
+
+def _profile_support_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    profile = config.get("_proposal_data_profile")
+    if not isinstance(profile, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for table, table_profile in profile.items():
+        if not isinstance(table_profile, dict):
+            continue
+        columns = table_profile.get("columns")
+        if not isinstance(columns, dict):
+            continue
+        for column, column_profile in columns.items():
+            if not isinstance(column_profile, dict):
+                continue
+            distinct_values = [
+                str(value).strip()
+                for value in column_profile.get("distinct_values") or []
+                if str(value).strip()
+            ]
+            minimum = str(column_profile.get("min") or "").strip()
+            maximum = str(column_profile.get("max") or "").strip()
+            if not distinct_values and not (minimum and maximum):
+                continue
+            rows.append(
+                {
+                    "table": str(table).strip(),
+                    "column": str(column).strip(),
+                    "distinct_values": distinct_values,
+                    "min": minimum,
+                    "max": maximum,
+                }
+            )
+    return rows
+
+
+def _profile_patch_text(patch: dict[str, Any]) -> str:
+    fields_by_type = {
+        "update_column_description": ("new_text", "description", "structured_sections"),
+        "add_instruction": ("new_text", "proposed_value", "value"),
+        "update_instruction_section": ("new_text", "proposed_value", "value"),
+        "add_sql_snippet_filter": (
+            "sql",
+            "instruction",
+            "display_name",
+            "synonyms",
+        ),
+    }
+    values = [
+        visible
+        for field in fields_by_type.get(str(patch.get("type") or ""), ())
+        for visible in _flatten_visible_values(patch.get(field))
+    ]
+    return "\n".join(values).casefold()
+
+
+def _profile_evidence_text(patch: dict[str, Any]) -> str:
+    if str(patch.get("type") or "") == "add_sql_snippet_filter":
+        return "\n".join(_flatten_visible_values(patch.get("sql")))
+    return _profile_patch_text(patch)
+
+
+def _profile_column_mentioned(text: str, *, table: str, column: str) -> bool:
+    normalized_table = _normalized_identifier(table)
+    table_leaf = normalized_table.rsplit(".", 1)[-1]
+    normalized_column = _normalized_identifier(column)
+    aliases = {
+        normalized_column,
+        f"{table_leaf}.{normalized_column}",
+        f"{normalized_table}.{normalized_column}",
+    }
+    for alias in sorted(aliases, key=len, reverse=True):
+        if not alias:
+            continue
+        if re.search(rf"(?<![\w]){re.escape(alias)}(?![\w])", text):
+            return True
+    return False
+
+
+def _profile_literal_mentioned(text: str, value: Any) -> bool:
+    literal = str(value or "").strip().casefold()
+    if not literal:
+        return False
+    if not any(character.isalnum() for character in literal):
+        return any(
+            f"{quote}{literal}{quote}" in text
+            for quote in ("'", '"', "`")
+        )
+    return bool(
+        re.search(
+            rf"(?<![\w.]){re.escape(literal)}(?![\w.])",
+            text,
+        )
+    )
+
+
+def _profile_observation_mentioned(text: str, support: dict[str, Any]) -> bool:
+    distinct_values = support.get("distinct_values") or []
+    if any(_profile_literal_mentioned(text, value) for value in distinct_values):
+        return True
+    minimum = support.get("min")
+    maximum = support.get("max")
+    return bool(
+        str(minimum or "").strip()
+        and str(maximum or "").strip()
+        and _profile_literal_mentioned(text, minimum)
+        and _profile_literal_mentioned(text, maximum)
+    )
+
+
+def _profile_filter_literals_supported(
+    sql: str,
+    support: dict[str, Any],
+) -> bool:
+    """Return whether every SQL literal is exact evidence from one profile row."""
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return False
+
+    literals = [str(literal.this) for literal in tree.find_all(exp.Literal)]
+    if not literals:
+        return False
+
+    distinct_values = {
+        str(value).strip()
+        for value in support.get("distinct_values") or []
+        if str(value).strip()
+    }
+    if distinct_values:
+        return all(literal in distinct_values for literal in literals)
+
+    minimum = str(support.get("min") or "").strip()
+    maximum = str(support.get("max") or "").strip()
+    if not minimum or not maximum:
+        return False
+    return (
+        minimum in literals
+        and maximum in literals
+        and all(literal in {minimum, maximum} for literal in literals)
+    )
+
+
+def _validate_profile_supported_patch(
+    patch: dict[str, Any],
+    *,
+    current_config: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    support_rows = _profile_support_rows(current_config)
+    if not support_rows:
+        return patch, None
+
+    # Proposal-profile mode is intentionally fail-closed for the whole patch
+    # set. Until other patch families have their own direct-evidence contract,
+    # benchmark context cannot be used to smuggle an unrelated profile action.
+    patch_type = str(patch.get("type") or "")
+    if patch_type not in _PROFILE_DIRECT_PATCH_TYPES:
+        dropped = dict(patch)
+        dropped["drop_reason"] = "profile_action_group_unsupported"
+        dropped["drop_detail"] = (
+            "Profile observations may only support a directly evidenced column "
+            "description, instruction, or filter snippet."
+        )
+        return None, dropped
+
+    text = _profile_evidence_text(patch)
+    target_table = _normalized_identifier(
+        patch.get("table") or patch.get("target_table")
+    )
+    target_column = _normalized_identifier(patch.get("column"))
+    for support in support_rows:
+        support_table = _normalized_identifier(support["table"])
+        support_column = _normalized_identifier(support["column"])
+        if target_table and target_table != support_table:
+            continue
+        if target_column and target_column != support_column:
+            continue
+        structurally_targeted = bool(target_column)
+        if not structurally_targeted and not _profile_column_mentioned(
+            text.casefold(),
+            table=support["table"],
+            column=support["column"],
+        ):
+            continue
+        if patch_type == "add_sql_snippet_filter":
+            supported = _profile_filter_literals_supported(text, support)
+        else:
+            supported = _profile_observation_mentioned(text, support)
+        if supported:
+            return patch, None
+
+    dropped = dict(patch)
+    dropped["drop_reason"] = "profile_evidence_unsupported"
+    dropped["drop_detail"] = (
+        "Patch does not cite a profiled column together with its observed values "
+        "or complete observed range."
+    )
+    return None, dropped
 
 
 def _benchmark_forbidden_strings(
@@ -1682,6 +2137,17 @@ def _preapply_safety_screen(
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for patch in patches:
+        validated, validation_drop = _validate_profile_supported_patch(
+            patch,
+            current_config=current_config,
+        )
+        if validation_drop is not None:
+            dropped.append(validation_drop)
+            continue
+        if validated is None:
+            continue
+        patch = validated
+
         leaked, reason = _patch_has_benchmark_prose_leak(
             patch,
             prose_needles=prose_needles,
@@ -2718,6 +3184,7 @@ def run_unified_optimization_loop(
         for runtime_key in (
             "_uc_columns",
             "_data_profile",
+            "_proposal_data_profile",
             "_rls_audit",
             "_asset_semantics",
             "_gso_top_level_description",

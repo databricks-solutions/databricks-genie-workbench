@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from genie_space_optimizer.common.config import (
+    PII_COLUMN_PATTERNS,
     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
     PROPAGATION_WAIT_SECONDS,
 )
@@ -43,20 +44,42 @@ from genie_space_optimizer.optimization.wide_schema import (
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_TAG_MARKERS = frozenset({
+    "confidential",
+    "personal data",
+    "personal_data",
+    "phi",
+    "pii",
+    "restricted",
+    "secret",
+    "sensitive",
+})
+
+
+def _tag_marks_column_sensitive(tag: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(tag.get(field) or "").strip().casefold()
+        for field in ("tag_name", "tag_value")
+    )
+    return any(marker in text for marker in _SENSITIVE_TAG_MARKERS)
+
 _STAGE = "SPACE_QUALITY_ENRICHMENT"
 _TASK_KEY = "space_quality_enrichment"
 _INSTRUCTION_SEED_THRESHOLD = 50
 _MAX_SOURCE_NAMES = 6
 _MAX_PROMPT_COLUMNS_PER_ASSET = 50
-_PROMPT_MATCHING_CONTEXT_VERSION = 1
+_MAX_PROFILE_VALUES_PER_COLUMN = 12
+_MAX_PROFILE_VALUE_CHARS = 120
+_PROMPT_MATCHING_CONTEXT_VERSION = 2
 
 
 def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
-    """Build a compact, non-sensitive handoff for prompt matching.
+    """Build compact prompt-matching and optimizer proposal handoffs.
 
     Preflight profiles may contain sampled distinct values. The prompt matcher
-    only needs row counts and cardinalities, so the artifact deliberately drops
-    those values while retaining UC types, RLS verdicts, and asset semantics.
+    only needs row counts and cardinalities. The optimizer proposal context keeps
+    separately capped values and ranges so it can ground reusable fixes in the
+    current data without broadening prompt-matching behavior.
     """
     # ``_uc_columns`` is expected to be the active wide-schema projection.
     # Keep a defensive per-asset cap here because this function is also used by
@@ -120,7 +143,29 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
             break
         offset += 1
 
+    raw_columns_by_key = {
+        (
+            normalize_component(raw.get("catalog_name")),
+            normalize_component(raw.get("schema_name")),
+            normalize_component(raw.get("table_name")),
+            normalize_component(raw.get("column_name")),
+        ): raw
+        for raw in config.get("_uc_columns") or []
+        if isinstance(raw, dict)
+    }
     active_columns_by_asset: dict[tuple[str, str, str], set[str]] = {}
+    sensitive_columns_by_asset: dict[tuple[str, str, str], set[str]] = {}
+    for tag in config.get("_uc_tags") or []:
+        if not isinstance(tag, dict) or not _tag_marks_column_sensitive(tag):
+            continue
+        asset_key = (
+            normalize_component(tag.get("catalog_name")),
+            normalize_component(tag.get("schema_name")),
+            normalize_component(tag.get("table_name")),
+        )
+        column_name = normalize_component(tag.get("column_name"))
+        if all(asset_key) and column_name:
+            sensitive_columns_by_asset.setdefault(asset_key, set()).add(column_name)
     for column in uc_columns:
         asset_key = (
             normalize_component(column.get("catalog_name")),
@@ -130,15 +175,36 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
         column_name = normalize_component(column.get("column_name"))
         if all(asset_key) and column_name:
             active_columns_by_asset.setdefault(asset_key, set()).add(column_name)
+            raw_column = raw_columns_by_key.get((*asset_key, column_name), {})
+            description = " ".join(
+                str(raw_column.get(field) or "")
+                for field in ("comment", "description")
+            ).casefold()
+            if (
+                any(pattern in column_name for pattern in PII_COLUMN_PATTERNS)
+                or "pii" in description
+                or "sensitive" in description
+            ):
+                sensitive_columns_by_asset.setdefault(asset_key, set()).add(column_name)
     has_active_projection = isinstance(config.get("_uc_columns"), list)
 
+    rls_verdict_by_asset = {
+        _identifier_parts(identifier): str(raw_verdict.get("verdict") or "unknown")
+        for identifier, raw_verdict in (config.get("_rls_audit") or {}).items()
+        if isinstance(raw_verdict, dict)
+    }
+
     data_profile: dict[str, Any] = {}
+    proposal_data_profile: dict[str, Any] = {}
     for identifier, raw_table in (config.get("_data_profile") or {}).items():
         if not isinstance(raw_table, dict):
             continue
         asset_key = _identifier_parts(identifier)
         allowed_columns = active_columns_by_asset.get(asset_key, set())
+        sensitive_columns = sensitive_columns_by_asset.get(asset_key, set())
+        proposal_values_allowed = rls_verdict_by_asset.get(asset_key) == "clean"
         columns: dict[str, Any] = {}
+        proposal_columns: dict[str, Any] = {}
         for column_name, raw_column in (raw_table.get("columns") or {}).items():
             if not isinstance(raw_column, dict):
                 continue
@@ -151,10 +217,40 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
             if cardinality is None:
                 continue
             columns[str(column_name)] = {"cardinality": cardinality}
+            proposal_column: dict[str, Any] = {"cardinality": cardinality}
+            if (
+                not proposal_values_allowed
+                or normalize_component(column_name) in sensitive_columns
+            ):
+                continue
+            distinct_values = raw_column.get("distinct_values")
+            if isinstance(distinct_values, list) and distinct_values:
+                proposal_column["distinct_values"] = [
+                    str(value)[:_MAX_PROFILE_VALUE_CHARS]
+                    for value in distinct_values[:_MAX_PROFILE_VALUES_PER_COLUMN]
+                ]
+            if raw_column.get("min") is not None:
+                proposal_column["min"] = str(raw_column["min"])[
+                    :_MAX_PROFILE_VALUE_CHARS
+                ]
+            if raw_column.get("max") is not None:
+                proposal_column["max"] = str(raw_column["max"])[
+                    :_MAX_PROFILE_VALUE_CHARS
+                ]
+            if any(
+                key in proposal_column
+                for key in ("distinct_values", "min", "max")
+            ):
+                proposal_columns[str(column_name)] = proposal_column
         data_profile[str(identifier)] = {
             "row_count": raw_table.get("row_count", 0),
             "columns": columns,
         }
+        if proposal_columns:
+            proposal_data_profile[str(identifier)] = {
+                "row_count": raw_table.get("row_count", 0),
+                "columns": proposal_columns,
+            }
 
     rls_audit: dict[str, Any] = {}
     for identifier, raw_verdict in (config.get("_rls_audit") or {}).items():
@@ -179,6 +275,7 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
         "version": _PROMPT_MATCHING_CONTEXT_VERSION,
         "uc_columns": uc_columns,
         "data_profile": data_profile,
+        "proposal_data_profile": proposal_data_profile,
         "rls_audit": rls_audit,
         "asset_semantics": asset_semantics,
         "inventory_hash": config.get("_wide_schema_inventory_hash"),
@@ -199,6 +296,9 @@ def apply_prompt_matching_context(
         return config
     config["_uc_columns"] = copy.deepcopy(context.get("uc_columns") or [])
     config["_data_profile"] = copy.deepcopy(context.get("data_profile") or {})
+    config["_proposal_data_profile"] = copy.deepcopy(
+        context.get("proposal_data_profile") or {}
+    )
     config["_rls_audit"] = copy.deepcopy(context.get("rls_audit") or {})
     config["_asset_semantics"] = copy.deepcopy(context.get("asset_semantics") or {})
     config["_wide_schema_inventory_hash"] = context.get("inventory_hash")

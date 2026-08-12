@@ -63,7 +63,12 @@ def fetch_uc_metadata_obo(
             f"WHERE c.table_schema = '{safe_schema}'"
         ),
         "uc_tags": (
-            f"SELECT * FROM {catalog}.information_schema.table_tags "
+            f"SELECT catalog_name, schema_name, table_name, "
+            f"CAST(NULL AS STRING) AS column_name, tag_name, tag_value "
+            f"FROM {catalog}.information_schema.table_tags "
+            f"WHERE schema_name = '{safe_schema}' UNION ALL "
+            f"SELECT catalog_name, schema_name, table_name, column_name, "
+            f"tag_name, tag_value FROM {catalog}.information_schema.column_tags "
             f"WHERE schema_name = '{safe_schema}'"
         ),
         "uc_routines": (
@@ -103,10 +108,15 @@ def _fetch_for_tables(
             f"ON c.table_catalog = t.table_catalog AND c.table_schema = t.table_schema AND c.table_name = t.table_name "
             f"WHERE c.table_schema = '{schema}' AND c.table_name IN ({safe_tables})"
         )
-        tag_queries.append(
-            f"SELECT * FROM {catalog}.information_schema.table_tags "
-            f"WHERE schema_name = '{schema}' AND table_name IN ({safe_tables})"
-        )
+        tag_queries.extend([
+            f"SELECT catalog_name, schema_name, table_name, "
+            f"CAST(NULL AS STRING) AS column_name, tag_name, tag_value "
+            f"FROM {catalog}.information_schema.table_tags "
+            f"WHERE schema_name = '{schema}' AND table_name IN ({safe_tables})",
+            f"SELECT catalog_name, schema_name, table_name, column_name, "
+            f"tag_name, tag_value FROM {catalog}.information_schema.column_tags "
+            f"WHERE schema_name = '{schema}' AND table_name IN ({safe_tables})",
+        ])
 
     routine_queries = [
         "SELECT routine_name, routine_type, routine_definition, "

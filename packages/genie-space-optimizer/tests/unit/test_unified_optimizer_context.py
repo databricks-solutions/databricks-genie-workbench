@@ -165,6 +165,128 @@ def test_relevant_join_spec_after_old_position_cap_is_included() -> None:
     assert "right_44" in rendered
 
 
+def test_failure_relevant_data_profile_is_included_and_bounded() -> None:
+    config = {
+        "data_sources": {
+            "tables": [_table("orders", columns=["status", "created_at", "ignored"])],
+        },
+        "instructions": {},
+        "_proposal_data_profile": {
+            "`cat`.`sch`.`orders`": {
+                "row_count": 250,
+                "columns": {
+                    "status": {
+                        "cardinality": 20,
+                        "distinct_values": [f"state_{index}" for index in range(20)],
+                    },
+                    "created_at": {
+                        "cardinality": 200,
+                        "min": "2024-01-01",
+                        "max": "2026-08-01",
+                    },
+                    "ignored": {"cardinality": 250},
+                    "not_in_space": {
+                        "cardinality": 2,
+                        "distinct_values": ["x", "y"],
+                    },
+                },
+            },
+            "cat.sch.unrelated": {
+                "row_count": 1,
+                "columns": {"secret": {"cardinality": 1, "distinct_values": ["omit"]}},
+            },
+        },
+    }
+
+    context, stats, _text = _optimizer_context_pack(
+        config,
+        _eval(
+            "SELECT status, created_at FROM cat.sch.orders",
+            question="Which order statuses occurred in the requested date range?",
+        ),
+    )
+
+    asset = context["space_context"]["assets"][0]
+    profile = asset["data_profile"]
+    assert profile["row_count"] == 250
+    by_name = {column["column_name"]: column for column in profile["columns"]}
+    assert set(by_name) == {"status", "created_at"}
+    assert by_name["status"]["distinct_values"] == [
+        f"state_{index}" for index in range(12)
+    ]
+    assert by_name["created_at"]["min"] == "2024-01-01"
+    assert by_name["created_at"]["max"] == "2026-08-01"
+    assert "not_in_space" not in by_name
+    assert stats["included_counts"]["profiled_assets"] == 1
+    assert stats["included_counts"]["profiled_columns"] == 2
+
+
+def test_optimizer_does_not_fall_back_to_raw_profile_values() -> None:
+    config = {
+        "data_sources": {"tables": [_table("orders", columns=["status"])]},
+        "instructions": {},
+        "_data_profile": {
+            "cat.sch.orders": {
+                "row_count": 2,
+                "columns": {
+                    "status": {
+                        "cardinality": 2,
+                        "distinct_values": ["ACTIVE", "CLOSED"],
+                    }
+                },
+            }
+        },
+    }
+
+    context, _stats, _text = _optimizer_context_pack(
+        config,
+        _eval("SELECT status FROM cat.sch.orders"),
+    )
+
+    assert "data_profile" not in context["space_context"]["assets"][0]
+
+
+def test_profile_compaction_honors_prompt_character_budget() -> None:
+    tables = [
+        _table(f"orders_{index}", columns=[f"status_{column}" for column in range(12)])
+        for index in range(8)
+    ]
+    profile = {
+        f"cat.sch.orders_{index}": {
+            "row_count": 1000,
+            "columns": {
+                f"status_{column}": {
+                    "cardinality": 12,
+                    "distinct_values": [
+                        f"value_{value}_" + ("x" * 100) for value in range(12)
+                    ],
+                }
+                for column in range(12)
+            },
+        }
+        for index in range(8)
+    }
+    config = {
+        "data_sources": {"tables": tables},
+        "instructions": {},
+        "_proposal_data_profile": profile,
+    }
+    referenced = ", ".join(
+        f"cat.sch.orders_{index}.status_{column}"
+        for index in range(8)
+        for column in range(12)
+    )
+
+    _context, stats, text = _optimizer_context_pack(
+        config,
+        _eval(f"SELECT {referenced}"),
+        max_chars=60_000,
+    )
+
+    assert len(text) <= 60_000
+    assert stats["prompt_context_chars"] <= 60_000
+
+
 def test_large_context_is_valid_json_with_omission_summary_and_no_raw_marker() -> None:
     config = {
         "description": "large config",
@@ -229,3 +351,7 @@ def test_llm_messages_include_quality_rubric_and_scan_context() -> None:
     }
     assert "Agent description" in failed
     assert "SQL guidance artifacts" in failed
+    assert any(
+        "Treat data_profile as bounded observations" in rule
+        for rule in user["patch_rules"]
+    )

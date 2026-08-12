@@ -38,6 +38,364 @@ def _eval_result() -> dict:
     }
 
 
+def _profiled_config() -> dict:
+    config = _config()
+    config["_proposal_data_profile"] = {
+        "cat.sch.orders": {
+            "row_count": 250,
+            "columns": {
+                "status": {
+                    "cardinality": 2,
+                    "distinct_values": ["ACTIVE", "CLOSED"],
+                },
+                "amount": {"min": "1.0", "max": "500.0"},
+            },
+        }
+    }
+    return config
+
+
+def test_profile_gate_drops_formula_like_unsupported_action_bundle() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "amount",
+                "new_text": "Use amount to identify the customer's preferred order.",
+            },
+            {
+                "type": "add_instruction",
+                "new_text": "Treat priorityId = 3 as an urgent order.",
+                "routing_evidence": [
+                    {
+                        "type": "structured_behavior",
+                        "reason": "This is a cross-cutting filter rule.",
+                    }
+                ],
+            },
+            {
+                "type": "add_join_spec",
+                "join_spec": {
+                    "left": {"identifier": "cat.sch.orders"},
+                    "right": {"identifier": "cat.sch.customers"},
+                    "sql": ["orders.customer_id = customers.customer_id"],
+                },
+            },
+            {
+                "type": "add_example_sql",
+                "example_question": "Which customers placed the largest orders?",
+                "example_sql": (
+                    "SELECT customer_id, MAX(amount) FROM orders GROUP BY customer_id"
+                ),
+                "usage_guidance": "Use for customer-level maximum order analysis.",
+                "source_failure_pattern": "customer order aggregation",
+                "affected_qids": ["q2"],
+                "semantic_delta_from_benchmark": "Uses a different aggregation shape.",
+                "why_not_benchmark_copy": "This is a novel generalized example.",
+            },
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert [patch["drop_reason"] for patch in dropped] == [
+        "profile_evidence_unsupported",
+        "profile_evidence_unsupported",
+        "profile_action_group_unsupported",
+        "profile_action_group_unsupported",
+    ]
+
+
+def test_profile_gate_keeps_directly_supported_categorical_guidance() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "add_instruction",
+                "new_text": (
+                    "Filter orders.status with the exact stored values: "
+                    "ACTIVE for open orders and CLOSED for closed orders."
+                ),
+                "routing_evidence": [
+                    {
+                        "type": "structured_behavior",
+                        "reason": "The same coded values apply across order questions.",
+                    }
+                ],
+            },
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "Stored values are ACTIVE and CLOSED.",
+            },
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert [patch["type"] for patch in kept] == [
+        "add_instruction",
+        "update_column_description",
+    ]
+
+
+def test_profile_gate_rejects_substring_and_inexact_range_evidence() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "Use INACTIVE for disabled orders.",
+            },
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "amount",
+                "new_text": "Observed amount range is 10.0 to 5000.0.",
+            },
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert [patch["drop_reason"] for patch in dropped] == [
+        "profile_evidence_unsupported",
+        "profile_evidence_unsupported",
+    ]
+
+
+def test_profile_gate_checks_filter_sql_not_explanatory_text() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "add_sql_snippet_filter",
+                "sql": "orders.status = 'INACTIVE'",
+                "instruction": "ACTIVE is an observed status value.",
+                "display_name": "Disabled orders",
+                "synonyms": ["disabled"],
+                "target_table": "cat.sch.orders",
+                "snippet_type": "filter",
+            }
+        ],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_rejects_filter_literal_with_wrong_case(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        lambda sql, *_args, **_kwargs: (True, "", sql),
+    )
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_sql_snippet_filter",
+            "sql": "orders.status = 'active'",
+            "instruction": "Filter to active orders.",
+            "display_name": "Active orders",
+            "synonyms": ["active"],
+            "target_table": "cat.sch.orders",
+            "snippet_type": "filter",
+        }],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_rejects_filter_with_any_unobserved_literal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        lambda sql, *_args, **_kwargs: (True, "", sql),
+    )
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_sql_snippet_filter",
+            "sql": "orders.status IN ('ACTIVE', 'BOGUS')",
+            "instruction": "Filter to selected order statuses.",
+            "display_name": "Selected statuses",
+            "synonyms": ["selected statuses"],
+            "target_table": "cat.sch.orders",
+            "snippet_type": "filter",
+        }],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_keeps_filter_when_every_literal_is_observed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        lambda sql, *_args, **_kwargs: (True, "", sql),
+    )
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_sql_snippet_filter",
+            "sql": "orders.status IN ('ACTIVE', 'CLOSED')",
+            "instruction": "Filter to active or closed orders.",
+            "display_name": "Active or closed orders",
+            "synonyms": ["active or closed"],
+            "target_table": "cat.sch.orders",
+            "snippet_type": "filter",
+        }],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert kept[0]["sql"] == "orders.status IN ('ACTIVE', 'CLOSED')"
+
+
+def test_profile_gate_requires_symbolic_values_to_be_quoted() -> None:
+    config = _profiled_config()
+    config["_proposal_data_profile"]["cat.sch.orders"]["columns"]["status"] = {
+        "cardinality": 1,
+        "distinct_values": ["="],
+    }
+
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "Use status = ACTIVE for active orders.",
+            },
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.orders",
+                "column": "status",
+                "new_text": "The observed stored status is `=`.",
+            },
+        ],
+        current_config=config,
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert [patch["new_text"] for patch in kept] == [
+        "The observed stored status is `=`."
+    ]
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_keeps_validated_toxicology_symbol_mapping() -> None:
+    config = _profiled_config()
+    config["_proposal_data_profile"] = {
+        "cat.sch.bond": {
+            "row_count": 100,
+            "columns": {
+                "bond_type": {
+                    "cardinality": 3,
+                    "distinct_values": ["-", "=", "#"],
+                }
+            },
+        }
+    }
+    instruction = (
+        "bond.bond_type stores symbolic codes: single bond is '-', "
+        "double bond is '=', and triple bond is '#'."
+    )
+
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_instruction",
+            "new_text": instruction,
+            "routing_evidence": [{
+                "type": "structured_behavior",
+                "reason": "The same stored codes apply across bond questions.",
+            }],
+        }],
+        current_config=config,
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert kept[0]["new_text"] == instruction
+
+
+def test_profile_gate_is_inactive_without_proposal_profile() -> None:
+    kept, dropped = _preapply_safety_screen(
+        [
+            {
+                "type": "add_join_spec",
+                "join_spec": {
+                    "left": {"identifier": "cat.sch.orders"},
+                    "right": {"identifier": "cat.sch.customers"},
+                    "sql": ["orders.customer_id = customers.customer_id"],
+                },
+            }
+        ],
+        current_config=_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert [patch["type"] for patch in kept] == ["add_join_spec"]
+
+
 def test_benchmark_question_copy_in_instruction_patch_is_dropped() -> None:
     patches = [
         {
