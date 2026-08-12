@@ -350,6 +350,40 @@ def test_prompt_matching_context_excludes_sensitive_column_values() -> None:
     assert context["proposal_data_profile"] == {}
 
 
+def test_prompt_matching_context_excludes_governed_sensitive_column_values() -> None:
+    context = sqe.build_prompt_matching_context({
+        "_uc_columns": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "customers",
+            "column_name": "contact",
+            "data_type": "STRING",
+        }],
+        "_uc_tags": [{
+            "catalog_name": "main",
+            "schema_name": "sales",
+            "table_name": "customers",
+            "column_name": "contact",
+            "tag_name": "classification",
+            "tag_value": "PII",
+        }],
+        "_data_profile": {
+            "main.sales.customers": {
+                "row_count": 1,
+                "columns": {
+                    "contact": {
+                        "cardinality": 1,
+                        "distinct_values": ["person@example.com"],
+                    }
+                },
+            }
+        },
+        "_rls_audit": {"main.sales.customers": {"verdict": "clean"}},
+    })
+
+    assert context["proposal_data_profile"] == {}
+
+
 def test_active_enrichment_applies_and_audits_prompt_matching(monkeypatch) -> None:
     stages, patches = _stub_state(monkeypatch)
     raw = _raw_space(

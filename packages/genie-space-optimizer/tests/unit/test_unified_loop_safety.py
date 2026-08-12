@@ -210,6 +210,90 @@ def test_profile_gate_checks_filter_sql_not_explanatory_text() -> None:
     assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
 
 
+def test_profile_gate_rejects_filter_literal_with_wrong_case(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        lambda sql, *_args, **_kwargs: (True, "", sql),
+    )
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_sql_snippet_filter",
+            "sql": "orders.status = 'active'",
+            "instruction": "Filter to active orders.",
+            "display_name": "Active orders",
+            "synonyms": ["active"],
+            "target_table": "cat.sch.orders",
+            "snippet_type": "filter",
+        }],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_rejects_filter_with_any_unobserved_literal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        lambda sql, *_args, **_kwargs: (True, "", sql),
+    )
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_sql_snippet_filter",
+            "sql": "orders.status IN ('ACTIVE', 'BOGUS')",
+            "instruction": "Filter to selected order statuses.",
+            "display_name": "Selected statuses",
+            "synonyms": ["selected statuses"],
+            "target_table": "cat.sch.orders",
+            "snippet_type": "filter",
+        }],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert kept == []
+    assert dropped[0]["drop_reason"] == "profile_evidence_unsupported"
+
+
+def test_profile_gate_keeps_filter_when_every_literal_is_observed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        lambda sql, *_args, **_kwargs: (True, "", sql),
+    )
+    kept, dropped = _preapply_safety_screen(
+        [{
+            "type": "add_sql_snippet_filter",
+            "sql": "orders.status IN ('ACTIVE', 'CLOSED')",
+            "instruction": "Filter to active or closed orders.",
+            "display_name": "Active or closed orders",
+            "synonyms": ["active or closed"],
+            "target_table": "cat.sch.orders",
+            "snippet_type": "filter",
+        }],
+        current_config=_profiled_config(),
+        benchmarks=[],
+        eval_result={"rows": []},
+        spark=None,
+        catalog="cat",
+        schema="sch",
+        w=None,
+    )
+
+    assert dropped == []
+    assert kept[0]["sql"] == "orders.status IN ('ACTIVE', 'CLOSED')"
+
+
 def test_profile_gate_requires_symbolic_values_to_be_quoted() -> None:
     config = _profiled_config()
     config["_proposal_data_profile"]["cat.sch.orders"]["columns"]["status"] = {

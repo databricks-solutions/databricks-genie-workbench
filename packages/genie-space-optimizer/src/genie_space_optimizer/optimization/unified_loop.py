@@ -1420,7 +1420,7 @@ def _profile_patch_text(patch: dict[str, Any]) -> str:
 
 def _profile_evidence_text(patch: dict[str, Any]) -> str:
     if str(patch.get("type") or "") == "add_sql_snippet_filter":
-        return "\n".join(_flatten_visible_values(patch.get("sql"))).casefold()
+        return "\n".join(_flatten_visible_values(patch.get("sql")))
     return _profile_patch_text(patch)
 
 
@@ -1472,6 +1472,42 @@ def _profile_observation_mentioned(text: str, support: dict[str, Any]) -> bool:
     )
 
 
+def _profile_filter_literals_supported(
+    sql: str,
+    support: dict[str, Any],
+) -> bool:
+    """Return whether every SQL literal is exact evidence from one profile row."""
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return False
+
+    literals = [str(literal.this) for literal in tree.find_all(exp.Literal)]
+    if not literals:
+        return False
+
+    distinct_values = {
+        str(value).strip()
+        for value in support.get("distinct_values") or []
+        if str(value).strip()
+    }
+    if distinct_values:
+        return all(literal in distinct_values for literal in literals)
+
+    minimum = str(support.get("min") or "").strip()
+    maximum = str(support.get("max") or "").strip()
+    if not minimum or not maximum:
+        return False
+    return (
+        minimum in literals
+        and maximum in literals
+        and all(literal in {minimum, maximum} for literal in literals)
+    )
+
+
 def _validate_profile_supported_patch(
     patch: dict[str, Any],
     *,
@@ -1508,12 +1544,16 @@ def _validate_profile_supported_patch(
             continue
         structurally_targeted = bool(target_column)
         if not structurally_targeted and not _profile_column_mentioned(
-            text,
+            text.casefold(),
             table=support["table"],
             column=support["column"],
         ):
             continue
-        if _profile_observation_mentioned(text, support):
+        if patch_type == "add_sql_snippet_filter":
+            supported = _profile_filter_literals_supported(text, support)
+        else:
+            supported = _profile_observation_mentioned(text, support)
+        if supported:
             return patch, None
 
     dropped = dict(patch)

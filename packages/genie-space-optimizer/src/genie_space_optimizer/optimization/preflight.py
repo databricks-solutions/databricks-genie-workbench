@@ -1402,13 +1402,13 @@ def preflight_collect_uc_metadata(
         )
         uc_tags_dicts = (
             _usable_prefetch("uc_tags")
-            or _rest_collect(
-                lambda: get_tags_for_tables_rest(w, genie_table_refs),
-                "tags (genie tables)", "uc_tags",
-            )
             or _spark_collect(
                 lambda: get_tags_for_tables(spark, genie_table_refs),
-                "tags (genie tables)", "uc_tags",
+                "tags (genie tables and columns)", "uc_tags",
+            )
+            or _rest_collect(
+                lambda: get_tags_for_tables_rest(w, genie_table_refs),
+                "table tags (genie tables)", "uc_tags",
             )
         )
         uc_routines_dicts = (
@@ -1445,7 +1445,10 @@ def preflight_collect_uc_metadata(
         )
         uc_tags_dicts = (
             _usable_prefetch("uc_tags")
-            or _spark_collect(lambda: get_tags(spark, catalog, schema), "tags", "uc_tags")
+            or _spark_collect(
+                lambda: get_tags(spark, catalog, schema),
+                "table and column tags", "uc_tags",
+            )
         )
         uc_routines_dicts = (
             _usable_prefetch("uc_routines")
@@ -1691,6 +1694,7 @@ def preflight_collect_uc_metadata(
     print("\n".join(_lines))
 
     config["_uc_columns"] = uc_columns_dicts
+    config["_uc_tags"] = uc_tags_dicts
     config["_uc_foreign_keys"] = uc_fk_dicts
 
     referenced_schemas = sorted(

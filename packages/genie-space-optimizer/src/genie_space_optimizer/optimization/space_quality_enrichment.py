@@ -44,6 +44,25 @@ from genie_space_optimizer.optimization.wide_schema import (
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_TAG_MARKERS = frozenset({
+    "confidential",
+    "personal data",
+    "personal_data",
+    "phi",
+    "pii",
+    "restricted",
+    "secret",
+    "sensitive",
+})
+
+
+def _tag_marks_column_sensitive(tag: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(tag.get(field) or "").strip().casefold()
+        for field in ("tag_name", "tag_value")
+    )
+    return any(marker in text for marker in _SENSITIVE_TAG_MARKERS)
+
 _STAGE = "SPACE_QUALITY_ENRICHMENT"
 _TASK_KEY = "space_quality_enrichment"
 _INSTRUCTION_SEED_THRESHOLD = 50
@@ -136,6 +155,17 @@ def build_prompt_matching_context(config: dict[str, Any]) -> dict[str, Any]:
     }
     active_columns_by_asset: dict[tuple[str, str, str], set[str]] = {}
     sensitive_columns_by_asset: dict[tuple[str, str, str], set[str]] = {}
+    for tag in config.get("_uc_tags") or []:
+        if not isinstance(tag, dict) or not _tag_marks_column_sensitive(tag):
+            continue
+        asset_key = (
+            normalize_component(tag.get("catalog_name")),
+            normalize_component(tag.get("schema_name")),
+            normalize_component(tag.get("table_name")),
+        )
+        column_name = normalize_component(tag.get("column_name"))
+        if all(asset_key) and column_name:
+            sensitive_columns_by_asset.setdefault(asset_key, set()).add(column_name)
     for column in uc_columns:
         asset_key = (
             normalize_component(column.get("catalog_name")),

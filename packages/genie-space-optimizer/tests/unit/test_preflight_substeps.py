@@ -189,11 +189,13 @@ class TestPreflightCollectUcMetadata:
     def test_returns_expected_keys_no_refs(self, mock_ws, mock_val, mock_join, mock_spark):
         from genie_space_optimizer.optimization.preflight import preflight_collect_uc_metadata
 
+        config = {}
         result = preflight_collect_uc_metadata(
             MagicMock(), mock_spark, "run-1", "cat", "gold",
-            config={}, snapshot={}, genie_table_refs=[],
+            config=config, snapshot={}, genie_table_refs=[],
         )
         assert set(result.keys()) == {"uc_columns", "uc_tags", "uc_routines", "uc_fk"}
+        assert config["_uc_tags"] == result["uc_tags"]
 
     @patch("genie_space_optimizer.optimization.preflight._compute_join_overlaps", return_value=[])
     @patch("genie_space_optimizer.optimization.preflight._validate_core_access")
