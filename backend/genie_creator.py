@@ -424,7 +424,7 @@ def _non_retrying_client(base_client):
 # live against the Genie API.) Reconcile must match both the exact title AND
 # the collision-renamed variants, or a timed-out retry that landed under a
 # renamed title would be missed and returned as yet another duplicate.
-_COLLISION_SUFFIX_RE = re.compile(r"^\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?Z?$")
+_COLLISION_SUFFIX_RE = re.compile(r"^\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?Z?$")
 
 # The Genie list endpoint is eventually consistent — a just-created space does
 # not appear in list_genie_spaces() immediately (observed ~10s lag live). A
