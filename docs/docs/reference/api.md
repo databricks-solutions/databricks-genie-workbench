@@ -93,15 +93,17 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 
 ## GenieWatch Routers (`/api/watch`)
 
-GenieWatch reads Databricks **system tables**, which are not OBO-readable. Every
-route below therefore executes as the **service principal**, with results served
-from an in-process TTL cache. Registered separately from the workbench routers in
-`main.py`.
+Most GenieWatch metrics read Databricks **system tables**, which are not OBO-readable,
+so those routes execute as the **service principal** and use an in-process TTL cache.
+The traffic-gap route is user-authorized and does not persist traffic: it requires
+`CAN_MANAGE`, reads all conversation pages transiently, and fails instead of
+returning partial results. These routers are registered separately in `main.py`.
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | <span className="badge badge--success">GET</span> | `/api/watch/spaces` | <span className="badge badge--secondary">SP</span> | List watched Genie Agents with cost/usage summaries |
 | <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}` | <span className="badge badge--secondary">SP</span> | Watch detail for one Agent |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/traffic-gaps` | <span className="badge badge--secondary">OBO</span> | Manager-only, reviewable benchmark candidate gaps; no raw question or user identity in the response |
 | <span className="badge badge--info">POST</span> | `/api/watch/spaces/refresh` | <span className="badge badge--secondary">SP</span> | Refresh the watched-space cache |
 | <span className="badge badge--success">GET</span> | `/api/watch/overview` | <span className="badge badge--secondary">SP</span> | Org-wide cost overview |
 | <span className="badge badge--success">GET</span> | `/api/watch/cost/top` | <span className="badge badge--secondary">SP</span> | Highest-cost Agents |

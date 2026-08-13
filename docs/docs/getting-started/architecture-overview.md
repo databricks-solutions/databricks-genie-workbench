@@ -93,10 +93,13 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 | `usage.py` | `/api/watch` | Per-Agent query volume and usage trends |
 | `feedback.py` | `/api/watch` | User feedback signals and comments |
 | `resources.py` | `/api/watch` | Executed-resource lineage, rollups, and graph |
+| `traffic_gaps.py` | `/api/watch/spaces` | Manager-only benchmark candidate gaps from production traffic |
 | `settings.py` | `/api/watch/settings` | Watch health and cache refresh |
 | `admin.py` | `/api/watch/admin` | Admin-gated rollup refresh |
 
-GenieWatch queries Databricks **system tables** (`system.query.history`, `system.billing.usage`, `system.access.audit`, `system.access.table_lineage`). System tables are **not** OBO-readable, so `watch/services/system_tables.py` always runs as the **service principal** and caches results in an in-process TTL cache. The SP needs `USE CATALOG system` plus schema/SELECT grants — `scripts/grant_permissions.py` is the source of truth for that list.
+Most GenieWatch metrics come from Databricks **system tables** (`system.query.history`, `system.billing.usage`, `system.access.audit`, `system.access.table_lineage`). System tables are **not** OBO-readable, so `watch/services/system_tables.py` runs as the **service principal** and caches results in an in-process TTL cache. The SP needs `USE CATALOG system` plus schema/SELECT grants; `scripts/grant_permissions.py` is the source of truth for that list.
+
+The candidate-gap endpoint is the exception. It uses only the signed-in user's OBO token and requires `CAN_MANAGE` on the Agent. It reads the complete conversation history and current benchmarks in memory, returns aggregate signals and up to three conversation links per candidate, and does not persist question text or user identities. If any page is unavailable, it returns no analysis.
 
 See [Appendix A: API Reference](/docs/reference/api) for the complete endpoint list.
 
