@@ -80,10 +80,10 @@ def _evidence_conversations(family: _Family, signals: list[str]) -> list[str]:
         if conversation_id and conversation_id not in selected and len(selected) < 3:
             selected.append(conversation_id)
 
-    for conversation_id in family.negative_feedback_conversations:
-        add(conversation_id)
-    for conversation_id in family.failed_conversations:
-        add(conversation_id)
+    if "negative_feedback" in signals and family.negative_feedback_conversations:
+        add(family.negative_feedback_conversations[0])
+    if "failed" in signals and family.failed_conversations:
+        add(family.failed_conversations[0])
 
     if "cross_user_repeat" in signals:
         represented_users = {
@@ -98,6 +98,10 @@ def _evidence_conversations(family: _Family, signals: list[str]) -> list[str]:
             if len(represented_users) >= 2 or len(selected) >= 3:
                 break
 
+    for conversation_id in family.negative_feedback_conversations:
+        add(conversation_id)
+    for conversation_id in family.failed_conversations:
+        add(conversation_id)
     for conversation_id in family.conversations:
         add(conversation_id)
     return selected

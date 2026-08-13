@@ -193,3 +193,32 @@ def test_cross_user_evidence_links_include_two_users() -> None:
     )
 
     assert "https://example/conv-u2" in result.candidates[0].conversation_urls
+
+
+def test_cross_user_evidence_reserves_a_link_when_failures_fill_budget() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                f"Show orders for {2021 + index}",
+                conversation_id=f"failed-{index}",
+                user_key="u1",
+                status="FAILED",
+            )
+            for index in range(3)
+        ]
+        + [
+            _message(
+                "Show orders for 2024",
+                conversation_id="repeat-u2",
+                user_key="u2",
+            )
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.signals == ["failed", "cross_user_repeat"]
+    assert "https://example/failed-0" in candidate.conversation_urls
+    assert "https://example/repeat-u2" in candidate.conversation_urls
+    assert len(candidate.conversation_urls) <= 3
