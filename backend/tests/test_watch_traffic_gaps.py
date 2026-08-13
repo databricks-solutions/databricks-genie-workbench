@@ -28,12 +28,16 @@ def _message(
 
 
 def test_normalization_groups_literal_variants_without_fuzzy_matching() -> None:
-    assert normalize_question("Revenue for 'EMEA' in 2025?") == normalize_question(
-        'revenue for "APAC" in 2024'
+    assert normalize_question("Revenue in 2025?") == normalize_question(
+        "revenue in 2024"
     )
     assert normalize_question("revenue by country") != normalize_question(
         "revenue for country"
     )
+    assert normalize_question('Show "gross margin" by region') != normalize_question(
+        'Show "net revenue" by region'
+    )
+    assert normalize_question("profit/loss") != normalize_question("profit-loss")
     assert "revenue" in normalize_question("What's revenue for John's region?")
 
 
@@ -41,12 +45,12 @@ def test_covered_family_is_not_returned() -> None:
     result = analyze_traffic_gaps(
         messages=[
             _message(
-                "Revenue for 'EMEA' in 2025",
+                "Revenue in 2025",
                 conversation_id="conv-1",
                 status="FAILED",
             )
         ],
-        benchmark_questions=["Revenue for 'APAC' in 2024"],
+        benchmark_questions=["Revenue in 2024"],
         conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
     )
 
@@ -146,3 +150,46 @@ def test_response_has_opaque_ids_no_raw_content_and_at_most_three_links() -> Non
     assert "Show orders" not in serialized
     assert "user-" not in serialized
     assert "normalized" not in serialized
+
+
+def test_evidence_links_prioritize_signal_bearing_conversations() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message("Show orders for 2021", conversation_id="conv-1"),
+            _message("Show orders for 2022", conversation_id="conv-2"),
+            _message("Show orders for 2023", conversation_id="conv-3"),
+            _message(
+                "Show orders for 2024",
+                conversation_id="conv-4",
+                status="FAILED",
+            ),
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.candidates[0].conversation_urls[0] == "https://example/conv-4"
+
+
+def test_cross_user_evidence_links_include_two_users() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                f"Show orders for {2021 + index}",
+                conversation_id=f"conv-{index}",
+                user_key="u1",
+            )
+            for index in range(3)
+        ]
+        + [
+            _message(
+                "Show orders for 2024",
+                conversation_id="conv-u2",
+                user_key="u2",
+            )
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert "https://example/conv-u2" in result.candidates[0].conversation_urls

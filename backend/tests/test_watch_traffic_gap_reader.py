@@ -8,6 +8,7 @@ from backend.watch.services.traffic_gap_reader import (
     IncompleteTrafficRead,
     read_traffic_gap_analysis,
 )
+from backend.watch.services import traffic_gap_reader
 
 
 SPACE_ID = "a" * 32
@@ -136,4 +137,51 @@ def test_omitted_collection_with_next_token_fails_closed() -> None:
     responses[(conversations_path, None)] = {"next_page_token": "next"}
 
     with pytest.raises(IncompleteTrafficRead, match="missing page data"):
+        read_traffic_gap_analysis(client=_Client(responses), space_id=SPACE_ID)
+
+
+def test_malformed_message_content_fails_closed() -> None:
+    responses = _responses()
+    message_path = (
+        f"/api/2.0/genie/spaces/{SPACE_ID}/conversations/conv-1/messages"
+    )
+    responses[(message_path, None)]["messages"][0].pop("content")
+
+    with pytest.raises(IncompleteTrafficRead, match="message content"):
+        read_traffic_gap_analysis(client=_Client(responses), space_id=SPACE_ID)
+
+
+def test_global_cap_counts_nonterminal_api_messages(monkeypatch) -> None:
+    responses = _responses()
+    space_path = f"/api/2.0/genie/spaces/{SPACE_ID}"
+    conversations_path = f"{space_path}/conversations"
+    responses[(conversations_path, None)] = {
+        "conversations": [
+            {"id": "conv-1"},
+            {"id": "conv-2"},
+            {"id": "conv-3"},
+        ]
+    }
+    for conversation_id in ("conv-1", "conv-2", "conv-3"):
+        responses[(f"{conversations_path}/{conversation_id}/messages", None)] = {
+            "messages": [
+                {"content": "still running", "status": "SUBMITTED"}
+            ]
+        }
+    monkeypatch.setattr(traffic_gap_reader, "_MAX_MESSAGES", 2)
+
+    with pytest.raises(IncompleteTrafficRead, match="safety limit"):
+        read_traffic_gap_analysis(client=_Client(responses), space_id=SPACE_ID)
+
+
+def test_malformed_benchmark_question_fails_closed() -> None:
+    responses = _responses()
+    space_path = f"/api/2.0/genie/spaces/{SPACE_ID}"
+    responses[(space_path, None)] = {
+        "serialized_space": json.dumps(
+            {"benchmarks": {"questions": [{"id": "missing-question"}]}}
+        )
+    }
+
+    with pytest.raises(IncompleteTrafficRead, match="benchmark question"):
         read_traffic_gap_analysis(client=_Client(responses), space_id=SPACE_ID)

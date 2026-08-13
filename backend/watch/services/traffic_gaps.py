@@ -15,12 +15,9 @@ from typing import Callable, Iterable
 
 from backend.watch.models import TrafficGapAnalysis, TrafficGapCandidate
 
-_QUOTED_LITERAL_RE = re.compile(
-    r"(?:(?<!\w)'[^'\n]*'(?!\w)|(?<!\w)\"[^\"\n]*\"(?!\w))"
-)
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b")
 _NUMBER_RE = re.compile(r"(?<!\w)[+-]?(?:\d[\d,]*)(?:\.\d+)?(?!\w)")
-_PUNCTUATION_RE = re.compile(r"[^\w\s]+", re.UNICODE)
+_TRAILING_SENTENCE_PUNCTUATION_RE = re.compile(r"[?!.]+$")
 _SPACE_RE = re.compile(r"\s+")
 
 
@@ -38,6 +35,9 @@ class TrafficMessage:
 class _Family:
     users: set[str]
     conversations: list[str]
+    conversation_users: dict[str, str]
+    failed_conversations: list[str]
+    negative_feedback_conversations: list[str]
     occurrence_count: int = 0
     failed_count: int = 0
     negative_feedback_count: int = 0
@@ -48,15 +48,14 @@ class _Family:
 def normalize_question(value: str) -> str:
     """Return a conservative template key used for exact family matching.
 
-    Only explicit quoted values, ISO dates, and numeric literals are abstracted.
-    The remaining words must match exactly after Unicode/case/punctuation
-    normalization; this is intentionally not semantic or fuzzy matching.
+    Only ISO dates and numeric literals are abstracted. Quoted business terms
+    and meaningful punctuation are preserved; this is intentionally not
+    semantic or fuzzy matching.
     """
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    text = _QUOTED_LITERAL_RE.sub(" stringliteral ", text)
     text = _ISO_DATE_RE.sub(" dateliteral ", text)
     text = _NUMBER_RE.sub(" numberliteral ", text)
-    text = _PUNCTUATION_RE.sub(" ", text)
+    text = _TRAILING_SENTENCE_PUNCTUATION_RE.sub("", text)
     return _SPACE_RE.sub(" ", text).strip()
 
 
@@ -74,6 +73,36 @@ def _update_seen(family: _Family, created_at: datetime | None) -> None:
         family.last_seen_at = created_at
 
 
+def _evidence_conversations(family: _Family, signals: list[str]) -> list[str]:
+    selected: list[str] = []
+
+    def add(conversation_id: str) -> None:
+        if conversation_id and conversation_id not in selected and len(selected) < 3:
+            selected.append(conversation_id)
+
+    for conversation_id in family.negative_feedback_conversations:
+        add(conversation_id)
+    for conversation_id in family.failed_conversations:
+        add(conversation_id)
+
+    if "cross_user_repeat" in signals:
+        represented_users = {
+            family.conversation_users.get(conversation_id, "")
+            for conversation_id in selected
+        }
+        for conversation_id in family.conversations:
+            user_key = family.conversation_users.get(conversation_id, "")
+            if user_key and user_key not in represented_users:
+                add(conversation_id)
+                represented_users.add(user_key)
+            if len(represented_users) >= 2 or len(selected) >= 3:
+                break
+
+    for conversation_id in family.conversations:
+        add(conversation_id)
+    return selected
+
+
 def analyze_traffic_gaps(
     *,
     messages: Iterable[TrafficMessage],
@@ -82,7 +111,13 @@ def analyze_traffic_gaps(
 ) -> TrafficGapAnalysis:
     """Group traffic and return only uncovered, owner-actionable candidates."""
     families: dict[str, _Family] = defaultdict(
-        lambda: _Family(users=set(), conversations=[])
+        lambda: _Family(
+            users=set(),
+            conversations=[],
+            conversation_users={},
+            failed_conversations=[],
+            negative_feedback_conversations=[],
+        )
     )
     scanned_message_count = 0
     for message in messages:
@@ -99,10 +134,18 @@ def analyze_traffic_gaps(
             family.users.add(message.user_key)
         if message.conversation_id and message.conversation_id not in family.conversations:
             family.conversations.append(message.conversation_id)
+        if message.conversation_id and message.user_key:
+            family.conversation_users.setdefault(
+                message.conversation_id, message.user_key
+            )
         if status == "FAILED":
             family.failed_count += 1
+            if message.conversation_id not in family.failed_conversations:
+                family.failed_conversations.append(message.conversation_id)
         if _is_negative_feedback(message.feedback):
             family.negative_feedback_count += 1
+            if message.conversation_id not in family.negative_feedback_conversations:
+                family.negative_feedback_conversations.append(message.conversation_id)
         _update_seen(family, message.created_at)
 
     covered_keys = {
@@ -146,7 +189,7 @@ def analyze_traffic_gaps(
             signals=signals,
             conversation_urls=[
                 conversation_url(conversation_id)
-                for conversation_id in family.conversations[:3]
+                for conversation_id in _evidence_conversations(family, signals)
             ],
             first_seen_at=family.first_seen_at,
             last_seen_at=family.last_seen_at,

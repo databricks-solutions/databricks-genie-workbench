@@ -106,9 +106,13 @@ def _benchmark_questions(config: dict[str, Any]) -> list[str]:
         if isinstance(value, str) and value.strip():
             out.append(value)
         elif isinstance(value, list):
-            if any(not isinstance(item, str) for item in value):
+            if not value or any(
+                not isinstance(item, str) or not item.strip() for item in value
+            ):
                 raise IncompleteTrafficRead("benchmark question has an invalid shape")
-            out.extend(item for item in value if item.strip())
+            out.extend(value)
+        else:
+            raise IncompleteTrafficRead("benchmark question has an invalid shape")
     return out
 
 
@@ -137,12 +141,15 @@ def _user_key(message: dict[str, Any], conversation: dict[str, Any]) -> str:
 
 
 def _feedback_rating(value: Any) -> str | None:
+    if value is None:
+        return None
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
         rating = value.get("rating") or value.get("feedback_rating")
-        return str(rating) if rating is not None else None
-    return None
+        if isinstance(rating, str) and rating.strip():
+            return rating
+    raise IncompleteTrafficRead("message feedback has an invalid shape")
 
 
 def _conversation_url(host: str, space_id: str, conversation_id: str) -> str:
@@ -171,6 +178,7 @@ def read_traffic_gap_analysis(*, client: Any, space_id: str) -> TrafficGapAnalys
     )
 
     messages: list[TrafficMessage] = []
+    returned_message_count = 0
     for conversation in conversations:
         conversation_id = conversation.get("id") or conversation.get("conversation_id")
         if not conversation_id:
@@ -180,12 +188,13 @@ def read_traffic_gap_analysis(*, client: Any, space_id: str) -> TrafficGapAnalys
             client,
             path=f"{conversations_path}/{conversation_id}/messages",
             item_key="messages",
-            max_items=_MAX_MESSAGES - len(messages),
+            max_items=_MAX_MESSAGES - returned_message_count,
         )
+        returned_message_count += len(raw_messages)
         for message in raw_messages:
             content = message.get("content")
             if not isinstance(content, str) or not content.strip():
-                continue
+                raise IncompleteTrafficRead("message content has an invalid shape")
             messages.append(
                 TrafficMessage(
                     content=content,
@@ -198,7 +207,7 @@ def read_traffic_gap_analysis(*, client: Any, space_id: str) -> TrafficGapAnalys
                     ),
                 )
             )
-            if len(messages) > _MAX_MESSAGES:
+            if returned_message_count > _MAX_MESSAGES:
                 raise IncompleteTrafficRead("messages: safety limit exceeded")
 
     host = str(getattr(getattr(client, "config", None), "host", "") or "")
