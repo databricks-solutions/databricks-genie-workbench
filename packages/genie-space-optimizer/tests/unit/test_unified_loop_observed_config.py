@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from genie_space_optimizer.optimization import unified_loop
 
 
@@ -17,6 +16,16 @@ def _config(content: list[str]) -> dict:
             "text_instructions": [{"id": "instruction-1", "content": content}],
         },
     }
+
+
+def _assessment_rows(total: int, good_ids: set[int]) -> list[dict[str, str]]:
+    return [
+        {
+            "question_id": f"q{index}",
+            "assessment": "GOOD" if index in good_ids else "BAD",
+        }
+        for index in range(1, total + 1)
+    ]
 
 
 def test_settled_observation_failure_is_non_fatal(monkeypatch) -> None:
@@ -210,23 +219,23 @@ def test_accepted_attempt_emits_bounded_decision_diagnostics(monkeypatch) -> Non
         [
             {
                 "overall_accuracy": 70.0,
-                "total_questions": 10,
-                "correct_count": 7,
+                "total_questions": 60,
+                "correct_count": 42,
                 "scores": {},
                 "failures": ["q8", "q9", "q10"],
                 "remaining_failures": ["q8", "q9", "q10"],
                 "thresholds_met": False,
-                "rows": [],
+                "rows": _assessment_rows(60, set(range(1, 43))),
             },
             {
                 "overall_accuracy": 80.0,
-                "total_questions": 10,
-                "correct_count": 8,
+                "total_questions": 60,
+                "correct_count": 48,
                 "scores": {},
                 "failures": ["q9", "q10"],
                 "remaining_failures": ["q9", "q10"],
                 "thresholds_met": False,
-                "rows": [],
+                "rows": _assessment_rows(60, set(range(4, 52))),
             },
         ]
     )
@@ -305,3 +314,108 @@ def test_accepted_attempt_emits_bounded_decision_diagnostics(monkeypatch) -> Non
     assert accepted["improvement"] == 10.0
     assert accepted["champion_accuracy"] == 80.0
     assert "Improve revenue metadata" not in str(diagnostics)
+
+
+def test_aggregate_improvement_is_rolled_back_without_paired_evidence(
+    monkeypatch,
+) -> None:
+    baseline_config = _config(["PURPOSE:\n- Help users"])
+    candidate_config = _config(["PURPOSE:\n- Help users", "TERMS:\n- Revenue"])
+    patch = {
+        "type": "update_column",
+        "lever": 1,
+        "target": "main.sales.orders.revenue",
+    }
+    control_good = set(range(6, 16))
+    candidate_good = set(range(1, 6)) | set(range(8, 16))
+    evaluations = iter(
+        [
+            {
+                "overall_accuracy": 50.0,
+                "total_questions": 20,
+                "correct_count": 10,
+                "rows": _assessment_rows(20, control_good),
+                "remaining_failures": [],
+            },
+            {
+                "overall_accuracy": 65.0,
+                "total_questions": 20,
+                "correct_count": 13,
+                "rows": _assessment_rows(20, candidate_good),
+                "remaining_failures": [],
+            },
+        ]
+    )
+    rollback = MagicMock(name="rollback")
+    loop_states: list[dict] = []
+
+    monkeypatch.setattr(
+        unified_loop,
+        "fetch_space_config",
+        lambda *_args, **_kwargs: {"_parsed_space": copy.deepcopy(baseline_config)},
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "run_space_quality_enrichment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            current_config=copy.deepcopy(baseline_config)
+        ),
+    )
+    monkeypatch.setattr(
+        unified_loop, "_native_eval", lambda *_args, **_kwargs: next(evaluations)
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "propose_patches",
+        lambda *_args, **_kwargs: (1, "Improve revenue metadata", [patch], "{}"),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "_preapply_safety_screen",
+        lambda patches, **_kwargs: (patches, []),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "apply_patch_set",
+        lambda *_args, **_kwargs: {
+            "patch_deployed": True,
+            "applied": [{"patch": patch, "action": {}}],
+            "post_snapshot": copy.deepcopy(candidate_config),
+            "dropped_patches": [],
+        },
+    )
+    monkeypatch.setattr(unified_loop, "rollback", rollback)
+    monkeypatch.setattr(
+        unified_loop,
+        "update_iteration_loop_state",
+        lambda *_args, **kwargs: loop_states.append(kwargs["loop_state"]),
+    )
+    for name in (
+        "write_iteration",
+        "write_patch",
+        "update_run_status",
+        "mark_patches_rolled_back",
+        "mark_iteration_rolled_back",
+        "_stamp_terminal",
+    ):
+        monkeypatch.setattr(unified_loop, name, lambda *_args, **_kwargs: None)
+
+    result = unified_loop.run_unified_optimization_loop(
+        MagicMock(),
+        MagicMock(),
+        run_id="run-1",
+        space_id="space-1",
+        benchmarks=[],
+        catalog="catalog",
+        schema="schema",
+        levers=[1],
+        max_attempts=1,
+        target_accuracy=90.0,
+    )
+
+    assert result["accuracy"] == 50.0
+    assert result["accepted_attempts"] == 0
+    rollback.assert_called_once()
+    assert loop_states[-1]["decision"] == "reject"
+    assert "paired evidence" in loop_states[-1]["decision_reason"]
+    assert "5 wins, 2 losses" in loop_states[-1]["decision_reason"]
