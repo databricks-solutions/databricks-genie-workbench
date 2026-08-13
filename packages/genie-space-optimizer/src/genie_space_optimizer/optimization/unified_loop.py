@@ -248,7 +248,7 @@ def _paired_assessment(row: dict[str, Any]) -> bool | None:
     assessment = str(row.get("assessment") or "").strip().upper()
     if assessment == "GOOD":
         return True
-    if assessment == "BAD":
+    if assessment in {"BAD", "NEEDS_REVIEW"}:
         return False
     return None
 
@@ -273,9 +273,9 @@ def paired_sign_evidence(
 ) -> dict[str, Any]:
     """Return fail-closed paired evidence from two official eval outputs.
 
-    Rows are aligned by the stable Genie benchmark question id.  GOOD/BAD
-    disagreements form an exact one-sided sign test under the null that a
-    disagreement is equally likely to favor either configuration.
+    Rows are aligned by the stable Genie benchmark question id.  GOOD versus
+    official non-GOOD disagreements form an exact one-sided sign test under the
+    null that a disagreement is equally likely to favor either configuration.
     """
     control_rows = control_eval.get("rows")
     candidate_rows = candidate_eval.get("rows")

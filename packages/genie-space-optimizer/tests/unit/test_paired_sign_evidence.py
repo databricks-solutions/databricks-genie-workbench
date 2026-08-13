@@ -102,7 +102,7 @@ def test_financial_nine_wins_three_losses_is_accepted() -> None:
             "missing_question_id",
         ),
         (
-            [{"question_id": "q1", "assessment": "NEEDS_REVIEW"}],
+            [{"question_id": "q1", "assessment": ""}],
             [{"question_id": "q1", "assessment": "GOOD"}],
             "unscored_row",
         ),
@@ -133,3 +133,14 @@ def test_zero_discordant_pairs_are_rejected() -> None:
     assert evidence["discordant"] == 0
     assert evidence["p_value"] == 1.0
     assert evidence["reason"] == "no_discordant_pairs"
+
+
+def test_needs_review_is_counted_as_an_official_non_good_outcome() -> None:
+    evidence = paired_sign_evidence(
+        {"rows": [{"question_id": "q1", "assessment": "NEEDS_REVIEW"}]},
+        {"rows": [{"question_id": "q1", "assessment": "GOOD"}]},
+    )
+
+    assert evidence["valid"] is True
+    assert evidence["wins"] == 1
+    assert evidence["losses"] == 0
