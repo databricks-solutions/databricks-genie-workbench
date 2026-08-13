@@ -375,6 +375,125 @@ def _is_permission_error(e: Exception) -> bool:
     return "403" in s or "permission" in s or "forbidden" in s
 
 
+def _is_timeout_error(e: Exception) -> bool:
+    """Detect read/connect timeouts from the SDK / urllib3.
+
+    Matches ``timeout``, ``timed out`` (e.g. ``Read timed out``), and the
+    common timeout exception class names. The create POST can succeed
+    server-side while the response never returns within the HTTP read
+    timeout — so callers must reconcile rather than assume failure. The old
+    ``"timeout" in error_str`` check missed ``"Read timed out"`` entirely.
+    """
+    s = str(e).lower()
+    if "timeout" in s or "timed out" in s:
+        return True
+    return type(e).__name__ in (
+        "ReadTimeout", "ConnectTimeout", "ReadTimeoutError", "TimeoutError",
+    )
+
+
+def _non_retrying_client(base_client):
+    """Return a client whose config mirrors ``base_client`` but does NOT retry.
+
+    The create POST (/api/2.0/genie/spaces) is **not idempotent**. The SDK's
+    default retry loop re-fires the same POST on a read timeout (up to
+    retry_timeout_seconds, default 300s) — so a single slow-but-successful
+    create becomes several duplicate spaces before our code ever sees the
+    error. Cloning the config with retry_timeout_seconds=1 makes a timeout
+    raise immediately (one POST, at most one space); the reconcile-by-name
+    path then resolves whether that single POST actually landed.
+
+    Falls back to the original client if cloning fails — correct auth beats
+    the retry optimization.
+    """
+    import copy
+
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        cfg = copy.deepcopy(base_client.config)
+        cfg.retry_timeout_seconds = 1  # effectively "do not retry"
+        return WorkspaceClient(config=cfg)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("Could not build non-retrying client (%s); using default", e)
+        return base_client
+
+
+# Genie appends a timestamp to the title on name collision, e.g. a second
+# space created as "Foo" is stored as "Foo 2026-08-12 12:03:55". (Verified
+# live against the Genie API.) Reconcile must match both the exact title AND
+# the collision-renamed variants, or a timed-out retry that landed under a
+# renamed title would be missed and returned as yet another duplicate.
+_COLLISION_SUFFIX_RE = re.compile(r"^\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?Z?$")
+
+# The Genie list endpoint is eventually consistent — a just-created space does
+# not appear in list_genie_spaces() immediately (observed ~10s lag live). A
+# single lookup right after a timeout therefore misses the space it is trying
+# to reconcile, so poll with backoff long enough to outlast propagation.
+_RECONCILE_ATTEMPTS = 6
+_RECONCILE_DELAYS = (2, 3, 3, 4, 5)  # seconds between attempts (~17s worst case)
+
+
+def _title_matches_requested(actual_title: str, requested: str) -> bool:
+    """True if ``actual_title`` is the requested title or a Genie
+    collision-renamed variant of it ("<requested> <timestamp>")."""
+    actual = (actual_title or "").strip()
+    if actual == requested:
+        return True
+    if actual.startswith(requested):
+        return bool(_COLLISION_SUFFIX_RE.match(actual[len(requested):]))
+    return False
+
+
+def _find_space_by_display_name(display_name: str, *, poll: bool = False) -> dict | None:
+    """Look up an existing Genie Agent created under this display name.
+
+    Used to reconcile after a create timeout: the space may already exist
+    server-side even though the POST response never returned. Matches both the
+    exact title and Genie's collision-renamed variants ("<name> <timestamp>").
+    When several match, returns the one with the EARLIEST create_time — the
+    original create, not a duplicate spawned by a retry. Never raises —
+    reconciliation is best-effort.
+
+    With ``poll=True``, retries the lookup with backoff to outlast the list
+    endpoint's eventual-consistency lag.
+    """
+    import time as _t
+
+    target = display_name.strip()
+    attempts = _RECONCILE_ATTEMPTS if poll else 1
+
+    for i in range(attempts):
+        try:
+            from backend.services.genie_client import list_genie_spaces
+
+            spaces = list_genie_spaces()
+        except Exception as list_err:  # pragma: no cover - defensive
+            logger.warning("Reconcile lookup failed for '%s': %s", display_name, list_err)
+            spaces = []
+
+        matches = [
+            s for s in spaces
+            if (s.get("space_id") or s.get("id"))
+            and _title_matches_requested(s.get("title") or s.get("display_name") or "", target)
+        ]
+        if matches:
+            # Earliest create_time wins — the original, not a renamed retry.
+            # Missing create_time sorts last (sentinel beats ISO timestamps).
+            matches.sort(key=lambda s: s.get("create_time") or "9999")
+            return matches[0]
+
+        if poll and i < attempts - 1:
+            delay = _RECONCILE_DELAYS[min(i, len(_RECONCILE_DELAYS) - 1)]
+            logger.info(
+                "Reconcile: '%s' not visible yet (attempt %d/%d) — retrying in %ds "
+                "(list is eventually consistent)", display_name, i + 1, attempts, delay,
+            )
+            _t.sleep(delay)
+
+    return None
+
+
 def create_genie_space(
     display_name: str,
     merged_config: dict,
@@ -424,6 +543,10 @@ def create_genie_space(
     client = get_workspace_client()
     host = get_databricks_host()
 
+    # The create POST is non-idempotent — use a client that does NOT auto-retry,
+    # so a read timeout can't silently re-fire the POST and create duplicates.
+    create_client = _non_retrying_client(client)
+
     candidates = _build_path_candidates(parent_path)
     last_error: Exception | None = None
 
@@ -432,7 +555,7 @@ def create_genie_space(
 
         try:
             t_api = _time.monotonic()
-            response = client.api_client.do(
+            response = create_client.api_client.do(
                 method="POST",
                 path="/api/2.0/genie/spaces",
                 body={
@@ -471,8 +594,34 @@ def create_genie_space(
             error_str = str(e).lower()
             if "400" in error_str or "invalid" in error_str:
                 raise ValueError(f"The configuration is invalid: {e}")
-            if "timeout" in error_str:
-                raise TimeoutError("Request timed out. Please try again.")
+            if _is_timeout_error(e):
+                # The POST may have succeeded server-side even though the
+                # response timed out. Reconcile by looking the space up by
+                # display name (polling to outlast list lag) so retries are
+                # idempotent and we never leave a phantom failure.
+                logger.warning(
+                    "Create request for '%s' timed out — reconciling against the API",
+                    display_name,
+                )
+                existing = _find_space_by_display_name(display_name, poll=True)
+                if existing:
+                    genie_space_id = existing.get("space_id") or existing.get("id")
+                    space_url = f"{host}/genie/rooms/{genie_space_id}"
+                    logger.info(
+                        "Reconciled timed-out create for '%s' to existing space %s",
+                        display_name, genie_space_id,
+                    )
+                    return {
+                        "genie_space_id": genie_space_id,
+                        "display_name": display_name,
+                        "space_url": space_url,
+                        "parent_path": target_path,
+                        "reconciled": True,
+                    }
+                raise TimeoutError(
+                    "Request timed out and no matching agent was found. "
+                    "Please check your Genie Agents list before retrying."
+                )
             if _is_permission_error(e):
                 break
             raise
