@@ -278,7 +278,10 @@ class JoinSpecSide(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     identifier: str
-    alias: str
+    # ``alias`` appears in some programmatic payloads but is not emitted
+    # by the current Genie UI and is not required by the serialized_space
+    # validation contract. Preserve it when present without requiring it.
+    alias: str | None = None
 
 
 class JoinSpec(BaseModel):
