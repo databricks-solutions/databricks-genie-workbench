@@ -75,6 +75,7 @@ from genie_space_optimizer.optimization.benchmark_quality import (
     build_actionable_warning_repair,
     review_benchmark_format_coverage,
     review_benchmark_quality,
+    summarize_quality_counts,
 )
 from genie_space_optimizer.optimization.benchmarking import generate_benchmarks
 from genie_space_optimizer.optimization.benchmarking import (
@@ -1108,6 +1109,16 @@ def _final_quality_result(benchmark: dict) -> dict:
 
 
 _final_quality_results = [_final_quality_result(b) for b in _benchmarks]
+_quality_counts = summarize_quality_counts(
+    _final_quality_results,
+    additional_excluded=len(_rejected_benchmarks_by_id),
+    duplicate_normalized_question=len(_duplicate_rejections),
+    review_not_run=sum(
+        1
+        for finding in _quality_findings_by_key.values()
+        if finding.get("code") == "REVIEW_NOT_RUN"
+    ),
+)
 _format_coverage = review_benchmark_format_coverage(_benchmarks)
 for _finding_row in _format_coverage.get("findings", []):
     _finding_key = "|".join(
@@ -1161,26 +1172,7 @@ _qc_payload: dict[str, Any] = {
         if key != "findings"
     },
     "quality_findings": list(_quality_findings_by_key.values()),
-    "quality_counts": {
-        "total": len(_benchmarks),
-        "trusted": sum(
-            1
-            for result in _final_quality_results
-            if result.get("disposition") == "passed"
-        ),
-        "warnings": sum(
-            1
-            for result in _final_quality_results
-            if result.get("disposition") == "warning"
-        ),
-        "excluded": len(_rejected_benchmarks_by_id) + len(_duplicate_rejections),
-        "duplicate_normalized_question": len(_duplicate_rejections),
-        "review_not_run": sum(
-            1
-            for f in _quality_findings_by_key.values()
-            if f.get("code") == "REVIEW_NOT_RUN"
-        ),
-    },
+    "quality_counts": _quality_counts,
     "proposed_changes": [
         {
             "question_id": f.get("question_id"),

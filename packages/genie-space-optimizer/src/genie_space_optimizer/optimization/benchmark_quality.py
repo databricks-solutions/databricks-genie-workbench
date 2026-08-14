@@ -51,6 +51,7 @@ _NON_ACTIONABLE_WARNING_CODES = frozenset(
     {
         "GT_EXECUTION_NOT_RUN",
         "REVIEW_NOT_RUN",
+        "DATA_VALUE_MISMATCH",
         "VALUE_ACCESS_GAP",
         "VOLATILE_TIME_REFERENCE",
     }
@@ -161,6 +162,58 @@ def _finding(
         "proposed_question": proposed_question_value,
         "proposed_sql": proposed_sql_value,
         "recommended_action": recommended_action,
+    }
+
+
+def summarize_quality_counts(
+    benchmark_results: list[dict[str, Any]],
+    *,
+    additional_excluded: int = 0,
+    duplicate_normalized_question: int = 0,
+    review_not_run: int = 0,
+) -> dict[str, int]:
+    """Count unique final benchmark dispositions for the QC artifact.
+
+    ``benchmark_results`` may contain all reviewed rows or only the final
+    eligible corpus. Callers pass run-local exclusions separately in the
+    latter case. Duplicate rejections remain a separate diagnostic because
+    they are rendered in the mutation ledger rather than the quality groups.
+    """
+    rank = {"passed": 0, "warning": 1, "excluded": 2}
+    dispositions_by_question: dict[str, str] = {}
+    for index, result in enumerate(benchmark_results):
+        disposition = str(result.get("disposition") or "")
+        if disposition not in rank:
+            continue
+        question_key = str(
+            result.get("question_id")
+            or result.get("question")
+            or f"benchmark-{index}"
+        )
+        current = dispositions_by_question.get(question_key)
+        if current is None or rank[disposition] > rank[current]:
+            dispositions_by_question[question_key] = disposition
+
+    trusted = sum(
+        1 for disposition in dispositions_by_question.values() if disposition == "passed"
+    )
+    warnings = sum(
+        1 for disposition in dispositions_by_question.values() if disposition == "warning"
+    )
+    excluded = sum(
+        1
+        for disposition in dispositions_by_question.values()
+        if disposition == "excluded"
+    ) + max(0, int(additional_excluded or 0))
+    return {
+        "total": trusted + warnings + excluded,
+        "trusted": trusted,
+        "warnings": warnings,
+        "excluded": excluded,
+        "duplicate_normalized_question": max(
+            0, int(duplicate_normalized_question or 0)
+        ),
+        "review_not_run": max(0, int(review_not_run or 0)),
     }
 
 
@@ -885,34 +938,14 @@ def review_benchmark_quality(
     reviewable_ids = [qid for qid, _ in reviewable_pairs]
     reviewable = [benchmark for _, benchmark in reviewable_pairs]
 
+    pending_predicate_mismatches: dict[str, list[dict[str, Any]]] = {}
     data_profile = config.get("_data_profile")
     if isinstance(data_profile, dict) and data_profile and reviewable:
         predicate_results = validate_predicate_values(reviewable, data_profile)
-        for qid, benchmark, result in zip(reviewable_ids, reviewable, predicate_results):
+        for qid, result in zip(reviewable_ids, predicate_results):
             if result.get("valid", True):
                 continue
-            proposed_sql = str(benchmark.get("expected_sql") or "")
-            for mismatch in result.get("mismatches") or []:
-                suggestion = mismatch.get("suggestion")
-                literal = mismatch.get("literal")
-                if suggestion and literal:
-                    proposed_sql = proposed_sql.replace(f"'{literal}'", f"'{suggestion}'")
-            safe_proposal = proposed_sql != str(benchmark.get("expected_sql") or "")
-            findings.append(
-                _finding(
-                    question_id=qid,
-                    question=str(benchmark.get("question") or ""),
-                    source=_source(benchmark),
-                    category=DATA_VALIDITY,
-                    code="DATA_VALUE_MISMATCH",
-                    severity="warning" if safe_proposal else "error",
-                    explanation="Ground-truth SQL uses filter values not found in the data profile.",
-                    expected_sql=str(benchmark.get("expected_sql") or ""),
-                    evidence=result.get("mismatches"),
-                    proposed_sql=proposed_sql if safe_proposal else None,
-                    recommended_action="repair_benchmark_sql",
-                )
-            )
+            pending_predicate_mismatches[qid] = list(result.get("mismatches") or [])
 
     for qid, benchmark in reviewable_pairs:
         findings.extend(
@@ -923,6 +956,7 @@ def review_benchmark_quality(
             )
         )
 
+    execution_results_by_id: dict[str, dict[str, Any]] = {}
     if reviewable:
         execution_results = validate_gt_returns_results(
             reviewable,
@@ -933,6 +967,7 @@ def review_benchmark_quality(
             schema=schema,
         )
         for qid, benchmark, result in zip(reviewable_ids, reviewable, execution_results):
+            execution_results_by_id[qid] = result
             if not result.get("has_results", True) and result.get("error") is None:
                 findings.append(
                     _finding(
@@ -960,6 +995,41 @@ def review_benchmark_quality(
                         expected_sql=str(benchmark.get("expected_sql") or ""),
                     )
                 )
+
+    for qid, benchmark in reviewable_pairs:
+        mismatches = pending_predicate_mismatches.get(qid)
+        if not mismatches:
+            continue
+        execution_result = execution_results_by_id.get(qid)
+        if (
+            execution_result
+            and execution_result.get("has_results", False)
+            and execution_result.get("error") is None
+        ):
+            logger.info(
+                "Ignoring bounded-profile value miss for %s because the "
+                "ground-truth SQL returned rows",
+                qid,
+            )
+            continue
+        findings.append(
+            _finding(
+                question_id=qid,
+                question=str(benchmark.get("question") or ""),
+                source=_source(benchmark),
+                category=DATA_VALIDITY,
+                code="DATA_VALUE_MISMATCH",
+                severity="warning",
+                explanation=(
+                    "A filter value was not observed in the bounded data profile. "
+                    "Profiles are advisory and can be incomplete, especially for "
+                    "metric views; ground-truth SQL execution is authoritative."
+                ),
+                expected_sql=str(benchmark.get("expected_sql") or ""),
+                evidence=mismatches,
+                recommended_action="verify_filter_value",
+            )
+        )
 
     semantic_findings, incomplete_ids = _llm_review(
         reviewable,
@@ -1018,11 +1088,8 @@ def review_benchmark_quality(
         "excluded": excluded,
         "findings": findings,
         "benchmark_results": benchmark_results,
-        "counts": {
-            "total": len(benchmarks),
-            "trusted": sum(1 for r in benchmark_results if r["disposition"] == "passed"),
-            "warnings": sum(1 for r in benchmark_results if r["disposition"] == "warning"),
-            "excluded": sum(1 for r in benchmark_results if r["disposition"] == "excluded"),
-            "review_not_run": len(incomplete_ids),
-        },
+        "counts": summarize_quality_counts(
+            benchmark_results,
+            review_not_run=len(incomplete_ids),
+        ),
     }

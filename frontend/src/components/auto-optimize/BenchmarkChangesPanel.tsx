@@ -349,8 +349,38 @@ function BenchmarkQuality({ qc }: { qc: GSOBenchmarkQC }) {
   const counts = qc.qualityCounts
   if (!counts && findings.length === 0 && !qc.qualityReviewStatus) return null
 
-  const errors = findings.filter((f) => f.severity === "error")
-  const warnings = findings.filter((f) => f.severity !== "error")
+  const corpusFindings = findings.filter((finding) =>
+    finding.question_id === "__corpus__" || finding.category === "corpus_coverage",
+  )
+  const questionFindings = findings.filter((finding) =>
+    finding.question_id !== "__corpus__" && finding.category !== "corpus_coverage",
+  )
+  const questionKey = (finding: GSOBenchmarkQualityFinding, index: number) =>
+    finding.question_id || finding.question || `finding-${index}`
+  const excludedQuestionIds = new Set(
+    questionFindings
+      .map((finding, index) => ({ finding, key: questionKey(finding, index) }))
+      .filter(({ finding }) => finding.severity === "error")
+      .map(({ key }) => key),
+  )
+  const errors = questionFindings.filter((finding, index) =>
+    excludedQuestionIds.has(questionKey(finding, index)),
+  )
+  const warnings = questionFindings.filter((finding, index) =>
+    finding.severity !== "error"
+    && !excludedQuestionIds.has(questionKey(finding, index)),
+  )
+  const warningQuestionIds = new Set(
+    warnings.map((finding, index) => questionKey(finding, index)),
+  )
+  const excludedCount = Math.max(counts?.excluded ?? 0, excludedQuestionIds.size)
+  const warningCount = Math.max(counts?.warnings ?? 0, warningQuestionIds.size)
+  const storedTrusted = counts?.trusted ?? 0
+  const total = Math.max(
+    counts?.total ?? 0,
+    storedTrusted + warningCount + excludedCount,
+  )
+  const trustedCount = Math.max(0, total - warningCount - excludedCount)
   const coverage = qc.semanticReviewCoverage == null
     ? null
     : Math.round(qc.semanticReviewCoverage * 100)
@@ -367,16 +397,16 @@ function BenchmarkQuality({ qc }: { qc: GSOBenchmarkQC }) {
             Question clarity, ground-truth alignment, SQL validity, and data checks
           </p>
         </div>
-        {counts && (
+        {(counts || findings.length > 0) && (
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium">
             <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-600 dark:text-emerald-400">
-              {counts.trusted} trusted
+              {trustedCount} trusted
             </span>
             <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-600 dark:text-amber-400">
-              {counts.warnings} warnings
+              {warningCount} warnings
             </span>
             <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-red-600 dark:text-red-400">
-              {counts.excluded} excluded
+              {excludedCount} excluded
             </span>
           </div>
         )}
@@ -396,12 +426,21 @@ function BenchmarkQuality({ qc }: { qc: GSOBenchmarkQC }) {
       <QualityFindingGroup
         title="Excluded from evaluation"
         findings={errors}
+        count={excludedCount}
         tone="error"
         defaultExpanded
       />
       <QualityFindingGroup
         title="Warnings"
         findings={warnings}
+        count={warningCount}
+        tone="warning"
+        defaultExpanded={false}
+      />
+      <QualityFindingGroup
+        title="Corpus coverage"
+        findings={corpusFindings}
+        count={corpusFindings.length}
         tone="warning"
         defaultExpanded={false}
       />
@@ -412,17 +451,19 @@ function BenchmarkQuality({ qc }: { qc: GSOBenchmarkQC }) {
 function QualityFindingGroup({
   title,
   findings,
+  count,
   tone,
   defaultExpanded,
 }: {
   title: string
   findings: GSOBenchmarkQualityFinding[]
+  count: number
   tone: "error" | "warning"
   defaultExpanded: boolean
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const contentId = useId()
-  if (findings.length === 0) return null
+  if (count === 0) return null
 
   return (
     <div className="border-t border-default pt-2">
@@ -434,15 +475,19 @@ function QualityFindingGroup({
         onClick={() => setExpanded((value) => !value)}
       >
         <span className={`text-[11px] font-semibold uppercase tracking-wider ${tone === "error" ? "text-red-500" : "text-amber-600 dark:text-amber-400"}`}>
-          {title} ({findings.length})
+          {title} ({count})
         </span>
         <ChevronDown className={`h-3.5 w-3.5 text-muted transition-transform ${expanded ? "rotate-180" : ""}`} />
       </button>
       {expanded && (
         <div id={contentId} className="mt-2 space-y-2">
-          {findings.map((finding, index) => (
+          {findings.length > 0 ? findings.map((finding, index) => (
             <QualityFindingRow key={`${finding.question_id}-${finding.code}-${index}`} finding={finding} />
-          ))}
+          )) : (
+            <p className="rounded-md border border-default bg-surface/70 px-3 py-2 text-[11px] text-muted">
+              Finding details are unavailable for this historical run.
+            </p>
+          )}
         </div>
       )}
     </div>
