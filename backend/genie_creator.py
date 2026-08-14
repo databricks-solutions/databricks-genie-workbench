@@ -424,7 +424,17 @@ def _non_retrying_client(base_client):
 # live against the Genie API.) Reconcile must match both the exact title AND
 # the collision-renamed variants, or a timed-out retry that landed under a
 # renamed title would be missed and returned as yet another duplicate.
-_COLLISION_SUFFIX_RE = re.compile(r"^\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?Z?$")
+# Tolerant of format variation across regions/API versions: optional
+# surrounding brackets, optional seconds, optional fractional/Z. The required
+# date+time structure (YYYY-MM-DD HH:MM) is what rejects prefix-sibling false
+# matches like "Sales Report" for requested "Sales". The false-match risk that
+# would argue for a stricter pattern is independently guarded by the
+# created_after window in _find_space_by_display_name (a pre-existing sibling
+# is excluded by create_time), so we favor matching the customer's actual
+# title format — reported duplicates looked like "... 2026-08-10 13:17".
+_COLLISION_SUFFIX_RE = re.compile(
+    r"^\s+\[?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?Z?\]?$"
+)
 
 # The Genie list endpoint is eventually consistent — a just-created space does
 # not appear in list_genie_spaces() immediately (observed ~10s lag live). A
@@ -445,15 +455,29 @@ def _title_matches_requested(actual_title: str, requested: str) -> bool:
     return False
 
 
-def _find_space_by_display_name(display_name: str, *, poll: bool = False) -> dict | None:
-    """Look up an existing Genie Agent created under this display name.
+def _find_space_by_display_name(
+    display_name: str,
+    *,
+    created_after: str | None = None,
+    poll: bool = False,
+) -> dict | None:
+    """Look up a Genie Agent created under this display name BY THIS attempt.
 
-    Used to reconcile after a create timeout: the space may already exist
-    server-side even though the POST response never returned. Matches both the
-    exact title and Genie's collision-renamed variants ("<name> <timestamp>").
-    When several match, returns the one with the EARLIEST create_time — the
-    original create, not a duplicate spawned by a retry. Never raises —
-    reconciliation is best-effort.
+    Used to reconcile after a create timeout: the space may exist server-side
+    even though the POST response never returned. Matches the exact title and
+    Genie's collision-renamed variants ("<name> <timestamp>").
+
+    ``created_after`` (ISO-8601, the moment just before the POST) scopes the
+    match to spaces created by *this* attempt. This is critical: a same-named
+    space may already have existed before this create. Binding to that
+    pre-existing space and later calling update_space on it would OVERWRITE an
+    unrelated space (data loss). Only spaces with ``create_time >= created_after``
+    are eligible; if none qualify, we do NOT reconcile (return None → caller
+    raises a clear timeout).
+
+    Among eligible matches, returns the EARLIEST create_time — the original
+    create for this attempt, not a duplicate spawned by an SDK/manual retry.
+    Never raises — reconciliation is best-effort.
 
     With ``poll=True``, retries the lookup with backoff to outlast the list
     endpoint's eventual-consistency lag.
@@ -472,14 +496,24 @@ def _find_space_by_display_name(display_name: str, *, poll: bool = False) -> dic
             logger.warning("Reconcile lookup failed for '%s': %s", display_name, list_err)
             spaces = []
 
-        matches = [
-            s for s in spaces
-            if (s.get("space_id") or s.get("id"))
-            and _title_matches_requested(s.get("title") or s.get("display_name") or "", target)
-        ]
+        matches = []
+        for s in spaces:
+            if not (s.get("space_id") or s.get("id")):
+                continue
+            if not _title_matches_requested(s.get("title") or s.get("display_name") or "", target):
+                continue
+            # Scope to THIS attempt: exclude spaces created before the POST.
+            # A missing/blank create_time is ambiguous — exclude it when a
+            # cutoff is set, since we cannot prove it belongs to this attempt.
+            if created_after is not None:
+                ct = s.get("create_time") or ""
+                if not ct or ct < created_after:
+                    continue
+            matches.append(s)
+
         if matches:
-            # Earliest create_time wins — the original, not a renamed retry.
-            # Missing create_time sorts last (sentinel beats ISO timestamps).
+            # Earliest create_time wins — the original for this attempt, not a
+            # renamed retry duplicate. (All are >= created_after already.)
             matches.sort(key=lambda s: s.get("create_time") or "9999")
             return matches[0]
 
@@ -550,6 +584,16 @@ def create_genie_space(
     candidates = _build_path_candidates(parent_path)
     last_error: Exception | None = None
 
+    # Wall-clock instant just before the first POST. Used to scope timeout
+    # reconciliation to spaces created by THIS attempt (the API's create_time
+    # is wall-clock ISO-8601 Z). A small safety margin absorbs minor client/
+    # server clock skew so we don't exclude the space we just created.
+    from datetime import datetime, timedelta, timezone
+    request_start = (
+        (datetime.now(timezone.utc) - timedelta(seconds=5))
+        .strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    )
+
     for target_path in candidates:
         logger.info(f"Attempting to create Genie Space '{display_name}' in {target_path}")
 
@@ -603,7 +647,9 @@ def create_genie_space(
                     "Create request for '%s' timed out — reconciling against the API",
                     display_name,
                 )
-                existing = _find_space_by_display_name(display_name, poll=True)
+                existing = _find_space_by_display_name(
+                    display_name, created_after=request_start, poll=True
+                )
                 if existing:
                     genie_space_id = existing.get("space_id") or existing.get("id")
                     space_url = f"{host}/genie/rooms/{genie_space_id}"

@@ -852,15 +852,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           streamingMsgIdRef.current = null
           pendingToolCalls = []
 
-          // A create_space was attempted but no `created` event arrived (timed
-          // out / errored). The space MAY exist server-side, so guard against a
-          // reflexive re-click spawning a duplicate — unless we're about to
-          // auto-reconnect (that path continues the same attempt).
-          if (createInFlightRef.current && needsContinuation !== "connection_lost") {
-            createInFlightRef.current = false
-            if (!createdSpaceIdRef.current) setCreateOutcomeUnknown(true)
-          }
-
           // Auto-reconnect on proxy/network disconnects. The decision (reconnect
           // vs stop, and why) lives in the pure, unit-tested decideReconnect —
           // the component must NOT reimplement it inline (that duplication is
@@ -875,14 +866,18 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               currentCount: reconnectCountRef.current,
             })
             if (decision.action === "reconnect") {
+              // Same attempt continues — do NOT resolve the in-flight create yet.
               reconnectCountRef.current = decision.attempt
               setAgentStatus(`Reconnecting (attempt ${decision.attempt}/${MAX_AUTO_RECONNECTS})...`)
               setTimeout(() => sendMessage(""), 2000 * decision.attempt)
               return
             }
-            // Stop. Only "cap-reached" warrants the resume-prompt message; a
-            // space-already-created stop is a clean success (space exists), and
-            // not-a-drop won't occur on this branch.
+            // Terminal stop (cap-reached or no session). The attempt is over —
+            // if a create was in flight and unconfirmed, mark it unknown so a
+            // re-click can't spawn a duplicate.
+            resolveInFlightCreateAsUnknown()
+            // Only "cap-reached" warrants the resume-prompt message; a
+            // space-already-created stop is a clean success (space exists).
             if (decision.reason === "cap-reached") {
               setMessages((prev) => [
                 ...prev,
@@ -907,6 +902,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             requestAnimationFrame(() => sendMessage(""))
             return
           }
+
+          // Clean terminal end (error event or normal done, no continuation).
+          // Resolve any unconfirmed in-flight create as unknown-outcome.
+          resolveInFlightCreateAsUnknown()
 
           reconnectCountRef.current = 0
           setIsStreaming(false)
@@ -934,8 +933,23 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     }
   }
 
+  // If a create_space attempt is in flight when a turn terminates for ANY
+  // reason (clean error/done, reconnect cap exhausted, or the user hitting
+  // Stop) and no `created` event confirmed success, the space MAY exist
+  // server-side. Mark the outcome unknown so Approve & Create requires an
+  // explicit confirm before it can spawn a duplicate.
+  const resolveInFlightCreateAsUnknown = () => {
+    if (createInFlightRef.current) {
+      createInFlightRef.current = false
+      if (!createdSpaceIdRef.current) setCreateOutcomeUnknown(true)
+    }
+  }
+
   const handleStop = () => {
     stopRef.current?.()
+    // Stop aborts the fetch; the AbortError never reaches onDone, so resolve
+    // an in-flight create's unknown outcome here.
+    resolveInFlightCreateAsUnknown()
     setIsStreaming(false)
     setAgentStatus(null)
     queuedMessageRef.current = null

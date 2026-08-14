@@ -77,7 +77,15 @@ def _get_default_client() -> WorkspaceClient:
     global _client, _auth_logged
 
     if _client is None:
-        _client = WorkspaceClient(product=PRODUCT_NAME, product_version=PRODUCT_VERSION)
+        # Widen the read timeout to match the OBO client. Genie Space creation
+        # can fall back to the SP on scope errors, and create can exceed the
+        # SDK's 60s default read timeout on large configs — without this, an SP
+        # create would hit the same timeout that drove the duplicate-space bug.
+        _client = WorkspaceClient(
+            config=Config(http_timeout_seconds=300),
+            product=PRODUCT_NAME,
+            product_version=PRODUCT_VERSION,
+        )
 
         if not _auth_logged:
             logger.info("=== Databricks SDK Authentication ===")
