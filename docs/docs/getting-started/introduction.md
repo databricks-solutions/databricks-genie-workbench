@@ -15,7 +15,7 @@ Genie Workbench provides five capabilities that form a continuous improvement lo
 2. **Score** — A rule-based IQ Scanner that evaluates agent quality across 12 checks and assigns a maturity tier.
 3. **Optimize** — A benchmark-driven pipeline (Auto-Optimize / GSO) that measures real accuracy, diagnoses failures, and iteratively improves the agent configuration.
 4. **Track** — Persistent history of every scan, optimization run, and configuration change, stored in Lakebase.
-5. **Watch** — GenieWatch, an observability surface that reports per-Agent cost, usage, feedback, and executed-resource lineage from Databricks system tables.
+5. **Watch** — GenieWatch reports per-Agent cost, usage, feedback, executed-resource lineage, and manager-reviewable benchmark candidate gaps.
 
 :::note
 An earlier LLM-based "Fix" capability (Quick Fix) has been removed. Auto-Optimize is now the only path that mutates Agent configuration.
@@ -60,7 +60,7 @@ flowchart LR
 - **IQ Scanner** evaluates the agent and produces findings with recommended next steps.
 - **Auto-Optimize** runs a deeper benchmark-driven pipeline for accuracy improvement.
 - **Track** persists all results to Lakebase so you can see progress over time.
-- **GenieWatch** reports how the Agent is actually being used in production — cost, query volume, user feedback, and which tables answered real questions.
+- **GenieWatch** reports how the Agent is used in production: cost, query volume, user feedback, executed tables, and repeated or unsuccessful question families that are not exact matches for existing benchmarks. Candidate gaps require manager review; GenieWatch does not add benchmarks or change the Agent.
 - The cycle repeats: after optimization, re-scan to see the updated score.
 
 ## Next Steps

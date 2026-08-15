@@ -108,6 +108,25 @@ export interface TopQuery {
   statement_text: string | null
 }
 
+export interface TrafficGapCandidate {
+  candidate_id: string
+  occurrence_count: number
+  distinct_user_count: number
+  failed_count: number
+  negative_feedback_count: number
+  signals: Array<'negative_feedback' | 'failed' | 'cross_user_repeat'>
+  conversation_urls: string[]
+  first_seen_at: string | null
+  last_seen_at: string | null
+}
+
+export interface TrafficGapAnalysis {
+  scanned_message_count: number
+  family_count: number
+  covered_family_count: number
+  candidates: TrafficGapCandidate[]
+}
+
 export interface CostPerConversation {
   conversation_id: string
   user_email: string | null

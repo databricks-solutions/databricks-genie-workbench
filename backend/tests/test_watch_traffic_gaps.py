@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from backend.watch.services.traffic_gaps import (
+    TrafficMessage,
+    analyze_traffic_gaps,
+    normalize_question,
+)
+
+
+def _message(
+    content: str,
+    *,
+    conversation_id: str,
+    user_key: str = "user-1",
+    status: str = "COMPLETED",
+    feedback: str | None = None,
+) -> TrafficMessage:
+    return TrafficMessage(
+        content=content,
+        conversation_id=conversation_id,
+        user_key=user_key,
+        status=status,
+        feedback=feedback,
+        created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+
+
+def test_normalization_groups_literal_variants_without_fuzzy_matching() -> None:
+    assert normalize_question("Revenue in 2025?") == normalize_question(
+        "revenue in 2024"
+    )
+    assert normalize_question("revenue by country") != normalize_question(
+        "revenue for country"
+    )
+    assert normalize_question('Show "gross margin" by region') != normalize_question(
+        'Show "net revenue" by region'
+    )
+    assert normalize_question("profit/loss") != normalize_question("profit-loss")
+
+
+def test_normalization_ignores_surrounding_whitespace_around_punctuation() -> None:
+    canonical = normalize_question("Revenue?")
+    assert canonical == "revenue"
+    for variant in ("Revenue? ", "  Revenue?  ", "Revenue?\t", "Revenue!\n ", "Revenue . "):
+        assert normalize_question(variant) == canonical
+    assert "revenue" in normalize_question("What's revenue for John's region?")
+
+
+def test_covered_family_is_not_returned() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                "Revenue in 2025",
+                conversation_id="conv-1",
+                status="FAILED",
+            )
+        ],
+        benchmark_questions=["Revenue in 2024"],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.covered_family_count == 1
+    assert result.candidates == []
+
+
+def test_cross_user_repeat_is_actionable_but_single_user_repeat_is_not() -> None:
+    repeated = [
+        _message("Show churn for 2025", conversation_id="conv-1", user_key="u1"),
+        _message("Show churn for 2024", conversation_id="conv-2", user_key="u2"),
+    ]
+    result = analyze_traffic_gaps(
+        messages=repeated,
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+    assert len(result.candidates) == 1
+    assert result.candidates[0].signals == ["cross_user_repeat"]
+    assert result.candidates[0].distinct_user_count == 2
+
+    same_user = [
+        _message("Show churn for 2025", conversation_id="conv-1"),
+        _message("Show churn for 2024", conversation_id="conv-2"),
+    ]
+    result = analyze_traffic_gaps(
+        messages=same_user,
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+    assert result.candidates == []
+
+
+def test_failures_and_negative_feedback_are_actionable() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message("Question one", conversation_id="conv-1", status="FAILED"),
+            _message(
+                "Question two",
+                conversation_id="conv-2",
+                feedback="NEGATIVE",
+            ),
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert [candidate.signals for candidate in result.candidates] == [
+        ["negative_feedback"],
+        ["failed"],
+    ]
+
+
+def test_in_flight_and_cancelled_messages_are_not_evidence() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                "Show churn for 2025",
+                conversation_id="conv-1",
+                user_key="u1",
+                status="SUBMITTED",
+            ),
+            _message(
+                "Show churn for 2024",
+                conversation_id="conv-2",
+                user_key="u2",
+                status="CANCELLED",
+            ),
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.scanned_message_count == 0
+    assert result.candidates == []
+
+
+def test_expired_query_results_count_as_completed_traffic_not_failures() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                "Show refunds by region",
+                conversation_id="conv-1",
+                user_key="u1",
+                status="QUERY_RESULT_EXPIRED",
+            ),
+            _message(
+                "Show refunds by region",
+                conversation_id="conv-2",
+                user_key="u2",
+                status="QUERY_RESULT_EXPIRED",
+            ),
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.scanned_message_count == 2
+    assert result.family_count == 1
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.signals == ["cross_user_repeat"]
+    assert candidate.occurrence_count == 2
+    assert candidate.failed_count == 0
+
+
+def test_expired_query_result_family_can_be_covered_by_a_benchmark() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                "Show refunds by region",
+                conversation_id="conv-1",
+                user_key="u1",
+                status="QUERY_RESULT_EXPIRED",
+            ),
+        ],
+        benchmark_questions=["Show refunds by region"],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.scanned_message_count == 1
+    assert result.covered_family_count == 1
+    assert result.candidates == []
+
+
+def test_response_has_opaque_ids_no_raw_content_and_at_most_three_links() -> None:
+    messages = [
+        _message(
+            f"Show orders for {2020 + index}",
+            conversation_id=f"conv-{index}",
+            user_key=f"user-{index}",
+        )
+        for index in range(5)
+    ]
+    result = analyze_traffic_gaps(
+        messages=messages,
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    payload = result.model_dump(mode="json")
+    assert payload["candidates"][0]["candidate_id"] == "candidate-1"
+    assert len(payload["candidates"][0]["conversation_urls"]) == 3
+    serialized = result.model_dump_json()
+    assert "Show orders" not in serialized
+    assert "user-" not in serialized
+    assert "normalized" not in serialized
+
+
+def test_evidence_links_prioritize_signal_bearing_conversations() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message("Show orders for 2021", conversation_id="conv-1"),
+            _message("Show orders for 2022", conversation_id="conv-2"),
+            _message("Show orders for 2023", conversation_id="conv-3"),
+            _message(
+                "Show orders for 2024",
+                conversation_id="conv-4",
+                status="FAILED",
+            ),
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.candidates[0].conversation_urls[0] == "https://example/conv-4"
+
+
+def test_cross_user_evidence_links_include_two_users() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                f"Show orders for {2021 + index}",
+                conversation_id=f"conv-{index}",
+                user_key="u1",
+            )
+            for index in range(3)
+        ]
+        + [
+            _message(
+                "Show orders for 2024",
+                conversation_id="conv-u2",
+                user_key="u2",
+            )
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert "https://example/conv-u2" in result.candidates[0].conversation_urls
+
+
+def test_cross_user_evidence_reserves_a_link_when_failures_fill_budget() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                f"Show orders for {2021 + index}",
+                conversation_id=f"failed-{index}",
+                user_key="u1",
+                status="FAILED",
+            )
+            for index in range(3)
+        ]
+        + [
+            _message(
+                "Show orders for 2024",
+                conversation_id="repeat-u2",
+                user_key="u2",
+            )
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.signals == ["failed", "cross_user_repeat"]
+    assert "https://example/failed-0" in candidate.conversation_urls
+    assert "https://example/repeat-u2" in candidate.conversation_urls
+    assert len(candidate.conversation_urls) <= 3
+
+
+def test_cross_user_evidence_uses_two_known_users_not_unknown_signal_users() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                "Show orders for 2020",
+                conversation_id="unknown-negative",
+                user_key="",
+                feedback="NEGATIVE",
+            ),
+            _message(
+                "Show orders for 2021",
+                conversation_id="unknown-failed",
+                user_key="",
+                status="FAILED",
+            ),
+            _message(
+                "Show orders for 2022",
+                conversation_id="known-u1",
+                user_key="u1",
+            ),
+            _message(
+                "Show orders for 2023",
+                conversation_id="known-u2",
+                user_key="u2",
+            ),
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.signals == [
+        "negative_feedback",
+        "failed",
+        "cross_user_repeat",
+    ]
+    assert "https://example/known-u1" in candidate.conversation_urls
+    assert "https://example/known-u2" in candidate.conversation_urls
+    assert len(candidate.conversation_urls) <= 3
