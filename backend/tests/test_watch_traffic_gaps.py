@@ -38,6 +38,13 @@ def test_normalization_groups_literal_variants_without_fuzzy_matching() -> None:
         'Show "net revenue" by region'
     )
     assert normalize_question("profit/loss") != normalize_question("profit-loss")
+
+
+def test_normalization_ignores_surrounding_whitespace_around_punctuation() -> None:
+    canonical = normalize_question("Revenue?")
+    assert canonical == "revenue"
+    for variant in ("Revenue? ", "  Revenue?  ", "Revenue?\t", "Revenue!\n ", "Revenue . "):
+        assert normalize_question(variant) == canonical
     assert "revenue" in normalize_question("What's revenue for John's region?")
 
 
@@ -125,6 +132,54 @@ def test_in_flight_and_cancelled_messages_are_not_evidence() -> None:
     )
 
     assert result.scanned_message_count == 0
+    assert result.candidates == []
+
+
+def test_expired_query_results_count_as_completed_traffic_not_failures() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                "Show refunds by region",
+                conversation_id="conv-1",
+                user_key="u1",
+                status="QUERY_RESULT_EXPIRED",
+            ),
+            _message(
+                "Show refunds by region",
+                conversation_id="conv-2",
+                user_key="u2",
+                status="QUERY_RESULT_EXPIRED",
+            ),
+        ],
+        benchmark_questions=[],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.scanned_message_count == 2
+    assert result.family_count == 1
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.signals == ["cross_user_repeat"]
+    assert candidate.occurrence_count == 2
+    assert candidate.failed_count == 0
+
+
+def test_expired_query_result_family_can_be_covered_by_a_benchmark() -> None:
+    result = analyze_traffic_gaps(
+        messages=[
+            _message(
+                "Show refunds by region",
+                conversation_id="conv-1",
+                user_key="u1",
+                status="QUERY_RESULT_EXPIRED",
+            ),
+        ],
+        benchmark_questions=["Show refunds by region"],
+        conversation_url=lambda conversation_id: f"https://example/{conversation_id}",
+    )
+
+    assert result.scanned_message_count == 1
+    assert result.covered_family_count == 1
     assert result.candidates == []
 
 

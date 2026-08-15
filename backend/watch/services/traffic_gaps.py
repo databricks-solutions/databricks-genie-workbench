@@ -20,6 +20,13 @@ _NUMBER_RE = re.compile(r"(?<!\w)[+-]?(?:\d[\d,]*)(?:\.\d+)?(?!\w)")
 _TRAILING_SENTENCE_PUNCTUATION_RE = re.compile(r"[?!.]+$")
 _SPACE_RE = re.compile(r"\s+")
 
+# Genie message statuses that represent finished processing. QUERY_RESULT_EXPIRED
+# means the message completed successfully but its stored SQL result has aged
+# out, so it is real traffic and must not be read as a failure.
+_COMPLETED_STATUSES = frozenset({"COMPLETED", "QUERY_RESULT_EXPIRED"})
+_FAILED_STATUSES = frozenset({"FAILED"})
+_TERMINAL_STATUSES = _COMPLETED_STATUSES | _FAILED_STATUSES
+
 
 @dataclass(frozen=True)
 class TrafficMessage:
@@ -55,8 +62,11 @@ def normalize_question(value: str) -> str:
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     text = _ISO_DATE_RE.sub(" dateliteral ", text)
     text = _NUMBER_RE.sub(" numberliteral ", text)
+    # Collapse and trim whitespace before stripping trailing sentence
+    # punctuation, so "Revenue?" and "Revenue? " reach the same family key.
+    text = _SPACE_RE.sub(" ", text).strip()
     text = _TRAILING_SENTENCE_PUNCTUATION_RE.sub("", text)
-    return _SPACE_RE.sub(" ", text).strip()
+    return text.strip()
 
 
 def _is_negative_feedback(value: str | None) -> bool:
@@ -123,7 +133,7 @@ def analyze_traffic_gaps(
     scanned_message_count = 0
     for message in messages:
         status = str(message.status or "").strip().upper()
-        if status not in {"COMPLETED", "FAILED"}:
+        if status not in _TERMINAL_STATUSES:
             continue
         key = normalize_question(message.content)
         if not key:
@@ -139,7 +149,7 @@ def analyze_traffic_gaps(
             family.conversation_users.setdefault(
                 message.conversation_id, message.user_key
             )
-        if status == "FAILED":
+        if status in _FAILED_STATUSES:
             family.failed_count += 1
             if message.conversation_id not in family.failed_conversations:
                 family.failed_conversations.append(message.conversation_id)

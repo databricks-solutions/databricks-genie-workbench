@@ -97,13 +97,15 @@ Most GenieWatch metrics read Databricks **system tables**, which are not OBO-rea
 so those routes execute as the **service principal** and use an in-process TTL cache.
 The traffic-gap route is user-authorized and does not persist traffic: it requires
 `CAN_MANAGE`, reads all conversation pages transiently, and fails instead of
-returning partial results. These routers are registered separately in `main.py`.
+returning partial results. It is **OBO-only** — it never falls back to the service
+principal and returns `401` without user authorization. See
+[OBO-only routes](/docs/platform/authentication#obo-only-routes). These routers are registered separately in `main.py`.
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | <span className="badge badge--success">GET</span> | `/api/watch/spaces` | <span className="badge badge--secondary">SP</span> | List watched Genie Agents with cost/usage summaries |
 | <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}` | <span className="badge badge--secondary">SP</span> | Watch detail for one Agent |
-| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/traffic-gaps` | <span className="badge badge--secondary">OBO</span> | Manager-only, reviewable benchmark candidate gaps; no raw question or user identity in the response |
+| <span className="badge badge--success">GET</span> | `/api/watch/spaces/{space_id}/traffic-gaps` | <span className="badge badge--secondary">OBO only</span> | Manager-only, reviewable benchmark candidate gaps; no SP fallback, and no raw question or user identity in the response |
 | <span className="badge badge--info">POST</span> | `/api/watch/spaces/refresh` | <span className="badge badge--secondary">SP</span> | Refresh the watched-space cache |
 | <span className="badge badge--success">GET</span> | `/api/watch/overview` | <span className="badge badge--secondary">SP</span> | Org-wide cost overview |
 | <span className="badge badge--success">GET</span> | `/api/watch/cost/top` | <span className="badge badge--secondary">SP</span> | Highest-cost Agents |
