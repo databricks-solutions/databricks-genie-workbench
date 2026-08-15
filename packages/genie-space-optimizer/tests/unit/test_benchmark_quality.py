@@ -31,6 +31,28 @@ def _patch_deterministic_checks(monkeypatch, *, valid: bool = True) -> None:
     )
 
 
+def test_quality_counts_use_final_question_dispositions() -> None:
+    counts = quality.summarize_quality_counts(
+        [
+            {"question_id": "trusted", "disposition": "passed"},
+            {"question_id": "warning", "disposition": "warning"},
+            {"question_id": "warning", "disposition": "excluded"},
+        ],
+        additional_excluded=2,
+        duplicate_normalized_question=3,
+        review_not_run=1,
+    )
+
+    assert counts == {
+        "total": 4,
+        "trusted": 1,
+        "warnings": 0,
+        "excluded": 3,
+        "duplicate_normalized_question": 3,
+        "review_not_run": 1,
+    }
+
+
 def test_alignment_error_excludes_benchmark(monkeypatch) -> None:
     _patch_deterministic_checks(monkeypatch)
     monkeypatch.setattr(
@@ -622,7 +644,7 @@ def test_unordered_limit_is_excluded_before_semantic_review(monkeypatch) -> None
     assert result["findings"][0]["code"] == "UNORDERED_LIMIT"
 
 
-def test_safe_data_value_correction_is_actionable_warning(monkeypatch) -> None:
+def test_data_profile_mismatch_is_ignored_when_gt_returns_rows(monkeypatch) -> None:
     _patch_deterministic_checks(monkeypatch)
     monkeypatch.setattr(
         quality,
@@ -650,16 +672,61 @@ def test_safe_data_value_correction_is_actionable_warning(monkeypatch) -> None:
         config={"_data_profile": {"orders": {"columns": {}}}},
     )
 
+    assert result["benchmark_results"][0]["disposition"] == "passed"
+    assert result["findings"] == []
+
+
+def test_unconfirmed_data_profile_mismatch_is_non_actionable_warning(monkeypatch) -> None:
+    _patch_deterministic_checks(monkeypatch)
+    monkeypatch.setattr(
+        quality,
+        "validate_predicate_values",
+        lambda *_args, **_kwargs: [{
+            "valid": False,
+            "mismatches": [{
+                "table": "cat.sch.orders_metric_view",
+                "column": "state_code",
+                "literal": "California",
+                "profiled_values": ["CA"],
+                "suggestion": "CA",
+            }],
+        }],
+    )
+    monkeypatch.setattr(
+        quality,
+        "validate_gt_returns_results",
+        lambda *_args, **_kwargs: [{
+            "has_results": True,
+            "row_count": -1,
+            "error": "execution unavailable",
+        }],
+    )
+    monkeypatch.setattr(quality, "_llm_review", lambda *_args, **_kwargs: ([], set()))
+    benchmark = {
+        "id": "q1",
+        "question": "Show California orders",
+        "expected_sql": (
+            "SELECT state_code FROM orders_metric_view "
+            "WHERE state_code = 'California' GROUP BY state_code"
+        ),
+    }
+
+    result = quality.review_benchmark_quality(
+        [benchmark],
+        object(),
+        config={"_data_profile": {"orders_metric_view": {"columns": {}}}},
+    )
+
     assert result["benchmark_results"][0]["disposition"] == "warning"
-    finding = result["findings"][0]
-    assert finding["code"] == "DATA_VALUE_MISMATCH"
-    assert finding["proposed_sql"].endswith("state_code = 'CA'")
-    repaired, _change = quality.build_actionable_warning_repair(
+    finding = next(
+        item for item in result["findings"] if item["code"] == "DATA_VALUE_MISMATCH"
+    )
+    assert "bounded data profile" in finding["explanation"]
+    assert finding["proposed_sql"] is None
+    assert quality.build_actionable_warning_repair(
         benchmark,
         result["benchmark_results"][0],
-    )
-    assert repaired is not None
-    assert repaired["expected_sql"].endswith("state_code = 'CA'")
+    ) == (None, None)
 
 
 def test_value_access_gap_distinguishes_agent_metadata_from_bad_sql() -> None:

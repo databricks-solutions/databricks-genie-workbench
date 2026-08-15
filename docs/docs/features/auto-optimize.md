@@ -49,6 +49,18 @@ subset. Wording that is weak but still has one defensible answer remains
 eligible with a warning. A semantic-review outage is recorded as
 `review_not_run`; it is never silently reported as a successful review.
 
+Quality counters and finding groups use the same final per-question
+disposition. Multiple findings on one question do not inflate the counts, and
+native review-only questions retain their `space_question_id` throughout QC.
+Duplicate-normalized questions remain a separate mutation-ledger diagnostic.
+
+Bounded data profiles are advisory rather than proof that a filter value does
+not exist. This distinction is especially important for metric views. When the
+ground-truth SQL executes and returns rows, execution overrides a profile-only
+value miss. If execution cannot confirm the query, the profile miss remains a
+non-repairing warning; a confirmed zero-row result is the hard data-validity
+failure.
+
 Repair-enabled runs re-review every changed benchmark. If rewriting a question
 reveals a follow-up expected-SQL correction, GSO applies that correction in a
 later bounded repair round and reviews the result again. A benchmark leaves the

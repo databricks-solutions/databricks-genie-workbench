@@ -29,6 +29,7 @@ from genie_space_optimizer.optimization.benchmark_repair import (
     BenchmarkCorpusTooSmallError,
     BenchmarkRepairOutcome,
     BenchmarkTopUpOutcome,
+    default_id_of,
     require_minimum_valid_benchmarks,
     run_bounded_benchmark_repair,
     run_bounded_benchmark_top_up,
@@ -48,6 +49,12 @@ def _validate_by_flag(benchmarks: list[dict]):
     valid = [b for b in benchmarks if b.get("_valid")]
     invalid = [b for b in benchmarks if not b.get("_valid")]
     return valid, invalid
+
+
+def test_default_id_uses_native_space_question_id() -> None:
+    assert default_id_of({"space_question_id": "native-question-id"}) == (
+        "native-question-id"
+    )
 
 
 def test_default_max_tries_is_three():

@@ -62,10 +62,15 @@ DEFAULT_BENCHMARK_TOP_UP_MAX_NO_PROGRESS = 2
 def default_id_of(benchmark: dict) -> str:
     """Stable benchmark identity for repair bookkeeping.
 
-    Mirrors the ``id`` / ``question_id`` fallback used across preflight
-    (`preflight_validate_benchmarks`).
+    Native review-only benchmarks retain their Genie identity as
+    ``space_question_id`` rather than synthesizing a second ID.
     """
-    return str(benchmark.get("id", benchmark.get("question_id", "")) or "")
+    return str(
+        benchmark.get("id")
+        or benchmark.get("question_id")
+        or benchmark.get("space_question_id")
+        or ""
+    )
 
 
 # ``validate_fn(benchmarks) -> (valid, invalid)`` — EXPLAIN-style validation.

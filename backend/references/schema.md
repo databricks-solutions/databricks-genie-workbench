@@ -202,7 +202,7 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 - SQL snippet filters, expressions, and measures require `id` and non-empty `sql`. `display_name`, `instruction`, `synonyms`, and `comment` are optional API metadata. Expressions and measures may also contain a legacy/programmatic `alias`; preserve it when present, but do not require or synthesize it.
 - Filters must NOT include `WHERE` keyword — only the boolean condition
 - `join_specs.sql`: exactly **TWO elements** — (1) backtick-quoted condition `` `alias`.`col` = `alias`.`col` `` (2) `--rt=FROM_RELATIONSHIP_TYPE_...--` relationship annotation. **Without the `--rt=` annotation the API rejects the request** with a protobuf parsing error.
-- `join_specs` required fields: `id`, `left` (object: `identifier` + `alias`), `right` (object: `identifier` + `alias`), `sql` (2 elements). Optional: `comment`, `instruction`. **Omitting `left` or `right` causes a protobuf parsing error.**
+- `join_specs` required fields: `id`, `left` (object: `identifier`), `right` (object: `identifier`), `sql` (2 elements). Optional: `comment`, `instruction`. Each side may also contain a programmatic `alias`; preserve it when present, but do not require or synthesize it. The Genie UI omits `left.alias` / `right.alias`. **Omitting `left` or `right` causes a protobuf parsing error.**
 
 ### Size limits
 - `version`: Required. Must be `2`.

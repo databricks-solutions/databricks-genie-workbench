@@ -561,6 +561,83 @@ describe("BenchmarkChangesPanel — QC window meter + repair-tries indicator", (
     expect(markup).toContain("Suggested ground truth")
   })
 
+  it("reconciles historical pill and dropdown exclusion counts", () => {
+    const markup = renderToStaticMarkup(
+      <BenchmarkChangesPanel
+        runId="r"
+        changes={changes({
+          qc: qc({
+            qualityCounts: { total: 8, trusted: 0, warnings: 8, excluded: 0, review_not_run: 0 },
+            qualityFindings: [
+              {
+                question_id: "q1",
+                question: "Question one",
+                source: "genie_benchmark",
+                category: "data_validity",
+                code: "DATA_VALUE_MISMATCH",
+                severity: "error",
+                confidence: 1,
+                explanation: "Legacy finding one",
+              },
+              {
+                question_id: "q2",
+                question: "Question two",
+                source: "genie_benchmark",
+                category: "data_validity",
+                code: "DATA_VALUE_MISMATCH",
+                severity: "error",
+                confidence: 1,
+                explanation: "Legacy finding two",
+              },
+            ],
+          }),
+        })}
+      />,
+    )
+
+    expect(markup).toContain("2 excluded")
+    expect(markup).toContain("Excluded from evaluation (2)")
+  })
+
+  it("counts questions rather than individual findings", () => {
+    const markup = renderToStaticMarkup(
+      <BenchmarkChangesPanel
+        runId="r"
+        changes={changes({
+          qc: qc({
+            qualityCounts: { total: 1, trusted: 0, warnings: 0, excluded: 0, review_not_run: 0 },
+            qualityFindings: [
+              {
+                question_id: "q1",
+                question: "Question one",
+                source: "genie_benchmark",
+                category: "sql_validity",
+                code: "INVALID_SQL",
+                severity: "error",
+                confidence: 1,
+                explanation: "First error",
+              },
+              {
+                question_id: "q1",
+                question: "Question one",
+                source: "genie_benchmark",
+                category: "data_validity",
+                code: "GT_RETURNS_NO_ROWS",
+                severity: "error",
+                confidence: 1,
+                explanation: "Second error",
+              },
+            ],
+          }),
+        })}
+      />,
+    )
+
+    expect(markup).toContain("1 excluded")
+    expect(markup).toContain("Excluded from evaluation (1)")
+    expect(markup).not.toContain("2 excluded")
+  })
+
   it("keeps the Added group collapsed by default", () => {
     const added = {
       questionId: "q-new",
