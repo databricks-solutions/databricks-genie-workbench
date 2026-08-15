@@ -298,18 +298,73 @@ class TestSqlSnippetAliasCompatibility:
         sent = _send(config)
         assert sent["instructions"]["sql_snippets"]["measures"][0]["alias"] == "net_sales"
 
-    def test_join_side_alias_remains_required(self):
-        config = {
+
+class TestJoinSpecAliasCompatibility:
+    def _ui_style_config(self) -> dict:
+        return {
             "version": 2,
+            "data_sources": {
+                "tables": [{"identifier": "cat.sch.orders"}],
+                "metric_views": [],
+            },
             "instructions": {
                 "join_specs": [{
                     "id": "4" * 32,
                     "left": {"identifier": "cat.sch.orders"},
-                    "right": {"identifier": "cat.sch.customers", "alias": "customers"},
-                    "sql": ["orders.customer_id = customers.customer_id"],
+                    "right": {"identifier": "cat.sch.customers"},
+                    "sql": [
+                        "orders.customer_id = customers.customer_id",
+                        "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--",
+                    ],
+                    "comment": ["orders to customers"],
+                }]
+            },
+        }
+
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_ui_style_joins_without_alias_validate(self, strict: bool):
+        ok, errors = validate_serialized_space(self._ui_style_config(), strict=strict)
+        assert ok, errors
+
+    def test_patch_round_trip_does_not_inject_alias(self):
+        sent = _send(self._ui_style_config())
+        js = sent["instructions"]["join_specs"][0]
+        assert "alias" not in js["left"]
+        assert "alias" not in js["right"]
+
+    def test_legacy_join_alias_is_preserved(self):
+        config = self._ui_style_config()
+        config["instructions"]["join_specs"][0]["left"]["alias"] = "orders"
+        config["instructions"]["join_specs"][0]["right"]["alias"] = "customers"
+        sent = _send(config)
+        js = sent["instructions"]["join_specs"][0]
+        assert js["left"]["alias"] == "orders"
+        assert js["right"]["alias"] == "customers"
+
+    def test_exported_joins_without_alias_validate(self):
+        """Customer-exported Genie UI join_specs omit alias on both sides."""
+        config = {
+            "version": 2,
+            "data_sources": {"tables": [], "metric_views": []},
+            "instructions": {
+                "join_specs": [{
+                    "id": "01f197a79447104780e8327710109915",
+                    "left": {
+                        "identifier": (
+                            "deloitte_datalens_poc.omnia_v4.milestone_status_calculation"
+                        ),
+                    },
+                    "right": {
+                        "identifier": "deloitte_datalens_poc.demographic.engagements",
+                    },
+                    "sql": [
+                        "milestone_status_calculation.engagement_file_id = "
+                        "engagements.engagement_file_id",
+                        "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--",
+                    ],
+                    "comment": ["milestone_status_calculation to engagements"],
                 }]
             },
         }
         ok, errors = validate_serialized_space(config)
-        assert not ok
-        assert any("left.alias" in error for error in errors)
+        assert ok, errors
