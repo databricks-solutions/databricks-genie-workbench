@@ -7,7 +7,7 @@ description: "Benchmark-driven Genie optimization with a four-task, auditable hi
 
 Auto-Optimize measures a Genie Agent against its benchmark corpus, diagnoses failures, and tests targeted configuration changes. It is powered by the Genie Space Optimizer package in `packages/genie-space-optimizer/`.
 
-Unlike the [IQ Scanner](/docs/features/iq-scanner), which produces an instant rule-based readiness score, Auto-Optimize runs a bounded optimization job against the live Agent. Every attempt is evaluated, accepted only when accuracy improves, and persisted for audit.
+Unlike the [IQ Scanner](/docs/features/iq-scanner), which produces an instant rule-based readiness score, Auto-Optimize runs a bounded optimization job against the live Agent. Every attempt is evaluated, accepted only when accuracy improves **and** question-level paired evidence supports the change, and persisted for audit.
 
 ## Four-task pipeline
 
@@ -120,14 +120,27 @@ flowchart LR
     diagnose --> propose["Propose one bounded patch set"]
     propose --> safety["Validate & apply"]
     safety --> prove["Run full evaluation"]
-    prove --> decision{"Accuracy improved?"}
+    prove --> decision{"Accuracy improved<br/>and paired evidence passes?"}
     decision -->|Yes| keep["Accept as best"]
     decision -->|No| rollback["Rollback & record reflection"]
     keep --> eval
     rollback --> eval
 ```
 
-Iteration 0 is the baseline. Later rows are patch attempts. A candidate is accepted only when its full-evaluation accuracy is strictly greater than the best accepted accuracy; otherwise its patches and iteration are marked rolled back and the live serialized configuration is restored.
+Iteration 0 is the baseline. Later rows are patch attempts. A candidate is accepted only when both acceptance conditions hold; otherwise its patches and iteration are marked rolled back and the live serialized configuration is restored.
+
+1. Its full-evaluation accuracy is strictly greater than the best accepted accuracy.
+2. Its question-level paired evidence passes at `p <= 0.10`.
+
+### Paired evidence gate
+
+Genie generation is stochastic, so a candidate can score higher than its control by chance. Accuracy alone therefore cannot distinguish a real improvement from run-to-run noise. The gate reuses the official control and candidate evaluation rows already returned by the Eval-Run API, so it adds no Genie evaluations, API calls, or runtime cost.
+
+Rows are aligned by the stable benchmark question id. `GOOD` counts as correct; `BAD` and `NEEDS_REVIEW` count as non-correct. Questions where the two runs disagree are the discordant pairs: a *win* is control non-correct and candidate correct, a *loss* is the reverse. An exact one-sided sign test over those pairs must reach `p <= 0.10`, under the null that a disagreement is equally likely to favor either configuration.
+
+The gate fails closed. Evidence is rejected when rows are missing, a question id is missing or duplicated, the two row sets do not match, a row is unscored, or there are no discordant pairs. The typed evidence reason is one of `paired_evidence_passed`, `insufficient_paired_evidence`, `no_discordant_pairs`, `missing_rows`, `missing_question_id`, `duplicate_question_id`, `question_id_mismatch`, or `unscored_row`.
+
+Wins, losses, ties, discordant count, p-value, threshold, and the evidence reason are persisted in the iteration reflection for both accepted and rolled-back attempts, and the decision reason records why a candidate was accepted or rejected.
 
 The controller stores attempt mode, hypothesis, decision, decision reason, best accuracy, retry memory, terminal reason, and champion state on `genie_opt_iterations`. Terminal stamping adds the terminal reason without overwriting the attempt's existing accept/reject decision.
 

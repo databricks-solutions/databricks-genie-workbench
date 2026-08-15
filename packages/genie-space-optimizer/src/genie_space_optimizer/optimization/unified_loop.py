@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from contextlib import nullcontext
@@ -29,13 +30,13 @@ from genie_space_optimizer.optimization.applier import (
     classify_risk,
     rollback,
 )
+from genie_space_optimizer.optimization.benchmarking import _extract_json
 from genie_space_optimizer.optimization.eval_runner import (
     FULL,
     OfficialBenchmarkRunner,
     build_eval_output_from_official,
     resolve_space_benchmark_qids,
 )
-from genie_space_optimizer.optimization.benchmarking import _extract_json
 from genie_space_optimizer.optimization.leakage import (
     BenchmarkCorpus,
     canonicalize_sql,
@@ -55,9 +56,9 @@ from genie_space_optimizer.optimization.state import (
     mark_patches_rolled_back,
     update_iteration_loop_state,
     update_run_status,
+    write_artifact,
     write_iteration,
     write_patch,
-    write_artifact,
     write_required_artifact,
 )
 from genie_space_optimizer.optimization.wide_schema import (
@@ -144,6 +145,11 @@ _TRANSIENT_EVAL_STATUSES: frozenset[str] = frozenset(
 # window without stalling the loop indefinitely on a persistently-down service.
 _MAX_TRANSIENT_EVAL_RETRIES = 2
 
+# Candidate acceptance requires directional question-level evidence from the
+# same official evaluations already used for aggregate accuracy.  This is a
+# deliberately explicit product policy constant, not an extra evaluation.
+PAIRED_SIGN_EVIDENCE_THRESHOLD = 0.10
+
 _METADATA_PATCH_TYPES: frozenset[str] = frozenset(
     {"update_description", "update_column_description", "add_column_synonym"}
 )
@@ -225,6 +231,121 @@ def _metric(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return default if result != result else result
+
+
+def _paired_question_id(row: dict[str, Any]) -> str:
+    inputs = row.get("inputs")
+    nested_id = inputs.get("question_id") if isinstance(inputs, dict) else None
+    return str(
+        row.get("question_id")
+        or row.get("inputs/question_id")
+        or nested_id
+        or ""
+    ).strip()
+
+
+def _paired_assessment(row: dict[str, Any]) -> bool | None:
+    assessment = str(row.get("assessment") or "").strip().upper()
+    if assessment == "GOOD":
+        return True
+    if assessment in {"BAD", "NEEDS_REVIEW"}:
+        return False
+    return None
+
+
+def _invalid_paired_sign_evidence(reason: str) -> dict[str, Any]:
+    return {
+        "valid": False,
+        "passes": False,
+        "wins": 0,
+        "losses": 0,
+        "ties": 0,
+        "discordant": 0,
+        "p_value": 1.0,
+        "threshold": PAIRED_SIGN_EVIDENCE_THRESHOLD,
+        "reason": reason,
+    }
+
+
+def paired_sign_evidence(
+    control_eval: dict[str, Any],
+    candidate_eval: dict[str, Any],
+) -> dict[str, Any]:
+    """Return fail-closed paired evidence from two official eval outputs.
+
+    Rows are aligned by the stable Genie benchmark question id.  GOOD versus
+    official non-GOOD disagreements form an exact one-sided sign test under the
+    null that a disagreement is equally likely to favor either configuration.
+    """
+    control_rows = control_eval.get("rows")
+    candidate_rows = candidate_eval.get("rows")
+    if not isinstance(control_rows, list) or not isinstance(candidate_rows, list):
+        return _invalid_paired_sign_evidence("missing_rows")
+    if not control_rows or not candidate_rows:
+        return _invalid_paired_sign_evidence("missing_rows")
+
+    def index_rows(rows: list[Any]) -> tuple[dict[str, bool], str | None]:
+        indexed: dict[str, bool] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                return {}, "unscored_row"
+            question_id = _paired_question_id(row)
+            if not question_id:
+                return {}, "missing_question_id"
+            if question_id in indexed:
+                return {}, "duplicate_question_id"
+            assessment = _paired_assessment(row)
+            if assessment is None:
+                return {}, "unscored_row"
+            indexed[question_id] = assessment
+        return indexed, None
+
+    control_by_id, error = index_rows(control_rows)
+    if error:
+        return _invalid_paired_sign_evidence(error)
+    candidate_by_id, error = index_rows(candidate_rows)
+    if error:
+        return _invalid_paired_sign_evidence(error)
+    if set(control_by_id) != set(candidate_by_id):
+        return _invalid_paired_sign_evidence("question_id_mismatch")
+
+    wins = 0
+    losses = 0
+    ties = 0
+    for question_id, control_good in control_by_id.items():
+        candidate_good = candidate_by_id[question_id]
+        if candidate_good == control_good:
+            ties += 1
+        elif candidate_good:
+            wins += 1
+        else:
+            losses += 1
+
+    discordant = wins + losses
+    if discordant == 0:
+        p_value = 1.0
+        reason = "no_discordant_pairs"
+        passes = False
+    else:
+        tail_count = sum(
+            math.comb(discordant, successes)
+            for successes in range(wins, discordant + 1)
+        )
+        p_value = tail_count / (2**discordant)
+        passes = p_value <= PAIRED_SIGN_EVIDENCE_THRESHOLD
+        reason = "paired_evidence_passed" if passes else "insufficient_paired_evidence"
+
+    return {
+        "valid": True,
+        "passes": passes,
+        "wins": wins,
+        "losses": losses,
+        "ties": ties,
+        "discordant": discordant,
+        "p_value": p_value,
+        "threshold": PAIRED_SIGN_EVIDENCE_THRESHOLD,
+        "reason": reason,
+    }
 
 
 def _failure_rows(eval_result: dict[str, Any], *, limit: int = 12) -> list[dict[str, Any]]:
@@ -3197,6 +3318,7 @@ def run_unified_optimization_loop(
                     current_config[runtime_key]
                 )
         candidate_accuracy = _metric(candidate_eval.get("overall_accuracy"))
+        sign_evidence = paired_sign_evidence(best_eval, candidate_eval)
 
         write_iteration(
             spark,
@@ -3212,6 +3334,7 @@ def run_unified_optimization_loop(
                 "patch_count": len(patches),
                 "applied_count": len(applied_entries),
                 "dropped_patches": apply_log.get("dropped_patches") or [],
+                "paired_sign_evidence": sign_evidence,
             },
             config_snapshot=submitted_candidate_config,
             observed_config_snapshot=observed_candidate_config,
@@ -3263,7 +3386,7 @@ def run_unified_optimization_loop(
             )
             break
 
-        if candidate_accuracy > best_accuracy:
+        if candidate_accuracy > best_accuracy and sign_evidence["passes"]:
             previous_best_accuracy = best_accuracy
             best_accuracy = candidate_accuracy
             best_iteration = iteration
@@ -3281,7 +3404,9 @@ def run_unified_optimization_loop(
             levers_accepted.append(int(lever))
             decision_reason = (
                 f"accuracy improved to {candidate_accuracy:.2f} "
-                f"from previous best"
+                "from previous best with paired evidence "
+                f"({sign_evidence['wins']} wins, {sign_evidence['losses']} losses, "
+                f"p={sign_evidence['p_value']:.6g})"
             )
             update_iteration_loop_state(
                 spark,
@@ -3320,6 +3445,7 @@ def run_unified_optimization_loop(
                 "rationale": rationale,
                 "patch_types": hypothesis.get("patch_types", []),
                 "patch_family": hypothesis.get("patch_family"),
+                "paired_sign_evidence": sign_evidence,
             }
             if hypothesis.get("patch_family") == "metadata_only":
                 accepted_reflection["next_guidance"] = (
@@ -3338,6 +3464,9 @@ def run_unified_optimization_loop(
                 improvement=round(candidate_accuracy - previous_best_accuracy, 2),
                 champion_accuracy=round(best_accuracy, 2),
                 remaining_failures=len(candidate_eval.get("remaining_failures") or []),
+                paired_wins=sign_evidence["wins"],
+                paired_losses=sign_evidence["losses"],
+                paired_p_value=sign_evidence["p_value"],
                 eval_run_id=candidate_eval.get("eval_run_id"),
                 eval_run_status=candidate_eval.get("eval_run_status"),
             )
@@ -3346,10 +3475,25 @@ def run_unified_optimization_loop(
                 break
             continue
 
-        reason = (
-            f"candidate accuracy {candidate_accuracy:.2f} did not improve "
-            f"on best {best_accuracy:.2f}"
-        )
+        if candidate_accuracy <= best_accuracy:
+            reason = (
+                f"candidate accuracy {candidate_accuracy:.2f} did not improve "
+                f"on best {best_accuracy:.2f}"
+            )
+        elif not sign_evidence["valid"]:
+            reason = (
+                f"candidate accuracy {candidate_accuracy:.2f} improved on best "
+                f"{best_accuracy:.2f}, but paired evidence failed closed: "
+                f"{sign_evidence['reason']}"
+            )
+        else:
+            reason = (
+                f"candidate accuracy {candidate_accuracy:.2f} improved on best "
+                f"{best_accuracy:.2f}, but paired evidence was insufficient "
+                f"({sign_evidence['wins']} wins, {sign_evidence['losses']} losses, "
+                f"p={sign_evidence['p_value']:.6g}, "
+                f"threshold={sign_evidence['threshold']:.2f})"
+            )
         rollback(apply_log, w, space_id, metadata_snapshot=current_config)
         mark_patches_rolled_back(spark, run_id, iteration, reason, catalog, schema)
         mark_iteration_rolled_back(
@@ -3394,6 +3538,7 @@ def run_unified_optimization_loop(
                 "rationale": rationale,
                 "patch_types": hypothesis.get("patch_types", []),
                 "patch_family": hypothesis.get("patch_family"),
+                "paired_sign_evidence": sign_evidence,
             }
         )
         _emit_diagnostic(
@@ -3405,6 +3550,10 @@ def run_unified_optimization_loop(
             candidate_accuracy=round(candidate_accuracy, 2),
             champion_accuracy=round(best_accuracy, 2),
             remaining_failures=len(candidate_eval.get("remaining_failures") or []),
+            paired_wins=sign_evidence["wins"],
+            paired_losses=sign_evidence["losses"],
+            paired_p_value=sign_evidence["p_value"],
+            paired_evidence_reason=sign_evidence["reason"],
             eval_run_id=candidate_eval.get("eval_run_id"),
             eval_run_status=candidate_eval.get("eval_run_status"),
         )
