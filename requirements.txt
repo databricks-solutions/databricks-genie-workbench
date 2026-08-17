@@ -463,7 +463,7 @@ sqlglot==30.0.3
     # via genie-space-optimizer
 sqlmodel==0.0.37
     # via genie-space-optimizer
-sqlparse==0.5.5
+sqlparse==0.6.0
     # via mlflow-skinny
 starlette==1.0.0
     # via fastapi
