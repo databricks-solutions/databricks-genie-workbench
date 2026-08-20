@@ -1,18 +1,8 @@
-"""Unit tests for ``write_iteration`` schema (Bug #2 persistence contract).
-
-Guards against:
-  * Missing evaluated_count / excluded_count / quarantined_benchmarks_json
-    columns in the INSERT — would silently drop Bug #2/#3 data.
-  * Regression to total_questions-as-denominator semantics.
-  * Crashes when old call sites emit eval_results lacking the new keys.
-
-We mock spark.sql and inspect the rendered INSERT statement rather than
-requiring a real Spark session — these are pure unit tests that run in CI
-without Databricks connectivity.
-"""
+"""Persistence-contract tests for the active iteration schema."""
 
 from __future__ import annotations
 
+import base64
 import json
 from unittest.mock import MagicMock
 
@@ -23,186 +13,180 @@ from genie_space_optimizer.optimization.state import write_iteration
 
 @pytest.fixture
 def mock_spark_iter():
-    """Capture the SQL string passed to spark.sql for assertions."""
     spark = MagicMock()
     spark.sql.return_value = MagicMock()
     return spark
 
 
-def _extract_insert_sql(mock_spark: MagicMock) -> str:
-    """Pull the first spark.sql(...) call that looks like an INSERT."""
-    for call in mock_spark.sql.call_args_list:
+def _insert_sql(spark: MagicMock) -> str:
+    for call in spark.sql.call_args_list:
         sql = call.args[0] if call.args else call.kwargs.get("sqlQuery", "")
         if "INSERT INTO" in sql and "genie_opt_iterations" in sql:
             return sql
-    raise AssertionError(
-        f"No INSERT INTO genie_opt_iterations found. Calls: {mock_spark.sql.call_args_list}"
-    )
+    raise AssertionError("No genie_opt_iterations INSERT was executed")
 
 
-def test_write_iteration_includes_new_bug2_columns(mock_spark_iter) -> None:
-    """Bug #2/#3: write_iteration must persist the new counts + quarantine JSON."""
-    eval_result = {
-        "overall_accuracy": 85.71,
-        "total_questions": 14,
-        "evaluated_count": 14,
-        "correct_count": 12,
-        "excluded_count": 0,
-        "scores": {"judge_a": 90.0, "judge_b": 80.0},
-        "failures": ["q13", "q14"],
-        "remaining_failures": ["q13", "q14"],
-        "arbiter_actions": [],
-        "thresholds_met": False,
-        "rows": [{"question_id": "q1", "result_correctness/value": "yes"}],
-        "mlflow_run_id": "run-abc-123",
-        "quarantined_benchmarks": [
-            {
-                "question_id": "q_bad",
-                "reason_code": "quarantined",
-                "reason_detail": "EXPLAIN failed",
-                "question": "broken q",
-            }
-        ],
-    }
-
+def test_write_iteration_persists_active_denominator_columns(mock_spark_iter) -> None:
     write_iteration(
         mock_spark_iter,
         run_id="run-1",
         iteration=0,
-        eval_result=eval_result,
+        eval_result={
+            "overall_accuracy": 85.71,
+            "total_questions": 14,
+            "evaluated_count": 13,
+            "correct_count": 12,
+            "excluded_count": 1,
+            "scores": {},
+            "failures": ["q14"],
+            "thresholds_met": False,
+        },
         catalog="cat",
         schema="sch",
-        eval_scope="full",
     )
 
-    sql = _extract_insert_sql(mock_spark_iter)
-    # All three new columns must be in the col list.
-    assert "evaluated_count" in sql
-    assert "excluded_count" in sql
-    assert "quarantined_benchmarks_json" in sql
-    # The quarantine payload must survive serialization into the INSERT.
-    assert "q_bad" in sql
-    # total_questions is still present for back-compat.
-    assert "total_questions" in sql
+    sql = _insert_sql(mock_spark_iter)
+    assert "evaluated_count, excluded_count" in sql
+    assert "quarantined_benchmarks_json" not in sql
+    assert "arbiter_actions_json" not in sql
+    assert "repeatability_json" not in sql
 
 
-def test_write_iteration_back_compat_defaults_when_new_fields_missing(
-    mock_spark_iter,
-) -> None:
-    """Back-compat: eval_results from old call sites (e.g. repeatability-only)
-    must not crash. evaluated_count falls back to total_questions, excluded
-    defaults to 0, quarantined_benchmarks_json is NULL.
-    """
-    eval_result = {
-        "overall_accuracy": 90.0,
-        "total_questions": 10,
-        "correct_count": 9,
-        "scores": {},
-        "thresholds_met": True,
-    }
-
+def test_write_iteration_defaults_missing_denominator_counts(mock_spark_iter) -> None:
     write_iteration(
         mock_spark_iter,
         run_id="run-2",
         iteration=1,
-        eval_result=eval_result,
+        eval_result={
+            "overall_accuracy": 90.0,
+            "total_questions": 10,
+            "correct_count": 9,
+            "scores": {},
+            "thresholds_met": True,
+        },
         catalog="cat",
         schema="sch",
     )
 
-    sql = _extract_insert_sql(mock_spark_iter)
-    # evaluated_count defaults to total_questions when missing.
-    assert ", 10, 0, NULL" in sql or ", 10, 0," in sql
+    sql = _insert_sql(mock_spark_iter)
+    assert ", 10, 0, false," in sql
 
 
-def test_write_iteration_escapes_quotes_in_quarantine_payload(mock_spark_iter) -> None:
-    """SQL injection / quote safety: the quarantine JSON may include user-
-    controlled strings with single quotes. _opt_json should escape them.
-    """
-    eval_result = {
-        "overall_accuracy": 50.0,
-        "total_questions": 2,
-        "evaluated_count": 1,
-        "correct_count": 0,
-        "excluded_count": 1,
-        "scores": {},
-        "thresholds_met": False,
-        "quarantined_benchmarks": [
-            {
-                "question_id": "q_quote",
-                "reason_detail": "Column 'amount' doesn't exist",
-                "question": "Show 'weird' data",
-            }
-        ],
-    }
-
+def test_write_iteration_persists_native_eval_metadata(mock_spark_iter) -> None:
     write_iteration(
         mock_spark_iter,
-        run_id="run-3",
+        run_id="run-native",
         iteration=0,
-        eval_result=eval_result,
+        eval_result={
+            "overall_accuracy": 80.0,
+            "total_questions": 10,
+            "evaluated_count": 10,
+            "correct_count": 8,
+            "excluded_count": 0,
+            "scores": {},
+            "thresholds_met": False,
+            "num_needs_review": 2,
+            "eval_run_id": "er-12345",
+            "eval_run_status": "DONE",
+        },
         catalog="cat",
         schema="sch",
     )
 
-    sql = _extract_insert_sql(mock_spark_iter)
-    # Spark SQL literal quoting: every ' inside a '...'-delimited literal
-    # must be doubled as ''. Our _esc/_opt_json helpers do this. We verify by
-    # extracting the payload literal and asserting it contains only even-length
-    # runs of single quotes (i.e. '' pairs, never a lone ').
-    import re as _re
-    payload_match = _re.search(
-        r"(\[\\{.*?\\}\]|\[\{.*?\}\])",
-        sql,
-        flags=_re.DOTALL,
-    )
-    assert payload_match, f"No quarantine JSON payload found in SQL: {sql[:500]}"
-    payload = payload_match.group(1)
-    # A lone (odd-count) single quote would terminate the SQL literal early —
-    # classic injection. Every run of quotes in the payload must be even length.
-    for run in _re.findall(r"'+", payload):
-        assert len(run) % 2 == 0, (
-            f"Odd-length quote run in payload (broken escape): {run!r} in {payload!r}"
-        )
-    # Positive confirmation: the original single quote was preserved as an
-    # escaped pair, so the user-supplied text is still recoverable.
-    assert "''amount''" in payload or r"\u0027amount\u0027" in payload
+    sql = _insert_sql(mock_spark_iter)
+    assert "num_needs_review, eval_run_id, eval_run_status" in sql
+    assert "false, 2, 'er-12345', 'DONE'," in sql
 
 
-def test_write_iteration_accepts_enrichment_eval_scope(mock_spark_iter) -> None:
-    """Lock down ``eval_scope='enrichment'`` as a valid value.
-
-    The post-enrichment iter-0 row uses this scope so the UI can surface
-    "baseline 91.7 → optimized 96.2" when the lever loop short-circuits.
-    The DDL declares ``eval_scope`` as a free STRING, so this is a
-    behavioral lock-down rather than a schema-level enforcement.
-    """
-    eval_result = {
-        "overall_accuracy": 96.15,
-        "total_questions": 26,
-        "evaluated_count": 26,
-        "correct_count": 25,
-        "scores": {"judge_a": 96.0},
-        "thresholds_met": True,
+def test_write_iteration_persists_submitted_and_observed_configs(mock_spark_iter) -> None:
+    submitted = {
+        "version": 2,
+        "instructions": {"text_instructions": [{"id": "a", "content": ["one block"]}]},
     }
-
+    observed = {
+        "version": 2,
+        "instructions": {"text_instructions": [{"id": "a", "content": ["one ", "block"]}]},
+    }
     write_iteration(
         mock_spark_iter,
-        run_id="run-enrich",
-        iteration=0,
-        eval_result=eval_result,
+        run_id="run-observed",
+        iteration=1,
+        eval_result={
+            "overall_accuracy": 90.0,
+            "total_questions": 10,
+            "correct_count": 9,
+            "scores": {},
+            "thresholds_met": True,
+        },
+        config_snapshot=submitted,
+        observed_config_snapshot=observed,
         catalog="cat",
         schema="sch",
+    )
+
+    sql = _insert_sql(mock_spark_iter)
+    submitted_encoded = base64.b64encode(
+        json.dumps(submitted).encode("utf-8")
+    ).decode("ascii")
+    observed_encoded = base64.b64encode(
+        json.dumps(observed).encode("utf-8")
+    ).decode("ascii")
+    assert "config_json, observed_config_json, is_champion" in sql
+    assert f"CAST(unbase64('{submitted_encoded}') AS STRING)" in sql
+    assert f"CAST(unbase64('{observed_encoded}') AS STRING)" in sql
+
+
+def test_write_iteration_preserves_sql_string_literal_quotes(mock_spark_iter) -> None:
+    config = {
+        "version": 2,
+        "benchmarks": {
+            "questions": [{
+                "question": ["Which invoices are late?"],
+                "answer": [{
+                    "format": "SQL",
+                    "content": ["SELECT * FROM invoices WHERE status = 'Late'"],
+                }],
+            }],
+        },
+    }
+    write_iteration(
+        mock_spark_iter,
+        run_id="run-quotes",
+        iteration=1,
+        eval_result={
+            "overall_accuracy": 90.0,
+            "total_questions": 10,
+            "correct_count": 9,
+            "scores": {},
+            "thresholds_met": True,
+        },
+        config_snapshot=config,
+        observed_config_snapshot=config,
+        catalog="cat",
+        schema="sch",
+    )
+
+    encoded = base64.b64encode(json.dumps(config).encode("utf-8")).decode("ascii")
+    sql = _insert_sql(mock_spark_iter)
+    assert sql.count(f"CAST(unbase64('{encoded}') AS STRING)") == 2
+    assert "status = ''Late''" not in sql
+
+
+def test_write_iteration_accepts_enrichment_scope(mock_spark_iter) -> None:
+    write_iteration(
+        mock_spark_iter,
+        run_id="run-enrichment",
+        iteration=0,
         eval_scope="enrichment",
-        model_id="m-enrichment-test",
+        eval_result={
+            "overall_accuracy": 96.15,
+            "total_questions": 26,
+            "correct_count": 25,
+            "scores": {},
+            "thresholds_met": True,
+        },
+        catalog="cat",
+        schema="sch",
     )
 
-    sql = _extract_insert_sql(mock_spark_iter)
-    assert "'enrichment'" in sql, (
-        f"eval_scope='enrichment' not present in INSERT: {sql[:500]}"
-    )
-    assert "m-enrichment-test" in sql
-    # Iteration must still be 0 — enrichment row anchors at the
-    # baseline iteration so ``compute_run_scores`` matches it
-    # against the iter-0 baseline.
-    assert "0," in sql
+    assert "'enrichment'" in _insert_sql(mock_spark_iter)

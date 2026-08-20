@@ -676,6 +676,24 @@ class TestIdempotency:
 class TestDiffApplication:
     """Diff semantics: displacement, PII disable, RLS disable."""
 
+    def test_unknown_type_preserves_existing_entity_matching(self, monkeypatch):
+        """A partial UC metadata fetch must not reclaim an untyped slot."""
+        _pin_smarter_scoring(monkeypatch, True)
+        config = _make_config(
+            {"cat.sch.orders": [("region", "STRING")]},
+            enabled_em={"cat.sch.orders": {"region"}},
+        )
+        config["_uc_columns"] = []
+
+        result = _run_apply(config)
+
+        assert not any(
+            change["type"] == "disable_value_dictionary"
+            for change in result["applied"]
+        )
+        cc = config["_parsed_space"]["data_sources"]["tables"][0]["column_configs"][0]
+        assert cc["enable_entity_matching"] is True
+
     def test_new_high_score_column_displaces_low_score(self, monkeypatch):
         """When the space is at the 120-slot cap with low-score fillers,
         a new high-score candidate should displace exactly one low slot."""

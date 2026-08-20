@@ -1,6 +1,5 @@
 import {
   ExternalLink,
-  FlaskConical,
   BriefcaseBusiness,
   Database,
   Sparkles,
@@ -9,6 +8,7 @@ import type { GSOResourceLink } from "@/types"
 
 interface ResourceLinksProps {
   links: GSOResourceLink[]
+  showHeading?: boolean
 }
 
 const categoryConfig: Record<string, {
@@ -32,13 +32,6 @@ const categoryConfig: Record<string, {
     bgColor: "bg-blue-50 dark:bg-blue-950/30",
     borderColor: "border-blue-200 dark:border-blue-800",
   },
-  mlflow: {
-    icon: <FlaskConical className="h-4 w-4" />,
-    title: "MLflow",
-    color: "text-emerald-700 dark:text-emerald-400",
-    bgColor: "bg-emerald-50 dark:bg-emerald-950/30",
-    borderColor: "border-emerald-200 dark:border-emerald-800",
-  },
   data: {
     icon: <Database className="h-4 w-4" />,
     title: "Data",
@@ -48,7 +41,7 @@ const categoryConfig: Record<string, {
   },
 }
 
-export function ResourceLinks({ links }: ResourceLinksProps) {
+export function ResourceLinks({ links, showHeading = true }: ResourceLinksProps) {
   if (!links.length) return null
 
   const grouped = links.reduce<Record<string, GSOResourceLink[]>>((acc, link) => {
@@ -58,7 +51,7 @@ export function ResourceLinks({ links }: ResourceLinksProps) {
     return acc
   }, {})
 
-  const categoryOrder = ["genie", "job", "mlflow", "data"]
+  const categoryOrder = ["genie", "job", "data"]
   const sortedCategories = Object.keys(grouped).sort(
     (a, b) =>
       (categoryOrder.indexOf(a) === -1 ? 99 : categoryOrder.indexOf(a)) -
@@ -67,10 +60,12 @@ export function ResourceLinks({ links }: ResourceLinksProps) {
 
   return (
     <div className="space-y-3">
-      <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-        <ExternalLink className="h-3.5 w-3.5" />
-        Databricks Resources
-      </h3>
+      {showHeading && (
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+          <ExternalLink className="h-3.5 w-3.5" />
+          Databricks Resources
+        </h3>
+      )}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {sortedCategories.map((cat) => {

@@ -1,6 +1,6 @@
 """Per-patch applier decision audit + cap-vs-applied reconciliation.
 
-Pure helpers. No side effects, no Genie API calls. The harness and the
+Pure helpers. No side effects, no Genie API calls. The unified loop and
 applier consume these rows for structured logging and downstream gate
 diagnostics.
 """

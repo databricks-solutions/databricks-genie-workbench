@@ -1,12 +1,8 @@
 """Canonical per-iteration accuracy derivation for GSO.
 
 Bug #2 contract: the UI must see accuracy that matches correct/evaluated to
-the decimal point. Before this module existed, both the standalone GSO
-backend (``genie_space_optimizer.backend.routes.runs``) and the Workbench
-router (``backend.routers.auto_optimize``) each carried near-identical copies
-of ``_derived_accuracy`` — easy for the two to drift (and they did; see PR #79
-review finding #4). Extracted here as the single source of truth, mirroring
-the ``common/prompt_registry.py`` pattern.
+the decimal point. This module is the single source of truth shared with the
+Workbench router (``backend.routers.auto_optimize``).
 
 The guard that gates derived vs. stored accuracy also fixes PR #79 review
 finding #5: parse ``evaluated_count`` first, then gate on the parsed result,
@@ -46,8 +42,8 @@ def derived_accuracy(
     """Return the canonical per-iteration accuracy percentage.
 
     Prefers ``correct_count / evaluated_count * 100`` (the same math the
-    frontend uses for tab labels via ``ui/lib/eval-counts.ts``) so KPI cards
-    and tab labels agree to the decimal. Falls back to stored
+    frontend uses for tab labels via ``frontend/src/lib/eval-counts.ts``) so
+    KPI cards and tab labels agree to the decimal. Falls back to stored
     ``overall_accuracy`` when ``evaluated_count`` is absent or unparseable
     (legacy rows written before the Bug #2 column migration).
 
@@ -121,7 +117,7 @@ class RunScores:
     Wire/UI contract (locks down the bug where a 100% slice probe was being
     rendered as the "Optimized" headline mid-run, see PR description):
 
-    * ``baseline`` is iteration 0's full-scope arbiter-adjusted accuracy.
+    * ``baseline`` is iteration 0's full-corpus official assessment accuracy.
       ``None`` only before iteration 0 has been written (i.e. before the
       Baseline Evaluation step completes).
     * ``optimized`` is ``max(baseline, best_non_rolled_back_candidate)``
@@ -169,9 +165,8 @@ class RunScores:
 def _is_rolled_back(row: dict[str, Any]) -> bool:
     """True iff the iteration was rejected by detect_regressions (or similar).
 
-    Mirrors ``backend.routes.runs._is_rolled_back``: legacy rows written
-    before the Tier 1.1 column migration return ``False`` so historical
-    dashboards don't suddenly drop iterations from the max() pool.
+    Legacy rows written before the ``rolled_back`` column migration return
+    ``False`` so historical dashboards retain their prior score selection.
     """
     val = row.get("rolled_back")
     if val is None:
@@ -183,6 +178,14 @@ def _is_rolled_back(row: dict[str, Any]) -> bool:
     if isinstance(val, str):
         return val.strip().lower() in {"true", "t", "1", "yes", "y"}
     return False
+
+
+def _timestamp_sort_key(row: dict[str, Any], fallback_index: int) -> tuple[str, int]:
+    """Order append-only rows deterministically, preserving legacy input order."""
+    value = row.get("timestamp")
+    if hasattr(value, "isoformat"):
+        value = value.isoformat()
+    return (str(value or ""), fallback_index)
 
 
 def compute_run_scores(
@@ -209,10 +212,14 @@ def compute_run_scores(
     1. Filter to ``eval_scope == "full"`` rows for baseline derivation.
        Slice/p0/held-out probes evaluate on a tiny subset and routinely
        show 100% — they MUST NOT contribute to the headline.
-    2. Iteration 0 (full scope) is always retained, even if some bug stamped
-       ``rolled_back=true`` on it. Baseline is the floor.
+    2. The EARLIEST iteration-0 full-scope row is always retained, even if some
+       bug stamped ``rolled_back=true`` on it. Baseline is the floor. A repaired
+       or re-entered Optimize task can append another iteration-0 full row; that
+       later evaluation is an optimization candidate, not a replacement floor.
     3. Candidates for ``optimized`` are:
-       - rows with ``eval_scope == "full"`` AND ``iteration > 0``, plus
+       - rows with ``eval_scope == "full"`` AND ``iteration > 0``,
+       - later duplicate iteration-0 full rows (recovered as pre-loop
+         enrichment/re-entry candidates), plus
        - the iter 0 row with ``eval_scope == "enrichment"`` (post-enrichment
          eval). It can win because enrichment may have already mutated the
          space enough to clear thresholds before the lever loop runs.
@@ -241,7 +248,13 @@ def compute_run_scores(
     if not full_rows:
         return RunScores(None, None, None, None)
 
-    iter_zero_rows = [r for r in full_rows if safe_int(r.get("iteration")) == 0]
+    indexed_zero_rows = [
+        (index, row)
+        for index, row in enumerate(full_rows)
+        if safe_int(row.get("iteration")) == 0
+    ]
+    indexed_zero_rows.sort(key=lambda item: _timestamp_sort_key(item[1], item[0]))
+    iter_zero_rows = [row for _, row in indexed_zero_rows]
     iter_zero = iter_zero_rows[0] if iter_zero_rows else None
     baseline = derived_accuracy(
         iter_zero, run_id=run_id, iteration=0, logger=logger,
@@ -259,7 +272,7 @@ def compute_run_scores(
     candidates: list[tuple[int, float, str]] = []
     for row in full_rows:
         it = safe_int(row.get("iteration"))
-        if it is None or it <= 0:
+        if it is None or it < 0 or row is iter_zero:
             continue
         if _is_rolled_back(row):
             continue
@@ -268,7 +281,11 @@ def compute_run_scores(
         )
         if acc is None:
             continue
-        candidates.append((it, acc, "full"))
+        # A later append-only iteration-0/full row is the post-baseline result
+        # of an Optimize task re-entry. Surface it like the historical
+        # enrichment candidate so the UI reports baseline -> optimized rather
+        # than replacing the baseline with whichever tied row SQL returned.
+        candidates.append((it, acc, "enrichment" if it == 0 else "full"))
 
     for row in iter_rows:
         if str(row.get("eval_scope") or "").lower() != "enrichment":

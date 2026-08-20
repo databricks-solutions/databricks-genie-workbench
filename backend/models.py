@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 # ===== GenieIQ Models =====
 
 class MaturityLevel(str, Enum):
-    """Maturity level for a Genie Space (3-tier)."""
+    """Maturity level for a Genie Agent (3-tier)."""
     NOT_READY = "Not Ready"
     READY_TO_OPTIMIZE = "Ready to Optimize"
     TRUSTED = "Trusted"
@@ -22,7 +22,7 @@ class CheckDetail(BaseModel):
 
 
 class ScanResult(BaseModel):
-    """IQ scan result for a Genie Space."""
+    """IQ scan result for a Genie Agent."""
     space_id: str
     score: int = Field(..., ge=0, le=12)
     total: int = 12
@@ -56,13 +56,6 @@ class SpaceScanRequest(BaseModel):
 class StarToggleRequest(BaseModel):
     """Request to toggle star on a space."""
     starred: bool
-
-
-class FixRequest(BaseModel):
-    """Request to run the AI fix agent on a space."""
-    space_id: str = Field(..., min_length=1, max_length=64)
-    findings: list[str] = Field(default_factory=list)
-    space_config: dict = Field(default_factory=dict)
 
 
 class AdminDashboardStats(BaseModel):
@@ -112,6 +105,8 @@ class LLMModelInfo(BaseModel):
     name: str
     displayName: str
     isDefault: bool = False
+    optimizerPromptBudgetChars: int | None = None
+    contextTier: Literal["standard", "long"] | None = None
 
 
 # ── Auto-Optimize preflight permissions ──────────────────────────────────
@@ -132,33 +127,91 @@ class SchemaAccessStatus(BaseModel):
     grant_sql: str | None = None
 
 
+class QueryHistoryWarehouseStatus(BaseModel):
+    warehouse_id: str
+    name: str
+    accessible: bool = False
+
+
+class QueryUsageSignal(BaseModel):
+    status: Literal[
+        "system_table_available",
+        "warehouse_api_available",
+        "partially_available",
+        "unavailable",
+    ] = "unavailable"
+    system_table_available: bool = False
+    warehouse_api_available: bool = False
+    warehouses: list[QueryHistoryWarehouseStatus] = Field(default_factory=list)
+    inaccessible_warehouses: list[str] = Field(default_factory=list)
+    system_grant_sql: str | None = None
+
+
 class PermissionCheckResponse(BaseModel):
     """Payload for ``GET /auto-optimize/permissions``.
 
     Shape contract for the Auto-Optimize permissions preflight. The UI's
-    PermissionAlert consumes the ``prompt_registry_*`` fields to decide
-    whether to show the "Prompt Registry disabled" banner vs. a grant-based
-    remediation; the /trigger endpoint re-checks the same shape."""
+    PermissionAlert consumes the SP and schema access fields to show
+    grant-based remediation."""
 
     sp_display_name: str
     sp_application_id: str = ""
     sp_has_manage: bool
     schemas: list[SchemaAccessStatus]
-    # Fail-closed default: availability must be proven by the probe, not assumed.
-    prompt_registry_available: bool = False
-    prompt_registry_error: str | None = None
-    # Stable reason code for UI/alerting; paired with prompt_registry_error.
-    # One of: ok | feature_not_enabled | missing_uc_permissions |
-    # registry_path_not_found | missing_sp_scope | vendor_bug |
-    # unknown (legacy) | probe_error.
-    prompt_registry_reason_code: str | None = None
-    # Raw vendor error code (e.g. ENDPOINT_NOT_FOUND). Surfaced verbatim in
-    # the UI mono block so the next unmapped code is visible without a log
-    # dive. May be None when the probe succeeded or raised a non-SDK error.
-    prompt_registry_error_code: str | None = None
-    # Two-axis actionability: "customer" (admin flips toggle / grants perms)
-    # vs. "platform" (our bug or Databricks' bug). Drives UI chip color and
-    # alert routing. None = unknown (treated as platform by the UI).
-    prompt_registry_actionable_by: str | None = None
     can_start: bool
     errors: list[str] = []
+    query_usage_signal: QueryUsageSignal | None = None
+
+
+# ── Auto-Optimize current version ────────────────────────────────────────
+# Mirrored on the frontend as `CurrentVersionResponse` in
+# `frontend/src/types/index.ts`. Both halves must stay in sync — update
+# together (see AGENTS.md §Models).
+
+
+class VersionMatch(BaseModel):
+    """One known optimization version matching a live-state component."""
+
+    run_id: str
+    target: Literal["baseline", "champion"]
+    started_at: str | None = None
+    best_accuracy: float | None = None
+
+
+class CurrentVersionResponse(BaseModel):
+    """Payload for ``GET /auto-optimize/spaces/{space_id}/current-version``.
+
+    Answers "which known optimization version is the live agent on?" by
+    fingerprint-matching config and benchmarks independently against every
+    history-visible captured run baseline / champion:
+
+    * ``matched`` — config and benchmarks equal the same known version;
+    * ``mixed`` — both components are known, but come from different versions;
+    * ``drifted`` — one or both components match no known version;
+    * ``history_incomplete`` — at least one expected baseline/champion lacks
+      an authoritative API-observed capture, so a non-match is inconclusive;
+    * ``no_known_versions`` — no runs with captured configs (nothing to
+      compare); ``unavailable`` — the check itself failed (fail-open, the UI
+      renders nothing); ``optimization_in_progress`` — an active run is
+      mutating the live config, so matching would be noise.
+    """
+
+    status: Literal[
+        "matched",
+        "mixed",
+        "drifted",
+        "history_incomplete",
+        "no_known_versions",
+        "unavailable",
+        "optimization_in_progress",
+    ]
+    current: VersionMatch | None = None
+    also_matches: list[VersionMatch] = Field(default_factory=list)
+    config_match: VersionMatch | None = None
+    config_also_matches: list[VersionMatch] = Field(default_factory=list)
+    benchmark_match: VersionMatch | None = None
+    benchmark_also_matches: list[VersionMatch] = Field(default_factory=list)
+    drifted_dimensions: list[Literal["config", "benchmarks"]] = Field(
+        default_factory=list
+    )
+    live_update_time: str | None = None

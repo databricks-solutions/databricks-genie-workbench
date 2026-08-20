@@ -66,9 +66,9 @@ export function CostExplorer({ onOpenSpace }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Genie Spaces Overview</h1>
+          <h1 className="text-2xl font-semibold">Genie Agents Overview</h1>
           <p className="text-sm text-muted">
-            Workspace-wide health for Genie Spaces — KPIs, trends, and top spaces.
+            Workspace-wide health for Genie Agents — KPIs, trends, and top agents.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -92,7 +92,7 @@ export function CostExplorer({ onOpenSpace }: Props) {
       <CostScopeNote />
 
       <div className={`grid grid-cols-2 gap-3 transition-opacity sm:grid-cols-3 lg:grid-cols-6 ${overviewLoading ? 'opacity-50' : ''}`}>
-        <Stat label="Active spaces" value={overview ? formatInt(overview.active_spaces) : '—'} />
+        <Stat label="Active agents" value={overview ? formatInt(overview.active_spaces) : '—'} />
         <Stat label="Queries" value={overview ? formatInt(overview.total_queries) : '—'} />
         <Stat label="Distinct users" value={overview ? formatInt(overview.distinct_users) : '—'} />
         <Stat label="Approx cost total (SQL WH)" value={overview ? formatUsd(overview.approx_usd) : '—'} />
@@ -111,13 +111,13 @@ export function CostExplorer({ onOpenSpace }: Props) {
 
       <Card className={`overflow-hidden p-0 transition-opacity ${topLoading ? 'opacity-50' : ''}`}>
         <h2 className="border-b border-default px-4 py-3 text-sm font-medium uppercase text-muted">
-          Top spending spaces — drill-down
+          Top spending agents — drill-down
         </h2>
         <table className="w-full text-sm">
           <thead className="border-b border-default bg-elevated text-left text-xs uppercase text-muted">
             <tr>
               <Th onClick={() => toggleSort('space_id')} active={sortKey === 'space_id'} dir={sortDir}>
-                Space
+                Agent
               </Th>
               <Th onClick={() => toggleSort('workspace_name')} active={sortKey === 'workspace_name'} dir={sortDir}>
                 Workspace
@@ -164,7 +164,7 @@ export function CostExplorer({ onOpenSpace }: Props) {
                     target="_blank"
                     rel="noreferrer"
                     onClick={e => e.stopPropagation()}
-                    title="Open Genie Space in Databricks"
+                    title="Open Genie Agent in Databricks"
                     className="inline-flex items-center text-muted hover:text-fg"
                   >
                     <ExternalLink size={14} />

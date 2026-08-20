@@ -10,8 +10,6 @@ function iter(overrides: Partial<GSOIterationResult>): GSOIterationResult {
     overall_accuracy: 0,
     total_questions: 0,
     correct_count: 0,
-    scores_json: {},
-    thresholds_met: false,
     ...overrides,
   }
 }
@@ -167,6 +165,86 @@ describe("evalCountsFromIteration", () => {
       }),
     )
     expect(c.storedAccuracyPct).toBeCloseTo(82.6)
+  })
+
+  it("OFFICIAL: uses num_correct / num_questions, not correct / evaluated_count", () => {
+    // GSO v2 Phase 6 — a partial official run: 8 correct, only 8 evaluated
+    // (num_done), but 10 benchmark questions. The headline accuracy is the
+    // official 8/10 = 80%, NOT the legacy 8/8 = 100% (which would inflate).
+    const c = evalCountsFromIteration(
+      iter({
+        overall_accuracy: 80.0,
+        total_questions: 10,
+        evaluated_count: 8,
+        excluded_count: 0,
+        correct_count: 8,
+        num_correct: 8,
+        num_questions: 10,
+        num_done: 8,
+        eval_run_status: "DONE",
+        eval_run_id: "er-1",
+      }),
+    )
+    expect(c.evaluated).toBe(10)
+    expect(c.correct).toBe(8)
+    expect(c.accuracyPct).toBeCloseTo(80, 4)
+    expect(c.hasDrift).toBe(false)
+  })
+
+  it("OFFICIAL: reports the full 30-question benchmark corpus even when legacy evaluated_count is 25", () => {
+    const c = evalCountsFromIteration(
+      iter({
+        overall_accuracy: 80.0,
+        total_questions: 30,
+        evaluated_count: 25,
+        correct_count: 24,
+        num_correct: 24,
+        num_questions: 30,
+        num_done: 25,
+        eval_run_status: "DONE",
+        eval_run_id: "er-30",
+      }),
+    )
+    expect(c.total).toBe(30)
+    expect(c.evaluated).toBe(30)
+    expect(c.correct).toBe(24)
+    expect(c.accuracyPct).toBeCloseTo(80, 4)
+  })
+
+  it("OFFICIAL: needs-review rows stay in the num_questions denominator", () => {
+    // 7 GOOD, 2 NEEDS_REVIEW, 1 BAD over 10 questions → 70% (GOOD / total).
+    const c = evalCountsFromIteration(
+      iter({
+        overall_accuracy: 70.0,
+        total_questions: 10,
+        evaluated_count: 10,
+        correct_count: 7,
+        num_correct: 7,
+        num_questions: 10,
+        num_needs_review: 2,
+        eval_run_status: "DONE",
+      }),
+    )
+    expect(c.evaluated).toBe(10)
+    expect(c.accuracyPct).toBeCloseTo(70, 4)
+  })
+
+  it("LEGACY fallback: no eval-run metadata → correct / evaluated_count", () => {
+    // Without eval_run_id/eval_run_status the Bug #2 denominator still wins,
+    // even if num_correct/num_questions happen to be present.
+    const c = evalCountsFromIteration(
+      iter({
+        overall_accuracy: 84.21,
+        total_questions: 22,
+        evaluated_count: 19,
+        correct_count: 16,
+        excluded_count: 3,
+        num_correct: 16,
+        num_questions: 22,
+      }),
+    )
+    expect(c.evaluated).toBe(19)
+    expect(c.accuracyPct).toBeCloseTo(84.210526, 4)
   })
 
   it("handles live GSORunStatus shape (no per-iteration counts)", () => {

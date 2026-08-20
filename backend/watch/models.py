@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 class WatchSpacePermission(BaseModel):
     principal: Optional[str] = None
     permission_level: Optional[str] = None
+    principal_type: Optional[str] = None
+    inherited: Optional[bool] = None
 
 
 class WatchSpaceSummary(BaseModel):
@@ -155,6 +157,28 @@ class TopQuery(BaseModel):
     total_duration_ms: Optional[int] = None
     execution_status: Optional[str] = None
     statement_text: Optional[str] = None
+
+
+# ─── Benchmark candidate gaps ─────────────────────────────────────────────
+
+
+class TrafficGapCandidate(BaseModel):
+    candidate_id: str
+    occurrence_count: int
+    distinct_user_count: int
+    failed_count: int
+    negative_feedback_count: int
+    signals: list[str] = Field(default_factory=list)
+    conversation_urls: list[str] = Field(default_factory=list, max_length=3)
+    first_seen_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+
+
+class TrafficGapAnalysis(BaseModel):
+    scanned_message_count: int
+    family_count: int
+    covered_family_count: int
+    candidates: list[TrafficGapCandidate] = Field(default_factory=list)
 
 
 # ─── Feedback tab (workspace-wide aggregation) ────────────────────────────

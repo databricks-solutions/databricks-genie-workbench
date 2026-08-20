@@ -1,9 +1,9 @@
 """
-Delta-backed state machine for Genie Space optimization runs.
+Delta-backed state machine for Genie Agent optimization runs.
 
-Persists every stage transition, iteration score, and patch record
-across 5 Delta tables. Both the optimization harness (writer) and
-the FastAPI backend (reader) depend on this module.
+Persists stage transitions, iteration scores, and patch records in the
+canonical GSO Delta tables. The optimization workflow writes them and the
+Workbench reads them.
 
 All functions accept ``spark``, ``catalog``, and ``schema`` as explicit
 arguments — no globals.
@@ -11,6 +11,7 @@ arguments — no globals.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -20,14 +21,12 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 from genie_space_optimizer.common.config import (
-    TABLE_ASI,
-    TABLE_FINALIZE_ATTESTATION,
+    TABLE_ARTIFACTS,
+    TABLE_BENCHMARK_MUTATIONS,
     TABLE_ITERATIONS,
     TABLE_PATCHES,
-    TABLE_PROVENANCE,
     TABLE_RUNS,
     TABLE_STAGES,
-    TABLE_SUGGESTIONS,
 )
 from genie_space_optimizer.common.delta_helpers import (
     _fqn,
@@ -40,13 +39,6 @@ from genie_space_optimizer.common.delta_helpers import (
 )
 from genie_space_optimizer.optimization.ddl import (
     ADDITIVE_COLUMN_MIGRATIONS,
-    TABLE_DATA_ACCESS_GRANTS,
-    TABLE_GT_CORRECTION_CANDIDATES,
-    TABLE_HUMAN_REQUIRED,
-    TABLE_LEVER_LOOP_DECISIONS,
-    TABLE_PROACTIVE_CORPUS_PROFILE,
-    TABLE_PROACTIVE_PATCHES,
-    TABLE_QUESTION_REGRESSIONS,
     _ALL_DDL,
 )
 
@@ -129,6 +121,15 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
     _try_enable_column_defaults(spark, _fqn(catalog, schema, TABLE_ITERATIONS))
 
     for table, col, col_def in ADDITIVE_COLUMN_MIGRATIONS:
+        # Ignore migrations for tables that are no longer part of the active
+        # schema. Existing historical tables are left untouched.
+        if table not in _ALL_DDL:
+            logger.debug(
+                "  [SKIP] %s (retired / not in active DDL set) — no migration for %s",
+                _fqn(catalog, schema, table), col,
+            )
+            continue
+
         fqn = _fqn(catalog, schema, table)
         try:
             existing = {
@@ -211,19 +212,18 @@ _REQUIRED_ITERATION_COLUMNS = (
     "rolled_back",
     "rolled_back_at",
     "rollback_reason",
-    "both_correct_count",
-    "both_correct_rate",
     "evaluated_count",
     "excluded_count",
-    "quarantined_benchmarks_json",
-    "leakage_count_by_type",
-    "firewall_rejection_count_by_type",
-    "secondary_mining_blocked",
-    "synthesis_slots_persisted",
-    "arbiter_rejection_count",
-    "cluster_fallback_to_instruction_count",
-    "synthesis_archetype_distribution",
     "reflection_json",
+    # Version contract: write_iteration emits submitted, observed, and
+    # champion-marker columns on every row.
+    "config_json",
+    "observed_config_json",
+    "is_champion",
+    # GSO v2 Phase 6: native official eval-run metadata (assessment contract).
+    "num_needs_review",
+    "eval_run_id",
+    "eval_run_status",
 )
 
 
@@ -278,11 +278,10 @@ def create_run(
     levers: list[int] | None = None,
     apply_mode: str = "genie_config",
     deploy_target: str | None = None,
-    experiment_name: str | None = None,
-    experiment_id: str | None = None,
     config_snapshot: dict | None = None,
     triggered_by: str | None = None,
     llm_model: str | None = None,
+    benchmark_policy: str = "repair_allowed",
 ) -> None:
     """Insert a new row into ``genie_opt_runs`` with status QUEUED."""
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, MAX_ITERATIONS
@@ -299,14 +298,12 @@ def create_run(
         "max_iterations": max_iterations or MAX_ITERATIONS,
         "levers": json.dumps(levers or DEFAULT_LEVER_ORDER),
         "apply_mode": apply_mode,
+        "benchmark_policy": benchmark_policy,
+        "benchmark_mutation_count": 0,
         "updated_at": now,
     }
     if deploy_target is not None:
         row["deploy_target"] = deploy_target
-    if experiment_name is not None:
-        row["experiment_name"] = experiment_name
-    if experiment_id is not None:
-        row["experiment_id"] = experiment_id
     if config_snapshot is not None:
         row["config_snapshot"] = json.dumps(config_snapshot)
     if triggered_by is not None:
@@ -314,7 +311,12 @@ def create_run(
     if llm_model is not None:
         row["llm_model"] = llm_model
 
-    insert_row(spark, catalog, schema, TABLE_RUNS, row)
+    insert_kwargs = (
+        {"base64_string_columns": {"config_snapshot"}}
+        if config_snapshot is not None
+        else {}
+    )
+    insert_row(spark, catalog, schema, TABLE_RUNS, row, **insert_kwargs)
     logger.info("Created run %s for space %s", run_id, space_id)
 
 
@@ -327,11 +329,25 @@ def _update_row_with_delta_retry(
     updates: dict[str, Any],
     *,
     attempts: int = 3,
+    base64_string_columns: set[str] | None = None,
 ) -> None:
     last_exc: BaseException | None = None
     for attempt in range(attempts):
         try:
-            update_row(spark, catalog, schema, table, keys, updates)
+            update_kwargs = (
+                {"base64_string_columns": base64_string_columns}
+                if base64_string_columns
+                else {}
+            )
+            update_row(
+                spark,
+                catalog,
+                schema,
+                table,
+                keys,
+                updates,
+                **update_kwargs,
+            )
             return
         except Exception as exc:
             if not is_retryable_delta_write_conflict(exc) or attempt == attempts - 1:
@@ -379,28 +395,25 @@ def update_run_status(
     status: str | None = None,
     best_iteration: int | None = None,
     best_accuracy: float | None = None,
-    best_repeatability: float | None = None,
-    best_model_id: str | None = None,
     convergence_reason: str | None = None,
     job_run_id: str | None = None,
     job_id: str | None = None,
-    experiment_name: str | None = None,
-    experiment_id: str | None = None,
-    labeling_session_name: str | None = None,
-    labeling_session_run_id: str | None = None,
-    labeling_session_url: str | None = None,
     config_snapshot: dict | None = None,
     warehouse_id: str | None = None,
-    human_corrections: list[dict] | None = None,
     max_benchmark_count: int | None = None,
     llm_model: str | None = None,
+    benchmark_policy: str | None = None,
+    benchmark_mutation_count: int | None = None,
     space_id: str | None = None,
 ) -> None:
     """Update ``genie_opt_runs`` — only sets non-None fields."""
     now = datetime.now(timezone.utc).isoformat()
 
     updates: dict[str, Any] = {"updated_at": now}
-    terminal_statuses = {"CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED"}
+    terminal_statuses = {
+        "CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED",
+        "SKIPPED",
+    }
 
     if status is not None:
         updates["status"] = status
@@ -410,42 +423,35 @@ def update_run_status(
         updates["best_iteration"] = best_iteration
     if best_accuracy is not None:
         updates["best_accuracy"] = best_accuracy
-    if best_repeatability is not None:
-        updates["best_repeatability"] = best_repeatability
-    if best_model_id is not None:
-        updates["best_model_id"] = best_model_id
     if convergence_reason is not None:
         updates["convergence_reason"] = convergence_reason
     if job_run_id is not None:
         updates["job_run_id"] = job_run_id
     if job_id is not None:
         updates["job_id"] = job_id
-    if experiment_name is not None:
-        updates["experiment_name"] = experiment_name
-    if experiment_id is not None:
-        updates["experiment_id"] = experiment_id
-    if labeling_session_name is not None:
-        updates["labeling_session_name"] = labeling_session_name
-    if labeling_session_run_id is not None:
-        updates["labeling_session_run_id"] = labeling_session_run_id
-    if labeling_session_url is not None:
-        updates["labeling_session_url"] = labeling_session_url
     if config_snapshot is not None:
         updates["config_snapshot"] = json.dumps(config_snapshot)
     if warehouse_id is not None:
         updates["warehouse_id"] = warehouse_id
-    if human_corrections is not None:
-        updates["human_corrections_json"] = json.dumps(human_corrections, default=str)
     if max_benchmark_count is not None:
         updates["max_benchmark_count"] = int(max_benchmark_count)
     if llm_model is not None:
         updates["llm_model"] = llm_model
+    if benchmark_policy is not None:
+        updates["benchmark_policy"] = benchmark_policy
+    if benchmark_mutation_count is not None:
+        updates["benchmark_mutation_count"] = int(benchmark_mutation_count)
 
     resolved_space_id = space_id or _lookup_run_space_id(spark, run_id, catalog, schema)
     keys: dict[str, Any] = {"run_id": run_id}
     if resolved_space_id:
         keys["space_id"] = resolved_space_id
 
+    update_kwargs = (
+        {"base64_string_columns": {"config_snapshot"}}
+        if config_snapshot is not None
+        else {}
+    )
     _update_row_with_delta_retry(
         spark,
         catalog,
@@ -453,6 +459,7 @@ def update_run_status(
         TABLE_RUNS,
         keys,
         updates,
+        **update_kwargs,
     )
 
 
@@ -481,6 +488,16 @@ def write_stage(
     now_iso = now.isoformat()
     fqn = _fqn(catalog, schema, TABLE_STAGES)
 
+    def _sql_val(val: Any) -> str:
+        if val is None:
+            return "NULL"
+        if isinstance(val, bool):
+            return str(val).lower()
+        if isinstance(val, (int, float)):
+            return str(val)
+        escaped = str(val).replace("\\", "\\\\").replace("'", "''")
+        return f"'{escaped}'"
+
     completed_at: str | None = None
     duration_seconds: float | None = None
 
@@ -489,7 +506,8 @@ def write_stage(
         started_df = run_query(
             spark,
             f"SELECT started_at FROM {fqn} "
-            f"WHERE run_id = '{run_id}' AND stage = '{stage}' AND status = 'STARTED' "
+            f"WHERE run_id = {_sql_val(run_id)} AND stage = {_sql_val(stage)} "
+            "AND status = 'STARTED' "
             f"ORDER BY started_at DESC LIMIT 1",
         )
         if not started_df.empty:
@@ -499,21 +517,11 @@ def write_stage(
             duration_seconds = (now - started_ts.to_pydatetime()).total_seconds()
 
     detail_json = json.dumps(detail) if detail else None
-    _safe_err = error_message.replace("'", "''") if error_message else None
 
     col_names = (
         "run_id, task_key, stage, status, started_at, completed_at, "
         "duration_seconds, lever, iteration, detail_json, error_message"
     )
-
-    def _sql_val(val: Any) -> str:
-        if val is None:
-            return "NULL"
-        if isinstance(val, bool):
-            return str(val).lower()
-        if isinstance(val, (int, float)):
-            return str(val)
-        return f"'{val}'"
 
     vals = ", ".join(
         [
@@ -526,8 +534,8 @@ def write_stage(
             _sql_val(duration_seconds),
             _sql_val(lever),
             _sql_val(iteration),
-            _sql_val(detail_json.replace("'", "''") if detail_json else None),
-            _sql_val(_safe_err),
+            _sql_val(detail_json),
+            _sql_val(error_message),
         ]
     )
 
@@ -538,6 +546,39 @@ def write_stage(
         table_name=fqn,
     )
     logger.info("Stage %s/%s for run %s", stage, status, run_id)
+
+
+def write_failure_stage_safely(
+    spark: SparkSession,
+    run_id: str,
+    stage: str,
+    *,
+    task_key: str | None = None,
+    detail: dict | None = None,
+    error_message: str | None = None,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Best-effort failure telemetry that never masks the original exception."""
+
+    try:
+        write_stage(
+            spark,
+            run_id,
+            stage,
+            "FAILED",
+            task_key=task_key,
+            detail=detail,
+            error_message=error_message,
+            catalog=catalog,
+            schema=schema,
+        )
+    except Exception:
+        logger.exception(
+            "Could not persist FAILED stage %s for run %s; preserving original error",
+            stage,
+            run_id,
+        )
 
 
 def write_eval_heartbeat(
@@ -563,6 +604,221 @@ def write_eval_heartbeat(
     )
 
 
+# GSO v2 Phase 4 (D3): whitelist of documented Genie ``serialized_space`` keys
+# persisted into ``genie_opt_iterations.config_json`` and
+# ``observed_config_json``.
+#
+# This is INTENTIONALLY DIFFERENT from ``models._SAFE_SPACE_CONFIG_KEYS``
+# (the MLflow artifact projection) — it is not a mirror:
+#   * it EXTENDS that set with ``benchmarks`` and ``config`` because the
+#     per-iteration record must track the FULL effective serialized space
+#     (incl. the benchmark questions/SQL and the config block) that the
+#     iteration was evaluated against, not just the MLflow snapshot subset;
+#   * ``_project_config_for_iteration`` also prefers ``_parsed_space`` and
+#     unwraps ``serialized_space`` so a raw fetched config and an
+#     already-parsed ``metadata_snapshot`` yield the same documented shape;
+#   * it deliberately OMITS ``permissions`` / ``owner`` (ACL / user-identity
+#     fields) — there is no consumer of those in Delta and they are exactly
+#     the PII we must not copy into the optimization tables (reviewer
+#     suggestion #2). The omission is also the guard for a future caller
+#     that passes a raw config WITHOUT ``_parsed_space``: ACL/owner data
+#     still never reaches ``config_json``.
+# Kept self-contained here (not imported from ``models``) so the Delta-only
+# write path carries no MLflow dependency (D3: Delta is the sole store).
+# Everything else — notably the optimizer-internal ``_*`` keys mutated by
+# the lever loop (``_failure_clusters``, ``_data_profile``, ``_parsed_space``,
+# ``_uc_columns``, ``_strategy`` …) — is dropped before serialization, which
+# also removes the only source of circular references. The projection carries
+# no credentials/tokens/secrets: those are not Genie-domain config keys and
+# are never present on the parsed space.
+_SAFE_ITERATION_CONFIG_KEYS: frozenset[str] = frozenset({
+    "version",
+    "data_sources",
+    "instructions",
+    "benchmarks",
+    "config",
+})
+
+
+def _decycle_config(obj: Any, _seen: set[int] | None = None) -> Any:
+    """Break reference cycles by replacing repeats with ``"<cycle>"``.
+
+    Defense-in-depth for ``_project_config_for_iteration``: the whitelist
+    projection already drops the ``_*`` keys where cycles originate, but a
+    pathological nested structure must never crash ``json.dumps`` deep
+    inside ``write_iteration``. ``_seen`` tracks identities on the current
+    recursion path only, so legitimate shared sibling sub-trees survive.
+    """
+    if _seen is None:
+        _seen = set()
+    obj_id = id(obj)
+    if isinstance(obj, dict):
+        if obj_id in _seen:
+            return "<cycle>"
+        _seen.add(obj_id)
+        try:
+            return {k: _decycle_config(v, _seen) for k, v in obj.items()}
+        finally:
+            _seen.discard(obj_id)
+    if isinstance(obj, list):
+        if obj_id in _seen:
+            return "<cycle>"
+        _seen.add(obj_id)
+        try:
+            return [_decycle_config(v, _seen) for v in obj]
+        finally:
+            _seen.discard(obj_id)
+    if isinstance(obj, tuple):
+        return [_decycle_config(v, _seen) for v in obj]
+    return obj
+
+
+def _project_config_for_iteration(config: Any) -> dict[str, Any]:
+    """Return a clean, JSON-safe projection of the per-iteration config.
+
+    Accepts either a raw fetched config (which nests the parsed space under
+    ``_parsed_space`` / ``serialized_space``) or an already-parsed space dict
+    (``metadata_snapshot`` in the lever loop); both yield the same parsed
+    ``serialized_space`` shape. Drops every ``_``-prefixed
+    (optimizer-internal) key and every key not in
+    :data:`_SAFE_ITERATION_CONFIG_KEYS`, then de-cycles. Returns ``{}`` when
+    *config* is not a dict or has no whitelisted keys.
+    """
+    if not isinstance(config, dict):
+        return {}
+    base = config
+    parsed = config.get("_parsed_space")
+    if isinstance(parsed, dict):
+        base = parsed
+    else:
+        serialized = config.get("serialized_space")
+        if isinstance(serialized, dict):
+            base = serialized
+        elif isinstance(serialized, str) and serialized.strip():
+            try:
+                loaded = json.loads(serialized)
+            except (json.JSONDecodeError, TypeError):
+                loaded = None
+            if isinstance(loaded, dict):
+                base = loaded
+    out: dict[str, Any] = {}
+    for k, v in base.items():
+        if not isinstance(k, str) or k.startswith("_"):
+            continue
+        if k not in _SAFE_ITERATION_CONFIG_KEYS:
+            continue
+        out[k] = v
+    return _decycle_config(out)
+
+
+# GSO v2 Phase 8 (arch §7.4): the ordered loop-state columns the two-mode
+# controller commits on each per-attempt ``genie_opt_iterations`` row. Order is
+# the contract shared by ``write_iteration`` (INSERT) and
+# ``update_iteration_loop_state`` (UPDATE); ``(name, kind)`` where kind ∈
+# {int, float, str, json}. ``best_iteration`` is intentionally absent — it is a
+# ``genie_opt_runs`` column, not an iterations column.
+_LOOP_STATE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("attempt_no", "int"),
+    ("attempt_mode", "str"),
+    ("best_accuracy", "float"),
+    ("best_config_version_id", "str"),
+    ("current_hypothesis", "json"),
+    ("do_not_repeat", "json"),
+    ("terminal_reason", "str"),
+    ("decision", "str"),
+    ("decision_reason", "str"),
+    ("surgical_attempts_used", "int"),
+    ("next_hypothesis", "json"),
+    ("target_accuracy", "float"),
+    ("max_attempts", "int"),
+)
+
+
+def _render_loop_state_value(kind: str, value: Any, esc: Any) -> str:
+    """Render one loop-state value as a Spark-SQL literal (or ``NULL``)."""
+    if value is None:
+        return "NULL"
+    if kind == "int":
+        return str(int(value))
+    if kind == "float":
+        return str(float(value))
+    if kind == "json":
+        if isinstance(value, str):
+            return "NULL" if value == "" else f"'{esc(value)}'"
+        return f"'{esc(json.dumps(value))}'"
+    # str
+    text = str(value)
+    return "NULL" if text == "" else f"'{esc(text)}'"
+
+
+def _render_loop_state_sql(loop_state: dict | None, esc: Any) -> tuple[str, list[str]]:
+    """Return ``(column_list_sql, value_literals)`` for the loop-state columns.
+
+    ``column_list_sql`` is a comma-joined column-name string (no trailing comma);
+    ``value_literals`` is the matching list of SQL literals. Absent keys ⇒ ``NULL``.
+    """
+    ls = loop_state or {}
+    cols = ", ".join(name for name, _ in _LOOP_STATE_COLUMNS)
+    vals = [
+        _render_loop_state_value(kind, ls.get(name), esc)
+        for name, kind in _LOOP_STATE_COLUMNS
+    ]
+    return cols, vals
+
+
+def update_iteration_loop_state(
+    spark: SparkSession,
+    run_id: str,
+    iteration: int,
+    *,
+    catalog: str,
+    schema: str,
+    loop_state: dict,
+    eval_scope: str | None = None,
+) -> None:
+    """UPDATE the per-attempt ``genie_opt_iterations`` row with final loop-state.
+
+    GSO v2 Phase 8 (arch §7.5): the surgical candidate's eval row is INSERTed by
+    ``_run_gate_checks`` *before* the accept/reject decision is known, so the
+    controller commits the post-decision loop-state (``decision``, ``decision_reason``,
+    ``best_accuracy``, ``best_config_version_id``, ``terminal_reason``, ...) here at
+    the END of each attempt. Only the keys present in ``loop_state`` are SET; this
+    is additive over the existing row. Best-effort — a failed UPDATE is logged but
+    never aborts the loop."""
+    if not loop_state:
+        return
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("'", "''")
+
+    set_clauses: list[str] = []
+    for name, kind in _LOOP_STATE_COLUMNS:
+        if name not in loop_state:
+            continue
+        set_clauses.append(
+            f"{name} = {_render_loop_state_value(kind, loop_state.get(name), _esc)}"
+        )
+    if not set_clauses:
+        return
+
+    where = f"run_id = '{_esc(str(run_id))}' AND iteration = {int(iteration)}"
+    if eval_scope:
+        where += f" AND eval_scope = '{_esc(str(eval_scope))}'"
+    try:
+        execute_delta_write_with_retry(
+            spark,
+            f"UPDATE {fqn} SET {', '.join(set_clauses)} WHERE {where}",
+            operation_name="update_iteration_loop_state",
+            table_name=fqn,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to update loop-state for run %s iteration %s (non-fatal)",
+            run_id, iteration, exc_info=True,
+        )
+
+
 def write_iteration(
     spark: SparkSession,
     run_id: str,
@@ -573,23 +829,38 @@ def write_iteration(
     schema: str,
     lever: int | None = None,
     eval_scope: str = "full",
-    model_id: str | None = None,
     reflection_json: dict | None = None,
+    config_snapshot: dict | None = None,
+    observed_config_snapshot: dict | None = None,
+    loop_state: dict | None = None,
+    rolled_back: bool = False,
 ) -> None:
-    """Insert into ``genie_opt_iterations`` with scores, failures, etc."""
+    """Insert into ``genie_opt_iterations`` with scores, failures, etc.
+
+    ``rolled_back`` (GSO v2 Phase 8) marks the row excluded from current-state
+    selection at INSERT time. ``load_latest_state_iteration`` /
+    ``load_latest_full_iteration`` filter ``rolled_back = false``, so a coverage
+    attempt that regressed and was rolled back to the frozen baseline must be
+    written with ``rolled_back=True`` — otherwise resume/clustering would read the
+    rejected coverage eval as current state (the baseline-pollution Phase 8 kills).
+
+    ``loop_state`` (GSO v2 Phase 8, arch §7.4) carries the two-mode controller's
+    per-attempt loop-state columns (``attempt_no``, ``attempt_mode``, ``decision``,
+    ``best_accuracy``, ``surgical_attempts_used``, ``target_accuracy``, etc.). The
+    map is the contract produced by the unified loop; absent keys are written
+    ``NULL``. ``genie_opt_iterations`` is the single
+    per-attempt truth, so the
+    loop commits its state here rather than in a separate artifact."""
     now = datetime.now(timezone.utc).isoformat()
     fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
 
     scores = eval_result.get("scores", {})
     failures = eval_result.get("failures", [])
     remaining = eval_result.get("remaining_failures", failures)
-    arbiter_actions = eval_result.get("arbiter_actions", [])
     thresholds_met = eval_result.get("thresholds_met", False)
     if isinstance(thresholds_met, (int, float)):
         thresholds_met = thresholds_met == 1.0
 
-    repeatability_pct = eval_result.get("repeatability_pct")
-    repeatability_details = eval_result.get("repeatability_details")
     rows_data = eval_result.get("rows")
     if isinstance(rows_data, list):
         _STRIP_COLS = {"trace", "trace_id"}
@@ -603,66 +874,68 @@ def write_iteration(
             return "NULL"
         return f"'{_esc(json.dumps(val))}'"
 
-    mlflow_run_id = eval_result.get("mlflow_run_id")
+    def _opt_byte_preserving_json(val: Any) -> str:
+        if val is None:
+            return "NULL"
+        raw = json.dumps(val)
+        encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+        return f"CAST(unbase64('{encoded}') AS STRING)"
 
     # Bug #2 denominator contract fields.
     # Read from eval_result but fall back sensibly:
     #   evaluated_count defaults to total_questions (matches pre-Bug#2 behavior
     #   where no rows were excluded at runtime).
-    #   excluded_count / quarantined default to 0 / empty list.
-    # This keeps the write safe against eval_results emitted by older call
-    # sites (e.g. repeatability-only paths) that don't populate the new keys.
+    #   excluded_count defaults to 0.
+    # This keeps the write safe when a result omits explicit denominator fields.
     _total_questions = int(eval_result.get("total_questions", 0) or 0)
     _evaluated_count = eval_result.get("evaluated_count")
     if _evaluated_count is None:
         _evaluated_count = _total_questions
     _excluded_count = int(eval_result.get("excluded_count", 0) or 0)
-    _quarantined = eval_result.get("quarantined_benchmarks")
-    if not isinstance(_quarantined, list):
-        _quarantined = []
-
-    # Bug #4 leakage observability. Callers pass the metrics through
-    # eval_result so the write stays back-compat for call sites that don't
-    # track them (older repeatability-only paths). Defaults: empty maps, 0.
-    _leakage_count_by_type = eval_result.get("leakage_count_by_type") or {}
-    if not isinstance(_leakage_count_by_type, dict):
-        _leakage_count_by_type = {}
-    _firewall_rejection_count_by_type = eval_result.get("firewall_rejection_count_by_type") or {}
-    if not isinstance(_firewall_rejection_count_by_type, dict):
-        _firewall_rejection_count_by_type = {}
-    _secondary_mining_blocked = int(eval_result.get("secondary_mining_blocked", 0) or 0)
-
-    # Bug #4 Phase 3 synthesis observability.
-    _synthesis_slots_persisted = int(eval_result.get("synthesis_slots_persisted", 0) or 0)
-    _arbiter_rejection_count = int(eval_result.get("arbiter_rejection_count", 0) or 0)
-    _cluster_fallback_to_instruction_count = int(
-        eval_result.get("cluster_fallback_to_instruction_count", 0) or 0
+    # Preserve both sides of the PATCH contract. ``config_json`` is the
+    # submitted/local candidate for audit and legacy revert compatibility;
+    # ``observed_config_json`` is the authoritative serialized_space returned
+    # by a post-write GET. The API can normalize string fragments and SQL text,
+    # so only the observed form is strong enough to prove version identity.
+    # A missing read-back stays NULL and makes history incomplete rather than
+    # causing a false external-drift claim.
+    _config_payload = (
+        _project_config_for_iteration(config_snapshot)
+        if config_snapshot is not None
+        else None
     )
-    _synthesis_archetype_distribution = eval_result.get("synthesis_archetype_distribution") or {}
-    if not isinstance(_synthesis_archetype_distribution, dict):
-        _synthesis_archetype_distribution = {}
+    _observed_config_payload = (
+        _project_config_for_iteration(observed_config_snapshot)
+        if observed_config_snapshot is not None
+        else None
+    )
 
-    # Tier 1.7: both_correct_count / both_correct_rate. These are
-    # strictly stricter than overall_accuracy (which counts arbiter
-    # overrides of rc=yes). Defaults preserve back-compat with eval
-    # results emitted before the migration landed.
-    _both_correct_count = int(eval_result.get("both_correct_count", 0) or 0)
-    _both_correct_rate_val = eval_result.get("both_correct_rate")
-    if _both_correct_rate_val is None and _evaluated_count:
-        _both_correct_rate_val = round(
-            100.0 * _both_correct_count / int(_evaluated_count), 2
-        ) if int(_evaluated_count) > 0 else 0.0
+    # GSO v2 Phase 6: native official eval-run metadata surfaced to the
+    # Workbench UI (assessment-centric contract). ``num_needs_review`` lets the
+    # UI distinguish review-pending rows from failures; ``eval_run_id`` /
+    # ``eval_run_status`` reference the underlying native run. All three are
+    # produced by ``build_eval_output_from_official`` and default to NULL when
+    # the native runner does not emit them.
+    _num_needs_review = eval_result.get("num_needs_review")
+    _num_needs_review = (
+        int(_num_needs_review) if isinstance(_num_needs_review, (int, float)) else None
+    )
+    _eval_run_id = eval_result.get("eval_run_id") or None
+    _eval_run_status = eval_result.get("eval_run_status") or None
+
+    # Per-attempt loop-state columns emitted by the native optimizer.
+    _loop_state_cols, _loop_state_vals = _render_loop_state_sql(loop_state, _esc)
 
     col_names = (
-        "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
+        "run_id, iteration, lever, eval_scope, timestamp, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
-        "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
+        "remaining_failures, "
         "thresholds_met, rows_json, reflection_json, "
-        "evaluated_count, excluded_count, quarantined_benchmarks_json, "
-        "leakage_count_by_type, firewall_rejection_count_by_type, secondary_mining_blocked, "
-        "synthesis_slots_persisted, arbiter_rejection_count, "
-        "cluster_fallback_to_instruction_count, synthesis_archetype_distribution, "
-        "rolled_back, both_correct_count, both_correct_rate"
+        "evaluated_count, excluded_count, "
+        "rolled_back, "
+        "config_json, observed_config_json, is_champion, "
+        "num_needs_review, eval_run_id, eval_run_status, "
+        + _loop_state_cols
     )
     vals = ", ".join(
         [
@@ -671,34 +944,28 @@ def write_iteration(
             str(lever) if lever is not None else "NULL",
             f"'{eval_scope}'",
             f"TIMESTAMP '{now}'",
-            f"'{mlflow_run_id}'" if mlflow_run_id else "NULL",
-            f"'{model_id}'" if model_id else "NULL",
             str(eval_result.get("overall_accuracy", 0.0)),
             str(_total_questions),
             str(eval_result.get("correct_count", 0)),
             f"'{_esc(json.dumps(scores))}'",
             _opt_json(failures),
             _opt_json(remaining),
-            _opt_json(arbiter_actions),
-            str(repeatability_pct) if repeatability_pct is not None else "NULL",
-            _opt_json(repeatability_details),
             str(thresholds_met).lower(),
             _opt_json(rows_data),
             _opt_json(reflection_json),
             str(int(_evaluated_count)),
             str(_excluded_count),
-            _opt_json(_quarantined) if _quarantined else "NULL",
-            _opt_json(_leakage_count_by_type) if _leakage_count_by_type else "NULL",
-            _opt_json(_firewall_rejection_count_by_type) if _firewall_rejection_count_by_type else "NULL",
-            str(_secondary_mining_blocked),
-            str(_synthesis_slots_persisted),
-            str(_arbiter_rejection_count),
-            str(_cluster_fallback_to_instruction_count),
-            _opt_json(_synthesis_archetype_distribution) if _synthesis_archetype_distribution else "NULL",
+            "true" if rolled_back else "false",
+            _opt_byte_preserving_json(_config_payload) if _config_payload else "NULL",
+            _opt_byte_preserving_json(_observed_config_payload)
+            if _observed_config_payload
+            else "NULL",
             "false",
-            str(_both_correct_count),
-            str(_both_correct_rate_val) if _both_correct_rate_val is not None else "NULL",
+            str(_num_needs_review) if _num_needs_review is not None else "NULL",
+            f"'{_esc(str(_eval_run_id))}'" if _eval_run_id is not None else "NULL",
+            f"'{_esc(str(_eval_run_status))}'" if _eval_run_status is not None else "NULL",
         ]
+        + _loop_state_vals
     )
 
     execute_delta_write_with_retry(
@@ -714,40 +981,6 @@ def write_iteration(
         eval_scope,
         run_id,
         eval_result.get("overall_accuracy", 0.0),
-    )
-
-
-def update_iteration_reflection(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    reflection_json: dict,
-    *,
-    catalog: str,
-    schema: str,
-    eval_scope: str = "full",
-) -> None:
-    """Update ``reflection_json`` on an existing iteration row."""
-    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
-
-    def _esc(s: str) -> str:
-        return s.replace("\\", "\\\\").replace("'", "''")
-
-    payload = _esc(json.dumps(reflection_json))
-    stmt = (
-        f"UPDATE {fqn} SET reflection_json = '{payload}' "
-        f"WHERE run_id = '{run_id}' AND iteration = {iteration} "
-        f"AND eval_scope = '{eval_scope}'"
-    )
-    execute_delta_write_with_retry(
-        spark,
-        stmt,
-        operation_name="update_iteration_reflection",
-        table_name=fqn,
-    )
-    logger.info(
-        "Updated reflection_json for run %s iteration %d scope=%s",
-        run_id, iteration, eval_scope,
     )
 
 
@@ -824,6 +1057,47 @@ def write_patch(
     )
 
 
+def mark_iteration_rolled_back(
+    spark: SparkSession,
+    run_id: str,
+    iteration: int,
+    *,
+    catalog: str,
+    schema: str,
+    eval_scope: str | None = None,
+    reason: str = "",
+) -> None:
+    """Set ``rolled_back=true`` on a SPECIFIC ``genie_opt_iterations`` row.
+
+    Unlike :func:`mark_patches_rolled_back` (which marks every row at
+    ``iteration``), this is scoped by ``eval_scope`` for compatibility with older
+    runs that wrote multiple scopes for one iteration. The active unified loop
+    writes one full-scope row per baseline/patch attempt.
+
+    This is REQUIRED, not best-effort: callers need a rejected row to be
+    unselectable before continuing. ``run_id`` / ``eval_scope`` are escaped the
+    same way as the rest of the per-row writers (SQL-literal quote-doubling).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    iters_fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("'", "''")
+
+    safe_reason = _esc(str(reason or ""))
+    where = f"run_id = '{_esc(str(run_id))}' AND iteration = {int(iteration)}"
+    if eval_scope:
+        where += f" AND eval_scope = '{_esc(str(eval_scope))}'"
+    execute_delta_write_with_retry(
+        spark,
+        f"UPDATE {iters_fqn} SET rolled_back = true, "
+        f"rolled_back_at = TIMESTAMP '{now}', "
+        f"rollback_reason = '{safe_reason}' WHERE {where}",
+        operation_name="mark_iteration_rolled_back",
+        table_name=iters_fqn,
+    )
+
+
 def mark_patches_rolled_back(
     spark: SparkSession,
     run_id: str,
@@ -873,7 +1147,7 @@ def mark_patches_rolled_back(
         )
     except Exception:
         # Non-fatal: the patches-table stamp is still correct, so the
-        # deployed Genie Space state is accurate. Only the iteration
+        # deployed Genie Agent state is accurate. Only the iteration
         # filter downstream is affected; readers fall back to reading
         # ``rolled_back`` from patches via a join if needed.
         logger.warning(
@@ -883,546 +1157,379 @@ def mark_patches_rolled_back(
     logger.info("Rolled back patches + iteration row for run %s iteration %d: %s", run_id, iteration, reason)
 
 
-# ── ASI & Provenance Write Functions ─────────────────────────────────────
-
-
-def write_asi_results(
+def mark_champion_iteration(
     spark: SparkSession,
     run_id: str,
     iteration: int,
-    asi_rows: list[dict],
-    catalog: str,
-    schema: str,
-    *,
-    mlflow_run_id: str = "",
-) -> None:
-    """Write per-question per-judge ASI feedback to ``genie_eval_asi_results``."""
-    if not asi_rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    for a in asi_rows:
-        blame = a.get("blame_set")
-        if isinstance(blame, list):
-            blame = json.dumps(blame)
-        row: dict[str, Any] = {
-            "run_id": run_id,
-            "mlflow_run_id": mlflow_run_id or a.get("mlflow_run_id", ""),
-            "iteration": iteration,
-            "question_id": a.get("question_id", ""),
-            "judge": a.get("judge", ""),
-            "value": a.get("value", "no"),
-            "failure_type": a.get("failure_type"),
-            "severity": a.get("severity"),
-            "confidence": a.get("confidence"),
-            "blame_set": blame,
-            "counterfactual_fix": a.get("counterfactual_fix"),
-            "wrong_clause": a.get("wrong_clause"),
-            "expected_value": a.get("expected_value"),
-            "actual_value": a.get("actual_value"),
-            "missing_metadata": a.get("missing_metadata"),
-            "ambiguity_detected": a.get("ambiguity_detected", False),
-            "logged_at": now,
-        }
-        row = {k: v for k, v in row.items() if v is not None}
-        try:
-            insert_row(spark, catalog, schema, TABLE_ASI, row)
-        except Exception:
-            logger.debug("Failed to write ASI row for %s/%s", a.get("question_id"), a.get("judge"), exc_info=True)
-    logger.info("Wrote %d ASI results for run %s iter %d", len(asi_rows), run_id, iteration)
-
-
-def write_provenance(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    lever: int,
-    provenance_rows: list[dict],
-    catalog: str,
-    schema: str,
-) -> None:
-    """Write provenance rows linking questions/judges to clusters."""
-    if not provenance_rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    for p in provenance_rows:
-        blame = p.get("blame_set")
-        if isinstance(blame, list):
-            blame = json.dumps(blame)
-        row: dict[str, Any] = {
-            "run_id": run_id,
-            "iteration": iteration,
-            "lever": lever,
-            "question_id": p.get("question_id", ""),
-            "signal_type": p.get("signal_type", "hard"),
-            "arbiter_verdict": p.get("arbiter_verdict"),
-            "judge": p.get("judge", ""),
-            "judge_verdict": p.get("judge_verdict", "FAIL"),
-            "asi_failure_type_raw": p.get("asi_failure_type_raw"),
-            "resolved_root_cause": p.get("resolved_root_cause", "other"),
-            "resolution_method": p.get("resolution_method", "unknown"),
-            "blame_set": blame,
-            "counterfactual_fix": p.get("counterfactual_fix"),
-            "wrong_clause": p.get("wrong_clause"),
-            "rationale_snippet": (p.get("rationale_snippet") or "")[:500],
-            "expected_sql": (p.get("expected_sql") or "")[:2000],
-            "generated_sql": (p.get("generated_sql") or "")[:2000],
-            "cluster_id": p.get("cluster_id", ""),
-            "logged_at": now,
-        }
-        row = {k: v for k, v in row.items() if v is not None}
-        try:
-            insert_row(spark, catalog, schema, TABLE_PROVENANCE, row)
-        except Exception:
-            logger.debug("Failed to write provenance row for %s/%s", p.get("question_id"), p.get("judge"), exc_info=True)
-    logger.info("Wrote %d provenance rows for run %s iter %d lever %d", len(provenance_rows), run_id, iteration, lever)
-
-
-def write_lever_loop_decisions(
-    spark: SparkSession,
-    rows: list[dict],
     *,
     catalog: str,
     schema: str,
+    eval_scope: str | None = None,
 ) -> None:
-    """Persist Task 3 decision audit rows.
+    """Stamp ``is_champion=true`` on the champion iteration row (GSO v2 Phase 4, D3).
 
-    Each input row may carry plain Python lists/dicts under
-    ``affected_qids``, ``source_cluster_ids``, ``proposal_ids``,
-    ``proposal_to_patch_map``, and ``metrics``. We JSON-serialize them
-    here so callers don't have to round-trip through ``json.dumps``.
-    No-op when ``rows`` is empty.
+    The champion is the best ``genie_opt_iterations`` row as chosen by the
+    EXISTING Delta-driven selection (``models.promote_best_model`` —
+    full/enrichment scope, rolled-back rows excluded, ``idxmax`` of
+    ``overall_accuracy``). This writer does not re-derive that decision; it
+    only persists it in Delta. There is intentionally **no UC model
+    registration** here (Phase 5 decommissions the MLflow champion alias;
+    this Delta marker is the durable signal that survives it).
+
+    Implemented as a SINGLE run-scoped conditional UPDATE that recomputes
+    ``is_champion`` for every row of the run as the boolean predicate
+    ``(iteration = <best> [AND eval_scope = <scope>])``. This is atomic: a
+    row can never be cleared without the new champion being set in the same
+    statement (there is no clear-then-set window where a mid-write failure
+    could leave the run with NO champion). ``eval_scope`` should be supplied
+    (e.g. ``"full"`` or ``"enrichment"``) so the marker lands on the selected
+    row rather than a same-iteration slice/p0 gate row. Best-effort: a write
+    failure is logged, not raised — champion marking is a transparency
+    signal, never a gating mechanism, and on failure the prior champion
+    state is left intact.
     """
-    if not rows:
-        return
-
-    def _as_json(val: Any) -> Any:
-        if val is None:
-            return None
-        if isinstance(val, str):
-            return val  # already serialized
-        try:
-            return json.dumps(val, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        payload: dict[str, Any] = {
-            "run_id": r.get("run_id", ""),
-            "iteration": int(r.get("iteration") or 0),
-            "ag_id": r.get("ag_id"),
-            "decision_order": int(r.get("decision_order") or 0),
-            "stage_letter": r.get("stage_letter"),
-            "gate_name": r.get("gate_name", ""),
-            "decision": r.get("decision", ""),
-            "reason_code": r.get("reason_code"),
-            "reason_detail": (r.get("reason_detail") or None) if not isinstance(
-                r.get("reason_detail"), str,
-            ) else r["reason_detail"][:2000],
-            "affected_qids_json": _as_json(
-                r.get("affected_qids_json", r.get("affected_qids")),
-            ),
-            "source_cluster_ids_json": _as_json(
-                r.get("source_cluster_ids_json", r.get("source_cluster_ids")),
-            ),
-            "proposal_ids_json": _as_json(
-                r.get("proposal_ids_json", r.get("proposal_ids")),
-            ),
-            "proposal_to_patch_map_json": _as_json(
-                r.get(
-                    "proposal_to_patch_map_json", r.get("proposal_to_patch_map"),
-                ),
-            ),
-            "metrics_json": _as_json(r.get("metrics_json", r.get("metrics"))),
-            "created_at": now,
-        }
-        if not payload["run_id"] or not payload["gate_name"] or not payload["decision"]:
-            continue
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_LEVER_LOOP_DECISIONS, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write lever-loop decision row %s/%s",
-                payload["gate_name"],
-                payload["reason_code"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d lever-loop decision row(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    safe_run = run_id.replace("'", "''")
+    if eval_scope:
+        safe_scope = eval_scope.replace("'", "''")
+        champion_pred = (
+            f"(iteration = {int(iteration)} AND eval_scope = '{safe_scope}')"
         )
-
-
-def write_question_regressions(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist Task 4 per-question pass/fail transitions.
-
-    Empty list is a no-op. JSON columns are serialized here so callers
-    can pass plain Python lists.
-    """
-    if not rows:
-        return
-
-    def _as_json(val: Any) -> Any:
-        if val is None:
-            return None
-        if isinstance(val, str):
-            return val
-        try:
-            return json.dumps(val, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        payload: dict[str, Any] = {
-            "run_id": r.get("run_id", ""),
-            "iteration": int(r.get("iteration") or 0),
-            "ag_id": r.get("ag_id", ""),
-            "question_id": r.get("question_id", ""),
-            "was_passing": bool(r.get("was_passing")) if r.get("was_passing") is not None else None,
-            "is_passing": bool(r.get("is_passing")) if r.get("is_passing") is not None else None,
-            "transition": r.get("transition"),
-            "pre_arbiter_before": r.get("pre_arbiter_before"),
-            "pre_arbiter_after": r.get("pre_arbiter_after"),
-            "post_arbiter_before": r.get("post_arbiter_before"),
-            "post_arbiter_after": r.get("post_arbiter_after"),
-            "source_cluster_ids_json": _as_json(
-                r.get("source_cluster_ids_json", r.get("source_cluster_ids")),
-            ),
-            "source_proposal_ids_json": _as_json(
-                r.get(
-                    "source_proposal_ids_json", r.get("source_proposal_ids"),
-                ),
-            ),
-            "applied_patch_ids_json": _as_json(
-                r.get("applied_patch_ids_json", r.get("applied_patch_ids")),
-            ),
-            "suppressed": bool(r.get("suppressed", False)),
-            "created_at": now,
-        }
-        if not payload["run_id"] or not payload["question_id"]:
-            continue
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_QUESTION_REGRESSIONS, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write question regression row %s",
-                payload["question_id"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d question regression row(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
-        )
-
-
-def write_proactive_corpus_profile(
-    spark: SparkSession,
-    *,
-    run_id: str,
-    iteration: int,
-    table_id: str | None,
-    profile_blob: dict | str | None,
-    eligible_row_count: int,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist a Task 9 proactive corpus profile snapshot.
-
-    ``profile_blob`` may be a Python dict (will be JSON-serialized) or
-    a pre-serialized string. No-op when both ``profile_blob`` and
-    ``eligible_row_count`` are empty.
-    """
-    if not profile_blob and not eligible_row_count:
-        return
-    if isinstance(profile_blob, dict):
-        try:
-            profile_blob_str = json.dumps(profile_blob, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            profile_blob_str = None
     else:
-        profile_blob_str = profile_blob
-    payload: dict[str, Any] = {
+        champion_pred = f"(iteration = {int(iteration)})"
+    try:
+        execute_delta_write_with_retry(
+            spark,
+            f"UPDATE {fqn} SET is_champion = {champion_pred} "
+            f"WHERE run_id = '{safe_run}'",
+            operation_name="mark_champion_iteration",
+            table_name=fqn,
+        )
+        logger.info(
+            "Marked champion iteration for run %s: iteration=%d scope=%s",
+            run_id, int(iteration), eval_scope or "(any)",
+        )
+    except Exception:
+        logger.warning(
+            "Failed to mark champion iteration run=%s iter=%s scope=%s",
+            run_id, iteration, eval_scope, exc_info=True,
+        )
+
+
+# ── Provenance Write Functions ───────────────────────────────────────────
+
+
+def write_benchmark_mutations(
+    spark: SparkSession,
+    run_id: str,
+    rows: list[dict],
+    *,
+    catalog: str,
+    schema: str,
+) -> int:
+    """Append GSO benchmark-mutation provenance rows (v2 §3.5).
+
+    Each ``row`` describes one mutation (or advisory) GSO recorded against
+    the user's live Genie Agent benchmark set:
+    ``{question_id, op, before, after, reason}`` where ``op`` ∈
+    {``added``, ``excluded``, ``removed``, ``changed``,
+    ``prune_recommended``}. ``excluded`` is a non-mutating run-local decision;
+    ``removed`` remains accepted for historical ledger rows. Likewise,
+    ``prune_recommended`` is a NON-mutating advisory row: the over-window
+    (30–40) prune recommendation, recorded for transparency because the
+    publisher never auto-prunes. ``before`` / ``after`` are
+    ``{question, sql}`` dicts (JSON-serialized here) or ``None``. No-op when
+    ``rows`` is empty. Best-effort: a write failure is logged but never
+    aborts preflight (the push itself is the source of truth).
+
+    Returns the number of rows written.
+    """
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    written = 0
+
+    def _opt_json(val: Any) -> str | None:
+        if val is None:
+            return None
+        try:
+            return json.dumps(val, default=str)[:5000]
+        except (TypeError, ValueError):
+            return None
+
+    for r in rows:
+        op = str(r.get("op", "")).strip()
+        if op not in (
+            "added", "excluded", "removed", "changed", "prune_recommended",
+        ):
+            logger.debug("Skipping benchmark mutation with bad op=%r", op)
+            continue
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "question_id": str(r.get("question_id", "") or "")[:200],
+            "op": op,
+            "before": _opt_json(r.get("before")),
+            "after": _opt_json(r.get("after")),
+            "reason": (str(r.get("reason", "")) or "")[:500] or None,
+            "logged_at": now,
+        }
+        try:
+            insert_row(
+                spark, catalog, schema, TABLE_BENCHMARK_MUTATIONS, payload,
+            )
+            written += 1
+        except Exception:
+            logger.warning(
+                "Failed to write benchmark mutation (op=%s qid=%s) for run %s",
+                op, payload["question_id"], run_id, exc_info=True,
+            )
+    if written:
+        logger.info(
+            "Wrote %d benchmark mutation row(s) for run %s", written, run_id,
+        )
+    return written
+
+
+# GSO v2 orchestration (Phase 7, arch §7.1–7.3): the stage-level handoff
+# blob kinds carried by genie_opt_artifacts. Per-attempt scored truth
+# (scores, loop-state, patches, decisions) is NOT an artifact — it lives in
+# genie_opt_iterations / genie_opt_patches / genie_eval_lever_loop_decisions.
+ARTIFACT_KINDS: tuple[str, ...] = (
+    "run_manifest",
+    "wide_schema_inventory",
+    "wide_schema_evidence",
+    "wide_schema_selection_plan",
+    "wide_schema_audit",
+    "wide_schema_profile_telemetry",
+    "wide_schema_prompt_telemetry",
+    "space_metadata",
+    "benchmark_qc",
+    "space_quality_enrichment",
+    "publish_record",
+)
+
+
+def write_artifact(
+    spark: SparkSession,
+    run_id: str,
+    artifact_kind: str,
+    payload: dict | list | str | None,
+    *,
+    catalog: str,
+    schema: str,
+    stage_name: str | None = None,
+    iteration: int | None = None,
+    source_notebook: str | None = None,
+    parent_artifact_id: str | None = None,
+) -> str | None:
+    """Append one stage-level handoff blob to ``genie_opt_artifacts`` (arch §7.1).
+
+    ``artifact_kind`` must be one of :data:`ARTIFACT_KINDS`. ``payload`` is
+    JSON-serialized into ``artifact_json``; a ``content_hash`` is computed for
+    dedupe / replay safety. Returns the generated ``artifact_id`` (or ``None``
+    on a swallowed write failure — best-effort, never aborts the notebook).
+    """
+    import hashlib
+    import uuid
+
+    if artifact_kind not in ARTIFACT_KINDS:
+        logger.warning(
+            "write_artifact: unknown artifact_kind=%r (expected one of %s)",
+            artifact_kind, ARTIFACT_KINDS,
+        )
+
+    if payload is None:
+        artifact_json = None
+    elif isinstance(payload, str):
+        artifact_json = payload
+    else:
+        try:
+            artifact_json = json.dumps(payload, default=str, sort_keys=True)
+        except (TypeError, ValueError):
+            logger.warning(
+                "write_artifact: payload for kind=%s not JSON-serializable",
+                artifact_kind,
+            )
+            artifact_json = None
+
+    content_hash = (
+        hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
+        if artifact_json is not None
+        else None
+    )
+    artifact_id = str(uuid.uuid4())
+    payload_row: dict[str, Any] = {
+        "artifact_id": artifact_id,
         "run_id": run_id,
-        "iteration": int(iteration),
-        "table_id": table_id,
-        "profile_blob": profile_blob_str,
-        "eligible_row_count": int(eligible_row_count or 0),
+        "stage_name": stage_name,
+        "iteration": int(iteration) if iteration is not None else None,
+        "artifact_kind": artifact_kind,
+        "artifact_json": artifact_json,
+        "content_hash": content_hash,
+        "parent_artifact_id": parent_artifact_id,
+        "source_notebook": source_notebook or stage_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
         insert_row(
-            spark, catalog, schema, TABLE_PROACTIVE_CORPUS_PROFILE, payload,
-        )
-    except Exception:
-        logger.debug(
-            "Failed to write proactive corpus profile row for run %s iter %d",
-            run_id, iteration, exc_info=True,
-        )
-
-
-def write_proactive_patches(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist Task 9 proactive enrichment patches.
-
-    Each input row is the patch dict emitted by
-    ``feature_mining.synthesize_proactive_patches`` plus an
-    ``applied`` boolean and optional ``patch_id`` / ``run_id`` /
-    ``iteration``. No-op when ``rows`` is empty.
-    """
-    if not rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        run_id = str(r.get("run_id") or "")
-        if not run_id:
-            continue
-        target = (
-            r.get("target")
-            or r.get("column")
-            or r.get("snippet_name")
-            or (
-                f"{r.get('left_table', '')}|{r.get('join_kind', '')}|"
-                f"{r.get('right_table', '')}"
-                if r.get("type") == "add_join_spec" else None
-            )
-        )
-        payload: dict[str, Any] = {
-            "run_id": run_id,
-            "iteration": int(r.get("iteration") or 0),
-            "patch_id": str(r.get("patch_id") or f"proactive_{written + 1}"),
-            "patch_type": r.get("type"),
-            "target": str(target) if target is not None else None,
-            "table_id": r.get("table_id"),
-            "source_signal": r.get("source_signal"),
-            "frequency": int(r.get("frequency") or 0),
-            "dedup_route": r.get("dedup_route"),
-            "dedup_dropped_reason": r.get("dedup_dropped_reason"),
-            "applied": bool(r.get("applied", False)),
-            "created_at": now,
-        }
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_PROACTIVE_PATCHES, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write proactive patch row for run %s",
-                run_id, exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d proactive patch row(s) for run %s",
-            written, rows[0].get("run_id", "?"),
-        )
-
-
-def write_human_required_escalations(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist Task 8 escalation records to ``genie_eval_human_required``.
-
-    Each input row may carry plain Python lists/dicts under
-    ``evidence`` / ``evidence_json``; we JSON-serialize defensively.
-    Empty list is a no-op. Skips rows missing run_id or
-    cluster_signature so orphan rows do not pollute the queue.
-    """
-    if not rows:
-        return
-
-    def _as_json(val: Any) -> Any:
-        if val is None:
-            return None
-        if isinstance(val, str):
-            return val
-        try:
-            return json.dumps(val, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            return None
-
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        sig = str(r.get("cluster_signature") or "").strip()
-        run_id = str(r.get("run_id") or "").strip()
-        if not sig or not run_id:
-            continue
-        payload: dict[str, Any] = {
-            "run_id": run_id,
-            "cluster_signature": sig,
-            "question_id": r.get("question_id") or "",
-            "root_cause": r.get("root_cause"),
-            "attempt_count": int(r.get("attempt_count") or 0),
-            "last_iteration": int(r.get("last_iteration") or 0),
-            "reason_code": r.get("reason_code"),
-            "evidence_json": _as_json(r.get("evidence_json", r.get("evidence"))),
-            "created_at": now,
-        }
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_HUMAN_REQUIRED, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write human-required row for sig=%s qid=%s",
-                sig,
-                payload["question_id"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d human-required escalation row(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
-        )
-
-
-def write_gt_correction_candidates(
-    spark: SparkSession,
-    rows: list[dict],
-    *,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Persist GT correction queue payloads from Task 1.
-
-    Each row already carries the Delta-shaped fields built by
-    ``ground_truth_corrections.build_gt_correction_candidate``. Status
-    starts at ``pending_review``; the four-state machine
-    (``pending_review`` / ``accepted_corpus_fix`` / ``rejected_keep_gt``
-    / ``superseded``) is documented in the helper module. No-op when
-    ``rows`` is empty.
-    """
-    if not rows:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    written = 0
-    for r in rows:
-        payload: dict[str, Any] = {
-            "run_id": r.get("run_id", ""),
-            "iteration": int(r.get("iteration") or 0),
-            "question_id": r.get("question_id", ""),
-            "question": (r.get("question") or "")[:5000],
-            "expected_sql": (r.get("expected_sql") or "")[:5000],
-            "genie_sql": (r.get("genie_sql") or "")[:5000],
-            "arbiter_verdict": r.get("arbiter_verdict", ""),
-            "arbiter_rationale": (r.get("arbiter_rationale") or "")[:2000],
-            "status": r.get("status") or "pending_review",
-            "created_at": now,
-        }
-        if not payload["question_id"]:
-            # Skip orphan rows; downstream consumers key on question_id.
-            continue
-        try:
-            insert_row(
-                spark, catalog, schema, TABLE_GT_CORRECTION_CANDIDATES, payload,
-            )
-            written += 1
-        except Exception:
-            logger.debug(
-                "Failed to write GT correction candidate for %s",
-                payload["question_id"],
-                exc_info=True,
-            )
-    if written:
-        logger.info(
-            "Wrote %d GT correction candidate(s) for run %s",
-            written,
-            rows[0].get("run_id", "?"),
-        )
-
-
-def update_provenance_proposals(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    proposal_mappings: list[dict],
-    catalog: str,
-    schema: str,
-) -> None:
-    """Backfill ``proposal_id`` and ``patch_type`` into provenance rows."""
-    fqn = _fqn(catalog, schema, TABLE_PROVENANCE)
-    for m in proposal_mappings:
-        cid = (m.get("cluster_id") or "").replace("'", "''")
-        pid = (m.get("proposal_id") or "").replace("'", "''")
-        pt = (m.get("patch_type") or "").replace("'", "''")
-        if not cid:
-            continue
-        try:
-            stmt = (
-                f"UPDATE {fqn} SET proposal_id = '{pid}', patch_type = '{pt}' "
-                f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND cluster_id = '{cid}'"
-            )
-            execute_delta_write_with_retry(
-                spark,
-                stmt,
-                operation_name="update_provenance_proposals",
-                table_name=fqn,
-            )
-        except Exception:
-            logger.debug("Failed to update provenance proposals for cluster %s", cid, exc_info=True)
-
-
-def update_provenance_gate(
-    spark: SparkSession,
-    run_id: str,
-    iteration: int,
-    lever: int,
-    gate_type: str,
-    gate_result: str,
-    gate_regression: dict | None,
-    catalog: str,
-    schema: str,
-) -> None:
-    """Backfill gate outcome into provenance rows."""
-    fqn = _fqn(catalog, schema, TABLE_PROVENANCE)
-    gt = gate_type.replace("'", "''")
-    gr = gate_result.replace("'", "''")
-    reg_json = json.dumps(gate_regression, default=str) if gate_regression else None
-    reg_str = f"'{reg_json.replace(chr(39), chr(39)+chr(39))}'" if reg_json else "NULL"
-    try:
-        stmt = (
-            f"UPDATE {fqn} SET gate_type = '{gt}', gate_result = '{gr}', gate_regression = {reg_str} "
-            f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND lever = {lever}"
-        )
-        execute_delta_write_with_retry(
             spark,
-            stmt,
-            operation_name="update_provenance_gate",
-            table_name=fqn,
+            catalog,
+            schema,
+            TABLE_ARTIFACTS,
+            payload_row,
+            base64_string_columns={"artifact_json"},
+        )
+        logger.info(
+            "Wrote %s artifact %s for run %s", artifact_kind, artifact_id, run_id,
+        )
+        return artifact_id
+    except Exception:
+        logger.warning(
+            "Failed to write %s artifact for run %s", artifact_kind, run_id,
+            exc_info=True,
+        )
+        return None
+
+
+def load_artifacts(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    *,
+    artifact_kind: str | None = None,
+) -> pd.DataFrame:
+    """Read ``genie_opt_artifacts`` rows for ``run_id`` (optionally one kind).
+
+    Most-recent-first. Returns an empty DataFrame when the table is absent or
+    has no matching rows (best-effort — never raises).
+    """
+    fqn = _fqn(catalog, schema, TABLE_ARTIFACTS)
+    where = f"run_id = '{run_id}'"
+    if artifact_kind:
+        where += f" AND artifact_kind = '{artifact_kind}'"
+    try:
+        return run_query(
+            spark, f"SELECT * FROM {fqn} WHERE {where} ORDER BY created_at DESC",
         )
     except Exception:
-        logger.debug("Failed to update provenance gate for run %s iter %d lever %d", run_id, iteration, lever, exc_info=True)
+        logger.debug("load_artifacts: no rows for run %s", run_id, exc_info=True)
+        return pd.DataFrame()
+
+
+def load_latest_artifact_payload(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    artifact_kind: str,
+) -> dict[str, Any] | None:
+    """Return the newest JSON-object payload for one artifact kind."""
+    rows = load_artifacts(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind=artifact_kind,
+    )
+    if rows.empty:
+        return None
+    raw = rows.iloc[0].get("artifact_json")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Artifact %s for run %s contains invalid JSON",
+            artifact_kind,
+            run_id,
+        )
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def load_latest_artifact_record(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    artifact_kind: str,
+) -> dict[str, Any] | None:
+    """Load and content-hash verify the newest artifact row.
+
+    Unlike :func:`load_latest_artifact_payload`, this helper is strict: malformed
+    JSON or a hash mismatch raises because wide-schema inventory and plan
+    handoffs are required deterministic state.
+    """
+    import hashlib
+
+    rows = load_artifacts(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind=artifact_kind,
+    )
+    if rows.empty:
+        return None
+    row = rows.iloc[0].to_dict()
+    raw = row.get("artifact_json")
+    if not isinstance(raw, str) or not raw.strip():
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} has no JSON payload")
+    actual_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if str(row.get("content_hash") or "") != actual_hash:
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} failed content-hash verification")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} contains invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Artifact {artifact_kind} for run {run_id} is not a JSON object")
+    row["payload"] = payload
+    return row
+
+
+def write_required_artifact(
+    spark: SparkSession,
+    run_id: str,
+    artifact_kind: str,
+    payload: dict[str, Any],
+    *,
+    catalog: str,
+    schema: str,
+    stage_name: str,
+    source_notebook: str,
+    iteration: int | None = None,
+    parent_artifact_id: str | None = None,
+) -> dict[str, Any]:
+    """Write, read back, and hash-verify a required notebook handoff."""
+    artifact_id = write_artifact(
+        spark,
+        run_id,
+        artifact_kind,
+        payload,
+        catalog=catalog,
+        schema=schema,
+        stage_name=stage_name,
+        iteration=iteration,
+        source_notebook=source_notebook,
+        parent_artifact_id=parent_artifact_id,
+    )
+    if not artifact_id:
+        raise RuntimeError(f"Required artifact {artifact_kind} could not be persisted")
+    record = load_latest_artifact_record(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind,
+    )
+    if record is None or record.get("artifact_id") != artifact_id:
+        raise RuntimeError(f"Required artifact {artifact_kind} could not be read back")
+    return record
 
 
 # ── Read Functions ───────────────────────────────────────────────────────
@@ -1528,8 +1635,7 @@ def load_latest_full_iteration(
     if df.empty:
         return None
     row = df.iloc[0].to_dict()
-    for col in ("scores_json", "failures_json", "remaining_failures", "arbiter_actions_json",
-                "repeatability_json", "rows_json"):
+    for col in ("scores_json", "failures_json", "remaining_failures", "rows_json"):
         if row.get(col) and isinstance(row[col], str):
             try:
                 row[col] = json.loads(row[col])
@@ -1542,7 +1648,7 @@ def load_latest_state_iteration(
     spark: SparkSession, run_id: str, catalog: str, schema: str,
     *, include_rolled_back: bool = False,
 ) -> dict | None:
-    """Latest iteration row reflecting current Genie Space state.
+    """Latest iteration row reflecting current Genie Agent state.
 
     Includes ``eval_scope IN ('full', 'enrichment')`` so post-enrichment
     evals (which mutate the space without an intervening lever-loop
@@ -1574,8 +1680,7 @@ def load_latest_state_iteration(
     if df.empty:
         return None
     row = df.iloc[0].to_dict()
-    for col in ("scores_json", "failures_json", "remaining_failures", "arbiter_actions_json",
-                "repeatability_json", "rows_json"):
+    for col in ("scores_json", "failures_json", "remaining_failures", "rows_json"):
         if row.get(col) and isinstance(row[col], str):
             try:
                 row[col] = json.loads(row[col])
@@ -1604,8 +1709,39 @@ def load_all_full_iterations(
     rows = df.to_dict("records")
     for row in rows:
         for col in ("scores_json", "failures_json", "remaining_failures",
-                     "arbiter_actions_json", "repeatability_json", "rows_json",
-                     "reflection_json"):
+                    "rows_json", "reflection_json"):
+            if row.get(col) and isinstance(row[col], str):
+                try:
+                    row[col] = json.loads(row[col])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    return rows
+
+
+def load_all_scored_iterations(
+    spark: SparkSession, run_id: str, catalog: str, schema: str
+) -> list[dict]:
+    """All full-scope iterations plus historical enrichment rows.
+
+    The unified loop writes only ``eval_scope='full'``. Historical runs may have
+    ``eval_scope='enrichment'`` rows; publish/audit keeps reading them so old
+    trajectories remain explainable, while champion selection restricts
+    promotion to full-scope rows. Ordered by ``iteration ASC, timestamp ASC``;
+    JSON columns parsed like ``load_all_full_iterations``.
+    """
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    df = run_query(
+        spark,
+        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' "
+        f"AND eval_scope IN ('full', 'enrichment') "
+        f"ORDER BY iteration ASC, timestamp ASC",
+    )
+    if df.empty:
+        return []
+    rows = df.to_dict("records")
+    for row in rows:
+        for col in ("scores_json", "failures_json", "remaining_failures",
+                    "rows_json", "reflection_json"):
             if row.get(col) and isinstance(row[col], str):
                 try:
                     row[col] = json.loads(row[col])
@@ -1617,7 +1753,7 @@ def load_all_full_iterations(
 def load_runs_for_space(
     spark: SparkSession, space_id: str, catalog: str, schema: str
 ) -> pd.DataFrame:
-    """All runs for a Genie Space, ordered by ``started_at DESC``."""
+    """All runs for a Genie Agent, ordered by ``started_at DESC``."""
     fqn = _fqn(catalog, schema, TABLE_RUNS)
     return run_query(
         spark,
@@ -1645,279 +1781,10 @@ def load_recent_activity(
     )
 
 
-def load_asi_results(
-    spark: SparkSession,
-    run_id: str,
-    catalog: str,
-    schema: str,
-    *,
-    iteration: int | None = None,
-) -> pd.DataFrame:
-    """All ASI judge results for a run, optionally filtered by iteration."""
-    fqn = _fqn(catalog, schema, TABLE_ASI)
-    where = f"WHERE run_id = '{run_id}'"
-    if iteration is not None:
-        where += f" AND iteration = {iteration}"
-    return run_query(
-        spark,
-        f"SELECT * FROM {fqn} {where} ORDER BY question_id, judge",
-    )
-
-
-def load_provenance(
-    spark: SparkSession,
-    run_id: str,
-    catalog: str,
-    schema: str,
-    *,
-    iteration: int | None = None,
-    lever: int | None = None,
-) -> pd.DataFrame:
-    """All provenance records for a run, optionally filtered by iteration/lever."""
-    fqn = _fqn(catalog, schema, TABLE_PROVENANCE)
-    where = f"WHERE run_id = '{run_id}'"
-    if iteration is not None:
-        where += f" AND iteration = {iteration}"
-    if lever is not None:
-        where += f" AND lever = {lever}"
-    return run_query(
-        spark,
-        f"SELECT * FROM {fqn} {where} ORDER BY iteration, lever, question_id",
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Queued Patches (high-risk, pending human review)
 # ═══════════════════════════════════════════════════════════════════════
 
-TABLE_QUEUED_PATCHES = "genie_opt_queued_patches"
-
-
-def _ensure_queued_patches_table(spark: Any, catalog: str, schema: str) -> None:
-    fqn = _fqn(catalog, schema, TABLE_QUEUED_PATCHES)
-    spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS {fqn} (
-            run_id              STRING      NOT NULL,
-            iteration           INT         NOT NULL,
-            patch_type          STRING      NOT NULL,
-            target_identifier   STRING      NOT NULL,
-            confidence_tier     STRING,
-            coverage_analysis   STRING      COMMENT 'JSON blob with schema overlap details',
-            blame_iterations    INT,
-            status              STRING      NOT NULL,
-            created_at          TIMESTAMP   NOT NULL,
-            resolved_at         TIMESTAMP
-        ) USING DELTA
-    """)
-
-
-def write_queued_patch(
-    spark: Any,
-    run_id: str,
-    iteration: int,
-    patch_type: str,
-    target_identifier: str,
-    catalog: str,
-    schema: str,
-    *,
-    confidence_tier: str = "",
-    coverage_analysis: dict | None = None,
-    blame_iterations: int = 0,
-) -> None:
-    """Persist a high-risk patch that needs human approval."""
-    _ensure_queued_patches_table(spark, catalog, schema)
-    fqn = _fqn(catalog, schema, TABLE_QUEUED_PATCHES)
-    now = datetime.now(timezone.utc).isoformat()
-    cov_json = json.dumps(coverage_analysis or {}).replace("'", "''")
-    target_esc = target_identifier.replace("'", "''")
-    execute_delta_write_with_retry(
-        spark,
-        f"""
-        INSERT INTO {fqn} (run_id, iteration, patch_type, target_identifier,
-                           confidence_tier, coverage_analysis, blame_iterations,
-                           status, created_at)
-        VALUES ('{run_id}', {iteration}, '{patch_type}', '{target_esc}',
-                '{confidence_tier}', '{cov_json}', {blame_iterations},
-                'pending', '{now}')
-        """,
-        operation_name="write_queued_patch",
-        table_name=fqn,
-    )
-
-
-def get_queued_patches(
-    spark: Any,
-    catalog: str,
-    schema: str,
-    *,
-    status: str = "pending",
-) -> list[dict]:
-    """Return all queued patches with the given status."""
-    _ensure_queued_patches_table(spark, catalog, schema)
-    fqn = _fqn(catalog, schema, TABLE_QUEUED_PATCHES)
-    try:
-        df = run_query(
-            spark,
-            f"SELECT * FROM {fqn} WHERE status = '{status}' ORDER BY created_at DESC",
-        )
-        return df.to_dict("records") if not df.empty else []
-    except Exception:
-        logger.debug("Could not read queued patches table", exc_info=True)
-        return []
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Improvement Suggestions
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def write_suggestion(
-    spark: Any,
-    catalog: str,
-    schema: str,
-    suggestion: dict,
-) -> None:
-    """Insert a single improvement suggestion row."""
-    import uuid
-
-    now = datetime.now(timezone.utc).isoformat()
-    row = {
-        "suggestion_id": suggestion.get("suggestion_id") or str(uuid.uuid4()),
-        "run_id": suggestion["run_id"],
-        "space_id": suggestion["space_id"],
-        "iteration": suggestion.get("iteration"),
-        "lever": suggestion.get("lever"),
-        "type": suggestion["type"],
-        "title": suggestion["title"],
-        "rationale": suggestion.get("rationale"),
-        "definition": suggestion.get("definition"),
-        "affected_questions": json.dumps(suggestion.get("affected_questions", [])),
-        "estimated_impact": suggestion.get("estimated_impact"),
-        "status": suggestion.get("status", "PROPOSED"),
-        "reviewed_by": None,
-        "reviewed_at": None,
-        "created_at": now,
-        "updated_at": now,
-    }
-    insert_row(spark, catalog, schema, TABLE_SUGGESTIONS, row)
-    logger.info(
-        "Wrote suggestion %s (%s) for run %s",
-        row["suggestion_id"], row["type"], row["run_id"],
-    )
-
-
-def load_suggestions(
-    spark: Any,
-    run_id: str,
-    catalog: str,
-    schema: str,
-) -> pd.DataFrame:
-    """All suggestions for a run, ordered by created_at ASC."""
-    fqn = _fqn(catalog, schema, TABLE_SUGGESTIONS)
-    return run_query(
-        spark,
-        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' ORDER BY created_at ASC",
-    )
-
-
-def load_suggestion_by_id(
-    spark: Any,
-    suggestion_id: str,
-    catalog: str,
-    schema: str,
-) -> dict | None:
-    """Load a single suggestion by its ID. Returns dict or None."""
-    fqn = _fqn(catalog, schema, TABLE_SUGGESTIONS)
-    df = run_query(
-        spark,
-        f"SELECT * FROM {fqn} WHERE suggestion_id = '{suggestion_id}' LIMIT 1",
-    )
-    if df.empty:
-        return None
-    return df.iloc[0].to_dict()
-
-
-def update_suggestion_status(
-    spark: Any,
-    suggestion_id: str,
-    catalog: str,
-    schema: str,
-    status: str,
-    reviewed_by: str | None = None,
-) -> None:
-    """Update the status of a suggestion (ACCEPTED, REJECTED, IMPLEMENTED)."""
-    now = datetime.now(timezone.utc).isoformat()
-    updates: dict[str, Any] = {
-        "status": status,
-        "updated_at": now,
-    }
-    if reviewed_by:
-        updates["reviewed_by"] = reviewed_by
-        updates["reviewed_at"] = now
-    update_row(spark, catalog, schema, TABLE_SUGGESTIONS, {"suggestion_id": suggestion_id}, updates)
-
-
-def write_finalize_attestation_matrix(
-    spark: SparkSession,
-    run_id: str,
-    *,
-    iteration_idx: str,
-    train_passes: dict[str, bool],
-    heldout_passes: dict[str, bool],
-    catalog: str,
-    schema: str,
-) -> None:
-    """Bug #4 Phase 4 — persist per-qid pass/fail for a baseline / finalize
-    sweep.
-
-    ``iteration_idx`` is a canonical marker: ``"baseline"`` for the run-
-    start sweep, ``"final"`` for the end-of-run sweep. Integer iteration
-    values are accepted but not emitted by the standard harness.
-
-    Writes one row per (run_id, qid, iteration_idx). Safe to call multiple
-    times per run (different iteration_idx values) but NOT idempotent for
-    the same marker — callers should delete existing rows before rewriting
-    if re-running.
-    """
-    if not train_passes and not heldout_passes:
-        return
-    fqn = _fqn(catalog, schema, TABLE_FINALIZE_ATTESTATION)
-    now = datetime.now(timezone.utc).isoformat()
-    values: list[str] = []
-
-    def _bool_sql(v: bool | None) -> str:
-        if v is None:
-            return "NULL"
-        return "true" if v else "false"
-
-    def _esc(s: str) -> str:
-        return s.replace("\\", "\\\\").replace("'", "''")
-
-    for qid, passed in train_passes.items():
-        values.append(
-            f"('{_esc(run_id)}', '{_esc(qid)}', '{_esc(iteration_idx)}', "
-            f"{_bool_sql(passed)}, false, TIMESTAMP '{now}')"
-        )
-    for qid, passed in heldout_passes.items():
-        values.append(
-            f"('{_esc(run_id)}', '{_esc(qid)}', '{_esc(iteration_idx)}', "
-            f"{_bool_sql(passed)}, true, TIMESTAMP '{now}')"
-        )
-
-    if not values:
-        return
-
-    execute_delta_write_with_retry(
-        spark,
-        (
-            f"INSERT INTO {fqn} "
-            f"(run_id, qid, iteration_idx, passed, is_heldout, logged_at) "
-            f"VALUES {', '.join(values)}"
-        ),
-        operation_name="write_finalize_attestation",
-        table_name=fqn,
-    )
-    logger.info(
-        "Wrote %d finalize_attestation rows for run %s (marker=%s)",
-        len(values), run_id, iteration_idx,
-    )

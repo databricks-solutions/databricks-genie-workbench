@@ -8,12 +8,12 @@
 # MAGIC
 # MAGIC **Required compute:** attach this notebook to **Databricks Serverless Environment v5**. The installer expects Python 3.11+ and workspace-native Databricks SDK auth.
 # MAGIC
-# MAGIC **Required workspace previews/settings:** Databricks Apps, **Databricks Apps On-Behalf-of-User authorization** (Public Preview), and **Managed MLflow Prompt Registry** (Beta) must be enabled. Workspace admins manage preview toggles from the Databricks **Previews** page.
+# MAGIC **Required workspace previews/settings:** Databricks Apps and **Databricks Apps On-Behalf-of-User authorization** (Public Preview) must be enabled. Workspace admins manage preview toggles from the Databricks **Previews** page.
 # MAGIC
 # MAGIC **Optional:** Lakebase Autoscaling is recommended for persistent app state. Set `lakebase_mode` to `skip` only when ephemeral in-memory state is acceptable.
 
 # COMMAND ----------
-# MAGIC %pip install databricks-sdk==0.102.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0
+# MAGIC %pip install databricks-sdk==0.117.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0
 
 # COMMAND ----------
 dbutils.library.restartPython()
@@ -21,6 +21,10 @@ dbutils.library.restartPython()
 # COMMAND ----------
 from pathlib import Path
 import sys
+
+# Workspace Git folders (wsfs) reject __pycache__ writes; skip bytecode caching
+# so importing scripts.deploy_lib does not log wsfs errors.
+sys.dont_write_bytecode = True
 
 
 def path_exists(path: Path) -> bool:
@@ -69,7 +73,6 @@ dbutils.widgets.text("lakebase_project_name", "")
 # MAGIC - [ ] Notebook is attached to **Databricks Serverless Environment v5**.
 # MAGIC - [ ] **Databricks Apps** is enabled in this workspace.
 # MAGIC - [ ] **Databricks Apps On-Behalf-of-User authorization** Public Preview is enabled.
-# MAGIC - [ ] **Managed MLflow Prompt Registry** Beta is enabled.
 # MAGIC - [ ] The selected SQL warehouse exists and you have `CAN_USE`.
 # MAGIC - [ ] The selected Unity Catalog exists and you can create/use the target schema.
 # MAGIC - [ ] If `lakebase_mode` is not `skip`, Lakebase Autoscaling is available.

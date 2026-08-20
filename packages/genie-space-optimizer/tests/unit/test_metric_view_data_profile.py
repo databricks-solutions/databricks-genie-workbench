@@ -64,7 +64,7 @@ def _uc_columns_for_mv(mv_fqn: str) -> list[dict]:
 def test_profile_dispatches_to_mv_path_for_dimensions():
     """When an entity is in the effective MV set, ``_collect_data_profile``
     routes to ``_profile_metric_view`` and never issues a ``SELECT *``."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     sql_log: list[str] = []
@@ -122,7 +122,7 @@ def test_profile_dispatches_to_mv_path_for_dimensions():
 
 def test_dimensions_resolved_from_yaml_when_present():
     """YAML dimensions take precedence over UC column rows."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     queried_dims: list[str] = []
@@ -169,7 +169,7 @@ def test_dimensions_resolved_from_yaml_when_present():
 def test_dimensions_fallback_to_uc_columns_without_yaml():
     """When no YAML is available, dimensions come from UC columns whose
     ``column_type`` is not ``measure``."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     queried_cols: list[str] = []
@@ -216,7 +216,7 @@ def test_dimensions_fallback_to_uc_columns_without_yaml():
 
 def test_measures_recorded_from_yaml_with_expressions():
     """Measures appear in the result dict with their YAML expressions."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     def fake_exec_sql(sql, *args, **kwargs):
@@ -272,7 +272,7 @@ def test_returns_none_when_no_dimensions_resolvable():
 
 def test_row_count_falls_back_to_minus_one_on_mv_error():
     """If ``SELECT count(*)`` is rejected with an MV error, row_count = -1."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     def fake_exec_sql(sql, *args, **kwargs):
@@ -434,7 +434,7 @@ def test_collect_data_profile_dispatches_mvs_to_mv_path():
     """Effective MVs in ``tables`` argument are routed through the MV
     profile path; their result lands in ``profile`` (not in
     ``reclassified_mvs``)."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     table_fqn = _MV_FQN

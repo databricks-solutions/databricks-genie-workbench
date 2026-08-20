@@ -98,9 +98,9 @@ export function SettingsPage({ onBack, currentGenieSpaceId }: SettingsPageProps)
             <>
               <SettingItem
                 icon={<Server className="w-5 h-5" />}
-                label="Genie Space ID"
+                label="Genie Agent ID"
                 value={currentGenieSpaceId || settings.genie_space_id}
-                description="The Genie Space currently being analyzed"
+                description="The Genie Agent currently being analyzed"
               />
 
               <SettingItem
@@ -128,7 +128,7 @@ export function SettingsPage({ onBack, currentGenieSpaceId }: SettingsPageProps)
                 icon={<FolderOpen className="w-5 h-5" />}
                 label="Workspace Directory"
                 value={settings.workspace_directory}
-                description="Target directory for creating new Genie Spaces"
+                description="Target directory for creating new Genie Agents"
               />
             </>
           )}

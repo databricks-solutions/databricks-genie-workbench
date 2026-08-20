@@ -1,20 +1,24 @@
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { getAutoOptimizePatches } from "@/lib/api"
-import type { GSOPatch } from "@/types"
+import { patchAttemptLabel } from "@/components/auto-optimize/pipelineDetail"
+import type { GSOPatch, GSOIterationResult } from "@/types"
 
 interface PatchesTableProps {
   runId: string
+  // GSO v2 (Phase 14) — when provided, the "Iter" column is re-keyed onto the
+  // patch-attempt vocabulary (Baseline · Patch N).
+  iterations?: GSOIterationResult[]
 }
 
 const LEVER_NAMES: Record<number, string> = {
   0: "genie_config",
   1: "Tables & Columns",
   2: "Metric Views",
-  3: "SQL Queries & Functions",
-  4: "Joins",
-  5: "Text Instructions",
+  3: "Table-Valued Functions",
+  4: "Join Specifications",
+  5: "Instructions & Examples",
   6: "SQL Expressions",
 }
 
@@ -26,13 +30,22 @@ const STATUS_COLORS: Record<string, "success" | "danger" | "warning" | "secondar
   pending: "secondary",
 }
 
-export function PatchesTable({ runId }: PatchesTableProps) {
+export function PatchesTable({ runId, iterations }: PatchesTableProps) {
   const [patches, setPatches] = useState<GSOPatch[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
 
-  useEffect(() => {
+  // Flip back to loading when runId changes. Adjusting state during render in
+  // response to a prop change avoids the cascading render that a setState in
+  // an effect would trigger.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [prevRunId, setPrevRunId] = useState(runId)
+  if (runId !== prevRunId) {
+    setPrevRunId(runId)
     setLoading(true)
+  }
+
+  useEffect(() => {
     getAutoOptimizePatches(runId)
       .then(setPatches)
       .finally(() => setLoading(false))
@@ -68,7 +81,7 @@ export function PatchesTable({ runId }: PatchesTableProps) {
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-default">
                 <th className="w-8 px-2 py-2" />
-                <th className="text-left px-3 py-2 text-xs font-medium text-muted">Iter</th>
+                <th className="text-left px-3 py-2 text-xs font-medium text-muted">{iterations ? "Attempt" : "Iter"}</th>
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Lever</th>
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Type</th>
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Target</th>
@@ -82,35 +95,37 @@ export function PatchesTable({ runId }: PatchesTableProps) {
                 const isExpanded = expandedRows.has(i)
                 const hasCommand = !!patch.command
                 return (
-                  <tr key={i} className="border-b border-default last:border-0">
-                    <td colSpan={8} className="p-0">
-                      <div>
-                        <button
-                          onClick={() => hasCommand && toggleRow(i)}
-                          className={`flex w-full items-center text-left hover:bg-elevated/50 transition-colors ${hasCommand ? "cursor-pointer" : "cursor-default"}`}
-                        >
-                          <div className="w-8 px-2 py-2 flex items-center justify-center">
-                            {hasCommand && (
-                              isExpanded
-                                ? <ChevronDown className="h-3.5 w-3.5 text-muted" />
-                                : <ChevronRight className="h-3.5 w-3.5 text-muted" />
-                            )}
-                          </div>
-                          <div className="px-3 py-2 text-muted">{patch.iteration}</div>
-                          <div className="px-3 py-2 text-muted">{LEVER_NAMES[patch.lever ?? 0] ?? `Lever ${patch.lever}`}</div>
-                          <div className="px-3 py-2 text-primary">{patch.patch_type}</div>
-                          <div className="px-3 py-2 text-primary font-mono text-xs flex-1 truncate max-w-[200px]" title={patch.target_object}>
-                            {patch.target_object}
-                          </div>
-                          <div className="px-3 py-2 text-muted">{patch.scope}</div>
-                          <div className="px-3 py-2 text-muted">{patch.risk_level}</div>
-                          <div className="px-3 py-2">
-                            <Badge variant={STATUS_COLORS[patch.status?.toLowerCase()] ?? "secondary"}>
-                              {patch.status}
-                            </Badge>
-                          </div>
-                        </button>
-                        {isExpanded && patch.command && (
+                  <Fragment key={i}>
+                    <tr
+                      onClick={() => hasCommand && toggleRow(i)}
+                      className={`border-b border-default last:border-0 transition-colors ${hasCommand ? "cursor-pointer hover:bg-elevated/50" : ""}`}
+                    >
+                      <td className="w-8 px-2 py-2 text-center">
+                        {hasCommand && (
+                          isExpanded
+                            ? <ChevronDown className="inline h-3.5 w-3.5 text-muted" />
+                            : <ChevronRight className="inline h-3.5 w-3.5 text-muted" />
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-muted">
+                        {iterations ? patchAttemptLabel(patch.iteration, iterations) : patch.iteration}
+                      </td>
+                      <td className="px-3 py-2 text-muted">{LEVER_NAMES[patch.lever ?? 0] ?? `Lever ${patch.lever}`}</td>
+                      <td className="px-3 py-2 text-primary">{patch.patch_type}</td>
+                      <td className="px-3 py-2 text-primary font-mono text-xs truncate max-w-[200px]" title={patch.target_object}>
+                        {patch.target_object}
+                      </td>
+                      <td className="px-3 py-2 text-muted">{patch.scope}</td>
+                      <td className="px-3 py-2 text-muted">{patch.risk_level}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant={STATUS_COLORS[patch.status?.toLowerCase()] ?? "secondary"}>
+                          {patch.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                    {isExpanded && patch.command && (
+                      <tr className="border-b border-default last:border-0">
+                        <td colSpan={8} className="p-0">
                           <div className="mx-8 mb-3 rounded-lg bg-elevated p-3 overflow-x-auto">
                             <pre className="text-xs font-mono text-muted whitespace-pre-wrap">{
                               typeof patch.command === "string"
@@ -118,10 +133,10 @@ export function PatchesTable({ runId }: PatchesTableProps) {
                                 : JSON.stringify(patch.command, null, 2)
                             }</pre>
                           </div>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>

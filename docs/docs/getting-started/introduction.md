@@ -13,9 +13,13 @@ Genie Workbench provides five capabilities that form a continuous improvement lo
 
 1. **Create** — An AI agent that walks you from business requirements through data discovery, inspection, and plan generation to a fully configured Genie Agent.
 2. **Score** — A rule-based IQ Scanner that evaluates agent quality across 12 checks and assigns a maturity tier.
-3. **Fix** — An AI agent that reads scan findings and generates targeted JSON patches to fix configuration gaps.
-4. **Optimize** — A benchmark-driven pipeline (Auto-Optimize / GSO) that measures real accuracy, diagnoses failures, and iteratively improves the agent configuration.
-5. **Track** — Persistent history of every scan, optimization run, and configuration change, stored in Lakebase.
+3. **Optimize** — A benchmark-driven pipeline (Auto-Optimize / GSO) that measures real accuracy, diagnoses failures, and iteratively improves the agent configuration.
+4. **Track** — Persistent history of every scan, optimization run, and configuration change, stored in Lakebase.
+5. **Watch** — GenieWatch reports per-Agent cost, usage, feedback, executed-resource lineage, and manager-reviewable benchmark candidate gaps.
+
+:::note
+An earlier LLM-based "Fix" capability (Quick Fix) has been removed. Auto-Optimize is now the only path that mutates Agent configuration.
+:::
 
 ## Target Audience
 
@@ -32,8 +36,8 @@ Genie Workbench provides five capabilities that form a continuous improvement lo
 | **IQ Score** | A 0–12 score based on 12 binary checks. Each check evaluates one aspect of agent configuration quality. |
 | **Maturity Tier** | One of three labels derived from the IQ Score: **Not Ready**, **Ready to Optimize**, or **Trusted**. |
 | **Finding** | A specific configuration gap identified by the IQ Scanner (e.g., "No join specifications for multi-table agent"), paired with a recommended next step. |
-| **Benchmark** | A question-answer pair used to measure Genie accuracy. The expected SQL is compared against Genie's generated SQL by specialized judges. |
-| **Lever** | An optimization strategy category in Auto-Optimize. Five lever types: tables/columns, metric views, TVFs, join specs, and instructions/example SQL. |
+| **Benchmark** | A question plus expected SQL, used to measure Genie accuracy. Runs are scored by Genie's native benchmark Eval-Run API. |
+| **Lever** | An optimization strategy category in Auto-Optimize. Six user-selectable levers: tables/columns, metric views, TVFs, join specs, instructions & examples, and SQL expressions. |
 | **Patch** | A targeted change to the `serialized_space` configuration, represented as a `field_path` + `new_value` pair. |
 | **OBO (On-Behalf-Of)** | Authentication model where the app acts on behalf of the signed-in user. See [Authentication & Permissions](/docs/platform/authentication). |
 | **SP (Service Principal)** | The app's own identity, used for background jobs and API fallback. See [Authentication & Permissions](/docs/platform/authentication). |
@@ -48,6 +52,7 @@ flowchart LR
     Create["Create Agent"] --> Score["IQ Scan (Score)"]
     Score --> Optimize["Auto-Optimize (GSO)"]
     Optimize --> Track["Track (History)"]
+    Track --> Watch["GenieWatch<br/>cost · usage · feedback"]
     Track -. "re-scan · continuous improvement" .-> Score
 ```
 
@@ -55,6 +60,7 @@ flowchart LR
 - **IQ Scanner** evaluates the agent and produces findings with recommended next steps.
 - **Auto-Optimize** runs a deeper benchmark-driven pipeline for accuracy improvement.
 - **Track** persists all results to Lakebase so you can see progress over time.
+- **GenieWatch** reports how the Agent is used in production: cost, query volume, user feedback, executed tables, and repeated or unsuccessful question families that are not exact matches for existing benchmarks. Candidate gaps require manager review; GenieWatch does not add benchmarks or change the Agent.
 - The cycle repeats: after optimization, re-scan to see the updated score.
 
 ## Next Steps

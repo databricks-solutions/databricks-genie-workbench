@@ -67,6 +67,16 @@ EXCLUDE_DIRS = {
 
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 
+PRIVATE_PYTHON_REGISTRY_HOSTS = {
+    "pypi-proxy.dev.databricks.com",
+}
+
+PYTHON_DEPENDENCY_FILENAMES = {
+    "pyproject.toml",
+    "uv.lock",
+    "uv.toml",
+}
+
 
 def default_source_path(deployer_user: str, app_name: str) -> str:
     return f"/Workspace/Users/{deployer_user}/.genie-workbench-deploy/{app_name}/app"
@@ -99,8 +109,6 @@ def should_copy(path: Path, repo_root: Path) -> bool:
         return False
     if rel.startswith("packages/genie-space-optimizer/tests/"):
         return False
-    if rel.startswith("packages/genie-space-optimizer/browser-test-output/"):
-        return False
     if rel.startswith("packages/genie-space-optimizer/.build/"):
         return False
     return True
@@ -116,6 +124,30 @@ def iter_runtime_files(repo_root: Path) -> Iterable[Path]:
             continue
         if is_file and should_copy(path, repo_root):
             yield path
+
+
+def validate_python_dependency_sources(repo_root: Path) -> None:
+    """Reject deployable dependency metadata tied to private registries."""
+    offenders: list[str] = []
+    for path in iter_runtime_files(repo_root):
+        if path.name not in PYTHON_DEPENDENCY_FILENAMES:
+            continue
+        try:
+            content = path.read_text(errors="ignore")
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTSUP, errno.EPERM):
+                raise
+            continue
+        if any(host in content for host in PRIVATE_PYTHON_REGISTRY_HOSTS):
+            offenders.append(path.relative_to(repo_root).as_posix())
+
+    if offenders:
+        files = ", ".join(sorted(offenders))
+        raise ValueError(
+            "Deployable Python dependency files contain a private Databricks "
+            f"registry URL: {files}. Remove the private index configuration and "
+            "regenerate uv.lock against https://pypi.org/simple before installing."
+        )
 
 
 def _can_use_local_path(path: str) -> bool:
@@ -209,6 +241,8 @@ def upload_source_notebook(w, src_path: Path, workspace_path_without_ext: str) -
 def prepare_workspace_source(w, cfg: InstallConfig, deployer_user: str) -> str:
     repo_root = Path(cfg.repo_root or "").resolve()
     source_path = cfg.deploy_workspace_path or default_source_path(deployer_user, cfg.app_name)
+
+    validate_python_dependency_sources(repo_root)
 
     delete_workspace_path(w, source_path)
     mkdirs(w, source_path)

@@ -30,7 +30,7 @@ def _table_uc_columns(table_fqn: str) -> list[dict]:
 
 def test_mv_error_triggers_reclassification():
     """Profile query raising an MV error → ref appears in reclassified set."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     table_fqn = "cat.sch.mv_in_disguise"
@@ -65,7 +65,7 @@ def test_mv_error_triggers_reclassification():
 
 def test_non_mv_error_does_not_trigger_reclassification():
     """Generic table failures still skip the ref but do NOT reclassify."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     table_fqn = "cat.sch.broken_table"
@@ -94,7 +94,7 @@ def test_mv_error_skips_fallback_query():
     """When the primary aggregate raises an MV error, the fallback (no
     TABLESAMPLE) is NOT attempted — it would also fail and just adds
     log noise."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     table_fqn = "cat.sch.mv_skip_fallback"
@@ -132,7 +132,7 @@ def test_mv_error_skips_fallback_query():
 def test_mixed_refs_only_mv_failures_reclassified():
     """A mix of table refs + one MV-rejecting ref → only the MV is reclassified;
     the regular table is profiled normally."""
-    from genie_space_optimizer.optimization import evaluation as ev_mod
+    from genie_space_optimizer.optimization import benchmarking as ev_mod
     from genie_space_optimizer.optimization import preflight
 
     good_fqn = "cat.sch.good_table"

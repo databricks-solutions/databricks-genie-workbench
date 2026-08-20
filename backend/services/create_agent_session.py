@@ -1,4 +1,4 @@
-"""Session management for the Create Genie agent.
+"""Session management for the Create Genie Agent.
 
 Maintains conversation history and accumulated state per session.
 Persists to Lakebase (PostgreSQL) when available, falls back to in-memory.

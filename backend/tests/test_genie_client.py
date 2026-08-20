@@ -1,6 +1,7 @@
+import json
 from types import SimpleNamespace
 
-from backend.services.genie_client import normalize_metric_view_sources
+from backend.services.genie_client import get_serialized_space, normalize_metric_view_sources
 
 
 class _TablesClient:
@@ -73,3 +74,47 @@ def test_normalize_metric_view_sources_falls_back_to_mv_prefix_when_type_unknown
     assert [t["identifier"] for t in space_data["data_sources"]["tables"]] == ["cat.sch.orders"]
     assert [m["identifier"] for m in space_data["data_sources"]["metric_views"]] == ["cat.sch.mv_retail_sales"]
 
+
+def test_get_serialized_space_does_not_copy_top_level_description_by_default(monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.genie_client.get_genie_space",
+        lambda genie_space_id=None: {
+            "description": "Useful top-level description for this sales analytics space.",
+            "serialized_space": json.dumps({
+                "data_sources": {"tables": []},
+                "instructions": {},
+                "benchmarks": {},
+            }),
+        },
+    )
+    monkeypatch.setattr(
+        "backend.services.genie_client.get_workspace_client",
+        lambda: (_ for _ in ()).throw(RuntimeError("no workspace client")),
+    )
+
+    space_data = get_serialized_space("space-1")
+
+    assert "description" not in space_data
+
+
+def test_get_serialized_space_can_copy_top_level_description_for_scoring(monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.genie_client.get_genie_space",
+        lambda genie_space_id=None: {
+            "description": "Useful top-level description for this sales analytics space.",
+            "serialized_space": json.dumps({
+                "description": "TBD",
+                "data_sources": {"tables": []},
+                "instructions": {},
+                "benchmarks": {},
+            }),
+        },
+    )
+    monkeypatch.setattr(
+        "backend.services.genie_client.get_workspace_client",
+        lambda: (_ for _ in ()).throw(RuntimeError("no workspace client")),
+    )
+
+    space_data = get_serialized_space("space-1", include_top_level_description=True)
+
+    assert space_data["description"] == "Useful top-level description for this sales analytics space."

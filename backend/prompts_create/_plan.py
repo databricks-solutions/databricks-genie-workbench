@@ -22,11 +22,11 @@ Call `generate_plan` with a `user_requirements` string summarizing the user's go
 
 Only fall back to `present_plan` with manually constructed data if the user asks to **revise specific sections** after seeing the generated plan.
 
-**Guiding principle:** Use every schema feature that adds value. The serialized_space schema has many sections — tables, column configs, text instructions, example SQLs, join specs, measures, filters, expressions, SQL functions, metric views, benchmarks, and sample questions. If the data or business context suggests a feature would help Genie answer questions more accurately, **include it**. A rich config produces a more capable space.
+**Guiding principle:** Use every schema feature that adds value. The serialized_space schema has many sections — tables, column configs, text instructions, example SQLs, join specs, measures, filters, expressions, SQL functions, metric views, benchmarks, and sample questions. If the data or business context suggests a feature would help Genie answer questions more accurately, **include it**. A rich config produces a more capable agent.
 
 The plan should include:
 
-1. **Space title, description, audience**
+1. **Agent title, description, audience**
 2. **Selected tables** (with column-level detail)
    - **Column descriptions**: Add descriptions for columns whose names are ambiguous or domain-specific
    - **Column synonyms**: Add synonyms for columns users might refer to by different names (e.g., "cust_id" → "customer ID", "account number")
@@ -143,14 +143,14 @@ The plan should include:
 
 6. **Measures** — reusable aggregation SQL for key metrics
 
-   Each measure has an `alias`, `sql` (an aggregate expression), `display_name`, and optional `synonyms`, `instruction`, and `comment`.
+   Each measure has a `display_name`, `sql` (an aggregate expression), and optional `synonyms`, `instruction`, and `comment`.
    - `instruction`: tells Genie WHEN to use this measure (e.g., "Use for any revenue aggregation")
    - `comment`: internal note explaining the formula or business context
    Put the actual aggregation formula here, not in text instructions. If the user defined "conversion rate = orders / visits", create a measure with `sql: "CAST(COUNT(DISTINCT order_id) AS DOUBLE) / NULLIF(COUNT(DISTINCT session_id), 0)"`.
 
 7. **Expressions** — reusable computed columns / dimension expressions
 
-   Each expression has an `alias`, `sql` (a dimension expression), `display_name`, and optional `synonyms`, `instruction`, and `comment`.
+   Each expression has a `display_name`, `sql` (a dimension expression), and optional `synonyms`, `instruction`, and `comment`.
    Use for date dimensions (`YEAR(order_date)`), computed categories (`CASE WHEN amount > 1000 THEN 'High' ELSE 'Low' END`), or derived columns that Genie should know about.
 
 8. **Join specs** — table relationships for multi-table queries
@@ -160,11 +160,11 @@ The plan should include:
    - `comment`: describes the relationship in plain language
    Always define joins proactively when multi-table data is selected — don't wait for the user to ask.
 
-9. **SQL functions** — Unity Catalog UDFs available to the space
+9. **SQL functions** — Unity Catalog UDFs available to the agent
 
    If `discover_tables` or the user mentioned custom SQL functions (UDFs) relevant to the domain, include them. Each needs an `identifier` (catalog.schema.function_name). The function must already be registered in Unity Catalog.
 
-10. **Benchmark queries** (5-10 pairs) — for validating the space after creation
+10. **Benchmark queries** (5-10 pairs) — for validating the agent after creation
 
    Benchmarks are test questions used to verify Genie produces correct SQL. They should:
    - Include specific expected SQL or expected result characteristics
@@ -175,7 +175,7 @@ The plan should include:
 
    Use patterns from `profile_table_usage` query history to make benchmarks realistic.
 
-11. **Sample questions** (3-5) — displayed in the space as conversation starters
+11. **Sample questions** (3-5) — displayed in the agent as conversation starters
 
    These should match the audience level. For executives: "What were our top 5 products by revenue this quarter?" For analysts: "Show me the daily trend of conversion rate over the past 30 days." Incorporate business context (fiscal definitions, terminology).
 

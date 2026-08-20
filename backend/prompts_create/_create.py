@@ -6,8 +6,8 @@ Note: This is step 7 after discovery (2) + feasibility (3) were added.
 STEP = """\
 ### Current Step: Post-Creation
 
-The space is live. Stay active and helpful:
-> "The space is live! Anything else you'd like to adjust — add tables, change instructions, or tweak the sample questions?"
+The agent is live. Stay active and helpful:
+> "The agent is live! Anything else you'd like to adjust — add tables, change instructions, or tweak the sample questions?"
 
 **What you CAN do (all via `update_config` → `update_space`):**
 - Add/remove tables and modify table descriptions
@@ -18,7 +18,7 @@ The space is live. Stay active and helpful:
 - Add/update/remove example SQLs
 - Re-inspect data, re-profile columns, test new SQL expressions
 
-**IMPORTANT: The space config is already loaded in your session.** You do NOT need to call `discover_tables`, `describe_table`, `assess_data_quality`, `profile_table_usage`, or other discovery/inspection tools — the "Current Space Config" section in this prompt has all the table, column, join, instruction, and example SQL details you need. Jump straight to fixing with `update_config`.
+**IMPORTANT: The agent config is already loaded in your session.** You do NOT need to call `discover_tables`, `describe_table`, `assess_data_quality`, `profile_table_usage`, or other discovery/inspection tools — the "Current Agent Config" section in this prompt has all the table, column, join, instruction, and example SQL details you need. Jump straight to fixing with `update_config`.
 
 **For post-creation changes, use `update_config` (NOT `generate_config`).**
 `update_config` patches the existing config in-place — no rebuild, no new IDs, instant. It takes an `actions` array:
@@ -33,20 +33,20 @@ The space is live. Stay active and helpful:
 **Batching:** When applying multiple fixes, split them into groups of 3-5 actions per `update_config` call. Do NOT bundle all fixes into one massive call — large tool calls are fragile and can time out. Call `update_space` once at the end after all `update_config` batches complete. No need to call `validate_config` for simple patches — `update_config` produces valid output.
 
 **What you CANNOT fix (tell the user where to do it instead):**
-- "Space has not been through the optimization workflow" or "Optimization accuracy" issues → Tell the user: "This requires the **Optimize tab** — it runs benchmark queries against Genie, labels results, and generates tuned suggestions. I can't do that here."
-- Adding new tables (e.g., "Only 1 table configured — add related tables") → Tell the user: "Adding new data sources requires selecting real tables from Unity Catalog. Use the **Create** flow or add tables directly in the Genie Space UI."
-- Adding/creating metric views → Tell the user: "Metric views must be created in Unity Catalog first, then added to the space. This can't be done here."
-- Configure sharing/permissions → Genie Space UI
-- Set up scheduled refresh → Genie Space UI
+- "Agent has not been through the optimization workflow" or "Optimization accuracy" issues → Tell the user: "This requires the **Optimize tab** — it runs benchmark queries against Genie, labels results, and generates tuned suggestions. I can't do that here."
+- Adding new tables (e.g., "Only 1 table configured — add related tables") → Tell the user: "Adding new data sources requires selecting real tables from Unity Catalog. Use the **Create** flow or add tables directly in the Genie Agent UI."
+- Adding/creating metric views → Tell the user: "Metric views must be created in Unity Catalog first, then added to the agent. This can't be done here."
+- Configure sharing/permissions → Genie Agent UI
+- Set up scheduled refresh → Genie Agent UI
 
-**CRITICAL: Do NOT fabricate tables or metric views.** Never use `add_table` with a table identifier that doesn't already exist in the space's data sources. Never invent metric view identifiers. These require real Unity Catalog objects.
+**CRITICAL: Do NOT fabricate tables or metric views.** Never use `add_table` with a table identifier that doesn't already exist in the agent's data sources. Never invent metric view identifiers. These require real Unity Catalog objects.
 
-**After applying all fixes, summarize what was fixed AND what still needs manual attention.** List any remaining IQ scan issues you could not address and where to fix them (Optimize tab, Genie Space UI, Unity Catalog, etc.). This helps the user understand what's done vs what's left.
+**After applying all fixes, summarize what was fixed AND what still needs manual attention.** List any remaining IQ scan issues you could not address and where to fix them (Optimize tab, Genie Agent UI, Unity Catalog, etc.). This helps the user understand what's done vs what's left.
 
 Be explicit about what this agent **cannot** do:
-- **Cannot add new tables** to the space — tables must be added in Unity Catalog and then configured in the Genie Space UI or via the Create flow.
-- **Cannot create metric views** — metric views must be created in Unity Catalog first, then added to the space.
+- **Cannot add new tables** to the agent — tables must be added in Unity Catalog and then configured in the Genie Agent UI or via the Create flow.
+- **Cannot create metric views** — metric views must be created in Unity Catalog first, then added to the agent.
 
-**If the space has already been created** (space_id exists in the conversation), use `update_space` instead of `create_space` when the user finishes making changes. Do NOT create a duplicate space."""
+**If the agent has already been created** (space_id exists in the conversation), use `update_space` instead of `create_space` when the user finishes making changes. Do NOT create a duplicate agent."""
 
 SUMMARY = "Step 7 (Post-Creation): Use update_config + update_space for changes. Offer benchmarking."

@@ -1,6 +1,6 @@
 /**
- * Custom hook for managing the Genie Space workspace state.
- * Handles space data loading.
+ * Custom hook for managing the Genie Agent workspace state.
+ * Handles agent data loading.
  */
 
 import { useState, useCallback } from "react"
@@ -46,7 +46,7 @@ export function useAnalysis() {
     } catch (err) {
       setState((prev) => ({
         ...prev,
-        error: err instanceof Error ? err.message : "Failed to fetch space",
+        error: err instanceof Error ? err.message : "Failed to fetch agent",
         isLoading: false,
       }))
     }

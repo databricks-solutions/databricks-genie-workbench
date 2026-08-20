@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { ApiError, extractDetailMessage, getModels, streamAgentChat, triggerAutoOptimize } from "./api"
+import {
+  ApiError,
+  extractDetailMessage,
+  getAutoOptimizeLoopState,
+  getAutoOptimizePublishRecord,
+  getAutoOptimizeRevertOptions,
+  getModels,
+  removeAutoOptimizeRunFromHistory,
+  revertAutoOptimizeRun,
+  streamAgentChat,
+  triggerAutoOptimize,
+} from "./api"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -26,16 +37,15 @@ describe("extractDetailMessage", () => {
     )
   })
 
-  it("picks `error` from a structured dict (Prompt Registry probe shape)", () => {
+  it("picks `error` from a structured dict", () => {
     const detail = {
-      error: "Prompt Registry is not available in this workspace.",
-      reason_code: "not_enabled",
+      error: "Optimization prerequisites are not met.",
+      reason_code: "missing_permission",
       error_code: null,
       actionable_by: "customer",
-      prompt_registry_available: false,
     }
     expect(extractDetailMessage(detail, "fallback")).toBe(
-      "Prompt Registry is not available in this workspace.",
+      "Optimization prerequisites are not met.",
     )
   })
 
@@ -60,13 +70,12 @@ describe("extractDetailMessage", () => {
 describe("ApiError", () => {
   it("carries structured detail for callers that need reason_code / actionable_by", () => {
     const detail = {
-      error: "Prompt Registry is not available",
+      error: "Missing optimization permission",
       reason_code: "permission_denied",
       actionable_by: "customer",
-      prompt_registry_available: false,
     }
     const err = new ApiError(detail.error, 412, detail)
-    expect(err.message).toBe("Prompt Registry is not available")
+    expect(err.message).toBe("Missing optimization permission")
     expect(err.status).toBe(412)
     expect(err.detail).toEqual(detail)
     expect(err.detail?.reason_code).toBe("permission_denied")
@@ -116,6 +125,7 @@ describe("model selection API payloads", () => {
       apply_mode: "genie_config",
       levers: [1, 2],
       llm_model: "selected-chat",
+      benchmark_policy: "review_only",
     })
 
     const [, options] = fetchMock.mock.calls[0]
@@ -124,7 +134,141 @@ describe("model selection API payloads", () => {
       apply_mode: "genie_config",
       levers: [1, 2],
       llm_model: "selected-chat",
+      benchmark_policy: "review_only",
     })
+  })
+
+  it("round-trips the GSO loop knobs in the trigger request", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        runId: "run",
+        jobRunId: "job-run",
+        jobUrl: null,
+        status: "QUEUED",
+        targetAccuracy: 0.85,
+        maxAttempts: 5,
+      }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const resp = await triggerAutoOptimize({
+      space_id: "space",
+      target_accuracy: 0.85,
+      max_attempts: 5,
+      benchmark_policy: "repair_allowed",
+    })
+
+    const [, options] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String(options.body))).toEqual({
+      space_id: "space",
+      target_accuracy: 0.85,
+      max_attempts: 5,
+      benchmark_policy: "repair_allowed",
+    })
+    expect(resp.targetAccuracy).toBe(0.85)
+    expect(resp.maxAttempts).toBe(5)
+  })
+
+  it("fetches the loop-state read path", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ runId: "run", loopState: null, attempts: [] }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const out = await getAutoOptimizeLoopState("run")
+
+    expect(out).toEqual({ runId: "run", loopState: null, attempts: [] })
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auto-optimize/runs/run/loop-state")
+  })
+
+  it("fetches the publish-record read path and tolerates errors", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ runId: "run", publishRecord: null }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const out = await getAutoOptimizePublishRecord("run")
+
+    expect(out).toEqual({ runId: "run", publishRecord: null })
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auto-optimize/runs/run/publish")
+  })
+
+  it("fetches the combined revert-options preview", async () => {
+    const preview = {
+      runId: "run",
+      spaceId: "space",
+      championAvailable: true,
+      baselineAvailable: true,
+      benchmarkChampionAvailable: true,
+      benchmarkBaselineAvailable: true,
+      benchmarkDiffs: {
+        champion: {
+          currentCount: 12,
+          targetCount: 11,
+          willAdd: 2,
+          willRemove: 3,
+          willChange: 1,
+        },
+        baseline: {
+          currentCount: 12,
+          targetCount: 10,
+          willAdd: 1,
+          willRemove: 3,
+          willChange: 2,
+        },
+      },
+    }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => preview,
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(getAutoOptimizeRevertOptions("run")).resolves.toEqual(preview)
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/auto-optimize/runs/run/revert-options",
+    )
+  })
+
+  it("sends both independent revert scopes through one action", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ status: "reverted", runId: "run", message: "ok" }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await revertAutoOptimizeRun("run", {
+      configTarget: "champion",
+      benchmarkTarget: "champion",
+    })
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe(
+      "/api/auto-optimize/runs/run/revert?config_target=champion&benchmark_target=champion",
+    )
+    expect(options).toEqual(expect.objectContaining({ method: "POST" }))
+  })
+
+  it("removes an optimization history entry with DELETE", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        status: "removed",
+        runId: "run",
+        spaceId: "space",
+        message: "ok",
+      }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await removeAutoOptimizeRunFromHistory("run")
+
+    const [url, options] = fetchMock.mock.calls[0]
+    expect(url).toBe("/api/auto-optimize/runs/run/history-entry")
+    expect(options).toEqual(expect.objectContaining({ method: "DELETE" }))
   })
 
   it("sends model in Create Agent chat request", async () => {

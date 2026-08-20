@@ -1,4 +1,4 @@
-"""IQ Scan: static quality scoring for Genie Space configurations.
+"""IQ Scan: static quality scoring for Genie Agent configurations.
 
 This package contains the pure scoring engine (no IO, no Lakebase, no SDK calls)
 used by both the backend scanner service and the GSO optimizer preflight.

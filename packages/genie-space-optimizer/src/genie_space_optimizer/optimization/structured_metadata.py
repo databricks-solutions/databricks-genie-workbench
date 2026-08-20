@@ -1,4 +1,4 @@
-"""Structured metadata schema for Genie Space descriptions.
+"""Structured metadata schema for Genie Agent descriptions.
 
 Provides parse/render/update utilities so that table, column, metric view,
 and function descriptions follow a predictable plain-text format with

@@ -21,7 +21,6 @@ sync:
     - dashboards/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs/**
-    - packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py
   exclude:
     - backend/**
     - frontend/**
@@ -29,7 +28,6 @@ sync:
     - sql/**
     - TODO/**
     - packages/genie-space-optimizer/tests/**
-    - packages/genie-space-optimizer/src/genie_space_optimizer/ui/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/backend/**
     - packages/genie-space-optimizer/node_modules/**
     - packages/genie-space-optimizer/.build/**
@@ -51,9 +49,14 @@ resources:
     gso-optimization-runner:
       name: "gso-optimization-job"
       description: >-
-        Persistent DAG optimization runner managed by Genie Workbench
-        (preflight -> baseline_eval -> enrichment -> lever_loop -> finalize -> deploy).
-        SP executes with granted privileges on user schemas.
+        GSO v2 bounded hill-climbing runner managed by Genie Workbench
+        (intake_and_snapshot -> benchmark_qc_and_repair ->
+        optimize -> publish_and_audit).
+        Linear 4-task serverless DAG; the baseline eval and hill-climb run as an
+        in-process native Benchmark API loop inside optimize. No condition tasks, no dbutils.notebook.run,
+        no inter-task task-value plumbing — every task reads job parameters +
+        durable Delta state by run_id (D9). SP executes with granted privileges
+        on user schemas.
       max_concurrent_runs: 20
       queue:
         enabled: true
@@ -61,6 +64,13 @@ resources:
         app: "genie-workbench"
         managed-by: "databricks-bundle"
         pattern: "persistent-dag"
+      # Parameter set mirrors the package bundle
+      # (packages/genie-space-optimizer/databricks.yml) 4-task job. `llm_model`
+      # is the Workbench-specific extra: deploy.sh passes it via
+      # `--var llm_model` so the operator-selected serving endpoint reaches each
+      # task (every v2 entrypoint honors the llm_model widget). MLflow was
+      # decommissioned (Phase 5) so `experiment_name` is gone, and `deploy` is
+      # out of scope (D7) so `deploy_target` is gone.
       parameters:
         - name: run_id
           default: ""
@@ -76,22 +86,36 @@ resources:
           default: "genie_config"
         - name: levers
           default: "[1,2,3,4,5,6]"
-        - name: max_iterations
-          default: "5"
+        # Bounded LLM patch/eval attempt budget.
+        - name: max_attempts
+          default: "3"
+        # Stop-early target accuracy.
+        - name: target_accuracy
+          default: "0.90"
+        # Bound on benchmark_qc_and_repair's inline repair/prune loop.
+        - name: benchmark_repair_max_tries
+          default: "3"
+        # Backward-compatible job default. The Workbench UI explicitly sends
+        # review_only unless the operator opts into live benchmark repair.
+        - name: benchmark_policy
+          default: "repair_allowed"
         - name: triggered_by
-          default: ""
-        - name: experiment_name
-          default: ""
-        - name: deploy_target
           default: ""
         - name: warehouse_id
           default: ""
+        - name: workload_warehouse_ids
+          default: "[]"
         - name: llm_model
           default: ${var.llm_model}
+      # Every task carries its job-parameter subset as base_parameters so there
+      # is NO inter-task task-value plumbing (D9). run_id/catalog/schema
+      # bootstrap each notebook; all other handoff state is read from Delta by
+      # run_id. This mirrors the package bundle; `llm_model` is added to every
+      # task (Workbench-specific — see the parameter note above).
       tasks:
-        - task_key: preflight
+        - task_key: intake_and_snapshot
           notebook_task:
-            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight.py
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_intake_and_snapshot.py
             base_parameters:
               run_id: "{{job.parameters.run_id}}"
               space_id: "{{job.parameters.space_id}}"
@@ -100,61 +124,77 @@ resources:
               schema: "{{job.parameters.schema}}"
               apply_mode: "{{job.parameters.apply_mode}}"
               levers: "{{job.parameters.levers}}"
-              max_iterations: "{{job.parameters.max_iterations}}"
-              experiment_name: "{{job.parameters.experiment_name}}"
-              deploy_target: "{{job.parameters.deploy_target}}"
+              max_attempts: "{{job.parameters.max_attempts}}"
+              target_accuracy: "{{job.parameters.target_accuracy}}"
+              benchmark_repair_max_tries: "{{job.parameters.benchmark_repair_max_tries}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
+              triggered_by: "{{job.parameters.triggered_by}}"
+              warehouse_id: "{{job.parameters.warehouse_id}}"
+              workload_warehouse_ids: "{{job.parameters.workload_warehouse_ids}}"
+              llm_model: "{{job.parameters.llm_model}}"
+          environment_key: default
+          timeout_seconds: 14400
+          max_retries: 0
+        - task_key: benchmark_qc_and_repair
+          depends_on:
+            - task_key: intake_and_snapshot
+          notebook_task:
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_benchmark_qc_and_repair.py
+            base_parameters:
+              run_id: "{{job.parameters.run_id}}"
+              space_id: "{{job.parameters.space_id}}"
+              domain: "{{job.parameters.domain}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              apply_mode: "{{job.parameters.apply_mode}}"
+              benchmark_repair_max_tries: "{{job.parameters.benchmark_repair_max_tries}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
-        - task_key: baseline_eval
+        - task_key: optimize
           depends_on:
-            - task_key: preflight
+            - task_key: benchmark_qc_and_repair
           notebook_task:
-            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_baseline.py
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_optimize.py
             base_parameters:
+              run_id: "{{job.parameters.run_id}}"
+              space_id: "{{job.parameters.space_id}}"
+              domain: "{{job.parameters.domain}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              apply_mode: "{{job.parameters.apply_mode}}"
+              levers: "{{job.parameters.levers}}"
+              max_attempts: "{{job.parameters.max_attempts}}"
+              target_accuracy: "{{job.parameters.target_accuracy}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
+              warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
-        - task_key: enrichment
+        - task_key: publish_and_audit
           depends_on:
-            - task_key: baseline_eval
+            - task_key: optimize
           notebook_task:
-            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_enrichment.py
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_publish_and_audit.py
             base_parameters:
+              run_id: "{{job.parameters.run_id}}"
+              space_id: "{{job.parameters.space_id}}"
+              domain: "{{job.parameters.domain}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              apply_mode: "{{job.parameters.apply_mode}}"
+              target_accuracy: "{{job.parameters.target_accuracy}}"
+              max_attempts: "{{job.parameters.max_attempts}}"
+              benchmark_policy: "{{job.parameters.benchmark_policy}}"
+              warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
-        - task_key: lever_loop
-          depends_on:
-            - task_key: enrichment
-          notebook_task:
-            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_lever_loop.py
-            base_parameters:
-              llm_model: "{{job.parameters.llm_model}}"
-          environment_key: default
-          timeout_seconds: 7200
-          max_retries: 0
-        - task_key: finalize
-          depends_on:
-            - task_key: lever_loop
-          notebook_task:
-            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_finalize.py
-            base_parameters:
-              llm_model: "{{job.parameters.llm_model}}"
-          environment_key: default
-          timeout_seconds: 7200
-          max_retries: 0
-        - task_key: deploy
-          depends_on:
-            - task_key: finalize
-          condition_task:
-            op: EQUAL_TO
-            left: "deploy"
-            right: "disabled"
       environments:
         - environment_key: default
           spec:

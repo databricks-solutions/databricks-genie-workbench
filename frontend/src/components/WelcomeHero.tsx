@@ -63,10 +63,10 @@ export function WelcomeHero({ spaces, loading, onCreateSpace }: WelcomeHeroProps
 
         {/* Description */}
         <p
-          className="text-secondary text-lg max-w-lg mb-8 leading-relaxed"
+          className="text-secondary text-lg mb-8 leading-relaxed"
           style={{ animation: "fadeSlideUp 0.5s ease-out 120ms both" }}
         >
-          Score, optimize, and govern your Databricks Genie Spaces — all in one place.
+          Score, optimize, and govern your Databricks Genie Agents — all in one place.
         </p>
 
         {/* Stats */}
@@ -82,7 +82,7 @@ export function WelcomeHero({ spaces, loading, onCreateSpace }: WelcomeHeroProps
             </>
           ) : total > 0 ? (
             <>
-              <StatPill label="spaces" value={total} />
+              <StatPill label="agents" value={total} />
               <StatPill label="scanned" value={scanned > 0 ? `${Math.round(scanned / total * 100)}%` : "0%"} />
               <StatPill label="avg score" value={avgScore} />
               {trusted > 0 && <StatPill label="trusted" value={trusted} />}
@@ -99,7 +99,7 @@ export function WelcomeHero({ spaces, loading, onCreateSpace }: WelcomeHeroProps
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl gradient-accent text-white text-sm font-semibold shadow-lg shadow-accent/25 hover:shadow-xl hover:shadow-accent/30 hover:-translate-y-0.5 transition-all duration-200"
             >
               <Plus className="w-4 h-4" />
-              Create Space
+              Create Agent
               <ArrowRight className="w-3.5 h-3.5 ml-0.5" />
             </button>
           </div>

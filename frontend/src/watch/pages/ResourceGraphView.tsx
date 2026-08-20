@@ -329,11 +329,11 @@ export function ResourceGraphView({ days }: Props) {
         />
         <div className="mt-2 border-t border-default pt-3">
           <label className="block text-xs font-medium uppercase text-muted">
-            Min spaces per resource
+            Min agents per resource
           </label>
           <p className="mt-1 text-[11px] text-muted/80">
-            Hide resources used by fewer than N spaces. Set to 2+ to surface
-            tables shared across spaces (potential redundancy).
+            Hide resources used by fewer than N agents. Set to 2+ to surface
+            tables shared across agents (potential redundancy).
           </p>
           <div className="mt-2 flex items-center gap-2">
             <input
@@ -350,7 +350,7 @@ export function ResourceGraphView({ days }: Props) {
           {minSharedSpaces > 1 && (filterContext.droppedResources > 0 || filterContext.droppedSpaces > 0) && (
             <p className="mt-1 text-[11px] text-muted/70">
               Hiding {filterContext.droppedResources} resource{filterContext.droppedResources === 1 ? '' : 's'}
-              {filterContext.droppedSpaces > 0 && ` · ${filterContext.droppedSpaces} disconnected space${filterContext.droppedSpaces === 1 ? '' : 's'}`}
+              {filterContext.droppedSpaces > 0 && ` · ${filterContext.droppedSpaces} disconnected agent${filterContext.droppedSpaces === 1 ? '' : 's'}`}
             </p>
           )}
         </div>
@@ -361,7 +361,7 @@ export function ResourceGraphView({ days }: Props) {
               checked={hideUnnamedSpaces}
               onChange={e => setHideUnnamedSpaces(e.target.checked)}
             />
-            <span>Hide spaces with no title</span>
+            <span>Hide agents with no title</span>
           </label>
           <p className="mt-1 text-[11px] text-muted/80">
             Exclude workspaces in trash or no title
@@ -371,14 +371,14 @@ export function ResourceGraphView({ days }: Props) {
           <div className="mb-1 font-medium uppercase">Legend</div>
           <div className="flex items-center gap-2 py-0.5">
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: SPACE_COLOR }} />
-            <span>Genie Space</span>
+            <span>Genie Agent</span>
           </div>
           <div className="flex items-center gap-2 py-0.5">
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: RESOURCE_COLOR }} />
             <span>Resource (table / view)</span>
           </div>
           <p className="mt-2 text-muted/70">
-            Node size scales with query volume (log-scaled). Genie Space nodes are
+            Node size scales with query volume (log-scaled). Genie Agent nodes are
             ~1.4× the radius of resource nodes for emphasis. Hover over a node
             to highlight its neighborhood.
           </p>
@@ -417,7 +417,7 @@ export function ResourceGraphView({ days }: Props) {
               }}
               nodeLabel={(n: NodeObject) => {
                 const node = n as GraphNode
-                const kindLabel = node.kind === 'space' ? 'Genie Space' : 'Resource'
+                const kindLabel = node.kind === 'space' ? 'Genie Agent' : 'Resource'
                 const escape = (s: string) =>
                   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                 const lines = [`<b>${kindLabel}</b>`, escape(node.label)]
@@ -513,7 +513,7 @@ function SpaceFilterDropdown({
         onClick={() => setOpen(o => !o)}
         className="flex w-full items-center gap-2 rounded border border-default bg-elevated px-3 py-1.5 text-sm hover:bg-elevated/80"
       >
-        <span className="text-xs uppercase text-muted">Genie Spaces</span>
+        <span className="text-xs uppercase text-muted">Genie Agents</span>
         <span>{summary}</span>
         <ChevronDown className="ml-auto h-4 w-4 text-muted" />
       </button>
@@ -523,7 +523,7 @@ function SpaceFilterDropdown({
             <input
               autoFocus
               type="text"
-              placeholder="Search spaces…"
+              placeholder="Search agents…"
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full rounded border border-default bg-elevated px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-default"

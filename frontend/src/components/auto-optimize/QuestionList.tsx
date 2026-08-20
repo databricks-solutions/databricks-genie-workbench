@@ -1,6 +1,7 @@
 import { useState } from "react"
-import { CheckCircle, XCircle, MinusCircle, Search } from "lucide-react"
+import { CheckCircle, XCircle, MinusCircle, AlertCircle, Search } from "lucide-react"
 import type { GSOQuestionDetail } from "@/types"
+import { questionState } from "@/lib/assessment"
 
 interface QuestionListProps {
   questions: GSOQuestionDetail[]
@@ -8,7 +9,7 @@ interface QuestionListProps {
   onSelect: (id: string) => void
 }
 
-type Filter = "all" | "passing" | "failing"
+type Filter = "all" | "passing" | "failing" | "needs_review"
 
 export function QuestionList({ questions, selectedId, onSelect }: QuestionListProps) {
   const [search, setSearch] = useState("")
@@ -19,8 +20,10 @@ export function QuestionList({ questions, selectedId, onSelect }: QuestionListPr
       const s = search.toLowerCase()
       if (!q.question.toLowerCase().includes(s) && !q.question_id.toLowerCase().includes(s)) return false
     }
-    if (filter === "passing" && q.passed !== true) return false
-    if (filter === "failing" && q.passed !== false) return false
+    const state = questionState(q)
+    if (filter === "passing" && state !== "passing") return false
+    if (filter === "failing" && state !== "failing") return false
+    if (filter === "needs_review" && state !== "needs_review") return false
     return true
   })
 
@@ -28,6 +31,7 @@ export function QuestionList({ questions, selectedId, onSelect }: QuestionListPr
     { id: "all", label: "All" },
     { id: "passing", label: "Passing" },
     { id: "failing", label: "Failing" },
+    { id: "needs_review", label: "Needs Review" },
   ]
 
   return (
@@ -68,6 +72,7 @@ export function QuestionList({ questions, selectedId, onSelect }: QuestionListPr
         ) : (
           filtered.map((q) => {
             const isSelected = q.question_id === selectedId
+            const state = questionState(q)
             return (
               <button
                 key={q.question_id}
@@ -78,10 +83,12 @@ export function QuestionList({ questions, selectedId, onSelect }: QuestionListPr
                     : "hover:bg-elevated border border-transparent"
                 }`}
               >
-                {q.passed === true ? (
+                {state === "passing" ? (
                   <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                ) : q.passed === false ? (
+                ) : state === "failing" ? (
                   <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                ) : state === "needs_review" ? (
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 ) : (
                   <MinusCircle className="w-4 h-4 text-muted shrink-0 mt-0.5" />
                 )}

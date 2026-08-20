@@ -1,7 +1,7 @@
 """
-Genie Space data ingestion utilities.
+Genie Agent data ingestion utilities.
 
-Fetches and parses Genie Space configurations from the Databricks API.
+Fetches and parses Genie Agent configurations from the Databricks API.
 Supports both local development (PAT) and Databricks Apps (OBO) authentication.
 """
 
@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from copy import deepcopy
 from typing import Any
 
 from dotenv import load_dotenv
@@ -158,7 +159,7 @@ def call_with_sp_fallback(fn, *, what: str = "genie API call"):
 def get_genie_space(
     genie_space_id: str | None = None,
 ) -> dict:
-    """Fetch and parse a Genie space's serialized configuration.
+    """Fetch and parse a Genie Agent's serialized configuration.
 
     Uses the Databricks SDK's API client which automatically handles
     OBO authentication when running on Databricks Apps, ensuring that
@@ -166,7 +167,7 @@ def get_genie_space(
     Space will receive a 403/404 error.
 
     Args:
-        genie_space_id: The Genie space ID (defaults to GENIE_SPACE_ID env var)
+        genie_space_id: The Genie Agent ID (defaults to GENIE_SPACE_ID env var)
 
     Returns:
         Parsed serialized space configuration as a dictionary
@@ -182,7 +183,7 @@ def get_genie_space(
     client = get_workspace_client()
 
     # Log diagnostic info for debugging
-    logger.info(f"Fetching Genie Space: {genie_space_id}")
+    logger.info(f"Fetching Genie Agent: {genie_space_id}")
     logger.info(f"Running on Databricks Apps: {is_running_on_databricks_apps()}")
     logger.info(f"Workspace host: {client.config.host}")
     logger.info(f"Auth type: {client.config.auth_type}")
@@ -195,12 +196,12 @@ def get_genie_space(
             sp_client = get_service_principal_client()
             if sp_client is not client:
                 return _get_space_with_client(sp_client, genie_space_id)
-        logger.error(f"Failed to fetch Genie Space {genie_space_id}: {e}")
-        raise ValueError(f"Unable to get space [{genie_space_id}]. {e}")
+        logger.error(f"Failed to fetch Genie Agent {genie_space_id}: {e}")
+        raise ValueError(f"Unable to get agent [{genie_space_id}]. {e}")
 
 
 def _get_space_with_client(client, genie_space_id: str) -> dict:
-    """Fetch a single Genie space using the given client."""
+    """Fetch a single Genie Agent using the given client."""
     response = client.api_client.do(
         method="GET",
         path=f"/api/2.0/genie/spaces/{genie_space_id}",
@@ -210,7 +211,7 @@ def _get_space_with_client(client, genie_space_id: str) -> dict:
 
 
 def list_genie_spaces() -> list[dict]:
-    """Fetch all Genie Spaces from the Databricks API with cursor pagination.
+    """Fetch all Genie Agents from the Databricks API with cursor pagination.
 
     Returns list of dicts with: id, display_name, description, create_time, update_time
     Raises an Exception on failure (callers should handle as appropriate).
@@ -219,7 +220,7 @@ def list_genie_spaces() -> list[dict]:
 
 
 def _list_spaces_with_client(client) -> list[dict]:
-    """Paginate through all Genie Spaces using the given client."""
+    """Paginate through all Genie Agents using the given client."""
     spaces = []
     page_token = None
     while True:
@@ -243,17 +244,37 @@ def _list_spaces_with_client(client) -> list[dict]:
     return spaces
 
 
-def get_serialized_space(genie_space_id: str | None = None) -> dict:
-    """Fetch a Genie space and return the parsed serialized space.
+def _parse_serialized_space_value(serialized_space: Any) -> dict:
+    """Parse the API ``serialized_space`` value into a mutable dict."""
+    if isinstance(serialized_space, dict):
+        return deepcopy(serialized_space)
+    if isinstance(serialized_space, str):
+        parsed = json.loads(serialized_space)
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("Genie API returned an invalid serialized_space payload")
+
+
+def get_serialized_space(
+    genie_space_id: str | None = None,
+    *,
+    include_top_level_description: bool = False,
+) -> dict:
+    """Fetch a Genie Agent and return the parsed serialized space.
 
     Args:
-        genie_space_id: The Genie space ID (defaults to GENIE_SPACE_ID env var)
+        genie_space_id: The Genie Agent ID (defaults to GENIE_SPACE_ID env var)
+        include_top_level_description: Copy the API-level agent description
+            into the returned dict for read-only scoring paths. Genie stores
+            the agent description outside ``serialized_space``.
 
     Returns:
         Parsed serialized space configuration as a dictionary
     """
     data = get_genie_space(genie_space_id=genie_space_id)
-    space_data = json.loads(data["serialized_space"])
+    space_data = _parse_serialized_space_value(data["serialized_space"])
+    if include_top_level_description and "description" in data:
+        space_data["description"] = data.get("description") or ""
     try:
         client = get_workspace_client()
     except Exception:
@@ -267,13 +288,13 @@ def query_genie_for_sql(
     timeout_seconds: int = 120,
     poll_interval_seconds: float = 2.0,
 ) -> dict:
-    """Query a Genie Space with a natural language question and retrieve generated SQL.
+    """Query a Genie Agent with a natural language question and retrieve generated SQL.
 
     Uses the Databricks Genie conversation API to start a conversation, poll for
     completion, and extract any generated SQL from the response.
 
     Args:
-        genie_space_id: The Genie space ID
+        genie_space_id: The Genie Agent ID
         question: Natural language question to ask Genie
         timeout_seconds: Maximum time to wait for response (default 120s)
         poll_interval_seconds: Time between status polls (default 2s)
@@ -298,7 +319,7 @@ def query_genie_for_sql(
     client = get_workspace_client()
 
     # Step 1: Start conversation
-    logger.info(f"Starting Genie conversation for space {genie_space_id}")
+    logger.info(f"Starting Genie conversation for agent {genie_space_id}")
     logger.info(f"Question: {question[:100]}...")
 
     start_response = client.api_client.do(

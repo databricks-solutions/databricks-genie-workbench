@@ -1,7 +1,7 @@
 """
-Genie Space API wrapper.
+Genie Agent API wrapper.
 
-All Genie Space API interactions. Every function takes ``WorkspaceClient``
+All Genie Agent API interactions. Every function takes ``WorkspaceClient``
 as its first argument (APX pattern: dependency injection, no global state).
 """
 
@@ -12,6 +12,7 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from databricks.sdk import WorkspaceClient
@@ -19,6 +20,8 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors.platform import ResourceExhausted
 
 from .config import (
+    BENCHMARK_WINDOW_MAX,
+    BENCHMARK_WINDOW_MIN,
     GENIE_MAX_WAIT,
     GENIE_POLL_INITIAL,
     GENIE_POLL_MAX,
@@ -36,8 +39,105 @@ logger = logging.getLogger(__name__)
 # ── Space Discovery & Config ───────────────────────────────────────────
 
 
+class MissingSerializedSpaceError(RuntimeError):
+    """Raised when Genie returns a space without an exportable config."""
+
+
+_MISSING = object()
+
+
+def _space_from_config(config: dict | None) -> dict:
+    """Return the parsed serialized space from a fetch result or snapshot."""
+    if not isinstance(config, dict):
+        return {}
+
+    parsed = config.get("_parsed_space")
+    if isinstance(parsed, dict):
+        return parsed
+
+    ss = config.get("serialized_space")
+    if isinstance(ss, str):
+        try:
+            loaded = json.loads(ss)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+    if isinstance(ss, dict):
+        return ss
+
+    if any(key in config for key in ("data_sources", "instructions", "config")):
+        return config
+    return {}
+
+
+def drop_empty_text_instruction_placeholders(config: dict | None) -> int:
+    """Remove exported text-instruction rows that contain no content.
+
+    Genie can export an empty UI placeholder as an ID-only row even though
+    ``content`` is required when ``serialized_space`` is validated or patched.
+    The row carries no instruction semantics, so normalize it to the canonical
+    representation for "no text instructions": an empty list. Non-empty rows
+    are left untouched and remain subject to normal schema validation.
+
+    Returns the number of placeholders removed.
+    """
+    parsed = _space_from_config(config)
+    instructions = parsed.get("instructions") if isinstance(parsed, dict) else None
+    if not isinstance(instructions, dict):
+        return 0
+    text_instructions = instructions.get("text_instructions")
+    if not isinstance(text_instructions, list):
+        return 0
+
+    kept: list[Any] = []
+    removed = 0
+    for instruction in text_instructions:
+        if isinstance(instruction, dict) and not instruction.get("content"):
+            removed += 1
+        else:
+            kept.append(instruction)
+    if removed:
+        instructions["text_instructions"] = kept
+    return removed
+
+
+def _serialized_space_for_patch(config: dict) -> dict:
+    """Return the parsed ``serialized_space`` object expected by PATCH.
+
+    Most callers already pass the parsed config directly, but history and
+    snapshot paths can hand around the raw Genie Agent API response, where the
+    exportable config is nested under ``serialized_space`` / ``_parsed_space``.
+    The PATCH body must contain the parsed serialized-space object itself.
+    """
+    parsed = _space_from_config(config)
+    return parsed if parsed else config
+
+
+def space_config_data_source_counts(config: dict | None) -> dict[str, int]:
+    """Return counts for exported Genie data-source collections."""
+    parsed = _space_from_config(config)
+    ds = parsed.get("data_sources") if isinstance(parsed, dict) else None
+    if not isinstance(ds, dict):
+        return {"tables": 0, "metric_views": 0, "functions": 0}
+    counts: dict[str, int] = {}
+    for key in ("tables", "metric_views", "functions"):
+        values = ds.get(key)
+        counts[key] = len(values) if isinstance(values, list) else 0
+    return counts
+
+
+def space_config_has_data_sources(config: dict | None) -> bool:
+    """Return True when a config has at least one table, MV, or TVF."""
+    return any(space_config_data_source_counts(config).values())
+
+
+def space_config_has_tables(config: dict | None) -> bool:
+    """Return True when a config snapshot has at least one table entry."""
+    return space_config_data_source_counts(config).get("tables", 0) > 0
+
+
 def list_spaces(w: WorkspaceClient) -> list[dict[str, str]]:
-    """List available Genie Spaces via SDK, paginating through all pages.
+    """List available Genie Agents via SDK, paginating through all pages.
 
     Returns a list of ``{"id": ..., "title": ...}`` dicts.
     """
@@ -60,7 +160,7 @@ EDITABLE_PERMISSIONS = {"CAN_MANAGE", "CAN_EDIT"}
 
 
 def get_space_permissions_rest(w: WorkspaceClient, space_id: str) -> dict | None:
-    """Fetch Genie Space ACL via REST API.
+    """Fetch Genie Agent ACL via REST API.
 
     Returns the raw JSON response dict, or ``None`` on failure.
     Prefer this over ``permissions.get()`` SDK which requires specific
@@ -202,7 +302,7 @@ def get_user_access_level(
     user_groups: set[str] | None = None,
     acl_client: WorkspaceClient | None = None,
 ) -> str | None:
-    """Return the user's highest permission on a Genie space.
+    """Return the user's highest permission on a Genie Agent.
 
     Returns ``"CAN_MANAGE"``, ``"CAN_EDIT"``, ``"CAN_VIEW"``, or ``None``.
     """
@@ -236,7 +336,7 @@ def user_can_edit_space(
     acl_client: WorkspaceClient | None = None,
     cached_perms: dict | object | None = None,
 ) -> bool:
-    """Check whether a user has CAN_MANAGE or CAN_EDIT on a Genie space.
+    """Check whether a user has CAN_MANAGE or CAN_EDIT on a Genie Agent.
 
     Uses REST API ``GET /api/2.0/permissions/genie/{id}`` via the OBO
     client first, then falls back to the SP client.  The ``cached_perms``
@@ -274,7 +374,7 @@ def sp_can_manage_space(
     cached_perms: dict | None = None,
     sp_client: WorkspaceClient | None = None,
 ) -> bool:
-    """Check whether a service principal has CAN_MANAGE on a Genie space.
+    """Check whether a service principal has CAN_MANAGE on a Genie Agent.
 
     Uses REST API ``GET /api/2.0/permissions/genie/{id}``.
     Accepts a pre-fetched REST dict via ``cached_perms``.
@@ -296,11 +396,15 @@ def sp_can_manage_space(
 
 
 def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
-    """GET Genie Space config with full serialized_space content.
+    """GET Genie Agent config with full serialized_space content.
 
     Returns the raw API response augmented with convenience keys:
     ``_parsed_space``, ``_tables``, ``_metric_views``, ``_functions``,
     ``_instructions``.
+
+    Raises:
+        MissingSerializedSpaceError: if Genie returns a 200 response without
+            the requested ``serialized_space`` export, or with an empty export.
     """
     raw_config = w.api_client.do(
         "GET",
@@ -309,14 +413,53 @@ def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
     )
     if not isinstance(raw_config, dict):
         raise RuntimeError(
-            f"Unexpected Genie space response type: {type(raw_config).__name__}"
+            f"Unexpected Genie Agent response type: {type(raw_config).__name__}"
         )
     config = cast(dict[str, Any], raw_config)
 
-    ss = config.get("serialized_space", {})
+    ss = config.get("serialized_space", _MISSING)
+    if ss is _MISSING or ss is None or ss == "":
+        logger.error(
+            "Genie Agent %s response omitted serialized_space despite "
+            "include_serialized_space=true; response keys=%s",
+            space_id,
+            sorted(config.keys()),
+        )
+        raise MissingSerializedSpaceError(
+            f"Genie Agent {space_id} response omitted serialized_space; "
+            "the caller must retry with a client that can export the space config."
+        )
     if isinstance(ss, str):
+        if not ss.strip():
+            logger.error(
+                "Genie Agent %s response returned empty serialized_space string",
+                space_id,
+            )
+            raise MissingSerializedSpaceError(
+                f"Genie Agent {space_id} response returned empty serialized_space"
+            )
         ss = json.loads(ss)
+    if not isinstance(ss, dict) or not ss:
+        logger.error(
+            "Genie Agent %s response had empty/invalid serialized_space "
+            "despite include_serialized_space=true; type=%s",
+            space_id,
+            type(ss).__name__,
+        )
+        raise MissingSerializedSpaceError(
+            f"Genie Agent {space_id} response had empty serialized_space; "
+            "the caller must reject this snapshot."
+        )
     config["_parsed_space"] = ss
+
+    removed_placeholders = drop_empty_text_instruction_placeholders(config)
+    if removed_placeholders:
+        logger.warning(
+            "Normalized %d empty text-instruction placeholder(s) exported by "
+            "Genie Agent %s",
+            removed_placeholders,
+            space_id,
+        )
 
     ds = ss.get("data_sources", {})
     if isinstance(ds, dict):
@@ -602,7 +745,7 @@ def sanitize_sql(sql: str) -> str:
 def _migrate_column_configs_v1_to_v2(config: dict) -> dict:
     """Migrate v1 column config fields to v2 and strip non-exportable column fields.
 
-    The Genie Space export API v2 renamed:
+    The Genie Agent export API v2 renamed:
       - ``get_example_values``    -> ``enable_format_assistance``
       - ``build_value_dictionary`` -> ``enable_entity_matching``
 
@@ -795,16 +938,24 @@ def patch_space_config(
     max_retries: int = 2,
     retry_delay: float = 5.0,
 ) -> dict:
-    """PATCH a Genie Space with updated serialized_space config.
+    """PATCH a Genie Agent with updated serialized_space config.
 
     Strips non-exportable fields, sorts arrays, and validates the payload
     structure before sending.  Retries on transient HTTP errors (429, 5xx).
     Returns the raw API response.
     """
-    from .genie_schema import validate_serialized_space
+    from .genie_schema import normalize_array_fields, validate_serialized_space
 
-    clean = strip_non_exportable_fields(config)
+    clean = strip_non_exportable_fields(_serialized_space_for_patch(config))
     clean = sort_genie_config(clean)
+    # Coerce every array-typed leaf field (description / synonyms / content /
+    # …) to ``list[str]`` IN PLACE before validation AND serialization. The
+    # Genie API rejects a bare string here with "Expected an array for
+    # <field>"; the schema's model-level coercion never reaches this dict
+    # (see normalize_array_fields). This is the single choke point every
+    # PATCH flows through, so it also neutralizes a bare string left on a
+    # shared metadata_snapshot by an upstream enrichment step.
+    clean = normalize_array_fields(clean)
 
     ok, errors = validate_serialized_space(clean, strict=True)
     if not ok:
@@ -818,7 +969,7 @@ def patch_space_config(
     payload = {"serialized_space": json.dumps(clean)}
     payload_size = len(payload["serialized_space"])
     logger.info(
-        "PATCHing Genie Space %s (payload: %d chars)", space_id, payload_size,
+        "PATCHing Genie Agent %s (payload: %d chars)", space_id, payload_size,
     )
 
     last_exc: Exception | None = None
@@ -860,7 +1011,7 @@ def update_space_description(
     max_retries: int = 2,
     retry_delay: float = 5.0,
 ) -> dict:
-    """PATCH only the top-level ``description`` field of a Genie Space.
+    """PATCH only the top-level ``description`` field of a Genie Agent.
 
     ``description`` is a top-level metadata field on the Space object, NOT
     inside ``serialized_space``.  This sends a minimal PATCH with just
@@ -868,7 +1019,7 @@ def update_space_description(
     """
     payload = {"description": description}
     logger.info(
-        "PATCHing Genie Space %s description (%d chars)", space_id, len(description),
+        "PATCHing Genie Agent %s description (%d chars)", space_id, len(description),
     )
 
     last_exc: Exception | None = None
@@ -962,7 +1113,7 @@ def _benchmarks_to_genie_format(
     """Convert optimizer benchmark dicts to Genie-native ``benchmarks.questions`` format.
 
     Published rows are plain Genie benchmark questions. The optimizer keeps
-    source/provenance metadata in the UC evaluation dataset, not in the Genie
+    source/provenance metadata in the UC Delta benchmark table, not in the Genie
     Space payload. Prioritises curated/P0 benchmarks first, then fills with
     synthetic. The ``tag_as_optimizer`` parameter is retained only for
     backward-compatible callers that still want the legacy
@@ -985,6 +1136,7 @@ def _benchmarks_to_genie_format(
     seen: set[str] = set()
     skipped_no_answer = 0
     for b in ordered:
+        source = b.get("source", "")
         question = str(b.get("question", "")).strip()
         if not question:
             continue
@@ -1005,8 +1157,17 @@ def _benchmarks_to_genie_format(
             else question
         )
 
+        # A curated native benchmark keeps its Genie question ID so a SQL
+        # repair can update that exact row. Other rows receive fresh IDs;
+        # notably, sample-question IDs cannot be reused because Genie requires
+        # uniqueness across sample questions and benchmark questions.
+        native_question_id = (
+            str(b.get("space_question_id") or "").strip()
+            if source == "genie_benchmark"
+            else ""
+        )
         entry: dict[str, Any] = {
-            "id": uuid.uuid4().hex,
+            "id": native_question_id or uuid.uuid4().hex,
             "question": [display_question],
             "answer": [{"format": "SQL", "content": [expected_sql]}],
         }
@@ -1030,17 +1191,62 @@ def _benchmarks_to_genie_format(
     return genie_questions
 
 
+def _extract_benchmark_sql_answer(answer: Any) -> str:
+    """Reconstruct the complete SQL answer from Genie content fragments.
+
+    Genie serializes answer ``content`` as an array. Existing spaces can carry
+    one SQL statement split across multiple array elements, while GSO writes a
+    newly repaired statement as one element. The elements are ordered content
+    fragments, so concatenate all of them exactly as the benchmark extractor
+    does instead of treating ``content[0]`` as the whole statement.
+    """
+    if not isinstance(answer, list):
+        return ""
+    for item in answer:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("format") or "").upper() != "SQL":
+            continue
+        content = item.get("content")
+        if isinstance(content, list):
+            return "".join(
+                str(fragment) for fragment in content if fragment is not None
+            ).strip()
+        return str(content or "").strip()
+    return ""
+
+
 def _dedupe_and_merge_benchmarks(
-    existing: list[dict], additions: list[dict],
-) -> tuple[list[dict], int, int]:
+    existing: list[dict],
+    additions: list[dict],
+    *,
+    question_update_ids: set[str] | None = None,
+) -> tuple[list[dict], int, int, list[dict]]:
     """Merge ``additions`` into ``existing`` preserving user-authored rows.
 
-    Returns ``(merged, added_count, skipped_count)``. A new row is skipped if
-    its normalized question text has n-gram Jaccard >= 0.90 against any
-    existing row (covers "Top 10 products" vs "top 10 products" vs "Top
-    ten  products").
+    An addition whose stable ID matches an existing row may update only that
+    row's SQL answer by default. Question text may change only when the caller
+    explicitly includes the stable native ID in ``question_update_ids`` after
+    a bounded quality-warning repair. All other existing rows remain
+    byte-for-byte intact.
+
+    Returns ``(merged, added_count, skipped_count, updated)``. A new row is
+    skipped only when its normalized question text exactly matches an existing
+    row. Similar-but-distinct phrasings must remain separate live benchmarks:
+    the native evaluator identifies rows by live question ID, and mapping a
+    fuzzy match to an existing row could silently evaluate different wording
+    or ground-truth SQL. Near-duplicate pruning remains an advisory window
+    recommendation. ``updated`` contains before/after SQL records for the
+    provenance ledger.
     """
     merged: list[dict] = list(existing) if isinstance(existing, list) else []
+    question_update_ids = question_update_ids or set()
+
+    existing_index_by_id = {
+        str(entry.get("id") or "").strip(): index
+        for index, entry in enumerate(merged)
+        if isinstance(entry, dict) and str(entry.get("id") or "").strip()
+    }
 
     existing_norms: list[str] = [
         _normalize_question_text(_extract_existing_question_text(e))
@@ -1050,6 +1256,7 @@ def _dedupe_and_merge_benchmarks(
 
     added = 0
     skipped = 0
+    updated: list[dict] = []
     for add in additions:
         add_text = _extract_existing_question_text(add)
         add_norm = _normalize_question_text(add_text)
@@ -1057,23 +1264,83 @@ def _dedupe_and_merge_benchmarks(
             skipped += 1
             continue
 
-        is_dup = False
-        for ex_norm in existing_norms:
-            if ex_norm == add_norm:
-                is_dup = True
-                break
-            if _ngram_similarity_for_dedup(ex_norm, add_norm) >= _DEDUP_SIMILARITY_THRESHOLD:
-                is_dup = True
-                break
-        if is_dup:
+        add_id = str(add.get("id") or "").strip() if isinstance(add, dict) else ""
+        existing_index = existing_index_by_id.get(add_id) if add_id else None
+        if existing_index is not None:
+            current = merged[existing_index]
+            current_text = _extract_existing_question_text(current)
+            current_norm = _normalize_question_text(current_text)
+            question_changed = current_norm != add_norm
+            if question_changed and add_id not in question_update_ids:
+                logger.warning(
+                    "Skipped benchmark update for stable id %s because question text changed",
+                    add_id,
+                )
+                skipped += 1
+                continue
+            if question_changed:
+                collides_with_other = any(
+                    index != existing_index
+                    and _normalize_question_text(_extract_existing_question_text(entry))
+                    == add_norm
+                    for index, entry in enumerate(merged)
+                )
+                if collides_with_other:
+                    logger.warning(
+                        "Skipped authorized benchmark question update for stable id %s "
+                        "because the proposed wording duplicates another live row",
+                        add_id,
+                    )
+                    skipped += 1
+                    continue
+            before_answer = current.get("answer") if isinstance(current, dict) else None
+            after_answer = add.get("answer") if isinstance(add, dict) else None
+            before_sql = _extract_benchmark_sql_answer(before_answer)
+            after_sql = _extract_benchmark_sql_answer(after_answer)
+            # Do not report or apply a repair when the only difference is the
+            # serialized content shape (many fragments versus one fragment).
+            # This preserves the user's original row byte-for-byte and keeps
+            # the benchmark-change count semantic rather than representational.
+            if not question_changed and before_sql == after_sql:
+                skipped += 1
+                continue
+            repaired = dict(current)
+            if question_changed:
+                repaired["question"] = add.get("question")
+            repaired["answer"] = after_answer
+            merged[existing_index] = repaired
+            if question_changed:
+                existing_norms = [
+                    normalized
+                    for entry in merged
+                    if (
+                        normalized := _normalize_question_text(
+                            _extract_existing_question_text(entry)
+                        )
+                    )
+                ]
+
+            updated.append({
+                "id": add_id,
+                "question": add_text,
+                "before_question": current_text,
+                "after_question": add_text,
+                "before_sql": before_sql,
+                "after_sql": after_sql,
+            })
+            continue
+
+        if add_norm in existing_norms:
             skipped += 1
             continue
 
         merged.append(add)
+        if add_id:
+            existing_index_by_id[add_id] = len(merged) - 1
         existing_norms.append(add_norm)
         added += 1
 
-    return merged, added, skipped
+    return merged, added, skipped, updated
 
 
 def _extract_example_sql_questions(parsed: dict) -> set[str]:
@@ -1108,28 +1375,171 @@ def _extract_example_sql_questions(parsed: dict) -> set[str]:
     return {r for r in result if r}
 
 
-def publish_benchmarks_to_genie_space(
+def compute_benchmark_window_recommendation(
+    benchmarks: list[dict],
+    *,
+    window_min: int = BENCHMARK_WINDOW_MIN,
+    window_max: int = BENCHMARK_WINDOW_MAX,
+) -> dict:
+    """Recommend how to bring a benchmark set into the 30–40 window (D8).
+
+    Pure function — produces a RECOMMENDATION only; it never mutates or
+    drops anything (prune is never a silent auto-delete). Returns a dict:
+
+    * ``status`` — ``within_window`` | ``over_window`` | ``under_window``
+    * ``count`` — current set count
+    * ``window`` — ``[window_min, window_max]``
+    * ``recommended_prune`` — for ``over_window``, the list of question ids
+      recommended for removal (near-duplicates first, then lowest
+      priority), trimmed down to ``window_max``.
+    * ``recommended_topup`` — for ``under_window``, how many synthetic
+      questions to generate to reach ``window_min``.
+
+    The caller passes the POST-MERGE candidate set — existing live
+    questions + net-new additions, after dedupe — so the resulting
+    ``status``/``count`` reflect the real live set, not the net-new
+    slice alone. Near-duplicate detection reuses the same normalized
+    n-gram Jaccard (>= 0.90) the publisher uses for merge dedup, so the
+    recommendation is consistent with how rows actually merge.
+    """
+    count = len(benchmarks)
+    rec: dict[str, Any] = {
+        "count": count,
+        "window": [window_min, window_max],
+        "recommended_prune": [],
+        "recommended_topup": 0,
+    }
+
+    def _qid(b: dict) -> str:
+        return str(b.get("id", b.get("question_id", "")) or "")
+
+    if count < window_min:
+        rec["status"] = "under_window"
+        rec["recommended_topup"] = window_min - count
+        return rec
+
+    if count <= window_max:
+        rec["status"] = "within_window"
+        return rec
+
+    # over_window — recommend trimming to window_max. Order of removal:
+    # near-duplicates first (keep the higher-priority member of each
+    # near-dup pair), then lowest priority. NEVER applied automatically.
+    rec["status"] = "over_window"
+    norms = [(_qid(b), _normalize_question_text(str(b.get("question", "")))) for b in benchmarks]
+    prio = {_qid(b): str(b.get("priority", "")) for b in benchmarks}
+    # P0 ranks highest (kept); blank/other lowest.
+    prio_rank = {"P0": 0, "P1": 1, "P2": 2}
+
+    near_dup_ids: list[str] = []
+    kept: list[tuple[str, str]] = []
+    for qid, norm in norms:
+        if not norm:
+            continue
+        is_dup = any(
+            _ngram_similarity_for_dedup(norm, kept_norm) >= _DEDUP_SIMILARITY_THRESHOLD
+            for _kid, kept_norm in kept
+        )
+        if is_dup:
+            near_dup_ids.append(qid)
+        else:
+            kept.append((qid, norm))
+
+    over_by = count - window_max
+    prune: list[str] = list(near_dup_ids[:over_by])
+    if len(prune) < over_by:
+        # Still over — recommend lowest-priority survivors (stable order).
+        remaining = [
+            qid for qid, _ in norms
+            if qid not in prune
+        ]
+        remaining.sort(key=lambda q: prio_rank.get(prio.get(q, ""), 3))
+        for qid in reversed(remaining):
+            if len(prune) >= over_by:
+                break
+            if qid not in prune:
+                prune.append(qid)
+    rec["recommended_prune"] = prune[:over_by]
+    return rec
+
+
+@dataclass
+class BenchmarkPushReport:
+    """Structured outcome of a merge-only benchmark push to a Genie Agent.
+
+    Surfaces enough detail for the v2 provenance ledger (§3.5) to record
+    the added/removed/changed diff without re-deriving it. ``added`` rows
+    are the net-new questions actually written into the space (each
+    ``{id, question, sql}``); ``merged`` is the WHOLE post-merge set
+    (existing live + net-new) so callers can compute the 30–40 window
+    recommendation over the real resulting set; ``merged_total`` is its
+    length. The push is additive except for SQL repair of an identical
+    question selected by stable native ID, plus explicitly authorized wording
+    repairs produced by the bounded benchmark-quality loop. User-authored rows
+    are NEVER removed or truncated here, and cannot be reworded without that
+    per-ID authorization.
+
+    ``window`` is the post-merge 30–40 window recommendation (recommendation
+    only — never auto-applied). ``over_cap`` is set when the merged set would
+    exceed the genuine Genie API cap (``hard_cap``); in that case the push is
+    NOT applied (``patched`` stays False) — the publisher fails closed rather
+    than silently dropping rows.
+    """
+
+    added_count: int = 0
+    updated_count: int = 0
+    dedup_skipped: int = 0
+    mirror_skipped: int = 0
+    merged_total: int = 0
+    existing_count: int = 0
+    added: list[dict] = field(default_factory=list)
+    updated: list[dict] = field(default_factory=list)
+    merged: list[dict] = field(default_factory=list)
+    window: dict | None = None
+    over_cap: bool = False
+    hard_cap: int = GENIE_MAX_BENCHMARK_QUESTIONS
+    patched: bool = False
+
+
+def publish_benchmarks_to_genie_space_with_report(
     w: WorkspaceClient,
     space_id: str,
     benchmarks: list[dict],
     max_questions: int = GENIE_MAX_BENCHMARK_QUESTIONS,
     *,
     run_id: str | None = None,
-) -> int:
-    """Write optimizer benchmarks into the Genie Space's native benchmarks section.
+    question_update_ids: set[str] | None = None,
+) -> BenchmarkPushReport:
+    """Merge optimizer benchmarks into the space's native benchmarks section.
 
     Fetches the current space config, converts benchmarks to Genie-native
     format, MERGES them into existing ``serialized_space.benchmarks.questions``
     (preserving any user-authored rows), and PATCHes the space via
     ``updateSpace``. Published rows are plain benchmark questions: no
     ``[auto-optimize]`` prefix and no GSO ``metadata`` payload. Provenance
-    stays in the UC evaluation dataset, where the optimizer needs it.
+    stays in the UC Delta benchmark table, where the optimizer needs it.
 
     Questions that are already mirrored in the space's ``example_question_sqls``
     are excluded — keeping the same question in both slots would restore the
     exact leak Bug #4 guards against.
 
-    Returns the number of newly-added benchmark questions (not the total).
+    The push is additive except for bounded stable-ID updates. SQL-only repair
+    is allowed when question text is identical. A wording repair additionally
+    requires the native ID in ``question_update_ids``; the QC task supplies
+    that authorization only for revalidated warning proposals. The merged set
+    is NEVER sliced or truncated,
+    so pushed rows can't be silently dropped and pre-existing user-authored
+    rows can't be deleted or reworded. ``max_questions`` is the genuine Genie
+    API hard cap (``GENIE_MAX_BENCHMARK_QUESTIONS``), NOT a train/held-out
+    target. If the post-merge set would exceed that hard cap, the publisher
+    FAILS CLOSED — it does not patch and returns a non-mutating report with
+    ``over_cap=True`` (the caller turns that into a hard failure). The 30–40
+    *working window* is surfaced as a RECOMMENDATION only (``window``)
+    computed over the post-merge set; it is never auto-applied here.
+
+    Returns a :class:`BenchmarkPushReport` describing the merge.
+    ``publish_benchmarks_to_genie_space`` is the thin int-returning wrapper
+    kept for backward compatibility.
     """
     config = fetch_space_config(w, space_id)
     parsed = config.get("_parsed_space", {})
@@ -1161,18 +1571,69 @@ def publish_benchmarks_to_genie_space(
         pre_filtered, tag_as_optimizer=False, run_id=run_id,
     )
 
-    merged_questions, added_count, dedup_skipped = _dedupe_and_merge_benchmarks(
-        existing_questions, new_genie_questions,
+    existing_count = len(existing_questions)
+    (
+        merged_questions,
+        _added_count,
+        dedup_skipped,
+        updated_detail,
+    ) = _dedupe_and_merge_benchmarks(
+        existing_questions,
+        new_genie_questions,
+        question_update_ids=question_update_ids,
     )
+    # The merge appends net-new rows after the existing ones, so the
+    # tail [existing_count:] is exactly what GSO added this push.
+    added_rows = merged_questions[existing_count:]
 
+    def _first(v: Any) -> str:
+        if isinstance(v, list) and v:
+            return str(v[0])
+        return str(v) if v is not None else ""
+
+    def _to_record(r: dict) -> dict:
+        return {
+            "id": str(r.get("id", "")),
+            "question": _first(r.get("question")),
+            "sql": _extract_benchmark_sql_answer(r.get("answer")),
+        }
+
+    merged_detail = [_to_record(r) for r in merged_questions if isinstance(r, dict)]
+    added_detail = [_to_record(r) for r in added_rows if isinstance(r, dict)]
+
+    # 30–40 working-window recommendation over the POST-MERGE set (existing
+    # live rows + net-new additions, after dedupe). Recommendation only —
+    # the publisher never prunes or truncates.
+    window = compute_benchmark_window_recommendation(merged_detail)
+
+    # Genuine Genie API hard cap — additive/merge-only NEVER truncates. If
+    # the merged set would exceed the API cap we FAIL CLOSED: do not patch,
+    # return a non-mutating "would exceed cap" report. This protects both
+    # pushed rows (never silently dropped) and existing user-authored rows
+    # (never deleted to make room).
     if len(merged_questions) > max_questions:
-        logger.warning(
-            "Truncating benchmarks from %d to %d (Genie space limit). "
-            "User-authored entries are kept first.",
-            len(merged_questions),
-            max_questions,
+        logger.error(
+            "Refusing to push benchmarks to Genie Agent %s: merged set of %d "
+            "exceeds the Genie API hard cap of %d. Publisher is merge-only and "
+            "will not truncate — pruning the live set is an explicit operator "
+            "decision. No mutation performed.",
+            space_id, len(merged_questions), max_questions,
         )
-        merged_questions = merged_questions[:max_questions]
+        return BenchmarkPushReport(
+            added_count=0,
+            updated_count=0,
+            dedup_skipped=dedup_skipped,
+            mirror_skipped=skipped_mirror,
+            merged_total=len(merged_questions),
+            existing_count=existing_count,
+            added=[],
+            updated=[],
+            merged=merged_detail,
+            window=window,
+            over_cap=True,
+            hard_cap=max_questions,
+            patched=False,
+        )
 
     parsed["benchmarks"] = dict(existing_benchmarks_container)
     parsed["benchmarks"]["questions"] = merged_questions
@@ -1180,11 +1641,48 @@ def publish_benchmarks_to_genie_space(
     patch_space_config(w, space_id, parsed)
 
     logger.info(
-        "Published %d new benchmark question(s) to Genie space %s "
-        "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d)",
-        added_count, space_id, dedup_skipped, skipped_mirror, len(merged_questions),
+        "Published %d new and updated %d existing benchmark question(s) to Genie Agent %s "
+        "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d, "
+        "window: %s)",
+        len(added_detail), len(updated_detail), space_id, dedup_skipped, skipped_mirror,
+        len(merged_questions), window.get("status"),
     )
-    return added_count
+
+    return BenchmarkPushReport(
+        added_count=len(added_detail),
+        updated_count=len(updated_detail),
+        dedup_skipped=dedup_skipped,
+        mirror_skipped=skipped_mirror,
+        merged_total=len(merged_questions),
+        existing_count=existing_count,
+        added=added_detail,
+        updated=updated_detail,
+        merged=merged_detail,
+        window=window,
+        over_cap=False,
+        hard_cap=max_questions,
+        patched=True,
+    )
+
+
+def publish_benchmarks_to_genie_space(
+    w: WorkspaceClient,
+    space_id: str,
+    benchmarks: list[dict],
+    max_questions: int = GENIE_MAX_BENCHMARK_QUESTIONS,
+    *,
+    run_id: str | None = None,
+) -> int:
+    """Backward-compatible wrapper: returns the net-new benchmark count.
+
+    See :func:`publish_benchmarks_to_genie_space_with_report` for the full
+    merge semantics and the structured report consumed by the v2 preflight
+    push / provenance ledger.
+    """
+    report = publish_benchmarks_to_genie_space_with_report(
+        w, space_id, benchmarks, max_questions, run_id=run_id,
+    )
+    return report.added_count
 
 
 def configure_connection_pool(w: WorkspaceClient, pool_size: int = 20) -> None:

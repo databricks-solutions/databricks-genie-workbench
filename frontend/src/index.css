@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* The app owns theme selection through the `.dark` class. Without this
+   override Tailwind's dark variants follow the OS preference, which can mix
+   dark-mode foregrounds with explicitly selected light-mode surfaces. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ==========================================================================
    FONT FACES
    Download fonts from:
@@ -132,6 +137,10 @@
   --shadow-color: rgba(15, 23, 42, 0.08);
   --accent-current: var(--color-accent);
   --accent-glow-current: var(--color-accent-glow);
+  --success-foreground: #047857;
+  --warning-foreground: #92400E;
+  --danger-foreground: #B91C1C;
+  --info-foreground: #1D4ED8;
 }
 
 /* ==========================================================================
@@ -151,6 +160,10 @@
   --shadow-color: rgba(0, 0, 0, 0.3);
   --accent-current: var(--color-accent-light);
   --accent-glow-current: rgba(129, 140, 248, 0.4);
+  --success-foreground: #6EE7B7;
+  --warning-foreground: #FCD34D;
+  --danger-foreground: #FCA5A5;
+  --info-foreground: #93C5FD;
 }
 
 /* ==========================================================================
@@ -461,6 +474,22 @@ button:disabled,
 
 .text-accent {
   color: var(--accent-current);
+}
+
+.text-success-foreground {
+  color: var(--success-foreground);
+}
+
+.text-warning-foreground {
+  color: var(--warning-foreground);
+}
+
+.text-danger-foreground {
+  color: var(--danger-foreground);
+}
+
+.text-info-foreground {
+  color: var(--info-foreground);
 }
 
 /* ==========================================================================

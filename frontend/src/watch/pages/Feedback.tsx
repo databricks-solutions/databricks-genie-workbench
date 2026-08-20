@@ -138,7 +138,7 @@ export function Feedback({ onOpenSpace }: Props) {
         <div>
           <h1 className="text-2xl font-semibold">Feedback</h1>
           <p className="text-sm text-muted">
-            Workspace-wide thumbs up/down on Genie Space responses.
+            Workspace-wide thumbs up/down on Genie Agent responses.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -193,7 +193,7 @@ export function Feedback({ onOpenSpace }: Props) {
           <div className="grid gap-3 md:grid-cols-2">
             <CountChartCard
               title="Most positive feedback"
-              subtitle={`Top 10 spaces by 👍 count over the last ${data.days} days. Click a row to filter the reviews below.`}
+              subtitle={`Top 10 agents by 👍 count over the last ${data.days} days. Click a row to filter the reviews below.`}
               rows={topByPositive}
               valueFn={s => s.positive}
               barColor="bg-emerald-500"
@@ -204,7 +204,7 @@ export function Feedback({ onOpenSpace }: Props) {
             />
             <CountChartCard
               title="Most negative feedback"
-              subtitle={`Top 10 spaces by 👎 count over the last ${data.days} days. Click a row to filter the reviews below.`}
+              subtitle={`Top 10 agents by 👎 count over the last ${data.days} days. Click a row to filter the reviews below.`}
               rows={topByNegative}
               valueFn={s => s.negative}
               barColor="bg-red-500"
@@ -218,20 +218,20 @@ export function Feedback({ onOpenSpace }: Props) {
           <div className="grid gap-4 lg:grid-cols-2">
           <Card className="overflow-hidden p-0">
             <div className="border-b border-default px-4 py-3">
-              <h3 className="text-sm font-medium uppercase text-muted">By space</h3>
+              <h3 className="text-sm font-medium uppercase text-muted">By agent</h3>
               <p className="mt-0.5 text-xs text-muted">
-                Click a row to see that space's feedback. Click <ExternalLink size={10} className="inline" /> to open the space details.
+                Click a row to see that agent's feedback. Click <ExternalLink size={10} className="inline" /> to open the agent details.
               </p>
             </div>
             <table className="w-full text-sm">
               <thead className="border-b border-default bg-elevated text-left text-xs uppercase text-muted">
                 <tr>
-                  <th className="px-4 py-2">Space</th>
+                  <th className="px-4 py-2">Agent</th>
                   <Th onClick={() => toggleSort('positive')} active={sortKey === 'positive'} dir={sortDir}>Positive</Th>
                   <Th onClick={() => toggleSort('negative')} active={sortKey === 'negative'} dir={sortDir}>Negative</Th>
                   <Th onClick={() => toggleSort('neg_rate_pct')} active={sortKey === 'neg_rate_pct'} dir={sortDir}>Neg %</Th>
                   <Th onClick={() => toggleSort('last_feedback_at')} active={sortKey === 'last_feedback_at'} dir={sortDir}>Last</Th>
-                  <th className="px-2 py-2" aria-label="Open space details"></th>
+                  <th className="px-2 py-2" aria-label="Open agent details"></th>
                 </tr>
               </thead>
               <tbody>
@@ -269,7 +269,7 @@ export function Feedback({ onOpenSpace }: Props) {
                         type="button"
                         className="rounded p-1 text-muted hover:bg-elevated hover:text-fg"
                         aria-label={`Open ${r.title || r.space_id} details`}
-                        title="Open space details"
+                        title="Open agent details"
                         onClick={(e) => { e.stopPropagation(); onOpenSpace(r.space_id) }}
                       >
                         <ExternalLink size={14} />
@@ -281,7 +281,7 @@ export function Feedback({ onOpenSpace }: Props) {
                 {sortedRollup && sortedRollup.length === 0 && (
                   <tr>
                     <td colSpan={6} className="p-6 text-center text-muted">
-                      No spaces with feedback in this window.
+                      No agents with feedback in this window.
                     </td>
                   </tr>
                 )}
@@ -299,8 +299,8 @@ export function Feedback({ onOpenSpace }: Props) {
                     type="button"
                     onClick={() => setSpaceFilter(null)}
                     className="flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs text-accent hover:bg-accent/20"
-                    aria-label="Clear space filter"
-                    title="Clear space filter"
+                    aria-label="Clear agent filter"
+                    title="Clear agent filter"
                   >
                     <span className="max-w-[140px] truncate">
                       {data.per_space.find(s => s.space_id === spaceFilter)?.title || spaceFilter.slice(0, 12)}
@@ -324,7 +324,7 @@ export function Feedback({ onOpenSpace }: Props) {
                   onChange={e => setSpaceFilter(e.target.value || null)}
                   className="rounded border border-default bg-elevated px-2 py-1 text-xs"
                 >
-                  <option value="">All spaces</option>
+                  <option value="">All agents</option>
                   {data.per_space.map(s => (
                     <option key={s.space_id} value={s.space_id}>
                       {s.title || s.space_id.slice(0, 12)}

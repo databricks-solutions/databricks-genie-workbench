@@ -1,7 +1,7 @@
 """
-Genie Space creation utilities.
+Genie Agent creation utilities.
 
-Creates new Genie Spaces from optimized configurations via the Databricks API.
+Creates new Genie Agents from optimized configurations via the Databricks API.
 """
 
 import json
@@ -332,7 +332,7 @@ _FALLBACK_DIR = "/Shared/"
 
 
 def get_target_directory() -> str:
-    """Get the configured target directory for new Genie Spaces.
+    """Get the configured target directory for new Genie Agents.
 
     Returns GENIE_TARGET_DIRECTORY if set, otherwise ``/Shared/``.
     """
@@ -381,14 +381,14 @@ def create_genie_space(
     description: str = "",
     parent_path: str | None = None,
 ) -> dict:
-    """Create a new Genie Space with the given configuration.
+    """Create a new Genie Agent with the given configuration.
 
     Attempts creation with a fallback chain of parent paths.  If the
     primary path returns a permission error, the next candidate is
     tried automatically (configured directory -> /Shared/).
 
     Args:
-        display_name: The display name for the new Genie Space
+        display_name: The display name for the new Genie Agent
         merged_config: The merged configuration dict (from optimization)
         parent_path: Optional workspace path for the parent directory.
                     If not provided, uses GENIE_TARGET_DIRECTORY or /Shared/.
@@ -428,7 +428,7 @@ def create_genie_space(
     last_error: Exception | None = None
 
     for target_path in candidates:
-        logger.info(f"Attempting to create Genie Space '{display_name}' in {target_path}")
+        logger.info(f"Attempting to create Genie Agent '{display_name}' in {target_path}")
 
         try:
             t_api = _time.monotonic()
@@ -437,7 +437,7 @@ def create_genie_space(
                 path="/api/2.0/genie/spaces",
                 body={
                     "title": display_name,
-                    "description": description or "Genie Space created by Genie Workbench",
+                    "description": description or "Genie Agent created by Genie Workbench",
                     "parent_path": target_path,
                     "warehouse_id": warehouse_id,
                     "serialized_space": serialized_space,
@@ -451,7 +451,7 @@ def create_genie_space(
                 raise ValueError(f"API did not return a space_id. Response: {response}")
 
             space_url = f"{host}/genie/rooms/{genie_space_id}"
-            logger.info("Created Genie Space %s in %s (API call %.2fs)", genie_space_id, target_path, t_api_done)
+            logger.info("Created Genie Agent %s in %s (API call %.2fs)", genie_space_id, target_path, t_api_done)
 
             return {
                 "genie_space_id": genie_space_id,
@@ -478,7 +478,7 @@ def create_genie_space(
             raise
 
     raise PermissionError(
-        f"Cannot create Genie Space — no writable directory found. "
+        f"Cannot create Genie Agent — no writable directory found. "
         f"Tried: {', '.join(candidates)}. "
         f"Grant the app's service principal 'Can Manage' on a workspace folder."
     )

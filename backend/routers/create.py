@@ -1,5 +1,5 @@
 """
-/api/create — UC discovery + config validation + Genie Space creation wizard + agent chat.
+/api/create — UC discovery + config validation + Genie Agent creation wizard + agent chat.
 """
 import asyncio
 import json
@@ -156,7 +156,7 @@ async def create_space_endpoint(body: CreateSpaceRequest):
         raise HTTPException(status_code=504, detail=str(e))
     except Exception as e:
         logger.exception(f"create_genie_space failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create Genie Space")
+        raise HTTPException(status_code=500, detail="Failed to create Genie Agent")
 
     # genie_creator returns genie_space_id; our response model uses space_id
     return CreateSpaceResponse(
@@ -183,7 +183,7 @@ class AgentChatRequest(BaseModel):
 
 @router.post("/agent/chat")
 async def agent_chat(body: AgentChatRequest, request: Request):
-    """Conversational endpoint for the Create Genie agent.
+    """Conversational endpoint for the Create Genie Agent.
 
     Returns a streaming SSE response with typed events:
     - thinking: agent is processing

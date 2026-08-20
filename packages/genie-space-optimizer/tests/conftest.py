@@ -57,7 +57,7 @@ def mock_ws():
     ws = MagicMock()
     ws.api_client.do.return_value = {
         "title": "Test Space",
-        "description": "A test Genie Space",
+        "description": "A test Genie Agent",
         "create_time": "2025-01-01T00:00:00Z",
         "update_time": "2025-06-01T00:00:00Z",
         "serialized_space": {
@@ -116,7 +116,6 @@ def sample_run():
         "apply_mode": "genie_config",
         "best_iteration": 3,
         "best_accuracy": 92.5,
-        "best_repeatability": 95.0,
         "convergence_reason": "threshold_met",
         "experiment_name": "/Shared/genie-space-optimizer/test-space/revenue",
         "triggered_by": "test@example.com",
@@ -142,7 +141,7 @@ def sample_run():
 
 @pytest.fixture
 def sample_metadata():
-    """Metadata snapshot representing a Genie Space config."""
+    """Metadata snapshot representing a Genie Agent config."""
     return {
         "tables": [
             {

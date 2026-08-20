@@ -1,0 +1,1013 @@
+"""GSO v2 — ``publish_and_audit`` core logic (Phase 9, arch §6 / §7.3 / §13.3).
+
+The final task of the reshaped 4-task DAG. Once ``optimize`` has produced a
+champion, this module:
+
+1. **Reads the STAMPED terminal reason** off the champion iteration row
+   (``genie_opt_iterations.terminal_reason``, written by the Phase-8 controller
+   via ``state.update_iteration_loop_state``). It does **NOT** re-derive the
+   reason from accuracy vs. target — that re-derivation silently collapses
+   ``NO_NEW_HYPOTHESIS`` / ``EVAL_INVALID`` /
+   ``CONFIG_VALIDATION_FAILED`` / ``LOOP_STATE_INVALID`` /
+   ``EVAL_BUDGET_EXHAUSTED`` into ``TARGET_REACHED`` / ``MAX_ATTEMPTS`` and is
+   the correctness bug Phase 9 fixes.
+2. **Gates on the terminal reason** (arch §5.1 vocabulary):
+   * ``{TARGET_REACHED, MAX_ATTEMPTS}`` -> publish the champion (idempotent
+     Delta-only ``models.promote_best_model`` - re-stamps ``is_champion`` + the
+     run's ``best_*``; NO live-space mutation: the accepted patches were already
+     applied in-place by the loop).
+   * anything else -> do **not** publish; still write a ``publish_record`` (it is
+     the surface where concerns are raised, arch §7.3) carrying the stop reason
+     and residual failures.
+3. **Writes an LLM-generated audit summary** into the canonical ``publish_record``
+   artifact. The summary call is **best-effort / non-fatal** - a failure never
+   aborts the publish; the record is written with ``audit_summary=None`` plus a
+   concern.
+4. **Stamps the run's terminal status** by reusing the existing terminal statuses
+   (``CONVERGED`` / ``MAX_ITERATIONS`` / ``FAILED`` / ``STALLED``). A dedicated
+   ``PUBLISHED_AUDITED`` status (arch §13.3) is intentionally NOT introduced -
+   it is not in ``update_run_status``'s terminal set, would leave ``completed_at``
+   NULL, and needs a DDL/migration. That decision is deferred to the human.
+
+**Leakage discipline (D8 / progress §3.6).** The audit-summary prompt context is
+built by :func:`as_audit_context`, which carries ONLY structural / aggregate
+fields (per-attempt accuracy, deltas, attempt mode, decision, lever/patch counts
+and families, champion pointer). Benchmark question text, ``expected_sql`` /
+``generated_sql`` ground-truth, judge rationale, and counterfactual fixes are
+**never** included — feeding them to an LLM is the exact leakage path the firewall
+guards against on the config-write side.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+from collections import Counter
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, Any
+
+from genie_space_optimizer.common.config import (
+    AUDIT_SUMMARY_PROMPT,
+    LEVER_NAMES,
+)
+from genie_space_optimizer.optimization.champion import select_champion_row
+from genie_space_optimizer.optimization.llm_client import call_llm
+from genie_space_optimizer.optimization.models import promote_best_model
+from genie_space_optimizer.optimization.scan_snapshots import run_postflight_scan
+from genie_space_optimizer.optimization.state import (
+    load_all_scored_iterations,
+    load_patches,
+    load_run,
+    update_run_status,
+    write_artifact,
+)
+
+if TYPE_CHECKING:  # pragma: no cover
+    import pandas as pd
+    from databricks.sdk import WorkspaceClient
+
+# ``spark`` is typed ``Any`` (not ``pyspark.sql.SparkSession``) because pyspark is
+# not a type-check dependency — matching the ``cast(Any, spark)`` convention in
+# the jobs/ notebook entrypoints and avoiding an unresolved-import diagnostic.
+
+logger = logging.getLogger(__name__)
+
+
+# ── Terminal-reason gating (arch §5.1) ──────────────────────────────────────
+
+#: Terminal reasons that mean "we have a champion worth publishing".
+PUBLISH_TERMINAL_REASONS: frozenset[str] = frozenset({"TARGET_REACHED", "MAX_ATTEMPTS"})
+
+#: terminal_reason → reused terminal run status (arch §13.3 — NO new
+#: PUBLISHED_AUDITED status). Unknown / absent reasons fall through to STALLED.
+_TERMINAL_REASON_TO_RUN_STATUS: dict[str, str] = {
+    "TARGET_REACHED": "CONVERGED",
+    "MAX_ATTEMPTS": "MAX_ITERATIONS",
+    "EVAL_INVALID": "FAILED",
+    "CONFIG_VALIDATION_FAILED": "FAILED",
+    "LOOP_STATE_INVALID": "FAILED",
+    "NO_NEW_HYPOTHESIS": "STALLED",
+    "EVAL_BUDGET_EXHAUSTED": "STALLED",
+}
+
+#: Human-readable concern phrasing per non-publishing terminal reason.
+_TERMINAL_REASON_CONCERN: dict[str, str] = {
+    "EVAL_INVALID": (
+        "Run stopped because evaluation became invalid (EVAL_INVALID); the "
+        "champion was NOT published."
+    ),
+    "CONFIG_VALIDATION_FAILED": (
+        "Run stopped because a proposed Genie configuration failed structural "
+        "validation (CONFIG_VALIDATION_FAILED); the champion was NOT published."
+    ),
+    "LOOP_STATE_INVALID": (
+        "Run stopped because the optimizer controller state became invalid "
+        "(LOOP_STATE_INVALID); the champion was NOT published."
+    ),
+    "NO_NEW_HYPOTHESIS": (
+        "Run stalled: the strategist produced no new hypothesis to try "
+        "(NO_NEW_HYPOTHESIS) before reaching the target."
+    ),
+    "EVAL_BUDGET_EXHAUSTED": (
+        "Run stopped because the evaluation wall-clock budget was exhausted "
+        "(EVAL_BUDGET_EXHAUSTED) before reaching the target."
+    ),
+}
+
+#: Fields that must NEVER appear in the audit-summary prompt context — they carry
+#: benchmark answer-key material (the §3.6 leakage surface).
+_LEAKY_FIELDS: frozenset[str] = frozenset({
+    "question",
+    "question_text",
+    "expected_sql",
+    "generated_sql",
+    "expected_response",
+    "actual_response",
+    "counterfactual_fix",
+    "rationale_snippet",
+    "wrong_clause",
+    "decision_reason",
+    "drop_detail",
+    "rationale",
+    "raw_response_preview",
+})
+
+
+def should_publish(terminal_reason: str | None) -> bool:
+    """True iff the stamped ``terminal_reason`` is in the publish set."""
+    return terminal_reason in PUBLISH_TERMINAL_REASONS
+
+
+def run_status_for_terminal_reason(terminal_reason: str | None) -> str:
+    """Map the stamped ``terminal_reason`` → a reused terminal run status.
+
+    Never collapses the reason — the reason itself is recorded separately as
+    ``convergence_reason``. Unknown / absent reasons fall through to ``STALLED``
+    (fail-closed: never fabricate a CONVERGED publish status from accuracy).
+    """
+    return _TERMINAL_REASON_TO_RUN_STATUS.get(terminal_reason or "", "STALLED")
+
+
+# ── Champion + terminal-reason resolution ───────────────────────────────────
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    # pandas NaN guard
+    return None if f != f else f
+
+
+def _is_rolled_back(row: dict) -> bool:
+    return bool(row.get("rolled_back"))
+
+
+def _is_champion_flag(row: dict) -> bool:
+    return bool(row.get("is_champion"))
+
+
+def _is_baseline_row(row: dict) -> bool:
+    """Iteration-0 ``eval_scope='full'`` row — the floor (never rolled back)."""
+    return _as_int(row.get("iteration")) == 0 and str(row.get("eval_scope")) == "full"
+
+
+def resolve_champion_row(scored_iters: list[dict]) -> dict | None:
+    """Pick the champion over the PROMOTION candidate universe (arch §7.4 / Phase 4).
+
+    Delegates to the same selector used by ``promote_best_model`` so publish/audit
+    and champion stamping cannot drift.
+    """
+    return select_champion_row(scored_iters)
+
+
+def resolve_terminal_reason(champion_row: dict | None) -> str | None:
+    """Read the STAMPED terminal reason off the CHAMPION row ONLY (arch §5.1).
+
+    The champion row is the single authoritative source. A ``terminal_reason``
+    stamped on a NON-champion row is NEVER used for gating (using it could publish
+    from a non-champion MAX_ATTEMPTS/TARGET_REACHED row). Returns ``None`` when the
+    champion is missing or unstamped ⇒ the caller takes the fail-closed no-publish
+    path (status STALLED). There is NO accuracy-based re-derivation.
+    """
+    if champion_row:
+        reason = champion_row.get("terminal_reason")
+        if reason:
+            return str(reason)
+    return None
+
+
+def unstamped_champion_diagnostic(
+    champion_row: dict | None, scored_iters: list[dict]
+) -> str | None:
+    """Diagnostic-only concern when the champion is unstamped but a NON-champion
+    row carries a reason. Surfaced in concerns for visibility — NEVER used to
+    gate the publish (B1)."""
+    if champion_row and champion_row.get("terminal_reason"):
+        return None
+    champ_iter = _as_int(champion_row.get("iteration")) if champion_row else None
+    champ_scope = str(champion_row.get("eval_scope")) if champion_row else None
+    others = {
+        str(r.get("terminal_reason"))
+        for r in scored_iters
+        if r.get("terminal_reason")
+        and not (
+            _as_int(r.get("iteration")) == champ_iter
+            and str(r.get("eval_scope")) == champ_scope
+        )
+    }
+    if not others:
+        return None
+    return (
+        "Champion row carries no stamped terminal_reason; non-champion row(s) "
+        f"carry {sorted(others)} but that is NOT used for gating (fail-closed)."
+    )
+
+
+def _champion_config_version_id(champion_row: dict | None) -> str | None:
+    """Stable champion config pointer.
+
+    Prefers the loop-state ``best_config_version_id`` column; when that is absent /
+    empty (base Phase 8 does not reliably populate it on real writes), derives a
+    deterministic short hash of the champion's ``config_json`` so the publish_record
+    pointer is still complete. Returns ``None`` only when neither is available.
+    """
+    if not champion_row:
+        return None
+    vid = champion_row.get("best_config_version_id")
+    if vid:
+        return str(vid)
+    config_json = champion_row.get("config_json")
+    if config_json:
+        if not isinstance(config_json, str):
+            try:
+                config_json = json.dumps(config_json, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                config_json = str(config_json)
+        digest = hashlib.sha256(config_json.encode("utf-8")).hexdigest()[:12]
+        return f"cfgsha:{digest}"
+    return None
+
+
+# ── Improvement trajectory + audit context (leak-free) ──────────────────────
+
+
+def _trajectory_sort_key(row: dict) -> tuple:
+    """Order: baseline first, then by attempt_no, then timestamp."""
+    attempt_no = _as_int(row.get("attempt_no"))
+    primary = attempt_no if attempt_no is not None else -1
+    return (primary, str(row.get("timestamp") or ""), _as_int(row.get("iteration")) or 0)
+
+
+def build_improvement_trajectory(scored_iters: list[dict]) -> list[dict]:
+    """Structured per-attempt staircase: baseline -> patch/eval iterations.
+
+    Only STRUCTURAL / bounded fields (B3 §3.6 firewall): the free-text
+    ``decision_reason`` is deliberately EXCLUDED — only the bounded ``decision``
+    value (accept/reject/continue) is carried. ``delta_vs_baseline`` is the
+    accuracy lift over the iteration-0 ``eval_scope='full'`` baseline.
+    """
+    ordered = sorted(scored_iters, key=_trajectory_sort_key)
+    # Baseline is the EARLIEST iteration-0 full row. A repaired/re-entered
+    # Optimize task can append a later full row at iteration 0; preserve that
+    # second official evaluation as a pre-loop improvement rung.
+    baseline_candidates = sorted(
+        (r for r in scored_iters if _is_baseline_row(r)),
+        key=lambda r: str(r.get("timestamp") or ""),
+    )
+    baseline_row = baseline_candidates[0] if baseline_candidates else None
+    baseline_acc = _as_float(baseline_row.get("overall_accuracy")) if baseline_row else None
+    used_attempt_nos = {
+        attempt_no
+        for row in scored_iters
+        if (attempt_no := _as_int(row.get("attempt_no"))) is not None and attempt_no > 0
+    }
+    next_recovered_attempt = 1
+    trajectory: list[dict] = []
+    for row in ordered:
+        iteration = _as_int(row.get("iteration"))
+        acc = _as_float(row.get("overall_accuracy"))
+        delta = (
+            round(acc - baseline_acc, 2)
+            if (acc is not None and baseline_acc is not None)
+            else None
+        )
+        is_baseline = row is baseline_row
+        attempt_no = _as_int(row.get("attempt_no"))
+        mode = row.get("attempt_mode")
+        decision = row.get("decision")
+        if is_baseline:
+            mode = "baseline"
+            attempt_no = None
+        elif _is_baseline_row(row) and (attempt_no is None or attempt_no == 0):
+            while next_recovered_attempt in used_attempt_nos:
+                next_recovered_attempt += 1
+            attempt_no = next_recovered_attempt
+            used_attempt_nos.add(attempt_no)
+            next_recovered_attempt += 1
+            mode = "enrichment"
+            if str(decision or "").lower() in {"", "baseline"}:
+                decision = "accept"
+        elif not mode and _is_baseline_row(row):
+            mode = "baseline"
+        trajectory.append({
+            "iteration": iteration,
+            "attempt_no": attempt_no,
+            "attempt_mode": mode,
+            "eval_scope": row.get("eval_scope"),
+            "accuracy": acc,
+            "delta_vs_baseline": delta,
+            "best_accuracy": _as_float(row.get("best_accuracy")),
+            "decision": decision,
+            "rolled_back": _is_rolled_back(row),
+            "is_champion": _is_champion_flag(row),
+        })
+    return trajectory
+
+
+def _patch_family_counts(patches_df: "pd.DataFrame | None") -> tuple[int, int, dict[str, int]]:
+    """Return (total patches, rolled-back patches, counts by lever family)."""
+    if patches_df is None or getattr(patches_df, "empty", True):
+        return 0, 0, {}
+    families: dict[str, int] = {}
+    total = 0
+    rolled_back = 0
+    for _, p in patches_df.iterrows():
+        lever = _as_int(p.get("lever"))
+        name = LEVER_NAMES.get(lever, f"Lever {lever}") if lever is not None else "unknown"
+        families[name] = families.get(name, 0) + 1
+        total += 1
+        if bool(p.get("rolled_back")):
+            rolled_back += 1
+    return total, rolled_back, families
+
+
+def _json_value(value: Any, default: Any) -> Any:
+    """Decode Delta JSON columns that may already be hydrated by loaders."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    if value is None:
+        return default
+    return value
+
+
+def _safe_reason_label(value: Any, *, default: str = "UNSPECIFIED_FAILURE") -> str:
+    """Convert potentially free-text judge reasons into bounded audit labels."""
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    upper = raw.upper()
+    keyword_map = (
+        ("MISSING JOIN", "MISSING_JOIN"),
+        ("MISSING_JOIN", "MISSING_JOIN"),
+        ("WRONG JOIN", "WRONG_JOIN"),
+        ("WRONG_JOIN", "WRONG_JOIN"),
+        ("MISSING COLUMN", "MISSING_COLUMNS"),
+        ("MISSING_COLUMNS", "MISSING_COLUMNS"),
+        ("WRONG COLUMN", "WRONG_COLUMNS"),
+        ("WRONG_COLUMNS", "WRONG_COLUMNS"),
+        ("FILTER", "MISSING_OR_INCORRECT_FILTER"),
+        ("PERCENTILE", "INCORRECT_METRIC_OR_FUNCTION"),
+        ("FUNCTION", "INCORRECT_METRIC_OR_FUNCTION"),
+        ("METRIC", "INCORRECT_METRIC_OR_FUNCTION"),
+        ("AGGREGAT", "INCORRECT_AGGREGATION"),
+        ("GROUP", "INCORRECT_GROUPING"),
+        ("ORDER", "INCORRECT_ORDERING"),
+        ("RANK", "INCORRECT_RANKING"),
+        ("WINDOW", "INCORRECT_RANKING"),
+        ("ASSET", "ASSET_ROUTING_ERROR"),
+        ("TABLE", "ASSET_ROUTING_ERROR"),
+        ("INCOMPLETE", "INCOMPLETE_OR_PARTIAL_OUTPUT"),
+        ("PARTIAL", "INCOMPLETE_OR_PARTIAL_OUTPUT"),
+        ("OUTPUT", "INCOMPLETE_OR_PARTIAL_OUTPUT"),
+        ("SEMANTIC", "SEMANTIC_ERROR"),
+        ("SYNTAX", "SQL_SYNTAX_ERROR"),
+    )
+    for needle, label in keyword_map:
+        if needle in upper:
+            return label
+    if re.fullmatch(r"[A-Z0-9_:-]{1,80}", upper):
+        return upper
+    return "OTHER_FAILURE_REASON"
+
+
+def _safe_patch_label(value: Any, *, default: str = "unknown") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    label = re.sub(r"[^A-Za-z0-9_:-]+", "_", raw)[:80].strip("_")
+    return label or default
+
+
+def _count_values(values: list[Any]) -> dict[str, int]:
+    return dict(Counter(str(v) for v in values if str(v or "").strip()))
+
+
+def _eval_rows_from_iteration(row: dict) -> list[dict[str, Any]]:
+    rows = _json_value(row.get("rows_json"), [])
+    if not rows:
+        rows = _json_value(row.get("rows"), [])
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _failure_reason_summaries(scored_iters: list[dict]) -> list[dict[str, Any]]:
+    """Per-eval failure categories for the audit summary.
+
+    This intentionally emits only counts of bounded reason labels. It never
+    carries question text, SQL, judge prose, or question ids.
+    """
+    summaries: list[dict[str, Any]] = []
+    for row in sorted(scored_iters, key=_trajectory_sort_key):
+        eval_rows = _eval_rows_from_iteration(row)
+        if not eval_rows:
+            continue
+        assessment_counts: Counter[str] = Counter()
+        reason_counts: Counter[str] = Counter()
+        failing_count = 0
+        for eval_row in eval_rows:
+            assessment = _safe_reason_label(
+                eval_row.get("assessment")
+                or eval_row.get("result_correctness")
+                or eval_row.get("correctness"),
+                default="UNKNOWN_ASSESSMENT",
+            )
+            assessment_counts[assessment] += 1
+            if assessment in {"GOOD", "YES", "BOTH_CORRECT"}:
+                continue
+            failing_count += 1
+            reasons = eval_row.get("assessment_reasons")
+            genie_eval = eval_row.get("genie_equivalent_eval")
+            if not reasons and isinstance(genie_eval, dict):
+                reasons = genie_eval.get("assessment_reasons")
+                if not reasons and genie_eval.get("primary_assessment_reason"):
+                    reasons = [genie_eval.get("primary_assessment_reason")]
+            if not isinstance(reasons, list) or not reasons:
+                reasons = [assessment if assessment != "UNKNOWN_ASSESSMENT" else "UNSPECIFIED_FAILURE"]
+            for reason in reasons:
+                reason_counts[_safe_reason_label(reason)] += 1
+        summaries.append({
+            "iteration": _as_int(row.get("iteration")),
+            "attempt_no": _as_int(row.get("attempt_no")),
+            "eval_scope": row.get("eval_scope"),
+            "accuracy": _as_float(row.get("overall_accuracy")),
+            "decision": row.get("decision"),
+            "rolled_back": _is_rolled_back(row),
+            "is_champion": _is_champion_flag(row),
+            "failing_count": failing_count,
+            "assessment_counts": dict(assessment_counts),
+            "failure_reason_counts": dict(reason_counts),
+        })
+    return summaries
+
+
+def _pick_failure_summary(
+    summaries: list[dict[str, Any]],
+    *,
+    iteration: int | None,
+    baseline: bool = False,
+) -> dict[str, Any] | None:
+    for summary in summaries:
+        if baseline and summary.get("iteration") == 0 and summary.get("eval_scope") == "full":
+            return summary
+        if not baseline and summary.get("iteration") == iteration and summary.get("eval_scope") == "full":
+            return summary
+    return None
+
+
+def _patch_attempt_summaries(scored_iters: list[dict]) -> list[dict[str, Any]]:
+    """Summarize what each LLM patch attempt tried, kept, and dropped.
+
+    Only bounded types/counts are emitted. Raw LLM text, rationales, SQL, example
+    questions, and drop details are deliberately excluded.
+    """
+    attempts: list[dict[str, Any]] = []
+    for row in sorted(scored_iters, key=_trajectory_sort_key):
+        hypothesis = _json_value(row.get("current_hypothesis"), {})
+        if not isinstance(hypothesis, dict) or not hypothesis:
+            continue
+        patch_types = [
+            _safe_patch_label(p)
+            for p in hypothesis.get("patch_types") or []
+            if str(p or "").strip()
+        ]
+        dropped_summary = hypothesis.get("preapply_dropped_summary")
+        if not isinstance(dropped_summary, list):
+            dropped_summary = []
+        dropped_patch_types = [
+            _safe_patch_label(item.get("type") or item.get("patch_type"))
+            for item in dropped_summary
+            if isinstance(item, dict)
+        ]
+        dropped_reasons = [
+            _safe_patch_label(item.get("drop_reason"))
+            for item in dropped_summary
+            if isinstance(item, dict)
+        ]
+        if not dropped_reasons:
+            dropped_reasons = [
+                _safe_patch_label(r)
+                for r in hypothesis.get("preapply_dropped_reasons") or []
+                if str(r or "").strip()
+            ]
+
+        attempt = {
+            "iteration": _as_int(row.get("iteration")),
+            "attempt_no": _as_int(row.get("attempt_no")),
+            "accuracy": _as_float(row.get("overall_accuracy")),
+            "decision": row.get("decision"),
+            "rolled_back": _is_rolled_back(row),
+            "is_champion": _is_champion_flag(row),
+            "lever": _as_int(hypothesis.get("lever")),
+            "proposed_patch_count": _as_int(hypothesis.get("proposed_patch_count")),
+            "surviving_patch_count": _as_int(hypothesis.get("patch_count")),
+            "surviving_patch_types": patch_types,
+            "patch_family": _safe_patch_label(hypothesis.get("patch_family")),
+            "preapply_dropped_count": _as_int(hypothesis.get("preapply_dropped_count")) or 0,
+            "preapply_dropped_patch_type_counts": _count_values(dropped_patch_types),
+            "preapply_dropped_reason_counts": _count_values(dropped_reasons),
+        }
+        if hypothesis.get("failure_stage"):
+            attempt["failure_stage"] = _safe_patch_label(hypothesis.get("failure_stage"))
+        if hypothesis.get("structured_intent_lost"):
+            attempt["structured_intent_lost"] = True
+        attempts.append(attempt)
+    return attempts
+
+
+def _residual_failure_count(champion_row: dict | None) -> int:
+    """Count residual failures recorded on the champion iteration."""
+    residual_count = 0
+    if champion_row is not None:
+        remaining = champion_row.get("remaining_failures")
+        if isinstance(remaining, str):
+            try:
+                remaining = json.loads(remaining)
+            except (json.JSONDecodeError, TypeError):
+                remaining = None
+        if isinstance(remaining, list):
+            residual_count = len(remaining)
+    return residual_count
+
+
+def _assert_leak_free(obj: Any) -> None:
+    """Defensive: the audit context must never carry answer-key fields — at ANY
+    depth (B3). Walks nested dicts/lists so a benchmark question / expected_sql
+    buried in a nested structure is caught, not just a top-level key."""
+    if isinstance(obj, dict):
+        leaked = _LEAKY_FIELDS & set(obj.keys())
+        if leaked:  # pragma: no cover - guardrail
+            raise ValueError(
+                f"audit context leaks benchmark answer-key fields: {sorted(leaked)}"
+            )
+        for value in obj.values():
+            _assert_leak_free(value)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _assert_leak_free(item)
+
+
+def as_audit_context(
+    run_id: str,
+    space_id: str,
+    scored_iters: list[dict],
+    patches_df: "pd.DataFrame | None",
+    *,
+    terminal_reason: str | None,
+    champion_row: dict | None,
+    target_accuracy: float | None,
+    max_attempts: int | None,
+) -> dict:
+    """Build the LEAK-FREE structural prompt context for the audit summary.
+
+    ONLY structural / aggregate / bounded fields are included (D8 / §3.6): per-attempt
+    accuracy + deltas, attempt mode, the bounded ``decision`` value (NOT the free-text
+    ``decision_reason``), lever/patch counts and families, champion pointer, and
+    the stop reason. NO benchmark question text,
+    NO ``expected_sql`` / ground-truth, NO judge rationale — those are the leakage
+    surface and are excluded by construction; ``_assert_leak_free`` enforces it
+    recursively. ``scored_iters`` is the ``full`` + ``enrichment`` set.
+    """
+    trajectory = build_improvement_trajectory(scored_iters)
+    baseline_accuracy = next(
+        (
+            _as_float(r.get("overall_accuracy"))
+            for r in scored_iters
+            if _is_baseline_row(r)
+        ),
+        None,
+    )
+
+    champion_iteration = _as_int(champion_row.get("iteration")) if champion_row else None
+    champion_accuracy = _as_float(champion_row.get("overall_accuracy")) if champion_row else None
+    champion_config_version_id = _champion_config_version_id(champion_row)
+    surgical_attempts_used = (
+        _as_int(champion_row.get("surgical_attempts_used")) if champion_row else None
+    )
+
+    total_patches, rolled_back_patches, patch_families = _patch_family_counts(patches_df)
+    residual_failure_count = _residual_failure_count(champion_row)
+    failure_summaries = _failure_reason_summaries(scored_iters)
+    baseline_failure_summary = _pick_failure_summary(
+        failure_summaries,
+        iteration=None,
+        baseline=True,
+    )
+    champion_failure_summary = _pick_failure_summary(
+        failure_summaries,
+        iteration=champion_iteration,
+    )
+    patch_attempts = _patch_attempt_summaries(scored_iters)
+
+    context = {
+        "run_id": run_id,
+        "space_id": space_id,
+        "terminal_reason": terminal_reason,
+        "published": should_publish(terminal_reason),
+        "target_accuracy": target_accuracy,
+        "max_attempts": max_attempts,
+        "surgical_attempts_used": surgical_attempts_used,
+        "baseline_accuracy": baseline_accuracy,
+        "champion_iteration": champion_iteration,
+        "champion_accuracy": champion_accuracy,
+        "champion_config_version_id": champion_config_version_id,
+        "improvement_trajectory": trajectory,
+        "total_patches_applied": total_patches,
+        "patches_rolled_back": rolled_back_patches,
+        "patch_families": patch_families,
+        "eval_failure_summaries": failure_summaries,
+        "baseline_failure_summary": baseline_failure_summary,
+        "champion_failure_summary": champion_failure_summary,
+        "patch_attempt_summaries": patch_attempts,
+        "residual_failure_count": residual_failure_count,
+    }
+    _assert_leak_free(context)
+    return context
+
+
+# ── LLM audit summary (best-effort / non-fatal) ─────────────────────────────
+
+
+def _start_chain_span(name: str) -> Any:
+    try:
+        import mlflow
+        from mlflow.entities import SpanType
+
+        return mlflow.start_span(name=name, span_type=SpanType.CHAIN)
+    except Exception:
+        return nullcontext(None)
+
+
+def build_audit_summary(
+    w: "WorkspaceClient | None",
+    audit_context: dict,
+) -> tuple[str | None, str | None]:
+    """Generate the short human-readable audit summary via the LLM.
+
+    Returns ``(summary_text_or_None, concern_or_None)``. The call is best-effort:
+    any exception or empty/unusable output yields ``(None, concern)`` so the
+    caller can still write the ``publish_record`` and stamp the run — a summary
+    failure must NEVER fail the publish task.
+    """
+    try:
+        user_payload = json.dumps(audit_context, default=str, sort_keys=True)
+        messages = [
+            {"role": "system", "content": AUDIT_SUMMARY_PROMPT},
+            {"role": "user", "content": user_payload},
+        ]
+        context_hash = hashlib.sha256(user_payload.encode("utf-8")).hexdigest()
+        with _start_chain_span("audit_summary") as span:
+            try:
+                if span is not None:
+                    span.set_inputs(
+                        {
+                            "prompt_template": "audit_summary",
+                            "audit_context_hash": context_hash,
+                            "audit_context_chars": len(user_payload),
+                            "audit_context_field_count": len(audit_context),
+                            "improvement_trajectory_count": len(
+                                audit_context.get("improvement_trajectory") or []
+                            ),
+                            "patch_family_count": len(
+                                audit_context.get("patch_families") or {}
+                            ),
+                        }
+                    )
+            except Exception:
+                pass
+            text, _response = call_llm(w, messages=messages)
+            try:
+                if span is not None:
+                    span.set_outputs({"summary_chars": len(text or "")})
+            except Exception:
+                pass
+        text = (text or "").strip()
+        if not text:
+            return None, "Audit summary generation returned empty output."
+        return text, None
+    except Exception as exc:
+        logger.warning(
+            "Audit summary LLM call failed (non-fatal) — publishing without it",
+            exc_info=True,
+        )
+        return None, f"Audit summary generation failed: {type(exc).__name__}."
+
+
+# ── publish_record payload + orchestrator ───────────────────────────────────
+
+
+def build_publish_record(
+    *,
+    run_id: str,
+    space_id: str,
+    run_status: str,
+    terminal_reason: str | None,
+    published: bool,
+    publish_outcome: str,
+    champion_iteration: int | None,
+    champion_accuracy: float | None,
+    champion_config_version_id: str | None,
+    target_accuracy: float | None,
+    max_attempts: int | None,
+    audit_summary: str | None,
+    improvement_trajectory: list[dict],
+    concerns: list[str],
+) -> dict:
+    """Assemble the canonical ``publish_record`` payload (arch §7.3).
+
+    All fields JSON-serializable. ``champion_iteration`` doubles as the champion
+    pointer (number); the champion accuracy + config-version reference complete
+    the pointer.
+    """
+    return {
+        "run_id": run_id,
+        "space_id": space_id,
+        "final_status": run_status,
+        "terminal_reason": terminal_reason,
+        "published": published,
+        "publish_outcome": publish_outcome,
+        "champion_iteration": champion_iteration,
+        "champion_accuracy": champion_accuracy,
+        "champion_config_version_id": champion_config_version_id,
+        "target_accuracy": target_accuracy,
+        "max_attempts": max_attempts,
+        "audit_summary": audit_summary,
+        "improvement_trajectory": improvement_trajectory,
+        "concerns": concerns,
+    }
+
+
+def publish_skipped_run(
+    spark: Any,
+    run_id: str,
+    *,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    terminal_reason: str,
+    valid_count: int,
+    minimum_valid_count: int,
+    target_accuracy: float | None = None,
+    max_attempts: int | None = None,
+    source_notebook: str = "run_publish_and_audit.py",
+) -> dict:
+    """Write the terminal audit record for a pre-optimization business skip."""
+    audit_summary = (
+        "Optimization was skipped because benchmark review left "
+        f"{valid_count} valid benchmark question(s), below the required minimum "
+        f"of {minimum_valid_count}. No optimization evaluation or configuration "
+        "patch was run."
+    )
+    concerns = [
+        f"Add or repair at least {minimum_valid_count - valid_count} more valid "
+        "benchmark question(s), then start a new optimization run."
+    ]
+    publish_record = build_publish_record(
+        run_id=run_id,
+        space_id=space_id,
+        run_status="SKIPPED",
+        terminal_reason=terminal_reason,
+        published=False,
+        publish_outcome=f"not_published:{terminal_reason}",
+        champion_iteration=None,
+        champion_accuracy=None,
+        champion_config_version_id=None,
+        target_accuracy=target_accuracy,
+        max_attempts=max_attempts,
+        audit_summary=audit_summary,
+        improvement_trajectory=[],
+        concerns=concerns,
+    )
+    write_artifact(
+        spark,
+        run_id,
+        "publish_record",
+        publish_record,
+        catalog=catalog,
+        schema=schema,
+        stage_name="PUBLISH_AND_AUDIT",
+        source_notebook=source_notebook,
+    )
+    update_run_status(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        status="SKIPPED",
+        convergence_reason=terminal_reason,
+        space_id=space_id or None,
+    )
+    return {
+        "run_id": run_id,
+        "terminal_reason": terminal_reason,
+        "final_status": "SKIPPED",
+        "published": False,
+        "publish_outcome": f"not_published:{terminal_reason}",
+        "champion_iteration": None,
+        "champion_accuracy": None,
+        "concerns": concerns,
+        "audit_summary_generated": True,
+    }
+
+
+def publish_and_audit(
+    spark: Any,
+    w: "WorkspaceClient | None",
+    run_id: str,
+    *,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    target_accuracy: float | None = None,
+    max_attempts: int | None = None,
+    source_notebook: str = "run_publish_and_audit.py",
+) -> dict:
+    """Run the real ``publish_and_audit`` body (Phase 9).
+
+    Reads the stamped terminal reason, gates publish on it, generates the
+    best-effort LLM audit summary, writes the ``publish_record`` artifact, and
+    stamps the run's terminal status. Returns a small result dict for the
+    notebook's exit JSON.
+    """
+    # load_all_scored_iterations still includes historical enrichment rows so
+    # old runs render a complete trajectory; select_champion_row restricts
+    # promotion to full-scope rows for the unified loop.
+    scored_iters = load_all_scored_iterations(spark, run_id, catalog, schema)
+
+    champion_row = resolve_champion_row(scored_iters)
+    # B1: gate ONLY on the champion row's stamped reason (fail-closed when absent).
+    terminal_reason = resolve_terminal_reason(champion_row)
+
+    publish = should_publish(terminal_reason)
+    run_status = run_status_for_terminal_reason(terminal_reason)
+
+    concerns: list[str] = []
+    champion_iteration = _as_int(champion_row.get("iteration")) if champion_row else None
+    champion_accuracy = _as_float(champion_row.get("overall_accuracy")) if champion_row else None
+    champion_config_version_id = _champion_config_version_id(champion_row)
+
+    if publish:
+        # Idempotent Delta-only champion publish: re-stamps is_champion + the
+        # run's best_*. NO live-space mutation (the loop already applied accepted
+        # patches in-place); NO example-SQL firewall path is invoked here.
+        promoted = promote_best_model(spark, run_id, catalog, schema)
+        published = True
+        publish_outcome = "published"
+        if promoted is not None:
+            champion_iteration = promoted
+            refreshed = load_run(spark, run_id, catalog, schema) or {}
+            if _as_float(refreshed.get("best_accuracy")) is not None:
+                champion_accuracy = _as_float(refreshed.get("best_accuracy"))
+    else:
+        published = False
+        publish_outcome = f"not_published:{terminal_reason or 'UNKNOWN'}"
+        if terminal_reason is None:
+            concerns.append(
+                "Champion row carries no stamped terminal_reason; treated as a "
+                "non-publishing, fail-closed outcome (no accuracy-based "
+                "re-derivation, no non-champion fallback)."
+            )
+            # Diagnostic-only: surface a reason stamped on a NON-champion row
+            # WITHOUT using it to gate (B1).
+            diag = unstamped_champion_diagnostic(champion_row, scored_iters)
+            if diag:
+                concerns.append(diag)
+        else:
+            concerns.append(
+                _TERMINAL_REASON_CONCERN.get(
+                    terminal_reason,
+                    f"Run stopped with terminal_reason={terminal_reason}; the "
+                    "champion was NOT published.",
+                )
+            )
+        residual_count = _residual_failure_count(champion_row)
+        if residual_count:
+            concerns.append(
+                f"{residual_count} benchmark question(s) still failing on the "
+                "champion config at stop time."
+            )
+
+    # Best-effort LLM audit summary over the LEAK-FREE structural context.
+    patches_df = load_patches(spark, run_id, catalog, schema)
+    audit_context = as_audit_context(
+        run_id,
+        space_id,
+        scored_iters,
+        patches_df,
+        terminal_reason=terminal_reason,
+        champion_row=champion_row,
+        target_accuracy=target_accuracy,
+        max_attempts=max_attempts,
+    )
+    audit_summary, summary_concern = build_audit_summary(w, audit_context)
+    if summary_concern:
+        concerns.append(summary_concern)
+
+    improvement_trajectory = audit_context["improvement_trajectory"]
+
+    publish_record = build_publish_record(
+        run_id=run_id,
+        space_id=space_id,
+        run_status=run_status,
+        terminal_reason=terminal_reason,
+        published=published,
+        publish_outcome=publish_outcome,
+        champion_iteration=champion_iteration,
+        champion_accuracy=champion_accuracy,
+        champion_config_version_id=champion_config_version_id,
+        target_accuracy=target_accuracy,
+        max_attempts=max_attempts,
+        audit_summary=audit_summary,
+        improvement_trajectory=improvement_trajectory,
+        concerns=concerns,
+    )
+
+    write_artifact(
+        spark,
+        run_id,
+        "publish_record",
+        publish_record,
+        catalog=catalog,
+        schema=schema,
+        stage_name="PUBLISH_AND_AUDIT",
+        iteration=champion_iteration,
+        source_notebook=source_notebook,
+    )
+
+    # Capture final IQ state while the run is still non-terminal. The hook is
+    # soft-failing, so scan/API/persistence issues never block the authoritative
+    # terminal status update immediately below.
+    run_postflight_scan(
+        w,
+        spark,
+        run_id,
+        space_id,
+        catalog,
+        schema,
+        best_accuracy=champion_accuracy,
+    )
+
+    # Reuse an existing terminal status (arch §13.3 — PUBLISHED_AUDITED is NOT
+    # introduced). convergence_reason carries the ACTUAL terminal_reason; it is
+    # never collapsed.
+    update_run_status(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        status=run_status,
+        best_iteration=champion_iteration,
+        best_accuracy=champion_accuracy,
+        convergence_reason=terminal_reason,
+        space_id=space_id or None,
+    )
+
+    return {
+        "run_id": run_id,
+        "terminal_reason": terminal_reason,
+        "final_status": run_status,
+        "published": published,
+        "publish_outcome": publish_outcome,
+        "champion_iteration": champion_iteration,
+        "champion_accuracy": champion_accuracy,
+        "concerns": concerns,
+        "audit_summary_generated": audit_summary is not None,
+    }

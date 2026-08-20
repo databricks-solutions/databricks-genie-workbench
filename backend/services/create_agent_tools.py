@@ -1,4 +1,4 @@
-"""Tool implementations for the Create Genie agent.
+"""Tool implementations for the Create Genie Agent.
 
 Each tool returns a dict that gets serialized as the tool result for the LLM.
 Tools handle all mechanical formatting — the LLM provides content, tools handle structure.
@@ -292,7 +292,7 @@ TOOL_DEFINITIONS = [
                     "table_identifiers": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Fully qualified table names (catalog.schema.table) — the tables selected for the Genie Space.",
+                        "description": "Fully qualified table names (catalog.schema.table) — the tables selected for the Genie Agent.",
                     },
                     "business_questions": {
                         "type": "array",
@@ -334,7 +334,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "discover_warehouses",
-            "description": "List eligible SQL warehouses (pro or serverless) for the Genie space.",
+            "description": "List eligible SQL warehouses (pro or serverless) for the Genie Agent.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -356,7 +356,7 @@ TOOL_DEFINITIONS = [
             "name": "generate_config",
             "description": (
                 "Build the complete serialized_space JSON from structured inputs. "
-                "Use this for INITIAL space creation only. For post-creation changes, use update_config instead. "
+                "Use this for INITIAL agent creation only. For post-creation changes, use update_config instead. "
                 "Handles all mechanical formatting: generates IDs, sorts arrays, splits SQL into "
                 "line-by-line arrays, formats join specs with backtick-quoting and --rt= annotations, "
                 "wraps strings in arrays. The LLM provides the CONTENT; this tool handles the FORMAT. "
@@ -367,12 +367,12 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "tables": {
                         "type": "array",
-                        "description": "Tables to include in the space",
+                        "description": "Tables to include in the agent",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "identifier": {"type": "string", "description": "catalog.schema.table"},
-                                "description": {"type": "string", "description": "Space-scoped table description"},
+                                "description": {"type": "string", "description": "Agent-scoped table description"},
                                 "column_configs": {
                                     "type": "array",
                                     "items": {
@@ -394,7 +394,7 @@ TOOL_DEFINITIONS = [
                     "sample_questions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "5 sample questions shown to users in the Genie Space UI as click-to-ask suggestions",
+                        "description": "5 sample questions shown to users in the Genie Agent UI as click-to-ask suggestions",
                     },
                     "text_instructions": {
                         "type": "array",
@@ -453,7 +453,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string", "description": "When Genie should use this measure (e.g., 'Use for any revenue aggregation')"},
                                 "comment": {"type": "string", "description": "Internal note about the measure definition or business context"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "filters": {
@@ -482,7 +482,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string", "description": "When Genie should use this expression (e.g., 'Use for year-based grouping')"},
                                 "comment": {"type": "string", "description": "Internal note about this computed column"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "join_specs": {
@@ -559,7 +559,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "generate_plan",
             "description": (
-                "Generate the complete Genie Space plan using PARALLEL LLM calls (4x faster than "
+                "Generate the complete Genie Agent plan using PARALLEL LLM calls (4x faster than "
                 "building it manually). Extracts table context and inspection findings from session "
                 "history automatically — you only need to pass user_requirements summarizing the "
                 "user's goals and business context. Returns the plan as a present_plan result for "
@@ -587,7 +587,7 @@ TOOL_DEFINITIONS = [
             "name": "present_plan",
             "description": (
                 "Present a structured plan for the user to review BEFORE generating the config. "
-                "The frontend renders this as collapsible sections mirroring the Genie Space UI tabs. "
+                "The frontend renders this as collapsible sections mirroring the Genie Agent UI tabs. "
                 "Prefer generate_plan (parallel, faster) unless you need to manually construct "
                 "or revise specific plan sections. The user must approve the plan before "
                 "you call generate_config. Parameters are IDENTICAL to generate_config so the plan "
@@ -598,12 +598,12 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "tables": {
                         "type": "array",
-                        "description": "Tables to include in the space",
+                        "description": "Tables to include in the agent",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "identifier": {"type": "string", "description": "catalog.schema.table"},
-                                "description": {"type": "string", "description": "Space-scoped table description"},
+                                "description": {"type": "string", "description": "Agent-scoped table description"},
                                 "column_configs": {
                                     "type": "array",
                                     "items": {
@@ -625,7 +625,7 @@ TOOL_DEFINITIONS = [
                     "sample_questions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "5 sample questions shown to users in the Genie Space UI as click-to-ask suggestions",
+                        "description": "5 sample questions shown to users in the Genie Agent UI as click-to-ask suggestions",
                     },
                     "text_instructions": {
                         "type": "array",
@@ -684,7 +684,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string"},
                                 "comment": {"type": "string"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "filters": {
@@ -713,7 +713,7 @@ TOOL_DEFINITIONS = [
                                 "instruction": {"type": "string"},
                                 "comment": {"type": "string"},
                             },
-                            "required": ["alias", "sql"],
+                            "required": ["display_name", "sql"],
                         },
                     },
                     "join_specs": {
@@ -800,14 +800,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "create_space",
-            "description": "Create the Genie space via the Databricks API. Call this only after the user has approved the config.",
+            "description": "Create the Genie Agent via the Databricks API. Call this only after the user has approved the config.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "display_name": {"type": "string", "description": "Display name for the space"},
-                    "description": {"type": "string", "description": "1-2 sentence description of what this Genie Space enables users to explore"},
+                    "display_name": {"type": "string", "description": "Display name for the agent"},
+                    "description": {"type": "string", "description": "1-2 sentence description of what this Genie Agent enables users to explore"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
-                    "parent_path": {"type": "string", "description": "Workspace folder path for the space (optional)"},
+                    "parent_path": {"type": "string", "description": "Workspace folder path for the agent (optional)"},
                 },
                 "required": ["display_name", "description"],
             },
@@ -817,13 +817,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_space",
-            "description": "Update an existing Genie space — config, display name, or both. Use this instead of create_space when the space has already been created. Supports renaming.",
+            "description": "Update an existing Genie Agent — config, display name, or both. Use this instead of create_space when the agent has already been created. Supports renaming.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "space_id": {"type": "string", "description": "The ID of the existing Genie space to update"},
+                    "space_id": {"type": "string", "description": "The ID of the existing Genie Agent to update"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
-                    "display_name": {"type": "string", "description": "New display name for the space (optional — only if renaming)"},
+                    "display_name": {"type": "string", "description": "New display name for the agent (optional — only if renaming)"},
                 },
                 "required": ["space_id"],
             },
@@ -2104,7 +2104,7 @@ def _assess_readiness(table_identifiers: list[str], business_questions: list[str
         if cols_without > 0:
             recommendations.append(
                 f"{cols_without} column(s) ({100 - col_doc_pct:.0f}%) have no descriptions — "
-                "these will be generated in the Genie Space configuration."
+                "these will be generated in the Genie Agent configuration."
             )
     if semantic_band == "Low" and extracted.get("entities"):
         missing_dims = sorted(extracted["entities"] - set(corpus.split()))
@@ -2440,9 +2440,13 @@ def _generate_config(
     if measures:
         m_items = []
         for m in measures:
-            entry = {"id": secrets.token_hex(16), "alias": m["alias"], "sql": [m["sql"]]}
-            if m.get("display_name"):
-                entry["display_name"] = m["display_name"]
+            entry = {
+                "id": secrets.token_hex(16),
+                "display_name": m["display_name"],
+                "sql": [m["sql"]],
+            }
+            if m.get("alias"):
+                entry["alias"] = m["alias"]
             if m.get("synonyms"):
                 entry["synonyms"] = m["synonyms"]
             if m.get("instruction"):
@@ -2473,9 +2477,13 @@ def _generate_config(
     if expressions:
         e_items = []
         for e in expressions:
-            entry = {"id": secrets.token_hex(16), "alias": e["alias"], "sql": [e["sql"]]}
-            if e.get("display_name"):
-                entry["display_name"] = e["display_name"]
+            entry = {
+                "id": secrets.token_hex(16),
+                "display_name": e["display_name"],
+                "sql": [e["sql"]],
+            }
+            if e.get("alias"):
+                entry["alias"] = e["alias"]
             if e.get("synonyms"):
                 entry["synonyms"] = e["synonyms"]
             if e.get("instruction"):
@@ -2814,15 +2822,18 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
 
         # ── SQL snippet actions (measures, filters, expressions) ──────
         elif action == "add_measure":
-            alias = act.get("alias", "")
             dn = act.get("display_name", "")
             sql = act.get("sql", "")
-            if not alias or not sql:
-                applied.append("Skipped add_measure — alias and sql required")
+            if not dn or not sql:
+                applied.append("Skipped add_measure — display_name and sql required")
                 continue
-            entry_m: dict[str, Any] = {"id": secrets.token_hex(16), "alias": alias, "sql": [sql]}
-            if dn:
-                entry_m["display_name"] = dn
+            entry_m: dict[str, Any] = {
+                "id": secrets.token_hex(16),
+                "display_name": dn,
+                "sql": [sql],
+            }
+            if act.get("alias"):
+                entry_m["alias"] = act["alias"]
             if act.get("synonyms"):
                 entry_m["synonyms"] = act["synonyms"]
             if act.get("instruction"):
@@ -2871,14 +2882,18 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             applied.append(f"Removed {removed} filter(s) matching '{dn}'")
 
         elif action == "add_expression":
-            alias = act.get("alias", "")
+            dn = act.get("display_name", "")
             sql = act.get("sql", "")
-            if not alias or not sql:
-                applied.append("Skipped add_expression — alias and sql required")
+            if not dn or not sql:
+                applied.append("Skipped add_expression — display_name and sql required")
                 continue
-            entry_e: dict[str, Any] = {"id": secrets.token_hex(16), "alias": alias, "sql": [sql]}
-            if act.get("display_name"):
-                entry_e["display_name"] = act["display_name"]
+            entry_e: dict[str, Any] = {
+                "id": secrets.token_hex(16),
+                "display_name": dn,
+                "sql": [sql],
+            }
+            if act.get("alias"):
+                entry_e["alias"] = act["alias"]
             if act.get("synonyms"):
                 entry_e["synonyms"] = act["synonyms"]
             if act.get("instruction"):
@@ -2886,17 +2901,23 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             es = cfg.setdefault("instructions", {}).setdefault("sql_snippets", {}).setdefault("expressions", [])
             es.append(entry_e)
             es.sort(key=lambda x: x["id"])
-            applied.append(f"Added expression: {alias}")
+            applied.append(f"Added expression: {dn}")
 
         elif action == "remove_expression":
+            dn = act.get("display_name", "").lower()
             alias = act.get("alias", "").lower()
             es = cfg.get("instructions", {}).get("sql_snippets", {}).get("expressions", [])
             before = len(es)
             cfg.setdefault("instructions", {}).setdefault("sql_snippets", {})["expressions"] = [
-                e for e in es if e.get("alias", "").lower() != alias
+                e for e in es
+                if not (
+                    (dn and e.get("display_name", "").lower() == dn)
+                    or (alias and e.get("alias", "").lower() == alias)
+                )
             ]
             removed = before - len(cfg["instructions"]["sql_snippets"]["expressions"])
-            applied.append(f"Removed {removed} expression(s) matching '{alias}'")
+            selector = dn or alias
+            applied.append(f"Removed {removed} expression(s) matching '{selector}'")
 
         else:
             applied.append(f"Unknown action: {action}")
@@ -3138,7 +3159,17 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
 
     # ── IQ quality warnings (aligned with scanner.py checks) ─────────────
 
-    # 1. Table descriptions: warn if <80% have descriptions; warn at 80-99%
+    # 1. Space description: warn if missing, placeholder-like, or too short.
+    raw_description = config.get("description", "")
+    description_text = " ".join(raw_description) if isinstance(raw_description, list) else str(raw_description or "")
+    description_words = re.findall(r"[A-Za-z0-9]+", description_text)
+    if len(description_text.strip()) < 30 or len(description_words) < 5 or description_text.strip().lower() in {"n/a", "na", "none", "todo", "tbd"}:
+        warning(
+            "description",
+            "Missing or short agent description — define the domain, audience, and scope"
+        )
+
+    # 2. Table descriptions: warn if <80% have descriptions; warn at 80-99%
     if tables:
         described_tables = sum(
             1 for t in tables if t.get("description") or t.get("comment")
@@ -3156,7 +3187,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"{described_tables}/{total_tables} tables have descriptions ({tbl_desc_pct:.0%}) — aim for 100%"
             )
 
-    # 2. Column descriptions: warn if <50%; warn at 50-79%
+    # 3. Column descriptions: warn if <50%; warn at 50-79%
     if tables:
         total_cols = 0
         described_cols = 0
@@ -3177,7 +3208,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"{described_cols}/{total_cols} columns have descriptions ({col_desc_pct:.0%}) — aim for 80%+"
             )
 
-    # 3. Text instructions: warn if missing/short, too long, or contains SQL patterns
+    # 4. Text instructions: warn if missing/short, too long, or contains SQL patterns
     if not ti or all(not t.get("content") for t in ti):
         warning("instructions.text_instructions", "No text instructions — add business context and terminology")
     else:
@@ -3193,10 +3224,10 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 "instructions.text_instructions",
                 f"Text instructions only {ti_total_chars} chars — add more business context (>50 chars recommended)"
             )
-        if ti_total_chars > 2500:
+        if ti_total_chars > 2000:
             warning(
                 "instructions.text_instructions",
-                f"Text instructions are {ti_total_chars:,} chars — keep under 2,500 to avoid pushing out higher-value SQL context"
+                f"Text instructions are {ti_total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context"
             )
         # Scanner v2 — structure-aware detection. Natural-language prose
         # like "Do not join X to Y" or "Where applicable" is no longer
@@ -3213,26 +3244,34 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"SQL Expressions. First offender: {sample!r}"
             )
 
-    # 4. Join specs: warn if missing when >1 table
+    # 5. Join specs: warn if missing when >1 table
     if len(tables) > 1 and not jss:
         warning(
             "instructions.join_specs",
             f"No join specs for {len(tables)} tables — add join specifications to help Genie correctly join your tables"
         )
-
-    # 5. Table count: hard structural limits are handled above.
-
-    # 6. Example SQLs: warn if <8; warn at 8-9; warn if >50% lack usage_guidance
-    n_examples = len(eqs)
-    if n_examples < 8:
+    elif len(tables) > 1 and len(jss) < max(len(tables) - 1, 1):
         warning(
-            "instructions.example_question_sqls",
-            f"Only {n_examples} example SQLs — 8+ required for good accuracy"
+            "instructions.join_specs",
+            f"{len(jss)} join specs for {len(tables)} tables — relationship coverage may be incomplete"
         )
-    elif n_examples < 10:
+
+    # 6. Table count: hard structural limits are handled above.
+
+    # 7. SQL guidance artifacts: require at least one SQL snippet/function or example SQL.
+    n_examples = len(eqs)
+    iq_sql_functions = config.get("instructions", {}).get("sql_functions", [])
+    iq_sql_snippets = config.get("instructions", {}).get("sql_snippets", {})
+    iq_expressions = iq_sql_snippets.get("expressions", [])
+    iq_measures = iq_sql_snippets.get("measures", [])
+    iq_filters = iq_sql_snippets.get("filters", [])
+    has_any_sql_guidance = bool(
+        eqs or iq_sql_functions or iq_expressions or iq_measures or iq_filters
+    )
+    if not has_any_sql_guidance:
         warning(
-            "instructions.example_question_sqls",
-            f"{n_examples} example SQLs — 10-15 is the sweet spot for largest accuracy jump"
+            "instructions",
+            "No SQL guidance artifacts — add a SQL snippet, SQL function, or example SQL"
         )
     if eqs:
         missing_guidance = sum(1 for e in eqs if not e.get("usage_guidance"))
@@ -3242,19 +3281,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 f"{missing_guidance}/{n_examples} example SQLs lack usage_guidance — add descriptions of when each should be applied"
             )
 
-    # 7. SQL snippets: warn if none at all; warn if missing filters or measures
-    iq_sql_functions = config.get("instructions", {}).get("sql_functions", [])
-    iq_sql_snippets = config.get("instructions", {}).get("sql_snippets", {})
-    iq_expressions = iq_sql_snippets.get("expressions", [])
-    iq_measures = iq_sql_snippets.get("measures", [])
-    iq_filters = iq_sql_snippets.get("filters", [])
-    has_any_snippets = bool(iq_sql_functions or iq_expressions or iq_measures or iq_filters)
-    if not has_any_snippets:
-        warning(
-            "instructions.sql_snippets",
-            "No SQL functions, expressions, measures, or filters — add snippets for complex business logic"
-        )
-    else:
+    if iq_sql_functions or iq_expressions or iq_measures or iq_filters:
         missing_types = []
         if not iq_filters:
             missing_types.append("filters")
@@ -3283,7 +3310,7 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
     if entity_count > 100:
         warning(
             "data_sources.tables.column_configs",
-            f"{entity_count} columns with entity matching — approaching 120/space limit"
+            f"{entity_count} columns with entity matching — approaching 120/agent limit"
         )
 
     # 9. Benchmarks: warn if <10
@@ -3348,7 +3375,7 @@ def _check_sorted(items: list, key_fn, key_name: str, path: str, error_fn) -> No
 
 @mlflow.trace(name="create_space", span_type=SpanType.TOOL)
 def _create_space(display_name: str, description: str = "", config: dict | None = None, parent_path: str | None = None) -> dict:
-    """Create the Genie space via the API.
+    """Create the Genie Agent via the API.
 
     Path resolution is automatic: configured directory -> /Shared/.
     On permission errors the next candidate is tried transparently.
@@ -3379,7 +3406,7 @@ def _create_space(display_name: str, description: str = "", config: dict | None 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
 def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None) -> dict:
-    """Update an existing Genie space with a new configuration and/or name."""
+    """Update an existing Genie Agent with a new configuration and/or name."""
     if not config and not display_name:
         return {"success": False, "error": "No config or display_name provided"}
     try:
@@ -3412,7 +3439,7 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
             "success": True,
             "space_id": space_id,
             "url": f"{host}/genie/rooms/{space_id}",
-            "message": "Space updated successfully.",
+            "message": "Agent updated successfully.",
         }
     except Exception as e:
         logger.exception("update_space failed")

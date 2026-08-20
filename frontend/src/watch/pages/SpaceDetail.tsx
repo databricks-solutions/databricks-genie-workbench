@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import * as api from '@/watch/lib/api'
 import type {
   CostPerConversation, CostRollup, HealthStatus,
-  ResourceUsage, SpaceSummary, UsageRollup,
+  ResourceUsage, SpaceSummary, TrafficGapAnalysis, UsageRollup,
 } from '@/watch/types/api'
 import { formatDate, formatInt, formatMs, formatUsd, formatDay } from '@/watch/lib/format'
 import { invalidate, useCachedFetch } from '@/watch/lib/cache'
@@ -33,7 +33,7 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
     setRefreshing(true)
     // Clear this space's cached tab data, then bump refreshKey (a fetch dep on
     // every tab) so the kept-alive tabs re-fetch against the now-empty cache.
-    for (const prefix of ['usage:', 'cost:', 'cost-conv:', 'resources:']) {
+    for (const prefix of ['usage:', 'cost:', 'cost-conv:', 'resources:', 'traffic-gaps:']) {
       invalidate(`${prefix}${spaceId}`)
     }
     space.reload()
@@ -48,7 +48,7 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} className="gap-1">
-          <ArrowLeft size={16} /> Back to spaces
+          <ArrowLeft size={16} /> Back to agents
         </Button>
         <Button variant="outline" onClick={refreshAll} disabled={refreshing} className="gap-1">
           <RefreshCw className={refreshing ? 'animate-spin' : ''} size={14} /> Refresh
@@ -69,7 +69,7 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg"
-                title="Open Genie Space in Databricks"
+                title="Open Genie Agent in Databricks"
               >
                 <ExternalLink size={14} /> open in Databricks
               </a>
@@ -86,12 +86,14 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
               <TabsTrigger value="usage">Usage</TabsTrigger>
               <TabsTrigger value="cost">Cost</TabsTrigger>
               <TabsTrigger value="resources">Resources</TabsTrigger>
+              <TabsTrigger value="traffic-gaps">Candidate gaps</TabsTrigger>
             </TabsList>
 
             <TabsContent value="overview" keepAlive><Overview space={space.data} /></TabsContent>
             <TabsContent value="usage" keepAlive><UsageTab spaceId={spaceId} refreshKey={refreshKey} /></TabsContent>
             <TabsContent value="cost" keepAlive><CostTab spaceId={spaceId} refreshKey={refreshKey} /></TabsContent>
             <TabsContent value="resources" keepAlive><ResourcesTab spaceId={spaceId} refreshKey={refreshKey} /></TabsContent>
+            <TabsContent value="traffic-gaps" keepAlive><TrafficGapsTab spaceId={spaceId} refreshKey={refreshKey} /></TabsContent>
           </Tabs>
         </>
       )}
@@ -99,21 +101,105 @@ export function SpaceDetail({ spaceId, onBack }: Props) {
   )
 }
 
-function Overview({ space }: { space: SpaceSummary }) {
-  return (
-    <div className="grid gap-4 md:grid-cols-2">
-      <Card className="p-4">
-        <h2 className="mb-2 text-sm font-medium uppercase text-muted">Owner</h2>
-        <p className="font-medium">{space.owner_email || '—'}</p>
+function TrafficGapsTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number }) {
+  const { data, error: err } = useCachedFetch<TrafficGapAnalysis>(
+    `traffic-gaps:${spaceId}`,
+    () => api.getTrafficGaps(spaceId),
+    [spaceId, refreshKey],
+  )
+
+  if (err) {
+    return (
+      <Card className="border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-400">
+        Candidate-gap analysis is unavailable. You must manage this agent, and Genie must return the complete conversation history.
       </Card>
+    )
+  }
+  if (!data) return <LoadingCard />
+  return <TrafficGapsPanel data={data} />
+}
+
+const signalLabels: Record<string, string> = {
+  negative_feedback: 'Negative feedback',
+  failed: 'Failed answer',
+  cross_user_repeat: 'Repeated across users',
+}
+
+export function TrafficGapsPanel({ data }: { data: TrafficGapAnalysis }) {
+  return (
+    <div className="space-y-4">
+      <Card className="border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-300">
+        <Info className="mr-1 inline" size={14} />
+        These are review candidates found through exact normalized matching, not proof of semantic benchmark coverage.
+        Question text and user identities are processed transiently and are not returned or stored.
+      </Card>
+
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Stat label="Messages checked" value={formatInt(data.scanned_message_count)} />
+        <Stat label="Question families" value={formatInt(data.family_count)} />
+        <Stat label="Exact benchmark matches" value={formatInt(data.covered_family_count)} />
+        <Stat label="Candidate gaps" value={formatInt(data.candidates.length)} />
+      </div>
+
       <Card className="p-4">
-        <h2 className="mb-2 text-sm font-medium uppercase text-muted">Permissions</h2>
+        <h2 className="text-sm font-medium uppercase text-muted">Candidate benchmark gaps</h2>
+        <p className="mt-1 text-sm text-muted">
+          Managers should inspect the linked conversations, confirm the intended answer, and decide whether a benchmark belongs in the agent.
+        </p>
+
+        {data.candidates.length === 0 ? (
+          <p className="mt-4 text-sm text-muted">
+            No actionable candidate gaps were found by exact normalized matching.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {data.candidates.map(candidate => (
+              <div key={candidate.candidate_id} className="rounded border border-default p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-sm">{candidate.candidate_id}</span>
+                  <span className="text-xs text-muted">
+                    {candidate.occurrence_count} occurrence{candidate.occurrence_count === 1 ? '' : 's'} ·{' '}
+                    {candidate.distinct_user_count} user{candidate.distinct_user_count === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {candidate.signals.map(signal => (
+                    <Badge key={signal}>{signalLabels[signal] || signal}</Badge>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                  {candidate.conversation_urls.map((url, index) => (
+                    <a
+                      key={url}
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-muted hover:text-fg"
+                    >
+                      <ExternalLink size={13} /> Evidence {index + 1}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+export function Overview({ space }: { space: SpaceSummary }) {
+  return (
+    <div className="grid gap-4">
+      <Card className="p-4">
+        <h2 className="mb-2 text-sm font-medium uppercase text-muted">Managers</h2>
         <div className="space-y-1">
-          {space.permissions.length === 0 && <p className="text-sm text-muted">No ACL data.</p>}
+          {space.permissions.length === 0 && <p className="text-sm text-muted">—</p>}
           {space.permissions.map((p, i) => (
             <div key={i} className="flex items-center justify-between text-sm">
               <span className="truncate">{p.principal || '?'}</span>
-              <Badge>{p.permission_level || '—'}</Badge>
+              <Badge>{(p.principal_type || 'principal').replaceAll('_', ' ')}{p.inherited ? ' · inherited' : ''}</Badge>
             </div>
           ))}
         </div>
@@ -248,7 +334,7 @@ function CostTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: number 
       <Card className="border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-400">
         <AlertCircle className="mr-1 inline" size={14} />
         Cost is approximate. Databricks bills warehouses, not queries — we apportion warehouse-day cost
-        by this space's share of warehouse query duration. See <code>docs/apportionment-caveat.md</code>.
+        by this agent's share of warehouse query duration. See <code>docs/apportionment-caveat.md</code>.
       </Card>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -386,7 +472,3 @@ function ResourcesTab({ spaceId, refreshKey }: { spaceId: string; refreshKey: nu
     </Card>
   )
 }
-
-
-
-

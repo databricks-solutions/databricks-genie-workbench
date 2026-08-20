@@ -175,7 +175,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
       {step === 0 && (
         <div className="space-y-4">
           <div>
-            <label className="text-sm font-medium block mb-1 text-secondary">Space Name *</label>
+            <label className="text-sm font-medium block mb-1 text-secondary">Agent Name *</label>
             <input
               value={state.name}
               onChange={(e) => setState((s) => ({ ...s, name: e.target.value }))}
@@ -306,7 +306,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
       {step === 2 && (
         <div className="space-y-2">
           <p className="text-sm text-muted mb-3">
-            Add 5–20 natural language questions this space should answer.
+            Add 5–20 natural language questions this agent should answer.
           </p>
           {state.sampleQuestions.map((q, i) => (
             <input
@@ -356,7 +356,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
         <div>
           <div className="mb-4 text-sm space-y-1">
             <div className="flex justify-between text-muted">
-              <span>Space name</span>
+              <span>Agent name</span>
               <span className="font-medium text-primary">{state.name}</span>
             </div>
             <div className="flex justify-between text-muted">
@@ -410,7 +410,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
           <div className="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center mx-auto mb-4">
             <Check className="w-6 h-6 text-green-500" />
           </div>
-          <p className="font-semibold text-primary mb-2">Space Created!</p>
+          <p className="font-semibold text-primary mb-2">Agent Created!</p>
           <a
             href={result.space_url}
             target="_blank"
@@ -424,7 +424,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
             onClick={() => onCreated(result.space_id, state.name)}
             className="mt-4 px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium"
           >
-            View Space →
+            View Agent →
           </button>
         </div>
       )}
@@ -453,7 +453,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
             disabled={creating || validation?.valid === false}
             className="px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium disabled:opacity-50"
           >
-            {creating ? "Creating..." : "Create Space"}
+            {creating ? "Creating..." : "Create Agent"}
           </button>
         )}
       </div>

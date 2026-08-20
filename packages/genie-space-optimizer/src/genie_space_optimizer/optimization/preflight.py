@@ -1,13 +1,14 @@
 """
-Preflight logic — extracted from the harness to keep orchestration lean.
+Preflight logic for intake, metadata discovery, and benchmark preparation.
 
-Fetches Genie Space config, UC metadata, loads or generates benchmarks,
-validates SQL, registers judge prompts, and creates the initial MLflow
-LoggedModel (iteration 0).
+Fetches Genie Agent config, UC metadata, loads or generates benchmarks,
+validates SQL, configures MLflow tracing, and prepares the initial benchmark
+Delta handoff.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from pathlib import PurePosixPath
@@ -16,14 +17,24 @@ from typing import TYPE_CHECKING, Any
 import mlflow
 
 from genie_space_optimizer.common.config import (
+    BENCHMARK_WINDOW_MAX,
+    BENCHMARK_WINDOW_MIN,
     EXPERIMENT_PATH_TEMPLATE,
     MAX_BENCHMARK_COUNT,
+    MIN_VALID_BENCHMARK_COUNT,
+    PUBLISH_BENCHMARKS_TO_SPACE,
     TARGET_BENCHMARK_COUNT,
     format_mlflow_template,
 )
-from genie_space_optimizer.common.genie_client import fetch_space_config
-from genie_space_optimizer.common.genie_schema import validate_serialized_space
-from genie_space_optimizer.common.mlflow_names import default_tags, preflight_run_name
+from genie_space_optimizer.common.genie_client import (
+    compute_benchmark_window_recommendation,
+    drop_empty_text_instruction_placeholders,
+    fetch_space_config,
+)
+from genie_space_optimizer.common.genie_schema import (
+    SerializedSpaceValidationError,
+    validate_serialized_space,
+)
 from genie_space_optimizer.common.uc_metadata import (
     extract_genie_space_table_refs,
     get_columns,
@@ -38,23 +49,28 @@ from genie_space_optimizer.common.uc_metadata import (
     get_tags_for_tables,
     get_tags_for_tables_rest,
 )
-from genie_space_optimizer.optimization.benchmarks import validate_benchmarks
-from genie_space_optimizer.optimization.applier import _get_general_instructions
-from genie_space_optimizer.optimization.evaluation import (
-    _drop_benchmark_table,
+from genie_space_optimizer.optimization.benchmarks import (
+    deduplicate_benchmark_corpus,
+    duplicate_rejection_mutations,
+    live_benchmark_question_id,
+    load_benchmark_corpus,
+    persist_benchmark_corpus,
+    validate_benchmarks,
+)
+from genie_space_optimizer.optimization.benchmark_repair import (
+    require_minimum_valid_benchmarks,
+)
+from genie_space_optimizer.optimization.benchmarking import (
     _flag_stale_temporal_benchmarks,
     _set_sql_context,
-    create_evaluation_dataset,
     extract_genie_space_benchmarks,
     generate_benchmarks,
-    load_benchmarks_from_dataset,
-    register_benchmark_prompts,
-    register_instruction_version,
 )
 from genie_space_optimizer.optimization.state import (
     load_run,
-    load_runs_for_space,
     update_run_status as _update_run_status,
+    write_benchmark_mutations,
+    write_failure_stage_safely,
     write_stage,
 )
 
@@ -174,9 +190,9 @@ def check_dim_date_staleness(
 
 
 def compute_asset_fingerprint(config: dict) -> str:
-    """Compute a short hash over the sorted table/view/function refs in the Genie Space config.
+    """Compute a short hash over the sorted table/view/function refs in the Genie Agent config.
 
-    Used to detect when the Genie Space schema has changed (tables added or
+    Used to detect when the Genie Agent schema has changed (tables added or
     removed) between benchmark runs so stale benchmarks are regenerated.
     """
     import hashlib
@@ -233,7 +249,7 @@ def _collect_or_empty(fetch_fn: Any, label: str) -> tuple[list[dict], str | None
 
 
 def _resolve_experiment_path(*, space_id: str, domain: str) -> str:
-    """Return a stable, app-owned experiment path for this Genie Space.
+    """Return a stable, app-owned experiment path for this Genie Agent.
 
     Experiments live under ``/Shared/genie-space-optimizer/<space_id>/<domain>``
     so the SP can create them without OBO and each space gets its own experiment.
@@ -259,8 +275,8 @@ def _ensure_experiment_parent_dir(ws: WorkspaceClient, experiment_path: str) -> 
         return False
 
 
-# PR 19: detection moved to ``common.metric_view_catalog`` so harness's
-# enrichment startup can reuse it without importing the entire preflight
+# PR 19: detection moved to ``common.metric_view_catalog`` so enrichment can
+# reuse it without importing the entire preflight
 # module. Re-exported here under the original name so existing call
 # sites and tests continue to work unchanged.
 from genie_space_optimizer.common.metric_view_catalog import (  # noqa: E402
@@ -321,7 +337,7 @@ def _profile_metric_view(
         LOW_CARDINALITY_THRESHOLD,
         PROFILE_SAMPLE_SIZE,
     )
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         _exec_sql,
         is_metric_view_error,
     )
@@ -525,7 +541,7 @@ def _collect_data_profile(
     catalog: str = "",
     schema: str = "",
 ) -> tuple[dict[str, dict], list[str]]:
-    """Profile actual data values for Genie Space tables.
+    """Profile actual data values for Genie Agent tables.
 
     For each table (up to *max_tables*) runs a single TABLESAMPLE-bounded
     SQL query that collects per-column cardinality, distinct values
@@ -553,7 +569,7 @@ def _collect_data_profile(
         MAX_PROFILE_TABLES,
         PROFILE_SAMPLE_SIZE,
     )
-    from genie_space_optimizer.optimization.evaluation import _exec_sql
+    from genie_space_optimizer.optimization.benchmarking import _exec_sql
 
     max_tables = max_tables or MAX_PROFILE_TABLES
     sample_size = sample_size or PROFILE_SAMPLE_SIZE
@@ -590,7 +606,7 @@ def _collect_data_profile(
     profile: dict[str, dict] = {}
     reclassified_mvs: list[str] = []
     yaml_cache = metric_view_yaml or {}
-    from genie_space_optimizer.optimization.evaluation import is_metric_view_error
+    from genie_space_optimizer.optimization.benchmarking import is_metric_view_error
     for table_fqn in tables[:max_tables]:
         _leaf = table_fqn.split(".")[-1].strip("`").lower()
         _fq_lower = table_fqn.strip().lower()
@@ -798,7 +814,7 @@ def _compute_join_overlaps(
     When *w* and *warehouse_id* are provided, queries are routed through
     the SQL warehouse; otherwise Spark SQL is used.
     """
-    from genie_space_optimizer.optimization.evaluation import _exec_sql
+    from genie_space_optimizer.optimization.benchmarking import _exec_sql
 
     _sql_kw: dict[str, Any] = dict(w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema)
 
@@ -862,7 +878,7 @@ def _validate_core_access(
     """Early-fail if the SP cannot read table metadata for referenced schemas.
 
     Uses the REST API (``w.tables.get``) to validate access — the same path
-    the harness uses for UC metadata extraction.  This avoids Spark SQL
+    the workflow uses for UC metadata extraction. This avoids Spark SQL
     ``information_schema`` queries which have a hidden dependency on the
     ``system`` catalog.
     """
@@ -966,7 +982,7 @@ def preflight_fetch_config(
     domain: str,
     apply_mode: str = "genie_config",
 ) -> dict:
-    """Sub-step 1: Load Genie Space config from snapshot or API.
+    """Sub-step 1: Load Genie Agent config from snapshot or API.
 
     Returns a context dict with keys: config, snapshot, genie_table_refs,
     domain, apply_mode, configured_cols.
@@ -1005,14 +1021,34 @@ def preflight_fetch_config(
                 "Could not back-fill config_snapshot for %s", run_id, exc_info=True,
             )
 
+    removed_instruction_placeholders = drop_empty_text_instruction_placeholders(config)
+    if removed_instruction_placeholders:
+        logger.warning(
+            "Normalized %d empty text-instruction placeholder(s) from the "
+            "stored snapshot for run %s",
+            removed_instruction_placeholders,
+            run_id,
+        )
+
     _parsed = config.get("_parsed_space", config)
     _schema_ok, _schema_errors = validate_serialized_space(
         _parsed if isinstance(_parsed, dict) else config
     )
     if not _schema_ok:
-        logger.warning(
+        logger.error(
             "Space config has structural issues for %s: %s", space_id, _schema_errors
         )
+        write_failure_stage_safely(
+            spark,
+            run_id,
+            "PREFLIGHT_CONFIG_VALIDATION",
+            task_key="preflight",
+            detail={"space_id": space_id, "errors": _schema_errors[:20]},
+            error_message="CONFIG_VALIDATION_FAILED",
+            catalog=catalog,
+            schema=schema,
+        )
+        raise SerializedSpaceValidationError(_schema_errors)
 
     _ds = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
     _inv_tables = _ds.get("tables", [])
@@ -1028,7 +1064,7 @@ def preflight_fetch_config(
     genie_table_refs = extract_genie_space_table_refs(config)
     if genie_table_refs:
         logger.info(
-            "Genie space references %d data assets across schemas: %s",
+            "Genie Agent references %d data assets across schemas: %s",
             len(genie_table_refs),
             sorted({f"{c}.{s}" for c, s, _ in genie_table_refs if c and s}),
         )
@@ -1070,12 +1106,12 @@ def preflight_fetch_config(
 # Flag-gated by GSO_ENABLE_IQ_SCAN_PREFLIGHT. When enabled, a fresh IQ Scan
 # runs between preflight_fetch_config and preflight_collect_uc_metadata and:
 #
-#   - HARD-BLOCKS when Check 1 (data sources exist) fails. The optimizer has
+#   - HARD-BLOCKS when the scan finds zero data sources. The optimizer has
 #     nothing to do without data sources, and the error message is more
 #     actionable than waiting for _validate_core_access to surface a schema
 #     access failure on zero tables.
-#   - WARNS (never blocks) when Check 10 (10+ benchmark questions) fails.
-#     MIN_VALID_BENCHMARKS at line 1119 remains the authoritative
+#   - WARNS (never blocks) when the 10+ benchmark questions check fails.
+#     MIN_VALID_BENCHMARK_COUNT remains the authoritative
 #     post-validation gate; hard-blocking here would kill synthetic benchmark
 #     generation for fresh spaces.
 #   - Persists a phase='preflight' row to genie_opt_scan_snapshots so the
@@ -1140,29 +1176,43 @@ def preflight_run_iq_scan(
     *,
     recommended_levers_from_cta: list[int] | None = None,
 ) -> dict:
-    """Sub-step 1.5: Run a fresh IQ Scan against the Genie Space snapshot.
+    """Sub-step 1.5: Run a fresh IQ Scan against the Genie Agent snapshot.
 
-    Enforces the two scan-derived gates (Check 1 hard-block, Check 10 warn),
+    Enforces the two scan-derived gates (no-data-source hard-block, benchmark warn),
     persists a snapshot row, and returns a narrowed summary for the strategist
     plus the merged ``recommended_levers`` list.
 
-    No-op when ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is unset/false — returns a
-    dict with ``scan`` = ``None`` and an empty lever list so callers can use
-    ``.get(...)`` safely.
+    When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is unset/false, durable scan side
+    effects remain disabled: no snapshot rows, no stages, and no hard-blocks.
+    The function still returns a lightweight ``space_quality_scan`` prompt
+    context so optimization can be quality-aware without changing run control
+    flow.
     """
-    if not _iq_scan_preflight_enabled():
-        return {
-            "scan": None,
-            "scan_summary_for_strategist": None,
-            "recommended_levers": list(recommended_levers_from_cta or []),
-        }
-
-    from genie_space_optimizer.common.config import SCAN_CHECK_TO_LEVERS
+    cta_levers = list(recommended_levers_from_cta or [])
+    preflight_enabled = _iq_scan_preflight_enabled()
+    from genie_space_optimizer.iq_scan.context import (
+        build_space_quality_scan_context,
+        scan_recommended_levers,
+    )
     from genie_space_optimizer.iq_scan.scoring import calculate_score
-    from genie_space_optimizer.optimization.scan_snapshots import write_scan_snapshot
 
     parsed = config.get("_parsed_space", config) if isinstance(config, dict) else {}
     scan_result = calculate_score(parsed or {}, optimization_run=None)
+    scan_levers = scan_recommended_levers(scan_result)
+    quality_context = build_space_quality_scan_context(
+        scan_result,
+        recommended_levers=sorted(set(cta_levers + scan_levers)),
+    )
+
+    if not preflight_enabled:
+        return {
+            "scan": None,
+            "scan_summary_for_strategist": None,
+            "space_quality_scan": quality_context,
+            "recommended_levers": cta_levers,
+        }
+
+    from genie_space_optimizer.optimization.scan_snapshots import write_scan_snapshot
 
     # Always persist first — if we subsequently hard-block, the scan row still
     # exists for post-hoc auditing of why the run failed preflight.
@@ -1177,8 +1227,15 @@ def preflight_run_iq_scan(
         )
 
     checks = scan_result.get("checks") or []
-    check_1 = checks[0] if len(checks) >= 1 else {"passed": True}
-    check_10 = checks[9] if len(checks) >= 10 else {"passed": True}
+
+    def _check_by_label(label: str) -> dict:
+        for chk in checks:
+            if chk.get("label") == label:
+                return chk
+        return {"passed": True}
+
+    data_source_count_check = _check_by_label("Data source count 1-12")
+    benchmark_check = _check_by_label("10+ benchmark questions")
 
     findings = scan_result.get("findings") or []
     next_steps = scan_result.get("next_steps") or []
@@ -1194,20 +1251,32 @@ def preflight_run_iq_scan(
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 
-    # Hard-block: Check 1 (data sources exist).
-    if not check_1.get("passed"):
-        detail = findings[0] if findings else "No tables or metric views configured"
-        step = next_steps[0] if next_steps else "Add at least one table or metric view to your Genie Space"
+    # Hard-block: no data sources.
+    if (
+        not data_source_count_check.get("passed")
+        and str(data_source_count_check.get("detail") or "").startswith("0 ")
+    ):
+        detail = next(
+            (f for f in findings if "tables or metric views" in str(f).lower()),
+            "No tables or metric views configured",
+        )
+        step = next(
+            (
+                s for s in next_steps
+                if "table or metric view" in str(s).lower()
+            ),
+            "Add at least one table or metric view to your Genie Agent",
+        )
         write_stage(
-            spark, run_id, "PREFLIGHT_IQ_SCAN_CHECK1_FAILED", "FAILED",
+            spark, run_id, "PREFLIGHT_IQ_SCAN_NO_DATA_SOURCES", "FAILED",
             task_key="preflight", catalog=catalog, schema=schema,
             detail={"finding": detail, "next_step": step},
         )
         raise RuntimeError(f"{detail}. {step}")
 
-    # Warn-only: Check 10 (10+ benchmark questions).
-    if not check_10.get("passed"):
-        detail = check_10.get("detail") or ""
+    # Warn-only: 10+ benchmark questions.
+    if not benchmark_check.get("passed"):
+        detail = benchmark_check.get("detail") or ""
         write_stage(
             spark, run_id, "PREFLIGHT_IQ_SCAN_BENCHMARK_WARN", "WARNING",
             task_key="preflight", catalog=catalog, schema=schema,
@@ -1215,24 +1284,17 @@ def preflight_run_iq_scan(
                 "check": "10+ benchmark questions",
                 "scan_detail": detail,
                 "note": (
-                    "Warning only — MIN_VALID_BENCHMARKS remains the gate. "
+                    "Warning only — MIN_VALID_BENCHMARK_COUNT remains the gate. "
                     "Synthetic benchmark generation will top up to target count."
                 ),
             },
         )
         logger.info(
-            "IQ Scan Check 10 warning for run=%s: %s — continuing, synthetic benchmarks will top up",
+            "IQ Scan benchmark warning for run=%s: %s — continuing, synthetic benchmarks will top up",
             run_id, detail,
         )
 
     # Translate failing/warning config checks (1-10) into recommended levers.
-    cta_levers = list(recommended_levers_from_cta or [])
-    scan_levers: list[int] = []
-    for i, chk in enumerate(checks[:10], start=1):
-        if chk.get("passed") and (chk.get("severity") or "pass") != "warning":
-            continue
-        scan_levers.extend(SCAN_CHECK_TO_LEVERS.get(i, []))
-
     recommended = sorted(set(cta_levers + scan_levers))
 
     summary = _build_scan_summary_for_strategist(scan_result, recommended)
@@ -1251,6 +1313,7 @@ def preflight_run_iq_scan(
     return {
         "scan": scan_result,
         "scan_summary_for_strategist": summary,
+        "space_quality_scan": quality_context,
         "recommended_levers": recommended,
     }
 
@@ -1268,6 +1331,9 @@ def preflight_collect_uc_metadata(
     configured_cols: int = 0,
     *,
     warehouse_id: str = "",
+    wide_schema_inventory: dict[str, Any] | None = None,
+    wide_schema_plan: dict[str, Any] | None = None,
+    wide_schema_profile_budget: dict[str, Any] | None = None,
 ) -> dict:
     """Sub-step 2: Collect UC columns, tags, routines, FK constraints.
 
@@ -1336,13 +1402,13 @@ def preflight_collect_uc_metadata(
         )
         uc_tags_dicts = (
             _usable_prefetch("uc_tags")
-            or _rest_collect(
-                lambda: get_tags_for_tables_rest(w, genie_table_refs),
-                "tags (genie tables)", "uc_tags",
-            )
             or _spark_collect(
                 lambda: get_tags_for_tables(spark, genie_table_refs),
-                "tags (genie tables)", "uc_tags",
+                "tags (genie tables and columns)", "uc_tags",
+            )
+            or _rest_collect(
+                lambda: get_tags_for_tables_rest(w, genie_table_refs),
+                "table tags (genie tables)", "uc_tags",
             )
         )
         uc_routines_dicts = (
@@ -1379,7 +1445,10 @@ def preflight_collect_uc_metadata(
         )
         uc_tags_dicts = (
             _usable_prefetch("uc_tags")
-            or _spark_collect(lambda: get_tags(spark, catalog, schema), "tags", "uc_tags")
+            or _spark_collect(
+                lambda: get_tags(spark, catalog, schema),
+                "table and column tags", "uc_tags",
+            )
         )
         uc_routines_dicts = (
             _usable_prefetch("uc_routines")
@@ -1391,6 +1460,23 @@ def preflight_collect_uc_metadata(
     uc_tags_dicts = uc_tags_dicts if isinstance(uc_tags_dicts, list) else []
     uc_routines_dicts = uc_routines_dicts if isinstance(uc_routines_dicts, list) else []
     uc_fk_dicts = uc_fk_dicts if isinstance(uc_fk_dicts, list) else []
+
+    if wide_schema_inventory is not None and wide_schema_plan is not None:
+        from genie_space_optimizer.optimization.wide_schema import (
+            project_active_inventory,
+            validate_selection_plan,
+        )
+
+        validate_selection_plan(
+            wide_schema_plan,
+            inventory_hash=wide_schema_inventory.get("inventory_hash"),
+        )
+        uc_columns_dicts = project_active_inventory(
+            wide_schema_inventory,
+            wide_schema_plan,
+        )
+        config["_wide_schema_inventory_hash"] = wide_schema_inventory["inventory_hash"]
+        config["_wide_schema_plan_hash"] = wide_schema_plan["plan_hash"]
 
     if not uc_tags_dicts:
         print(
@@ -1501,7 +1587,7 @@ def preflight_collect_uc_metadata(
             "Asset semantics stamping failed (non-fatal)", exc_info=True,
         )
 
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         effective_metric_view_identifiers,
         effective_metric_view_identifiers_with_catalog,
     )
@@ -1608,6 +1694,7 @@ def preflight_collect_uc_metadata(
     print("\n".join(_lines))
 
     config["_uc_columns"] = uc_columns_dicts
+    config["_uc_tags"] = uc_tags_dicts
     config["_uc_foreign_keys"] = uc_fk_dicts
 
     referenced_schemas = sorted(
@@ -1653,18 +1740,63 @@ def preflight_collect_uc_metadata(
         for n in _eff_mvs
         if isinstance(n, str) and n.strip()
     )
+    _wide_profile_outcomes: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    _wide_profile_telemetry: dict[str, Any] = {}
     if table_names and uc_columns_dicts:
         write_stage(
             spark, run_id, "DATA_PROFILING", "STARTED",
             task_key="preflight", catalog=catalog, schema=schema,
         )
         try:
-            data_profile, reclassified_mvs = _collect_data_profile(
-                spark, table_names, uc_columns_dicts,
-                metric_view_names=_mv_names,
-                metric_view_yaml=config.get("_metric_view_yaml") or {},
-                w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
-            )
+            if wide_schema_inventory is not None and wide_schema_plan is not None:
+                if not (w and warehouse_id):
+                    raise RuntimeError("Wide-schema profiling requires a SQL warehouse")
+                from genie_space_optimizer.optimization.wide_schema_profile import (
+                    run_bounded_profile,
+                )
+
+                _wide_profile_result = run_bounded_profile(
+                    w,
+                    warehouse_id,
+                    wide_schema_inventory,
+                    wide_schema_plan,
+                    run_id=run_id,
+                    budget=wide_schema_profile_budget,
+                )
+                data_profile = _wide_profile_result["data_profile"]
+                existing_profile = config.get("_data_profile") or {}
+                if isinstance(existing_profile, dict):
+                    merged_profile = copy.deepcopy(existing_profile)
+                    for asset_id, asset_profile in data_profile.items():
+                        target = merged_profile.setdefault(
+                            asset_id,
+                            {
+                                "row_count": -1,
+                                "columns": {},
+                                "kind": asset_profile.get("kind"),
+                            },
+                        )
+                        if asset_profile.get("row_count", -1) >= 0:
+                            target["row_count"] = asset_profile["row_count"]
+                        target.setdefault("columns", {}).update(
+                            asset_profile.get("columns") or {},
+                        )
+                    data_profile = merged_profile
+                _wide_profile_outcomes = _wide_profile_result["outcomes"]
+                _wide_profile_telemetry = {
+                    **_wide_profile_result["telemetry"],
+                    "asset_statement_counts": _wide_profile_result.get(
+                        "asset_statement_counts"
+                    ) or {},
+                }
+                reclassified_mvs = []
+            else:
+                data_profile, reclassified_mvs = _collect_data_profile(
+                    spark, table_names, uc_columns_dicts,
+                    metric_view_names=_mv_names,
+                    metric_view_yaml=config.get("_metric_view_yaml") or {},
+                    w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+                )
             # Tier-A #2: merge runtime-reclassified MVs into the YAML cache
             # (with empty payloads — we have no YAML, just the fact that
             # Spark told us they're MVs) so all four downstream gates
@@ -1855,9 +1987,10 @@ def preflight_collect_uc_metadata(
                 "metric_views_detected_via_catalog": len(_catalog_mvs),
                 "metric_views_reclassified_at_runtime": len(reclassified_mvs),
                 "metric_view_profile_outcomes": mv_outcomes,
+                "wide_schema_profile": _wide_profile_telemetry,
             }
             # Mirror the same fields onto the persisted run-status
-            # snapshot so the harness's resume / re-run paths see them
+            # snapshot so resume / re-run paths see them
             # without re-reading the stage history.
             config["_data_profile_stage_detail"] = _stage_detail
             _ps_stage_mirror = config.get("_parsed_space")
@@ -1871,6 +2004,18 @@ def preflight_collect_uc_metadata(
             )
         except Exception:
             logger.warning("Data profiling failed — continuing without profile", exc_info=True)
+            if wide_schema_plan is not None:
+                _wide_profile_outcomes = {
+                    tuple(row["column_key"]): {
+                        "profile_status": "metadata_only",
+                        "submitted": False,
+                        "available_metrics": [],
+                    }
+                    for asset in wide_schema_plan.get("assets") or []
+                    for row in asset.get("columns") or []
+                    if row.get("active") and row.get("profile_status") == "pending"
+                }
+                _wide_profile_telemetry = {"profiling_unavailable": 1}
             config["_data_profile"] = {}
             _ps = config.get("_parsed_space")
             if isinstance(_ps, dict):
@@ -1914,12 +2059,16 @@ def preflight_collect_uc_metadata(
     else:
         config["_join_overlaps"] = []
 
-    return {
+    result = {
         "uc_columns": uc_columns_dicts,
         "uc_tags": uc_tags_dicts,
         "uc_routines": uc_routines_dicts,
         "uc_fk": uc_fk_dicts,
     }
+    if wide_schema_inventory is not None and wide_schema_plan is not None:
+        result["wide_schema_profile_outcomes"] = _wide_profile_outcomes
+        result["wide_schema_profile_telemetry"] = _wide_profile_telemetry
+    return result
 
 
 def preflight_generate_benchmarks(
@@ -1953,40 +2102,24 @@ def preflight_generate_benchmarks(
 
     try:
         _ensure_experiment_parent_dir(w, experiment_name)
-        register_benchmark_prompts(uc_schema, domain, experiment_name)
+        mlflow.set_experiment(experiment_name)
+        mlflow.openai.autolog()
     except Exception:
-        logger.warning(
-            "Benchmark prompt registration failed — tracing will be limited",
-            exc_info=True,
-        )
+        logger.warning("MLflow trace setup failed", exc_info=True)
 
-    with mlflow.start_run(run_name=preflight_run_name(run_id)) as _bench_run:
-        _pf_tags = default_tags(
-            run_id,
-            space_id=space_id,
-            stage="benchmark_generation",
-            iteration=0,
-        )
-        _pf_tags["genie.domain"] = domain
-        mlflow.set_tags(_pf_tags)
-
-        benchmarks, _benchmarks_regenerated = _load_or_generate_benchmarks(
-            w, spark, config, uc_columns, uc_tags, uc_routines,
-            domain, catalog, schema, uc_schema, run_id,
-            warehouse_id=warehouse_id,
-            target_benchmark_count=target_benchmark_count,
-            max_benchmark_count=max_benchmark_count,
-        )
-
-        mlflow.log_params({
-            "benchmark_count": len(benchmarks),
-            "regenerated": _benchmarks_regenerated,
-        })
+    benchmarks, _benchmarks_regenerated = _load_or_generate_benchmarks(
+        w, spark, config, uc_columns, uc_tags, uc_routines,
+        domain, catalog, schema, uc_schema, run_id,
+        warehouse_id=warehouse_id,
+        target_benchmark_count=target_benchmark_count,
+        max_benchmark_count=max_benchmark_count,
+    )
+    benchmarks, duplicate_rejections = deduplicate_benchmark_corpus(benchmarks)
 
     _lines = [_pf_section("PREFLIGHT — BENCHMARK GENERATION")]
     _lines.append(_pf_kv("Benchmarks loaded", len(benchmarks)))
     _lines.append(_pf_kv("Regenerated", _benchmarks_regenerated))
-    _lines.append(_pf_kv("MLflow run", _bench_run.info.run_id))
+    _lines.append(_pf_kv("Duplicate candidates rejected", len(duplicate_rejections)))
     _lines.append(_pf_bar())
     for bm in benchmarks[:10]:
         _bq = str(bm.get("question", ""))[:80]
@@ -1997,7 +2130,11 @@ def preflight_generate_benchmarks(
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 
-    return {"benchmarks": benchmarks, "regenerated": _benchmarks_regenerated}
+    return {
+        "benchmarks": benchmarks,
+        "regenerated": _benchmarks_regenerated,
+        "duplicate_rejections": duplicate_rejections,
+    }
 
 
 def preflight_validate_benchmarks(
@@ -2021,8 +2158,6 @@ def preflight_validate_benchmarks(
 
     Returns a dict with keys: benchmarks (filtered), pre_count, invalid_errors.
     """
-    MIN_VALID_BENCHMARKS = 5
-
     validation_results = validate_benchmarks(
         benchmarks, spark, catalog=catalog, gold_schema=schema,
         w=w, warehouse_id=warehouse_id, config=config,
@@ -2031,6 +2166,12 @@ def preflight_validate_benchmarks(
     filtered_benchmarks: list[dict] = []
     invalid_errors: list[str] = []
     rejected_details: list[str] = []
+    # GSO v2 (§3.5) provenance ledger inputs — questions GSO excludes from
+    # the working set (op="excluded") and rows it auto-corrects in place
+    # (op="changed"). Surfaced via the return dict; the push step writes
+    # them to genie_opt_benchmark_mutations.
+    rejected_benchmarks: list[dict] = []
+    changed_benchmarks: list[dict] = []
     for benchmark, validation in zip(benchmarks, validation_results):
         if validation.get("valid"):
             benchmark["validation_status"] = "valid"
@@ -2054,6 +2195,7 @@ def preflight_validate_benchmarks(
                 bid, bq, err[:200],
             )
             rejected_details.append(f"    - {bid}: \"{bq}\" — {err[:120]}")
+            rejected_benchmarks.append(dict(benchmark))
     benchmarks = filtered_benchmarks
     if len(benchmarks) < pre_count:
         logger.warning(
@@ -2144,6 +2286,10 @@ def preflight_validate_benchmarks(
                     _ab["validation_reason_code"] = "semantic_misalignment"
                     _ab["validation_error"] = _issues[:200]
             if _align_rejected > 0:
+                rejected_benchmarks.extend(
+                    dict(b) for b in benchmarks
+                    if b.get("validation_status") == "misaligned"
+                )
                 benchmarks = [b for b in benchmarks if b.get("validation_status") != "misaligned"]
                 _align_lines.append(_pf_kv("Rejected (misaligned)", _align_rejected))
                 _align_lines.append(_pf_kv("Remaining valid", len(benchmarks)))
@@ -2193,6 +2339,13 @@ def preflight_validate_benchmarks(
                                 _pb["correction_source"] = "predicate_value_fix"
                                 _pred_autocorrected += 1
                                 corrected = True
+                                changed_benchmarks.append({
+                                    "id": _pb.get("id", _pb.get("question_id", "")),
+                                    "question": _pb.get("question", ""),
+                                    "before_sql": old_sql,
+                                    "after_sql": new_sql,
+                                    "reason": "predicate_value_autocorrect",
+                                })
                                 _pred_lines.append(
                                     f"  AUTO-CORRECTED: {mm['column']}="
                                     f"'{mm['literal']}' → '{mm['suggestion']}'"
@@ -2214,6 +2367,10 @@ def preflight_validate_benchmarks(
                         )[:200]
 
             if _pred_rejected > 0 or _pred_autocorrected > 0:
+                rejected_benchmarks.extend(
+                    dict(b) for b in benchmarks
+                    if b.get("validation_status") == "predicate_mismatch"
+                )
                 benchmarks = [
                     b for b in benchmarks
                     if b.get("validation_status") != "predicate_mismatch"
@@ -2267,6 +2424,10 @@ def preflight_validate_benchmarks(
                     _eb["validation_error"] = "Ground truth SQL returned 0 rows"
 
             if _exec_empty > 0:
+                rejected_benchmarks.extend(
+                    dict(b) for b in benchmarks
+                    if b.get("validation_status") == "empty_gt_result"
+                )
                 benchmarks = [
                     b for b in benchmarks
                     if b.get("validation_status") != "empty_gt_result"
@@ -2291,11 +2452,11 @@ def preflight_validate_benchmarks(
 
     TOP_UP_THRESHOLD = int(target_benchmark_count * 0.75)
 
-    if len(benchmarks) < MIN_VALID_BENCHMARKS:
+    if len(benchmarks) < MIN_VALID_BENCHMARK_COUNT:
         logger.warning(
             "Only %d valid benchmarks after filtering (min %d). "
-            "Re-generating from scratch using Genie space assets.",
-            len(benchmarks), MIN_VALID_BENCHMARKS,
+            "Re-generating from scratch using Genie Agent assets.",
+            len(benchmarks), MIN_VALID_BENCHMARK_COUNT,
         )
         genie_benchmarks_regen = extract_genie_space_benchmarks(
             config, spark, catalog=catalog, schema=schema,
@@ -2381,81 +2542,529 @@ def preflight_validate_benchmarks(
             + (f" ({_reval_dropped} dropped by re-validation)" if _reval_dropped else "")
         )
 
-    if not benchmarks:
-        raise RuntimeError(
-            f"All {pre_count} benchmarks failed validation even after regeneration. "
-            f"Sample errors: {invalid_errors[:5]}. "
-            "Check that the Genie space's referenced tables actually exist."
-        )
+    require_minimum_valid_benchmarks(
+        benchmarks,
+        minimum_count=MIN_VALID_BENCHMARK_COUNT,
+        target_count=target_benchmark_count,
+        context="preflight validation and regeneration",
+    )
 
-    return {"benchmarks": benchmarks, "pre_count": pre_count, "invalid_errors": invalid_errors}
+    return {
+        "benchmarks": benchmarks,
+        "pre_count": pre_count,
+        "invalid_errors": invalid_errors,
+        "rejected_benchmarks": rejected_benchmarks,
+        "changed_benchmarks": changed_benchmarks,
+    }
 
 
-def preflight_load_human_feedback(
+class BenchmarkPushError(RuntimeError):
+    """Raised when a REQUIRED preflight benchmark push fails.
+
+    A failed required push means the live space still holds a stale or
+    incomplete benchmark set, or a handoff row could not be reconciled to an
+    exact live question ID. Raising here aborts preflight so native evaluation
+    never scores the wrong corpus (contract 1: benchmarks are pushed and
+    identity-reconciled BEFORE eval).
+    """
+
+
+def _attach_live_benchmark_question_ids(
+    benchmarks: list[dict],
+    merged_live_rows: list[dict],
+) -> tuple[int, list[dict[str, str]]]:
+    """Attach exact live benchmark IDs to the rows persisted for Optimize.
+
+    Matching is intentionally exact after the publisher's shared question
+    normalization. Fuzzy matching is unsafe because the native evaluator uses
+    the live row's wording and SQL, not the handoff row's expected SQL.
+    """
+    from genie_space_optimizer.common.genie_client import _normalize_question_text
+
+    live_by_id: dict[str, dict] = {}
+    live_ids_by_question: dict[str, list[str]] = {}
+    for row in merged_live_rows:
+        if not isinstance(row, dict):
+            continue
+        live_id = str(row.get("id") or "").strip()
+        normalized = _normalize_question_text(str(row.get("question") or ""))
+        if not live_id or not normalized:
+            continue
+        live_by_id[live_id] = row
+        live_ids_by_question.setdefault(normalized, []).append(live_id)
+
+    resolved = 0
+    unresolved: list[dict[str, str]] = []
+    for benchmark in benchmarks:
+        normalized = _normalize_question_text(str(benchmark.get("question") or ""))
+        requested_id = str(benchmark.get("space_question_id") or "").strip()
+
+        live_id = ""
+        if requested_id and requested_id in live_by_id:
+            live_question = _normalize_question_text(
+                str(live_by_id[requested_id].get("question") or ""),
+            )
+            if live_question == normalized:
+                live_id = requested_id
+
+        if not live_id:
+            candidates = live_ids_by_question.get(normalized, [])
+            if len(candidates) == 1:
+                live_id = candidates[0]
+            elif len(candidates) > 1:
+                unresolved.append({
+                    "benchmark_id": str(
+                        benchmark.get("id") or benchmark.get("question_id") or "",
+                    ),
+                    "reason": "ambiguous_exact_question",
+                })
+                continue
+
+        if not live_id:
+            unresolved.append({
+                "benchmark_id": str(
+                    benchmark.get("id") or benchmark.get("question_id") or "",
+                ),
+                "reason": "question_not_present_after_publish",
+            })
+            continue
+
+        benchmark["space_question_id"] = live_id
+        resolved += 1
+
+    return resolved, unresolved
+
+
+def preflight_push_benchmarks_to_space(
+    w: "WorkspaceClient",
     spark: "SparkSession",
     run_id: str,
     space_id: str,
     catalog: str,
     schema: str,
-    domain: str,
+    benchmarks: list[dict],
+    *,
+    rejected_benchmarks: list[dict] | None = None,
+    changed_benchmarks: list[dict] | None = None,
 ) -> dict:
-    """Sub-step 5: Load human corrections from prior labeling sessions.
+    """Sub-step 4b (GSO v2): push the validated benchmark set into the LIVE
+    space at preflight — BEFORE baseline eval — and record provenance.
 
-    Returns a dict with key: human_corrections (list[dict]).
+    This is the runner-independent Phase-2 wiring point (it does not depend
+    on the Phase-1 EvalRunner seam):
+
+    * **Push (D8):** the WHOLE validated set is merged (additive plus
+      SQL-only updates by stable native benchmark ID)
+      into ``serialized_space.benchmarks.questions`` so the official
+      Benchmark API scores against it from baseline onward. There is NO
+      train/held-out split — the benchmark is held out by nature. User-
+      authored question text changes require an explicit, revalidated warning
+      repair record in ``changed_benchmarks``; rows are never deleted, and the
+      merged set is never sliced or truncated (the publisher fails closed on
+      the Genie API hard cap rather than dropping rows).
+    * **Prune-invalid before publish:** a final defensive guard drops any
+      row that is not EXPLAIN-valid or lacks ground-truth SQL, so a
+      SQL-erroring question can never be published.
+    * **Window (D8):** a 30–40 recommendation is computed over the
+      POST-MERGE live set (existing live rows + net-new additions, after
+      dedupe) returned by the publisher, and surfaced in the run state
+      (``> max`` ⇒ recommended prune set; ``< min`` ⇒ top-up count).
+      Recommendation only — never a silent auto-delete.
+    * **Fail closed (contract 1):** when publishing is enabled and there is
+      a non-empty validated set, a push failure (publisher raised, the merged
+      set exceeds the Genie API hard cap, or any handoff row cannot be mapped
+      to one exact live question ID) raises :class:`BenchmarkPushError` so eval
+      never runs against a stale, incomplete, or identity-mismatched set.
+    * **Provenance ledger (§3.5):** every added / excluded / changed row —
+      plus any over-window prune RECOMMENDATION — is written to
+      ``genie_opt_benchmark_mutations``. The preflight ``config_snapshot``
+      remains the discard revert anchor (unchanged).
+
+    Returns a summary dict used by the caller and unit tests.
     """
-    uc_schema = f"{catalog}.{schema}"
-    _human_corrections: list[dict] = []
-    try:
-        from genie_space_optimizer.optimization.labeling import (
-            ensure_labeling_schemas,
-            ingest_human_feedback,
-            sync_corrections_to_dataset,
+    rejected_benchmarks = rejected_benchmarks or []
+    changed_benchmarks = changed_benchmarks or []
+    changed_benchmarks_by_id = {
+        str(change.get("question_id") or change.get("id") or "").strip(): change
+        for change in changed_benchmarks
+        if str(change.get("question_id") or change.get("id") or "").strip()
+    }
+    question_update_ids = {
+        str(change.get("question_id") or change.get("id") or "").strip()
+        for change in changed_benchmarks
+        if change.get("reason") == "benchmark_quality_warning_repair"
+        and str(change.get("before_question") or "").strip()
+        != str(change.get("after_question") or "").strip()
+        and str(change.get("question_id") or change.get("id") or "").strip()
+    }
+
+    # ── Prune-invalid backstop before publish (eval-validity) ────────
+    pushable: list[dict] = []
+    pruned_at_push: list[dict] = []
+    for b in benchmarks:
+        status = b.get("validation_status")
+        has_sql = bool(str(b.get("expected_sql", "")).strip())
+        if status in (None, "valid") and has_sql:
+            pushable.append(b)
+        else:
+            pruned_at_push.append(b)
+
+    # ── Push (additive/merge-only) into the live space ───────────────
+    # The push happens FIRST so the window recommendation below can be
+    # computed over the real POST-MERGE live set returned by the publisher.
+    push_report = None
+    published_count = 0
+    resolved_question_ids = 0
+    benchmark_mutation_count = 0
+    push_required = bool(PUBLISH_BENCHMARKS_TO_SPACE and pushable)
+    push_failure_reason: str | None = None
+    push_exc: Exception | None = None
+
+    if not PUBLISH_BENCHMARKS_TO_SPACE:
+        write_stage(
+            spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "SKIPPED",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={"reason": "publish_disabled"},
         )
-        ensure_labeling_schemas()
-
-        prior_runs = load_runs_for_space(spark, space_id, catalog, schema)
-        _prior_session_name = ""
-        if not prior_runs.empty:
-            completed = prior_runs[
-                (prior_runs["run_id"] != run_id)
-                & (prior_runs["status"].isin(["CONVERGED", "STALLED", "MAX_ITERATIONS"]))
-            ]
-            if not completed.empty:
-                _prior_session_name = completed.iloc[0].get("labeling_session_name", "") or ""
-        if _prior_session_name:
-            _benchmark_table = f"{uc_schema}.genie_benchmarks_{domain}"
-            sync_corrections_to_dataset(_prior_session_name, _benchmark_table)
-            feedback = ingest_human_feedback(_prior_session_name)
-            _human_corrections = feedback.get("corrections", [])
-            if _human_corrections:
-                logger.info(
-                    "Loaded %d human corrections from prior labeling session '%s'",
-                    len(_human_corrections), _prior_session_name,
-                )
-    except Exception:
-        logger.warning("Human feedback ingestion skipped (no prior session or module unavailable)", exc_info=True)
-
-    _lines = [_pf_section("PREFLIGHT — PAST HUMAN FEEDBACK")]
-    _lines.append(_pf_kv("Corrections loaded", len(_human_corrections)))
-    if _human_corrections:
-        _type_counts: dict[str, int] = {}
-        for c in _human_corrections:
-            ct = c.get("type", c.get("correction_type", "unknown"))
-            _type_counts[ct] = _type_counts.get(ct, 0) + 1
-        for ct, cnt in sorted(_type_counts.items()):
-            _lines.append(_pf_kv(f"  {ct}", cnt))
-        sample = _human_corrections[0]
-        _sq = str(sample.get("question", sample.get("question_text", "")))[:80]
-        _lines.append(_pf_kv("Sample", f'"{_sq}"'))
+    elif not pushable:
+        write_stage(
+            spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "SKIPPED",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={"reason": "no_pushable_benchmarks"},
+        )
     else:
-        _lines.append(_pf_kv("Status", "No prior labeling sessions found"))
-    _lines.append(_pf_bar())
-    print("\n".join(_lines))
+        from genie_space_optimizer.common.genie_client import (
+            publish_benchmarks_to_genie_space_with_report,
+        )
+        try:
+            # NOTE: do NOT pass the train/held-out cap here — the live
+            # publisher caps only on the genuine Genie API hard limit
+            # (its default) and never truncates the merged set.
+            push_report = publish_benchmarks_to_genie_space_with_report(
+                w,
+                space_id,
+                pushable,
+                run_id=run_id,
+                question_update_ids=question_update_ids,
+            )
+        except Exception as exc:
+            push_exc = exc
+            push_failure_reason = f"publish_raised:{type(exc).__name__}: {exc}"
+            logger.error(
+                "Preflight benchmark push to space %s raised — eval must NOT "
+                "run against the stale live benchmark set",
+                space_id, exc_info=True,
+            )
+            write_stage(
+                spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "FAILED",
+                task_key="preflight", catalog=catalog, schema=schema,
+                error_message=push_failure_reason[:500],
+            )
+        else:
+            if push_report.over_cap or not push_report.patched:
+                push_failure_reason = (
+                    f"over_cap:merged {push_report.merged_total} > hard cap "
+                    f"{push_report.hard_cap}"
+                    if push_report.over_cap
+                    else "publisher_did_not_patch"
+                )
+                logger.error(
+                    "Preflight benchmark push to space %s not applied (%s) — "
+                    "eval must NOT run against the stale live benchmark set",
+                    space_id, push_failure_reason,
+                )
+                write_stage(
+                    spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "FAILED",
+                    task_key="preflight", catalog=catalog, schema=schema,
+                    error_message=push_failure_reason[:500],
+                    detail={
+                        "over_cap": push_report.over_cap,
+                        "merged_total": push_report.merged_total,
+                        "hard_cap": push_report.hard_cap,
+                        "pushable": len(pushable),
+                    },
+                )
+            else:
+                # The live PATCH has already succeeded. Persist its mutation
+                # count before identity reconciliation, which can still fail
+                # and abort the task. Preserve a larger value from an earlier
+                # task attempt so repair/retry cannot reset the audit field.
+                current_mutation_count = max(
+                    int(push_report.added_count), 0,
+                ) + max(int(push_report.updated_count), 0)
+                try:
+                    existing_run = load_run(spark, run_id, catalog, schema) or {}
+                except Exception:
+                    logger.warning(
+                        "Could not read the existing benchmark mutation count "
+                        "for run %s; persisting the current PATCH count",
+                        run_id,
+                        exc_info=True,
+                    )
+                    existing_run = {}
+                try:
+                    existing_mutation_count = max(
+                        int(existing_run.get("benchmark_mutation_count") or 0),
+                        0,
+                    )
+                except (TypeError, ValueError):
+                    existing_mutation_count = 0
+                benchmark_mutation_count = max(
+                    current_mutation_count,
+                    existing_mutation_count,
+                )
+                _update_run_status(
+                    spark,
+                    run_id,
+                    catalog,
+                    schema,
+                    benchmark_mutation_count=benchmark_mutation_count,
+                )
 
-    return {"human_corrections": _human_corrections}
+                resolved_question_ids, unresolved = _attach_live_benchmark_question_ids(
+                    pushable,
+                    push_report.merged,
+                )
+                if unresolved:
+                    push_failure_reason = (
+                        "unresolved_after_publish:"
+                        f"{len(unresolved)}/{len(pushable)} benchmark ids"
+                    )
+                    logger.error(
+                        "Preflight benchmark push left %d/%d row(s) without an "
+                        "exact live question ID; refusing to start native eval",
+                        len(unresolved),
+                        len(pushable),
+                    )
+                    write_stage(
+                        spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "FAILED",
+                        task_key="preflight", catalog=catalog, schema=schema,
+                        error_message=push_failure_reason[:500],
+                        detail={
+                            "added": push_report.added_count,
+                            "updated": push_report.updated_count,
+                            "dedup_skipped": push_report.dedup_skipped,
+                            "mirror_skipped": push_report.mirror_skipped,
+                            "merged_total": push_report.merged_total,
+                            "pushable": len(pushable),
+                            "resolved_question_ids": resolved_question_ids,
+                            "unresolved": unresolved[:20],
+                        },
+                    )
+                else:
+                    published_count = push_report.added_count
+                    write_stage(
+                        spark, run_id, "PREFLIGHT_BENCHMARK_PUSH", "COMPLETE",
+                        task_key="preflight", catalog=catalog, schema=schema,
+                        detail={
+                            "added": push_report.added_count,
+                            "updated": push_report.updated_count,
+                            "dedup_skipped": push_report.dedup_skipped,
+                            "mirror_skipped": push_report.mirror_skipped,
+                            "merged_total": push_report.merged_total,
+                            "existing_count": push_report.existing_count,
+                            "pushable": len(pushable),
+                            "resolved_question_ids": resolved_question_ids,
+                            "window_status": (push_report.window or {}).get("status"),
+                        },
+                    )
+
+    # ── 30–40 window recommendation over the POST-MERGE set (D8) ─────
+    # Authoritative source is the publisher's post-merge recommendation
+    # (existing live rows + net-new additions, after dedupe). Only when no
+    # merge happened (publishing disabled / nothing pushable / push raised
+    # before merging) do we fall back to the validated set as a rough
+    # indicator — nothing was merged into the live space in that case.
+    if push_report is not None and push_report.window is not None:
+        window = push_report.window
+        window_basis = "post_merge_live_set"
+    else:
+        window = compute_benchmark_window_recommendation(pushable)
+        window_basis = "validated_set"
+
+    _w_lines = [_pf_section("PREFLIGHT — BENCHMARK WINDOW (30–40)")]
+    _w_lines.append(_pf_kv("Post-merge count", window["count"]))
+    _w_lines.append(_pf_kv("Window", f"{BENCHMARK_WINDOW_MIN}–{BENCHMARK_WINDOW_MAX}"))
+    _w_lines.append(_pf_kv("Basis", window_basis))
+    _w_lines.append(_pf_kv("Status", window["status"]))
+    if window["status"] == "over_window":
+        _prune_ids = window.get("recommended_prune", [])
+        # stdout stays truncated to the first 20 ids; the full list lands in
+        # the structured stage detail and the provenance ledger below.
+        _shown = ", ".join(_prune_ids[:20]) or "(none)"
+        if len(_prune_ids) > 20:
+            _shown += f", … (+{len(_prune_ids) - 20} more; full list in ledger)"
+        _w_lines.append(_pf_kv("Recommended prune (ids)", _shown))
+        _w_lines.append("  NOTE: recommendation only — no rows auto-deleted.")
+    elif window["status"] == "under_window":
+        _w_lines.append(_pf_kv("Recommended synthesis top-up", window["recommended_topup"]))
+    _w_lines.append(_pf_bar())
+    print("\n".join(_w_lines))
+
+    try:
+        write_stage(
+            spark, run_id, "PREFLIGHT_BENCHMARK_WINDOW", "COMPLETE",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={**window, "basis": window_basis},
+        )
+    except Exception:
+        logger.debug("Could not write benchmark-window stage", exc_info=True)
+
+    # ── Provenance ledger (§3.5) ─────────────────────────────────────
+    ledger_rows: list[dict] = []
+    # Net-new push set — only rows that were actually patched into the space.
+    if push_report is not None and push_report.patched:
+        for a in push_report.added:
+            ledger_rows.append({
+                "question_id": a.get("id", ""),
+                "op": "added",
+                "before": None,
+                "after": {"question": a.get("question", ""), "sql": a.get("sql", "")},
+                "reason": "preflight_push",
+            })
+        for updated in push_report.updated:
+            before_question = updated.get(
+                "before_question",
+                updated.get("question", ""),
+            )
+            after_question = updated.get(
+                "after_question",
+                updated.get("question", ""),
+            )
+            requested_change = changed_benchmarks_by_id.get(
+                str(updated.get("id") or ""),
+                {},
+            )
+            ledger_rows.append({
+                "question_id": updated.get("id", ""),
+                "op": "changed",
+                "before": {
+                    "question": before_question,
+                    "sql": updated.get("before_sql", ""),
+                },
+                "after": {
+                    "question": after_question,
+                    "sql": updated.get("after_sql", ""),
+                },
+                "reason": (
+                    requested_change.get("reason")
+                    or (
+                        "benchmark_quality_warning_repair"
+                        if before_question != after_question
+                        else "curated_sql_repair"
+                    )
+                ),
+            })
+    for r in rejected_benchmarks:
+        live_question_id = live_benchmark_question_id(r)
+        if not live_question_id:
+            continue
+        excluded_state = {
+            "question": r.get("question", ""),
+            "sql": r.get("expected_sql", ""),
+            **(
+                {
+                    "retained_question_id": r.get("duplicate_retained_question_id", ""),
+                    "normalized_question": r.get("duplicate_normalized_question", ""),
+                }
+                if r.get("validation_reason_code") == "duplicate_normalized_question"
+                else {}
+            ),
+        }
+        ledger_rows.append({
+            "question_id": live_question_id,
+            "op": "excluded",
+            "before": excluded_state,
+            "after": dict(excluded_state),
+            "reason": r.get("validation_reason_code") or "validation_pruned",
+        })
+    for b in pruned_at_push:
+        live_question_id = live_benchmark_question_id(b)
+        if not live_question_id:
+            continue
+        excluded_state = {
+            "question": b.get("question", ""),
+            "sql": b.get("expected_sql", ""),
+        }
+        ledger_rows.append({
+            "question_id": live_question_id,
+            "op": "excluded",
+            "before": excluded_state,
+            "after": dict(excluded_state),
+            "reason": "prune_invalid_before_publish",
+        })
+    publisher_updated_ids = {
+        str(updated.get("id") or "")
+        for updated in (push_report.updated if push_report is not None else [])
+    }
+    for c in changed_benchmarks:
+        change_id = str(c.get("question_id") or c.get("id") or "")
+        if change_id in publisher_updated_ids:
+            continue
+        ledger_rows.append({
+            "question_id": change_id,
+            "op": "changed",
+            "before": {
+                "question": c.get("before_question", c.get("question", "")),
+                "sql": c.get("before_sql", ""),
+            },
+            "after": {
+                "question": c.get("after_question", c.get("question", "")),
+                "sql": c.get("after_sql", ""),
+            },
+            "reason": c.get("reason") or "auto_corrected",
+        })
+    # Over-window prune RECOMMENDATIONS — recorded as non-mutating advisory
+    # rows (op="prune_recommended") now that the publisher never truncates.
+    # The full recommended set is recorded (stdout above is truncated).
+    if window.get("status") == "over_window" and window.get("recommended_prune"):
+        merged_by_id = {
+            m.get("id", ""): m
+            for m in (push_report.merged if push_report is not None else [])
+            if isinstance(m, dict)
+        }
+        for qid in window["recommended_prune"]:
+            row = merged_by_id.get(qid)
+            ledger_rows.append({
+                "question_id": qid,
+                "op": "prune_recommended",
+                "before": (
+                    {"question": row.get("question", ""), "sql": row.get("sql", "")}
+                    if row else None
+                ),
+                "after": None,
+                "reason": "over_window_recommendation",
+            })
+
+    ledger_written = write_benchmark_mutations(
+        spark, run_id, ledger_rows, catalog=catalog, schema=schema,
+    )
+
+    # ── Fail closed: a REQUIRED push must succeed before baseline eval ──
+    if push_required and push_failure_reason is not None:
+        raise BenchmarkPushError(
+            f"Preflight benchmark push to space {space_id} failed "
+            f"({push_failure_reason}). Refusing to continue: baseline eval "
+            f"must not run against a stale, incomplete, or identity-mismatched "
+            f"live benchmark set (contract 1 — pushed and reconciled BEFORE eval)."
+        ) from push_exc
+
+    return {
+        "pushable_count": len(pushable),
+        "pruned_at_push": len(pruned_at_push),
+        "published_count": published_count,
+        "resolved_question_ids": resolved_question_ids,
+        "window": window,
+        "window_basis": window_basis,
+        "push_ok": push_failure_reason is None,
+        "ledger_rows": len(ledger_rows),
+        "ledger_written": ledger_written,
+        "benchmark_mutation_count": benchmark_mutation_count,
+        "push_report": push_report,
+    }
 
 
-def preflight_setup_experiment(
+def preflight_persist_benchmark_corpus(
     w: "WorkspaceClient",
     spark: "SparkSession",
     run_id: str,
@@ -2465,18 +3074,14 @@ def preflight_setup_experiment(
     domain: str,
     config: dict,
     benchmarks: list[dict],
-    uc_columns: list[dict],
-    uc_tags: list[dict],
-    uc_routines: list[dict],
     genie_table_refs: list,
     experiment_name: str | None = None,
     *,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
-    """Sub-step 6: Create MLflow experiment, register judges, create model.
+    """Sub-step 6: Configure tracing and persist the Delta benchmark handoff.
 
-    Returns a dict with keys: model_id, experiment_name, experiment_id,
-    prompt_registrations.
+    Returns trace-destination and persisted benchmark-corpus metadata.
     """
     uc_schema = f"{catalog}.{schema}"
     _set_sql_context(spark, catalog, schema)
@@ -2484,44 +3089,18 @@ def preflight_setup_experiment(
     if experiment_name is None:
         experiment_name = _resolve_experiment_path(space_id=space_id, domain=domain)
 
-    _ensure_experiment_parent_dir(w, experiment_name)
     try:
+        _ensure_experiment_parent_dir(w, experiment_name)
         mlflow.set_experiment(experiment_name)
+        mlflow.openai.autolog()
     except Exception as exc:
-        raise RuntimeError(
-            f"Cannot create MLflow experiment at {experiment_name}: {exc}"
-        ) from exc
-    exp = mlflow.get_experiment_by_name(experiment_name)
-    experiment_id = exp.experiment_id if exp else ""
-    logger.info("Experiment: %s (id=%s)", experiment_name, experiment_id)
-
-    try:
-        from genie_space_optimizer import __version__ as _pipeline_version
-    except ImportError:
-        _pipeline_version = "0.0.0"
-    try:
-        mlflow.set_experiment_tags({
-            "genie.space_id": space_id,
-            "genie.domain": domain,
-            "genie.pipeline_version": _pipeline_version,
-            "genie.catalog": catalog,
-            "genie.schema": schema,
-        })
-    except Exception:
-        logger.debug("Failed to set experiment-level tags", exc_info=True)
-
-    initial_instructions = _get_general_instructions(config.get("_parsed_space", config))
-    if initial_instructions:
-        register_instruction_version(
-            uc_schema=uc_schema,
-            space_id=space_id,
-            instruction_text=initial_instructions,
-            run_id=run_id,
-            lever=0,
-            iteration=0,
-            accuracy=0.0,
-            domain=domain,
+        logger.warning(
+            "MLflow tracing unavailable at %s; continuing without traces: %s",
+            experiment_name,
+            exc,
         )
+    else:
+        logger.info("MLflow trace destination: %s", experiment_name)
 
     import os as _os
     _wh_id = _os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
@@ -2535,28 +3114,31 @@ def preflight_setup_experiment(
 
     _uc_table = f"{uc_schema}.genie_benchmarks_{domain}"
     logger.info(
-        "Dropping benchmark table %s before persist to eliminate stale duplicates "
+        "Overwriting benchmark Delta handoff %s "
         "(benchmarks=%d, asset_fingerprint=%s)",
         _uc_table, len(benchmarks), _asset_fp,
     )
-    _drop_benchmark_table(spark, _uc_table)
-
-    eval_dataset_write = create_evaluation_dataset(
+    corpus_write = persist_benchmark_corpus(
         spark, benchmarks, uc_schema, domain,
         space_id=space_id, catalog=catalog, gold_schema=schema,
-        experiment_id=experiment_id,
         max_benchmark_count=max_benchmark_count,
     )
-    if not isinstance(eval_dataset_write, dict):
-        eval_dataset_write = {}
-    benchmark_count = int(eval_dataset_write.get("record_count", len(benchmarks)))
+    if not isinstance(corpus_write, dict):
+        corpus_write = {}
+    benchmark_count = int(corpus_write.get("record_count", len(benchmarks)))
+    late_duplicates = list(corpus_write.get("rejected_duplicates") or [])
+    if late_duplicates:
+        write_benchmark_mutations(
+            spark,
+            run_id,
+            duplicate_rejection_mutations(late_duplicates),
+            catalog=catalog,
+            schema=schema,
+        )
 
-    _lines = [_pf_section("PREFLIGHT — EXPERIMENT & MODEL SETUP")]
-    _lines.append(_pf_kv("Experiment", experiment_name))
-    _lines.append(_pf_kv("Experiment ID", experiment_id))
-    _lines.append(_pf_kv("Model creation", "deferred to baseline eval"))
-    _lines.append(_pf_kv("Eval dataset", f"synced ({benchmark_count} persisted valid benchmarks)"))
-    _lines.append(_pf_kv("Instructions", "registered" if initial_instructions else "none to register"))
+    _lines = [_pf_section("PREFLIGHT — TRACE & BENCHMARK HANDOFF")]
+    _lines.append(_pf_kv("Trace destination", experiment_name))
+    _lines.append(_pf_kv("Benchmark Delta table", f"synced ({benchmark_count} persisted valid benchmarks)"))
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 
@@ -2577,194 +3159,15 @@ def preflight_setup_experiment(
             "instruction_count": _instr_count,
             "benchmark_count": benchmark_count,
             "experiment_name": experiment_name,
-            "model_id": None,
         },
         catalog=catalog, schema=schema,
     )
 
     return {
-        "model_id": None,
         "experiment_name": experiment_name,
-        "experiment_id": experiment_id,
         "benchmark_count": benchmark_count,
-        "evaluation_dataset": eval_dataset_write,
+        "benchmark_corpus": corpus_write,
     }
-
-
-def preflight_probe_prompt_registry(
-    spark: "SparkSession",
-    run_id: str,
-    catalog: str,
-    schema: str,
-) -> dict:
-    """Sub-step 6.5: write-path probe of MLflow Prompt Registry.
-
-    Runs AFTER experiment setup and BEFORE baseline evaluation. Exercises the
-    exact ``mlflow.genai.register_prompt`` call that ``register_judge_prompts``
-    will make during baseline — so if Prompt Registry is disabled or the SP
-    lacks UC privileges, we abort here rather than in the middle of baseline.
-
-    Gated by the ``GSO_ENABLE_WRITE_PROBE`` env var (default: enabled) so we
-    can roll back quickly if customers report false positives.
-
-    Raises:
-        RuntimeError: when the probe returns ``available=False``. The error
-            message carries the stable ``reason_code`` so downstream alerting
-            can pattern-match without parsing free-form text.
-    """
-    import os as _os
-
-    from genie_space_optimizer.common.prompt_registry import check_prompt_registry
-
-    uc_schema = f"{catalog}.{schema}"
-
-    if _os.getenv("GSO_ENABLE_WRITE_PROBE", "true").lower() not in {"1", "true", "yes", "on"}:
-        logger.info(
-            "Prompt Registry write probe disabled via GSO_ENABLE_WRITE_PROBE; skipping."
-        )
-        write_stage(
-            spark, run_id, "PREFLIGHT_PROMPT_REGISTRY_SKIPPED", "SKIPPED",
-            task_key="preflight",
-            detail={"reason": "disabled_by_env"},
-            catalog=catalog, schema=schema,
-        )
-        return {"skipped": True, "reason_code": "disabled_by_env"}
-
-    probe_hint = run_id[:8] if run_id else None
-    probe = check_prompt_registry(
-        mode="write",
-        uc_schema=uc_schema,
-        probe_name_hint=probe_hint,
-    )
-
-    if not probe.available:
-        logger.error(
-            "Preflight Prompt Registry probe failed: code=%s err=%s",
-            probe.reason_code,
-            (probe.raw_error or "")[:500],
-        )
-        write_stage(
-            spark, run_id, "PREFLIGHT_PROMPT_REGISTRY_FAILED", "FAILED",
-            task_key="preflight",
-            detail={
-                "reason_code": probe.reason_code,
-                "user_message": probe.user_message,
-                "missing_privileges": probe.missing_privileges,
-                "diagnostics": probe.diagnostics,
-            },
-            catalog=catalog, schema=schema,
-            error_message=(probe.raw_error or "")[:1000],
-        )
-        raise RuntimeError(
-            f"Prompt Registry unavailable (reason_code={probe.reason_code}): "
-            f"{probe.user_message}"
-        )
-
-    write_stage(
-        spark, run_id, "PREFLIGHT_PROMPT_REGISTRY_OK", "COMPLETE",
-        task_key="preflight",
-        detail={"probe_name": probe.diagnostics.get("probe_name")},
-        catalog=catalog, schema=schema,
-    )
-    return {"skipped": False, "reason_code": probe.reason_code}
-
-
-def run_preflight(
-    w: WorkspaceClient,
-    spark: SparkSession,
-    run_id: str,
-    space_id: str,
-    catalog: str,
-    schema: str,
-    domain: str,
-    experiment_name: str | None = None,
-    apply_mode: str = "genie_config",
-    warehouse_id: str = "",
-) -> tuple[dict, list[dict], str | None, str, list[dict]]:
-    """Execute the full preflight sequence (Stage 1).
-
-    Wrapper that calls the sub-steps in sequence. Each sub-step is individually
-    callable from a notebook cell for transparency.
-
-    When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is set, an IQ Scan sub-step runs
-    between ``preflight_fetch_config`` and ``preflight_collect_uc_metadata``
-    and can hard-block on Check 1 (data sources exist). Recommended levers
-    and the strategist-facing scan summary are attached to ``config`` under
-    ``_gso_iq_scan_recommended_levers`` and ``_gso_iq_scan_summary`` so they
-    flow through to the lever loop via the existing config pipe.
-
-    Returns:
-        (config, benchmarks, model_id, experiment_name, human_corrections)
-    """
-    ctx1 = preflight_fetch_config(
-        w, spark, run_id, space_id, catalog, schema, domain, apply_mode,
-    )
-    config = ctx1["config"]
-    snapshot = ctx1["snapshot"]
-    genie_table_refs = ctx1["genie_table_refs"]
-    domain = ctx1["domain"]
-
-    scan_ctx = preflight_run_iq_scan(
-        spark, run_id, space_id, catalog, schema, config,
-    )
-    if scan_ctx.get("recommended_levers"):
-        config["_gso_iq_scan_recommended_levers"] = list(scan_ctx["recommended_levers"])
-    if scan_ctx.get("scan_summary_for_strategist"):
-        config["_gso_iq_scan_summary"] = scan_ctx["scan_summary_for_strategist"]
-
-    ctx2 = preflight_collect_uc_metadata(
-        w, spark, run_id, catalog, schema, config, snapshot,
-        genie_table_refs, apply_mode=apply_mode,
-        configured_cols=ctx1.get("configured_cols", 0),
-        warehouse_id=warehouse_id,
-    )
-
-    # C3: advisory calendar-drift check. Never blocks preflight; log-only.
-    try:
-        dim_date_status = check_dim_date_staleness(spark, catalog, schema)
-        config["_gso_dim_date_status"] = dim_date_status
-    except Exception:  # pragma: no cover - defensive; check_* is already safe
-        logger.debug("DIM_DATE staleness check raised unexpectedly", exc_info=True)
-
-    ctx3 = preflight_generate_benchmarks(
-        w, spark, run_id, catalog, schema, config,
-        ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
-        domain,
-        warehouse_id=warehouse_id,
-    )
-    benchmarks = ctx3["benchmarks"]
-
-    ctx4 = preflight_validate_benchmarks(
-        w, spark, run_id, catalog, schema, config, benchmarks,
-        ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
-        domain,
-        warehouse_id=warehouse_id,
-    )
-    benchmarks = ctx4["benchmarks"]
-
-    ctx5 = preflight_load_human_feedback(
-        spark, run_id, space_id, catalog, schema, domain,
-    )
-
-    ctx6 = preflight_setup_experiment(
-        w, spark, run_id, space_id, catalog, schema, domain,
-        config, benchmarks,
-        ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
-        genie_table_refs, experiment_name,
-    )
-
-    # Layered defense: write-path probe AFTER experiment exists (so the probe
-    # prompt has a place to live) and BEFORE baseline eval (which depends on
-    # register_judge_prompts succeeding).
-    preflight_probe_prompt_registry(spark, run_id, catalog, schema)
-
-    return (
-        config,
-        benchmarks,
-        ctx6["model_id"],
-        ctx6["experiment_name"],
-        ctx5["human_corrections"],
-    )
 
 
 def _load_or_generate_benchmarks(
@@ -2784,7 +3187,7 @@ def _load_or_generate_benchmarks(
     target_benchmark_count: int = TARGET_BENCHMARK_COUNT,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> tuple[list[dict], bool]:
-    """Load existing benchmarks or generate new ones from Genie space + LLM.
+    """Load existing benchmarks or generate new ones from Genie Agent + LLM.
 
     Returns:
         A tuple of (benchmarks, regenerated) where *regenerated* is ``True``
@@ -2792,11 +3195,11 @@ def _load_or_generate_benchmarks(
         the stale UC table before persisting) and ``False`` for REUSE / TOP-UP.
 
     Strategy:
-      1. Extract benchmark questions from the Genie Space config
+      1. Extract benchmark questions from the Genie Agent config
          (``benchmarks.questions`` and ``config.sample_questions``).
          ``example_question_sqls`` are training examples and are excluded
          from the benchmark corpus.
-      2. Try loading previously persisted benchmarks from UC dataset.
+      2. Try loading previously persisted benchmarks from the UC Delta table.
          If enough exist AND they already include the curated ones, reuse them.
       3. Otherwise, generate synthetic benchmarks via LLM to augment the curated set.
     """
@@ -2819,12 +3222,12 @@ def _load_or_generate_benchmarks(
     print(
         f"\n-- BENCHMARK LOADING " + "-" * 31 + "\n"
         f"  Target count: {target_benchmark_count}\n"
-        f"  Curated from Genie Space: {len(genie_benchmarks)} "
+        f"  Curated from Genie Agent: {len(genie_benchmarks)} "
         f"({curated_with_sql} with SQL, {curated_question_only} question-only)"
     )
 
-    existing = load_benchmarks_from_dataset(spark, uc_schema, domain)
-    if existing and len(existing) >= 5:
+    existing = load_benchmark_corpus(spark, uc_schema, domain)
+    if existing and len(existing) >= MIN_VALID_BENCHMARK_COUNT:
         validation_results = validate_benchmarks(
             existing, spark, catalog=catalog, gold_schema=schema,
             w=w, warehouse_id=warehouse_id,
@@ -2833,7 +3236,7 @@ def _load_or_generate_benchmarks(
             b for b, v in zip(existing, validation_results)
             if v.get("valid")
         ]
-        from genie_space_optimizer.optimization.evaluation import (
+        from genie_space_optimizer.optimization.benchmarking import (
             _filter_example_sql_mirrored_benchmarks,
         )
         valid_existing = _filter_example_sql_mirrored_benchmarks(valid_existing, config)
@@ -2861,7 +3264,7 @@ def _load_or_generate_benchmarks(
         if _rejected_lines:
             print("  Rejected reasons:\n" + "\n".join(_rejected_lines[:10]))
 
-        if len(valid_existing) >= 5:
+        if len(valid_existing) >= MIN_VALID_BENCHMARK_COUNT:
             # ── Schema fingerprint check ─────────────────────────────
             current_fp = compute_asset_fingerprint(config)
             stored_fp = ""
@@ -2943,7 +3346,7 @@ def _load_or_generate_benchmarks(
                         benchmark.setdefault("validation_error", None)
                         benchmark.setdefault("correction_source", "")
                     if len(valid_existing) > max_benchmark_count:
-                        from genie_space_optimizer.optimization.evaluation import _truncate_benchmarks
+                        from genie_space_optimizer.optimization.benchmarking import _truncate_benchmarks
                         valid_existing = _truncate_benchmarks(valid_existing, max_benchmark_count)
                     from genie_space_optimizer.optimization.benchmarks import assign_splits
                     valid_existing = assign_splits(valid_existing)
@@ -2976,7 +3379,7 @@ def _load_or_generate_benchmarks(
                         w, config, uc_columns, uc_tags, uc_routines,
                         domain, catalog, schema, spark,
                         target_count=target_benchmark_count,
-                        genie_space_benchmarks=genie_benchmarks,
+                        genie_space_benchmarks=[],
                         existing_benchmarks=valid_existing,
                         warehouse_id=warehouse_id,
                         max_benchmark_count=max_benchmark_count,
@@ -2991,7 +3394,7 @@ def _load_or_generate_benchmarks(
                         catalog=catalog, schema=schema,
                     )
                     if len(new_benchmarks) > max_benchmark_count:
-                        from genie_space_optimizer.optimization.evaluation import _truncate_benchmarks
+                        from genie_space_optimizer.optimization.benchmarking import _truncate_benchmarks
                         new_benchmarks = _truncate_benchmarks(new_benchmarks, max_benchmark_count)
                     return new_benchmarks, False
 
@@ -3000,19 +3403,20 @@ def _load_or_generate_benchmarks(
                 + "-" * 52
             )
             logger.info(
-                "UC dataset has %d valid benchmarks but missing %d curated Genie space questions. "
+                "UC dataset has %d valid benchmarks but missing %d curated Genie Agent questions. "
                 "Re-generating to include them.",
                 len(valid_existing), len(missing_curated),
             )
         else:
             print(
-                f"  Decision: RE-GENERATE (only {len(valid_existing)} valid, need >=5)\n"
+                f"  Decision: RE-GENERATE (only {len(valid_existing)} valid, "
+                f"need >={MIN_VALID_BENCHMARK_COUNT})\n"
                 + "-" * 52
             )
             logger.info(
-                "Only %d valid benchmarks remain after re-validation (need >=5). "
+                "Only %d valid benchmarks remain after re-validation (need >=%d). "
                 "Re-generating from scratch.",
-                len(valid_existing),
+                len(valid_existing), MIN_VALID_BENCHMARK_COUNT,
             )
     else:
         print(
@@ -3022,7 +3426,7 @@ def _load_or_generate_benchmarks(
         )
 
     logger.info(
-        "Generating benchmarks: %d curated from Genie space + synthetic to reach %d",
+        "Generating benchmarks: %d curated from Genie Agent + synthetic to reach %d",
         len(genie_benchmarks), target_benchmark_count,
     )
     write_stage(
@@ -3052,6 +3456,6 @@ def _load_or_generate_benchmarks(
         catalog=catalog, schema=schema,
     )
     if len(benchmarks) > max_benchmark_count:
-        from genie_space_optimizer.optimization.evaluation import _truncate_benchmarks
+        from genie_space_optimizer.optimization.benchmarking import _truncate_benchmarks
         benchmarks = _truncate_benchmarks(benchmarks, max_benchmark_count)
     return benchmarks, True

@@ -24,10 +24,10 @@ interface StepDef {
 }
 
 const STEPS: StepDef[] = [
-  { icon: Shield, label: "Validating permissions", description: "Checking access to Genie Space and UC catalog" },
-  { icon: FileText, label: "Preparing configuration", description: "Snapshotting current space config and benchmarks" },
+  { icon: Shield, label: "Validating permissions", description: "Checking access to Genie Agent and UC catalog" },
+  { icon: FileText, label: "Preparing configuration", description: "Snapshotting current agent config and benchmarks" },
   { icon: Upload, label: "Submitting job", description: "Creating Databricks workflow run" },
-  { icon: Rocket, label: "Launching pipeline", description: "Starting the 6-task optimization DAG" },
+  { icon: Rocket, label: "Launching pipeline", description: "Starting the 4-task optimization DAG: 00 intake & snapshot -> 01 benchmark QC & repair -> 02 optimize -> 03 publish & audit" },
   { icon: CheckCircle, label: "Pipeline started", description: "Redirecting to run detail…" },
 ]
 
@@ -44,13 +44,18 @@ export function OptimizationLoadingStepper({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const navigateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Reset the stepper when the dialog closes. Adjusting state during render in
+  // response to a prop change is the React-blessed alternative to resetting in
+  // an effect (which triggers a cascading render).
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen)
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen)
+    if (!isOpen) setActiveStep(0)
+  }
+
   useEffect(() => {
-    if (!isOpen) {
-      setActiveStep(0)
-      return
-    }
-    if (error) return
-    if (isComplete) return
+    if (!isOpen || error || isComplete) return
 
     if (activeStep < STEPS.length - 2) {
       timerRef.current = setTimeout(() => {
@@ -64,7 +69,6 @@ export function OptimizationLoadingStepper({
 
   useEffect(() => {
     if (isComplete && isOpen) {
-      setActiveStep(STEPS.length - 1)
       navigateTimerRef.current = setTimeout(() => {
         onNavigate()
       }, POST_COMPLETE_DELAY_MS)
@@ -75,6 +79,10 @@ export function OptimizationLoadingStepper({
   }, [isComplete, isOpen, onNavigate])
 
   if (!isOpen) return null
+
+  // On completion, show the final step without storing it in state (avoids a
+  // setState-in-effect); the animate-up loop above stops at STEPS.length - 2.
+  const displayStep = isComplete ? STEPS.length - 1 : activeStep
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -99,10 +107,10 @@ export function OptimizationLoadingStepper({
         <div className="space-y-1 py-2">
           {STEPS.map((step, i) => {
             const StepIcon = step.icon
-            const isDone = i < activeStep
-            const isActive = i === activeStep && !error
-            const isFailed = i === activeStep && !!error
-            const isFuture = i > activeStep
+            const isDone = i < displayStep
+            const isActive = i === displayStep && !error
+            const isFailed = i === displayStep && !!error
+            const isFuture = i > displayStep
 
             return (
               <div

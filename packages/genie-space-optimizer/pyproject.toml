@@ -4,18 +4,13 @@ dynamic = ["version"]
 description = "Add your description here"
 requires-python = ">=3.10"
 dependencies = [
-    "fastapi==0.135.2",
-    "pydantic-settings==2.13.1",
-    "uvicorn==0.42.0",
-    "databricks-sdk==0.102.0",
+    "databricks-sdk==0.117.0",
     "mlflow[databricks]==3.11.1",
     "openai==2.30.0",
     "litellm==1.82.6",
     "pyyaml==6.0.3",
     "pydantic==2.12.5",
     "pandas==2.3.3",
-    "sqlmodel==0.0.37",
-    "psycopg[binary,pool]==3.3.3",
     "sqlglot==30.0.3",
 ]
 
@@ -41,10 +36,7 @@ testpaths = ["tests"]
 
 [tool.ty.src]
 include = ["src/**"]
-exclude = [
-    "genie_space_optimizer/genie_optimizer_skills/**",
-    ".venv/**",
-]
+exclude = [".venv/**"]
 
 [[tool.ty.overrides]]
 include = ["src/genie_space_optimizer/optimization/**"]
@@ -52,32 +44,12 @@ include = ["src/genie_space_optimizer/optimization/**"]
 [tool.ty.overrides.rules]
 possibly-missing-attribute = "ignore"
 
-[tool.apx.metadata]
-app-name = "genie-space-optimizer"
-app-slug = "genie_space_optimizer"
-app-entrypoint = "genie_space_optimizer.backend.app:app"
-api-prefix = "/api/genie"
-metadata-path = "src/genie_space_optimizer/_metadata.py"
-
-[tool.apx.ui]
-root = "src/genie_space_optimizer/ui"
-
-[tool.apx.ui.registries]
-"@animate-ui" = "https://animate-ui.com/r/{name}.json"
-"@ai-elements" = "https://registry.ai-sdk.dev/{name}.json"
-"@svgl" = "https://svgl.app/r/{name}.json"
-
 [build-system]
 requires = ["hatchling==1.29.0", "uv-dynamic-versioning==0.13.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
-
-[[tool.uv.index]]
-name = "databricks-proxy"
-url = "https://pypi-proxy.dev.databricks.com/simple/"
-default = true
 
 [tool.uv-dynamic-versioning]
 vcs = "git"
@@ -88,7 +60,3 @@ path = "src/genie_space_optimizer/_version.py"
 template = '''
 version = "{version}"
 '''
-
-[tool.hatch.build]
-artifacts = ["src/genie_space_optimizer/__dist__", "src/genie_space_optimizer/_metadata.py"]
-exclude = ["src/genie_space_optimizer/ui"]

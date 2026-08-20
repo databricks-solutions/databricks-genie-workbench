@@ -27,6 +27,7 @@ from .apply import apply_optimization
 from .config import IntegrationConfig
 from .discard import discard_optimization
 from .levers import get_default_lever_order, get_lever_info
+from .revert import preview_revert_options, revert_optimization
 from .trigger import trigger_optimization
 from .types import ActionResult, TriggerResult
 
@@ -37,6 +38,8 @@ __all__ = [
     "trigger_optimization",
     "apply_optimization",
     "discard_optimization",
+    "revert_optimization",
+    "preview_revert_options",
     "get_lever_info",
     "get_default_lever_order",
 ]

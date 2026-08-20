@@ -40,7 +40,7 @@ export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, onAction
           <span className="text-2xl text-muted font-bold">?</span>
         </div>
         <h3 className="text-lg font-semibold text-primary mb-2">Not yet scanned</h3>
-        <p className="text-muted mb-6">Run an IQ scan to assess this Genie Space's maturity</p>
+        <p className="text-muted mb-6">Run an IQ scan to assess this Genie Agent's maturity</p>
         <button
           onClick={onScan}
           disabled={isScanning}

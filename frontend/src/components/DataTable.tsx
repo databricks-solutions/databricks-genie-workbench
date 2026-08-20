@@ -81,7 +81,7 @@ export function DataTable({
           {data.length} row{data.length !== 1 ? "s" : ""}
         </span>
         {truncated && (
-          <span className="text-warning">
+          <span className="text-warning-foreground">
             Results truncated
           </span>
         )}

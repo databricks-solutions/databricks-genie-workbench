@@ -1,7 +1,15 @@
 import { Badge } from "@/components/ui/badge"
 import { DataTable } from "@/components/DataTable"
 import type { GSOQuestionDetail, SqlExecutionColumn } from "@/types"
+import { questionState, questionStateLabel, formatAssessmentReason } from "@/lib/assessment"
 import { useMemo } from "react"
+
+const STATE_BADGE: Record<string, "success" | "danger" | "warning" | "secondary"> = {
+  passing: "success",
+  failing: "danger",
+  needs_review: "warning",
+  excluded: "secondary",
+}
 
 interface QuestionDetailProps {
   question: GSOQuestionDetail | null
@@ -41,6 +49,17 @@ function parseCsvSample(csv: string | null | undefined, columnNames?: string[]):
 }
 
 export function QuestionDetail({ question }: QuestionDetailProps) {
+  // Hooks must run unconditionally (Rules of Hooks). parseCsvSample already
+  // no-ops on null/undefined, so it is safe to compute before the early return.
+  const genieParsed = useMemo(
+    () => parseCsvSample(question?.genie_sample, question?.genie_columns),
+    [question?.genie_sample, question?.genie_columns],
+  )
+  const gtParsed = useMemo(
+    () => parseCsvSample(question?.gt_sample, question?.gt_columns),
+    [question?.gt_sample, question?.gt_columns],
+  )
+
   if (!question) {
     return (
       <div className="flex items-center justify-center h-64 text-muted text-sm">
@@ -49,31 +68,39 @@ export function QuestionDetail({ question }: QuestionDetailProps) {
     )
   }
 
-  const genieParsed = useMemo(
-    () => parseCsvSample(question.genie_sample, question.genie_columns),
-    [question.genie_sample, question.genie_columns],
-  )
-  const gtParsed = useMemo(
-    () => parseCsvSample(question.gt_sample, question.gt_columns),
-    [question.gt_sample, question.gt_columns],
-  )
   const hasResultTables = genieParsed.data.length > 0 || gtParsed.data.length > 0
+  const state = questionState(question)
+  const reasons = question.assessment_reasons ?? []
 
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        {question.excluded ? (
-          <Badge variant="secondary">Excluded</Badge>
-        ) : (
-          <Badge variant={question.passed ? "success" : "danger"}>
-            {question.passed ? "Pass" : "Fail"}
-          </Badge>
-        )}
+      <div className="flex items-center gap-3 flex-wrap">
+        <Badge variant={STATE_BADGE[state] ?? "secondary"}>
+          {questionStateLabel(state)}
+        </Badge>
         {question.match_type && (
           <span className="text-xs text-muted font-mono">{question.match_type}</span>
         )}
       </div>
+
+      {/* Assessment reasons (replaces the retired per-judge verdicts) */}
+      {reasons.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2">Assessment reasons</h4>
+          <div className="flex flex-wrap gap-1.5">
+            {reasons.map((r) => (
+              <span
+                key={r}
+                title={r}
+                className="inline-flex items-center rounded-full border border-default bg-elevated/50 px-2.5 py-0.5 text-xs font-medium text-primary"
+              >
+                {formatAssessmentReason(r)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Question text */}
       <div>

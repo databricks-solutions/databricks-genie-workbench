@@ -15,7 +15,7 @@ set -euo pipefail
 #   8. Writes .env.deploy
 #   9. Runs deploy.sh
 #  10. Resolves app service principal
-#  11. Optionally grants SP access to Genie Spaces
+#  11. Optionally grants SP access to Genie Agents
 #  12. Prints summary with automated/manual sections
 # ---------------------------------------------------------------------------
 
@@ -134,6 +134,7 @@ _header "Step 1: Checking prerequisites"
 # _preflight_check_tools verifies presence + minimum versions for every
 # required tool in a single pass and exits if anything is wrong.
 _preflight_check_tools
+_preflight_check_python_dependency_sources
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 2: Databricks profile
@@ -417,10 +418,12 @@ _info "Users can choose other READY chat serving endpoints inside the app."
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 5: MLflow Tracing (optional)"
 
-_info "MLflow tracing is observability for the app's AI agents."
-_info "When enabled, the Create Agent and Fix Agent log their LLM requests,"
-_info "responses, token counts, and latency to an MLflow experiment so you can"
-_info "debug agent behavior and review what happened after a run."
+_info "MLflow tracing is observability for the app's in-app AI agents."
+_info "When enabled, the Create Agent logs its LLM requests, responses, token counts,"
+_info "and latency to this MLflow experiment so you can debug agent behavior."
+_info "Auto-Optimize traces are separate: the GSO job always writes them to its own"
+_info "per-space experiment (/Shared/genie-space-optimizer/<space_id>/<domain>),"
+_info "regardless of this choice."
 echo ""
 _info "This is optional because it does not affect core app functionality."
 _info "If you skip it, Genie Workbench still creates, scans, and optimizes spaces;"
@@ -797,9 +800,9 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 11: Genie Space permissions (optional)
+# Step 11: Genie Agent permissions (optional)
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 11: Genie Space access"
+_header "Step 11: Genie Agent access"
 
 _info "The app uses On-Behalf-Of (OBO) auth, so users see their own spaces."
 _info "However, the service principal needs explicit grants for fallback access."
@@ -807,19 +810,19 @@ echo ""
 
 GENIE_SPACES_GRANTED=0
 
-_prompt_yn GRANT_SPACES "Grant the app access to all Genie Spaces you can edit?" "Y"
+_prompt_yn GRANT_SPACES "Grant the app access to all Genie Agents you can edit?" "Y"
 
 if [ "$GRANT_SPACES" = "Y" ] && [ -n "$SP_CLIENT_ID" ]; then
-    _info "Discovering your Genie Spaces..."
+    _info "Discovering your Genie Agents..."
 
-    # List Genie Spaces and grant SP access
+    # List Genie Agents and grant SP access
     GENIE_SPACES_GRANTED=$(python3 -c "
 import json, subprocess, sys
 
 profile = '$PROFILE'
 sp_id = '$SP_CLIENT_ID'
 
-# List all Genie Spaces visible to the deploying user
+# List all Genie Agents visible to the deploying user
 try:
     result = subprocess.run(
         ['databricks', 'api', 'get', '/api/2.0/genie/spaces', '--profile', profile, '-o', 'json'],
@@ -828,7 +831,7 @@ try:
     data = json.loads(result.stdout)
     spaces = data if isinstance(data, list) else data.get('spaces', data.get('genie_spaces', []))
 except Exception as e:
-    print(f'Could not list Genie Spaces: {e}', file=sys.stderr)
+    print(f'Could not list Genie Agents: {e}', file=sys.stderr)
     spaces = []
 
 if not spaces:
@@ -852,7 +855,7 @@ for space in spaces:
             ]
         })
         subprocess.run(
-            ['databricks', 'api', 'put', f'/api/2.0/permissions/dashboards.genie/{space_id}',
+            ['databricks', 'api', 'put', f'/api/2.0/permissions/genie/{space_id}',
              '--profile', profile, '--json', perm_payload],
             capture_output=True, text=True, check=True,
         )
@@ -868,15 +871,15 @@ print(granted)
     fi
 
     if [ "$GENIE_SPACES_GRANTED" -gt 0 ]; then
-        _ok "Granted access to $GENIE_SPACES_GRANTED Genie Space(s)."
-        AUTOMATED+=("Genie Space SP access ($GENIE_SPACES_GRANTED spaces)")
+        _ok "Granted access to $GENIE_SPACES_GRANTED Genie Agent(s)."
+        AUTOMATED+=("Genie Agent SP access ($GENIE_SPACES_GRANTED spaces)")
     else
-        _warn "No Genie Spaces were granted. You can grant them manually later."
+        _warn "No Genie Agents were granted. You can grant them manually later."
     fi
 elif [ -z "$SP_CLIENT_ID" ]; then
     _warn "Skipped — no SP resolved."
 else
-    _info "Skipping Genie Space grants. You can grant them manually later."
+    _info "Skipping Genie Agent grants. You can grant them manually later."
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -930,9 +933,9 @@ fi
 
 if [ "$GENIE_SPACES_GRANTED" -eq 0 ]; then
     if [ "$GRANT_SPACES" = "Y" ] && [ -n "$SP_CLIENT_ID" ]; then
-        echo -e "    ${YELLOW}⚠${NC} No existing Genie Spaces were granted to the app SP"
+        echo -e "    ${YELLOW}⚠${NC} No existing Genie Agents were granted to the app SP"
     elif [ "$GRANT_SPACES" != "Y" ]; then
-        echo -e "    ${YELLOW}○${NC} Existing Genie Space SP grants skipped"
+        echo -e "    ${YELLOW}○${NC} Existing Genie Agent SP grants skipped"
     fi
 fi
 
@@ -955,7 +958,7 @@ echo -e "  ${BOLD}Optional follow-up:${NC}"
 echo "    • Auto-Optimize data access: if a run reports missing table access,"
 echo "      open Auto-Optimize → Settings to identify schemas, then grant:"
 echo -e "      ${CYAN}GRANT SELECT ON SCHEMA <catalog>.<schema> TO \`${SP_NAME_FOR_DISPLAY}\`${NC}"
-echo "    • Future Genie Spaces: share new spaces with '${SP_NAME_FOR_DISPLAY}'"
+echo "    • Future Genie Agents: share new spaces with '${SP_NAME_FOR_DISPLAY}'"
 echo "      when you want SP fallback or Auto-Optimize support."
 if [ -z "$LAKEBASE_INSTANCE" ]; then
     echo "    • Persistent history: set GENIE_LAKEBASE_INSTANCE in .env.deploy,"

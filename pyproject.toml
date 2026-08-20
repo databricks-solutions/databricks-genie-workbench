@@ -1,10 +1,10 @@
 [project]
 name = "genie-workbench"
 version = "0.1.0"
-description = "Unified Databricks Genie Space management platform"
+description = "Unified Databricks Genie Agent management platform"
 requires-python = ">=3.11"
 dependencies = [
-    "databricks-sdk==0.102.0",
+    "databricks-sdk==0.117.0",
     "pydantic==2.12.5",
     "python-dotenv==1.2.2",
     "mlflow==3.11.1",

@@ -54,6 +54,32 @@ def eval_llm_timeout_seconds() -> int:
 _openai_client_cache: dict[str, Any] = {}
 
 
+def _message_content_text(content: Any) -> str:
+    """Normalize OpenAI-compatible message content into plain text.
+
+    Databricks serving endpoints may return either the traditional string or
+    structured content blocks.  Joining block text without a separator keeps
+    JSON responses valid when an endpoint splits one document across blocks.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        return "".join(_message_content_text(part) for part in content)
+    if isinstance(content, dict):
+        for key in ("text", "content", "value"):
+            if key in content:
+                return _message_content_text(content[key])
+        return ""
+
+    for attribute in ("text", "content", "value"):
+        value = getattr(content, attribute, None)
+        if value is not None and value is not content:
+            return _message_content_text(value)
+    return str(content)
+
+
 def _resolve_bearer_token(wc: "WorkspaceClient") -> str:
     """Extract a bearer token from the workspace client's auth chain.
 
@@ -114,6 +140,8 @@ def call_llm(
     max_retries: int = LLM_MAX_RETRIES,
     temperature: float = LLM_TEMPERATURE,
     max_tokens: int | None = None,
+    response_format: dict[str, Any] | None = None,
+    prompt_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """Call an LLM via the OpenAI SDK with retry + exponential backoff.
 
@@ -127,6 +155,17 @@ def call_llm(
     not sent to Databricks, because some supported reasoning/frontier
     endpoints reject the parameter.
     """
+    from genie_space_optimizer.optimization.wide_schema_prompt import fit_messages
+
+    messages, pack_stats = fit_messages(messages)
+    if prompt_metadata:
+        pack_stats.update({
+            key: value
+            for key, value in prompt_metadata.items()
+            if key in {"plan_hash", "inventory_hash", "included_counts", "omitted_counts"}
+        })
+    logger.info("GSO LLM request packed: %s", pack_stats)
+
     client = get_openai_client(w)
     model = get_llm_endpoint()
 
@@ -138,20 +177,38 @@ def call_llm(
     # Do not send temperature: Claude Opus 4.7/4.8 and some GPT 5.x endpoints reject it.
     if max_tokens is not None:
         call_kwargs["max_tokens"] = max_tokens
+    if response_format is not None:
+        call_kwargs["response_format"] = response_format
 
     last_err: Exception | None = None
-    for attempt in range(max_retries):
+    retried_without_response_format = False
+    total_attempts = max_retries + (1 if response_format is not None else 0)
+    for attempt in range(total_attempts):
         try:
             response = client.chat.completions.create(**call_kwargs)
             if not response.choices:
                 raise ValueError("LLM response had no choices")
-            content = response.choices[0].message.content
-            if not content or not content.strip():
+            content = _message_content_text(response.choices[0].message.content).strip()
+            if not content:
                 raise ValueError("LLM response content is empty")
-            return str(content).strip(), response
+            try:
+                response._gso_prompt_pack_stats = pack_stats
+            except Exception:
+                pass
+            return content, response
         except Exception as exc:
+            if response_format is not None and not retried_without_response_format:
+                message = str(exc).lower()
+                if "response_format" in message or "json" in message:
+                    logger.info(
+                        "LLM endpoint rejected response_format; retrying without it: %s",
+                        exc,
+                    )
+                    call_kwargs.pop("response_format", None)
+                    retried_without_response_format = True
+                    continue
             last_err = exc
-            if attempt < max_retries - 1:
+            if attempt < total_attempts - 1:
                 time.sleep(2**attempt)
 
     raise last_err  # type: ignore[misc]

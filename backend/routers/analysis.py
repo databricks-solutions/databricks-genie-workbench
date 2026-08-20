@@ -1,5 +1,5 @@
 """
-REST API endpoints for Genie Space operations.
+REST API endpoints for Genie Agent operations.
 
 Provides endpoints for fetching/parsing spaces and application settings.
 """
@@ -40,7 +40,7 @@ def _safe_error(e: Exception, status_code: int, context: str) -> HTTPException:
 
 # Request/Response models
 class FetchSpaceRequest(BaseModel):
-    """Request to fetch a Genie Space."""
+    """Request to fetch a Genie Agent."""
 
     genie_space_id: str = Field(
         ..., min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9\-_]+$"
@@ -48,7 +48,7 @@ class FetchSpaceRequest(BaseModel):
 
 
 class FetchSpaceResponse(BaseModel):
-    """Response containing the fetched Genie Space data."""
+    """Response containing the fetched Genie Agent data."""
 
     genie_space_id: str
     space_data: dict
@@ -71,7 +71,7 @@ class SettingsResponse(BaseModel):
 
 @router.post("/space/fetch", response_model=FetchSpaceResponse)
 async def fetch_space(request: FetchSpaceRequest):
-    """Fetch and parse a Genie Space by ID.
+    """Fetch and parse a Genie Agent by ID.
 
     Returns the space data.
     """
@@ -83,12 +83,12 @@ async def fetch_space(request: FetchSpaceRequest):
             space_data=space_data,
         )
     except Exception as e:
-        raise _safe_error(e, 400, "Failed to fetch Genie space")
+        raise _safe_error(e, 400, "Failed to fetch Genie Agent")
 
 
 @router.post("/space/parse", response_model=FetchSpaceResponse)
 async def parse_space_json(request: ParseJsonRequest):
-    """Parse pasted Genie Space JSON.
+    """Parse pasted Genie Agent JSON.
 
     Accepts the raw API response from GET /api/2.0/genie/spaces/{id}?include_serialized_space=true
     Requires valid JSON format.
