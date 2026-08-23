@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D7 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D8 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -17,7 +17,7 @@
    cp cursor-prompt-playbook-mv-advisor.md docs/design/mv-advisor-playbook.md
    git add docs/design && git commit -m "docs: metric view advisor design POV + build playbook"
    ```
-   Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D7**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
+   Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D8**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
 2. **Create the Cursor rules file INSIDE the repo** — `databricks-genie-workbench/.cursor/rules/mv-advisor.mdc`, not the workspace root's `.cursor/`. A workspace-level rules file works in your session but is unversioned: it doesn't travel with the branch, doesn't survive a fresh clone, and gives a teammate running these prompts none of the guardrails. Commit it with the design docs. *(This needs a `.gitignore` change, done in the Prompt 1 follow-up: the repo ignored `.cursor/`, so the in-repo copy was just as unversioned as a workspace-root one. `.gitignore` now reads `.cursor/*` plus `!.cursor/rules/`, because a re-include cannot reach inside an excluded parent directory.)* This keeps every prompt honest without repeating the guardrails each time:
 
    ```
@@ -25,6 +25,11 @@
    description: Non-negotiables for the metric view advisor feature
    alwaysApply: true
    ---
+   Paths below are under databricks-genie-workbench/ from this workspace root.
+   Repo reality (and the gap report) wins over older POV wording. Do not
+   revive taskValues, condition tasks, run_if, extra job tasks, or a second
+   eval adapter.
+
    READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
    - Before modifying ANY file, you must first output a PLAN section containing:
      (1) the exact file paths you intend to modify or create,
@@ -59,6 +64,9 @@
    - Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
      AS AMENDED BY docs/design/mv-advisor-gap-report.md. Where they disagree,
      the gap report wins.
+   - Never invent API endpoints, table names, task names, wheel entrypoints,
+     or config keys. Read existing code first. If a name is not in the repo,
+     ASK.
    - The GSO job is a LINEAR FOUR-TASK NOTEBOOK DAG: intake_and_snapshot →
      benchmark_qc_and_repair → optimize → publish_and_audit. Do NOT add tasks,
      condition tasks, run_if edges, or wheel entry points. GSO v2 playbook decision D9 (a different D-namespace from this playbook's
@@ -94,6 +102,8 @@
      reverts — writes it already performs as SP today.
    - Do not reuse GET /permissions/{space_id} for entitlement: it probes the
      SP's privileges, not the user's. The entitlement probe is new OBO code.
+   - On entitlement/consent mismatch, DOWNGRADE to suggest_only — never
+     upgrade, never fall back to a different schema.
    - MLflow is decommissioned in GSO except tracing. No experiments, registry,
      or judges. Grading comes ONLY from native benchmark eval runs.
    - Backend routes live under the /api/auto-optimize router prefix; the
@@ -105,6 +115,23 @@
      writing a second scanner. No literals, sample values, or PII in shipped
      metadata, DDL comments, or logs.
    - Materialization is a separate consent (mv_materialize); never bundled.
+   - GENERATED YAML conforms to the generation quality standard in POV Part 4
+     (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
+     window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
+     nested joins only on DBR>=17.1 with profiling-proven 1:1 keys ->
+     subquery-source fallback); NEVER a flat sibling join referencing another
+     join alias; SCD2 joins carry is_current=true; rely.at_most_one_match only
+     with proven uniqueness; format types from the closed set (percentage not
+     percent, number not decimal); additive measures aggregate fact columns.
+   - MV comments use the structured format (PURPOSE/BEST FOR/NOT FOR/...).
+     BEST FOR lines are PARAPHRASED intents — verbatim benchmark question text
+     in any shipped MV metadata contaminates the benchmark and is a firewall
+     violation, same class as literals/PII.
+   - Updates to an existing metric view use ALTER VIEW ... AS $$...$$, never
+     CREATE OR REPLACE or drop+create (replace deletes UC grants).
+   - Post-create: DESCRIBE EXTENDED must show Type: METRIC_VIEW. Validation
+     queries use MEASURE(`name`) with GROUP BY — never SELECT *, never a
+     re-typed aggregate. Fan-out smoke test on every join.
    - Every new module ships with pytest tests in the same PR-sized commit.
      The repo has NO test CI — run the suites locally and report results in
      every VERIFY section.
@@ -197,9 +224,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D7)
+## Decisions register (MV-D1–MV-D8)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution and MV-D8 with the generation quality standard; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -216,6 +243,8 @@ The recon surfaced five structural conflicts, not naming drift. These decisions 
 **MV-D7 — Stateful MV entities get dedicated tables; run-scoped blobs stay in `genie_opt_artifacts`.** Three tables join `_ALL_DDL`: `genie_opt_mv_candidates` (partitioned by target_space_id — the upsert key is space-scoped and a candidate outlives the run that proposed it under MV-D1), `genie_opt_mv_consents` (unpartitioned — run_id is NULL at probe time and filled at trigger), and `genie_opt_mv_created_objects` (partitioned by run_id; merge key run_id + suggestion_id). The rendered DDL text remains a `genie_opt_artifacts` row under a new artifact_kind, with `content_hash` set to the dedup fingerprint so the stores cross-reference. Rationale: all three entities carry mutable, cross-run-lifecycle state that a run-partitioned append-style handoff table cannot host without fighting its own partitioning. Supersedes POV Appendix A Deltas 4 and 6 where they assert otherwise. Process rule established alongside it: **appendices record decisions; they do not make them** — any new architecture call surfaces here as an MV-D entry first, then the appendix cites it.
 
 *As implemented (Prompt 1):* accessors live in `optimization/mv_state.py`, one module rather than an extension of the already-large `optimization/state.py`, following the `scan_snapshots.py` precedent for feature-scoped persistence. Every writer goes through a new `delta_helpers.merge_row` primitive, so the §7.9 idempotency key `sha256(space_id | canonical_measure_expr | sorted_source_set)` is enforced as a single-statement upsert-on-conflict rather than a read-then-insert a retry can duplicate. JSON payload columns carry a `_json` suffix in storage and travel base64-encoded; the accessor signatures use the POV Part 4 field names (`score_components`, `evidence`, `provenance`, `alternatives`, `conflicts`, `probe_results`) verbatim. POV Part 4's proposal `type` is stored as `candidate_type` to avoid shadowing the builtin at the API. `reverified_at_trigger` is a `TIMESTAMP` (NULL = never re-verified), and `updated_at` sits on all three tables. `lift_report_json` is deferred to an `ADDITIVE_COLUMN_MIGRATIONS` entry in Prompt 7, when the lift report exists to store. Three judgment items raised in the Prompt 1 VERIFY were reviewed and approved in the Prompt 1 follow-up and are now settled: decision-column ownership (`upsert_mv_candidate` never writes them; `record_mv_candidate_decision` owns them, pinned by `test_re_proposing_does_not_resurrect_a_rejected_candidate`), the "Resolved by MV-D7" pointers added to the gap report, and the user-facing table rows in `docs/docs/features/auto-optimize.md` with their empty-table-is-not-a-failed-run framing.
+
+**MV-D8 — Generation quality standard adopted (metric-views-patterns v5.2).** All engine-emitted YAML is rendered and validated by one module (`mv_yaml`, Prompt 5.5) enforcing: v1.1 unsupported-field and format-type lints; the multi-hop decision ladder (denormalize → nested joins on DBR ≥ 17.1 with profiling-proven 1:1 keys → subquery-source fallback) with a hard transitive-join gate; SCD2 `is_current` guards; `rely.at_most_one_match` only on proven uniqueness; `MEASURE()`-composed derived metrics, `FILTER`-clause conditional counts, and Fixed-LOD percent-of-total (never `MEASURE()/MEASURE()`); structured comments with **paraphrased** BEST FOR lines (verbatim benchmark text is a firewall violation — it contaminates the benchmark the view is graded by); `ALTER VIEW` for all updates (grants-preserving); post-create `DESCRIBE EXTENDED` type assertion; `MEASURE()`-syntax validation queries with a fan-out smoke test; a copy-ready `GRANT SELECT` checklist surfaced, never auto-applied; and capability rows (DBR 17.3/17.1/18.1 floors) in the entitlement probe that downgrade the join strategy rather than emit unplannable YAML. Origin: the metric-views-patterns skill (v5.2, 2026-06-06); the sample YAML in POV Part 4 was itself corrected under this standard (its customer join was transitive).
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -328,6 +357,12 @@ module (dialect="databricks"):
   incl. SUM(CASE WHEN ...)), each with source columns and tables.
 - extract_dimensions(sql): GROUP BY sets; extract_filters; extract_join_keys.
 - fingerprint(expr) -> sha256 per the POV's dedup_fingerprint format.
+- classify_shapes(corpus): tag recurring patterns the generator consumes —
+  RATIO (SUM(x)/SUM(y) over the same grain -> emit atomic measures + a
+  MEASURE()-composed derived measure), CONDITIONAL_COUNT
+  (SUM(CASE WHEN c THEN 1 END) -> COUNT(1) FILTER (WHERE c)), and
+  PCT_OF_TOTAL (a windowed total in the denominator -> Fixed-LOD dimension
+  + ANY_VALUE(), NEVER MEASURE()/MEASURE() which always yields 1.0).
 - corpus_scan(iterable of (sql, provenance)) -> fingerprints with recurrence
   counts, distinct provenance ids, first/last seen.
 - FIREWALL: canonicalized output must contain NO literal values; add an
@@ -388,6 +423,58 @@ Per POV Part 7.3.1 and Part 5, implement the entitlement probe + consent:
   code path issues DDL.
 ```
 
+### Prompt 5.5 — YAML generator and static validator (MV-D8)
+
+```
+Per the generation quality standard in POV Part 4 (MV-D8 in the playbook
+register), add mv_yaml.py to the GSO package: the ONLY place metric view YAML
+is rendered, plus its static validator. Both the advisor (Prompt 6) and the
+backend create path (Prompt 9) call these; neither renders YAML itself.
+
+generate(candidate, profiling) rules — all normative:
+- version "1.1" quoted. Never emit: name, time_dimension, top-level
+  window_measures, join_type, or table inside joins. 'on' key quoted.
+- Multi-hop decision ladder, chosen from GSO profiling (join-key uniqueness,
+  denormalized-column availability, warehouse DBR): (1) denormalized column on
+  the first-hop dimension; (2) nested joins ONLY if DBR >= 17.1 AND every
+  intermediate key is proven 1:1 (nested columns referenced as
+  parent_join.child_join.column); (3) subquery-source pre-join with explicit
+  is_current guards and uniqueness enforced in the subquery. Record which rung
+  was chosen and why on the proposal (join_strategy + evidence).
+- rely.at_most_one_match: true only when profiling proves the dimension key
+  unique; omit otherwise (it is unvalidated at runtime and fan-out inflates
+  SUM/COUNT).
+- SCD2: any joined dimension with an is_current-style column gets
+  AND {dim}.is_current = true in the join.
+- Additive measures must aggregate source (fact) columns; a measure
+  aggregating a joined dimension column is rejected into the CONFLICT path.
+- Shapes from Prompt 3 classify_shapes: RATIO -> atomic measures +
+  MEASURE()-composed derived measure; CONDITIONAL_COUNT -> COUNT(1) FILTER
+  (WHERE ...); PCT_OF_TOTAL -> Fixed-LOD dimension (SUM(x) OVER ()) read via
+  ANY_VALUE(), never MEASURE()/MEASURE().
+- format.type from the closed set {byte,currency,date,date_time,number,
+  percentage} — reject percent/decimal/integer at generation time.
+- Structured comment: PURPOSE / BEST FOR / NOT FOR / DIMENSIONS / MEASURES /
+  SOURCE / JOINS / NOTE. BEST FOR = PARAPHRASED question intents (never
+  verbatim benchmark text — extend the leakage firewall check to reject any
+  comment line that matches a benchmark question at >0.9 normalized
+  similarity). NOT FOR cross-references the adjacent MV from the dedup gate
+  when one exists. 3-10 synonyms per field, <=255 chars each.
+
+validate(yaml_text) — static, no warehouse:
+- Parses; unsupported-field lint; format-type lint; transitive-join detector
+  (port the left-head-of-'on' check: the left side of every first-level join's
+  'on' must resolve to source, and every deeper level to its parent alias);
+  synonyms limits; comment structure present; capability check against the
+  probe's runtime rows (downgrade nested->subquery rather than emit
+  unplannable YAML).
+
+Tests: golden YAML per ladder rung; a transitive sibling join MUST be caught;
+percent/decimal MUST be rejected; PCT_OF_TOTAL must not render as
+MEASURE()/MEASURE(); a benchmark-verbatim BEST FOR line MUST be rejected;
+round-trip parse with sqlglot(dialect="databricks") on the wrapping DDL.
+```
+
 ---
 
 ## Phase 2 — Job integration
@@ -411,10 +498,13 @@ module under the GSO package following its existing module layout.
 - Pipeline: load iteration-0 generated SQL + benchmark SQL from the
   genie_opt_* run tables -> corpus_scan (Prompt 3) -> estate MV index via
   DESCRIBE ... AS JSON over in-scope schemas -> score + dedup (Prompt 4) ->
-  persist to genie_opt_mv_candidates -> write the DDL artifact (one SQL text
-  blob, header comments citing evidence, NO literals — run it through the
-  extended leakage.py scan first) as a row in genie_opt_artifacts, matching
-  how existing artifacts are written.
+  persist to genie_opt_mv_candidates -> render YAML EXCLUSIVELY through
+  mv_yaml.generate + validate (Prompt 5.5; the advisor never hand-builds
+  YAML) -> write the DDL artifact (one SQL text blob, header comments citing
+  evidence, NO literals — extended leakage.py scan, including the
+  benchmark-verbatim comment check) as a row in genie_opt_artifacts, matching
+  how existing artifacts are written. Persist join_strategy and its evidence
+  on each candidate.
 - The advisor ONLY proposes, in every mode.
 - Isolation per the rules: the whole phase in try/except; on any exception,
   persist a status row (phase=mv_advisor, status=FAILED, reason) and return
@@ -519,9 +609,18 @@ stays SP via backend/job_launcher.py.
   using the backend's existing OBO SQL-execution path (find how the backend
   runs warehouse SQL today and reuse it; if none exists, use the SDK statement
   execution API via require_obo_workspace_client and say so); (3) CREATE VIEW
-  ... WITH METRICS in the consented schema, record genie_opt_mv_created_objects
-  status=CREATED; (4) pass mv_attach_views + mv_consent_id through
-  job_launcher's parameter map. Any create failure -> that suggestion drops
+  ... WITH METRICS in the consented schema — YAML comes from mv_yaml (Prompt
+  5.5), never rendered inline — then DESCRIBE EXTENDED and assert
+  Type: METRIC_VIEW before recording genie_opt_mv_created_objects
+  status=CREATED; semantic validation queries use MEASURE(`name`) with
+  GROUP BY plus the fan-out row-count smoke test; (4) pass mv_attach_views +
+  mv_consent_id through job_launcher's parameter map, and attach a copy-ready
+  GRANT SELECT checklist for the space's audience to the run record (never
+  auto-granted). Any subsequent edit endpoint for an engine-created MV must
+  use ALTER VIEW ... AS $$...$$ (grants-preserving), never CREATE OR REPLACE.
+  The probe (Prompt 5) additionally returns capability rows (DBR 17.3+
+  create/edit, 17.1+ nested joins, 18.1+ fields/agg/window offset) that
+  mv_yaml.validate consumes. Any create failure -> that suggestion drops
   out, run proceeds; all failing -> suggest_only.
 - New routes under /api/auto-optimize: GET /runs/{run_id}/mv-proposals,
   GET /runs/{run_id}/mv-ddl (DDL artifact from genie_opt_artifacts + GRANT
@@ -633,7 +732,10 @@ Implement mockups 3–4 in the run output/results screen:
   count shown separately (never folded into accuracy), tables_freed,
   regression -> DETACHED badge + [Drop view] flow (confirm dialog quoting the
   "other consumers may depend on it" warning), downgrade_reason banner when the
-  run degraded.
+  run degraded, a join-strategy badge (denormalized / nested / subquery-source)
+  with its cardinality evidence, and a "Grant access" panel rendering the
+  copy-ready GRANT SELECT checklist with the note that other users' Genie
+  answers silently degrade without it.
 - Wire to the Prompt 9 endpoints; component tests for every state incl.
   downgraded-run and detached-with-drop.
 ```
@@ -690,7 +792,10 @@ Scenario C — approve, re-run, create_and_attach with lift (two runs, per MV-D1
   Run 1 in suggest_only produces proposals; approve one via the decision
   endpoint; trigger run 2 in create_and_attach with consent. Assert: the MV was
   created by the BACKEND under the user's identity (check created_by/owner),
-  in the consented schema only, BEFORE the job started; the job attached it via
+  in the consented schema only, BEFORE the job started; DESCRIBE EXTENDED on it
+  shows Type: METRIC_VIEW; its YAML passes mv_yaml.validate (no transitive
+  joins, structured comment, no benchmark-verbatim BEST FOR line); the
+  semantic-validation query used MEASURE() syntax; the job attached it via
   the mv_attach patch (visible in serialized_space); the mv_lift eval run
   reached DONE; lift_report stored with both eval_run_ids on
   genie_opt_mv_created_objects; the unified loop ran after attach; audit rows

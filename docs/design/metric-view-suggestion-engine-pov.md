@@ -137,24 +137,38 @@ Behavioral rules: nothing is written until the user confirms. **Accept** on a ma
 **Sample proposed Metric View YAML:**
 
 ```yaml
-version: 1.1
+version: "1.1"
 source: samples.tpch.lineitem
-comment: Auto-proposed by Genie Workbench from 60 recurring generated-SQL fingerprints
+comment: >
+  PURPOSE: Governed discounted revenue for TPC-H line items.
+  BEST FOR: Discounted revenue by market segment | Revenue by order status | Line item volume trends
+  NOT FOR: List-price revenue before discounts (query l_extendedprice directly)
+  DIMENSIONS: order_status, market_segment
+  MEASURES: discounted_revenue, line_item_count
+  SOURCE: samples.tpch.lineitem (sales domain)
+  JOINS: orders (order attributes), customer (nested under orders)
+  NOTE: Auto-proposed by Genie Workbench from 60 recurring generated-SQL fingerprints.
 joins:
   - name: orders
     source: samples.tpch.orders
     'on': source.l_orderkey = orders.o_orderkey
-  - name: customer
-    source: samples.tpch.customer
-    'on': orders.o_custkey = customer.c_custkey
+    rely:
+      at_most_one_match: true   # set ONLY because profiling proved o_orderkey unique; unvalidated at runtime
+    joins:                       # customer NESTED under orders (snowflake) — a flat sibling join whose
+      - name: customer           # 'on' references the orders alias is TRANSITIVE and fails or silently
+        source: samples.tpch.customer   # returns wrong grain. Nested joins require DBR 17.1+.
+        'on': orders.o_custkey = customer.c_custkey
 dimensions:
   - name: order_status
     expr: orders.o_orderstatus
+    comment: Order lifecycle status flag from the orders table
     display_name: Order Status
-    synonyms: [status, state]
+    synonyms: [status, state, order state]
   - name: market_segment
-    expr: customer.c_mktsegment
+    expr: orders.customer.c_mktsegment   # nested columns are parent_join.child_join.column
+    comment: Customer market segment from the customer dimension
     display_name: Market Segment
+    synonyms: [segment, customer segment, mktsegment]
 measures:
   - name: discounted_revenue
     expr: SUM(l_extendedprice * (1 - l_discount))
@@ -173,6 +187,24 @@ materialization:
       dimensions: [order_status, market_segment]
       measures: [discounted_revenue, line_item_count]
 ```
+
+**The generation quality standard (normative for every emitted YAML).** A suggestion engine that emits invalid or silently-wrong YAML is worse than no engine, because its output arrives pre-trusted. Every generated definition must pass these gates, drawn from field-hardened metric-view practice, before it reaches a proposal card:
+
+| Gate | Rule | Failure it prevents |
+|---|---|---|
+| Syntax | `WITH METRICS LANGUAGE YAML`, `AS $$…$$`, `version: "1.1"` quoted; never emit `name`, `time_dimension`, top-level `window_measures`, `join_type`, or `table` in joins | Creation errors; TBLPROPERTIES look-alikes that create a regular VIEW |
+| Multi-hop ladder | For any second-hop dimension: (1) prefer a denormalized column on the first dimension; (2) else nested joins **only if** DBR ≥ 17.1 **and** profiling proves the intermediate key 1:1; (3) else a subquery-`source` that pre-joins with explicit uniqueness guards. **Never** emit a flat sibling join whose `on` references another join alias | Transitive joins: `UNRESOLVED_COLUMN` on ≥17.1, silent wrong grain below it |
+| Cardinality | `rely.at_most_one_match: true` only when profiling has proven the dimension key unique — it is **not validated at runtime** and a fan-out inflates every SUM/COUNT. GSO enrichment already computes join-key uniqueness; consume it | Fan-out cartesians producing confidently wrong totals |
+| SCD2 | Any dimension with an `is_current`-style column gets `AND {dim}.is_current = true` in the join (profiling detects the column) | Duplicate dimension rows inflating measures |
+| Source selection | Additive measures must aggregate columns from the fact `source`; a measure aggregating a joined dimension's column is a defect the dedup/conflict path flags, not a proposal | Revenue-from-dimension under/over-reporting |
+| Composability | When the corpus shows a ratio of two recurring aggregates, emit atomic measures plus a `MEASURE()`-composed derived measure; `SUM(CASE WHEN c THEN 1 END)` shapes become `COUNT(1) FILTER (WHERE c)`. Percent-of-total is **never** `MEASURE()/MEASURE()` (always 1.0) — use a Fixed-LOD dimension (`SUM(x) OVER ()`) read with `ANY_VALUE()` | Duplicated aggregation logic; ratio measures that are always 1.0 |
+| Formats | Only `byte`, `currency`, `date`, `date_time`, `number`, `percentage`; `percent` and `decimal` are invalid | Creation errors from plausible-looking format types |
+| Agent metadata | Structured comment (PURPOSE / BEST FOR / NOT FOR / DIMENSIONS / MEASURES / SOURCE / JOINS / NOTE); 3–10 synonyms per field (max 10, 255 chars each); `NOT FOR` cross-references the adjacent MV the dedup gate found | Weak Genie routing; duplicate-metric usage |
+| Benchmark contamination | `BEST FOR` lines are **paraphrased intents, never verbatim benchmark question text**. An attached MV's comment is context Genie reads; verbatim benchmark text in it invalidates the benchmark it will be measured by | The engine grading itself on questions it memorized |
+| Capability | Warehouse/runtime supports what the YAML uses: DBR 17.3+ to create/edit; 17.1+ for nested joins; 18.1+ for `fields:`, `agg()`, window `offset`. The entitlement probe (§7.3.1) gains these capability rows | Grant-holding users blocked by runtime, not permissions |
+| Post-create | `DESCRIBE EXTENDED` must show `Type: METRIC_VIEW`; semantic validation queries use `MEASURE(\`name\`)` with GROUP BY (never `SELECT *`, never a re-typed aggregate); fan-out smoke test: row count unchanged after each join | Regular-VIEW impostors; validation queries that mask the exact defects being checked |
+| Update path | Subsequent edits to an engine-created MV use `ALTER VIEW … AS $$…$$`, never `CREATE OR REPLACE` or drop+create — replace deletes UC grants and cascading metadata | A metrics iteration silently revoking every consumer's access |
+| Grants | The creating user owns the view; other space users need SELECT or their answers silently degrade. The apply flow surfaces a copy-ready `GRANT SELECT` checklist for the space's audience (never auto-granted) | Per-user accuracy divergence nobody can reproduce |
 
 **Sample proposal payload:**
 
@@ -353,6 +385,8 @@ Creating a metric view is a UC write. Verify, under the signed-in user's OBO tok
 | `CREATE TABLE` | target schema | Unity Catalog's create privilege for view-class objects. **Verify the exact privilege name against your target runtime before shipping** — metric views are newer than the general view path and the requirement should be confirmed rather than assumed |
 | `SELECT` | every source and join table in the proposal | The view resolves against them at query time |
 | `CAN MANAGE` | the Genie Agent | Required to patch `data_sources.metric_views[]` |
+
+The probe also carries **capability rows**, not just privilege rows: the target warehouse/runtime must support what generated YAML will use — DBR 17.3+ to create or edit metric views, 17.1+ for nested (snowflake) joins, 18.1+ for `fields:`, `agg()`, and window `offset`. A user with every grant but the wrong runtime gets a capability denial with the same clarity as a permission denial, and the generator downgrades its join strategy (nested → subquery-source) rather than emitting YAML the runtime cannot plan.
 
 Probe with a `dry_run`-style check rather than a trial write: read effective privileges from the UC permissions surface, and confirm the schema exists. Do **not** attempt a speculative `CREATE VIEW` and catch the exception — a partial create leaves debris and an audit entry the user did not authorize.
 
@@ -581,8 +615,8 @@ This runs **before** the lever loop. Steps 1–4 happen in `metric_view_apply`; 
 1. **Re-verify consent.** Confirm `mv_consent` is present and well-formed, and that preflight's re-run of the entitlement probe still returns `SUFFICIENT` for the same `catalog.schema`. Abort to `suggest_only` on any mismatch — never write against a stale authorization.
 2. **Rank** candidates by confidence, then by the count of failing benchmark questions each would plausibly repair. Failure attribution comes from the eval-run result details: cluster failing questions by assessment reason, and prefer candidates targeting `RESULT_MISSING_COLUMNS`, `RESULT_MISSING_ROWS`, and `RESULT_EXTRA_ROWS` clusters, which are grain, join, and filter defects a governed measure resolves. Exclude questions flagged **Manual review needed** — they carry no verdict to improve on. Cap creations per run (default 3) so a single run cannot flood a schema.
 3. **Validate statically** — parse the generated YAML. Only if `mv_materialize` was separately consented and a `materialization` block is present, run `EXPLAIN CREATE MATERIALIZED VIEW` and abort the candidate on any incremental blocker rather than shipping a silent full-recompute. Default to `REFRESH POLICY INCREMENTAL`; use `INCREMENTAL STRICT` for high-cost or regulated metrics so the pipeline fails loudly instead of billing quietly.
-4. **Create** with `CREATE VIEW … WITH METRICS LANGUAGE YAML` on the run's SQL warehouse, **under OBO, in the consented `catalog.schema` and nowhere else**. The target is the one the user picked at configuration; the task must not fall back to another schema, a default schema, or the app service principal's own schema if the write fails. A failed write is a downgrade to `suggest_only`, not a retry somewhere more permissive.
-5. **Validate semantically** — run the new measure and the originating aggregation over a frozen sample window and diff result sets, not SQL text. Drop the view and reject the candidate on any difference outside tolerance.
+4. **Create** with `CREATE VIEW … WITH METRICS LANGUAGE YAML` on the run's SQL warehouse, **under OBO, in the consented `catalog.schema` and nowhere else**. The target is the one the user picked at configuration; the task must not fall back to another schema, a default schema, or the app service principal's own schema if the write fails. A failed write is a downgrade to `suggest_only`, not a retry somewhere more permissive. Immediately after: `DESCRIBE EXTENDED` and assert `Type: METRIC_VIEW` — a syntax slip creates a regular VIEW that passes every later check while behaving as neither. Any later edit to this object uses `ALTER VIEW … AS $$…$$`, never `CREATE OR REPLACE`, which deletes the view's UC grants.
+5. **Validate semantically** — query the new measure via `MEASURE(\`name\`)` with GROUP BY over a frozen sample window and diff result sets against the originating aggregation, not SQL text (`SELECT *` is unsupported on metric views, and re-typing the aggregate would mask the defect being checked). Run the fan-out smoke test: row count over the join must equal the pre-join count. Drop the view and reject the candidate on any difference outside tolerance. Surface the `GRANT SELECT` checklist for the space's audience alongside the created object — the creator's own answers validating proves nothing about other users'.
 6. **Attach to the space** — express the attachment as a standard GSO patch against `data_sources.metric_views[]`, plus optional removal of the raw tables the metric view now covers, applied via the Genie Update Space API. Requires CAN MANAGE, verified in the probe. Because it is an ordinary patch, it inherits the existing versioning, diff, and rollback machinery.
 7. **Measure the foundation change** (`mv_baseline`) — call *create eval run for benchmarks* over the same question set the `baseline` task used, poll to `DONE`, and read the results. This is the isolated metric-view delta, recorded before the lever loop changes anything else. **Optimization then proceeds from here**, with the metric view in place as the new foundation.
 
@@ -853,7 +887,7 @@ It consumes the advisor's candidate table because a *proposed* metric view is it
 
 ## Caveats
 
-- **Verify the exact create privilege for metric views on your target runtime.** The design assumes Unity Catalog's standard view-creation privilege set (`USE CATALOG`, `USE SCHEMA`, `CREATE TABLE` on the schema, `SELECT` on sources). Metric views are a newer object class created with `CREATE VIEW … WITH METRICS` and require DBR 17.2+ to manage, so confirm the privilege name against the target workspace before the entitlement probe ships. A probe that checks the wrong privilege will either block entitled users or promise a write that then fails.
+- **Verify the exact create privilege and runtime floor for metric views on your target workspace.** The design assumes Unity Catalog's standard view-creation privilege set (`USE CATALOG`, `USE SCHEMA`, `CREATE TABLE` on the schema, `SELECT` on sources). Current docs put creation/edit at **DBR 17.3+** (v1.1 YAML features at 17.2+; nested joins at 17.1+; `fields:`/`agg()`/window `offset` at 18.1+) — the probe's capability rows encode these, but confirm both the privilege name and the runtime floor against the target workspace before the probe ships. A probe that checks the wrong privilege or version will either block entitled users or promise a write that then fails.
 - **Materialization consent is separable from attach consent, and must stay that way.** Attaching a metric view is a metadata change; materializing one starts a managed Lakeflow pipeline that bills after the run ends. Any UI that collapses these into one checkbox will eventually produce a surprise invoice traced back to a feature the customer understood as advisory.
 - **Undocumented internals.** The "five versus six levers" naming discrepancy between the repo glossary and third-party write-ups, and internal schema acronyms in Genie Workbench, are not defined in public sources. Confirm against source code before building against them. Note also that public write-ups describing a bank of automated MLflow judges reflect an earlier architecture; grading now runs on Genie's native benchmark eval runs.
 - **The Genie benchmark eval APIs are Beta, not GA.** Create eval run, get eval run, list runs, list results, and get result details are all labelled Beta, so field names and enum values can change without a deprecation window. Isolate them behind an adapter, and record the API version alongside every stored `eval_run_id`.
@@ -898,7 +932,7 @@ cause real errors:
 
 | Namespace | Where it is recorded | Example |
 |---|---|---|
-| **MV advisor playbook** `MV-D1`–`MV-D7` | `docs/design/mv-advisor-playbook.md`, "Decisions from the Prompt 0 recon" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks; `MV-D7` = three metric-view Delta tables |
+| **MV advisor playbook** `MV-D1`–`MV-D8` | `docs/design/mv-advisor-playbook.md`, "Decisions from the Prompt 0 recon" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks; `MV-D7` = three metric-view Delta tables; `MV-D8` = the generation quality standard |
 | **GSO v2 playbook** `GSO v2 D1`–`GSO v2 D9` | Cited throughout the optimizer code; reconstructed in gap report §4. The defining file `GSO_OPTIMIZER_V2_TODO.md` is **not checked in** | `GSO v2 D1` = the native Benchmark Eval API is the sole eval runner; `GSO v2 D9` = linear DAG, no condition tasks, no task values |
 | **Baseline-eval-fix plan** `applier.py D1`–`applier.py D3` | `optimization/applier.py:358` | Quality-instruction policies (`mv_preference`, `column_ordering`, …) |
 
@@ -907,7 +941,7 @@ Every decision citation in this appendix carries its namespace prefix — `MV-D2
 above. The collision is not hypothetical: `GSO v2 D1` and `MV-D1` are different decisions
 about different subjects, and gap report §4 records `GSO v2 D4`, `GSO v2 D5` and
 `GSO v2 D6` as having **zero citations anywhere in the repository** — they are unrelated to
-`MV-D4`–`MV-D7`, which are defined in the MV advisor playbook and are used here.
+`MV-D4`–`MV-D8`, which are defined in the MV advisor playbook and are used here.
 
 Deltas 1 through 3 carry `MV-D` identifiers and between them cover `MV-D1`, `MV-D2`,
 `MV-D3`, `MV-D5` and `MV-D6`; `MV-D4` governs this appendix's existence and is cited in the
@@ -915,7 +949,9 @@ authority note above. Deltas 5 and 7 record repo facts established by the gap re
 than decisions taken in the playbook, so they cite the gap report instead — that is a
 difference in provenance, not an omission. Deltas 4 and 6 are mixed: each states a repo fact
 from the gap report *and* records `MV-D7`, the decision that resolved gap report §3 item 7
-by giving the metric-view feature three Delta tables of its own.
+by giving the metric-view feature three Delta tables of its own. Delta 8 carries `MV-D8`
+alone — the generation quality standard, adopted after the other deltas were written, which
+is why it amends rather than supersedes the section it touches.
 
 ---
 
@@ -1245,6 +1281,48 @@ persisted column on `genie_opt_iterations`.
 
 ---
 
+#### Delta 8 — Generation quality gates on the trigger-time create (MV-D8)
+
+*(`MV-D8` — MV advisor playbook. Amends: [Delta 1](#delta-1--two-run-consent-model)'s Run 2 create step. Shares ownership with §7.8 steps 4–5, which stay current for these gates.)*
+
+**What changes.** [Delta 1](#delta-1--two-run-consent-model) hoisted the UC write into the
+backend at trigger time, and its restatement of that flow predates `MV-D8`. Because this
+appendix wins over the body, an appendix-only reader would otherwise get the create
+without the generation gates — and an engine that emits invalid or silently wrong YAML is
+worse than no engine, because its output arrives pre-trusted. Six gates bind the
+trigger-time create:
+
+1. **One renderer, one validator.** All YAML is rendered and validated exclusively by
+   `mv_yaml` (playbook Prompt 5.5). The backend create path never renders inline, so the
+   proposal the user approved and the object actually created cannot drift apart.
+2. **Type assertion before status.** Post-create, `DESCRIBE EXTENDED` must assert
+   `Type: METRIC_VIEW` before `genie_opt_mv_created_objects` records `status=CREATED`.
+   A syntax slip produces a regular VIEW that passes every later check while behaving as
+   neither.
+3. **Validation that cannot mask the defect.** Semantic validation queries use
+   `MEASURE(\`name\`)` with GROUP BY, plus the fan-out row-count smoke test — never
+   `SELECT *`, which is unsupported on metric views, and never a re-typed aggregate,
+   which would re-implement the very expression under test.
+4. **Grants-preserving edits.** Any subsequent edit uses `ALTER VIEW … AS $$…$$`, never
+   `CREATE OR REPLACE` or drop+create, either of which deletes the view's UC grants and
+   cascading metadata — a metrics iteration silently revoking every consumer's access.
+5. **Grants surfaced, never applied.** A copy-ready `GRANT SELECT` checklist for the
+   space's audience is surfaced on the run record and never auto-applied. The creating
+   user owns the view; without SELECT, other users' Genie answers degrade silently and
+   per-user accuracy diverges in a way nobody can reproduce.
+6. **Capability, not just privilege.** The entitlement probe's capability rows — DBR
+   17.3+ to create or edit, 17.1+ for nested joins, 18.1+ for `fields:`, `agg()`, and
+   window `offset` — feed `mv_yaml.validate`, which downgrades the join strategy
+   (nested → subquery-`source`) rather than emitting YAML the runtime cannot plan.
+
+**Shared ownership with the body.** Unlike every other delta here, this one does not
+supersede the section it touches: **§7.8 steps 4–5 are current** for these gates, having
+been amended under `MV-D8` in the same change that added this delta. A body reader and an
+appendix reader therefore converge on the same requirements. If the two ever diverge
+again, that is a defect in this document, not a decision.
+
+---
+
 ### Preserved product behavior
 
 Every item below is a requirement of the original design that survives these deltas
@@ -1271,6 +1349,12 @@ unchanged. Implementation must satisfy all of them.
 | Cap creations per run; idempotent candidates | 7.8 step 2, 7.9 | Unchanged; `content_hash` supplies the dedup key |
 | Full auditability of mode, consent, probe, identity | 7.9 | Persisted to `genie_opt_runs` and `genie_opt_patches` |
 | Conflicts surfaced, adjudicated, never auto-resolved | Part 5, Recommendation 5 | Unaffected by these deltas |
+| `DESCRIBE EXTENDED` asserts `Type: METRIC_VIEW` before `status=CREATED` | 7.8 step 4, Delta 8 | The type gate runs before the created-object row is written, so a regular-VIEW impostor never reaches ATTACHED |
+| Semantic validation uses `MEASURE()` with GROUP BY plus a fan-out smoke test | 7.8 step 5, Delta 8 | Never `SELECT *`, never a re-typed aggregate — both mask the defect being checked |
+| Edits use `ALTER VIEW … AS $$…$$`, never `CREATE OR REPLACE` | 7.8 step 4, Delta 8 | Replace and drop+create delete the view's UC grants and cascading metadata |
+| `GRANT SELECT` checklist surfaced, never auto-applied | 7.8 step 5, Part 4, Delta 8 | Carried on the run record; the creator's own validation proves nothing about other users' answers |
+| Capability rows gate the join strategy, not just the write | 7.3.1, Part 4, Delta 8 | DBR 17.3/17.1/18.1 floors feed `mv_yaml.validate`, which downgrades nested → subquery-`source` rather than emitting unplannable YAML |
+| `BEST FOR` lines paraphrased, never verbatim benchmark text | Part 4, Delta 8 | Firewall class, same as literals and PII: an attached view's comment is context Genie reads, so verbatim text contaminates the benchmark grading it |
 
 ### What this appendix does not decide
 

@@ -2,6 +2,11 @@
 description: Non-negotiables for the metric view advisor feature
 alwaysApply: true
 ---
+Paths below are under databricks-genie-workbench/ from this workspace root.
+Repo reality (and the gap report) wins over older POV wording. Do not
+revive taskValues, condition tasks, run_if, extra job tasks, or a second
+eval adapter.
+
 READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
 - Before modifying ANY file, you must first output a PLAN section containing:
   (1) the exact file paths you intend to modify or create,
@@ -36,6 +41,9 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
 - Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
   AS AMENDED BY docs/design/mv-advisor-gap-report.md. Where they disagree,
   the gap report wins.
+- Never invent API endpoints, table names, task names, wheel entrypoints,
+  or config keys. Read existing code first. If a name is not in the repo,
+  ASK.
 - The GSO job is a LINEAR FOUR-TASK NOTEBOOK DAG: intake_and_snapshot →
   benchmark_qc_and_repair → optimize → publish_and_audit. Do NOT add tasks,
   condition tasks, run_if edges, or wheel entry points. GSO v2 playbook decision D9 (a different D-namespace from this playbook's
@@ -71,6 +79,8 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   reverts — writes it already performs as SP today.
 - Do not reuse GET /permissions/{space_id} for entitlement: it probes the
   SP's privileges, not the user's. The entitlement probe is new OBO code.
+- On entitlement/consent mismatch, DOWNGRADE to suggest_only — never
+  upgrade, never fall back to a different schema.
 - MLflow is decommissioned in GSO except tracing. No experiments, registry,
   or judges. Grading comes ONLY from native benchmark eval runs.
 - Backend routes live under the /api/auto-optimize router prefix; the
@@ -82,6 +92,23 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   writing a second scanner. No literals, sample values, or PII in shipped
   metadata, DDL comments, or logs.
 - Materialization is a separate consent (mv_materialize); never bundled.
+- GENERATED YAML conforms to the generation quality standard in POV Part 4
+  (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
+  window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
+  nested joins only on DBR>=17.1 with profiling-proven 1:1 keys ->
+  subquery-source fallback); NEVER a flat sibling join referencing another
+  join alias; SCD2 joins carry is_current=true; rely.at_most_one_match only
+  with proven uniqueness; format types from the closed set (percentage not
+  percent, number not decimal); additive measures aggregate fact columns.
+- MV comments use the structured format (PURPOSE/BEST FOR/NOT FOR/...).
+  BEST FOR lines are PARAPHRASED intents — verbatim benchmark question text
+  in any shipped MV metadata contaminates the benchmark and is a firewall
+  violation, same class as literals/PII.
+- Updates to an existing metric view use ALTER VIEW ... AS $$...$$, never
+  CREATE OR REPLACE or drop+create (replace deletes UC grants).
+- Post-create: DESCRIBE EXTENDED must show Type: METRIC_VIEW. Validation
+  queries use MEASURE(`name`) with GROUP BY — never SELECT *, never a
+  re-typed aggregate. Fan-out smoke test on every join.
 - Every new module ships with pytest tests in the same PR-sized commit.
   The repo has NO test CI — run the suites locally and report results in
   every VERIFY section.
