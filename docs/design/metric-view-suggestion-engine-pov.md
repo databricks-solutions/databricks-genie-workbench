@@ -104,8 +104,8 @@ Score = 100 × (0.35·L + 0.30·Y + 0.20·S + 0.15·D)
 |---|---|---|
 | **L** — Lineage/schema determinism | Source-table and column overlap | Jaccard of column sets from `column_lineage` |
 | **Y** — Syntactic AST match | Fingerprint recurrence × structural equivalence | (normalized recurrence) × (AST-equivalence flag) |
-| **S** — Semantic similarity | Max cosine of intent text vs MV field text | Vector Search / FMAPI cosine |
-| **D** — Demand/recency | Frequency × cost × distinct users, decayed | Normalized, then staleness-decayed |
+| **S** — Semantic similarity | Max cosine of intent text vs a reference set | FMAPI cosine against one of two reference kinds (see `MV-D12`): governed **MV field text** where the candidate acts on an existing view, else the **source columns' names and comments**. Read as MV-field-only, S would be structurally 0.0 for every `NEW_METRIC_VIEW` — including the worked example below, which asserts 0.40 |
+| **D** — Demand/recency | Frequency × cost × distinct users, decayed | Normalized, then staleness-decayed (see `MV-D11` — each factor saturates, then they combine as a **geometric mean**, not a literal product, which could not reach the 0.80 the worked example below asserts) |
 
 **Decay:** `D_effective = D × 0.5^(age_days / H)`, half-life `H ≈ 30 days`. Fingerprints unseen within the query-history retention window are dropped.
 
@@ -223,7 +223,8 @@ materialization:
     "benchmark_questions": ["bmk_12", "bmk_31"],
     "query_history_statement_ids": ["stmt_a1", "stmt_b7"],
     "lineage_source_tables": ["samples.tpch.lineitem", "samples.tpch.orders"],
-    "semantic_top_match": { "field": null, "cosine": 0.40 }
+    "semantic_top_match": { "field": "samples.tpch.lineitem.l_extendedprice",
+      "cosine": 0.40, "reference_kind": "SOURCE_COLUMN_METADATA" }
   },
   "provenance": {
     "generated_by": "gwb-mv-advisor@1.0",
@@ -246,9 +247,17 @@ An earlier draft of this payload carried a readable composite string
 (`"sha256:sum(...)|group:order_status,market_segment"`); it predated the shipped key, was
 never implemented, and should not be resurrected — despite its prefix it was not a digest,
 it omitted the space id, and it keyed on the grouping set rather than the source set.
-The expression-grained `expr_fingerprint` in `optimization/mv_fingerprint.py` is a
+The expression-grained fingerprint in `optimization/mv_fingerprint.py` is a
 *different* value that is deliberately never persisted here: it collides across spaces and
 across source sets, which is exactly what this column must not do.
+
+**`semantic_top_match` carries its `reference_kind`** (amended under `MV-D12`). An earlier
+draft of this payload reported `{"field": null, "cosine": 0.40}` — a cosine against nothing,
+which no reader could interpret and no implementation could reproduce. The 0.40 is real: this
+candidate has no governed metric view, so **S** scored its intent text against the source
+columns' own names and comments, and the field naming that column makes the number legible.
+The kind is recorded rather than inferred because 0.40 against a curated metric-view field
+and 0.40 against a column comment are different strengths of evidence.
 
 ---
 

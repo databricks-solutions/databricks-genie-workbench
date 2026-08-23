@@ -487,7 +487,7 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2395 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2506 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
@@ -495,7 +495,9 @@ src/genie_space_optimizer/
   optimization/   applier.py (4721 L), benchmarking.py (4594 L), unified_loop.py (3628 L),
                   preflight.py (3461 L), state.py (1790 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
-                  wide_schema*.py, genie_eval_taxonomy.py, ...
+                  wide_schema*.py, genie_eval_taxonomy.py,
+                  mv_fingerprint.py (1333 L), mv_scoring.py (945 L),
+                  mv_state.py (639 L), ...
 ```
 
 **Existing metric-view surface** (relevant — the advisor is not starting from zero):
@@ -767,9 +769,10 @@ path all have to be built. And POV §7.8's `DETACH_ONLY_NEVER_DROP` semantics �
 model.
 
 **Leakage firewall.** `optimization/leakage.py:414-420` `is_benchmark_leak(...)` is the
-entrypoint. Its runtime field map covers only example-SQL types:
+entrypoint. Its runtime field map covers only example-SQL types, preceded by the scoping
+comment that says why:
 
-```279:289:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/leakage.py
+```286:296:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/leakage.py
 _PATCH_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "add_example_sql": ("example_question", "example_sql"),
     "update_example_sql": ("example_question", "example_sql"),
@@ -1383,7 +1386,7 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 | `on_regression: DETACH_ONLY_NEVER_DROP` | **DOES-NOT-EXIST-YET** | And incompatible with snapshot rollback as written |
 | Idempotency key `sha256(space_id \| expr \| sources)` | **PARTIALLY MATCHES (precedent)** | `genie_opt_artifacts.content_hash` exists for exactly this (`ddl.py:184`); the launcher already builds a SHA-256 idempotency token (`job_launcher.py:33-37`) |
 | `tables_freed` / 30-table cap | **DOES-NOT-EXIST-YET** | No table-count ceiling logic |
-| Free text in MV proposals must clear the leakage firewall | **CONFLICTS with current coverage** | `_PATCH_TEXT_FIELDS` covers only example-SQL types (`leakage.py:279-289`); package AGENTS.md requires new text-carrying patch types to be routed through it |
+| Free text in MV proposals must clear the leakage firewall | **CONFLICTS with current coverage** | `_PATCH_TEXT_FIELDS` covers only example-SQL types (`leakage.py:286-289`); package AGENTS.md requires new text-carrying patch types to be routed through it |
 
 ### 2.6 Evaluation (POV §7.8 step 7, Key Finding 2, Recommendation 2)
 
@@ -1407,11 +1410,13 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 
 | POV assumption | Status | Evidence |
 |---|---|---|
+| Blended `100*(0.35L+0.30Y+0.20S+0.15D)` score with HIGH/MEDIUM/LOW tiers | **EXISTS (Prompt 4)** | `optimization/mv_scoring.py` — component scorers, blend, tiers, dedup gate, POV Part 4 payload, persistence through `mv_state.upsert_mv_candidate`. Weights and every normalization constant in `common/config.py:2423-2506` (MV-D11), never inlined |
 | sqlglot AST fingerprinting | **EXISTS (Prompt 3)** | `optimization/mv_fingerprint.py` — canonicalization, measure/dimension/filter/join-key extraction, shape classification, corpus scan; `sqlglot==30.0.3` pinned. Prior art: `benchmarking.py`, `unified_loop.py`, `wide_schema*.py` (**not** `applier.py`, which only names sqlglot in a comment at `:1534`) |
-| `system.query.history` demand signal (**D**) | **MATCHES** | `wide_schema_history.py:248`, with warehouse-history fallback at `:357` and a documented unavailable path |
-| Lineage signal (**L**) from `system.access.table_lineage` | **DOES-NOT-EXIST-YET** | No lineage reads in GSO. GenieWatch reads `system.access.table_lineage` but as **SP-only** (`backend/watch/services/system_tables.py`) |
-| Embedding / semantic signal (**S**) | **PARTIALLY MATCHES** | An embedding path exists only inside `leakage.py:132-137` and is disabled by default (`question_embeddings = None`). No Vector Search index. |
-| Existing MV detection for dedup | **MATCHES** | `common/metric_view_catalog.py:63-73`, `:481-490` |
+| Syntactic signal (**Y**) | **EXISTS (Prompt 4)** | `mv_scoring.syntactic_score` consumes a `RecurrenceSignal`. Its equivalence flag is **corpus-internal** (MV-D11) — governed-MV equivalence is the dedup gate's, not a multiplier's |
+| `system.query.history` demand signal (**D**) | **MATCHES** | `wide_schema_history.py:248`, with warehouse-history fallback at `:357` and a documented unavailable path. Normalized into a 0-1 score by `mv_scoring.demand_score` (geometric mean, then 30-day half-life decay, per MV-D11) |
+| Lineage signal (**L**) from `system.access.table_lineage` | **DOES-NOT-EXIST-YET** | Still no lineage reads in GSO, and Prompt 4 did not add one: `mv_scoring.lineage_overlap_score` takes a precomputed `LineageOverlap` and the module queries nothing (pinned by `test_this_module_queries_nothing`). GenieWatch reads `system.access.table_lineage` but as **SP-only** (`backend/watch/services/system_tables.py`) |
+| Embedding / semantic signal (**S**) | **PARTIALLY MATCHES** | Two paths, no Vector Search index. Firewall: `leakage.py:46-57` (endpoint/threshold), `:139-144` (vectors, `question_embeddings = None` so disabled by default), `_cosine_similarity` at `:174`, `get_embedding` at `:189`, `precompute_benchmark_embeddings` at `:220`. Advisor: `mv_scoring.FoundationModelEmbeddingClient`, injectable and defaulting to `databricks-gte-large-en`, which borrows `get_embedding` and no other firewall symbol. *(Correction: this row previously anchored the firewall path at `leakage.py:132-137`, which is the `BenchmarkCorpus` shingle block. That anchor was **wrong when written**, not rotted by a commit — `leakage.py` is untouched on this branch. A quote can be stale by position with its content unchanged, which no keyword search can find; that is the case for byte-matching every fenced reference in VERIFY rather than grepping for stale wording.)* |
+| Existing MV detection for dedup | **MATCHES** | `common/metric_view_catalog.py:63-73`, `:481-490`; flattened for the gate by `mv_scoring.metric_view_fields`, which keeps the `DESCRIBE ... AS JSON` parsing in `metric_view_catalog` |
 | Harvest already-optimized space artifacts | **MATCHES (data available)** | `genie_opt_patches.patch_json`, `genie_opt_iterations.config_json` / `observed_config_json` |
 | Copy-ready DDL panel with copy button | **DOES-NOT-EXIST-YET (components exist)** | `SqlCodeBlock.tsx` + `prism-react-renderer` |
 | Patch shown as a diff | **DOES-NOT-EXIST-YET (component exists)** | `SqlDiffView.tsx` + `react-diff-viewer-continued` |
@@ -1647,7 +1652,7 @@ that deliberately removed one.
 *Leakage.* Benchmark questions and their SQL must never reach the live space's Example SQL
 section. Deterministic hard-block on **every** write path:
 
-```284:289:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/leakage.py
+```291:296:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/leakage.py
 # Every patch/proposal type that persists a question+SQL pair into the live
 # space's Example SQL Queries section. The deterministic scored-benchmark
 # hard-block must cover all of them on every write path (v2 §3.6 / D8).

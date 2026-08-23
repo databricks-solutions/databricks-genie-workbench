@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D10 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D11 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -255,9 +255,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D10)
+## Decisions register (MV-D1–MV-D11)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, and MV-D10 during Prompt 3 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, and MV-D11 during Prompt 4 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -281,6 +281,8 @@ The recon surfaced five structural conflicts, not naming drift. These decisions 
 
 **MV-D9 — The gap report is refreshed in the same commit that invalidates it.** Commit 1 added three tables to `_ALL_DDL` and left four gap-report sites — the §1.6 Persistence heading and its `_ALL_DDL` quote block, the §2.6 Evaluation verdict row, and the Appendix summary row — asserting six tables. Because the rules make the gap report outrank the POV, and the POV's Delta 6 had already been retitled "Nine Delta tables," an agent reading both was told the authoritative source says six and the POV's nine is the error — exactly backwards. Rule: any commit that changes something the gap report quotes or counts refreshes those sites in the same commit, re-quoting live code with current line anchors. Enforced by a rules-file bullet and by every PLAN naming the gap-report sites it will refresh. Keyword search is insufficient enforcement: a quote can go stale by *position* with its content unchanged, invisible to any grep for stale wording, so VERIFY must byte-match every fenced reference rather than search for stale words.
 
+*Empirical record, as of Prompt 4.* Byte-match VERIFY has now caught **four** anchor defects that no keyword search could have detected: the §2.7 S row's `leakage.py:132-137` (pointing at the `BenchmarkCorpus` shingle block instead of the embedding path), `config.py`'s stale line count, and the two fenced quotes at `leakage.py:279-289` and `:284-289` (correct content, positions shifted seven lines). Two of the four — both `leakage.py` fences — quote `_PATCH_TEXT_FIELDS` and `_EXAMPLE_SQL_PATCH_TYPES`, the exact dict Prompt 5.5 must add an MV patch type to, so they would have misdirected that prompt specifically. Note also that three of the four were stale *by position with content unchanged*, and `leakage.py` is untouched on this branch: they were wrong when written rather than rotted by a commit, which is a defect class a freshness discipline keyed on "what did this commit change" cannot find at all. Keep the byte-match in every VERIFY that touches a quoted surface, whether or not the commit appears to have invalidated anything.
+
 **MV-D10 — Two fingerprint levels, permanently distinct.** The readable composite string in the POV Part 4 sample payload (`"sha256:sum(l_extendedprice*(1-l_discount))|group:order_status,market_segment"`) predated the shipped key and was never implemented. It is not a format to resurrect: despite the prefix it is not a sha256 digest, it omits the space id, and it keys on the grouping set rather than the source set. Corrected to the hex-digest form in the same commit as Prompt 3, under the DOC FREEZE factual-error exception. The two levels that do exist are:
 
 - **`expr_fingerprint`** (`optimization/mv_fingerprint.py`) — *expression*-grained, `sha256` of the canonical expression text. It counts recurrence inside a corpus scan and does nothing else. It collides across spaces and across source sets by construction, so it is **never persisted as a dedup key** — pinned by `test_expr_fingerprint_appears_in_no_persistence_path`, which asserts no other module in the package even references it.
@@ -295,6 +297,31 @@ Settled alongside it, from the same conflict: the new module's canonicalizer is 
 - **(c) Shape identity is the generator's TARGET form, not the corpus spelling.** `ShapeMatch.fingerprint` hashes `target_form` — what the generator will emit — so `SUM(CASE WHEN c THEN 1 END)` and `SUM(CASE WHEN c THEN 1 ELSE 0 END)` are one `CONDITIONAL_COUNT`. They ask for the same `COUNT(1) FILTER (WHERE c)` measure, and counting them apart would halve the recurrence of the exact thing being proposed. `SHAPE_GUIDANCE` holds the MV-D8 mandate per shape so the generator reads the rule rather than re-deriving it.
 
 *And the deliberate bias:* where canonicalization cannot prove two expressions are the same shape, it emits two fingerprints rather than one. **Recurrence therefore under-counts, never over-counts.** Under-counting can delay a proposal; over-counting would fabricate one. Two consequences are tested as intended behavior rather than left implicit: expressions differing only in a literal value *do* collapse (the firewall demands it, so a generator must recover concrete predicate values from profiling — there is nothing left in a fingerprint to read them out of), and aggregates in `ORDER BY`/`GROUP BY` positions are references to a projection, not second measures.
+
+**MV-D11 — Scoring: what Y multiplies, how Y and D normalize, and what gets persisted.** Taken during Prompt 4 execution, from four questions POV Part 3 leaves open or answers inconsistently.
+
+- **(a) Y's equivalence flag is corpus-internal, and governed-MV equivalence gates instead of damping.** Prompt 4's own bullet said "normalized recurrence × AST-equivalence flag *against existing MV measures*". That is not implementable against POV Part 3's first worked example, which scores **Y = 0.95 for a measure with no MV equivalent** — an MV-matching flag would zero it and yield 51.5, not the 80.0 the example asserts. The flag therefore asserts that the counted occurrences genuinely collapse to one canonical form; a consumer that bucketed by anything looser passes `False` and Y is zero. Equivalence against governed metric views lives in the dedup gate, where POV Part 3's "Conflicting or partial matches" paragraph already put it. **Gating is strictly stronger than damping:** a measure that is already governed is not a weaker proposal, it is not a proposal. Prompt 4's Y bullet is corrected in place under the DOC FREEZE factual-error exception so no later prompt re-derives the wrong reading from the prompt text.
+- **(b) Y's recurrence curve is log-saturating; D's factors combine as a geometric mean.** POV supplies component *values* in both worked examples and no curve for either, so the examples pin the blend, not the curves. Y is `min(1, log1p(r) / log1p(R_sat))` with `R_sat = 75`, which yields 0.9492 at the example's `r = 60` — the 0.95 it states, to two places — and gives diminishing returns so one pathological dashboard cannot saturate the signal alone. D saturates frequency, cost and breadth against their own ceilings and takes their **geometric mean**, not the literal product POV's prose ("frequency × cost × distinct users") suggests: three normalized factors multiplied collapse toward zero — `0.8³ = 0.512` — so a literal product **cannot reach the 0.80 that POV's own worked example asserts** for a busy measure. The geometric mean keeps D on the same 0-1 scale as L, Y and S, which is the only way the weights mean what they say. A zero on any factor still zeroes D. POV Part 3's D row now carries a one-line pointer here, since its body text is loose prose this register makes precise.
+- **(c) Only PROPOSE and CONFLICT are persisted.** `CONFLICT` persists as `candidate_type` (that is what the enum is for) and is never a suggestion. Dedup-**blocked** and sub-25 **suppressed** candidates are returned to the caller for run reporting and not written: `MV_CANDIDATE_TYPES` has no state for either and `genie_opt_mv_candidates.tier` is documented `HIGH|MEDIUM|LOW`. No `genie_opt_artifacts` row is written at scoring time either — the rendered DDL text that POV Appendix A Delta 4 assigns to that table does not exist until Prompt 5.5. `suggestion_id` is `"sug_" + dedup_fingerprint[:12]`, derived rather than random so a re-proposing run produces the same id (POV's `"sug_9f2a"` is illustrative). **If Prompt 13's UI later needs blocked-candidate counts persisted, that is an `ADDITIVE_COLUMN_MIGRATIONS` change plus an enum extension at that time — not a reason to widen `MV_CANDIDATE_TYPES` now.**
+- **(d) The MV-D10 guard test correctly blocks Prompt 4, and stays.** `test_expr_fingerprint_appears_in_no_persistence_path` is a substring scan over every package `.py` file, so it forbids even a prose mention of the name. Prompt 4 conformed — `mv_scoring.py` compares canonical expression *text* via `canonicalize_expr` and refers to "the expression-grained fingerprint in `mv_fingerprint`" — and the test was **not** weakened. Should a later prompt need a legitimate prose reference, the sanctioned fix is to narrow the scan to persistence modules **and** add a positive assertion that no call site feeds the expression-grained fingerprint into `upsert_mv_candidate`'s `dedup_fingerprint` kwarg — strictly stronger than the substring test it replaces. Deleting or loosening it without that replacement violates MV-D4.
+
+*As implemented (Prompt 4).* `optimization/mv_scoring.py`, with weights and every normalization constant in `common/config.py:2423-2506` (a `_float_env` helper sits there rather than beside `_int_env` at `:15`, whose `max(1, value)` clamp is wrong for weights, and appending held every gap-report `config.py` line anchor stable). The module **queries nothing** — lineage overlap, recurrence and demand arrive as frozen input contracts and existing metric-view definitions as `MetricViewField` values flattened from `metric_view_catalog.detect_metric_views_via_catalog`, so the `DESCRIBE ... AS JSON` parsing stays where it already lives. The embedding client is an injected `Protocol`; the production adapter borrows `leakage.get_embedding` and **no other firewall symbol** (pinned by an AST assertion, not a substring scan), defaults to `databricks-gte-large-en`, and L2-normalizes in our code because GTE does not normalize its output while BGE does. The blend is deliberately **not** rounded: both worked examples land on exact IEEE doubles, and rounding to two places would drag a 24.999 across the suppression floor into LOW. Benchmark question text cannot reach a proposal structurally — `MetricViewCandidate` has no field for it, so `evidence.benchmark_questions` carries ids because there is nothing else to carry.
+
+**MV-D12 — S has two reference kinds, because an MV-field-only reading retires a fifth of the blend.** Prompt 4 first implemented POV Part 3's S literally — "max cosine of intent text vs **MV field text**" — and reported the Part 4 payload's `{"field": null, "cosine": 0.40}` as an unresolvable inconsistency: a space with no metric views has no field text, so S is structurally 0.0. That reading is wrong, and the payload was the evidence. Consequences of the literal reading, which is why it cannot stand:
+
+- **S = 0.0 for every `NEW_METRIC_VIEW` candidate** — the class the engine exists to produce. Twenty percent of the blend becomes dead weight exactly where the feature earns its keep.
+- **Those candidates cap at 80** against thresholds calibrated for 100. HIGH stays reachable only because 0.35 + 0.30 + 0.15 = 0.80 clears 75 with nothing to spare; any future weight retune or threshold tightening makes the top tier structurally unreachable for the primary output. Systematically depressing the highest-value output is a worse defect than a null field in a sample payload.
+- **POV Part 3's own first worked example asserts S = 0.40 for a measure with no MV equivalent.** Under the literal reading that number is unreachable, so the document already contained the refutation.
+
+Resolved with the symmetry L already has (MV-D11's `reference_kind`): S takes a reference set plus a recorded kind.
+
+- **`GOVERNED_MV_FIELDS`** — preferred for `REPLACE_RAW_TABLE` and `ADD_MEASURE`, which act on an existing view. Max cosine of intent text against MV field text (display name, comment, synonyms).
+- **`SOURCE_COLUMN_METADATA`** — preferred for `NEW_METRIC_VIEW`, where no view exists yet. Max cosine of intent text against the candidate's source column names and comments.
+- **Neither available → 0.0 with a null field**, reported honestly rather than imputed.
+
+Preference is keyed on candidate type rather than availability because the question S answers differs between the two; where the preferred set is empty the other is used and **the kind recorded is always the one actually compared**, never the one wanted. `SOURCE_COLUMN_METADATA` is knowingly the weaker reference — a column comment describes a column, not a business measure — and that is acceptable because it is the only semantic evidence that exists before a metric view does, and the alternative is a structurally unreachable score band. Recording the kind is what keeps the weakness visible: 0.40 against a curated field and 0.40 against a column comment are different strengths of evidence, and a payload reporting only the number cannot be reviewed. POV Part 4's payload and Part 3's S row are corrected accordingly under the DOC FREEZE factual exception. **Neither pinned worked example changes** — both supply component values directly, so 80.0 and 58.75 still hold.
+
+*One correction to the record.* The prompt authorizing this decision quoted POV Part 3 as reading "S = 0.40 (no MV text to match yet, only weak column-name signal)". That parenthetical is **not in the document** — Part 3 says only "L = 0.90, Y = 0.95 (identical canonical fingerprint seen 60×), S = 0.40, D = 0.80". The reasoning stands without it, and on stronger ground: the bare `S = 0.40` for a candidate with no MV equivalent is itself the proof that S was never meant to be structurally zero. But the "weak column-name signal" phrasing is this decision's own resolution, not a recovered authorial intent, and must not be re-cited as a POV quotation.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -440,8 +467,13 @@ Per POV Part 3, implement the scoring engine:
 - Score = 100 * (0.35*L + 0.30*Y + 0.20*S + 0.15*D), weights in config not code.
 - L: Jaccard of column sets from lineage overlap (input: precomputed overlap
   data — define the input contract, do not query system tables from this module).
-- Y: normalized recurrence * AST-equivalence flag against existing MV measures
-  (parse existing MV YAML from DESCRIBE ... AS JSON view_text).
+- Y: normalized recurrence * corpus-internal AST-equivalence flag (did the
+  counted statements genuinely collapse to one canonical form). CORRECTED under
+  MV-D11(a): an earlier wording said "against existing MV measures", which
+  contradicts POV Part 3's first worked example (Y = 0.95 with no MV
+  equivalent). Equivalence against governed MVs belongs to the dedup gate
+  below, which blocks rather than damps. Existing MV YAML still parses from
+  DESCRIBE ... AS JSON view_text — for the gate, not for Y.
 - S: max cosine vs MV field text; make the embedding client injectable with a
   deterministic fake for tests (FMAPI gte-large-en in prod; note gte does not
   normalize — normalize vectors in our code).
@@ -532,7 +564,27 @@ Tests: golden YAML per ladder rung; a transitive sibling join MUST be caught;
 percent/decimal MUST be rejected; PCT_OF_TOTAL must not render as
 MEASURE()/MEASURE(); a benchmark-verbatim BEST FOR line MUST be rejected;
 round-trip parse with sqlglot(dialect="databricks") on the wrapping DDL.
+
+For this prompt only, you MAY read the metric-views-patterns skill at
+/Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+for reference detail (composability-patterns.md, level-of-detail.md,
+yaml-reference.md, validation-checklist.md). It is a SOURCE, not an authority:
+where it disagrees with MV-D8 or POV Part 4's generation standard, the in-repo
+documents win, and anything you rely on gets restated in-repo rather than cited
+by external path.
 ```
+
+*Why the skill pointer lives here and not in the rules file.* A standing
+named exception in `.cursor/rules/mv-advisor.mdc` would re-introduce exactly
+what the in-repository context rule exists to prevent: an unversioned
+dependency on one machine's filesystem, invisible to a fresh clone and to
+every teammate running these prompts. The rule already carries the right
+mechanism — *"unless the prompt names them explicitly"* — so the pointer
+belongs in the one prompt whose trigger fires. The skill's substance is
+already absorbed in-repo and versioned as MV-D8 and POV Part 4's generation
+standard; the external copy adds reference detail, not authority. Prompt 4
+confirmed the trigger does not fire earlier: scoring authors no YAML and only
+consumes metric-view fields `metric_view_catalog` has already parsed.
 
 ---
 

@@ -2418,3 +2418,89 @@ _LEVER_TO_PATCH_TYPE: dict[tuple[str, int], str] = {
 # Expanded patch identities remain lever-qualified in the active applier.
 def lever_qualified_patch_ids_enabled() -> bool:
     return True
+
+
+# ── 23. Metric View Advisor Scoring (MV-D11) ───────────────────────────
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a float override, falling back to ``default`` on anything unparseable.
+
+    Deliberately not a generalization of :func:`_int_env`, which clamps with
+    ``max(1, value)``. That clamp is right for counts and wrong for every value
+    below: a weight of ``0.35`` would clamp to ``1`` and a suppression floor of
+    ``0.0`` is legitimate.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+MV_SCORE_WEIGHT_L = _float_env("GSO_MV_SCORE_WEIGHT_L", 0.35)
+MV_SCORE_WEIGHT_Y = _float_env("GSO_MV_SCORE_WEIGHT_Y", 0.30)
+MV_SCORE_WEIGHT_S = _float_env("GSO_MV_SCORE_WEIGHT_S", 0.20)
+MV_SCORE_WEIGHT_D = _float_env("GSO_MV_SCORE_WEIGHT_D", 0.15)
+
+MV_SCORE_WEIGHTS: dict[str, float] = {
+    "L": MV_SCORE_WEIGHT_L,
+    "Y": MV_SCORE_WEIGHT_Y,
+    "S": MV_SCORE_WEIGHT_S,
+    "D": MV_SCORE_WEIGHT_D,
+}
+"""POV Part 3 blend weights: ``100 * (0.35L + 0.30Y + 0.20S + 0.15D)``.
+
+Read as a dict rather than inlined at the call site because the same dict
+travels in every proposal's ``score_components.weights``, so a workspace that
+retunes a weight ships the tuning it actually used alongside the scores it
+produced. A retuned deployment that stored bare scores would leave no way to
+tell a high-confidence candidate from a generously-weighted one.
+"""
+
+MV_TIER_HIGH_MIN = _float_env("GSO_MV_TIER_HIGH_MIN", 75.0)
+"""Lower bound of the HIGH tier. POV Part 3: High >= 75."""
+
+MV_TIER_MEDIUM_MIN = _float_env("GSO_MV_TIER_MEDIUM_MIN", 50.0)
+"""Lower bound of MEDIUM (50-74). Nothing is auto-applied below HIGH."""
+
+MV_TIER_LOW_MIN = _float_env("GSO_MV_TIER_LOW_MIN", 25.0)
+"""Lower bound of LOW (25-49). Below this a candidate is suppressed: it is
+reported for diagnostics and never persisted as a proposal."""
+
+MV_RECURRENCE_SATURATION = _int_env("GSO_MV_RECURRENCE_SATURATION", 75)
+"""Occurrence count at which the **Y** recurrence curve reaches 1.0.
+
+Log-scaled (`log1p(r) / log1p(saturation)`) because evidence accumulates with
+diminishing returns — the 60th re-derivation of a measure says little the 6th
+did not. At the POV's worked-example recurrence of 60 this yields 0.9492, which
+is the 0.95 that example asserts.
+"""
+
+MV_DEMAND_FREQUENCY_SATURATION = _int_env("GSO_MV_DEMAND_FREQUENCY_SATURATION", 100)
+"""Query count at which the **D** frequency factor saturates."""
+
+MV_DEMAND_COST_SATURATION_MS = _int_env("GSO_MV_DEMAND_COST_SATURATION_MS", 3_600_000)
+"""Total execution time (ms) at which the **D** cost factor saturates: one
+warehouse-hour of cumulative work attributable to one measure."""
+
+MV_DEMAND_BREADTH_SATURATION = _int_env("GSO_MV_DEMAND_BREADTH_SATURATION", 10)
+"""Distinct-user count at which the **D** breadth factor saturates. Breadth is
+what separates a measure the organization depends on from one analyst's habit."""
+
+MV_DEMAND_HALF_LIFE_DAYS = _float_env("GSO_MV_DEMAND_HALF_LIFE_DAYS", 30.0)
+"""Half-life `H` in `D_eff = D * 0.5^(age_days / H)`. POV Part 3: `H ~ 30 days`."""
+
+MV_EMBEDDING_ENDPOINT = os.environ.get(
+    "GSO_MV_EMBEDDING_ENDPOINT",
+    "databricks-gte-large-en",
+)
+"""Foundation Model endpoint for the advisor's **S** signal (POV Part 2:
+1024-dim, 8192-token window). Distinct from the firewall's
+``leakage.EMBEDDING_ENDPOINT`` — GTE does not normalize its vectors and BGE
+does, so the advisor L2-normalizes in our code rather than trusting either."""
+
+MV_ADVISOR_GENERATED_BY = "gwb-mv-advisor@1.0"
+"""``provenance.generated_by`` stamped on every proposal (POV Part 4)."""
