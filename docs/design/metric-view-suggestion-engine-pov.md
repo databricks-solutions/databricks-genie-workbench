@@ -7,8 +7,8 @@
 ## TL;DR
 
 - **Build it as a read-first "advisor" service inside Genie Workbench** that fuses three signal layers — Unity Catalog lineage (deterministic), vector-embedding semantic match, and sqlglot SQL-AST fingerprinting (syntactic) — into a 0–100 confidence score, then emits governed Metric View YAML proposals. Every primitive it needs to *read* exists today, and the picture has improved materially: **Genie's own benchmark evaluation APIs are now in Beta** (create eval run, get eval run, list and get evaluation results), so accuracy measurement no longer needs a bespoke judge harness. The remaining gap is that **no Metric View create/update REST endpoint exists**, so views are created via SQL DDL.
-- **The single highest-precision seed is an already-optimized Genie Space.** Genie Workbench's Auto-Optimize (Genie Space Optimizer, "GSO") pipeline already produces governed joins, metric views, instructions, and trusted-asset SQL as `field_path` + `new_value` patches to `serialized_space`. Harvesting those artifacts is a near-deterministic path to Metric View proposals and should be Phase 1 before any probabilistic matching.
-- **Ship it as a task inside the existing GSO job, not a separate pipeline.** The user experience is a single toggle in the run-config panel — "Suggest metric views" — which, when checked, asks a second question: *where* may the Workbench create them. If the user consents and holds the Unity Catalog privileges, the metric view is **created, attached to the Genie Agent, and then the space is optimized on top of it**. If consent is withheld or the privileges are missing, the run degrades cleanly to suggest-only and renders copy-ready DDL in the optimization output. Consent is scoped to one run and one schema, recorded with the run, and re-verified at preflight.
+- **The single highest-precision seed is an already-optimized Genie Space.** Genie Workbench's Auto-Optimize (Genie Space Optimizer, "GSO") pipeline already produces governed joins, metric views, instructions, and trusted-asset SQL as `field_path` + `new_value` patches to `serialized_space`. Harvesting those artifacts is a near-deterministic path to Metric View proposals and should be Phase 1 before any probabilistic matching. *(Patch shape superseded — see [Appendix A · Delta 3](#delta-3--dict-patches-and-new-patch_types).)*
+- **Ship it as a task inside the existing GSO job, not a separate pipeline.** The user experience is a single toggle in the run-config panel — "Suggest metric views" — which, when checked, asks a second question: *where* may the Workbench create them. If the user consents and holds the Unity Catalog privileges, the metric view is **created, attached to the Genie Agent, and then the space is optimized on top of it**. If consent is withheld or the privileges are missing, the run degrades cleanly to suggest-only and renders copy-ready DDL in the optimization output. Consent is scoped to one run and one schema, recorded with the run, and re-verified at preflight. *(Now a two-run flow — see [Appendix A · Delta 1](#delta-1--two-run-consent-model); consent scoping and re-verification are unchanged.)*
 - **The same profiling output curates Discover.** Domains, subdomains, and Pages are the human-modeled layer of the Genie Ontology, and a Genie Space is already a curated business scope — which makes it the strongest available domain seed. GSO's co-usage, lineage, join-key, and description-embedding signals map onto domain and subdomain proposals; its instruction text, metric-view synonyms, and benchmark evidence map onto Page drafts. Domain *assignment* is automatable today via governed tags and tag automations; domain, subdomain, and Page *creation* is UI-only and is the largest new API ask.
 - **Ground everything in Unity Catalog governance and On-Behalf-Of (OBO) auth.** Suggestions must be computed under the signed-in user's OBO token so row filters, column masks, and BROWSE/SELECT boundaries are respected automatically at query time; the app service principal is a fallback only for org-wide background scans of system tables, with results re-filtered to the viewer.
 
@@ -18,7 +18,7 @@
 
 1. **All read-side metadata primitives exist today.** Metric View definitions are fully retrievable via `DESCRIBE TABLE EXTENDED <mv> AS JSON` — the `view_text` field returns the complete YAML (source, joins, fields, measures) and each column carries a `metadata` field holding agent metadata (synonyms, display_name, format). The JSON output has been available since Databricks Runtime 16.2 and Databricks commits to a *stable* JSON schema, making it safe for automation. Genie Space config is retrievable via `get_space(..., include_serialized_space=True)`, returning `data_sources.tables[].identifier`, `data_sources.metric_views[]`, `instructions.text_instructions`, `instructions.example_question_sqls`, and `benchmarks`. Lineage system tables carry `genie_space_id` inside `entity_metadata`, and `source_type` includes a dedicated `METRIC_VIEW` value — enabling direct graph joins between spaces, physical tables, and metric views.
 
-2. **Accuracy measurement now runs on Genie's own benchmark evaluation, and the APIs for it are Beta.** Genie Workbench no longer scores optimization runs with a separate bank of MLflow judges; it invokes **Genie's native Benchmark Eval runs** and reads their results. Databricks shipped the matching REST surface in 2026: *Create eval run for benchmarks*, *Get benchmark evaluation run*, *List all evaluation runs in the space*, *List benchmark evaluation results*, and *Get benchmark evaluation result details*, all labelled **Beta**. This is the single most consequential change for this design. Grading is now the platform's job, using the platform's own definition of correctness, which means the advisor does not need to defend a bespoke scoring methodology to a customer — it reports the same number the customer sees in the Genie **Evaluations** tab. GSO's remaining job is orchestration, patching, versioning, and the audit trail (still persisted across roughly 15 Delta tables plus Lakebase), not grading.
+2. **Accuracy measurement now runs on Genie's own benchmark evaluation, and the APIs for it are Beta.** Genie Workbench no longer scores optimization runs with a separate bank of MLflow judges; it invokes **Genie's native Benchmark Eval runs** and reads their results. Databricks shipped the matching REST surface in 2026: *Create eval run for benchmarks*, *Get benchmark evaluation run*, *List all evaluation runs in the space*, *List benchmark evaluation results*, and *Get benchmark evaluation result details*, all labelled **Beta**. This is the single most consequential change for this design. Grading is now the platform's job, using the platform's own definition of correctness, which means the advisor does not need to defend a bespoke scoring methodology to a customer — it reports the same number the customer sees in the Genie **Evaluations** tab. GSO's remaining job is orchestration, patching, versioning, and the audit trail (still persisted across roughly 15 Delta tables plus Lakebase), not grading. *(Table count superseded — see [Appendix A · Delta 6](#delta-6--six-delta-tables-extended-additively).)*
 
    The mechanics matter for how lift is attributed. **Chat mode** grading is deterministic: Genie runs the generated SQL and compares the result set against the benchmark question's SQL Answer, and failure is reported with structured assessment reasons — `EMPTY_RESULT`, `RESULT_MISSING_ROWS`, `RESULT_EXTRA_ROWS`, `RESULT_MISSING_COLUMNS`. **Agent mode** grading is LLM-judge based, with an optional evaluation note to steer it. Questions Genie cannot assess, or that lack a SQL Answer, come back flagged **Manual review needed**. An eval run reports `num_questions`, `num_correct`, `num_needs_review`, and `num_done`, with status values including `RUNNING`, `DONE`, `EVALUATION_FAILED`, `EVALUATION_CANCELLED`, and `EVALUATION_TIMEOUT`.
 
@@ -65,8 +65,8 @@
 |---|---|---|---|---|
 | **Genie Benchmark Eval APIs** — create eval run for benchmarks; get eval run; list eval runs in space; list evaluation results; get evaluation result details | REST/SDK | Request: `space_id` + optional list of benchmark question IDs (**all questions if omitted**). Run: `eval_run_id`, `eval_run_status`, `run_by_user`, `created_timestamp`, `num_questions`, `num_correct`, `num_needs_review`, `num_done`. Result detail: benchmark question ID, assessment score, `manually_assessed`, structured assessment reasons | **Beta** | **The accuracy backbone.** Requires CAN EDIT on the space. Chat mode is deterministic result-set comparison; Agent mode is LLM-judge graded with an optional evaluation note. Statuses include `RUNNING`, `DONE`, `NOT_STARTED`, `EVALUATION_FAILED`, `EVALUATION_CANCELLED`, `EVALUATION_TIMEOUT`. Paginated via `next_page_token`. Beta means the contract can change — wrap it behind an adapter |
 | Genie benchmark questions (in `serialized_space.benchmarks`) | REST/SDK | question text, ground-truth SQL answer | **GA** | CAN VIEW. ≤500 benchmark questions per space; each benchmark answer must have exactly one answer with `format = SQL` |
-| GSO run artifacts (`/api/auto-optimize/runs/{run_id}/…`) | Workbench FastAPI + Lakebase/Delta | patch = `field_path` + `new_value`; per-iteration eval-run references; per-question results; strategist suggestions | **Workbench-internal** | OBO for auth, SP for job submission; audit trail across ~15 Delta tables. Role has changed: GSO now **records and correlates** eval-run results rather than producing its own accuracy verdicts |
-| MLflow tracing / experiments | Managed MLflow 3 | run lineage, patch history, parameter and metric logging | **GA** | Still the home for **run provenance and versioning**, not grading. `mlflow.genai.evaluate()` remains available for non-Genie surfaces but is no longer the accuracy source for a Genie Space |
+| GSO run artifacts (`/api/auto-optimize/runs/{run_id}/…`) | Workbench FastAPI + Lakebase/Delta | patch = `field_path` + `new_value`; per-iteration eval-run references; per-question results; strategist suggestions | **Workbench-internal** | OBO for auth, SP for job submission; audit trail across ~15 Delta tables. Role has changed: GSO now **records and correlates** eval-run results rather than producing its own accuracy verdicts. *Endpoint, patch shape and table count superseded — see [Appendix A](#appendix-a--implementation-deltas), Deltas 3, 5 and 6* |
+| MLflow tracing / experiments | Managed MLflow 3 | run lineage, patch history, parameter and metric logging | **GA** | Still the home for **run provenance and versioning**, not grading. `mlflow.genai.evaluate()` remains available for non-Genie surfaces but is no longer the accuracy source for a Genie Space. *Superseded — see [Appendix A · Delta 7](#delta-7--mlflow-is-tracing-only)* |
 | `system.query.history` | System table | `statement_text`, `query_source.genie_space_id`, duration/cost, `executed_by` | **Public Preview** | `statement_text` and `error_message` empty under customer-managed keys |
 
 **Explicit API asks (do not exist today):**
@@ -232,6 +232,8 @@ materialization:
 | **Phase 2 — Embedding-based semantic matching + Discover proposals** | Add the **S** component; raw-table→MV swaps at onboarding; add the `discover_curator` task emitting domain/subdomain proposals and Page drafts (propose-only) | Vector Search or FMAPI `gte-large-en`; governed tags; Phase 1 pipeline | ~6–8 weeks | Embedding drift; synonym sparsity; domain over-fragmentation | Recall lift with no High-tier precision regression; ≥1 domain proposal accepted per estate scan |
 | **Phase 3 — Create, attach, verify, and publish** | LLM-drafted MV YAML validated with `EXPLAIN`; `CREATE VIEW … WITH METRICS`; patch `data_sources.metric_views[]`; re-benchmark and auto-rollback on regression; governed-tag application via tag automations for domain membership; curator publish flow for Pages | FMAPI chat; REFRESH POLICY; DABs; tag automations (Beta); Phase 2 | ~8–10 weeks | Hallucinated measures; surprise full-refresh cost; conflict with trusted assets; UI-only domain/Page creation | ≥90% generated YAML valid on first `EXPLAIN`; measurable benchmark accuracy lift post-attach |
 
+> **Delivery mechanism superseded — see [Appendix A](#appendix-a--implementation-deltas).** The phase scopes, effort, risks and success metrics stand; the "gated task + Lakeflow If/else" framing does not.
+
 ---
 
 ### Part 7 — Native GSO Job Integration: Metric View Suggestions as an Optimizer Task
@@ -259,6 +261,8 @@ Every one of those artifacts is an input the advisor would otherwise have to rec
 The practical consequence: the advisor task is cheap. It performs no table scans of its own beyond an optional `EXPLAIN` and a bounded validation query; everything else is a read of Delta tables the run has already written.
 
 #### 7.2 Where the tasks sit in the DAG
+
+> **Superseded — see [Appendix A · Delta 2](#delta-2--gated-phases-inside-optimize).** The placement rationale below stands and is preserved by the phase ordering; the DAG does not.
 
 The sequencing follows from a product decision: if the user grants write permission, the metric view is **created and attached before the space is optimized**, so the lever loop tunes on top of the governed foundation rather than around it. A metric view is not a config tweak like an instruction edit; it changes the substrate the agent reasons over. Optimizing first and then swapping the substrate would invalidate the tuning you just paid for.
 
@@ -292,6 +296,8 @@ Rationale for that placement:
 - **`lever_loop` uses `run_if: ALL_DONE`** on the advisor and apply edges, so a failed, skipped, or permission-denied metric-view path never fails the optimization run. Metric view suggestions are an enhancement, not a dependency.
 
 #### 7.3 The pre-run consent gate
+
+> **Partly superseded — see [Appendix A · Delta 1](#delta-1--two-run-consent-model).** Both questions, the scoping and the re-verification survive intact; the gate now sits at the trigger of a second run.
 
 The toggle alone is not sufficient, because selecting it implies a write to Unity Catalog that the user has not yet authorized and may not be entitled to make. The run-configuration step therefore asks two separate questions, and conflating them is the most common way this kind of feature goes wrong:
 
@@ -374,6 +380,8 @@ The probe emits a structured result the UI renders and the run records:
 
 #### 7.4 Modes, and what each one does
 
+> **Partly superseded — see [Appendix A · Delta 1](#delta-1--two-run-consent-model).** All three modes survive; `create_and_attach` becomes the second run of a two-run flow rather than a branch within one run.
+
 The consent decision collapses into a single parameter the job reads. Three modes, and the middle one is the one most engagements should use:
 
 | `mv_action_mode` | Behavior | When |
@@ -386,6 +394,8 @@ The consent decision collapses into a single parameter the job reads. Three mode
 
 #### 7.5 What "suggest only" actually renders
 
+> **Not superseded — this section is binding.** Under [Delta 1](#delta-1--two-run-consent-model) it becomes the output contract of *every* first run, so it carries more weight than the original design gave it.
+
 The fallback path is not a consolation prize, and it should not look like one. It is the mode most first runs will use, so the output has to be directly actionable:
 
 - The full `CREATE VIEW … WITH METRICS LANGUAGE YAML` statement, syntax-validated, with a copy button.
@@ -396,6 +406,8 @@ The fallback path is not a consolation prize, and it should not look like one. I
 - A one-click **[Re-run with this metric view]** action that pre-fills the next run config in `create_and_attach` mode against the same target, so the user is one grant away from closing the loop.
 
 #### 7.6 The toggle and consent, end to end
+
+> **Superseded below the UI row — see [Appendix A · Deltas 1, 2 and 5](#appendix-a--implementation-deltas).** The UI layer and the consent-travels-with-the-run rule stand; the endpoint, the If/else operands and the task chain do not.
 
 | Layer | Mechanism | Value |
 |---|---|---|
@@ -413,6 +425,8 @@ Note the documented If/else semantics: `==` and `!=` perform **string** comparis
 **Downgrade, never upgrade.** If preflight re-verification finds the grant has been revoked since configuration, the run silently downgrades to `suggest_only` and records the reason in the output screen. It never escalates in the other direction — a run configured as `suggest_only` cannot become a writing run because a privilege happened to be available.
 
 #### 7.7 Bundle definition
+
+> **Superseded in full — see [Appendix A · Delta 2](#delta-2--gated-phases-inside-optimize).** Retained to show the intended gating semantics; do not implement this YAML — condition tasks, wheel entry points and extra tasks are forbidden by `test_phase7_job_dag.py`.
 
 ```yaml
 resources:
@@ -534,6 +548,8 @@ Three details in that spec are doing real work. `mv_write_gate` reads **prefligh
 
 #### 7.7.1 Task-values contract
 
+> **Mechanism superseded, payload retained — see [Appendix A · Deltas 2 and 4](#delta-2--gated-phases-inside-optimize).** Every field below survives as an artifact payload; the task-value transport does not.
+
 The advisor publishes a small, typed surface so downstream tasks and the app can branch without reading Delta:
 
 ```json
@@ -557,6 +573,8 @@ The advisor publishes a small, typed surface so downstream tasks and the app can
 Only numeric, string, and boolean values are usable inside If/else operands, so keep list-valued fields out of any condition expression and branch on `high_confidence_count` or `advisor_status` instead.
 
 #### 7.8 Create-and-attach flow (`mv_action_mode: create_and_attach`)
+
+> **Step ownership and step 6 superseded — see [Appendix A · Deltas 1 and 3](#delta-1--two-run-consent-model).** All seven steps survive as behavior; steps 1–4 move to the backend under OBO and steps 5–7 become phases in `optimize`.
 
 This runs **before** the lever loop. Steps 1–4 happen in `metric_view_apply`; steps 5–7 in `mv_baseline`.
 
@@ -601,6 +619,8 @@ This runs **before** the lever loop. Steps 1–4 happen in `metric_view_apply`; 
 ```
 
 #### 7.9 Idempotency, cost, and failure isolation
+
+> **Failure-isolation mechanism superseded — see [Appendix A · Delta 2](#delta-2--gated-phases-inside-optimize).** All four requirements hold; `max_retries`/`run_if`/task-value status become per-phase `try/except` plus a Delta status row.
 
 - **Idempotency.** Key every candidate on `sha256(space_id | canonical_measure_expr | sorted_source_set)`. Re-running the job upserts rather than duplicating, and a candidate already rejected by a human stays suppressed until its decay window expires. On the write path, check for an existing object at the target name before creating: a re-run must not produce `discounted_revenue_metrics_2`.
 - **Cost.** In `suggest_only` the task adds a few Delta reads, one embedding batch, and no table scans — negligible against the benchmark executions the run already performs. In `create_and_attach` it adds one validation query per candidate plus one extra eval run (`mv_baseline`), which is the real cost given the ~20 questions/min workspace ceiling. Materialization, if separately consented, adds ongoing pipeline cost that outlives the run — surface an estimate before the user checks that box, not after.
@@ -771,6 +791,8 @@ profile → cluster → propose → dry-run → curator approve → apply member
 
 #### 8.6 Wiring it into the job
 
+> **Superseded — see [Appendix A · Delta 2](#delta-2--gated-phases-inside-optimize).** The curator is a gated phase inside `optimize` on the same terms as the advisor, not a sibling task; the signal-to-artifact mapping in 8.2–8.5 is unaffected.
+
 The curator task is a sibling of the advisor, gated by its own parameter and dependent on the same enrichment output:
 
 ```yaml
@@ -812,7 +834,7 @@ It consumes the advisor's candidate table because a *proposed* metric view is it
 ## Recommendations
 
 1. **Ship Phase 1 as a strictly read-only advisor task, gated by a job parameter, harvesting already-optimized spaces first.** Highest precision, lowest risk, and no new platform capability required. Promote to broader heuristic matching once High-tier precision reaches 70%.
-2. **Grade with Genie's native benchmark eval runs, and store the `eval_run_id`, not a copied score.** The Beta eval-run APIs (create, get, list runs, list results, get result details) removed the need for a parallel judge stack. Keep MLflow for run provenance, patch history, and versioning; stop using it as the accuracy source for a Genie Space. Wrap the Beta endpoints behind a thin adapter so a contract change costs you one file.
+2. **Grade with Genie's native benchmark eval runs, and store the `eval_run_id`, not a copied score.** The Beta eval-run APIs (create, get, list runs, list results, get result details) removed the need for a parallel judge stack. Keep MLflow for run provenance, patch history, and versioning; stop using it as the accuracy source for a Genie Space. Wrap the Beta endpoints behind a thin adapter so a contract change costs you one file. *(The MLflow sentence is superseded — see [Appendix A · Delta 7](#delta-7--mlflow-is-tracing-only); the adapter already exists as the `EvalRunner` seam.)*
 3. **Make the metric view a hypothesis Genie's own evaluation falsifies, not an assertion the advisor makes.** Feeding candidates into the lever loop and re-running the affected benchmark subset is what converts a plausible suggestion into a measured accuracy delta — and because the grader is the platform's, the number needs no defending.
 4. **Gate every write behind a pre-run consent gate, not a mid-run prompt.** Ask for the target `catalog.schema` and probe entitlement *before* the run starts, so nobody discovers a permission problem forty minutes in. Default to `suggest_only`, downgrade automatically when the probe fails, and never upgrade. Keep materialization as a separately checked consent, and on regression **detach the metric view from the space but never auto-drop the Unity Catalog object** — someone may already be pointing a dashboard at it.
 5. **Treat trusted assets and custom instructions as authoritative in conflicts** — surface, adjudicate, log; never overwrite.
@@ -837,3 +859,387 @@ It consumes the advisor's candidate table because a *proposed* metric view is it
 - **The 30-table-per-agent limit** (25 on some older AWS docs) makes metric view consolidation a capacity lever as well as an accuracy one. Validate the exact number per workspace.
 - **Discover, Domains, and Subdomains are Public Preview; Pages and tag automations are Beta; AI-driven domain suggestions are not yet in preview.** Preview features are not covered by compliance certifications, and in workspaces with the compliance security profile enabled some previews may not be available at all. Confirm availability before committing a customer to this workflow.
 - **Domain and Page creation being UI-only is a hard architectural constraint**, not a temporary inconvenience. Design the curator task to produce a reviewed, validated, copy-ready plan, and treat full automation as contingent on the API asks in section 8.7.
+
+---
+
+## Appendix A — Implementation deltas
+
+This appendix supersedes the conflicting parts of Part 7. It exists because Parts 6–8 were
+drafted against a Genie Space Optimizer job that no longer exists: `main` replaced the
+multi-stage wheel DAG with a **linear four-task notebook DAG**, and that replacement is
+enforced by tests that pass today. The original sections are deliberately left in place —
+their reasoning is still the best statement of *why* the feature is shaped this way, and
+most of it survives the mechanical changes untouched.
+
+**Authority order.** Repository code and its tests win over this appendix — per `MV-D4`,
+the rules file and this document are amended and the tests are not; this appendix wins
+over the body of the POV; the body of the POV wins where this appendix is silent. The full
+evidence base is `docs/design/mv-advisor-gap-report.md`, which quotes the current code
+verbatim with line citations.
+
+**Nothing in Part 7's product behavior is negotiated away here.** Every requirement —
+two-question consent, run-and-schema scoping, preflight re-verification,
+downgrade-never-upgrade, the suggest-only output contract, detach-never-drop, the leakage
+firewall, and the "Lift not measured" label — survives intact. What changes is *where the
+code runs and what it writes to*. See [Preserved product behavior](#preserved-product-behavior)
+for the explicit checklist.
+
+### A note on decision numbering
+
+Three separate `D`-numbered decision sets are in circulation, and conflating them will
+cause real errors:
+
+| Namespace | Where it is recorded | Example |
+|---|---|---|
+| **MV advisor playbook** `MV-D1`–`MV-D6` | `docs/design/mv-advisor-playbook.md`, "Decisions from the Prompt 0 recon" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks |
+| **GSO v2 playbook** `GSO v2 D1`–`GSO v2 D9` | Cited throughout the optimizer code; reconstructed in gap report §4. The defining file `GSO_OPTIMIZER_V2_TODO.md` is **not checked in** | `GSO v2 D1` = the native Benchmark Eval API is the sole eval runner; `GSO v2 D9` = linear DAG, no condition tasks, no task values |
+| **Baseline-eval-fix plan** `applier.py D1`–`applier.py D3` | `optimization/applier.py:358` | Quality-instruction policies (`mv_preference`, `column_ordering`, …) |
+
+Every decision citation in this appendix carries its namespace prefix — `MV-D2`,
+`GSO v2 D9`, `applier.py D2` — and a bare `D<number>` appears nowhere outside the table
+above. The collision is not hypothetical: `GSO v2 D1` and `MV-D1` are different decisions
+about different subjects, and gap report §4 records `GSO v2 D4`, `GSO v2 D5` and
+`GSO v2 D6` as having **zero citations anywhere in the repository** — they are unrelated to
+`MV-D4`–`MV-D6`, which are defined in the MV advisor playbook and are used here.
+
+Deltas 1 through 3 carry `MV-D` identifiers and between them cover `MV-D1`, `MV-D2`,
+`MV-D3`, `MV-D5` and `MV-D6`; `MV-D4` governs this appendix's existence and is cited in the
+authority note above. Deltas 4 through 7 record repo facts established by the gap report
+rather than decisions taken in the playbook, so they cite the gap report instead — that is
+a difference in provenance, not an omission.
+
+---
+
+#### Delta 1 — Two-run consent model
+
+*(`MV-D1`. Supersedes: TL;DR bullet 3, 7.3 step 4–5, 7.4, 7.6, 7.8 steps 1–7 ownership.)*
+
+**What changes.** Part 7 assumed one run that creates a metric view mid-flight, attaches it,
+and then optimizes on top. That is not implementable: **the GSO job runs as the service
+principal**, so the user's OBO token does not exist inside it, and Part 5's rule that "the
+SP is never a write path for metric views" would be violated the moment the job issued
+`CREATE VIEW … WITH METRICS`. Create-and-attach therefore splits across two runs, with the
+UC write hoisted into the FastAPI backend where the OBO token actually lives.
+
+**Run 1 — advise.** The user enables suggestions. The run is *always* effectively
+`suggest_only` regardless of entitlement, because nothing can be created from inside the
+job. The advisor phase proposes candidates, and the run output renders the full §7.5
+contract: validated DDL, the `GRANT`, the would-be patch as a diff, the evidence block,
+and **"Lift not measured"**. No UC write, no space patch.
+
+**Between runs — consent.** The user reviews candidates in the run output, selects which to
+adopt, picks the target `catalog.schema`, and consents. The entitlement probe runs under
+OBO via `require_obo_workspace_client` (`backend/services/auth.py:117-127`), which — unlike
+`get_workspace_client` — never falls back to the service principal. The probe is **new OBO
+code**; `GET /api/auto-optimize/permissions/{space_id}` must not be reused for it, because
+it probes the SP's privileges rather than the user's.
+
+**Run 2 — adopt.** At `POST /api/auto-optimize/trigger`, *before the job is submitted*, the
+backend re-verifies the probe and executes `CREATE VIEW … WITH METRICS LANGUAGE YAML`
+under OBO in the consented schema and nowhere else. Only on success does it call
+`run_now`, passing the created identifiers and the consent record as job parameters. The
+job — as SP — then attaches the view by patch, measures, and reverts on regression: all
+writes it already performs today.
+
+| Step | Identity | Where |
+|---|---|---|
+| Propose candidates, render DDL | SP (job) | `optimize` task, advisor phase |
+| Entitlement probe | **OBO** | FastAPI, new route |
+| Record consent | OBO | FastAPI, persisted with the run |
+| `CREATE VIEW … WITH METRICS` | **OBO** | FastAPI, at trigger time, before `run_now` |
+| Attach to space (patch) | SP (job) | `optimize` task, attach phase |
+| Isolated lift eval | SP (job) | `optimize` task, eval phase |
+| Detach on regression | SP (job) | snapshot revert |
+| Drop the UC object | **OBO** | explicit backend endpoint, user-initiated only |
+
+**Why this is better than it looks.** §7.5 already specified a one-click
+**[Re-run with this metric view]** action that pre-fills the next run in `create_and_attach`
+mode. The two-run model makes that the primary path rather than a fallback, and it gives
+the user something the single-run design could not: a review step between seeing a proposal
+and having an object in their catalog.
+
+**Lift attribution is preserved without `mv_baseline`.** Run 2 evaluates iteration 0 with
+the view created but **not yet attached**, applies the attach patch, then evaluates again
+before any lever fires. That delta is the isolated metric-view contribution — exactly what
+§7.2 and §7.8 step 7 required, obtained from two in-process eval runs rather than a
+separate task. Both go through the `EvalRunner` seam (`optimization/eval_runner.py`); no
+second adapter, no raw SDK eval calls.
+
+**Downgrade, never upgrade — unchanged and now easier to enforce.** If re-verification at
+trigger time fails, the backend does not create, and submits the job in `suggest_only`.
+A run configured as `suggest_only` can never become a writing run. Because the write
+decision is made in one place, before submission, there is no mid-run state in which a
+downgrade can be missed.
+
+**`sandbox` mode survives** as the one exception to detach-never-drop: the backend creates
+in a scratch schema and auto-drop is correct there, because the schema exists only for the
+run. Outside sandbox, the job never drops.
+
+**Materialization stays a separate consent** (`mv_materialize`), never bundled with
+create-or-attach. The `EXPLAIN CREATE MATERIALIZED VIEW` precheck runs in the backend
+alongside the create, per §7.8 step 3.
+
+---
+
+#### Delta 2 — Gated phases inside optimize
+
+*(`MV-D3`; `MV-D5` for the job-parameter lockstep. Supersedes: 7.2 DAG, 7.6 rows "Job"/"Tasks", 7.7 bundle YAML, 7.7.1 transport, 7.9 failure isolation, 8.6.)*
+
+**What changes.** `mv_gate`, `metric_view_advisor`, `mv_write_gate`, `metric_view_apply`,
+`mv_baseline` and `discover_gate` are **not tasks**. Metric-view work runs as gated phases
+inside the existing `optimize` task. The job DAG is unchanged:
+
+```
+intake_and_snapshot → benchmark_qc_and_repair → optimize → publish_and_audit
+```
+
+Three mechanisms Part 7 relies on are each independently forbidden by a passing test in
+`packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py`. Per `MV-D4` the feature
+conforms to those tests; they are not weakened or deleted:
+
+| Part 7 mechanism | Prohibiting test |
+|---|---|
+| `condition_task` gates (`mv_gate`, `mv_write_gate`, `discover_gate`) | `test_no_condition_tasks` — also asserts every task is a `notebook_task` |
+| `{{tasks.X.values.Y}}` handoff | `test_no_dbutils_notebook_run_or_task_values_in_new_notebooks` |
+| Extra tasks / `run_if: ALL_DONE` edges | `test_dependencies_form_a_linear_chain`, `test_deploy_and_legacy_tasks_removed` |
+
+`python_wheel_task` is equally unavailable: all four tasks are notebooks and the package
+declares no `[project.scripts]` entry points.
+
+**Gating.** Each phase begins with an ordinary `if` on a job parameter read via
+`dbutils.widgets`. A string comparison against `"true"` is still the right test — Part 7's
+fail-closed reasoning about string operands carries over unchanged; it is simply an `if`
+in Python rather than an If/else task.
+
+**Failure isolation.** Every phase is wrapped in `try/except`. On failure the phase
+persists a status row to Delta and **the optimization continues**; nothing raises across a
+phase boundary. This delivers §7.9's requirement — advisor failure, consent withheld, and
+write failure must all leave the optimization intact — without `max_retries` or
+`run_if: ALL_DONE`.
+
+**Phase order inside `optimize`**, preserving §7.2's rationale that the foundation changes
+before tuning begins:
+
+```
+[enrichment / lever 0, existing]
+   → mv_advise      (propose; always runs when enabled, in every mode)
+   → mv_attach      (run 2 only; attach patch for views the backend created)
+   → mv_isolate     (eval; the isolated metric-view delta — replaces mv_baseline)
+   → [unified lever loop, existing]
+   → mv_revert      (detach on regression; snapshot revert, never a drop)
+```
+
+`mv_advise` runs identically in every mode, so — exactly as §7.7 intended — the expensive
+analysis is never wasted when consent is absent, and `suggest_only` output is precisely
+what run 2 would have written.
+
+**Job parameters (`MV-D5`).** Any new parameter must be added in **lockstep to all four** of
+`databricks.yml`, `packages/genie-space-optimizer/databricks.yml`,
+`scripts/deploy_lib/gso_job.py`, and the `run_now` map in
+`packages/genie-space-optimizer/src/genie_space_optimizer/backend/job_launcher.py`, plus a
+`dbutils.widgets` declaration in each consuming notebook. `run_now` rejects undeclared
+keys, so the launcher set must stay a subset of the three job definitions. Because §7.7
+proposes seven scalars and each costs roughly twelve coordinated edits, **prefer a single
+JSON-encoded `mv_config` parameter** parsed and validated in the notebook — this also suits
+`mv_consent`, which is already JSON.
+
+---
+
+#### Delta 3 — Dict patches and new PATCH_TYPES
+
+*(`MV-D2`; `MV-D6` for rollback. Supersedes: 7.8 step 6 and the patch JSON at the end of 7.8; TL;DR bullet 2.)*
+
+**What changes.** There is no `field_path` + `new_value` patch model in this repository —
+`field_path` does not appear anywhere in the optimizer source. Patches are dicts:
+
+| Part 7 field | Repo equivalent |
+|---|---|
+| `field_path` | `type` (a key in `PATCH_TYPES`) **plus** `target` (the asset identifier) |
+| `new_value` | `new_text`, with `old_text` carrying the prior value |
+| `operation` | `op` on the rendered command: `add` / `update` / `remove` / `update_section` / `rewrite` |
+
+The §7.8 patch becomes, in shape:
+
+```json
+{
+  "type": "attach_metric_view",
+  "target": "finance.sales.discounted_revenue_metrics",
+  "new_text": "finance.sales.discounted_revenue_metrics",
+  "old_text": "",
+  "lever": 2,
+  "risk_level": "…",
+  "grounded_in": ["bmk_12", "bmk_31", "bmk_44"]
+}
+```
+
+The rich `gate` block from §7.8 — consent, probe id, both eval-run ids, accuracies,
+`tables_freed`, `on_regression` — is retained as patch provenance and run state, not
+discarded.
+
+**This delta fixes a live bug, not just a naming mismatch.** The Lever-2 metric-view patch
+types already exist in `PATCH_TYPES` and render commands, but `_apply_action_to_config`
+treats `mv_measures`, `mv_dimensions` and `mv_yaml` as **config-level no-ops**, and nothing
+in the codebase attaches a metric view to a space at all: `add_table`/`remove_table` mutate
+`data_sources.tables` only. A new MV patch type must therefore ship **a real applier that
+mutates `data_sources.metric_views`**.
+
+Four registration points, all required:
+
+1. `PATCH_TYPES` in `common/config.py` — declare the type.
+2. `_ALLOWED_PATCH_TYPES` in `optimization/unified_loop.py` — the live loop allowlist, which
+   today contains eleven types and no metric-view type. A type absent here is silently
+   never applied.
+3. `_apply_action_to_config` in `optimization/applier.py` — the real applier. The companion
+   raw-table removal from §7.8 can reuse the existing `remove_table` branch, which must also
+   be added to the allowlist.
+4. `_PATCH_TEXT_FIELDS` in `optimization/leakage.py` — **mandatory**. MV proposals carry
+   `comment`, `display_name` and `synonyms`, all free text, and the firewall currently
+   covers only the two example-SQL patch types. Extend the existing scanner; do not write a
+   second one.
+
+**Rollback (`MV-D6`).** Detach-on-regression is implemented as whole-snapshot revert
+(`integration/revert.py`), which is how rollback works throughout this codebase. The UC
+object is never auto-dropped outside sandbox mode; a drop is an explicit backend OBO
+endpoint, user-initiated. Note the consequence Part 7 did not anticipate: a snapshot revert
+also reverts unrelated patches from the same iteration. If per-patch detach is required,
+that is new machinery and needs its own decision.
+
+---
+
+#### Delta 4 — Artifacts in genie_opt_artifacts
+
+*(No `MV-D` — repo fact per gap report §1.6; `GSO v2 D9` for Delta-by-`run_id` handoff. Supersedes: 7.7.1 transport and `ddl_artifact_path`.)*
+
+**What changes.** There is no Volumes convention for run artifacts — `/Volumes` appears
+nowhere in the optimizer source, and the only real Volumes use in the repo is the GSO wheel
+upload path. Cross-phase and cross-task state goes to the `genie_opt_artifacts` Delta
+table, keyed by `run_id`.
+
+The entire §7.7.1 payload survives **as a payload**; only the transport changes. Write it
+with `write_required_artifact` under a new `artifact_kind` (proposed: `mv_advisor`), and
+read it downstream with `load_latest_artifact_record` behind a missing-record gate. The
+`benchmark_qc` handoff is the worked precedent, and its read ordering — load, then
+missing-record gate, then payload, then eligibility gate — is itself pinned by
+`test_benchmark_qc_is_a_required_verified_handoff`. Follow that shape.
+
+Two fields map onto columns that already exist rather than needing invention:
+
+- `ddl_artifact_path` → the DDL text lives in the artifact payload; there is no path.
+- The §7.9 idempotency key `sha256(space_id | canonical_measure_expr | sorted_source_set)`
+  → `genie_opt_artifacts.content_hash`, which exists for exactly this purpose.
+
+Part 7's closing note that "only numeric, string, and boolean values are usable inside
+If/else operands" is moot: there are no If/else tasks, so list-valued fields such as
+`created_metric_views` and `space_patch_ids` need no special handling.
+
+---
+
+#### Delta 5 — The run-start endpoint
+
+*(No `MV-D` — repo fact per gap report §1.7. Supersedes: 7.6 "App API" row; the §1c GSO run-artifacts row.)*
+
+**What changes.** The route is **`POST /api/auto-optimize/trigger`**, not
+`POST /api/auto-optimize/runs`. Extend its inline `TriggerRequest` model in
+`backend/routers/auto_optimize.py` with the metric-view fields; **never add a parallel
+start endpoint**. All routes stay under the existing `/api/auto-optimize` router prefix.
+
+The §7.6 request body is otherwise correct as a payload. Under [Delta 1](#delta-1--two-run-consent-model)
+this same endpoint also performs the OBO create before submitting the job, which makes it
+the single place where the write decision is made.
+
+Two genuinely new OBO-only routes are required — the entitlement probe and the explicit
+drop. Both are new code rather than extensions of anything existing, and **their names are
+not yet decided**: this repository's convention is to not invent endpoint names in a design
+doc. See gap report §3 for the open naming decisions.
+
+---
+
+#### Delta 6 — Six Delta tables, extended additively
+
+*(No `MV-D` — repo fact per gap report §1.6. Supersedes: Key Finding 2 and the §1c row, both of which say "roughly 15 Delta tables".)*
+
+**What changes.** A GSO run writes **six** `genie_opt_*` tables, defined in one place
+(`optimization/ddl.py`): `genie_opt_runs`, `genie_opt_stages`, `genie_opt_iterations`,
+`genie_opt_patches`, `genie_opt_benchmark_mutations`, `genie_opt_artifacts`. Two more exist
+outside that registry — `genie_opt_scan_snapshots` and the per-domain
+`genie_benchmarks_{domain}` — for eight in total, not fifteen. They live in
+`{GSO_CATALOG}.{GSO_SCHEMA}`, so Part 7's `main.genie_workbench.mv_candidates` is wrong in
+both prefix and location.
+
+**Prefer extending the six over adding a seventh.** Candidates and DDL belong in
+`genie_opt_artifacts` under a new `artifact_kind` ([Delta 4](#delta-4--artifacts-in-genie_opt_artifacts)).
+The consent record, requested mode, effective mode and downgrade reason belong as new
+columns on `genie_opt_runs`.
+
+**Schema evolution is additive and never automatic-destructive.** Adding a column means
+editing the `CREATE` DDL string, appending to `ADDITIVE_COLUMN_MIGRATIONS`, wiring the
+writer, extending the Workbench API model, and adding tests — all in one commit. Adding a
+table means a name constant, a DDL string, and registration in `_ALL_DDL`; column
+migrations only apply to tables already registered there. Never drop or rename a
+historical table or column.
+
+Lakebase is a separate store — the app's own Postgres, holding scan results, starred
+spaces and watch caches. It is not where GSO run state lives, and the synced-table readers
+for GSO Delta tables are currently disabled behind a flag.
+
+---
+
+#### Delta 7 — MLflow is tracing-only
+
+*(No `MV-D` — repo fact per gap report §4, `GSO v2 D3`. Supersedes: the §1c MLflow row and the MLflow half of Recommendation 2.)*
+
+**What changes.** MLflow is **decommissioned in GSO except for tracing**. There are no
+experiments, no registry, no judges. Part 7's claim that MLflow is "still the home for run
+provenance and versioning" is not true of this codebase: tracking and versioning are
+Delta-only. There is no MLflow `LoggedModel` snapshot, no UC Model Registry version, and no
+per-mutation MLflow run; the champion iteration is selected from `genie_opt_iterations` and
+marked in Delta.
+
+Metric-view provenance therefore goes to Delta — `genie_opt_patches` for the patch and its
+provenance chain, `genie_opt_runs` for consent and mode, `genie_opt_artifacts` for
+candidates and DDL. The POV's own Caveat that "public write-ups describing a bank of
+automated MLflow judges reflect an earlier architecture" is correct, and this is the
+decision behind it.
+
+Recommendation 2's other half stands and is already implemented: grade with native
+benchmark eval runs, store the `eval_run_id`, and keep the Beta endpoints behind a thin
+adapter. That adapter exists as the `EvalRunner` seam, and `eval_run_id` is already a
+persisted column on `genie_opt_iterations`.
+
+---
+
+### Preserved product behavior
+
+Every item below is a requirement of the original design that survives these deltas
+unchanged. Implementation must satisfy all of them.
+
+| Requirement | Source | How it is preserved |
+|---|---|---|
+| Two separate questions: consent (authorization) and privileges (entitlement) | 7.3 | Both asked before run 2; probe under OBO |
+| Consent scoped to one run and one `catalog.schema` | 7.3, Part 5 | Recorded with the run, carried as a job parameter, not read from app state |
+| Consent re-verified before any write | 7.6, 7.8 step 1 | Re-verified at trigger time, immediately before the OBO create |
+| **Downgrade, never upgrade** | 7.6, Recommendation 4 | Probe failure ⇒ backend does not create and submits `suggest_only`; no path upgrades a run |
+| Write to the consented schema **and nowhere else** | 7.8 step 4 | Backend create targets the recorded schema; a failed write is a downgrade, never a retry somewhere more permissive |
+| The SP is never a write path for metric views | Part 5 | The UC create is OBO-only in the backend; the job never issues MV DDL |
+| Suggest-only renders DDL, `GRANT`, patch diff, evidence | 7.5 | Unchanged, and now the output contract of every first run |
+| **"Lift not measured"** label | 7.5, Part 4 | Mandatory on every run-1 output; never present a projected gain for an unevaluated view |
+| Isolated metric-view lift, measured before tuning | 7.2, 7.8 step 7 | Two in-process eval runs in run 2, pre- and post-attach, before the lever loop |
+| **Detach automatically, never auto-drop** | 7.8, Recommendation 4 | Regression ⇒ snapshot revert; drop is an explicit user-initiated OBO endpoint |
+| Sandbox mode may auto-drop | 7.4 | The one exception; scratch schema exists only for the run |
+| Materialization is a separate consent | 7.4, Caveats | `mv_materialize` never bundled with create or attach |
+| `EXPLAIN` precheck before materializing | 7.8 step 3 | Runs in the backend alongside the create |
+| Leakage / PII firewall on everything shipped | 7.8, 8.5, Recommendation 7 | Extend `optimization/leakage.py`; new text-carrying patch types must register in it |
+| Benchmark questions stay evaluation-only | Caveats | Firewall covers MV comments and Page bodies alike |
+| Metric-view path never fails the optimization | 7.9 | Per-phase `try/except` plus a Delta status row |
+| Cap creations per run; idempotent candidates | 7.8 step 2, 7.9 | Unchanged; `content_hash` supplies the dedup key |
+| Full auditability of mode, consent, probe, identity | 7.9 | Persisted to `genie_opt_runs` and `genie_opt_patches` |
+| Conflicts surfaced, adjudicated, never auto-resolved | Part 5, Recommendation 5 | Unaffected by these deltas |
+
+### What this appendix does not decide
+
+Open items, deferred to `docs/design/mv-advisor-gap-report.md` §3: names for the two new
+OBO routes and the new patch types; whether metric-view parameters ship as one JSON blob or
+several scalars; whether run 2's isolated lift eval is worth its cost against the
+~20 questions/min workspace ceiling; and whether per-patch detach is built or whole-snapshot
+revert is accepted. Per repository convention, none of these names should be invented in a
+design document — decide them, then implement.
