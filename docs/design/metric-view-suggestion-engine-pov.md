@@ -1,0 +1,839 @@
+# Automated Metric View Suggestion Engine for Databricks AI/BI Genie — Point of View & Architectural Solution Design
+
+*Prepared from the perspective of a Principal Data Architect / AI Product Strategist for the Databricks ecosystem. Scope: an in-app intelligence feature inside Genie Workbench (`databricks-solutions/databricks-genie-workbench`) that analyzes Genie Spaces and auto-recommends, maps, and generates Unity Catalog Metric Views — delivered as a toggleable task inside the existing Genie Space Optimizer job, and extended to curate Discover domains, subdomains, and Pages from the same profiling output. Product status as of mid-2026 is flagged throughout as GA / Public Preview / Beta / Private Preview / Undocumented / API-Ask.*
+
+---
+
+## TL;DR
+
+- **Build it as a read-first "advisor" service inside Genie Workbench** that fuses three signal layers — Unity Catalog lineage (deterministic), vector-embedding semantic match, and sqlglot SQL-AST fingerprinting (syntactic) — into a 0–100 confidence score, then emits governed Metric View YAML proposals. Every primitive it needs to *read* exists today, and the picture has improved materially: **Genie's own benchmark evaluation APIs are now in Beta** (create eval run, get eval run, list and get evaluation results), so accuracy measurement no longer needs a bespoke judge harness. The remaining gap is that **no Metric View create/update REST endpoint exists**, so views are created via SQL DDL.
+- **The single highest-precision seed is an already-optimized Genie Space.** Genie Workbench's Auto-Optimize (Genie Space Optimizer, "GSO") pipeline already produces governed joins, metric views, instructions, and trusted-asset SQL as `field_path` + `new_value` patches to `serialized_space`. Harvesting those artifacts is a near-deterministic path to Metric View proposals and should be Phase 1 before any probabilistic matching.
+- **Ship it as a task inside the existing GSO job, not a separate pipeline.** The user experience is a single toggle in the run-config panel — "Suggest metric views" — which, when checked, asks a second question: *where* may the Workbench create them. If the user consents and holds the Unity Catalog privileges, the metric view is **created, attached to the Genie Agent, and then the space is optimized on top of it**. If consent is withheld or the privileges are missing, the run degrades cleanly to suggest-only and renders copy-ready DDL in the optimization output. Consent is scoped to one run and one schema, recorded with the run, and re-verified at preflight.
+- **The same profiling output curates Discover.** Domains, subdomains, and Pages are the human-modeled layer of the Genie Ontology, and a Genie Space is already a curated business scope — which makes it the strongest available domain seed. GSO's co-usage, lineage, join-key, and description-embedding signals map onto domain and subdomain proposals; its instruction text, metric-view synonyms, and benchmark evidence map onto Page drafts. Domain *assignment* is automatable today via governed tags and tag automations; domain, subdomain, and Page *creation* is UI-only and is the largest new API ask.
+- **Ground everything in Unity Catalog governance and On-Behalf-Of (OBO) auth.** Suggestions must be computed under the signed-in user's OBO token so row filters, column masks, and BROWSE/SELECT boundaries are respected automatically at query time; the app service principal is a fallback only for org-wide background scans of system tables, with results re-filtered to the viewer.
+
+---
+
+## Key Findings
+
+1. **All read-side metadata primitives exist today.** Metric View definitions are fully retrievable via `DESCRIBE TABLE EXTENDED <mv> AS JSON` — the `view_text` field returns the complete YAML (source, joins, fields, measures) and each column carries a `metadata` field holding agent metadata (synonyms, display_name, format). The JSON output has been available since Databricks Runtime 16.2 and Databricks commits to a *stable* JSON schema, making it safe for automation. Genie Space config is retrievable via `get_space(..., include_serialized_space=True)`, returning `data_sources.tables[].identifier`, `data_sources.metric_views[]`, `instructions.text_instructions`, `instructions.example_question_sqls`, and `benchmarks`. Lineage system tables carry `genie_space_id` inside `entity_metadata`, and `source_type` includes a dedicated `METRIC_VIEW` value — enabling direct graph joins between spaces, physical tables, and metric views.
+
+2. **Accuracy measurement now runs on Genie's own benchmark evaluation, and the APIs for it are Beta.** Genie Workbench no longer scores optimization runs with a separate bank of MLflow judges; it invokes **Genie's native Benchmark Eval runs** and reads their results. Databricks shipped the matching REST surface in 2026: *Create eval run for benchmarks*, *Get benchmark evaluation run*, *List all evaluation runs in the space*, *List benchmark evaluation results*, and *Get benchmark evaluation result details*, all labelled **Beta**. This is the single most consequential change for this design. Grading is now the platform's job, using the platform's own definition of correctness, which means the advisor does not need to defend a bespoke scoring methodology to a customer — it reports the same number the customer sees in the Genie **Evaluations** tab. GSO's remaining job is orchestration, patching, versioning, and the audit trail (still persisted across roughly 15 Delta tables plus Lakebase), not grading.
+
+   The mechanics matter for how lift is attributed. **Chat mode** grading is deterministic: Genie runs the generated SQL and compares the result set against the benchmark question's SQL Answer, and failure is reported with structured assessment reasons — `EMPTY_RESULT`, `RESULT_MISSING_ROWS`, `RESULT_EXTRA_ROWS`, `RESULT_MISSING_COLUMNS`. **Agent mode** grading is LLM-judge based, with an optional evaluation note to steer it. Questions Genie cannot assess, or that lack a SQL Answer, come back flagged **Manual review needed**. An eval run reports `num_questions`, `num_correct`, `num_needs_review`, and `num_done`, with status values including `RUNNING`, `DONE`, `EVALUATION_FAILED`, `EVALUATION_CANCELLED`, and `EVALUATION_TIMEOUT`.
+
+3. **AST fingerprinting is the right mechanism to detect un-governed measures.** sqlglot parses the Databricks/Spark dialect, canonicalizes queries (alias renaming by first appearance, flattening and sorting of AND predicates, literal normalization, whitespace and case stripping), and lets you fingerprint recurring `SUM(CASE WHEN … THEN … END)` formulas, GROUP BY sets, filter predicates, and join keys across query history and benchmarks. Recurrent fingerprints with no governed Metric View equivalent are the highest-value proposals.
+
+4. **The enterprise text-to-SQL cliff justifies the whole effort.** Per Lei et al., "Spider 2.0" (arXiv:2411.07763, ICLR 2025), an o1-preview code-agent framework solves only 21.3% of tasks, against 91.2% on Spider 1.0 and 73.0% on BIRD. Governed semantic layers are the documented remedy: Databricks' Genie best-practices guidance states that metric views are particularly effective for Genie Agents because they pre-define metrics, dimensions, and aggregations, and thereby improve response accuracy — precisely by removing the measure ambiguity that drives most benchmark failures.
+
+5. **Materialization cost is now predictable and must be governed by policy.** Metric View materialization builds a managed Lakeflow Spark Declarative pipeline. The `REFRESH POLICY` clause offers four values — `AUTO` (cost-model default), `INCREMENTAL` (soft, falls back to full), `INCREMENTAL STRICT` (fails rather than silently full-recomputing), and `FULL` — and `EXPLAIN CREATE MATERIALIZED VIEW` previews incremental eligibility (naming blockers like `ROW_TRACKING_NOT_ENABLED`, `WINDOW_WITHOUT_PARTITION_BY`, `EXPRESSION_NOT_DETERMINISTIC`) before you commit. Proposals should ship with a pre-checked eligibility guarantee and a safe default policy.
+
+6. **Lakeflow Jobs already supports everything the "single toggle" needs.** Job parameters (`{{job.parameters.<name>}}`), task values (`{{tasks.<task>.values.<name>}}`), the **If/else condition task**, **Run if** dependency modes, and task disablement are all documented GA control-flow primitives. A conditional optimizer task requires no new platform capability — only a job-definition change in the bundle.
+
+7. **Discover, Domains, and Subdomains reached Public Preview in July 2026; Pages are in Beta.** Domains are an organization layer built on **governed tags**; subdomains follow a required `{parentDomainTag}/{subdomainName}` convention with exactly one level of nesting, one parent per subdomain, and many-to-many asset membership. A Page is a governed, authoritative definition of a business concept, organized under a domain or subdomain. Genie One prioritizes a Page's definition over context it infers automatically and cites the Page in its answer — which makes Page curation a direct, measurable accuracy lever, not just documentation hygiene.
+
+8. **Domain membership is automatable; domain creation is not.** Assigning an asset to a domain means applying the corresponding governed tag, which is fully scriptable via `ALTER … SET TAGS` (DBR 13.3+) or `SET TAG` (DBR 16.1+), subject to `ASSIGN` on the governed tag. **Tag automations** (Beta) can assign or remove governed tags on tables and volumes at scale from declarative rules, with a dry-run preview. But creating a domain, subdomain, Page, or custom Discover section is a UI action with no documented public REST API — the single largest gap in the Discover half of this design.
+
+---
+
+## Details
+
+### Part 1 — System Tables & API Ecosystem Analysis
+
+#### 1a. Metric View metadata
+
+| Source | Type | Key fields | Status | Permissions | Limitations / notes |
+|---|---|---|---|---|---|
+| `DESCRIBE TABLE EXTENDED <catalog.schema.mv> AS JSON` | SQL | `view_text` (full YAML: source, joins, fields, measures), per-column `metadata` (synonyms, display_name, format) | **GA** (JSON since DBR 16.2; schema stable) | SELECT on MV; USE CATALOG + USE SCHEMA | Create/manage requires DBR 17.2+; measures/dimensions only decomposed via the YAML in `view_text` |
+| `system.access.table_lineage` / `system.access.column_lineage` | System table | `source_table_full_name`, `source_type` (incl. `METRIC_VIEW`, `MATERIALIZED_VIEW`, `STREAMING_TABLE`), `entity_metadata.genie_space_id` | **GA** | Admin, or per-user dynamic view; BROWSE/SELECT on objects | Lineage system tables retain a rolling 1-year window; Catalog Explorer/lineage API retain indefinitely after 2024-09-01 |
+| `system.information_schema.*` | System table | tables, columns, views, `table_tags`, `column_tags` | **GA** | UC object privileges | Does not decompose metric-view semantics; `table_tags` is the reconstruction surface for domain membership (see Part 8) |
+| Unity Catalog Tables API (`GET /api/2.1/unity-catalog/tables`) | REST/SDK | `table_type`, `view_definition`, comment, properties, owner | **GA** | SELECT/BROWSE | Doesn't expand YAML measures; use `DESCRIBE … AS JSON` |
+| Table Insights / column-level popularity | Catalog Explorer UI (derived signal) | relative column popularity | **Preview / UI** | UC object privileges | **API-Ask:** no documented stable queryable system table; approximate via `column_lineage` counts |
+
+#### 1b. Genie Space configuration
+
+| Source | Type | Key fields | Status | Permissions | Limitations / notes |
+|---|---|---|---|---|---|
+| Genie `get_space(include_serialized_space=True)` | REST/SDK | `data_sources.tables[].identifier`/`description`/`column_configs`, `data_sources.metric_views[]`, `instructions.text_instructions`, `instructions.example_question_sqls`, `benchmarks`, `config.sample_questions` | **GA** | CAN VIEW/RUN on space; SELECT on objects | `serialized_space` is an escaped JSON string, schema `version: 2`; round-trippable via Create/Update |
+| Genie Conversation API | REST/SDK | generated SQL, result set, status | **GA** | CAN RUN; DBSQL entitlement; warehouse CAN USE | Async — poll every 1–5s, cap ~10 min |
+| Genie Management/CRUD | REST/SDK | `serialized_space` round-trip | **GA** | CAN MANAGE | **30 tables or views per Genie Agent** (older AWS setup page lists 25 — validate per workspace). This limit is a capacity lever, see Part 7 |
+| Genie throughput limits | Platform | — | **GA / Public Preview (API tier)** | — | ~20 questions/min/workspace across spaces; API free tier ~5/min; 10,000 conversations/space |
+
+#### 1c. Genie Workbench evaluation runs
+
+| Source | Type | Key fields | Status | Notes |
+|---|---|---|---|---|
+| **Genie Benchmark Eval APIs** — create eval run for benchmarks; get eval run; list eval runs in space; list evaluation results; get evaluation result details | REST/SDK | Request: `space_id` + optional list of benchmark question IDs (**all questions if omitted**). Run: `eval_run_id`, `eval_run_status`, `run_by_user`, `created_timestamp`, `num_questions`, `num_correct`, `num_needs_review`, `num_done`. Result detail: benchmark question ID, assessment score, `manually_assessed`, structured assessment reasons | **Beta** | **The accuracy backbone.** Requires CAN EDIT on the space. Chat mode is deterministic result-set comparison; Agent mode is LLM-judge graded with an optional evaluation note. Statuses include `RUNNING`, `DONE`, `NOT_STARTED`, `EVALUATION_FAILED`, `EVALUATION_CANCELLED`, `EVALUATION_TIMEOUT`. Paginated via `next_page_token`. Beta means the contract can change — wrap it behind an adapter |
+| Genie benchmark questions (in `serialized_space.benchmarks`) | REST/SDK | question text, ground-truth SQL answer | **GA** | CAN VIEW. ≤500 benchmark questions per space; each benchmark answer must have exactly one answer with `format = SQL` |
+| GSO run artifacts (`/api/auto-optimize/runs/{run_id}/…`) | Workbench FastAPI + Lakebase/Delta | patch = `field_path` + `new_value`; per-iteration eval-run references; per-question results; strategist suggestions | **Workbench-internal** | OBO for auth, SP for job submission; audit trail across ~15 Delta tables. Role has changed: GSO now **records and correlates** eval-run results rather than producing its own accuracy verdicts |
+| MLflow tracing / experiments | Managed MLflow 3 | run lineage, patch history, parameter and metric logging | **GA** | Still the home for **run provenance and versioning**, not grading. `mlflow.genai.evaluate()` remains available for non-Genie surfaces but is no longer the accuracy source for a Genie Space |
+| `system.query.history` | System table | `statement_text`, `query_source.genie_space_id`, duration/cost, `executed_by` | **Public Preview** | `statement_text` and `error_message` empty under customer-managed keys |
+
+**Explicit API asks (do not exist today):**
+1. Metric View **create/update REST endpoint** (creation is SQL DDL only).
+2. Genie **field-attribution API** ("which measures, dimensions, or Pages answered question X"). The eval-run APIs tell you *whether* an answer was right; they do not tell you *which context produced it*, which is what separates an ontology failure from a generation failure.
+3. **Column popularity / table insights** as a stable system table.
+4. **Domains / subdomains / Pages / Discover sections CRUD API** (see Part 8).
+5. **Eval-run promotion to GA**, plus a documented retention window for eval-run history — trend analysis across engagements depends on it.
+
+*Resolved since the first draft:* the Genie **benchmark results read API** was the top ask; it now exists in Beta (create eval run, get eval run, list runs, list results, get result details), which removes the need for a bespoke judge harness inside Genie Workbench.
+
+---
+
+### Part 2 — Multi-Modal Signal Extraction Engine
+
+| Signal class | Source(s) | Concrete extraction technique | Output artifact |
+|---|---|---|---|
+| **Lineage & graph** | `table_lineage`, `column_lineage` | Join Genie-space source tables to MV source tables on `source_table_full_name`; use `source_type = 'METRIC_VIEW'` to detect existing coverage; discover multi-hop join paths; flag orphans | Coverage/overlap graph + orphan list |
+| **NL intent** | space `text_instructions`, `example_question_sqls`, `benchmarks[].question`, `config.sample_questions` | Embed with `databricks-gte-large-en` (1024-dim, 8192-token window; the GTE endpoint does not normalize, `bge-large-en` does) | Intent vectors |
+| **SQL AST** | Genie generated SQL, benchmark answer SQL, GSO iteration SQL, `query.history` filtered by `genie_space_id` | sqlglot `parse_one(dialect="databricks")` → canonicalize → fingerprint recurring `SUM(CASE WHEN…)`, GROUP BY sets, filter predicates, window functions, join keys | Measure/dimension fingerprints with recurrence counts |
+| **Query-history patterns** | `system.query.history` | Rank by frequency × cost; top filter columns; recurring aggregations; distinct-user breadth | Ranked demand list |
+| **Optimized-space harvest** (highest value) | GSO `patches` + applied `serialized_space` | Extract the joins, `metric_views` entries, instructions, and trusted-asset SQL the optimizer already produced | High-confidence seed proposals |
+
+---
+
+### Part 3 — Matching Algorithm & Scoring Logic
+
+**Three tiers, blended:** (a) determinism via lineage/schema overlap; (b) semantic similarity between NL intent and MV field text (Databricks Vector Search Delta-Sync index with `embedding_model_endpoint_name`, or direct FMAPI embedding calls for small corpora); (c) syntactic AST parsing to detect un-governed measures.
+
+```
+Score = 100 × (0.35·L + 0.30·Y + 0.20·S + 0.15·D)
+```
+
+| Component | Meaning | How computed |
+|---|---|---|
+| **L** — Lineage/schema determinism | Source-table and column overlap | Jaccard of column sets from `column_lineage` |
+| **Y** — Syntactic AST match | Fingerprint recurrence × structural equivalence | (normalized recurrence) × (AST-equivalence flag) |
+| **S** — Semantic similarity | Max cosine of intent text vs MV field text | Vector Search / FMAPI cosine |
+| **D** — Demand/recency | Frequency × cost × distinct users, decayed | Normalized, then staleness-decayed |
+
+**Decay:** `D_effective = D × 0.5^(age_days / H)`, half-life `H ≈ 30 days`. Fingerprints unseen within the query-history retention window are dropped.
+
+**Worked example — un-governed revenue measure.** Genie repeatedly emits `SUM(l_extendedprice * (1 - l_discount))` with no MV equivalent: L = 0.90, Y = 0.95 (identical canonical fingerprint seen 60×), S = 0.40, D = 0.80.
+`Score = 100 × (0.315 + 0.285 + 0.080 + 0.120) = 80.0` → **High**.
+
+**Worked example — raw table → existing MV at onboarding.** L = 0.95, Y = 0.20, S = 0.75, D = 0.30.
+`Score = 100 × (0.3325 + 0.06 + 0.15 + 0.045) = 58.75` → **Medium** (propose, require confirm).
+
+**Thresholds:** High ≥ 75, Medium 50–74, Low 25–49, suppress < 25.
+
+**Conflicting or partial matches:** if two MVs partially match one fingerprint, emit the higher-**L** candidate as primary and attach the other under `alternatives[]`. Never auto-apply below High. If a fingerprint matches an existing MV measure *and* an instruction that defines it differently, downgrade to a `conflict` state (Part 5).
+
+---
+
+### Part 4 — In-App Integration & UX Touchpoints
+
+| Touchpoint | Trigger | UI element | Mock interaction copy |
+|---|---|---|---|
+| **Space Onboarding** | Raw table added that maps to an existing governed MV | Inline banner + diff view | *"Governed metric available. Replace **samples.tpch.orders** with Metric View **finance.sales.orders_metrics** (4 measures, 6 dimensions already governed)?"* **[Preview diff] [Replace] [Keep raw table] [Dismiss]** |
+| **Workbench Evaluation Loop** | Benchmark question fails on ambiguous/missing measure | Diagnostic card on the failed question | *"Failed: 'What was discounted revenue by region last quarter?' Diagnosis: **revenue** is computed 3 different ways across generated SQL. Governing it as a Metric View measure will stabilize this answer."* **[Generate draft YAML] [View evidence (3 SQL variants)] [Ignore]** |
+| **Semantic Layer Governance** | Recurring unmapped fingerprint | Proposal queue with confidence badges | *"High (80%) — 12 benchmark queries and 48 history queries reuse an un-governed **discounted_revenue** formula."* **[Review proposed Metric View] [Accept] [Edit YAML] [Reject]** |
+| **Optimizer run settings** (pre-run) | User configures an Auto-Optimize run | Toggle, then a target picker and an inline entitlement check | *"Suggest metric views — the optimizer will propose governed metric views from the profiling it already does."* → expands to *"Where should metric views be created? `finance.sales` — ✅ You can create metric views here."* → **○ Suggest only ● Create and attach, then optimize** (See Part 7.3) |
+| **Permission denied** (pre-run) | Entitlement probe fails on the chosen schema | Inline warning, non-blocking | *"You don't have permission to create metric views in `finance.sales`. Missing: CREATE TABLE on the schema. The run will continue in Suggest only mode."* **[Copy grant request] [Choose a different schema] [Continue in suggest-only mode]** |
+| **Optimization output screen** | Run completes in suggest-only mode | DDL panel with evidence | *"3 metric views proposed, none created. Lift not measured — these were not attached during this run."* **[Copy DDL] [Copy GRANT] [Re-run with this metric view]** (See Part 7.5) |
+
+Behavioral rules: nothing is written until the user confirms. **Accept** on a materialized proposal first runs `EXPLAIN CREATE MATERIALIZED VIEW` and surfaces any incremental blocker inline; only then does it run `CREATE VIEW … WITH METRICS`. **Reject** records a negative signal that suppresses the fingerprint for a decay period.
+
+**Sample proposed Metric View YAML:**
+
+```yaml
+version: 1.1
+source: samples.tpch.lineitem
+comment: Auto-proposed by Genie Workbench from 60 recurring generated-SQL fingerprints
+joins:
+  - name: orders
+    source: samples.tpch.orders
+    'on': source.l_orderkey = orders.o_orderkey
+  - name: customer
+    source: samples.tpch.customer
+    'on': orders.o_custkey = customer.c_custkey
+dimensions:
+  - name: order_status
+    expr: orders.o_orderstatus
+    display_name: Order Status
+    synonyms: [status, state]
+  - name: market_segment
+    expr: customer.c_mktsegment
+    display_name: Market Segment
+measures:
+  - name: discounted_revenue
+    expr: SUM(l_extendedprice * (1 - l_discount))
+    display_name: Discounted Revenue
+    format: {type: currency, currency_code: USD, decimal_places: {type: exact, places: 2}}
+    synonyms: [revenue, net revenue, discounted sales]
+  - name: line_item_count
+    expr: COUNT(1)
+    display_name: Line Item Count
+materialization:
+  schedule: every 6 hours
+  mode: relaxed
+  materialized_views:
+    - name: revenue_by_segment_status
+      type: aggregated
+      dimensions: [order_status, market_segment]
+      measures: [discounted_revenue, line_item_count]
+```
+
+**Sample proposal payload:**
+
+```json
+{
+  "suggestion_id": "sug_9f2a",
+  "type": "NEW_METRIC_VIEW",
+  "confidence_score": 80,
+  "tier": "HIGH",
+  "target_space_id": "01ef_genie",
+  "proposed_object": "finance.sales.discounted_revenue_metrics",
+  "score_components": { "L": 0.90, "Y": 0.95, "S": 0.40, "D": 0.80,
+    "weights": { "L": 0.35, "Y": 0.30, "S": 0.20, "D": 0.15 } },
+  "evidence": {
+    "ast_fingerprint_recurrence": 60,
+    "benchmark_questions": ["bmk_12", "bmk_31"],
+    "query_history_statement_ids": ["stmt_a1", "stmt_b7"],
+    "lineage_source_tables": ["samples.tpch.lineitem", "samples.tpch.orders"],
+    "semantic_top_match": { "field": null, "cosine": 0.40 }
+  },
+  "provenance": {
+    "generated_by": "gwb-mv-advisor@1.0",
+    "auth_identity": "OBO",
+    "gso_run_id": "run_5521",
+    "gso_task_key": "metric_view_advisor",
+    "generated_at": "2026-08-22T14:03:00Z"
+  },
+  "dedup_fingerprint": "sha256:sum(l_extendedprice*(1-l_discount))|group:order_status,market_segment",
+  "alternatives": [],
+  "conflicts": []
+}
+```
+
+---
+
+### Part 5 — Security, Governance & Conflict Resolution
+
+**Permission boundaries.** Compute suggestions under **OBO** using the `X-Forwarded-Access-Token` header with least-privilege scopes. Because Genie and metric views resolve data access via each end user's own Unity Catalog permissions, row filters and column masks are enforced per user at query time; the advisor must never surface a suggestion referencing a securable the viewing user cannot BROWSE or SELECT. Lineage graphs share the UC permission model, so lineage-derived evidence is already scoped.
+
+**Service-principal fallback.** Use the app SP only for org-wide background scans of system tables where admin access is required, then re-filter every candidate to the viewing user's grants before display. Record structured audit logs (identity, action, target, status) for every OBO action. **The SP is never a write path for metric views.** If the signed-in user cannot create the object, the answer is a `GRANT` statement for their admin, not a fallback identity with broader rights — an app that writes what its user could not write has quietly become a privilege-escalation vector.
+
+**Entitlement is not authorization.** These are two separate checks and the design keeps them separate (Part 7.3). *Entitlement* is what Unity Catalog will permit, discovered by probing effective privileges under OBO. *Authorization* is the user's explicit, scoped, recorded decision to let the Workbench act. Holding `CREATE TABLE` on a schema does not mean a user wants an optimization run writing to it. Consent is therefore requested before the run, scoped to one run and one `catalog.schema`, carried with the run as a parameter rather than read from mutable app state, and re-verified at preflight. Writes fail closed on any mismatch.
+
+**Conflict resolution workflow** (proposed MV contradicts an instruction or trusted asset):
+1. **Detect** — if a fingerprint matches an existing MV/measure *and* an instruction or trusted-asset SQL defines the same concept differently, set state = `CONFLICT` instead of emitting a suggestion.
+2. **Surface, don't overwrite** — render existing instruction / trusted asset beside the proposed measure, with divergent expressions highlighted.
+3. **Default to the trusted asset** — trusted assets provide exact, curated answers; the MV proposal is marked "requires human adjudication."
+4. **Adjudicate and log** — the reviewer chooses (keep instruction / adopt MV / reconcile both); the decision is written to the audit trail and, if adopted, applied as a reviewed patch. Never auto-resolve.
+
+---
+
+### Part 6 — Phased Architectural Implementation Strategy
+
+| Phase | Scope | Dependencies | Effort | Risks | Success metrics |
+|---|---|---|---|---|---|
+| **Phase 1 — Heuristic harvest & deterministic match** | Harvest optimized-space artifacts; deterministic lineage/schema match; sqlglot AST fingerprinting; read-only suggestions with L/Y/D scoring; ship as the gated `metric_view_advisor` GSO task in propose-only mode | Lineage system tables, `DESCRIBE…AS JSON`, `serialized_space`, GSO artifacts, sqlglot, Lakeflow If/else task | ~6–8 weeks | Lineage capture gaps; `statement_text` empty under CMK; 1-yr lineage window | ≥70% precision on High tier; ≥N proposals accepted per space |
+| **Phase 2 — Embedding-based semantic matching + Discover proposals** | Add the **S** component; raw-table→MV swaps at onboarding; add the `discover_curator` task emitting domain/subdomain proposals and Page drafts (propose-only) | Vector Search or FMAPI `gte-large-en`; governed tags; Phase 1 pipeline | ~6–8 weeks | Embedding drift; synonym sparsity; domain over-fragmentation | Recall lift with no High-tier precision regression; ≥1 domain proposal accepted per estate scan |
+| **Phase 3 — Create, attach, verify, and publish** | LLM-drafted MV YAML validated with `EXPLAIN`; `CREATE VIEW … WITH METRICS`; patch `data_sources.metric_views[]`; re-benchmark and auto-rollback on regression; governed-tag application via tag automations for domain membership; curator publish flow for Pages | FMAPI chat; REFRESH POLICY; DABs; tag automations (Beta); Phase 2 | ~8–10 weeks | Hallucinated measures; surprise full-refresh cost; conflict with trusted assets; UI-only domain/Page creation | ≥90% generated YAML valid on first `EXPLAIN`; measurable benchmark accuracy lift post-attach |
+
+---
+
+### Part 7 — Native GSO Job Integration: Metric View Suggestions as an Optimizer Task
+
+The design goal is that a user never runs a second tool. They open the Auto-Optimize run configuration, flip **Enable metric view suggestions**, and the optimizer does the rest — because by the time the optimizer reaches its lever loop it has already paid for all the expensive profiling the advisor needs.
+
+#### 7.1 What GSO already profiles, and what the advisor reuses
+
+GSO's Create agent profiles the data, builds metadata, generates grounding instructions, creates benchmark questions, and deploys a configured space — its output is a space with joins, metric views, instructions, and validated example SQL. The IQ Scanner then evaluates 12 checks (table descriptions, column annotations, sample queries, and so on). The Auto-Optimize job executes Genie against every benchmark, compares generated SQL to expected answers, diagnoses failures, and tunes across five lever types: tables/columns, metric views, TVFs, join specs, and instructions/example SQL.
+
+Every one of those artifacts is an input the advisor would otherwise have to recompute:
+
+| GSO artifact (already computed) | Produced in | Reused as | Metric View YAML target |
+|---|---|---|---|
+| Table and column inventory for the space scope | preflight | Candidate `source` and join table set | `source`, `joins[].source` |
+| Column descriptions / annotations (generated or repaired) | enrichment | Dimension `display_name`, `comment` | `dimensions[].display_name`, `comment` |
+| Synonyms and agent metadata | enrichment | Measure and dimension synonyms | `measures[].synonyms` |
+| Inferred join keys and cardinality (join-spec lever) | enrichment / lever loop | `joins[].on` predicates | `joins[].on` |
+| Numeric vs categorical vs temporal column typing | preflight profiling | Measure vs dimension classification; time-grain candidates | `measures[]` vs `dimensions[]` |
+| Query-history mining and column popularity | preflight | Demand ranking (**D**) and materialization dimension set | `materialization.materialized_views[].dimensions` |
+| Generated SQL per benchmark question, per iteration | baseline + lever loop | AST fingerprints (**Y**) — the core un-governed-measure signal | `measures[].expr` |
+| Eval-run results and structured assessment reasons | baseline + lever loop (via the Benchmark Eval APIs) | Failure-attributed prioritization: which measure, if governed, flips the most failing questions. `RESULT_MISSING_COLUMNS` and `RESULT_EXTRA_ROWS` in particular point at grain and filter defects a metric view fixes directly | proposal ranking |
+| Existing `data_sources.metric_views[]` | preflight | Dedup baseline — never propose a duplicate | `dedup_fingerprint` |
+
+The practical consequence: the advisor task is cheap. It performs no table scans of its own beyond an optional `EXPLAIN` and a bounded validation query; everything else is a read of Delta tables the run has already written.
+
+#### 7.2 Where the tasks sit in the DAG
+
+The sequencing follows from a product decision: if the user grants write permission, the metric view is **created and attached before the space is optimized**, so the lever loop tunes on top of the governed foundation rather than around it. A metric view is not a config tweak like an instruction edit; it changes the substrate the agent reasons over. Optimizing first and then swapping the substrate would invalidate the tuning you just paid for.
+
+```
+preflight ─→ baseline ─→ enrichment ─→ mv_gate (If/else)
+                                            │
+                              ┌──── true ───┴──── false ────┐
+                              ▼                             │
+                     metric_view_advisor                    │
+                              │                             │
+                    consent_granted?                        │
+                    ┌─── yes ─┴─ no ───┐                    │
+                    ▼                  ▼                    │
+              metric_view_apply    (DDL to output)          │
+              create → attach          │                    │
+                    │                  │                    │
+              mv_baseline (eval run)   │                    │
+                    │                  │                    │
+                    └──────────┬───────┴────────────────────┘
+                               ▼
+                          lever_loop  (run_if: ALL_DONE)
+                               ▼
+                       finalize ─→ deploy
+```
+
+Rationale for that placement:
+
+- **After enrichment**, because enrichment is where descriptions, synonyms, and join specs are settled — the advisor wants the enriched metadata, not the raw estate.
+- **Before the lever loop**, because the metric view is a foundation change. Once it is attached, the loop's instruction, join-spec, and column-metadata levers are tuned against the governed measure, which is what the customer will actually run in production.
+- **With its own eval run in between.** `mv_baseline` calls the Benchmark Eval API over the same question set the `baseline` task used, so the delta attributable to *the metric view alone* is isolated before the loop starts moving other variables. Without that intermediate run the metric view's contribution is unrecoverable from the final number, and the first question any reviewer asks is "how much of the lift was the metric view?"
+- **`lever_loop` uses `run_if: ALL_DONE`** on the advisor and apply edges, so a failed, skipped, or permission-denied metric-view path never fails the optimization run. Metric view suggestions are an enhancement, not a dependency.
+
+#### 7.3 The pre-run consent gate
+
+The toggle alone is not sufficient, because selecting it implies a write to Unity Catalog that the user has not yet authorized and may not be entitled to make. The run-configuration step therefore asks two separate questions, and conflating them is the most common way this kind of feature goes wrong:
+
+| Question | What it establishes | Failure mode if skipped |
+|---|---|---|
+| **Do you consent** to the Workbench creating a metric view on your behalf, in this run, in this schema? | Authorization — the user's explicit, scoped, recorded intent | The app writes UC objects the user did not expect, under their own OBO identity, with their name on the audit record |
+| **Do you hold the privileges** to create it there? | Entitlement — what Unity Catalog will actually permit | The run proceeds for forty minutes and fails at the write step, wasting the whole optimization |
+
+Consent is asked once, before the run starts, and is **scoped to a single run and a single target schema**. It is not a persistent setting, and it is never inferred from the suggestions toggle being on.
+
+**Run-configuration flow.**
+
+1. User opens Auto-Optimize run config and checks **Suggest metric views**.
+2. The panel expands to reveal a target picker: **Where should metric views be created?** — a `catalog.schema` selector defaulting to nothing, plus explanatory copy.
+3. On selection, the app runs a **pre-flight entitlement probe** under OBO against the chosen schema (see 7.3.1) and renders the result inline, before the user commits.
+4. The user chooses one of two modes, and the choice is recorded with identity and timestamp:
+   - **Suggest only** — produce DDL, write nothing.
+   - **Create and attach** — create the metric view, add it to the Genie Space, then optimize. Requires a passing entitlement probe and an explicit confirmation.
+5. The run starts. Preflight re-verifies entitlement, because grants can change between configuration and execution.
+
+Mock copy for the expanded panel:
+
+> **Suggest metric views** ☑
+> The optimizer will look for un-governed measures in this space's generated SQL and propose metric views for them.
+>
+> **Where should metric views be created?** `[ finance ▾ ] . [ sales ▾ ]`
+>
+> ✅ You can create metric views in `finance.sales`. *(Checked as prashanth@example.com)*
+>
+> ○ **Suggest only.** Show me the DDL in the run output. Nothing is created.
+> ● **Create and attach.** Create approved metric views in `finance.sales`, add them to this Genie Agent, then optimize the space with them in place.
+> ☐ Also materialize (starts a Lakeflow pipeline and incurs ongoing refresh cost). *Off by default.*
+>
+> **[ Start optimization ]**
+
+And the denial case:
+
+> ⚠️ **You don't have permission to create metric views in `finance.sales`.**
+> Missing: `CREATE TABLE` on the schema. The run will continue in **Suggest only** mode and show you the DDL at the end.
+> **[ Copy grant request ]** — sends your admin the exact `GRANT` statement needed.
+> **[ Choose a different schema ]  [ Continue in suggest-only mode ]**
+
+Note that the Workbench cannot grant the missing privilege, and should not offer to. It can generate the `GRANT` statement, name the principal, and get out of the way. Anything that looks like the app escalating its own access is a trust problem, not a convenience feature.
+
+##### 7.3.1 The entitlement probe
+
+Creating a metric view is a UC write. Verify, under the signed-in user's OBO token, that they hold:
+
+| Privilege | On | Why |
+|---|---|---|
+| `USE CATALOG` | target catalog | Traverse to the schema |
+| `USE SCHEMA` | target schema | Traverse to the object |
+| `CREATE TABLE` | target schema | Unity Catalog's create privilege for view-class objects. **Verify the exact privilege name against your target runtime before shipping** — metric views are newer than the general view path and the requirement should be confirmed rather than assumed |
+| `SELECT` | every source and join table in the proposal | The view resolves against them at query time |
+| `CAN MANAGE` | the Genie Agent | Required to patch `data_sources.metric_views[]` |
+
+Probe with a `dry_run`-style check rather than a trial write: read effective privileges from the UC permissions surface, and confirm the schema exists. Do **not** attempt a speculative `CREATE VIEW` and catch the exception — a partial create leaves debris and an audit entry the user did not authorize.
+
+The probe emits a structured result the UI renders and the run records:
+
+```json
+{
+  "probe_id": "probe_7f21",
+  "checked_as": "prashanth@example.com",
+  "auth_identity": "OBO",
+  "target": "finance.sales",
+  "checked_at": "2026-08-23T09:14:00Z",
+  "results": {
+    "USE CATALOG on finance": "GRANTED",
+    "USE SCHEMA on finance.sales": "GRANTED",
+    "CREATE TABLE on finance.sales": "DENIED",
+    "CAN MANAGE on space 01ef_genie": "GRANTED"
+  },
+  "verdict": "INSUFFICIENT",
+  "missing": ["CREATE TABLE on finance.sales"],
+  "remediation_sql": "GRANT CREATE TABLE ON SCHEMA finance.sales TO `prashanth@example.com`;",
+  "fallback_mode": "suggest_only"
+}
+```
+
+#### 7.4 Modes, and what each one does
+
+The consent decision collapses into a single parameter the job reads. Three modes, and the middle one is the one most engagements should use:
+
+| `mv_action_mode` | Behavior | When |
+|---|---|---|
+| `suggest_only` | Advisor produces proposals and **renders copy-ready DDL in the optimization output screen**. No UC write, no space patch. Optimization proceeds on the unmodified space. This is also the automatic fallback when the entitlement probe fails or consent is withheld | Default. Any run where the user lacks privileges, or a first pass in an unfamiliar estate |
+| `create_and_attach` | Create the approved metric view in the consented schema, patch `data_sources.metric_views[]`, run `mv_baseline` to isolate its lift, then optimize the space with it in place | Consent granted and probe passed |
+| `sandbox` | Create in a scratch schema, attach to a **cloned** space, measure, report, tear down. Leaves the real space and catalog untouched | Evaluating whether the feature is worth enabling, or demoing without estate impact |
+
+**Materialization stays off unless separately checked**, in either write mode. Attaching a metric view is a metadata change; materializing one starts a managed Lakeflow pipeline with ongoing refresh cost. Bundling those two consents together is how a customer ends up with a surprise bill from a feature they thought was advisory.
+
+#### 7.5 What "suggest only" actually renders
+
+The fallback path is not a consolation prize, and it should not look like one. It is the mode most first runs will use, so the output has to be directly actionable:
+
+- The full `CREATE VIEW … WITH METRICS LANGUAGE YAML` statement, syntax-validated, with a copy button.
+- The `GRANT` statement needed to unblock the write path next time, with the principal filled in.
+- The Genie Agent patch that *would* have been applied, shown as a diff against current `data_sources.metric_views[]`.
+- The evidence block: recurrence count, contributing benchmark question IDs, source tables, confidence score.
+- An explicit, honest label: **"Lift not measured — this metric view was not created or attached during this run."** Never present a projected accuracy gain for a view that was never evaluated. The whole credibility of the feature rests on the fact that its numbers come from real eval runs.
+- A one-click **[Re-run with this metric view]** action that pre-fills the next run config in `create_and_attach` mode against the same target, so the user is one grant away from closing the loop.
+
+#### 7.6 The toggle and consent, end to end
+
+| Layer | Mechanism | Value |
+|---|---|---|
+| UI | Checkbox + target picker + mode radio in the Auto-Optimize run-config panel | "Suggest metric views" / `finance.sales` / "Create and attach" |
+| Entitlement probe | OBO read of effective privileges, before submit | `verdict: SUFFICIENT \| INSUFFICIENT` |
+| App API | `POST /api/auto-optimize/runs` body | `{"enable_metric_view_suggestions": true, "mv_target_catalog": "finance", "mv_target_schema": "sales", "mv_action_mode": "create_and_attach", "mv_materialize": false, "mv_consent": {"granted_by": "prashanth@example.com", "granted_at": "2026-08-23T09:14:22Z", "probe_id": "probe_7f21"}}` |
+| Job trigger | `jobs.run_now(job_parameters={...})` | All of the above, serialized as strings |
+| Job | If/else condition task operands | `{{job.parameters.enable_metric_view_suggestions}} == "true"`, then `{{job.parameters.mv_action_mode}} == "create_and_attach"` |
+| Tasks | `metric_view_advisor` → `metric_view_apply` → `mv_baseline` | Gated in sequence |
+
+Note the documented If/else semantics: `==` and `!=` perform **string** comparison, and boolean task values are serialized to `"true"`/`"false"`. Pass the flag as a string and compare against the string, or the condition silently fails closed — which, for a write-gating condition, is the correct direction to fail.
+
+**The consent object travels with the run.** It is not read from app state at write time, because app state can change mid-run and because a consent record that lives outside the run artifact is not auditable after the fact. `mv_consent` is a job parameter, it is persisted with the run, and `metric_view_apply` refuses to write if it is absent, malformed, or references a `probe_id` whose re-verification at preflight failed.
+
+**Downgrade, never upgrade.** If preflight re-verification finds the grant has been revoked since configuration, the run silently downgrades to `suggest_only` and records the reason in the output screen. It never escalates in the other direction — a run configured as `suggest_only` cannot become a writing run because a privilege happened to be available.
+
+#### 7.7 Bundle definition
+
+```yaml
+resources:
+  jobs:
+    genie_space_optimizer:
+      name: genie-space-optimizer
+      parameters:
+        - name: space_id
+          default: ""
+        - name: enable_metric_view_suggestions
+          default: "false"
+        - name: mv_action_mode
+          default: "suggest_only"     # suggest_only | create_and_attach | sandbox
+        - name: mv_target_catalog
+          default: ""
+        - name: mv_target_schema
+          default: ""
+        - name: mv_materialize
+          default: "false"            # separate consent; never bundled with attach
+        - name: mv_consent
+          default: ""                 # JSON: granted_by, granted_at, probe_id
+        - name: mv_min_confidence
+          default: "75"               # High tier only, by default
+
+      tasks:
+        - task_key: preflight
+          # ... existing definition, plus: re-verify mv_consent + entitlement probe,
+          # and set task value mv_effective_mode (downgrade to suggest_only on failure)
+
+        - task_key: baseline
+          depends_on: [{ task_key: preflight }]
+
+        - task_key: enrichment
+          depends_on: [{ task_key: baseline }]
+
+        # ---- gate 1: is the feature on at all? ----
+        - task_key: mv_gate
+          depends_on: [{ task_key: enrichment }]
+          condition_task:
+            op: EQUAL_TO
+            left: "{{job.parameters.enable_metric_view_suggestions}}"
+            right: "true"
+
+        # ---- advisor: always propose-only, regardless of mode ----
+        - task_key: metric_view_advisor
+          depends_on:
+            - task_key: mv_gate
+              outcome: "true"
+          max_retries: 1
+          python_wheel_task:
+            package_name: genie_space_optimizer
+            entry_point: metric_view_advisor
+            parameters:
+              - "--space-id={{job.parameters.space_id}}"
+              - "--run-id={{job.id}}-{{job.run_id}}"
+              - "--min-confidence={{job.parameters.mv_min_confidence}}"
+              - "--profile-table={{tasks.enrichment.values.profile_table}}"
+              - "--baseline-eval-run-id={{tasks.baseline.values.eval_run_id}}"
+              - "--target-catalog={{job.parameters.mv_target_catalog}}"
+              - "--target-schema={{job.parameters.mv_target_schema}}"
+
+        # ---- gate 2: did the user consent AND survive re-verification? ----
+        # reads preflight's effective mode, not the raw parameter, so a revoked
+        # grant downgrades the run instead of failing it
+        - task_key: mv_write_gate
+          depends_on: [{ task_key: metric_view_advisor }]
+          condition_task:
+            op: EQUAL_TO
+            left: "{{tasks.preflight.values.mv_effective_mode}}"
+            right: "create_and_attach"
+
+        # ---- create in the consented schema, then attach to the space ----
+        - task_key: metric_view_apply
+          depends_on:
+            - task_key: mv_write_gate
+              outcome: "true"
+          python_wheel_task:
+            package_name: genie_space_optimizer
+            entry_point: metric_view_apply
+            parameters:
+              - "--candidates={{tasks.metric_view_advisor.values.candidate_table}}"
+              - "--target-catalog={{job.parameters.mv_target_catalog}}"
+              - "--target-schema={{job.parameters.mv_target_schema}}"
+              - "--materialize={{job.parameters.mv_materialize}}"
+              - "--consent={{job.parameters.mv_consent}}"
+
+        # ---- isolate the metric view's own contribution before tuning starts ----
+        - task_key: mv_baseline
+          depends_on: [{ task_key: metric_view_apply }]
+          python_wheel_task:
+            package_name: genie_space_optimizer
+            entry_point: mv_baseline
+            parameters:
+              - "--space-id={{job.parameters.space_id}}"
+              - "--pre-eval-run-id={{tasks.baseline.values.eval_run_id}}"
+              - "--attached-views={{tasks.metric_view_apply.values.created_metric_views}}"
+
+        # ---- optimization runs on top of whatever foundation now exists ----
+        - task_key: lever_loop
+          depends_on:
+            - task_key: enrichment
+            - task_key: metric_view_advisor
+            - task_key: mv_baseline
+          run_if: ALL_DONE            # tolerates skip, failure, or suggest-only
+          python_wheel_task:
+            package_name: genie_space_optimizer
+            entry_point: lever_loop
+            parameters:
+              - "--mv-candidates={{tasks.metric_view_advisor.values.candidate_table}}"
+
+        - task_key: finalize
+          depends_on: [{ task_key: lever_loop }]
+
+        - task_key: deploy
+          depends_on: [{ task_key: finalize }]
+```
+
+Three details in that spec are doing real work. `mv_write_gate` reads **preflight's re-verified effective mode**, not the raw job parameter, so a grant revoked between configuration and execution downgrades the run rather than erroring at the write. `metric_view_advisor` runs identically in every mode — it always only proposes — which means the expensive analysis is never wasted when consent is absent, and `suggest_only` output is exactly what `create_and_attach` would have written. And `lever_loop` depends on all three upstream metric-view nodes with `run_if: ALL_DONE`, so optimization proceeds whether the foundation was changed, left alone, or failed to change.
+
+#### 7.7.1 Task-values contract
+
+The advisor publishes a small, typed surface so downstream tasks and the app can branch without reading Delta:
+
+```json
+{
+  "candidate_table": "main.genie_workbench.mv_candidates",
+  "candidate_count": 7,
+  "high_confidence_count": 3,
+  "requested_mode": "create_and_attach",
+  "effective_mode": "suggest_only",
+  "downgrade_reason": "CREATE TABLE on finance.sales revoked between config and preflight",
+  "consent_probe_id": "probe_7f21",
+  "baseline_eval_run_id": "e1ef34712a29169db030324fd0e1df5f",
+  "created_metric_views": [],
+  "ddl_artifact_path": "/Volumes/main/genie_workbench/runs/5521/metric_views.sql",
+  "space_patch_ids": [],
+  "tables_freed": 0,
+  "advisor_status": "COMPLETED_WITH_CANDIDATES"
+}
+```
+
+Only numeric, string, and boolean values are usable inside If/else operands, so keep list-valued fields out of any condition expression and branch on `high_confidence_count` or `advisor_status` instead.
+
+#### 7.8 Create-and-attach flow (`mv_action_mode: create_and_attach`)
+
+This runs **before** the lever loop. Steps 1–4 happen in `metric_view_apply`; steps 5–7 in `mv_baseline`.
+
+1. **Re-verify consent.** Confirm `mv_consent` is present and well-formed, and that preflight's re-run of the entitlement probe still returns `SUFFICIENT` for the same `catalog.schema`. Abort to `suggest_only` on any mismatch — never write against a stale authorization.
+2. **Rank** candidates by confidence, then by the count of failing benchmark questions each would plausibly repair. Failure attribution comes from the eval-run result details: cluster failing questions by assessment reason, and prefer candidates targeting `RESULT_MISSING_COLUMNS`, `RESULT_MISSING_ROWS`, and `RESULT_EXTRA_ROWS` clusters, which are grain, join, and filter defects a governed measure resolves. Exclude questions flagged **Manual review needed** — they carry no verdict to improve on. Cap creations per run (default 3) so a single run cannot flood a schema.
+3. **Validate statically** — parse the generated YAML. Only if `mv_materialize` was separately consented and a `materialization` block is present, run `EXPLAIN CREATE MATERIALIZED VIEW` and abort the candidate on any incremental blocker rather than shipping a silent full-recompute. Default to `REFRESH POLICY INCREMENTAL`; use `INCREMENTAL STRICT` for high-cost or regulated metrics so the pipeline fails loudly instead of billing quietly.
+4. **Create** with `CREATE VIEW … WITH METRICS LANGUAGE YAML` on the run's SQL warehouse, **under OBO, in the consented `catalog.schema` and nowhere else**. The target is the one the user picked at configuration; the task must not fall back to another schema, a default schema, or the app service principal's own schema if the write fails. A failed write is a downgrade to `suggest_only`, not a retry somewhere more permissive.
+5. **Validate semantically** — run the new measure and the originating aggregation over a frozen sample window and diff result sets, not SQL text. Drop the view and reject the candidate on any difference outside tolerance.
+6. **Attach to the space** — express the attachment as a standard GSO patch against `data_sources.metric_views[]`, plus optional removal of the raw tables the metric view now covers, applied via the Genie Update Space API. Requires CAN MANAGE, verified in the probe. Because it is an ordinary patch, it inherits the existing versioning, diff, and rollback machinery.
+7. **Measure the foundation change** (`mv_baseline`) — call *create eval run for benchmarks* over the same question set the `baseline` task used, poll to `DONE`, and read the results. This is the isolated metric-view delta, recorded before the lever loop changes anything else. **Optimization then proceeds from here**, with the metric view in place as the new foundation.
+
+**Rollback semantics differ for the two artifacts, and conflating them causes damage.** The space patch is fully reversible and should be rolled back automatically if the metric view regresses accuracy. The metric view itself is a Unity Catalog object the user may now reference from a dashboard, a query, or another space within minutes of creation. So: **detach automatically, but never auto-drop.** On regression, revert the space patch, mark the view as unattached in the run output, and offer an explicit one-click drop with a warning that other consumers may already depend on it. In `sandbox` mode, where the scratch schema exists only for the run, auto-drop is correct and expected.
+
+**Capacity as a second-order benefit.** A Genie Agent is capped at 30 tables or views. A metric view that pre-joins a fact and three dimensions replaces four entries with one, freeing three slots. Report `tables_freed` in the run summary — for spaces at the ceiling, this is often a more compelling reason to accept the proposal than the accuracy delta.
+
+```json
+{
+  "patch_id": "patch_88c1",
+  "field_path": "data_sources.metric_views",
+  "operation": "append",
+  "new_value": [{ "identifier": "finance.sales.discounted_revenue_metrics" }],
+  "companion_patch": {
+    "field_path": "data_sources.tables",
+    "operation": "remove",
+    "removed": ["samples.tpch.lineitem", "samples.tpch.orders", "samples.tpch.customer"]
+  },
+  "gate": { "mode": "create_and_attach",
+            "consent": { "granted_by": "prashanth@example.com",
+                         "granted_at": "2026-08-23T09:14:22Z",
+                         "target": "finance.sales",
+                         "probe_id": "probe_7f21",
+                         "reverified_at_preflight": true,
+                         "materialize_consented": false },
+            "created_object": "finance.sales.discounted_revenue_metrics",
+            "baseline_eval_run_id": "e1ef34712a29169db030324fd0e1df5f",
+            "post_attach_eval_run_id": "a77c02be41d3907fb1194ce0aa2b8c14",
+            "affected_question_ids": ["bmk_12", "bmk_31", "bmk_44"],
+            "baseline_accuracy": 0.73, "post_attach_accuracy": 0.81,
+            "regressed_questions": 0, "needs_review_questions": 1, "tables_freed": 2,
+            "on_regression": "DETACH_ONLY_NEVER_DROP" }
+}
+```
+
+#### 7.9 Idempotency, cost, and failure isolation
+
+- **Idempotency.** Key every candidate on `sha256(space_id | canonical_measure_expr | sorted_source_set)`. Re-running the job upserts rather than duplicating, and a candidate already rejected by a human stays suppressed until its decay window expires. On the write path, check for an existing object at the target name before creating: a re-run must not produce `discounted_revenue_metrics_2`.
+- **Cost.** In `suggest_only` the task adds a few Delta reads, one embedding batch, and no table scans — negligible against the benchmark executions the run already performs. In `create_and_attach` it adds one validation query per candidate plus one extra eval run (`mv_baseline`), which is the real cost given the ~20 questions/min workspace ceiling. Materialization, if separately consented, adds ongoing pipeline cost that outlives the run — surface an estimate before the user checks that box, not after.
+- **Failure isolation.** `max_retries: 1` on the advisor, `run_if: ALL_DONE` on every downstream edge, and an `advisor_status` task value the app renders as a non-blocking warning. Three distinct outcomes must all leave the optimization intact: advisor failure, consent withheld, and write failure. A metric-view path that cannot complete must degrade to `suggest_only` and let the run finish.
+- **Auditability.** Every run records the requested mode, the effective mode, the downgrade reason if any, the consent object, the probe result, and the identity under which each write executed. If a customer asks six months later why a metric view exists in their catalog, the run should answer that question without anyone reading code.
+
+---
+
+### Part 8 — Curating Discover: Domains, Subdomains and Pages from Optimizer Profiling
+
+The clustering, co-usage, and description work the optimizer performs to scope one Genie Space is the same work a curator does to scope a domain. Doing it twice is waste. This section designs a second gated task, `discover_curator`, that turns GSO profiling into Discover artifacts.
+
+#### 8.1 What the platform gives you (status and mechanics)
+
+| Capability | What it is | Status | Programmatic surface |
+|---|---|---|---|
+| **Discover page** | Curated internal marketplace over tables, dashboards, notebooks, apps, metric views, and Genie Agents; curator and consumer personas; AI-powered recommendations | **Public Preview** (Beta earlier in 2026) | UI only |
+| **Domains** | Business-aligned grouping layer built on governed tags | **Public Preview** | Membership scriptable via tags; creation UI only |
+| **Subdomains** | Second level, `{parentDomainTag}/{subdomainName}`, one level of nesting, one parent, many-to-many assets, subdomain tag independent of parent tag | **Public Preview** | Same as domains; must be managed from a workspace-level Manage Discover page |
+| **Pages** | Governed, authoritative definition of a business concept, scoped to exactly one domain or subdomain; Genie One prioritizes and cites them | **Beta** (account preview toggle) | UI + Genie Code drafting and bulk import; no REST API |
+| **Governed tags** | Account-level tags with an enforcing tag policy; applied to UC objects and to workspace objects including dashboards, apps, notebooks and Genie Agents; requires `ASSIGN` on the tag plus `APPLY TAG` on the object | **Public Preview**; Tag Policies API documented | Assignment via `ALTER … SET TAGS` (DBR 13.3+). **No public REST endpoint for tag assignment on securables** — Databricks has confirmed the endpoint the UI uses is internal by design, so automation must issue SQL through the Statement Execution API |
+| **Tag automations** | Condition/action rules that assign or remove governed tags on Unity Catalog **tables and volumes** at scale, keeping them accurate as data changes | **Beta** | The practical bulk-assignment mechanism. Requires `USE CATALOG`, `USE SCHEMA`, `APPLY TAG` **and `MANAGE` on the catalog in scope** (checked at catalog level regardless of schema narrowing), plus `ASSIGN` on every tag involved |
+| **AI-driven domain suggestions** | Native proposal of domains | **Coming soon in preview** | — |
+| **Certification** | `system.certification_status` and related system governed tags; steers Genie One toward vouched assets | **Available** | Scriptable as a governed tag |
+
+Two constraints shape everything below. First, **enablement is two-sided**: an account admin must turn on "Domains and Discover Page" at the account level and "Discover Page" per workspace. Second, **`MANAGE DISCOVERY` is the curator permission**, grantable at account, domain, or subdomain scope — so the workbench can and should scope its proposals to the domains the signed-in user actually curates.
+
+**Reconstructing current state.** Domain membership is queryable today without any Discover API:
+
+```sql
+SELECT catalog_name, schema_name, table_name, tag_name, tag_value
+FROM system.information_schema.table_tags
+WHERE tag_name = 'Finance' OR tag_name LIKE 'Finance/%';
+```
+
+That query is the baseline the curator task diffs against, so it proposes only what is missing.
+
+#### 8.2 Signal-to-artifact mapping
+
+| GSO profiling signal | Derived Discover artifact | Why it is the right signal |
+|---|---|---|
+| Genie Space membership (`data_sources.tables[]`) | **Domain seed** | A space is already a human-curated business scope with an owner; it is the single strongest prior available |
+| Table co-usage in `query.history` (co-occurrence in the same statement or session) | Domain cluster cohesion | Assets people query together belong together |
+| Lineage adjacency (`table_lineage` edges) | Domain cluster cohesion; subdomain splits along pipeline stages | Transformation proximity is business proximity |
+| Inferred join keys (join-spec lever) | Domain connectivity | A shared join key is a hard structural link, not a soft one |
+| Naming prefixes and existing tags | Naming/tag consistency term | Cheap, high-precision, and matches how teams already think |
+| Embeddings of table and column descriptions | Semantic cohesion; subdomain separation | Catches business relatedness that names and lineage miss |
+| Enriched table/column descriptions | Domain **Description** and **Subtitle** | Already written, already reviewed |
+| Metric view measures + synonyms + display names | **Page** candidates (one per business concept) | A governed measure *is* a business concept with a definition |
+| Space `text_instructions` | Page body "Business use" section | Instructions are prose definitions of business rules |
+| Benchmark questions | Page "Examples of usage"; Discover section search queries | Real questions, in business language |
+| Certification status and freshness | Section ranking; Page trust signals | Steers both people and Genie One toward vouched assets |
+| Table owner / space owner | Domain **Technical owner** / **Business owner** | Required fields, already known |
+
+#### 8.3 Domain proposal scoring
+
+Mirror the metric-view model so reviewers learn one mental model:
+
+```
+DomainScore = 100 × (0.30·C + 0.25·J + 0.20·E + 0.15·N + 0.10·M)
+```
+
+| Component | Meaning | How computed |
+|---|---|---|
+| **C** — Co-usage cohesion | Do these tables get queried together? | Normalized modularity of the co-occurrence graph from `query.history` |
+| **J** — Join connectivity | Are they structurally linked? | Fraction of cluster members reachable via inferred join keys or lineage edges |
+| **E** — Semantic cohesion | Do their descriptions cluster? | Mean intra-cluster cosine minus mean inter-cluster cosine (silhouette-style) |
+| **N** — Naming/tag consistency | Do names and existing tags agree? | Longest common prefix coverage plus existing-tag agreement rate |
+| **M** — Space membership | Does an existing Genie Space already scope this? | Jaccard of the cluster against the space's table set |
+
+Thresholds match Part 3 (High ≥ 75, Medium 50–74, Low 25–49). Two extra rules matter in practice:
+
+- **Subdomain rule.** Run a second clustering pass *within* an accepted domain. Propose a subdomain only if the sub-cluster's internal cohesion exceeds the parent's by a clear margin and it holds at least a minimum asset count (default 5) — otherwise you fragment a domain into noise. Enforce the one-level nesting limit and the `{parent}/{child}` naming convention at proposal time, and reject any proposed subdomain name containing a slash.
+- **Overlap is fine.** Assets are many-to-many across domains, so do not force a hard partition. Emit overlapping memberships where the evidence supports both, and let the curator prune.
+
+```json
+{
+  "proposal_id": "dom_31a7",
+  "type": "NEW_DOMAIN",
+  "domain_score": 82,
+  "tier": "HIGH",
+  "governed_tag": "Loyalty",
+  "display": {
+    "subtitle": "Frequent-flyer program data and partner economics",
+    "description": "Tables, metric views and agents supporting loyalty revenue, membership and the co-brand card partnership.",
+    "technical_owner": "data-eng-loyalty@example.com",
+    "business_owner": "loyalty-analytics@example.com"
+  },
+  "score_components": { "C": 0.84, "J": 0.79, "E": 0.71, "N": 0.90, "M": 1.00 },
+  "evidence": {
+    "seed_genie_space_id": "01ef_genie",
+    "co_usage_edges": 212,
+    "join_key_coverage": 0.79,
+    "existing_tag_agreement": 0.63
+  },
+  "proposed_members": [
+    { "asset": "main.loyalty.fct_member_activity", "type": "TABLE", "member_score": 0.94 },
+    { "asset": "main.loyalty.revenue_metrics", "type": "METRIC_VIEW", "member_score": 0.91 },
+    { "asset": "01ef_genie", "type": "GENIE_AGENT", "member_score": 1.00 }
+  ],
+  "proposed_subdomains": [
+    { "governed_tag": "Loyalty/Co-brand", "domain_score": 77, "member_count": 9 },
+    { "governed_tag": "Loyalty/Membership", "domain_score": 71, "member_count": 14 }
+  ],
+  "apply_plan": {
+    "tag_ddl": [
+      "ALTER TABLE main.loyalty.fct_member_activity SET TAGS ('Loyalty' = '')",
+      "ALTER VIEW main.loyalty.revenue_metrics SET TAGS ('Loyalty' = '')"
+    ],
+    "manual_steps": ["Create governed tag 'Loyalty'", "Create domain in Discover UI", "Publish domain"]
+  }
+}
+```
+
+The `manual_steps` array is deliberate. Until a Domains API exists, the workbench should be explicit that it can prepare and validate everything and apply membership, but a human completes creation in the UI. Pretending otherwise produces a proposal that silently does nothing.
+
+#### 8.4 Page drafting
+
+A Page carries Domain, Owner, Synonyms, Description, Page body, Related assets, and Sources. Every one of those has a GSO source:
+
+| Page field | Drafted from |
+|---|---|
+| Domain | The accepted domain or subdomain proposal |
+| Owner | Metric view owner, or the space owner |
+| Synonyms | Metric view `synonyms` and `display_name`; alias clusters from AST fingerprints |
+| Description | Measure `comment`, or the enriched column description |
+| Page body | Definition (canonical `expr` rendered in prose and code), Business use (from space `text_instructions`), Examples (benchmark *questions*, never their result values) |
+| Related assets | The metric view, its source tables, the Genie Agent |
+| Sources | The metric view definition, the certified dashboard or query the definition derives from |
+
+```json
+{
+  "proposal_id": "page_5d90",
+  "type": "NEW_PAGE",
+  "domain": "Loyalty/Co-brand",
+  "title": "Discounted Revenue",
+  "owner": "loyalty-analytics@example.com",
+  "synonyms": ["net revenue", "revenue after discount", "discounted sales"],
+  "description": "Gross line-item revenue net of promotional discount, before tax and before partner settlement.",
+  "body_sections": {
+    "definition": "SUM(l_extendedprice * (1 - l_discount)), computed at line-item grain.",
+    "business_use": "Used in the monthly Revenue Review. Excludes accrual adjustments uploaded after book close.",
+    "examples": ["What was discounted revenue by market segment last quarter?"]
+  },
+  "related_assets": ["finance.sales.discounted_revenue_metrics", "samples.tpch.lineitem", "01ef_genie"],
+  "sources": ["finance.sales.discounted_revenue_metrics"],
+  "state": "DRAFT",
+  "firewall_check": { "pii_scan": "PASS", "literal_scan": "PASS", "sample_values_included": false }
+}
+```
+
+Two behaviors are worth calling out because they change how Pages should be used. First, **Genie One prioritizes a Page's definition over context it infers automatically and cites the Page in its answer** — so a Page is a direct accuracy lever, measurable with the same eval-run API used for metric views: take the benchmark questions whose answers depend on the term, run an eval before and after publication, and compare `num_correct` on that subset. Second, **draft Pages are visible only to the Page owner in Genie One conversations, while published Pages are available in all of them**. That gives a clean staging model, with one operational consequence: an eval run triggered by any other identity will not see a draft Page, so the before/after test must either be run by the Page owner or deferred until publication.
+
+Where an estate already documents terms elsewhere, prefer the native **bulk import** path — Genie Code reads attached documents, extracts terms, deduplicates, and returns proposed Pages with conflict, duplicate, and low-confidence flags for review. The workbench's job in that case is to supply the source material and the domain assignment, not to re-implement the extractor.
+
+#### 8.5 Governance workflow and the firewall
+
+```
+profile → cluster → propose → dry-run → curator approve → apply membership → create + publish (UI) → re-benchmark
+```
+
+- **Draft by default.** Domains, subdomains, and Pages all have native draft states; draft domains are visible only to users holding `MANAGE DISCOVERY`. Never publish from an automated task.
+- **Dry run before tagging.** Where tag automations are used for bulk membership, use the built-in dry-run preview and show the curator the exact asset list before enabling the rule.
+- **Scope to the curator.** Only propose against domains where the signed-in user holds `MANAGE DISCOVERY`, and only include assets they can BROWSE or SELECT. Apply tags under OBO; the `ASSIGN` permission on the governed tag is checked by the platform, so a proposal the user cannot apply should be rendered as "requires a curator" rather than failing at execution.
+- **The firewall is non-negotiable here, more than anywhere else in this design.** Tag data, domain metadata, custom section titles and subtitles, and Page content are all stored as plain text and replicated globally, and **Page data does not support customer-managed key encryption**. No sample values, no query literals, no PII, no regulated data may enter a tag name, tag value, domain description, section title, or Page body. Run an automated scan on every draft and block on failure — the `firewall_check` block above is a required field, not a decoration.
+- **Naming validation at proposal time.** Reject top-level domain tags containing `/`, reject subdomain names containing `/`, and enforce the `{parent}/{child}` prefix. Also check the plan against the documented ceilings before emitting it: Databricks caps the **combined number of domains and subdomains per account** and the **number of tags that can be applied**, both published on the Resource limits page rather than in the domains documentation. Read those limits at runtime rather than hard-coding them — a taxonomy proposal that exceeds the account ceiling fails halfway through and leaves membership half-applied.
+- **Remember that subdomain tags are independent.** Tagging an asset `Loyalty/Co-brand` does **not** tag it `Loyalty`. If the intent is for an asset to appear under both, the apply plan must emit both statements. Subdomain assets do still surface in the parent domain's browse and search, so this matters for tag-driven automation and ABAC, not for findability.
+
+#### 8.6 Wiring it into the job
+
+The curator task is a sibling of the advisor, gated by its own parameter and dependent on the same enrichment output:
+
+```yaml
+        - task_key: discover_gate
+          depends_on: [{ task_key: enrichment }]
+          condition_task:
+            op: EQUAL_TO
+            left: "{{job.parameters.enable_discover_curation}}"
+            right: "true"
+
+        - task_key: discover_curator
+          depends_on:
+            - task_key: discover_gate
+              outcome: "true"
+          run_if: ALL_DONE
+          python_wheel_task:
+            package_name: genie_space_optimizer
+            entry_point: discover_curator
+            parameters:
+              - "--space-id={{job.parameters.space_id}}"
+              - "--profile-table={{tasks.enrichment.values.profile_table}}"
+              - "--mv-candidates={{tasks.metric_view_advisor.values.candidate_table}}"
+              - "--mode=propose"
+```
+
+It consumes the advisor's candidate table because a *proposed* metric view is itself a Page candidate — which means enabling both toggles produces a coherent bundle: a governed measure, a domain to file it under, and a Page defining it in the language of the business. Because Domains and Pages feed Unity Catalog Semantics and therefore the Genie Ontology, the same optimizer run that raises one space's benchmark score also strengthens the shared context every other agent draws on.
+
+#### 8.7 API asks specific to Discover
+
+1. **Domain and subdomain CRUD API** — create, update, publish, delete, with the `MANAGE DISCOVERY` grant enforced. Without it, the workbench can only prepare and stage.
+2. **Pages CRUD API** — create draft, update, publish, unpublish; read published Pages for evaluation.
+3. **Discover sections API** — create and publish custom sections, including search-query sections and pinning.
+4. **Tag automations API** — create, dry-run, and enable automations programmatically rather than through Catalog Explorer.
+5. **AI domain suggestions API** — when native suggestions ship, a read path so the workbench reconciles with them rather than competing.
+6. **Domain-scoped read for evaluation** — the ability to ask "which Pages and domain context did Genie One use for this answer," which is the Discover analogue of the field-attribution ask in Part 1.
+
+---
+
+## Recommendations
+
+1. **Ship Phase 1 as a strictly read-only advisor task, gated by a job parameter, harvesting already-optimized spaces first.** Highest precision, lowest risk, and no new platform capability required. Promote to broader heuristic matching once High-tier precision reaches 70%.
+2. **Grade with Genie's native benchmark eval runs, and store the `eval_run_id`, not a copied score.** The Beta eval-run APIs (create, get, list runs, list results, get result details) removed the need for a parallel judge stack. Keep MLflow for run provenance, patch history, and versioning; stop using it as the accuracy source for a Genie Space. Wrap the Beta endpoints behind a thin adapter so a contract change costs you one file.
+3. **Make the metric view a hypothesis Genie's own evaluation falsifies, not an assertion the advisor makes.** Feeding candidates into the lever loop and re-running the affected benchmark subset is what converts a plausible suggestion into a measured accuracy delta — and because the grader is the platform's, the number needs no defending.
+4. **Gate every write behind a pre-run consent gate, not a mid-run prompt.** Ask for the target `catalog.schema` and probe entitlement *before* the run starts, so nobody discovers a permission problem forty minutes in. Default to `suggest_only`, downgrade automatically when the probe fails, and never upgrade. Keep materialization as a separately checked consent, and on regression **detach the metric view from the space but never auto-drop the Unity Catalog object** — someone may already be pointing a dashboard at it.
+5. **Treat trusted assets and custom instructions as authoritative in conflicts** — surface, adjudicate, log; never overwrite.
+6. **For Discover, apply membership automatically and leave creation to a human until the API exists.** Governed tags and tag automations cover assignment today; domain, subdomain, and Page creation do not have an API, and a proposal that cannot be applied should say so plainly.
+7. **Run the PII and literal firewall scan as a blocking gate on every domain and Page draft.** Page data has no CMK support and replicates globally; this is the one control in the design where a single miss is unrecoverable.
+8. **Escalate to Phase 3 auto-generation only when** High-tier precision reaches 85% and accept rate reaches 50%. Below that, auto-generation erodes trust faster than it adds coverage.
+
+---
+
+## Caveats
+
+- **Verify the exact create privilege for metric views on your target runtime.** The design assumes Unity Catalog's standard view-creation privilege set (`USE CATALOG`, `USE SCHEMA`, `CREATE TABLE` on the schema, `SELECT` on sources). Metric views are a newer object class created with `CREATE VIEW … WITH METRICS` and require DBR 17.2+ to manage, so confirm the privilege name against the target workspace before the entitlement probe ships. A probe that checks the wrong privilege will either block entitled users or promise a write that then fails.
+- **Materialization consent is separable from attach consent, and must stay that way.** Attaching a metric view is a metadata change; materializing one starts a managed Lakeflow pipeline that bills after the run ends. Any UI that collapses these into one checkbox will eventually produce a surprise invoice traced back to a feature the customer understood as advisory.
+- **Undocumented internals.** The "five versus six levers" naming discrepancy between the repo glossary and third-party write-ups, and internal schema acronyms in Genie Workbench, are not defined in public sources. Confirm against source code before building against them. Note also that public write-ups describing a bank of automated MLflow judges reflect an earlier architecture; grading now runs on Genie's native benchmark eval runs.
+- **The Genie benchmark eval APIs are Beta, not GA.** Create eval run, get eval run, list runs, list results, and get result details are all labelled Beta, so field names and enum values can change without a deprecation window. Isolate them behind an adapter, and record the API version alongside every stored `eval_run_id`.
+- **Grading semantics differ by benchmark mode, and this changes what a delta means.** Chat mode compares result sets deterministically against the question's SQL Answer; Agent mode uses an LLM judge with an optional evaluation note. Do not pool accuracy across modes in a single headline number, and treat Agent-mode deltas with the caution any LLM-graded metric deserves — the judge-bias literature has not stopped applying just because the judge now ships with the platform.
+- **"Manual review needed" is a third outcome, not a failure.** Questions Genie cannot assess, and questions without a SQL Answer, return unassessed. Exclude them from both the numerator and denominator of any lift calculation, and surface `num_needs_review` in the run summary — a rising count usually means the benchmark suite is degrading, not the space.
+- **Benchmark questions and answer SQL remain evaluation-only.** They should not be copied into space configuration; a benchmark that leaks into instructions stops being a test.
+- **Data-availability limits.** `statement_text` and `error_message` are empty under customer-managed keys; lineage system tables retain a rolling 1-year window; `system.query.history` is Public Preview with its own retention. All three bound historical demand signals.
+- **Materialization** is flagged Experimental in parts of the YAML reference even though `REFRESH POLICY` is GA. Validate on the target workspace and runtime before enabling it in proposals.
+- **Throughput ceilings** (~20 questions/min/workspace; API free tier ~5/min) constrain live replay. Prefer harvesting persisted GSO and query-history data.
+- **The 30-table-per-agent limit** (25 on some older AWS docs) makes metric view consolidation a capacity lever as well as an accuracy one. Validate the exact number per workspace.
+- **Discover, Domains, and Subdomains are Public Preview; Pages and tag automations are Beta; AI-driven domain suggestions are not yet in preview.** Preview features are not covered by compliance certifications, and in workspaces with the compliance security profile enabled some previews may not be available at all. Confirm availability before committing a customer to this workflow.
+- **Domain and Page creation being UI-only is a hard architectural constraint**, not a temporary inconvenience. Design the curator task to produce a reviewed, validated, copy-ready plan, and treat full automation as contingent on the API asks in section 8.7.
