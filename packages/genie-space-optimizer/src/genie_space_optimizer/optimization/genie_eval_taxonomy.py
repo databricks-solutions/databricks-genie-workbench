@@ -80,3 +80,7 @@ GENIE_REASON_RATIONALES: dict[str, str] = {
     **GENIE_DETERMINISTIC_REASON_RATIONALES,
     **GENIE_LLM_REASON_RATIONALES,
 }
+
+# Closed set of official assessment-reason codes. Lift / mapping code must
+# consume this rather than inventing a parallel vocabulary.
+ASSESSMENT_REASON_CODES: frozenset[str] = frozenset(GENIE_REASON_RATIONALES)

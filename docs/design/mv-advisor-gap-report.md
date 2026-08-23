@@ -514,10 +514,13 @@ exists**, including the CMK/unavailable fallback path.
 for "a thin adapter so a contract change costs you one file." That adapter exists.
 
 **Single seam:** `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py`
-(691 L). The `EvalRunner` Protocol (`:167-180`) is the only interface the optimizer
-evaluates through; `OfficialBenchmarkRunner` (`:318-352`) is the sole implementation.
+(890 L). The `EvalRunner` Protocol (`:305-330`) is the only interface the optimizer
+evaluates through; `OfficialBenchmarkRunner` (`:468-518`) is the sole implementation.
+Additive MV-advisor methods on that same class: `run_subset` (`:520-530`),
+`list_eval_runs` (`:532-544`), and `lift_report` (`:232-301` module function /
+`:546-552` method). There is no second adapter.
 
-```1:18:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py
+```1:19:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py
 """EvalRunner seam over the official Databricks Genie Benchmark (Eval-Run) API.
 
 Phase 1 of GSO Optimizer v2 (see ``GSO_OPTIMIZER_V2_TODO.md`` §4 Phase 1).
@@ -529,6 +532,7 @@ implementation that drives the native eval-run methods on the Databricks SDK
 
     w.genie.genie_create_eval_run(space_id, benchmark_question_ids=None)  # None ⇒ all
     w.genie.genie_get_eval_run(space_id, eval_run_id)                     # poll status
+    w.genie.genie_list_eval_runs(space_id, page_size, page_token)         # cross-run history
     w.genie.genie_list_eval_results(space_id, eval_run_id, page_size, page_token)
     w.genie.genie_get_eval_result_details(space_id, eval_run_id, result_id)
 
@@ -540,18 +544,18 @@ We never double-run the retired in-process scorer path.
 
 | POV API | Repo call | Called via | Line |
 |---|---|---|---|
-| Create eval run | `genie_create_eval_run(space_id, benchmark_question_ids=qids)` | SDK method on `w.genie` | `eval_runner.py:377-379` |
-| Get / poll | `genie_get_eval_run(space_id, eval_run_id)` | SDK | `eval_runner.py:432` |
-| List eval runs | — | **never called** (SDK method exists, repo does not use it) | — |
-| List results | `genie_list_eval_results(space_id, eval_run_id, page_size, page_token)` | SDK, paginated | `eval_runner.py:456-461` |
-| Result details | `genie_get_eval_result_details(space_id, eval_run_id, result_id)` | SDK | `eval_runner.py:463-465` |
+| Create eval run | `genie_create_eval_run(space_id, benchmark_question_ids=qids)` | SDK method on `w.genie` | `eval_runner.py:583-585` |
+| Get / poll | `genie_get_eval_run(space_id, eval_run_id)` | SDK | `eval_runner.py:638` |
+| List eval runs | `genie_list_eval_runs(space_id, page_size, page_token)` | SDK, paginated via `OfficialBenchmarkRunner.list_eval_runs` | `eval_runner.py:544-546` |
+| List results | `genie_list_eval_results(space_id, eval_run_id, page_size, page_token)` | SDK, paginated | `eval_runner.py:662-667` |
+| Result details | `genie_get_eval_result_details(space_id, eval_run_id, result_id)` | SDK | `eval_runner.py:669-671` |
 
 All calls are **SDK methods, not raw REST**. Neither `optimization/benchmarking.py` nor
 `common/genie_client.py` touches the eval-run APIs.
 
 **Status handling** — every enum the POV names is present:
 
-```57:61:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py
+```59:63:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py
 # ``EvaluationStatusType`` terminal values. Only ``DONE`` is a success.
 _SUCCESS_STATUS = "DONE"
 _TERMINAL_STATUSES = frozenset(
@@ -566,8 +570,9 @@ in the module docstring at `:29-31` as a planning-note error already caught once
 `RESULT_EXTRA_ROWS`, `RESULT_MISSING_COLUMNS`) exist in
 `optimization/genie_eval_taxonomy.py:8-20`, alongside `RESULT_EXTRA_COLUMNS`,
 `SINGLE_CELL_DIFFERENCE`, `EMPTY_GOOD_SQL`, `COLUMN_TYPE_DIFFERENCE`, and a family of
-`LLM_JUDGE_*` keys. Per-question assessment is `GOOD` / `BAD` / `NEEDS_REVIEW`
-(`eval_runner.py:266-289`).
+`LLM_JUDGE_*` keys, exported as `ASSESSMENT_REASON_CODES` (`genie_eval_taxonomy.py:87`).
+Per-question assessment is `GOOD` / `BAD` / `NEEDS_REVIEW`
+(`eval_runner.py:416-439`).
 
 **Retry and polling.**
 
@@ -587,14 +592,15 @@ EVAL_RUN_PAGE_SIZE: int = int(os.getenv("GSO_EVAL_RUN_PAGE_SIZE", "100"))
 ```
 
 Fixed 20 s interval (no backoff), 2700 s deadline, never sleeping past the deadline
-(`eval_runner.py:427-449`). An **outer** transient retry sits in `unified_loop.py`: up to
+(`eval_runner.py:633-655`). An **outer** transient retry sits in `unified_loop.py`: up to
 `_MAX_TRANSIENT_EVAL_RETRIES = 2` extra attempts, but only for
 `_TRANSIENT_EVAL_STATUSES = {"EVALUATION_TIMEOUT", "EVALUATION_CANCELLED"}` —
 `EVALUATION_FAILED` is returned on the first attempt (`unified_loop.py:133-146`,
 `:1278-1298`).
 
 `tests/unit/test_eval_timeouts.py` covers conversation/statement timeouts, **not** the
-eval-run adapter. There is no unit test for `OfficialBenchmarkRunner` polling.
+eval-run adapter. Seam contract tests (terminal statuses, taxonomy reasons, `run_subset`
+serialization, `lift_report`) live in `tests/unit/test_eval_runner.py`.
 
 **Where `eval_run_id` is stored:** `genie_opt_iterations.eval_run_id` /
 `.eval_run_status`, written by `state.write_iteration` (`state.py:923-966`). This
@@ -1378,13 +1384,13 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 
 | POV assumption | Status | Evidence |
 |---|---|---|
-| Create eval run for benchmarks | **MATCHES** | `eval_runner.py:377-379` |
-| Get eval run / poll | **MATCHES** | `eval_runner.py:432` |
-| List evaluation results | **MATCHES** | `eval_runner.py:456-461` |
-| Get result details | **MATCHES** | `eval_runner.py:463-465` |
-| List eval runs in space | **DOES-NOT-EXIST-YET** | SDK method exists; repo never calls it |
-| "Wrap the Beta endpoints behind a thin adapter" | **MATCHES — already done** | `EvalRunner` Protocol + `OfficialBenchmarkRunner`, single seam (`eval_runner.py:167-180`, `:318-352`) |
-| Statuses `RUNNING`/`DONE`/`NOT_STARTED`/`EVALUATION_FAILED`/`EVALUATION_CANCELLED`/`EVALUATION_TIMEOUT` | **MATCHES** | `eval_runner.py:32-33`, `:57-61` |
+| Create eval run for benchmarks | **MATCHES** | `eval_runner.py:583-585` |
+| Get eval run / poll | **MATCHES** | `eval_runner.py:638` |
+| List evaluation results | **MATCHES** | `eval_runner.py:662-667` |
+| Get result details | **MATCHES** | `eval_runner.py:669-671` |
+| List eval runs in space | **MATCHES** | `OfficialBenchmarkRunner.list_eval_runs` (`eval_runner.py:539-551`) |
+| "Wrap the Beta endpoints behind a thin adapter" | **MATCHES — already done** | `EvalRunner` Protocol + `OfficialBenchmarkRunner`, single seam (`eval_runner.py:305-330`, `:468-518`); `run_subset` / `lift_report` / `list_eval_runs` are additive on that seam |
+| Statuses `RUNNING`/`DONE`/`NOT_STARTED`/`EVALUATION_FAILED`/`EVALUATION_CANCELLED`/`EVALUATION_TIMEOUT` | **MATCHES** | `eval_runner.py:33-34`, `:59-63` |
 | Reasons `EMPTY_RESULT`/`RESULT_MISSING_ROWS`/`RESULT_EXTRA_ROWS`/`RESULT_MISSING_COLUMNS` | **MATCHES** | `genie_eval_taxonomy.py:8-20` |
 | `num_questions`/`num_correct`/`num_needs_review`/`num_done` | **PARTIALLY MATCHES** | `num_needs_review` is a persisted column (`ddl.py:100`); accuracy is `num_correct/num_questions`; `num_done` is not persisted |
 | Store `eval_run_id` not a copied score | **MATCHES** | `genie_opt_iterations.eval_run_id` (`ddl.py:101`) — though `overall_accuracy` is stored too |
@@ -1525,7 +1531,7 @@ derived **entirely from in-repo citations**, and are marked accordingly.
 
 **Reconstruction: high confidence.** Stated near-verbatim in code.
 
-```15:18:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py
+```16:19:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py
 Decision **D1**: the official API is the SOLE eval runner in v2 — scoring is the
 server-side ``assessment`` (GOOD/BAD/NEEDS_REVIEW), accuracy is
 ``num_correct / num_questions``, and lever routing reads ``assessment_reasons``.
@@ -1533,7 +1539,7 @@ We never double-run the retired in-process scorer path.
 ```
 
 Corollaries: **fail-closed** — *"a non-DONE / partial / empty run NEVER reads as a"*
-success (`eval_runner.py:595`); the knobs at `common/config.py:116-133` are the D1
+success (`eval_runner.py:810`); the knobs at `common/config.py:116-133` are the D1
 implementation surface.
 
 **Impact on the MV advisor.** POV Recommendation 2 is already satisfied. Any MV lift
@@ -1557,7 +1563,7 @@ DEFAULT_THRESHOLDS = {
 ```
 
 Corroborated at `benchmarking.py:1790` (*"the 9 scored judges are retired, so gating is on
-API accuracy"*) and `eval_runner.py:223`, `:313` (asset-type annotation on BAD /
+API accuracy"*) and `eval_runner.py:367`, `:463` (asset-type annotation on BAD /
 NEEDS_REVIEW rows, "Phase 3, D2").
 
 **Impact.** The POV's Caveat that *"public write-ups describing a bank of automated MLflow
