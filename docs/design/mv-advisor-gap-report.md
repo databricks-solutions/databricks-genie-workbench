@@ -1235,6 +1235,40 @@ Repo-root `tests/` holds manual E2E scripts (`test_e2e_local.py`, `test_e2e_depl
 > **no CI runs any test suite.** All three suites are local-only. Any test the MV advisor
 > adds is a test somebody must remember to run.
 
+#### Known pre-existing backend failures: none
+
+The expected baseline for `./scripts/test.sh` is **530 passed, 0 failed**. There is no
+standing residue, so any backend failure during MV advisor work is either newly introduced
+or an environment fault — never something to wave through as pre-existing.
+
+Because no CI ever runs these suites, a broken local environment can look exactly like
+feature breakage for a long time. Prompt 1's VERIFY hit both faults at once, and both were
+local to the machine rather than to the repo:
+
+| Symptom | Count | Root cause |
+|---|---|---|
+| `ImportError: cannot import name 'preview_revert_options' from 'genie_space_optimizer.integration'`, at collection, in `test_auto_optimize_router.py` and `test_current_version.py` | 2 collection errors | `_genie_space_optimizer.pth` in the interpreter's site-packages pointed at a **different checkout** of this repo, which lacked the symbol. Every backend test was silently running against foreign source. |
+| Async tests failing with `PytestUnknownMarkWarning: Unknown pytest.mark.asyncio` — 7 in `test_scanner.py::TestScanSpaceGsoSelection`, 4 in `test_watch_traffic_gap_router.py`, 1 in `test_auto_optimize_router.py` | 12 failures | `pytest-asyncio` was absent from the interpreter, so `asyncio_mode = "auto"` was inert and every coroutine test was collected but never awaited. |
+
+Both are fixed by pointing the editable install at this checkout and installing the pinned
+dev dependencies (`pytest==9.0.2`, `pytest-asyncio==1.3.0` — root `pyproject.toml:20`):
+
+```bash
+uv pip install --python "$(pyenv which python)" -e packages/genie-space-optimizer \
+  --force-reinstall --no-deps
+uv pip install --python "$(pyenv which python)" pytest==9.0.2 pytest-asyncio==1.3.0
+python -c "import genie_space_optimizer; print(genie_space_optimizer.__file__)"
+```
+
+That last line is now a rule, not a suggestion: the MV advisor rules file requires printing
+it and confirming the path is inside this checkout before any backend pytest result is
+trusted. A run against a foreign checkout is void.
+
+Note the shared-interpreter hazard behind the first fault: the editable install lives in a
+**global** pyenv `site-packages`, so exactly one checkout can own the `.pth` at a time.
+Two clones of this repo on one machine will keep stealing it from each other until one of
+them gets its own virtualenv.
+
 ---
 
 ## 2. Gap table — every POV Part 7 assumption

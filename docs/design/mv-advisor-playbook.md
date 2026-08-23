@@ -2,6 +2,8 @@
 
 *A sequenced set of Cursor prompts that take the POV document from design to a tested, PR-ready feature branch in `databricks-solutions/databricks-genie-workbench`. One prompt ≈ one reviewable commit. Run them in order; each prompt's output is the next prompt's input.*
 
+> **Custody.** From this commit forward, this in-repo copy is the canonical playbook and the canonical MV-D register. Any external copy is downstream: reconcile it to this file, never the reverse.
+
 ---
 
 ## Before you start (manual steps, 10 minutes)
@@ -16,7 +18,7 @@
    git add docs/design && git commit -m "docs: metric view advisor design POV + build playbook"
    ```
    Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D7**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
-2. **Create the Cursor rules file INSIDE the repo** — `databricks-genie-workbench/.cursor/rules/mv-advisor.mdc`, not the workspace root's `.cursor/`. A workspace-level rules file works in your session but is unversioned: it doesn't travel with the branch, doesn't survive a fresh clone, and gives a teammate running these prompts none of the guardrails. Commit it with the design docs. This keeps every prompt honest without repeating the guardrails each time:
+2. **Create the Cursor rules file INSIDE the repo** — `databricks-genie-workbench/.cursor/rules/mv-advisor.mdc`, not the workspace root's `.cursor/`. A workspace-level rules file works in your session but is unversioned: it doesn't travel with the branch, doesn't survive a fresh clone, and gives a teammate running these prompts none of the guardrails. Commit it with the design docs. *(This needs a `.gitignore` change, done in the Prompt 1 follow-up: the repo ignored `.cursor/`, so the in-repo copy was just as unversioned as a workspace-root one. `.gitignore` now reads `.cursor/*` plus `!.cursor/rules/`, because a re-include cannot reach inside an excluded parent directory.)* This keeps every prompt honest without repeating the guardrails each time:
 
    ```
    ---
@@ -106,6 +108,12 @@
    - Every new module ships with pytest tests in the same PR-sized commit.
      The repo has NO test CI — run the suites locally and report results in
      every VERIFY section.
+
+   - IMPORT RESOLUTION IS PART OF EVERY VERIFY THAT RUNS BACKEND TESTS: before
+     trusting any backend pytest result, print
+     `python -c "import genie_space_optimizer; print(genie_space_optimizer.__file__)"`
+     and confirm the path resolves inside THIS repository checkout. A test run
+     against a foreign checkout is void — report it, do not interpret it.
    ```
 
 3. **Have a dev workspace ready** with the TPC-H samples catalog, a scratch schema you own (e.g. `main.mv_advisor_dev`), a small Genie Space with 10–15 benchmark questions, and a second test identity that *lacks* `CREATE TABLE` on the scratch schema (you need it for the denial-path E2E test).
@@ -206,6 +214,8 @@ The recon surfaced five structural conflicts, not naming drift. These decisions 
 **MV-D6 — Rollback simplifies; drop stays manual.** Whole-snapshot revert means detach-on-regression comes free with the existing `integration/revert.py` path. The never-auto-drop rule is unchanged; drop is a backend OBO endpoint gated on DETACHED status.
 
 **MV-D7 — Stateful MV entities get dedicated tables; run-scoped blobs stay in `genie_opt_artifacts`.** Three tables join `_ALL_DDL`: `genie_opt_mv_candidates` (partitioned by target_space_id — the upsert key is space-scoped and a candidate outlives the run that proposed it under MV-D1), `genie_opt_mv_consents` (unpartitioned — run_id is NULL at probe time and filled at trigger), and `genie_opt_mv_created_objects` (partitioned by run_id; merge key run_id + suggestion_id). The rendered DDL text remains a `genie_opt_artifacts` row under a new artifact_kind, with `content_hash` set to the dedup fingerprint so the stores cross-reference. Rationale: all three entities carry mutable, cross-run-lifecycle state that a run-partitioned append-style handoff table cannot host without fighting its own partitioning. Supersedes POV Appendix A Deltas 4 and 6 where they assert otherwise. Process rule established alongside it: **appendices record decisions; they do not make them** — any new architecture call surfaces here as an MV-D entry first, then the appendix cites it.
+
+*As implemented (Prompt 1):* accessors live in `optimization/mv_state.py`, one module rather than an extension of the already-large `optimization/state.py`, following the `scan_snapshots.py` precedent for feature-scoped persistence. Every writer goes through a new `delta_helpers.merge_row` primitive, so the §7.9 idempotency key `sha256(space_id | canonical_measure_expr | sorted_source_set)` is enforced as a single-statement upsert-on-conflict rather than a read-then-insert a retry can duplicate. JSON payload columns carry a `_json` suffix in storage and travel base64-encoded; the accessor signatures use the POV Part 4 field names (`score_components`, `evidence`, `provenance`, `alternatives`, `conflicts`, `probe_results`) verbatim. POV Part 4's proposal `type` is stored as `candidate_type` to avoid shadowing the builtin at the API. `reverified_at_trigger` is a `TIMESTAMP` (NULL = never re-verified), and `updated_at` sits on all three tables. `lift_report_json` is deferred to an `ADDITIVE_COLUMN_MIGRATIONS` entry in Prompt 7, when the lift report exists to store. Three judgment items raised in the Prompt 1 VERIFY were reviewed and approved in the Prompt 1 follow-up and are now settled: decision-column ownership (`upsert_mv_candidate` never writes them; `record_mv_candidate_decision` owns them, pinned by `test_re_proposing_does_not_resurrect_a_rejected_candidate`), the "Resolved by MV-D7" pointers added to the gap report, and the user-facing table rows in `docs/docs/features/auto-optimize.md` with their empty-table-is-not-a-failed-run framing.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

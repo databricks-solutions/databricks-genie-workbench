@@ -1,0 +1,93 @@
+---
+description: Non-negotiables for the metric view advisor feature
+alwaysApply: true
+---
+READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
+- Before modifying ANY file, you must first output a PLAN section containing:
+  (1) the exact file paths you intend to modify or create,
+  (2) for each existing file, a quoted excerpt of the CURRENT code at the
+      location you will change (read it fresh in this session — do not rely
+      on memory of a previous session),
+  (3) every existing function, class, endpoint, table, task_key, or config
+      key you intend to call or extend, each with the file:line where it is
+      defined today.
+- If any item in (3) cannot be located in the current codebase, STOP after
+  the PLAN and report it as a blocker. Do not scaffold a stand-in.
+- If the PLAN contradicts docs/design/mv-advisor-gap-report.md or the POV
+  doc, STOP and report the contradiction before editing.
+- After edits, output a VERIFY section: run the test suite and linter for the
+  touched packages, and confirm (by search) that every symbol you referenced
+  exists and every symbol you defined is exported/registered the way this
+  repo registers it (router inclusion, entrypoint table, migration list).
+- ABSENCE claims require a positive control. Any "X does not exist in this
+  repo" check must run from the repo root and first confirm a known-present
+  sentinel (e.g. databricks.yml) resolves from the same working directory.
+  An absence check whose positive control fails is void — rerun it, do not
+  report it.
+- VERIFY includes `git status`. Run Python tooling with a frozen lockfile
+  (`uv run --frozen` or equivalent); the working tree after VERIFY must be
+  clean apart from the intended changes. A dirtied uv.lock is a finding to
+  report, never a file to commit.
+- Context discovery stays inside the repository. Do not read files outside
+  the repo (home directories, ~/Downloads, other checkouts) unless the
+  prompt names them explicitly.
+
+FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
+- Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
+  AS AMENDED BY docs/design/mv-advisor-gap-report.md. Where they disagree,
+  the gap report wins.
+- The GSO job is a LINEAR FOUR-TASK NOTEBOOK DAG: intake_and_snapshot →
+  benchmark_qc_and_repair → optimize → publish_and_audit. Do NOT add tasks,
+  condition tasks, run_if edges, or wheel entry points. GSO v2 playbook decision D9 (a different D-namespace from this playbook's
+  MV-D numbering) and test_phase7_job_dag.py forbid condition tasks and
+  taskValues — respect the
+  tests, do not delete or weaken them.
+- Cross-task and cross-phase state passes through Delta tables keyed by
+  run_id (genie_opt_* via optimization/ddl.py). NEVER dbutils.jobs.taskValues.
+- Job parameters are read with dbutils.widgets. Any new parameter is added
+  IN LOCKSTEP to all three job-definition mirrors — root databricks.yml,
+  packages/genie-space-optimizer/databricks.yml, and
+  scripts/deploy_lib/gso_job.py — plus backend/job_launcher.py's run_now map.
+  A parameter present in fewer than all four places is a bug.
+- Metric-view code inside the job runs as GATED PHASES within the existing
+  optimize task, each wrapped in try/except; on failure, persist a status
+  row to Delta and let the optimization continue. Never raise across the
+  phase boundary.
+- All benchmark eval calls go through the EvalRunner seam in
+  optimization/eval_runner.py (OfficialBenchmarkRunner). No second adapter,
+  no raw SDK eval calls anywhere else.
+- Patches are dicts with type/target/new_text/old_text, registered in
+  PATCH_TYPES (common/config.py) and allowlisted in unified_loop. New MV
+  patch types must implement a REAL applier action that mutates
+  data_sources.metric_views — the current Lever-2 MV path renders then
+  no-ops at config level, and that no-op is the bug this feature fixes.
+- Rollback is whole-snapshot revert (integration/revert.py). Detach-on-
+  regression = snapshot revert. NEVER auto-drop the created UC object
+  outside sandbox mode; drop is an explicit backend OBO endpoint.
+- The job runs as the SERVICE PRINCIPAL. Therefore the job NEVER executes
+  CREATE VIEW ... WITH METRICS. UC object creation happens ONLY in the
+  FastAPI backend under OBO (require_obo_workspace_client), at trigger time,
+  against a recorded consent. The job attaches (patch), measures, and
+  reverts — writes it already performs as SP today.
+- Do not reuse GET /permissions/{space_id} for entitlement: it probes the
+  SP's privileges, not the user's. The entitlement probe is new OBO code.
+- MLflow is decommissioned in GSO except tracing. No experiments, registry,
+  or judges. Grading comes ONLY from native benchmark eval runs.
+- Backend routes live under the /api/auto-optimize router prefix; the
+  run-start endpoint is POST /api/auto-optimize/trigger with the inline
+  TriggerRequest model — extend it, never add a parallel start endpoint.
+- Run artifacts persist to the genie_opt_artifacts Delta table, not a
+  Volumes path.
+- Firewall: extend optimization/leakage.py for MV metadata/DDL rather than
+  writing a second scanner. No literals, sample values, or PII in shipped
+  metadata, DDL comments, or logs.
+- Materialization is a separate consent (mv_materialize); never bundled.
+- Every new module ships with pytest tests in the same PR-sized commit.
+  The repo has NO test CI — run the suites locally and report results in
+  every VERIFY section.
+
+- IMPORT RESOLUTION IS PART OF EVERY VERIFY THAT RUNS BACKEND TESTS: before
+  trusting any backend pytest result, print
+  `python -c "import genie_space_optimizer; print(genie_space_optimizer.__file__)"`
+  and confirm the path resolves inside THIS repository checkout. A test run
+  against a foreign checkout is void — report it, do not interpret it.
