@@ -606,7 +606,7 @@ This runs **before** the lever loop. Steps 1–4 happen in `metric_view_apply`; 
                          "granted_at": "2026-08-23T09:14:22Z",
                          "target": "finance.sales",
                          "probe_id": "probe_7f21",
-                         "reverified_at_preflight": true,
+                         "reverified_at_trigger": "2026-08-23T09:41:07Z",
                          "materialize_consented": false },
             "created_object": "finance.sales.discounted_revenue_metrics",
             "baseline_eval_run_id": "e1ef34712a29169db030324fd0e1df5f",
@@ -617,6 +617,13 @@ This runs **before** the lever loop. Steps 1–4 happen in `metric_view_apply`; 
             "on_regression": "DETACH_ONLY_NEVER_DROP" }
 }
 ```
+
+**`reverified_at_trigger` is a timestamp, not a boolean** (amended under `MV-D7`; the field
+was `reverified_at_preflight: true` before [Delta 1](#delta-1--two-run-consent-model) moved
+the gate to trigger time). A boolean cannot distinguish "re-verified moments before this
+write" from "re-verified once, three weeks ago" — and staleness is the whole risk the check
+exists to close. It is persisted as a `TIMESTAMP` column on `genie_opt_mv_consents`, where
+NULL means never re-verified and the job refuses to attach.
 
 #### 7.9 Idempotency, cost, and failure isolation
 
@@ -891,7 +898,7 @@ cause real errors:
 
 | Namespace | Where it is recorded | Example |
 |---|---|---|
-| **MV advisor playbook** `MV-D1`–`MV-D6` | `docs/design/mv-advisor-playbook.md`, "Decisions from the Prompt 0 recon" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks |
+| **MV advisor playbook** `MV-D1`–`MV-D7` | `docs/design/mv-advisor-playbook.md`, "Decisions from the Prompt 0 recon" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks; `MV-D7` = three metric-view Delta tables |
 | **GSO v2 playbook** `GSO v2 D1`–`GSO v2 D9` | Cited throughout the optimizer code; reconstructed in gap report §4. The defining file `GSO_OPTIMIZER_V2_TODO.md` is **not checked in** | `GSO v2 D1` = the native Benchmark Eval API is the sole eval runner; `GSO v2 D9` = linear DAG, no condition tasks, no task values |
 | **Baseline-eval-fix plan** `applier.py D1`–`applier.py D3` | `optimization/applier.py:358` | Quality-instruction policies (`mv_preference`, `column_ordering`, …) |
 
@@ -900,13 +907,15 @@ Every decision citation in this appendix carries its namespace prefix — `MV-D2
 above. The collision is not hypothetical: `GSO v2 D1` and `MV-D1` are different decisions
 about different subjects, and gap report §4 records `GSO v2 D4`, `GSO v2 D5` and
 `GSO v2 D6` as having **zero citations anywhere in the repository** — they are unrelated to
-`MV-D4`–`MV-D6`, which are defined in the MV advisor playbook and are used here.
+`MV-D4`–`MV-D7`, which are defined in the MV advisor playbook and are used here.
 
 Deltas 1 through 3 carry `MV-D` identifiers and between them cover `MV-D1`, `MV-D2`,
 `MV-D3`, `MV-D5` and `MV-D6`; `MV-D4` governs this appendix's existence and is cited in the
-authority note above. Deltas 4 through 7 record repo facts established by the gap report
-rather than decisions taken in the playbook, so they cite the gap report instead — that is
-a difference in provenance, not an omission.
+authority note above. Deltas 5 and 7 record repo facts established by the gap report rather
+than decisions taken in the playbook, so they cite the gap report instead — that is a
+difference in provenance, not an omission. Deltas 4 and 6 are mixed: each states a repo fact
+from the gap report *and* records `MV-D7`, the decision that resolved gap report §3 item 7
+by giving the metric-view feature three Delta tables of its own.
 
 ---
 
@@ -1108,7 +1117,7 @@ that is new machinery and needs its own decision.
 
 #### Delta 4 — Artifacts in genie_opt_artifacts
 
-*(No `MV-D` — repo fact per gap report §1.6; `GSO v2 D9` for Delta-by-`run_id` handoff. Supersedes: 7.7.1 transport and `ddl_artifact_path`.)*
+*(No `MV-D` — repo fact per gap report §1.6; `GSO v2 D9` for Delta-by-`run_id` handoff; scope narrowed by `MV-D7`. Supersedes: 7.7.1 transport and `ddl_artifact_path`.)*
 
 **What changes.** There is no Volumes convention for run artifacts — `/Volumes` appears
 nowhere in the optimizer source, and the only real Volumes use in the repo is the GSO wheel
@@ -1127,6 +1136,15 @@ Two fields map onto columns that already exist rather than needing invention:
 - `ddl_artifact_path` → the DDL text lives in the artifact payload; there is no path.
 - The §7.9 idempotency key `sha256(space_id | canonical_measure_expr | sorted_source_set)`
   → `genie_opt_artifacts.content_hash`, which exists for exactly this purpose.
+
+**`MV-D7` narrows what belongs here.** The *rendered DDL text* is a stage output and stays
+an artifact row, written under a new `artifact_kind` exactly as described above. The
+*candidate itself* is not: it is a stateful entity with a human decision attached and a
+lifetime longer than the run that produced it, so it lives in `genie_opt_mv_candidates`
+(see [Delta 6](#delta-6--nine-delta-tables-six-run-scoped-plus-three-metric-view-stores)).
+The idempotency key is the bridge between the two stores: the artifact's `content_hash`
+is set to the candidate's `dedup_fingerprint`, so the DDL text for any candidate is
+reachable by that key and neither store needs a foreign key the other cannot supply.
 
 Part 7's closing note that "only numeric, string, and boolean values are usable inside
 If/else operands" is moot: there are no If/else tasks, so list-valued fields such as
@@ -1154,22 +1172,41 @@ doc. See gap report §3 for the open naming decisions.
 
 ---
 
-#### Delta 6 — Six Delta tables, extended additively
+#### Delta 6 — Nine Delta tables: six run-scoped plus three metric-view stores
 
-*(No `MV-D` — repo fact per gap report §1.6. Supersedes: Key Finding 2 and the §1c row, both of which say "roughly 15 Delta tables".)*
+*(Repo fact per gap report §1.6; the metric-view stores are `MV-D7`. Supersedes: Key Finding 2 and the §1c row, both of which say "roughly 15 Delta tables".)*
 
 **What changes.** A GSO run writes **six** `genie_opt_*` tables, defined in one place
 (`optimization/ddl.py`): `genie_opt_runs`, `genie_opt_stages`, `genie_opt_iterations`,
 `genie_opt_patches`, `genie_opt_benchmark_mutations`, `genie_opt_artifacts`. Two more exist
 outside that registry — `genie_opt_scan_snapshots` and the per-domain
-`genie_benchmarks_{domain}` — for eight in total, not fifteen. They live in
-`{GSO_CATALOG}.{GSO_SCHEMA}`, so Part 7's `main.genie_workbench.mv_candidates` is wrong in
-both prefix and location.
+`genie_benchmarks_{domain}`. They live in `{GSO_CATALOG}.{GSO_SCHEMA}`, so Part 7's
+`main.genie_workbench.mv_candidates` is wrong in both prefix and location.
 
-**Prefer extending the six over adding a seventh.** Candidates and DDL belong in
-`genie_opt_artifacts` under a new `artifact_kind` ([Delta 4](#delta-4--artifacts-in-genie_opt_artifacts)).
-The consent record, requested mode, effective mode and downgrade reason belong as new
-columns on `genie_opt_runs`.
+**`MV-D7` — the metric-view feature adds three tables to that registry**, not columns to
+the existing six: `genie_opt_mv_candidates`, `genie_opt_mv_consents`,
+`genie_opt_mv_created_objects`. Gap report §3 item 7 left the choice open between a
+candidates table and an `artifact_kind` row; the three-table shape resolves it, because all
+three hold **stateful entities rather than stage-handoff blobs**:
+
+- A **consent** is created by the entitlement probe *before any run exists*, so its
+  `run_id` is NULL at insert and filled at trigger time. It cannot be a column on
+  `genie_opt_runs`, which has no row yet, and it cannot be partitioned by `run_id`.
+- A **candidate** deliberately **outlives the run that proposed it** — `create_and_attach`
+  acts on proposals approved from an earlier run ([Delta 1](#delta-1--two-run-consent-model)),
+  and carries a mutable human decision plus a rejection decay window. A `run_id`-keyed
+  artifact row is the wrong grain and the wrong lifetime.
+- A **created object's** `status` mutates `CREATED → ATTACHED → DETACHED → DROPPED`, the
+  last transition potentially months later via the explicit drop endpoint. Artifacts are
+  append-only by design.
+
+What survives from the artifacts-first instinct is the split in
+[Delta 4](#delta-4--artifacts-in-genie_opt_artifacts): the *rendered DDL text* is a stage
+output and stays an artifact row, cross-referenced to its candidate by setting the
+artifact's `content_hash` to the candidate's `dedup_fingerprint`. Requested mode, effective
+mode and downgrade reason are recorded on the metric-view rows that own them
+(`genie_opt_mv_candidates` and `genie_opt_mv_consents` respectively) rather than widening
+`genie_opt_runs`, so a run with the feature off carries no metric-view columns at all.
 
 **Schema evolution is additive and never automatic-destructive.** Adding a column means
 editing the `CREATE` DDL string, appending to `ADDITIVE_COLUMN_MIGRATIONS`, wiring the

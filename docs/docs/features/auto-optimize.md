@@ -277,6 +277,19 @@ The main current-run sources of truth are:
 | `genie_opt_artifacts` | Typed JSON payloads keyed by artifact kind — `run_manifest`, `space_metadata`, `benchmark_qc`, `space_quality_enrichment`, `publish_record`, and the six `wide_schema_*` kinds (`inventory`, `evidence`, `selection_plan`, `audit`, `profile_telemetry`, `prompt_telemetry`) |
 | `genie_opt_scan_snapshots` | Optional paired preflight/postflight IQ snapshots |
 
+Three further tables are created alongside these and back the metric view advisor. They are
+created empty on every deploy and stay empty until that feature ships, so an empty table
+here is expected rather than a sign of a failed run:
+
+| Table | Contents |
+|-------|----------|
+| `genie_opt_mv_candidates` | Metric view proposals, one row per space and dedup fingerprint, with the human approve/reject decision |
+| `genie_opt_mv_consents` | Entitlement probes and the scoped consent recorded against them |
+| `genie_opt_mv_created_objects` | Metric views created under OBO and their attach/detach lifecycle |
+
+Unlike the run-scoped tables above, these three are keyed by space or probe rather than
+purely by run, because a proposal and its consent outlive the run that produced them.
+
 Workbench stores removed-history tombstones separately in Lakebase table
 `genie.hidden_optimization_runs`; GSO audit tables remain immutable.
 

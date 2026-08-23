@@ -6,7 +6,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D1–MV-D6 decision numbering; if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D7 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -15,8 +15,8 @@
    cp cursor-prompt-playbook-mv-advisor.md docs/design/mv-advisor-playbook.md
    git add docs/design && git commit -m "docs: metric view advisor design POV + build playbook"
    ```
-   Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D6**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
-2. **Create the Cursor rules file** (paste the block below into `.cursor/rules/mv-advisor.mdc` and commit). This keeps every prompt honest without repeating the guardrails each time:
+   Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D7**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
+2. **Create the Cursor rules file INSIDE the repo** — `databricks-genie-workbench/.cursor/rules/mv-advisor.mdc`, not the workspace root's `.cursor/`. A workspace-level rules file works in your session but is unversioned: it doesn't travel with the branch, doesn't survive a fresh clone, and gives a teammate running these prompts none of the guardrails. Commit it with the design docs. This keeps every prompt honest without repeating the guardrails each time:
 
    ```
    ---
@@ -189,9 +189,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions from the Prompt 0 recon (MV-D1–MV-D6)
+## Decisions register (MV-D1–MV-D7)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -204,6 +204,8 @@ The recon surfaced five structural conflicts, not naming drift. These decisions 
 **MV-D5 — Four-place lockstep for job parameters.** Root `databricks.yml`, the package-bundle mirror, `scripts/deploy_lib/gso_job.py`, and `backend/job_launcher.py` must all carry every new `mv_*` parameter. The gap report should state this explicitly so no prompt touches one mirror without the others.
 
 **MV-D6 — Rollback simplifies; drop stays manual.** Whole-snapshot revert means detach-on-regression comes free with the existing `integration/revert.py` path. The never-auto-drop rule is unchanged; drop is a backend OBO endpoint gated on DETACHED status.
+
+**MV-D7 — Stateful MV entities get dedicated tables; run-scoped blobs stay in `genie_opt_artifacts`.** Three tables join `_ALL_DDL`: `genie_opt_mv_candidates` (partitioned by target_space_id — the upsert key is space-scoped and a candidate outlives the run that proposed it under MV-D1), `genie_opt_mv_consents` (unpartitioned — run_id is NULL at probe time and filled at trigger), and `genie_opt_mv_created_objects` (partitioned by run_id; merge key run_id + suggestion_id). The rendered DDL text remains a `genie_opt_artifacts` row under a new artifact_kind, with `content_hash` set to the dedup fingerprint so the stores cross-reference. Rationale: all three entities carry mutable, cross-run-lifecycle state that a run-partitioned append-style handoff table cannot host without fighting its own partitioning. Supersedes POV Appendix A Deltas 4 and 6 where they assert otherwise. Process rule established alongside it: **appendices record decisions; they do not make them** — any new architecture call surfaces here as an MV-D entry first, then the appendix cites it.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

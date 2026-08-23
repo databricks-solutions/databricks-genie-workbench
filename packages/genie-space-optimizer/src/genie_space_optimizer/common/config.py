@@ -1852,6 +1852,31 @@ for the fat JSON stage-level blobs that don't fit a per-attempt scored row:
 Backed by ``ddl._GENIE_OPT_ARTIFACTS_DDL`` and written via
 ``state.write_artifact``."""
 
+TABLE_MV_CANDIDATES = "genie_opt_mv_candidates"
+"""Metric view advisor proposals (MV-D7). One row per
+``(target_space_id, dedup_fingerprint)`` — a candidate deliberately outlives
+the run that proposed it, because ``create_and_attach`` acts on proposals a
+user approved from an *earlier* run (MV-D1's two-run consent model). Partitioned
+by ``target_space_id`` rather than ``run_id`` for that reason. Backed by
+``ddl._GENIE_OPT_MV_CANDIDATES_DDL``; upserted via
+``mv_state.upsert_mv_candidate``. The rendered DDL *text* for a candidate is a
+separate ``genie_opt_artifacts`` row whose ``content_hash`` is this table's
+``dedup_fingerprint``, so the two stores cross-reference."""
+TABLE_MV_CONSENTS = "genie_opt_mv_consents"
+"""Metric view entitlement probes and the consent decisions taken against them
+(MV-D7). One row per ``probe_id``. Unpartitioned: the probe writes the row
+before any run exists, so ``run_id`` is NULL at insert and filled at trigger
+time, which rules it out as a partition key. Backed by
+``ddl._GENIE_OPT_MV_CONSENTS_DDL``; upserted via
+``mv_state.upsert_mv_consent``."""
+TABLE_MV_CREATED_OBJECTS = "genie_opt_mv_created_objects"
+"""Unity Catalog metric views the backend created under OBO for a run, and
+their attach/detach lifecycle (MV-D7). One row per
+``(run_id, suggestion_id)``; ``status`` mutates CREATED → ATTACHED →
+DETACHED → DROPPED over the life of the object. Backed by
+``ddl._GENIE_OPT_MV_CREATED_OBJECTS_DDL``; upserted via
+``mv_state.upsert_mv_created_object``."""
+
 # ── 13. Trace Destination Convention ──────────────────────────────────
 
 EXPERIMENT_PATH_TEMPLATE = "/Shared/genie-space-optimizer/{{ space_id }}/{{ domain }}"

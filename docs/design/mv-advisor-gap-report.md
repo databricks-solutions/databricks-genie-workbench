@@ -853,6 +853,10 @@ Column migrations only apply to tables already in `_ALL_DDL` (`state.py:126-131`
 > table in a different schema. Prefer either a `genie_opt_mv_candidates` table in
 > `_ALL_DDL`, or — cheaper and consistent with the existing handoff idiom — an
 > `mv_candidates` `artifact_kind` row in `genie_opt_artifacts`.
+>
+> **Resolved by `MV-D7`:** the table, plus two more (`genie_opt_mv_consents`,
+> `genie_opt_mv_created_objects`), because all three hold mutable state that outlives one
+> run. See §3 item 7.
 
 #### No Volumes convention for run artifacts
 
@@ -1426,6 +1430,12 @@ first parameter is added — retrofitting is worse than starting right.
 `_ALL_DDL`, or an `artifact_kind` row in `genie_opt_artifacts`? The POV's
 `main.genie_workbench.mv_candidates` is wrong either way — GSO tables live in
 `{GSO_CATALOG}.{GSO_SCHEMA}` under the `genie_opt_` prefix.
+
+> **Resolved by `MV-D7`** (playbook decisions register): both. Three tables join `_ALL_DDL`
+> for the stateful entities — `genie_opt_mv_candidates`, `genie_opt_mv_consents`,
+> `genie_opt_mv_created_objects` — while the rendered DDL *text* stays a
+> `genie_opt_artifacts` row, cross-referenced by setting its `content_hash` to the
+> candidate's dedup fingerprint.
 
 **8. Patch-type naming and firewall registration.** If MV attachment becomes a patch, it
 needs a `PATCH_TYPES` key (proposed: `attach_metric_view` / `detach_metric_view`), an

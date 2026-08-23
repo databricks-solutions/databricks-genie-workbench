@@ -4,6 +4,9 @@ from genie_space_optimizer.common.config import (
     TABLE_ARTIFACTS,
     TABLE_BENCHMARK_MUTATIONS,
     TABLE_ITERATIONS,
+    TABLE_MV_CANDIDATES,
+    TABLE_MV_CONSENTS,
+    TABLE_MV_CREATED_OBJECTS,
     TABLE_PATCHES,
     TABLE_RUNS,
     TABLE_STAGES,
@@ -192,6 +195,88 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+_GENIE_OPT_MV_CANDIDATES_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_candidates (
+    dedup_fingerprint   STRING        NOT NULL COMMENT 'MV-D7 idempotency key: sha256(space_id | canonical_measure_expr | sorted_source_set). Upsert key together with target_space_id; also the content_hash of the rendered-DDL genie_opt_artifacts row for this candidate',
+    target_space_id     STRING        NOT NULL COMMENT 'Genie Agent the candidate is proposed for',
+    suggestion_id       STRING        NOT NULL COMMENT 'Stable proposal id surfaced to the UI and carried on approve/reject decisions',
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id — the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)',
+    candidate_type      STRING        NOT NULL COMMENT 'NEW_METRIC_VIEW|REPLACE_RAW_TABLE|ADD_MEASURE|CONFLICT (POV Part 4 proposal `type`)',
+    confidence_score    DOUBLE                 COMMENT 'Weighted L/Y/S/D score, 0-100',
+    tier                STRING                 COMMENT 'HIGH|MEDIUM|LOW confidence tier',
+    proposed_object     STRING                 COMMENT 'Fully-qualified target name for the metric view (catalog.schema.name)',
+    score_components_json STRING               COMMENT 'JSON: POV Part 4 `score_components` — per-signal scores plus the weights used',
+    evidence_json       STRING                 COMMENT 'JSON: POV Part 4 `evidence` — fingerprint recurrence, benchmark question ids, statement ids, lineage source tables, semantic top match',
+    provenance_json     STRING                 COMMENT 'JSON: POV Part 4 `provenance` — generated_by, auth_identity, gso_run_id, generated_at',
+    alternatives_json   STRING                 COMMENT 'JSON: POV Part 4 `alternatives` — ranked runner-up shapes for the same fingerprint',
+    conflicts_json      STRING                 COMMENT 'JSON: POV Part 4 `conflicts` — existing instructions or trusted assets defining the same concept differently. Non-empty means human adjudication is required and the candidate is never auto-resolved',
+    requested_mode      STRING                 COMMENT 'mv_action_mode the user asked for on the proposing run: suggest_only|create_and_attach|sandbox',
+    effective_mode      STRING                 COMMENT 'Mode actually in force after entitlement/consent re-verification. Never upgrades relative to requested_mode',
+    decision            STRING                 COMMENT 'Human decision: NULL (undecided) | approved | rejected',
+    decided_by          STRING                 COMMENT 'User email who approved or rejected the candidate',
+    decided_at          TIMESTAMP              COMMENT 'When the decision was recorded',
+    suppressed_until    TIMESTAMP              COMMENT 'Rejection decay window — the advisor must not re-surface this fingerprint before this timestamp',
+    approved_for_rerun  BOOLEAN       DEFAULT false COMMENT 'MV-D1: true only when an approved candidate is eligible to be created under OBO on a subsequent run. create_and_attach is gated on this flag',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the candidate was first proposed',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp — a later run re-proposing the same fingerprint refreshes this'
+)
+USING DELTA
+PARTITIONED BY (target_space_id)
+COMMENT 'Metric view advisor proposals (MV-D7) - one row per (target_space_id, dedup_fingerprint), upserted so re-runs never duplicate a candidate'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true',
+    'delta.feature.allowColumnDefaults' = 'supported'
+)"""
+
+_GENIE_OPT_MV_CONSENTS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_consents (
+    probe_id            STRING        NOT NULL COMMENT 'Entitlement probe id — the upsert key. Issued by the OBO probe route before any run exists',
+    run_id              STRING                 COMMENT 'FK to genie_opt_runs.run_id, NULL until the consent is carried into a run at trigger time. This is why the table is unpartitioned',
+    granted_by          STRING        NOT NULL COMMENT 'User email who granted consent — the identity every OBO write for this run executes under',
+    granted_at          TIMESTAMP     NOT NULL COMMENT 'When consent was granted',
+    target_catalog      STRING        NOT NULL COMMENT 'Consented Unity Catalog catalog. Writes go here and nowhere else',
+    target_schema       STRING        NOT NULL COMMENT 'Consented UC schema. A failed write is a downgrade, never a retry somewhere more permissive',
+    materialize_consented BOOLEAN     DEFAULT false COMMENT 'Separate consent for materialization (mv_materialize) — never bundled with create or attach',
+    probe_results_json  STRING                 COMMENT 'JSON: probe verdict detail — checked_as, effective privileges, missing privileges, remediation GRANT',
+    verdict             STRING                 COMMENT 'SUFFICIENT|INSUFFICIENT|UNKNOWN',
+    reverified_at_trigger TIMESTAMP            COMMENT 'When the probe was last re-verified immediately before an OBO write. NULL means never re-verified; the job refuses to attach without it',
+    downgrade_reason    STRING                 COMMENT 'Why the run was downgraded to suggest_only, if it was. Downgrade never upgrades',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp'
+)
+USING DELTA
+COMMENT 'Metric view entitlement probes and consent decisions (MV-D7) - one row per probe_id; the audit answer to "who authorized this metric view and against what privileges"'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true',
+    'delta.feature.allowColumnDefaults' = 'supported'
+)"""
+
+_GENIE_OPT_MV_CREATED_OBJECTS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_created_objects (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id — the run this object was created for and attached by',
+    suggestion_id       STRING        NOT NULL COMMENT 'FK to genie_opt_mv_candidates.suggestion_id the object was created from. Upsert key together with run_id',
+    full_name           STRING        NOT NULL COMMENT 'Fully-qualified name of the created metric view (catalog.schema.name), in the consented schema only',
+    created_by          STRING        NOT NULL COMMENT 'Identity that executed CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never the service principal',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the UC object was created by the backend, before the job was submitted',
+    attach_patch_id     STRING                 COMMENT 'FK to the genie_opt_patches row that attached this view to data_sources.metric_views',
+    baseline_eval_run_id STRING                COMMENT 'Native eval-run id measured with the view created but NOT yet attached',
+    post_attach_eval_run_id STRING             COMMENT 'Native eval-run id measured immediately after the attach patch, before any lever fires. The delta against baseline_eval_run_id is the isolated metric-view lift',
+    status              STRING        NOT NULL COMMENT 'CREATED|ATTACHED|DETACHED|DROPPED',
+    on_regression_action STRING                COMMENT 'DETACH_ONLY_NEVER_DROP outside sandbox mode; SANDBOX_AUTO_DROP only for a scratch schema that exists solely for the run',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp - moves with every status transition'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Metric views created under OBO for a run and their attach/detach lifecycle (MV-D7) - one row per (run_id, suggestion_id). The UC object is never auto-dropped outside sandbox mode'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 _ALL_DDL: dict[str, str] = {
     TABLE_RUNS: _GENIE_OPT_RUNS_DDL,
     TABLE_STAGES: _GENIE_OPT_STAGES_DDL,
@@ -199,6 +284,9 @@ _ALL_DDL: dict[str, str] = {
     TABLE_PATCHES: _GENIE_OPT_PATCHES_DDL,
     TABLE_BENCHMARK_MUTATIONS: _GENIE_OPT_BENCHMARK_MUTATIONS_DDL,
     TABLE_ARTIFACTS: _GENIE_OPT_ARTIFACTS_DDL,
+    TABLE_MV_CANDIDATES: _GENIE_OPT_MV_CANDIDATES_DDL,
+    TABLE_MV_CONSENTS: _GENIE_OPT_MV_CONSENTS_DDL,
+    TABLE_MV_CREATED_OBJECTS: _GENIE_OPT_MV_CREATED_OBJECTS_DDL,
 }
 
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (

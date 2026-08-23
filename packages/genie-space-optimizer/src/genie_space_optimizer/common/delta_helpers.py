@@ -172,6 +172,25 @@ def _fqn(catalog: str, schema: str, table: str) -> str:
     return f"{catalog}.{schema}.{table}"
 
 
+def _sql_literal(value: Any, *, encode: bool = False) -> str:
+    """Render ``value`` as a SQL literal for the write helpers below.
+
+    Strings are quoted and escaped; ``None`` becomes ``NULL``; everything else
+    is emitted raw. When ``encode`` is set the string travels as an ASCII-only
+    ``unbase64`` expression so its UTF-8 bytes do not depend on Spark's
+    string-literal escape mode — required for nested-JSON columns.
+    """
+    if isinstance(value, str):
+        if encode:
+            encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+            return f"CAST(unbase64('{encoded}') AS STRING)"
+        escaped = value.replace("\\", "\\\\").replace("'", "''")
+        return f"'{escaped}'"
+    if value is None:
+        return "NULL"
+    return str(value)
+
+
 def read_table(
     spark: SparkSession,
     catalog: str,
@@ -244,19 +263,11 @@ def insert_row(
     fqn = _fqn(catalog, schema, table)
     encoded_columns = base64_string_columns or set()
 
-    def _sql_lit(column: str, v: Any) -> str:
-        if isinstance(v, str):
-            if column in encoded_columns:
-                encoded = base64.b64encode(v.encode("utf-8")).decode("ascii")
-                return f"CAST(unbase64('{encoded}') AS STRING)"
-            escaped = v.replace("\\", "\\\\").replace(chr(39), chr(39) + chr(39))
-            return f"'{escaped}'"
-        if v is None:
-            return "NULL"
-        return str(v)
-
     columns = ", ".join(row_dict.keys())
-    values = ", ".join(_sql_lit(column, value) for column, value in row_dict.items())
+    values = ", ".join(
+        _sql_literal(value, encode=column in encoded_columns)
+        for column, value in row_dict.items()
+    )
     stmt = f"INSERT INTO {fqn} ({columns}) VALUES ({values})"
     logger.debug("insert_row: %s", stmt)
     execute_delta_write_with_retry(
@@ -287,22 +298,13 @@ def update_row(
     fqn = _fqn(catalog, schema, table)
     encoded_columns = base64_string_columns or set()
 
-    def _fmt(val: Any, *, encode: bool = False) -> str:
-        if isinstance(val, str):
-            if encode:
-                encoded = base64.b64encode(val.encode("utf-8")).decode("ascii")
-                return f"CAST(unbase64('{encoded}') AS STRING)"
-            escaped = val.replace("\\", "\\\\").replace("'", "''")
-            return f"'{escaped}'"
-        if val is None:
-            return "NULL"
-        return str(val)
-
     set_clause = ", ".join(
-        f"{col} = {_fmt(val, encode=col in encoded_columns)}"
+        f"{col} = {_sql_literal(val, encode=col in encoded_columns)}"
         for col, val in update_cols.items()
     )
-    where_clause = " AND ".join(f"{col} = {_fmt(val)}" for col, val in key_cols.items())
+    where_clause = " AND ".join(
+        f"{col} = {_sql_literal(val)}" for col, val in key_cols.items()
+    )
 
     stmt = f"UPDATE {fqn} SET {set_clause} WHERE {where_clause}"
     logger.debug("update_row: %s", stmt)
@@ -310,6 +312,69 @@ def update_row(
         spark,
         stmt,
         operation_name="update_row",
+        table_name=fqn,
+    )
+
+
+def merge_row(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    table: str,
+    key_cols: dict[str, Any],
+    value_cols: dict[str, Any],
+    *,
+    insert_only_cols: dict[str, Any] | None = None,
+    base64_string_columns: set[str] | None = None,
+) -> None:
+    """Upsert a single row via ``MERGE INTO``, keyed on ``key_cols``.
+
+    One atomic statement, so a re-run cannot produce a duplicate the way a
+    read-then-insert can. ``value_cols`` are written on both branches;
+    ``insert_only_cols`` are written on insert only, which is how a
+    ``created_at`` survives later upserts while ``updated_at`` moves. Columns
+    named in ``base64_string_columns`` use byte-preserving transport.
+    """
+    if not key_cols:
+        raise ValueError("merge_row requires at least one key column")
+    if not value_cols:
+        raise ValueError("merge_row requires at least one value column")
+
+    fqn = _fqn(catalog, schema, table)
+    encoded_columns = base64_string_columns or set()
+    insert_only = insert_only_cols or {}
+
+    def _lit(col: str, val: Any) -> str:
+        return _sql_literal(val, encode=col in encoded_columns)
+
+    source = ", ".join(
+        f"{_lit(col, val)} AS {col}" for col, val in key_cols.items()
+    )
+    on_clause = " AND ".join(f"t.{col} = s.{col}" for col in key_cols)
+    set_clause = ", ".join(
+        f"t.{col} = {_lit(col, val)}" for col, val in value_cols.items()
+    )
+
+    insert_cols = [*key_cols, *value_cols, *insert_only]
+    insert_vals = [
+        *(f"s.{col}" for col in key_cols),
+        *(_lit(col, val) for col, val in value_cols.items()),
+        *(_lit(col, val) for col, val in insert_only.items()),
+    ]
+
+    stmt = (
+        f"MERGE INTO {fqn} AS t "
+        f"USING (SELECT {source}) AS s "
+        f"ON {on_clause} "
+        f"WHEN MATCHED THEN UPDATE SET {set_clause} "
+        f"WHEN NOT MATCHED THEN INSERT ({', '.join(insert_cols)}) "
+        f"VALUES ({', '.join(insert_vals)})"
+    )
+    logger.debug("merge_row: %s", stmt)
+    execute_delta_write_with_retry(
+        spark,
+        stmt,
+        operation_name="merge_row",
         table_name=fqn,
     )
 
