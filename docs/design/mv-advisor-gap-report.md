@@ -658,10 +658,10 @@ MLflow run. The champion iteration is selected from ``genie_opt_iterations``
 | `new_value` | `new_text` (with `old_text` for the prior value) |
 | `operation` | `op` on the *rendered command*, one of `add` / `update` / `remove` / `update_section` / `rewrite` |
 
-**Patch types.** The canonical registry is `PATCH_TYPES` in `common/config.py:1980` — 50
+**Patch types.** The canonical registry is `PATCH_TYPES` in `common/config.py:2005` — 50
 keys (the section comment says 35 and is stale). The Lever-2 metric-view subset exists
 (`add_mv_measure`, `update_mv_measure`, `remove_mv_measure`, `add_mv_dimension`,
-`remove_mv_dimension`, `update_mv_yaml`, all `scope: uc_artifact`) at `config.py:2042-2078`.
+`remove_mv_dimension`, `update_mv_yaml`, all `scope: uc_artifact`) at `config.py:2067-2103`.
 
 But the **live loop allowlist is 11 types and contains no MV type**:
 
@@ -781,11 +781,11 @@ and `synonyms` — all free text — so a new MV patch type must be added to
 
 ### 1.6 Persistence
 
-#### Delta — six tables, not ~15
+#### Delta — nine tables, not ~15
 
 `optimization/ddl.py` is the sole definition point:
 
-```195:202:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```280:290:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
 _ALL_DDL: dict[str, str] = {
     TABLE_RUNS: _GENIE_OPT_RUNS_DDL,
     TABLE_STAGES: _GENIE_OPT_STAGES_DDL,
@@ -793,8 +793,14 @@ _ALL_DDL: dict[str, str] = {
     TABLE_PATCHES: _GENIE_OPT_PATCHES_DDL,
     TABLE_BENCHMARK_MUTATIONS: _GENIE_OPT_BENCHMARK_MUTATIONS_DDL,
     TABLE_ARTIFACTS: _GENIE_OPT_ARTIFACTS_DDL,
+    TABLE_MV_CANDIDATES: _GENIE_OPT_MV_CANDIDATES_DDL,
+    TABLE_MV_CONSENTS: _GENIE_OPT_MV_CONSENTS_DDL,
+    TABLE_MV_CREATED_OBJECTS: _GENIE_OPT_MV_CREATED_OBJECTS_DDL,
 }
 ```
+
+> **Refreshed for `MV-D7`:** the last three entries are the metric view advisor
+> tables added in Prompt 1; the counts in this section were refreshed with them.
 
 | Table | Grain | Partition | Notes |
 |---|---|---|---|
@@ -804,6 +810,9 @@ _ALL_DDL: dict[str, str] = {
 | `genie_opt_patches` | one row per applied patch | `run_id` | `patch_json`, `command_json`, `rollback_json`, `rolled_back` |
 | `genie_opt_benchmark_mutations` | benchmark change ledger | `run_id` | |
 | `genie_opt_artifacts` | generic JSON blob handoff | `run_id` | **the task-to-task handoff table** |
+| `genie_opt_mv_candidates` | one row per (`target_space_id`, `dedup_fingerprint`) | `target_space_id` | MV-D7; upserted, so a re-proposing run refreshes rather than duplicates |
+| `genie_opt_mv_consents` | one row per `probe_id` | *none* | MV-D7; unpartitioned because `run_id` is NULL until trigger time |
+| `genie_opt_mv_created_objects` | one row per (`run_id`, `suggestion_id`) | `run_id` | MV-D7; `CREATED\|ATTACHED\|DETACHED\|DROPPED` lifecycle |
 
 Two more exist outside `_ALL_DDL`: `genie_opt_scan_snapshots` (`scan_snapshots.py:41-58`)
 and the per-domain `genie_benchmarks_{domain}` (`benchmarks.py:194-209`).
@@ -819,7 +828,7 @@ Names are constants in `common/config.py:1830-1845`. FQN is
 `genie_opt_artifacts.artifact_kind` is the extension point an advisor would use — it is a
 documented enum in the column comment:
 
-```179:179:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```182:182:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
     artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record',
 ```
 
@@ -827,7 +836,7 @@ documented enum in the column comment:
 
 Additive only, via a tuple of `(table, column, "TYPE COMMENT '...'")`:
 
-```204:209:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```292:297:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_RUNS, "job_id", "STRING COMMENT 'Databricks Job definition ID'"),
     (TABLE_PATCHES, "provenance_json", "STRING COMMENT 'JSON: full provenance chain from judge verdicts to this patch'"),
@@ -1325,7 +1334,7 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 | POV task value | Status | Evidence |
 |---|---|---|
 | `{{tasks.enrichment.values.profile_table}}` | **CONFLICTS** | Task values forbidden (`test_phase7_job_dag.py:397-406`); no `enrichment` task |
-| `{{tasks.baseline.values.eval_run_id}}` | **CONFLICTS** | Same; `eval_run_id` lives in `genie_opt_iterations.eval_run_id` (`ddl.py:98`) |
+| `{{tasks.baseline.values.eval_run_id}}` | **CONFLICTS** | Same; `eval_run_id` lives in `genie_opt_iterations.eval_run_id` (`ddl.py:101`) |
 | `{{tasks.preflight.values.mv_effective_mode}}` | **CONFLICTS** | Same; no `preflight` task |
 | `{{tasks.metric_view_advisor.values.candidate_table}}` | **CONFLICTS** | Same |
 | `{{tasks.metric_view_apply.values.created_metric_views}}` | **CONFLICTS** | Same |
@@ -1360,7 +1369,7 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 | `EXPLAIN CREATE MATERIALIZED VIEW` precheck | **DOES-NOT-EXIST-YET** | — |
 | "Inherits existing versioning, diff, rollback" | **PARTIALLY MATCHES** | `genie_opt_patches` would carry it; but rollback is whole-snapshot (`applier.py:4550-4560`), so per-patch detach has no analogue |
 | `on_regression: DETACH_ONLY_NEVER_DROP` | **DOES-NOT-EXIST-YET** | And incompatible with snapshot rollback as written |
-| Idempotency key `sha256(space_id \| expr \| sources)` | **PARTIALLY MATCHES (precedent)** | `genie_opt_artifacts.content_hash` exists for exactly this (`ddl.py:181`); the launcher already builds a SHA-256 idempotency token (`job_launcher.py:33-37`) |
+| Idempotency key `sha256(space_id \| expr \| sources)` | **PARTIALLY MATCHES (precedent)** | `genie_opt_artifacts.content_hash` exists for exactly this (`ddl.py:184`); the launcher already builds a SHA-256 idempotency token (`job_launcher.py:33-37`) |
 | `tables_freed` / 30-table cap | **DOES-NOT-EXIST-YET** | No table-count ceiling logic |
 | Free text in MV proposals must clear the leakage firewall | **CONFLICTS with current coverage** | `_PATCH_TEXT_FIELDS` covers only example-SQL types (`leakage.py:279-289`); package AGENTS.md requires new text-carrying patch types to be routed through it |
 
@@ -1376,10 +1385,10 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 | "Wrap the Beta endpoints behind a thin adapter" | **MATCHES — already done** | `EvalRunner` Protocol + `OfficialBenchmarkRunner`, single seam (`eval_runner.py:167-180`, `:318-352`) |
 | Statuses `RUNNING`/`DONE`/`NOT_STARTED`/`EVALUATION_FAILED`/`EVALUATION_CANCELLED`/`EVALUATION_TIMEOUT` | **MATCHES** | `eval_runner.py:32-33`, `:57-61` |
 | Reasons `EMPTY_RESULT`/`RESULT_MISSING_ROWS`/`RESULT_EXTRA_ROWS`/`RESULT_MISSING_COLUMNS` | **MATCHES** | `genie_eval_taxonomy.py:8-20` |
-| `num_questions`/`num_correct`/`num_needs_review`/`num_done` | **PARTIALLY MATCHES** | `num_needs_review` is a persisted column (`ddl.py:97`); accuracy is `num_correct/num_questions`; `num_done` is not persisted |
-| Store `eval_run_id` not a copied score | **MATCHES** | `genie_opt_iterations.eval_run_id` (`ddl.py:98`) — though `overall_accuracy` is stored too |
+| `num_questions`/`num_correct`/`num_needs_review`/`num_done` | **PARTIALLY MATCHES** | `num_needs_review` is a persisted column (`ddl.py:100`); accuracy is `num_correct/num_questions`; `num_done` is not persisted |
+| Store `eval_run_id` not a copied score | **MATCHES** | `genie_opt_iterations.eval_run_id` (`ddl.py:101`) — though `overall_accuracy` is stored too |
 | `mv_baseline` as a separate eval run isolating MV lift | **DOES-NOT-EXIST-YET** | Mechanically feasible in-process (a second `_native_eval` call at iteration 0.5), but costs one full eval run against the ~20 q/min ceiling |
-| "roughly 15 Delta tables plus Lakebase" | **CONFLICTS** | Six tables in `_ALL_DDL` (+2 outside it) |
+| "roughly 15 Delta tables plus Lakebase" | **CONFLICTS** | Nine tables in `_ALL_DDL` (+2 outside it) — MV-D7 added the three `genie_opt_mv_*` tables |
 | "MLflow… still the home for run provenance and versioning" | **CONFLICTS** | Decommissioned in Phase 5 (D3/D7). `models.py:1-16`: *"no MLflow LoggedModel snapshot, no UC Model Registry version, no per-mutation MLflow run."* GSO uses MLflow for **tracing only**. |
 
 ### 2.7 Scoring, signals, and outputs (POV §2, §3, §7.5)
@@ -1486,9 +1495,10 @@ or accept that a rollback also reverts unrelated same-iteration patches.
 workspace ceiling. Confirm the isolated-lift measurement is worth that, or make it a
 separate opt-in.
 
-**11. Correct the POV's factual claims.** Six Delta tables not ~15; MLflow is tracing-only,
-not the provenance home; the route is `POST /api/auto-optimize/trigger`; no Volumes
-artifact path; the eval-run status field is `eval_run_status` not `status`.
+**11. Correct the POV's factual claims.** Nine Delta tables not ~15 (MV-D7 added
+three `genie_opt_mv_*` tables); MLflow is tracing-only, not the provenance home;
+the route is `POST /api/auto-optimize/trigger`; no Volumes artifact path; the
+eval-run status field is `eval_run_status` not `status`.
 
 **12. Testing and CI.** No CI runs any suite, and there is no live-workspace integration
 harness. Decide whether the MV advisor ships with a CI workflow, and how the OBO
@@ -1569,9 +1579,9 @@ MLflow run. The champion iteration is selected from ``genie_opt_iterations``
 ``integration.discard`` (``genie_opt_runs.config_snapshot`` re-PATCH).
 ```
 
-Artefacts: `genie_opt_iterations.config_json` and `.is_champion` (`ddl.py:94`, `:96`); the
+Artefacts: `genie_opt_iterations.config_json` and `.is_champion` (`ddl.py:97`, `:99`); the
 whitelisted config projection (`state.py:607`, `:627`); the scrubbed `experiment_name`
-column (`trigger.py:201`, `warehouse.py:296`); retired templates at `config.py:1859`.
+column (`trigger.py:201`, `warehouse.py:296`); retired templates at `config.py:1884`.
 
 **Impact.** **Directly contradicts POV §1c**, which lists MLflow as *"Still the home for
 run provenance and versioning."* It is not. Per
@@ -1607,7 +1617,7 @@ inference should not be relied on. **Do not build against an assumed D4.**
 ### D7 — Cross-environment deploy is out of scope
 
 **Reconstruction: high confidence.** Cited at `scripts/deploy_lib/gso_job.py:27`, `:85`;
-`databricks.yml:73`; `models.py:3`; `config.py:1859`;
+`databricks.yml:73`; `models.py:3`; `config.py:1884`;
 `test_phase7_job_dag.py:114`; `backend/tests/test_auto_optimize_router.py:1136`.
 
 Consequences: the `deploy` task is gone, the `deploy_target` parameter is gone, and there
@@ -1694,7 +1704,7 @@ design must express gating as **in-notebook conditionals on job parameters** and
 | `{{tasks.X.values.Y}}` | `genie_opt_artifacts` row read by `run_id` |
 | `condition_task` gates | In-notebook `if` on a job parameter |
 | Patch = `field_path` + `new_value` | Patch = `type` + `target` + `new_text` |
-| "roughly 15 Delta tables" | Six in `_ALL_DDL` (eight counting `genie_opt_scan_snapshots` and `genie_benchmarks_{domain}`) |
+| "roughly 15 Delta tables" | Nine in `_ALL_DDL` after MV-D7 (eleven counting `genie_opt_scan_snapshots` and `genie_benchmarks_{domain}`) |
 | MLflow = provenance and versioning home | Delta-only (D3); MLflow is tracing-only |
 | `POST /api/auto-optimize/runs` | `POST /api/auto-optimize/trigger` |
 | `/Volumes/.../runs/<id>/metric_views.sql` | No Volumes convention; use `genie_opt_artifacts` |

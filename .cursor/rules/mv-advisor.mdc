@@ -92,6 +92,13 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   writing a second scanner. No literals, sample values, or PII in shipped
   metadata, DDL comments, or logs.
 - Materialization is a separate consent (mv_materialize); never bundled.
+- GAP-REPORT FRESHNESS (MV-D9): the gap report outranks the POV, so a stale
+  quote there actively misleads. Any commit that changes something the gap
+  report quotes or counts — _ALL_DDL membership, task keys, patch shape,
+  router paths, parameter lists, file:line anchors — MUST refresh the
+  affected gap-report sites in the SAME commit, re-quoting live code rather
+  than editing the prose around it. Every PLAN that touches such a surface
+  states which gap-report sites it will refresh, or asserts none apply.
 - GENERATED YAML conforms to the generation quality standard in POV Part 4
   (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
   window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->

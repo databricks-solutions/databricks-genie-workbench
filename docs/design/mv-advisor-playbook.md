@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D8 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D9 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -115,6 +115,13 @@
      writing a second scanner. No literals, sample values, or PII in shipped
      metadata, DDL comments, or logs.
    - Materialization is a separate consent (mv_materialize); never bundled.
+   - GAP-REPORT FRESHNESS (MV-D9): the gap report outranks the POV, so a stale
+     quote there actively misleads. Any commit that changes something the gap
+     report quotes or counts — _ALL_DDL membership, task keys, patch shape,
+     router paths, parameter lists, file:line anchors — MUST refresh the
+     affected gap-report sites in the SAME commit, re-quoting live code rather
+     than editing the prose around it. Every PLAN that touches such a surface
+     states which gap-report sites it will refresh, or asserts none apply.
    - GENERATED YAML conforms to the generation quality standard in POV Part 4
      (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
      window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
@@ -224,9 +231,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D8)
+## Decisions register (MV-D1–MV-D9)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution and MV-D8 with the generation quality standard; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, and MV-D9 from the Prompt 2 readiness check; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -243,6 +250,8 @@ The recon surfaced five structural conflicts, not naming drift. These decisions 
 **MV-D7 — Stateful MV entities get dedicated tables; run-scoped blobs stay in `genie_opt_artifacts`.** Three tables join `_ALL_DDL`: `genie_opt_mv_candidates` (partitioned by target_space_id — the upsert key is space-scoped and a candidate outlives the run that proposed it under MV-D1), `genie_opt_mv_consents` (unpartitioned — run_id is NULL at probe time and filled at trigger), and `genie_opt_mv_created_objects` (partitioned by run_id; merge key run_id + suggestion_id). The rendered DDL text remains a `genie_opt_artifacts` row under a new artifact_kind, with `content_hash` set to the dedup fingerprint so the stores cross-reference. Rationale: all three entities carry mutable, cross-run-lifecycle state that a run-partitioned append-style handoff table cannot host without fighting its own partitioning. Supersedes POV Appendix A Deltas 4 and 6 where they assert otherwise. Process rule established alongside it: **appendices record decisions; they do not make them** — any new architecture call surfaces here as an MV-D entry first, then the appendix cites it.
 
 *As implemented (Prompt 1):* accessors live in `optimization/mv_state.py`, one module rather than an extension of the already-large `optimization/state.py`, following the `scan_snapshots.py` precedent for feature-scoped persistence. Every writer goes through a new `delta_helpers.merge_row` primitive, so the §7.9 idempotency key `sha256(space_id | canonical_measure_expr | sorted_source_set)` is enforced as a single-statement upsert-on-conflict rather than a read-then-insert a retry can duplicate. JSON payload columns carry a `_json` suffix in storage and travel base64-encoded; the accessor signatures use the POV Part 4 field names (`score_components`, `evidence`, `provenance`, `alternatives`, `conflicts`, `probe_results`) verbatim. POV Part 4's proposal `type` is stored as `candidate_type` to avoid shadowing the builtin at the API. `reverified_at_trigger` is a `TIMESTAMP` (NULL = never re-verified), and `updated_at` sits on all three tables. `lift_report_json` is deferred to an `ADDITIVE_COLUMN_MIGRATIONS` entry in Prompt 7, when the lift report exists to store. Three judgment items raised in the Prompt 1 VERIFY were reviewed and approved in the Prompt 1 follow-up and are now settled: decision-column ownership (`upsert_mv_candidate` never writes them; `record_mv_candidate_decision` owns them, pinned by `test_re_proposing_does_not_resurrect_a_rejected_candidate`), the "Resolved by MV-D7" pointers added to the gap report, and the user-facing table rows in `docs/docs/features/auto-optimize.md` with their empty-table-is-not-a-failed-run framing.
+
+**MV-D9 — The gap report is refreshed in the same commit that invalidates it.** Commit 1 added three tables to `_ALL_DDL` and left four gap-report sites (`:784` heading, the `:789` quoted block, the `:1382` verdict row, the `:1697` summary row) asserting six tables. Because the rules make the gap report outrank the POV, and the POV's Delta 6 had already been retitled "Nine Delta tables," an agent reading both was told the authoritative source says six and the POV's nine is the error — exactly backwards. Rule: any commit that changes something the gap report quotes or counts refreshes those sites in the same commit, re-quoting live code with current line anchors. Enforced by a rules-file bullet and by every PLAN naming the gap-report sites it will refresh.
 
 **MV-D8 — Generation quality standard adopted (metric-views-patterns v5.2).** All engine-emitted YAML is rendered and validated by one module (`mv_yaml`, Prompt 5.5) enforcing: v1.1 unsupported-field and format-type lints; the multi-hop decision ladder (denormalize → nested joins on DBR ≥ 17.1 with profiling-proven 1:1 keys → subquery-source fallback) with a hard transitive-join gate; SCD2 `is_current` guards; `rely.at_most_one_match` only on proven uniqueness; `MEASURE()`-composed derived metrics, `FILTER`-clause conditional counts, and Fixed-LOD percent-of-total (never `MEASURE()/MEASURE()`); structured comments with **paraphrased** BEST FOR lines (verbatim benchmark text is a firewall violation — it contaminates the benchmark the view is graded by); `ALTER VIEW` for all updates (grants-preserving); post-create `DESCRIBE EXTENDED` type assertion; `MEASURE()`-syntax validation queries with a fan-out smoke test; a copy-ready `GRANT SELECT` checklist surfaced, never auto-applied; and capability rows (DBR 17.3/17.1/18.1 floors) in the entitlement probe that downgrade the join strategy rather than emit unplannable YAML. Origin: the metric-views-patterns skill (v5.2, 2026-06-06); the sample YAML in POV Part 4 was itself corrected under this standard (its customer join was transitive).
 
@@ -331,18 +340,27 @@ Add:
 - lift_report(pre_run, post_run, question_subset): excludes needs-review
   questions from BOTH numerator and denominator; returns delta_affected,
   delta_suite, regressed_question_ids, needs_review_count.
-- Surfacing of per-result assessment reasons (EMPTY_RESULT,
-  RESULT_MISSING_ROWS, RESULT_EXTRA_ROWS, RESULT_MISSING_COLUMNS) if the
-  current result mapping drops them — read the existing result parsing first
-  and extend, don't duplicate.
+- Assessment reasons are ALREADY surfaced — genie_eval_taxonomy.py, with
+  handling in benchmarks.py and map_eval_detail_to_row (:251). CONSUME that
+  taxonomy; do not build a second one. If lift_report or run_subset needs a
+  reason-derived grouping the taxonomy does not expose, extend the taxonomy
+  module itself and say so in VERIFY.
 - If useful for cross-run history, wire genie_list_eval_runs (present in the
   SDK, currently uncalled in this repo) behind the same seam.
+
+lift_report's return shape is a CONTRACT, not an implementation detail: MV-D7
+deferred genie_opt_mv_created_objects.lift_report_json to Prompt 7, and that
+column stores exactly this structure. Define it once here as a typed
+dataclass with a to_dict(); Prompt 7 persists to_dict() verbatim rather than
+reshaping. Name the fields in VERIFY so Prompt 7's PLAN can cite them.
 
 Respect the existing rate posture (poll 20s / timeout 2700s per config) and
 the ~20 q/min workspace ceiling: subset runs serialized, never concurrent.
 Contract tests with mocked SDK responses for every terminal status and every
-assessment reason; extend the module's existing test file rather than starting
-a new one if one exists.
+assessment reason. There is NO test_eval_runner.py today; the nearest files
+(test_eval_timeouts.py, test_evaluation_extract_json.py) are narrowly scoped
+by name. Create tests/unit/test_eval_runner.py as the seam's own contract-test
+home and leave test_eval_timeouts.py to its narrower job.
 ```
 
 ### Prompt 3 — SQL fingerprinting engine
