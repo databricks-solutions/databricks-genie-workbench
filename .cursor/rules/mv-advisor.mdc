@@ -36,6 +36,11 @@ READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
 - Context discovery stays inside the repository. Do not read files outside
   the repo (home directories, ~/Downloads, other checkouts) unless the
   prompt names them explicitly.
+- RULES COPIES: exactly two exist — .cursor/rules/mv-advisor.mdc in this
+  repo and the fenced block in docs/design/mv-advisor-playbook.md — and they
+  are kept byte-identical. Any third copy found outside the repository (a
+  workspace-root .cursor/, another checkout) is stale by definition: report
+  it, do not read it as guidance.
 
 FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
 - Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
@@ -138,3 +143,9 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   `python -c "import genie_space_optimizer; print(genie_space_optimizer.__file__)"`
   and confirm the path resolves inside THIS repository checkout. A test run
   against a foreign checkout is void — report it, do not interpret it.
+- PINNED-DEPENDENCY RESOLUTION: for any behavior that depends on a pinned
+  library version (sqlglot parsing and rendering above all), run only under
+  `uv run --frozen`. A bare pytest on an ambient interpreter is a void run:
+  the pyenv global carries sqlglot 30.0.1 against the pinned 30.0.3, and
+  canonicalization output can differ across parser patch releases. Report
+  the resolved version in VERIFY alongside the import path.

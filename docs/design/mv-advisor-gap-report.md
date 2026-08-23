@@ -388,7 +388,12 @@ dependencies = [
 ]
 ```
 
-`sqlglot` is imported by `optimization/{applier,benchmarking,unified_loop,wide_schema,wide_schema_history}.py`.
+`sqlglot` is imported by `optimization/{benchmarking,mv_fingerprint,unified_loop,wide_schema,wide_schema_history}.py`.
+Every one of those except `mv_fingerprint.py` imports it lazily inside the calling function;
+`mv_fingerprint.py` imports at module scope because it is nothing but sqlglot. `applier.py`
+does **not** import it — it only mentions it in a comment (`applier.py:1534`, "A smarter
+extractor (sqlglot) would be more…"), so an earlier revision of this report listing it as an
+importer was wrong.
 
 #### How entrypoints are registered — they are not
 
@@ -1402,7 +1407,7 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 
 | POV assumption | Status | Evidence |
 |---|---|---|
-| sqlglot AST fingerprinting | **MATCHES (dependency + precedent)** | `sqlglot==30.0.3` pinned; used in `applier.py`, `benchmarking.py`, `unified_loop.py`, `wide_schema*.py` |
+| sqlglot AST fingerprinting | **EXISTS (Prompt 3)** | `optimization/mv_fingerprint.py` — canonicalization, measure/dimension/filter/join-key extraction, shape classification, corpus scan; `sqlglot==30.0.3` pinned. Prior art: `benchmarking.py`, `unified_loop.py`, `wide_schema*.py` (**not** `applier.py`, which only names sqlglot in a comment at `:1534`) |
 | `system.query.history` demand signal (**D**) | **MATCHES** | `wide_schema_history.py:248`, with warehouse-history fallback at `:357` and a documented unavailable path |
 | Lineage signal (**L**) from `system.access.table_lineage` | **DOES-NOT-EXIST-YET** | No lineage reads in GSO. GenieWatch reads `system.access.table_lineage` but as **SP-only** (`backend/watch/services/system_tables.py`) |
 | Embedding / semantic signal (**S**) | **PARTIALLY MATCHES** | An embedding path exists only inside `leakage.py:132-137` and is disabled by default (`question_embeddings = None`). No Vector Search index. |

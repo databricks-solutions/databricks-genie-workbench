@@ -232,11 +232,23 @@ materialization:
     "gso_task_key": "metric_view_advisor",
     "generated_at": "2026-08-22T14:03:00Z"
   },
-  "dedup_fingerprint": "sha256:sum(l_extendedprice*(1-l_discount))|group:order_status,market_segment",
+  "dedup_fingerprint": "9b7f1c0a4e8d2b6f35a1c8e04d7b29f6a3c5e18b0d4f7a2c6e9b3d5f81a4c7e0",
   "alternatives": [],
   "conflicts": []
 }
 ```
+
+**`dedup_fingerprint` is a bare hex digest** (amended under `MV-D10`; the digest above is
+illustrative). It is `sha256(space_id | canonical_measure_expr | sorted_source_set)` —
+`mv_state.mv_candidate_fingerprint`, the `MV-D7` upsert key for
+`genie_opt_mv_candidates` and the `genie_opt_artifacts.content_hash` cross-reference.
+An earlier draft of this payload carried a readable composite string
+(`"sha256:sum(...)|group:order_status,market_segment"`); it predated the shipped key, was
+never implemented, and should not be resurrected — despite its prefix it was not a digest,
+it omitted the space id, and it keyed on the grouping set rather than the source set.
+The expression-grained `expr_fingerprint` in `optimization/mv_fingerprint.py` is a
+*different* value that is deliberately never persisted here: it collides across spaces and
+across source sets, which is exactly what this column must not do.
 
 ---
 
@@ -932,7 +944,7 @@ cause real errors:
 
 | Namespace | Where it is recorded | Example |
 |---|---|---|
-| **MV advisor playbook** `MV-D1`–`MV-D8` | `docs/design/mv-advisor-playbook.md`, "Decisions from the Prompt 0 recon" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks; `MV-D7` = three metric-view Delta tables; `MV-D8` = the generation quality standard |
+| **MV advisor playbook** `MV-D1`–`MV-D10` | `docs/design/mv-advisor-playbook.md`, "Decisions register" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks; `MV-D7` = three metric-view Delta tables; `MV-D8` = the generation quality standard; `MV-D10` = two permanently distinct fingerprint levels |
 | **GSO v2 playbook** `GSO v2 D1`–`GSO v2 D9` | Cited throughout the optimizer code; reconstructed in gap report §4. The defining file `GSO_OPTIMIZER_V2_TODO.md` is **not checked in** | `GSO v2 D1` = the native Benchmark Eval API is the sole eval runner; `GSO v2 D9` = linear DAG, no condition tasks, no task values |
 | **Baseline-eval-fix plan** `applier.py D1`–`applier.py D3` | `optimization/applier.py:358` | Quality-instruction policies (`mv_preference`, `column_ordering`, …) |
 
@@ -941,7 +953,7 @@ Every decision citation in this appendix carries its namespace prefix — `MV-D2
 above. The collision is not hypothetical: `GSO v2 D1` and `MV-D1` are different decisions
 about different subjects, and gap report §4 records `GSO v2 D4`, `GSO v2 D5` and
 `GSO v2 D6` as having **zero citations anywhere in the repository** — they are unrelated to
-`MV-D4`–`MV-D8`, which are defined in the MV advisor playbook and are used here.
+`MV-D4`–`MV-D10`, which are defined in the MV advisor playbook and are used here.
 
 Deltas 1 through 3 carry `MV-D` identifiers and between them cover `MV-D1`, `MV-D2`,
 `MV-D3`, `MV-D5` and `MV-D6`; `MV-D4` governs this appendix's existence and is cited in the

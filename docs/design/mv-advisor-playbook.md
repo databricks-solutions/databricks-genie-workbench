@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D9 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D10 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -17,7 +17,7 @@
    cp cursor-prompt-playbook-mv-advisor.md docs/design/mv-advisor-playbook.md
    git add docs/design && git commit -m "docs: metric view advisor design POV + build playbook"
    ```
-   Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D8**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
+   Note on decision namespaces: this repo already carries a GSO v2 playbook numbering (D1–D9, of which D9 = no task values) and a separate D1–D3 inside `applier.py`. This playbook's decisions are therefore cited as **MV-D1…MV-D10**, and any reference to the others must be namespace-qualified ("GSO v2 D9", "applier.py D2").
 2. **Create the Cursor rules file INSIDE the repo** — `databricks-genie-workbench/.cursor/rules/mv-advisor.mdc`, not the workspace root's `.cursor/`. A workspace-level rules file works in your session but is unversioned: it doesn't travel with the branch, doesn't survive a fresh clone, and gives a teammate running these prompts none of the guardrails. Commit it with the design docs. *(This needs a `.gitignore` change, done in the Prompt 1 follow-up: the repo ignored `.cursor/`, so the in-repo copy was just as unversioned as a workspace-root one. `.gitignore` now reads `.cursor/*` plus `!.cursor/rules/`, because a re-include cannot reach inside an excluded parent directory.)* This keeps every prompt honest without repeating the guardrails each time:
 
    ```
@@ -59,6 +59,11 @@
    - Context discovery stays inside the repository. Do not read files outside
      the repo (home directories, ~/Downloads, other checkouts) unless the
      prompt names them explicitly.
+   - RULES COPIES: exactly two exist — .cursor/rules/mv-advisor.mdc in this
+     repo and the fenced block in docs/design/mv-advisor-playbook.md — and they
+     are kept byte-identical. Any third copy found outside the repository (a
+     workspace-root .cursor/, another checkout) is stale by definition: report
+     it, do not read it as guidance.
 
    FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
    - Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
@@ -161,6 +166,12 @@
      `python -c "import genie_space_optimizer; print(genie_space_optimizer.__file__)"`
      and confirm the path resolves inside THIS repository checkout. A test run
      against a foreign checkout is void — report it, do not interpret it.
+   - PINNED-DEPENDENCY RESOLUTION: for any behavior that depends on a pinned
+     library version (sqlglot parsing and rendering above all), run only under
+     `uv run --frozen`. A bare pytest on an ambient interpreter is a void run:
+     the pyenv global carries sqlglot 30.0.1 against the pinned 30.0.3, and
+     canonicalization output can differ across parser patch releases. Report
+     the resolved version in VERIFY alongside the import path.
    ```
 
 3. **Have a dev workspace ready** with the TPC-H samples catalog, a scratch schema you own (e.g. `main.mv_advisor_dev`), a small Genie Space with 10–15 benchmark questions, and a second test identity that *lacks* `CREATE TABLE` on the scratch schema (you need it for the denial-path E2E test).
@@ -244,9 +255,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D9)
+## Decisions register (MV-D1–MV-D10)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, and MV-D9 from the Prompt 2 readiness check; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, and MV-D10 during Prompt 3 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -269,6 +280,21 @@ The recon surfaced five structural conflicts, not naming drift. These decisions 
 **MV-D8 — Generation quality standard adopted (metric-views-patterns v5.2).** All engine-emitted YAML is rendered and validated by one module (`mv_yaml`, Prompt 5.5) enforcing: v1.1 unsupported-field and format-type lints; the multi-hop decision ladder (denormalize → nested joins on DBR ≥ 17.1 with profiling-proven 1:1 keys → subquery-source fallback) with a hard transitive-join gate; SCD2 `is_current` guards; `rely.at_most_one_match` only on proven uniqueness; `MEASURE()`-composed derived metrics, `FILTER`-clause conditional counts, and Fixed-LOD percent-of-total (never `MEASURE()/MEASURE()`); structured comments with **paraphrased** BEST FOR lines (verbatim benchmark text is a firewall violation — it contaminates the benchmark the view is graded by); `ALTER VIEW` for all updates (grants-preserving); post-create `DESCRIBE EXTENDED` type assertion; `MEASURE()`-syntax validation queries with a fan-out smoke test; a copy-ready `GRANT SELECT` checklist surfaced, never auto-applied; and capability rows (DBR 17.3/17.1/18.1 floors) in the entitlement probe that downgrade the join strategy rather than emit unplannable YAML. Origin: the metric-views-patterns skill (v5.2, 2026-06-06); the sample YAML in POV Part 4 was itself corrected under this standard (its customer join was transitive).
 
 **MV-D9 — The gap report is refreshed in the same commit that invalidates it.** Commit 1 added three tables to `_ALL_DDL` and left four gap-report sites — the §1.6 Persistence heading and its `_ALL_DDL` quote block, the §2.6 Evaluation verdict row, and the Appendix summary row — asserting six tables. Because the rules make the gap report outrank the POV, and the POV's Delta 6 had already been retitled "Nine Delta tables," an agent reading both was told the authoritative source says six and the POV's nine is the error — exactly backwards. Rule: any commit that changes something the gap report quotes or counts refreshes those sites in the same commit, re-quoting live code with current line anchors. Enforced by a rules-file bullet and by every PLAN naming the gap-report sites it will refresh. Keyword search is insufficient enforcement: a quote can go stale by *position* with its content unchanged, invisible to any grep for stale wording, so VERIFY must byte-match every fenced reference rather than search for stale words.
+
+**MV-D10 — Two fingerprint levels, permanently distinct.** The readable composite string in the POV Part 4 sample payload (`"sha256:sum(l_extendedprice*(1-l_discount))|group:order_status,market_segment"`) predated the shipped key and was never implemented. It is not a format to resurrect: despite the prefix it is not a sha256 digest, it omits the space id, and it keys on the grouping set rather than the source set. Corrected to the hex-digest form in the same commit as Prompt 3, under the DOC FREEZE factual-error exception. The two levels that do exist are:
+
+- **`expr_fingerprint`** (`optimization/mv_fingerprint.py`) — *expression*-grained, `sha256` of the canonical expression text. It counts recurrence inside a corpus scan and does nothing else. It collides across spaces and across source sets by construction, so it is **never persisted as a dedup key** — pinned by `test_expr_fingerprint_appears_in_no_persistence_path`, which asserts no other module in the package even references it.
+- **`mv_state.mv_candidate_fingerprint`** — *candidate*-grained, `sha256(space_id | canonical_measure_expr | sorted_source_set)`. The MV-D7 upsert key for `genie_opt_mv_candidates.dedup_fingerprint` **and** the `genie_opt_artifacts.content_hash` cross-reference. It is the only thing this feature calls a "dedup fingerprint," and it consumes `MeasureRef.canonical_expr` from the fingerprint module as its `canonical_measure_expr` argument, so canonicalization has exactly one implementation. Cross-reference: MV-D7.
+
+Settled alongside it, from the same conflict: the new module's canonicalizer is `canonicalize_sql_ast` / `canonicalize_expr` rather than a reuse of `canonicalize_sql`, because `leakage.canonicalize_sql` already exists with the **inverted** literal contract — it *preserves* literals (verbatim benchmark text is the evidence it hunts) where the fingerprint module *erases* them (two queries differing only in a date are one shape). Both docstrings state the inversion; `leakage.py` behavior is untouched, and the firewall requirement is a property test on the new function.
+
+*Canonicalization invariants established by Prompt 3 (do not re-derive these).* Prompt 4's dedup gate and Prompt 5.5's generator both consume canonical forms produced here, and a second implementation of any of these rules is how two components start disagreeing about what one measure is:
+
+- **(a) Table qualifiers are STRIPPED from measure expressions, never renamed.** `SUM(l.l_extendedprice * (1 - l.l_discount))`, the `li.`-qualified spelling and the unqualified one all canonicalize to `sum(l_extendedprice * (?n - l_discount))`. Table identity is not lost — it travels in `MeasureRef.source_tables`, which is exactly what the MV-D7 key hashes as its sorted source set. Positional renaming (`t1`, `t2`) is correct for *whole statements* and wrong for measures: it would make the same measure fingerprint differently depending on the join order the query happened to use. Both levels therefore agree that one measure is one row.
+- **(b) Date-part units fold into the function name.** `DATE_TRUNC('month', d)` canonicalizes to `timestamp_trunc_month(d)`. Erasing the unit with the literals would merge a monthly grain with a daily one — the silent-wrong-numbers class of defect; keeping it quoted would leave a token in the canonical form indistinguishable from data. Folding preserves the grain *and* yields the firewall invariant in its mechanically-auditable form: **no quote character survives canonicalization.** That is a grep, not a judgment call — any quote in a canonical form or a fingerprint input is a firewall violation, full stop. Pinned across the whole test corpus by `test_no_corpus_statement_leaks_a_quoted_literal`.
+- **(c) Shape identity is the generator's TARGET form, not the corpus spelling.** `ShapeMatch.fingerprint` hashes `target_form` — what the generator will emit — so `SUM(CASE WHEN c THEN 1 END)` and `SUM(CASE WHEN c THEN 1 ELSE 0 END)` are one `CONDITIONAL_COUNT`. They ask for the same `COUNT(1) FILTER (WHERE c)` measure, and counting them apart would halve the recurrence of the exact thing being proposed. `SHAPE_GUIDANCE` holds the MV-D8 mandate per shape so the generator reads the rule rather than re-deriving it.
+
+*And the deliberate bias:* where canonicalization cannot prove two expressions are the same shape, it emits two fingerprints rather than one. **Recurrence therefore under-counts, never over-counts.** Under-counting can delay a proposal; over-counting would fabricate one. Two consequences are tested as intended behavior rather than left implicit: expressions differing only in a literal value *do* collapse (the firewall demands it, so a generator must recover concrete predicate values from profiling — there is nothing left in a fingerprint to read them out of), and aggregates in `ORDER BY`/`GROUP BY` positions are references to a projection, not second measures.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
