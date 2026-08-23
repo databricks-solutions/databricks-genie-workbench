@@ -851,7 +851,8 @@ driven from `ensure_optimization_tables` → `_migrate_add_columns` (`state.py:5
 
 **To add a new column:** edit the CREATE DDL string, append to
 `ADDITIVE_COLUMN_MIGRATIONS`, wire the writer, extend the Workbench API model, add tests —
-all in one commit, per `packages/genie-space-optimizer/AGENTS.md:53-59`.
+all in one commit, per the "Persistence rules" section of
+`packages/genie-space-optimizer/AGENTS.md`.
 
 **To add a new table:** add a `TABLE_*` constant in `config.py`, a `_GENIE_OPT_*_DDL`
 string in `ddl.py`, register it in `_ALL_DDL`. No migration-list entry is needed —

@@ -122,6 +122,19 @@
      affected gap-report sites in the SAME commit, re-quoting live code rather
      than editing the prose around it. Every PLAN that touches such a surface
      states which gap-report sites it will refresh, or asserts none apply.
+   - LIVE CLAIMS vs FROZEN TRANSCRIPTS: prompt bodies for already-executed
+     prompts are historical records — do not retrofit them when facts change.
+     Statements outside those bodies (headings, register preamble, custody
+     notes, rules, gap-report quotes) are live claims and must be refreshed
+     under MV-D9. When in doubt, ask rather than edit a transcript.
+   - CITE DOCUMENTS BY SECTION, CODE BY FILE:LINE. Never cite another design
+     document by line number — doc line anchors rot on every edit and each
+     rot costs a reconciliation pass. Use section headings or quoted phrases.
+     file:line into source code is required and unchanged.
+   - DOC FREEZE: no further doc-only commits on this branch. Playbook, POV,
+     and gap-report changes ride inside the code commit that made them
+     necessary (MV-D9 already requires same-commit gap-report refresh).
+     Exception: a factual error that would misdirect the next prompt.
    - GENERATED YAML conforms to the generation quality standard in POV Part 4
      (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
      window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
@@ -251,9 +264,9 @@ The recon surfaced five structural conflicts, not naming drift. These decisions 
 
 *As implemented (Prompt 1):* accessors live in `optimization/mv_state.py`, one module rather than an extension of the already-large `optimization/state.py`, following the `scan_snapshots.py` precedent for feature-scoped persistence. Every writer goes through a new `delta_helpers.merge_row` primitive, so the §7.9 idempotency key `sha256(space_id | canonical_measure_expr | sorted_source_set)` is enforced as a single-statement upsert-on-conflict rather than a read-then-insert a retry can duplicate. JSON payload columns carry a `_json` suffix in storage and travel base64-encoded; the accessor signatures use the POV Part 4 field names (`score_components`, `evidence`, `provenance`, `alternatives`, `conflicts`, `probe_results`) verbatim. POV Part 4's proposal `type` is stored as `candidate_type` to avoid shadowing the builtin at the API. `reverified_at_trigger` is a `TIMESTAMP` (NULL = never re-verified), and `updated_at` sits on all three tables. `lift_report_json` is deferred to an `ADDITIVE_COLUMN_MIGRATIONS` entry in Prompt 7, when the lift report exists to store. Three judgment items raised in the Prompt 1 VERIFY were reviewed and approved in the Prompt 1 follow-up and are now settled: decision-column ownership (`upsert_mv_candidate` never writes them; `record_mv_candidate_decision` owns them, pinned by `test_re_proposing_does_not_resurrect_a_rejected_candidate`), the "Resolved by MV-D7" pointers added to the gap report, and the user-facing table rows in `docs/docs/features/auto-optimize.md` with their empty-table-is-not-a-failed-run framing.
 
-**MV-D9 — The gap report is refreshed in the same commit that invalidates it.** Commit 1 added three tables to `_ALL_DDL` and left four gap-report sites (`:784` heading, the `:789` quoted block, the `:1382` verdict row, the `:1697` summary row) asserting six tables. Because the rules make the gap report outrank the POV, and the POV's Delta 6 had already been retitled "Nine Delta tables," an agent reading both was told the authoritative source says six and the POV's nine is the error — exactly backwards. Rule: any commit that changes something the gap report quotes or counts refreshes those sites in the same commit, re-quoting live code with current line anchors. Enforced by a rules-file bullet and by every PLAN naming the gap-report sites it will refresh.
-
 **MV-D8 — Generation quality standard adopted (metric-views-patterns v5.2).** All engine-emitted YAML is rendered and validated by one module (`mv_yaml`, Prompt 5.5) enforcing: v1.1 unsupported-field and format-type lints; the multi-hop decision ladder (denormalize → nested joins on DBR ≥ 17.1 with profiling-proven 1:1 keys → subquery-source fallback) with a hard transitive-join gate; SCD2 `is_current` guards; `rely.at_most_one_match` only on proven uniqueness; `MEASURE()`-composed derived metrics, `FILTER`-clause conditional counts, and Fixed-LOD percent-of-total (never `MEASURE()/MEASURE()`); structured comments with **paraphrased** BEST FOR lines (verbatim benchmark text is a firewall violation — it contaminates the benchmark the view is graded by); `ALTER VIEW` for all updates (grants-preserving); post-create `DESCRIBE EXTENDED` type assertion; `MEASURE()`-syntax validation queries with a fan-out smoke test; a copy-ready `GRANT SELECT` checklist surfaced, never auto-applied; and capability rows (DBR 17.3/17.1/18.1 floors) in the entitlement probe that downgrade the join strategy rather than emit unplannable YAML. Origin: the metric-views-patterns skill (v5.2, 2026-06-06); the sample YAML in POV Part 4 was itself corrected under this standard (its customer join was transitive).
+
+**MV-D9 — The gap report is refreshed in the same commit that invalidates it.** Commit 1 added three tables to `_ALL_DDL` and left four gap-report sites — the §1.6 Persistence heading and its `_ALL_DDL` quote block, the §2.6 Evaluation verdict row, and the Appendix summary row — asserting six tables. Because the rules make the gap report outrank the POV, and the POV's Delta 6 had already been retitled "Nine Delta tables," an agent reading both was told the authoritative source says six and the POV's nine is the error — exactly backwards. Rule: any commit that changes something the gap report quotes or counts refreshes those sites in the same commit, re-quoting live code with current line anchors. Enforced by a rules-file bullet and by every PLAN naming the gap-report sites it will refresh. Keyword search is insufficient enforcement: a quote can go stale by *position* with its content unchanged, invisible to any grep for stale wording, so VERIFY must byte-match every fenced reference rather than search for stale words.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

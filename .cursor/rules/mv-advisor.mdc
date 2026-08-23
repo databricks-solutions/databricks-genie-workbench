@@ -99,6 +99,19 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   affected gap-report sites in the SAME commit, re-quoting live code rather
   than editing the prose around it. Every PLAN that touches such a surface
   states which gap-report sites it will refresh, or asserts none apply.
+- LIVE CLAIMS vs FROZEN TRANSCRIPTS: prompt bodies for already-executed
+  prompts are historical records — do not retrofit them when facts change.
+  Statements outside those bodies (headings, register preamble, custody
+  notes, rules, gap-report quotes) are live claims and must be refreshed
+  under MV-D9. When in doubt, ask rather than edit a transcript.
+- CITE DOCUMENTS BY SECTION, CODE BY FILE:LINE. Never cite another design
+  document by line number — doc line anchors rot on every edit and each
+  rot costs a reconciliation pass. Use section headings or quoted phrases.
+  file:line into source code is required and unchanged.
+- DOC FREEZE: no further doc-only commits on this branch. Playbook, POV,
+  and gap-report changes ride inside the code commit that made them
+  necessary (MV-D9 already requires same-commit gap-report refresh).
+  Exception: a factual error that would misdirect the next prompt.
 - GENERATED YAML conforms to the generation quality standard in POV Part 4
   (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
   window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
