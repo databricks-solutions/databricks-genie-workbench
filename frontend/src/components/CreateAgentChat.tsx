@@ -2058,7 +2058,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-md text-[11px] font-semibold hover:bg-emerald-500 transition-colors disabled:opacity-40"
           >
             <Rocket className="w-3 h-3" />
-            {createOutcomeUnknown ? "Verify &amp; Retry Create" : "Approve &amp; Create"}
+            {createOutcomeUnknown ? "Verify & Retry Create" : "Approve & Create"}
           </button>
           {createOutcomeUnknown && (
             <span className="text-[11px] text-amber-400">
