@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -521,14 +521,31 @@ def curated_corpus_entries(
     patches follow. Governed metric views are intentionally *not* here; they are
     a seed exclusion in :func:`_advise`, not corpus evidence.
     """
+    entries: list[tuple[str, dict[str, str]]] = list(space_corpus_entries(applied_config))
+    entries.extend(
+        _patch_corpus_entries(spark, run_id=run_id, catalog=catalog, schema=schema)
+    )
+    return tuple(entries)
+
+
+def space_corpus_entries(
+    applied_config: Mapping[str, Any] | None,
+) -> tuple[tuple[str, dict[str, str]], ...]:
+    """The run-free curated corpus (MV-D23 scope item 1): the SparkSession-free
+    half of :func:`curated_corpus_entries` — trusted-asset SQL plus curated
+    snippets, tagged for the MV-D17 up-weight. Patches are excluded because they
+    are a run's Delta rows; a standalone advice request has no run to read.
+
+    Both callers route through this one accessor so the in-run and no-run paths
+    cannot disagree about what a curated corpus entry is — trusted-asset SQL
+    comes through :func:`example_question_sql_statements`, the single reader
+    ``trusted_asset_definitions`` also uses.
+    """
     entries: list[tuple[str, dict[str, str]]] = [
         (sql, _curated_provenance(f"trusted_asset:{identifier}"))
         for identifier, sql in example_question_sql_statements(applied_config)
     ]
     entries.extend(_snippet_corpus_entries(applied_config))
-    entries.extend(
-        _patch_corpus_entries(spark, run_id=run_id, catalog=catalog, schema=schema)
-    )
     return tuple(entries)
 
 
@@ -921,6 +938,13 @@ def _advise(
 ) -> AdvisorOutcome:
     load = load_iteration_zero_corpus(spark, run_id=run_id, catalog=catalog, schema=schema)
     if not load.usable:
+        # In-job, iteration-0 is a genuine gate: no baseline eval means the
+        # optimize task itself has nothing to have run. MV-D23's "iteration-0 is
+        # a contributor, not a gate" restructure applies to the STANDALONE path,
+        # which never loads iteration-0 and calls :func:`advise_from_corpus`
+        # directly on a curated-only corpus. The empty-corpus trap
+        # (EMPTY_ROWS_JSON / NO_GENERATED_SQL) therefore stays an in-job hard
+        # skip, exactly as before — MV-D15 vocabulary preserved.
         return AdvisorOutcome(
             status=STATUS_SKIPPED,
             skip_reason=load.skip_reason,
@@ -939,7 +963,85 @@ def _advise(
         schema=schema,
         applied_config=load.applied_config,
     )
-    scan = corpus_scan((*load.entries, *curated))
+    # MV-D23 scope item 2: the in-job Spark caller. It assembles the corpus and
+    # binds the estate reader + persistence to Spark, then delegates the
+    # SparkSession-free orchestration to :func:`advise_from_corpus` — the same
+    # seam the backend warehouse caller drives. Every helper the loop calls
+    # (corpus_scan, score_candidate, generate, persist_proposal, …) stays a
+    # module global here so behaviour — and the byte-unchanged in-job test
+    # surface — is preserved.
+    return advise_from_corpus(
+        space_id=space_id,
+        run_id=run_id,
+        corpus_entries=(*load.entries, *curated),
+        applied_config=load.applied_config,
+        benchmarks=benchmarks,
+        wide_schema_inventory=wide_schema_inventory,
+        metric_view_reader=lambda tables: metric_view_fields(
+            estate_metric_view_yamls(spark, tables, w=w, warehouse_id=warehouse_id)
+        ),
+        embedding_client=embedding_client,
+        signal_reader=signal_reader,
+        intent_texts=intent_texts,
+        domain=domain,
+        max_candidates=max_candidates,
+        persist_proposal=lambda proposal, rendered: persist_proposal(
+            spark,
+            proposal,
+            catalog=catalog,
+            schema=schema,
+            run_id=run_id,
+            requested_mode="suggest_only",
+            effective_mode="suggest_only",
+        ),
+        write_ddl_artifact=lambda proposal, rendered: _write_ddl_artifact(
+            spark,
+            proposal,
+            rendered,
+            run_id=run_id,
+            catalog=catalog,
+            schema=schema,
+        ),
+    )
+
+
+def advise_from_corpus(
+    *,
+    space_id: str,
+    run_id: str,
+    corpus_entries: Sequence[tuple[str, str]],
+    applied_config: Mapping[str, Any] | None,
+    benchmarks: Sequence[Mapping[str, Any]],
+    wide_schema_inventory: Mapping[str, Any] | None,
+    metric_view_reader: Callable[[set[str]], Sequence[Any]],
+    embedding_client: Any,
+    signal_reader: RunQuery | None,
+    intent_texts: Sequence[str],
+    domain: str,
+    max_candidates: int | None,
+    persist_proposal: Callable[[ScoredProposal, Any], bool],
+    write_ddl_artifact: Callable[[ScoredProposal, Any], bool],
+) -> AdvisorOutcome:
+    """Corpus-agnostic advisor orchestration (MV-D23 scope item 2).
+
+    The one body both callers share: the Spark in-job path (:func:`_advise`) and
+    the backend warehouse path (``POST /spaces/{space_id}/mv/suggest``). Its
+    inputs are the already-assembled corpus, the estate (via ``metric_view_reader``,
+    which the caller binds to ``estate_metric_view_yamls`` under Spark or to a
+    warehouse read), profiling context and the signal readers; its persistence is
+    injected (``persist_proposal(proposal, rendered)`` /
+    ``write_ddl_artifact(proposal, rendered)``). It never touches a
+    SparkSession, a run-keyed loader, or a Delta writer directly, so it imports
+    cleanly into the FastAPI backend (the ``mv_create``/``mv_yaml`` precedent —
+    a PySpark-free optimization leaf, not the job orchestration).
+
+    ``run_id`` is still required, and is a *real* row on both paths: the in-job
+    run, or the MV-D23 sentinel advice run the backend writes before calling.
+    The MV-D16(b) contamination rule is unweakened — nothing this produces
+    re-enters the corpus as recurrence evidence; the corpus is the caller's
+    input and is never appended to here.
+    """
+    scan = corpus_scan(tuple(corpus_entries))
     if not scan.statements_scanned:
         return AdvisorOutcome(
             status=STATUS_SKIPPED,
@@ -962,9 +1064,7 @@ def _advise(
 
     limit = MV_ADVISOR_MAX_CANDIDATES if max_candidates is None else max_candidates
     tables = {t for m in scan.measures for t in m.source_tables}
-    mv_fields = metric_view_fields(
-        estate_metric_view_yamls(spark, tables, w=w, warehouse_id=warehouse_id)
-    )
+    mv_fields = metric_view_reader(tables)
     # MV-D17 / blocker 4: a governed metric view already defines these, so seeding
     # them would only produce candidates the dedup gate blocks with the very MV
     # they came from. corpus_scan has no evidence-only channel — anything it scans
@@ -990,7 +1090,7 @@ def _advise(
     # in example_question_sqls, a different field from text_instructions, so
     # without this the gate could only see governed metric views and a proposal
     # contradicting a curated answer would reach PROPOSE unchallenged.
-    trusted_assets = trusted_asset_definitions(load.applied_config)
+    trusted_assets = trusted_asset_definitions(applied_config)
 
     persisted = 0
     artifacts = 0
@@ -1032,25 +1132,10 @@ def _advise(
         proposal = _with_generation_evidence(proposal, rendered)
         proposals.append(proposal)
 
-        if persist_proposal(
-            spark,
-            proposal,
-            catalog=catalog,
-            schema=schema,
-            run_id=run_id,
-            requested_mode="suggest_only",
-            effective_mode="suggest_only",
-        ):
+        if persist_proposal(proposal, rendered):
             persisted += 1
 
-        if rendered.ok and _write_ddl_artifact(
-            spark,
-            proposal,
-            rendered,
-            run_id=run_id,
-            catalog=catalog,
-            schema=schema,
-        ):
+        if rendered.ok and write_ddl_artifact(proposal, rendered):
             artifacts += 1
 
     return AdvisorOutcome(
@@ -1185,6 +1270,7 @@ __all__ = [
     "STATUS_SKIPPED",
     "AdvisorOutcome",
     "CorpusLoad",
+    "advise_from_corpus",
     "advisor_statuses",
     "candidate_from_measure",
     "column_facts_from_inventory",
@@ -1192,4 +1278,5 @@ __all__ = [
     "load_iteration_zero_corpus",
     "profiling_for",
     "run_mv_advisor_phase",
+    "space_corpus_entries",
 ]

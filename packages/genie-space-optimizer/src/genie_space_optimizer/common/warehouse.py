@@ -278,10 +278,27 @@ def wh_create_run(
     config_snapshot: dict | None = None,
     llm_model: str | None = None,
     benchmark_policy: str = "repair_allowed",
+    run_kind: str | None = None,
+    status: str = "QUEUED",
+    set_completed: bool = False,
+    max_iterations: int | None = None,
 ) -> None:
-    """Insert a QUEUED run row via SQL warehouse."""
-    from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, MAX_ITERATIONS
+    """Insert a run row via SQL warehouse (QUEUED by default).
 
+    The single run-insert writer. MV-D23 sentinel advice runs reuse it through
+    :func:`wh_create_advice_run` rather than a parallel INSERT — one writer, so
+    the ``run_kind`` discriminator and the column set can never drift between
+    the two paths. ``run_kind`` defaults to ``optimization``; ``status`` and
+    ``set_completed`` let the advice caller write a born-terminal row.
+    """
+    from genie_space_optimizer.common.config import (
+        DEFAULT_LEVER_ORDER,
+        MAX_ITERATIONS,
+        MV_RUN_KIND_OPTIMIZATION,
+    )
+
+    kind = run_kind or MV_RUN_KIND_OPTIMIZATION
+    iterations = MAX_ITERATIONS if max_iterations is None else max_iterations
     snap_json = json.dumps(config_snapshot) if config_snapshot else ""
     snap_sql = "''"
     if snap_json:
@@ -292,6 +309,10 @@ def wh_create_run(
     model_escaped = llm_model.replace("'", "''") if llm_model else ""
     model_sql = f"'{model_escaped}'" if model_escaped else "NULL"
     policy_escaped = benchmark_policy.replace("'", "''")
+    status_escaped = status.replace("'", "''")
+    kind_escaped = kind.replace("'", "''")
+    completed_col = ", completed_at" if set_completed else ""
+    completed_val = ", current_timestamp()" if set_completed else ""
 
     # GSO v2 Phase 5 (D3): the ``experiment_name`` column was scrubbed; the
     # surviving MLflow tracing self-resolves a deterministic experiment path in
@@ -301,14 +322,65 @@ def wh_create_run(
         f"(run_id, space_id, domain, catalog, uc_schema, status, started_at, "
         f"max_iterations, levers, apply_mode, updated_at, "
         f"triggered_by, config_snapshot, llm_model, benchmark_policy, "
-        f"benchmark_mutation_count) VALUES ("
+        f"benchmark_mutation_count, run_kind{completed_col}) VALUES ("
         f"'{run_id}', '{space_id}', '{domain}', '{catalog}', "
-        f"'{catalog}.{schema}', 'QUEUED', current_timestamp(), "
-        f"{MAX_ITERATIONS}, '{levers_json}', '{apply_mode}', current_timestamp(), "
-        f"'{user}', {snap_sql}, {model_sql}, '{policy_escaped}', 0)"
+        f"'{catalog}.{schema}', '{status_escaped}', current_timestamp(), "
+        f"{iterations}, '{levers_json}', '{apply_mode}', current_timestamp(), "
+        f"'{user}', {snap_sql}, {model_sql}, '{policy_escaped}', 0, "
+        f"'{kind_escaped}'{completed_val})"
     )
     sql_warehouse_execute(ws, warehouse_id, sql)
-    logger.info("Created run %s via SQL warehouse", run_id)
+    logger.info("Created run %s (kind=%s, status=%s) via SQL warehouse", run_id, kind, status)
+
+
+def wh_create_advice_run(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    run_id: str,
+    space_id: str,
+    domain: str,
+    catalog: str,
+    schema: str,
+    triggered_by: str | None = None,
+    config_snapshot: dict | None = None,
+    llm_model: str | None = None,
+) -> None:
+    """Create a born-terminal MV-D23 sentinel advice run.
+
+    Guardrail (i): the row is written with :data:`MV_ADVICE_RUN_STATUS` and a
+    ``completed_at`` immediately — never ``QUEUED``/``IN_PROGRESS`` — so
+    :func:`wh_reconcile_active_runs` (active set ``{QUEUED, IN_PROGRESS}``) can
+    never adopt it. ``run_kind = mv_advice`` excludes it from run-history and
+    accuracy aggregates through the pinned :data:`MV_ADVICE_RUN_EXCLUSION`
+    predicate. It runs no eval, so ``max_iterations = 0`` and ``levers = []``.
+
+    Reuses :func:`wh_create_run` (one run-insert writer). The caller must have
+    already run :func:`wh_ensure_optimization_tables` so ``run_kind`` exists.
+    """
+    from genie_space_optimizer.common.config import (
+        MV_ADVICE_RUN_STATUS,
+        MV_RUN_KIND_ADVICE,
+    )
+
+    wh_create_run(
+        ws,
+        warehouse_id,
+        run_id=run_id,
+        space_id=space_id,
+        domain=domain,
+        catalog=catalog,
+        schema=schema,
+        triggered_by=triggered_by,
+        config_snapshot=config_snapshot,
+        llm_model=llm_model,
+        levers=[],
+        run_kind=MV_RUN_KIND_ADVICE,
+        status=MV_ADVICE_RUN_STATUS,
+        set_completed=True,
+        max_iterations=0,
+    )
+    logger.info("Created born-terminal MV-D23 advice run %s for space %s", run_id, space_id)
 
 
 def wh_load_run(
@@ -721,6 +793,106 @@ def wh_record_mv_candidate_decision(
     )
 
 
+def wh_upsert_mv_candidate(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    run_id: str,
+    target_space_id: str,
+    suggestion_id: str,
+    dedup_fingerprint: str,
+    candidate_type: str,
+    confidence_score: float | None = None,
+    tier: str | None = None,
+    proposed_object: str | None = None,
+    score_components: dict | None = None,
+    evidence: dict | None = None,
+    provenance: dict | None = None,
+    alternatives: list | None = None,
+    conflicts: list | None = None,
+    requested_mode: str | None = None,
+    effective_mode: str | None = None,
+    yaml_text: str | None = None,
+) -> str:
+    """Upsert one advisor proposal — the twin of ``mv_state.upsert_mv_candidate``.
+
+    The write side of MV-D21's contract for the standalone advice path (MV-D23):
+    the backend has no SparkSession, so the sentinel-run advisor persists its
+    candidates here rather than through ``mv_state``. Keyed on
+    ``(target_space_id, dedup_fingerprint)`` and writing the *same* column set as
+    the Spark writer, plus the additive ``yaml_text`` column that carries the
+    rendered MV-D22 replay body on the candidate row — so a standalone candidate
+    is replayable without a run-partitioned ``genie_opt_artifacts`` row. Human
+    decision columns are never written here (a re-proposing run must not
+    resurrect a rejected candidate); ``created_at`` and ``approved_for_rerun``
+    are insert-only. Returns ``dedup_fingerprint``.
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CANDIDATES
+    from genie_space_optimizer.optimization.mv_state import MV_CANDIDATE_TYPES
+
+    if candidate_type not in MV_CANDIDATE_TYPES:
+        raise ValueError(
+            f"candidate_type must be one of {MV_CANDIDATE_TYPES}, got {candidate_type!r}"
+        )
+    if not dedup_fingerprint:
+        raise ValueError("dedup_fingerprint is required")
+    if not target_space_id:
+        raise ValueError("target_space_id is required")
+
+    def _json_lit(value: Any) -> str:
+        return _wh_literal(json.dumps(value), encode=True) if value is not None else "NULL"
+
+    value_cols = {
+        "suggestion_id": _wh_literal(suggestion_id),
+        "run_id": _wh_literal(run_id),
+        "candidate_type": _wh_literal(candidate_type),
+        "confidence_score": _wh_literal(float(confidence_score))
+        if confidence_score is not None
+        else "NULL",
+        "tier": _wh_literal(tier),
+        "proposed_object": _wh_literal(proposed_object),
+        "score_components_json": _json_lit(score_components),
+        "evidence_json": _json_lit(evidence),
+        "provenance_json": _json_lit(provenance),
+        "alternatives_json": _json_lit(alternatives),
+        "conflicts_json": _json_lit(conflicts),
+        "requested_mode": _wh_literal(requested_mode),
+        "effective_mode": _wh_literal(effective_mode),
+        "yaml_text": _wh_literal(yaml_text, encode=True) if yaml_text is not None else "NULL",
+        "updated_at": "current_timestamp()",
+    }
+    fqn = f"{catalog}.{schema}.{TABLE_MV_CANDIDATES}"
+    set_clause = ", ".join(f"t.{col} = {val}" for col, val in value_cols.items())
+    insert_cols = ", ".join(
+        ["target_space_id", "dedup_fingerprint", *value_cols, "created_at", "approved_for_rerun"]
+    )
+    insert_vals = ", ".join(
+        [
+            "s.target_space_id",
+            "s.dedup_fingerprint",
+            *value_cols.values(),
+            "current_timestamp()",
+            "false",
+        ]
+    )
+    sql = (
+        f"MERGE INTO {fqn} AS t "
+        f"USING (SELECT {_wh_literal(target_space_id)} AS target_space_id, "
+        f"{_wh_literal(dedup_fingerprint)} AS dedup_fingerprint) AS s "
+        f"ON t.target_space_id = s.target_space_id AND t.dedup_fingerprint = s.dedup_fingerprint "
+        f"WHEN MATCHED THEN UPDATE SET {set_clause} "
+        f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+    )
+    sql_warehouse_execute(ws, warehouse_id, sql)
+    logger.info(
+        "Upserted metric view candidate %s (%s, tier=%s) for space %s run %s via SQL warehouse",
+        suggestion_id, candidate_type, tier, target_space_id, run_id,
+    )
+    return dedup_fingerprint
+
+
 def wh_upsert_mv_created_object(
     ws: WorkspaceClient,
     warehouse_id: str,
@@ -736,14 +908,20 @@ def wh_upsert_mv_created_object(
     baseline_eval_run_id: str | None = None,
     post_attach_eval_run_id: str | None = None,
     on_regression_action: str = "DETACH_ONLY_NEVER_DROP",
+    provenance: str | None = None,
 ) -> str:
     """Record a metric view created under OBO — twin of ``mv_state.upsert_mv_created_object``.
 
     Keyed on ``(run_id, suggestion_id)``. ``created_by`` is the consenting user;
     the backend is the only writer of this table, because the job never issues
-    metric view DDL (MV-D1). Returns ``full_name``.
+    metric view DDL (MV-D1). ``provenance`` (MV-D24) discriminates the OBO
+    create-and-attach path (``OBO_CREATED``, the default) from a registered
+    bring-your-own view (``USER_CREATED``). Returns ``full_name``.
     """
-    from genie_space_optimizer.common.config import TABLE_MV_CREATED_OBJECTS
+    from genie_space_optimizer.common.config import (
+        MV_PROVENANCE_OBO_CREATED,
+        TABLE_MV_CREATED_OBJECTS,
+    )
     from genie_space_optimizer.optimization.mv_state import (
         MV_CREATED_OBJECT_STATUSES,
         MV_ON_REGRESSION_ACTIONS,
@@ -769,6 +947,7 @@ def wh_upsert_mv_created_object(
         "baseline_eval_run_id": _wh_literal(baseline_eval_run_id),
         "post_attach_eval_run_id": _wh_literal(post_attach_eval_run_id),
         "on_regression_action": _wh_literal(on_regression_action),
+        "provenance": _wh_literal(provenance or MV_PROVENANCE_OBO_CREATED),
         "updated_at": "current_timestamp()",
     }
     fqn = f"{catalog}.{schema}.{TABLE_MV_CREATED_OBJECTS}"

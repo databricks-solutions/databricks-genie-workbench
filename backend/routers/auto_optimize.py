@@ -28,10 +28,13 @@ from backend.models import (
     MvProposalDecisionRequest,
     MvProposalDecisionResponse,
     MvProposalsResponse,
+    MvRegisterRequest,
+    MvRegisterResponse,
     MvSemanticGraph,
     MvSemanticGraphEdge,
     MvSemanticGraphNode,
     MvSpaceProposalsResponse,
+    MvSuggestResponse,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
     QueryUsageSignal,
@@ -58,6 +61,7 @@ from genie_space_optimizer.common.accuracy import (
     compute_run_scores,
     derived_accuracy as _canonical_derived_accuracy,
 )
+from genie_space_optimizer.common.config import MV_PROVENANCE_USER_CREATED
 from genie_space_optimizer.common.genie_client import user_can_edit_space
 from genie_space_optimizer.integration import (
     trigger_optimization,
@@ -1708,6 +1712,162 @@ async def list_space_mv_proposals(
     )
 
 
+@router.post("/spaces/{space_id}/mv/suggest", response_model=MvSuggestResponse)
+async def suggest_space_mv(space_id: SpaceId, request: Request):
+    """Run the metric-view advisor for a space on demand (MV-D23).
+
+    The IQ Scan surface's advice affordance: score this Agent's curated corpus
+    now, with no optimization run. The backend writes a born-terminal sentinel
+    advice run and drives the SparkSession-free advisor over a SQL warehouse,
+    persisting any proposals as space-scoped candidates. Blocking is acceptable
+    here (seconds, not minutes); the embedding path carries a hard timeout so a
+    slow endpoint degrades **S** rather than stalling the request.
+
+    Visibility is bound to the signed-in user (MV-D20): the space config is read
+    under the caller's OBO client. Everything on the GSO side runs as the
+    service principal, exactly as the in-job advisor does — and nothing here
+    creates or drops a UC object, so no OBO write is involved.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    obo_ws = require_obo_workspace_client()
+    sp_ws = get_service_principal_client()
+
+    from genie_space_optimizer.common.genie_client import (
+        MissingSerializedSpaceError,
+        fetch_space_config,
+    )
+
+    try:
+        raw = await _offload(fetch_space_config, obo_ws, space_id)
+    except MissingSerializedSpaceError:
+        # The OBO client could not export the space config (e.g. the request
+        # lacks the genie OAuth scope). Fall back to the SP for this read only —
+        # the same scope-fallback the rest of the GSO surface uses.
+        raw = await _offload(fetch_space_config, sp_ws, space_id)
+    except Exception as exc:
+        logger.warning("mv/suggest: could not fetch space %s config: %s", space_id, exc)
+        raise HTTPException(
+            status_code=502, detail="Could not read the Agent configuration."
+        )
+
+    applied_config = raw.get("_parsed_space") if isinstance(raw, dict) else None
+
+    from backend.services import mv_suggest
+
+    user_email = request.headers.get("x-forwarded-email") or os.environ.get("DEV_USER_EMAIL")
+    try:
+        outcome, run_id = await _offload(
+            mv_suggest.suggest_for_space,
+            sp_ws=sp_ws,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            warehouse_id=config.warehouse_id,
+            llm_model=config.llm_model,
+            space_id=space_id,
+            applied_config=applied_config,
+            triggered_by=user_email,
+        )
+    except Exception:
+        logger.exception("mv/suggest failed for space %s", space_id)
+        raise HTTPException(status_code=500, detail="Metric-view advice failed.")
+
+    # Read the persisted proposals back through the same space-scoped accessor
+    # the list route uses, so MvSuggestOnlyPanel renders from one shape.
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+
+    try:
+        rows = await _offload(
+            wh_load_mv_candidates,
+            sp_ws,
+            config.warehouse_id,
+            config.catalog,
+            config.schema_name,
+            target_space_id=space_id,
+        )
+    except Exception as exc:
+        logger.warning("mv/suggest: could not reload proposals for %s: %s", space_id, exc)
+        rows = []
+
+    return MvSuggestResponse(
+        space_id=space_id,
+        run_id=run_id,
+        status=getattr(outcome, "status", "FAILED"),
+        skip_reason=getattr(outcome, "skip_reason", None),
+        error=getattr(outcome, "error", None),
+        proposals=[_mv_proposal_from_row(r) for r in rows],
+    )
+
+
+@router.post("/spaces/{space_id}/mv/register", response_model=MvRegisterResponse)
+async def register_space_mv(space_id: SpaceId, body: MvRegisterRequest):
+    """Register a user-created metric view so the app can attach it (MV-D24).
+
+    The return trip for the copied-DDL path: a user who created the suggested
+    view themselves reports its identifier here, the backend verifies it under
+    OBO (it is a metric view, its YAML is recoverable and passes the safety
+    lint, and — when claimed — its fingerprint matches the proposal), and on
+    success records a ``USER_CREATED`` ledger row under a sentinel advice run so
+    the normal attach-and-lift path runs next time.
+
+    Verified and refused are both normal 200 responses the panel renders from
+    one shape (``registered`` + ``reason``). Missing OBO is a 401 (MV-D20); a
+    write that fails after verification is a 500 the user retries — never a
+    verified-but-recorded-anyway view (invariant 2).
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    # MV-D20: a create-adjacent write is bound to the signed-in user and never
+    # falls back to the SP. Refuse up front when no OBO token reached us.
+    try:
+        require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    from backend.services import mv_create
+
+    try:
+        result = await _offload(
+            mv_create.register_user_created_view,
+            space_id=space_id,
+            full_name=body.full_name,
+            claimed_suggestion_id=body.suggestion_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            warehouse_id=config.warehouse_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except Exception:
+        logger.exception("mv/register failed for space %s", space_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Registration failed after verification; please retry.",
+        )
+
+    return MvRegisterResponse(
+        registered=result.registered,
+        full_name=result.full_name,
+        provenance=result.provenance,
+        run_id=result.run_id,
+        suggestion_id=result.suggestion_id,
+        reason=result.reason,
+        warnings=result.warnings,
+    )
+
+
 # ── Semantic model graph (Prompt 12, MV-D23) ────────────────────────────────
 # Deterministic, parse-free assembly of a space's semantic model from
 # serialized_space config fields plus the space-scoped proposals read. No SQL is
@@ -2066,6 +2226,19 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
         raise HTTPException(
             status_code=403,
             detail="Only the user who created this metric view may drop it.",
+        )
+    # MV-D24 invariant 1, placed BEFORE the status check: the app never drops a
+    # USER_CREATED (bring-your-own) view — we did not create it and do not own
+    # its lifecycle — so it is refused on provenance even when status=DETACHED.
+    provenance = str(obj.get("provenance") or "").strip().upper()
+    if provenance == MV_PROVENANCE_USER_CREATED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This metric view was created by you outside the app "
+                "(bring-your-own); the app never drops a user-created view. "
+                "Drop it yourself in a SQL editor if you no longer need it."
+            ),
         )
     status = str(obj.get("status") or "").upper()
     if status != "DETACHED":
@@ -3460,16 +3633,25 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
             "AS has_config_snapshot"
         )
         table = _delta_table("genie_opt_runs")
+        # MV-D23 guardrail (ii): exclude sentinel advice runs from history through
+        # the single pinned predicate. The COALESCE tolerates legacy NULL
+        # run_kind; on a table that predates the column the strict query raises
+        # and the fallback below drops the predicate — correct, because a table
+        # without run_kind definitionally holds no advice runs.
+        from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
+
         try:
             runs = _delta_query(
                 f"SELECT {base_cols}, benchmark_policy, benchmark_mutation_count, "
                 f"{suffix} FROM {table} WHERE space_id = '{space_id}' "
+                f"AND {MV_ADVICE_RUN_EXCLUSION} "
                 "ORDER BY started_at DESC",
                 strict=True,
             )
         except Exception:
             # History remains readable before the next run executes the additive
-            # migration. Legacy rows surface their benchmark handling as unknown.
+            # migration. Legacy rows surface their benchmark handling as unknown,
+            # and a table without run_kind holds no advice runs to exclude.
             runs = _delta_query(
                 f"SELECT {base_cols}, {suffix} FROM {table} "
                 f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"

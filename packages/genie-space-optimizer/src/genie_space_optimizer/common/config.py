@@ -2501,6 +2501,64 @@ be an attach nobody checked. MV-D16 places both after iteration-0 and before the
 first lever patch, inside the optimize task.
 """
 
+# ── Sentinel advice runs (MV-D23) ────────────────────────────────────────
+
+MV_RUN_KIND_OPTIMIZATION = "optimization"
+"""Default ``genie_opt_runs.run_kind`` — a real optimization run. NULL (legacy
+rows written before the column existed) is treated as this value everywhere."""
+
+MV_RUN_KIND_ADVICE = "mv_advice"
+"""``run_kind`` for a standalone metric-view advice request (MV-D23).
+
+An advice run writes candidates/artifacts/stage rows against a genuine
+``run_id`` so every FK, partition and ``wh_*`` helper works untouched, but it
+never ran an eval — so it is excluded from run-history and accuracy aggregates
+by :data:`MV_ADVICE_RUN_EXCLUSION`, and it is *born terminal*
+(:data:`MV_ADVICE_RUN_STATUS`) so active-run reconciliation never adopts it."""
+
+MV_ADVICE_RUN_STATUS = "MV_ADVICE"
+"""Terminal-at-birth ``status`` for an advice run (guardrail i, MV-D23).
+
+Not ``QUEUED``/``IN_PROGRESS``, so ``wh_reconcile_active_runs`` (whose active
+set is ``{QUEUED, IN_PROGRESS}``) can never pick one up. Closing the
+reconciliation half of the forgotten-filter risk structurally rather than by
+predicate."""
+
+
+def mv_advice_run_exclusion(alias: str = "") -> str:
+    """The single canonical predicate that excludes advice runs (guardrail ii).
+
+    Every run-listing and accuracy-aggregating query over ``genie_opt_runs``
+    routes through this rather than inlining a filter — the register's stated
+    failure mode is a filter forgotten in one place, so the predicate lives in
+    exactly one place and ``test_mv_advice_run_exclusion.py`` asserts the query
+    sites use it. ``COALESCE`` treats legacy NULL ``run_kind`` as an
+    optimization run, so pre-migration rows are never hidden.
+    """
+    col = f"{alias}.run_kind" if alias else "run_kind"
+    return f"COALESCE({col}, '{MV_RUN_KIND_OPTIMIZATION}') <> '{MV_RUN_KIND_ADVICE}'"
+
+
+MV_ADVICE_RUN_EXCLUSION = mv_advice_run_exclusion()
+"""Unqualified form of :func:`mv_advice_run_exclusion` for the common case."""
+
+
+# ── Created-object provenance (MV-D24) ───────────────────────────────────
+
+MV_PROVENANCE_OBO_CREATED = "OBO_CREATED"
+"""Default ``genie_opt_mv_created_objects.provenance`` — a view the backend
+create-and-attach path built under OBO. NULL (legacy rows written before the
+column existed) is treated as this value everywhere."""
+
+MV_PROVENANCE_USER_CREATED = "USER_CREATED"
+"""A view the *user* created in their own SQL editor and then registered
+(MV-D24 bring-your-own). Two invariants ride on this discriminator: the app
+never drops a ``USER_CREATED`` view (drop refuses on provenance, not merely on
+status), and ``mv_attach``'s ``created_by != granted_by`` identity guard is
+relaxed for ``USER_CREATED`` rows only — a verified registration is the consent
+coverage that guard exists to require."""
+
+
 MV_ADVISOR_MAX_CANDIDATES = _int_env("GSO_MV_ADVISOR_MAX_CANDIDATES", 10)
 """How many recurrence-ranked measures the advisor considers per run.
 

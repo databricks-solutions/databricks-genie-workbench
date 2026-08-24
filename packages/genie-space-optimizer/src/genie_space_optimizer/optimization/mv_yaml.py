@@ -96,6 +96,7 @@ __all__ = [
     "create_ddl",
     "generate",
     "validate",
+    "validate_registered",
 ]
 
 
@@ -1513,6 +1514,62 @@ def validate(
         downgrade_to=downgrade,
         echo_check=echo_check,
     )
+
+
+def validate_registered(yaml_text: str) -> ValidationReport:
+    """Safety lint for a bring-your-own metric view (MV-D24).
+
+    A user-authored view is not required to carry our *generation* conventions
+    — the exact ``version`` string pin and the eight structured comment sections
+    are how OUR renderer proves provenance, not what makes a view **safe** to
+    attach. Enforcing them here would reject nearly every legitimate hand-written
+    metric view, which is the wrong gate for registration.
+
+    So this runs the *safety subset* and blocks only on it: the YAML must parse
+    as a mapping, declare a ``source``, use only supported top-level fields and
+    valid ``format.type`` values, and contain no transitive join — reusing the
+    same :func:`_validate_fields` / :func:`_validate_joins` helpers the strict
+    :func:`validate` uses, so "a valid metric view" means one thing in this
+    codebase. The generation-convention checks are surfaced as *warnings*, never
+    errors. This is MV-D24's "verification, not trust" applied honestly:
+    verification proves the object is a real, safe metric view, not that we
+    authored it.
+    """
+    if not yaml_text or not str(yaml_text).strip():
+        return ValidationReport(ok=False, errors=("YAML is empty",))
+    try:
+        definition = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        return ValidationReport(ok=False, errors=(f"YAML does not parse: {exc}",))
+    if not isinstance(definition, Mapping):
+        return ValidationReport(ok=False, errors=("YAML top level is not a mapping",))
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for key in sorted(MV_UNSUPPORTED_TOP_LEVEL_FIELDS & set(definition)):
+        errors.append(f"unsupported top-level field '{key}'")
+    if not definition.get("source"):
+        errors.append("missing required field 'source'")
+    errors.extend(_validate_fields(definition))
+    join_errors, join_warnings, _needs_nested = _validate_joins(definition)
+    errors.extend(join_errors)
+    warnings.extend(join_warnings)
+
+    version = definition.get("version")
+    if not isinstance(version, str) or version != MV_YAML_VERSION:
+        warnings.append(
+            f"version is not the generated '{MV_YAML_VERSION}' — advisory for a "
+            "registered view, not a safety error"
+        )
+    comment = definition.get("comment")
+    if not isinstance(comment, str) or not comment.strip():
+        warnings.append(
+            "no structured comment — advisory for a registered view, not a "
+            "safety error"
+        )
+
+    return ValidationReport(ok=not errors, errors=tuple(errors), warnings=tuple(warnings))
 
 
 def _validate_comment(definition: Mapping[str, Any]) -> list[str]:

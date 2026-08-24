@@ -20,9 +20,24 @@ import pytest
 
 from genie_space_optimizer.common import warehouse
 from genie_space_optimizer.optimization.ddl import (
+    ADDITIVE_COLUMN_MIGRATIONS,
     _GENIE_OPT_MV_CANDIDATES_DDL,
     _GENIE_OPT_MV_CREATED_OBJECTS_DDL,
 )
+from genie_space_optimizer.common.config import (
+    TABLE_MV_CANDIDATES,
+    TABLE_MV_CREATED_OBJECTS,
+)
+
+
+def _additive_columns(table: str) -> set[str]:
+    """Column names the additive migrations add to ``table`` (MV-D21).
+
+    Additive columns (yaml_text, provenance, lift_report_json) are not in the
+    CREATE DDL string — they land via ADDITIVE_COLUMN_MIGRATIONS — so the pin
+    checks their membership here rather than against the CREATE body.
+    """
+    return {col for tbl, col, _decl in ADDITIVE_COLUMN_MIGRATIONS if tbl == table}
 
 
 class _FakeWorkspaceClient:
@@ -147,12 +162,27 @@ def test_created_object_writes_only_columns_the_table_declares(executed):
     assert len(written) == 11
     for col in written:
         assert col in _GENIE_OPT_MV_CREATED_OBJECTS_DDL
+    # provenance (MV-D24) is additive: written by the writer, present via
+    # ADDITIVE_COLUMN_MIGRATIONS, and NOT in the CREATE body.
+    assert "provenance" in sql
+    assert "provenance" in _additive_columns(TABLE_MV_CREATED_OBJECTS)
+    assert "provenance" not in _GENIE_OPT_MV_CREATED_OBJECTS_DDL
 
 
 def test_created_object_defaults_to_created_and_never_drop(executed):
     _, sql = _upsert_created(executed)
     assert "t.status = 'CREATED'" in sql
     assert "t.on_regression_action = 'DETACH_ONLY_NEVER_DROP'" in sql
+
+
+def test_created_object_provenance_defaults_to_obo_created(executed):
+    _, sql = _upsert_created(executed)
+    assert "t.provenance = 'OBO_CREATED'" in sql
+
+
+def test_created_object_records_user_created_provenance(executed):
+    _, sql = _upsert_created(executed, provenance="USER_CREATED")
+    assert "t.provenance = 'USER_CREATED'" in sql
 
 
 def test_created_object_rejects_an_unknown_status(executed):
@@ -171,6 +201,111 @@ def test_created_object_requires_a_full_name(executed):
     with pytest.raises(ValueError, match="full_name is required"):
         _upsert_created(executed, full_name="")
     assert executed == []
+
+
+# ── Candidates: upsert (MV-D23 standalone advice write side) ───────────────
+
+
+def _upsert_candidate(executed, **overrides):
+    kwargs = {
+        "catalog": "main",
+        "schema": "gso",
+        "run_id": "r1",
+        "target_space_id": "space-1",
+        "suggestion_id": "sug1",
+        "dedup_fingerprint": "fp1",
+        "candidate_type": "NEW_METRIC_VIEW",
+    }
+    kwargs.update(overrides)
+    result = warehouse.wh_upsert_mv_candidate(_FakeWorkspaceClient(), "wh1", **kwargs)
+    return result, executed[-1]
+
+
+def test_upsert_candidate_merges_on_space_and_fingerprint(executed):
+    fp, sql = _upsert_candidate(executed)
+    assert fp == "fp1"
+    assert sql.startswith("MERGE INTO main.gso.genie_opt_mv_candidates")
+    assert (
+        "ON t.target_space_id = s.target_space_id "
+        "AND t.dedup_fingerprint = s.dedup_fingerprint" in sql
+    )
+    assert "WHEN MATCHED THEN UPDATE SET" in sql
+    assert "WHEN NOT MATCHED THEN INSERT" in sql
+
+
+def test_upsert_candidate_writes_only_columns_the_table_declares(executed):
+    _, sql = _upsert_candidate(
+        executed,
+        confidence_score=82.0,
+        tier="HIGH",
+        proposed_object="finance.sales.revenue_metrics",
+        score_components={"L": 40},
+        evidence={"benchmark_ids": ["q1"]},
+        provenance={"kind": "generated"},
+        alternatives=[{"expr": "x"}],
+        conflicts=[{"with": "y"}],
+        requested_mode="suggest_only",
+        effective_mode="suggest_only",
+        yaml_text="version: '1.1'\n",
+    )
+    written = {
+        col for col in (
+            "target_space_id", "dedup_fingerprint", "suggestion_id", "run_id",
+            "candidate_type", "confidence_score", "tier", "proposed_object",
+            "score_components_json", "evidence_json", "provenance_json",
+            "alternatives_json", "conflicts_json", "requested_mode",
+            "effective_mode", "yaml_text", "updated_at", "created_at",
+            "approved_for_rerun",
+        )
+        if col in sql
+    }
+    assert len(written) == 19
+    additive = _additive_columns(TABLE_MV_CANDIDATES)
+    assert "yaml_text" in additive
+    for col in written:
+        assert col in _GENIE_OPT_MV_CANDIDATES_DDL or col in additive
+
+
+def test_upsert_candidate_never_updates_the_decision_columns(executed):
+    _, sql = _upsert_candidate(executed)
+    # approved_for_rerun is insert-only; a re-proposing run must not resurrect a
+    # candidate the user rejected. decision/decided_by/suppressed_until are never
+    # written by the proposer at all.
+    update_clause = sql.split("WHEN MATCHED THEN UPDATE SET", 1)[1].split(
+        "WHEN NOT MATCHED", 1
+    )[0]
+    assert "approved_for_rerun" not in update_clause
+    for col in ("decision", "decided_by", "decided_at", "suppressed_until"):
+        assert col not in sql
+
+
+def test_upsert_candidate_base64_encodes_yaml_and_json(executed):
+    _, sql = _upsert_candidate(
+        executed,
+        yaml_text="version: '1.1'\nsource: sales.orders\n",
+        score_components={"L": 40, "Y": 30},
+    )
+    encoded = re.findall(r"unbase64\('([^']+)'\)", sql)
+    decoded = {base64.b64decode(e).decode("utf-8") for e in encoded}
+    assert "version: '1.1'\nsource: sales.orders\n" in decoded
+    assert json.dumps({"L": 40, "Y": 30}) in decoded
+
+
+def test_upsert_candidate_rejects_an_unknown_type(executed):
+    with pytest.raises(ValueError, match="candidate_type must be one of"):
+        _upsert_candidate(executed, candidate_type="MADE_UP")
+    assert executed == []
+
+
+def test_upsert_candidate_requires_a_fingerprint(executed):
+    with pytest.raises(ValueError, match="dedup_fingerprint is required"):
+        _upsert_candidate(executed, dedup_fingerprint="")
+    assert executed == []
+
+
+def test_upsert_candidate_escapes_quotes_in_the_key(executed):
+    _, sql = _upsert_candidate(executed, target_space_id="s' OR '1'='1")
+    assert "'s'' OR ''1''=''1'" in sql
 
 
 # ── Created objects: status transition ─────────────────────────────────────

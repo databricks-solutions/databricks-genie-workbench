@@ -127,6 +127,7 @@ def _seed(
     status: str = "CREATED",
     full_name: str = MV_NAME,
     benchmark_questions: list[str] | None = AFFECTED,
+    provenance: str | None = None,
 ) -> None:
     """Seed consent, created-object and candidate rows through the real writers."""
     mv_state.upsert_mv_consent(
@@ -153,6 +154,7 @@ def _seed(
         full_name=full_name,
         created_by=created_by,
         status=status,
+        provenance=provenance,
     )
     if benchmark_questions is not None:
         mv_state.upsert_mv_candidate(
@@ -597,6 +599,26 @@ def test_a_creator_who_is_not_the_consenting_user_is_a_recorded_skip() -> None:
         runner=_FakeRunner([]),
     )
     assert outcome.skip_reason == mv_attach.SKIP_CREATOR_MISMATCH
+
+
+def test_a_user_created_row_bypasses_the_creator_mismatch_guard() -> None:
+    # MV-D24: a USER_CREATED (bring-your-own) row is a verified registration, so
+    # its created_by need not match the consent's granted_by — that verification
+    # IS the consent coverage the guard exists to require. The same row that
+    # skips as OBO_CREATED must NOT skip once it is USER_CREATED.
+    spark = FakeDeltaSpark()
+    _seed(
+        spark,
+        created_by="someone.else@example.com",
+        provenance="USER_CREATED",
+    )
+    outcome = _run_phase(
+        spark,
+        config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD")]),
+        runner=_FakeRunner([]),
+    )
+    assert outcome.skip_reason != mv_attach.SKIP_CREATOR_MISMATCH
 
 
 def test_an_object_not_in_created_status_is_a_recorded_skip() -> None:

@@ -5,6 +5,7 @@ import { useState } from "react"
 import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Check, X, Rocket, Loader2 } from "lucide-react"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
+import { MvIqScanAdvisorySection } from "@/components/auto-optimize/MvIqScanAdvisorySection"
 import type { ScanResult, CheckDetail } from "@/types"
 
 interface IQScoreTabProps {
@@ -21,7 +22,7 @@ interface IQScoreTabProps {
   onNavigateToOptimize?: () => void
 }
 
-export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, onAction, actionLabel, actionIcon, actionDescription, onNavigateToOptimize }: IQScoreTabProps) {
+export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, spaceId, onAction, actionLabel, actionIcon, actionDescription, onNavigateToOptimize }: IQScoreTabProps) {
   const [checksExpanded, setChecksExpanded] = useState(false)
 
   if (isLoading) {
@@ -307,6 +308,14 @@ export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, onAction
           )}
         </div>
       )}
+
+      {/* Advisory metric views (Prompt 13.5, MV-D23/D24) — the pre-optimization
+          surface. On-demand advice with no run context; the same MvProposalCard
+          the run output uses, fed from a space-scoped source (MV-D23). */}
+      <MvIqScanAdvisorySection
+        spaceId={spaceId}
+        onReviewCreate={onNavigateToOptimize ? () => onNavigateToOptimize() : undefined}
+      />
     </div>
   )
 }

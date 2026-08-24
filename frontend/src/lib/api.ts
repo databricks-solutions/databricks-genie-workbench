@@ -45,6 +45,9 @@ import type {
   MvProposalDecisionResponse,
   MvDropRequest,
   MvDropResponse,
+  MvSuggestResponse,
+  MvRegisterRequest,
+  MvRegisterResponse,
   SemanticGraphResponse,
 } from "@/types"
 
@@ -477,6 +480,40 @@ export async function fetchSpaceMvProposals(
     approvedForRerun === undefined ? "" : `?approved_for_rerun=${approvedForRerun}`
   return fetchWithTimeout<MvSpaceProposalsResponse>(
     `${API_BASE}/auto-optimize/spaces/${spaceId}/mv-proposals${query}`,
+  )
+}
+
+// POST /spaces/{space_id}/mv/suggest — an on-demand advice run (MV-D23). The IQ
+// Scan surface asks the advisor to score a space right now, with no optimization
+// run; the backend writes a born-terminal sentinel advice run and returns its
+// outcome plus the persisted proposals. Runs corpus scan + scoring + the S-signal
+// embedding synchronously (seconds), so it takes the long timeout — the embedding
+// path has its own hard cap server-side that degrades S rather than hanging.
+export async function suggestSpaceMv(spaceId: string): Promise<MvSuggestResponse> {
+  return fetchWithTimeout<MvSuggestResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv/suggest`,
+    { method: "POST", headers: { "Content-Type": "application/json" } },
+    LONG_TIMEOUT,
+  )
+}
+
+// POST /spaces/{space_id}/mv/register — a bring-your-own view (MV-D24). A user
+// who created the suggested view themselves reports its identifier; the backend
+// verifies it under OBO and, on success, records a USER_CREATED ledger row so
+// attach-and-lift picks it up. Verified and refused are both normal 200s the
+// panel renders from one shape (registered + reason).
+export async function registerSpaceMv(
+  spaceId: string,
+  request: MvRegisterRequest,
+): Promise<MvRegisterResponse> {
+  return fetchWithTimeout<MvRegisterResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv/register`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
   )
 }
 

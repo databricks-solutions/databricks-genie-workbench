@@ -471,13 +471,17 @@ def upsert_mv_created_object(
     baseline_eval_run_id: str | None = None,
     post_attach_eval_run_id: str | None = None,
     on_regression_action: str = "DETACH_ONLY_NEVER_DROP",
+    provenance: str | None = None,
 ) -> str:
     """Upsert the record of a metric view created under OBO for ``run_id``.
 
     Keyed on ``(run_id, suggestion_id)``. ``created_by`` is the consenting user,
     never the service principal — the job has no OBO token and never issues
-    metric view DDL.
+    metric view DDL. ``provenance`` (MV-D24) is ``OBO_CREATED`` by default; the
+    bring-your-own registration path writes ``USER_CREATED``.
     """
+    from genie_space_optimizer.common.config import MV_PROVENANCE_OBO_CREATED
+
     if status not in MV_CREATED_OBJECT_STATUSES:
         raise ValueError(
             f"status must be one of {MV_CREATED_OBJECT_STATUSES}, got {status!r}"
@@ -505,6 +509,7 @@ def upsert_mv_created_object(
             "baseline_eval_run_id": baseline_eval_run_id,
             "post_attach_eval_run_id": post_attach_eval_run_id,
             "on_regression_action": on_regression_action,
+            "provenance": provenance or MV_PROVENANCE_OBO_CREATED,
             "updated_at": now,
         },
         insert_only_cols={"created_at": now},

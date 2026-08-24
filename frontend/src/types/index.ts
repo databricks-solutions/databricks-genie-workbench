@@ -991,6 +991,47 @@ export interface MvSpaceProposalsResponse {
   proposals: MvProposal[]
 }
 
+// POST /spaces/{space_id}/mv/suggest — an on-demand advice run (MV-D23). The IQ
+// Scan surface asks the advisor to score a space now, with no optimization run.
+// status is the advisor's COMPLETE | SKIPPED | FAILED; skip_reason distinguishes
+// the honest empties (no SQL, no candidates, an already-governed estate) from a
+// failure, so the panel renders found vs EMPTY vs denial without inferring
+// intent from an empty list. proposals is the SAME MvProposal shape the
+// space-scoped and run-keyed lists return.
+export interface MvSuggestResponse {
+  space_id: string
+  run_id: string
+  status: string
+  skip_reason: string | null
+  error: string | null
+  proposals: MvProposal[]
+}
+
+// POST /spaces/{space_id}/mv/register — a bring-your-own view (MV-D24).
+// full_name is the three-part UC identifier of a metric view the user created
+// themselves. suggestion_id is optional: when the user claims the view
+// implements a specific proposal, the backend checks the claim by comparing
+// dedup fingerprints rather than trusting it.
+export interface MvRegisterRequest {
+  full_name: string
+  suggestion_id?: string | null
+}
+
+// One shape carries both the verified and refused states the panel renders:
+// registered is the verdict and reason explains a refusal (not a metric view,
+// not visible, failed validation, claim mismatch). On success run_id is the
+// sentinel advice run hosting the USER_CREATED ledger row and warnings are
+// advisory lints that did not block.
+export interface MvRegisterResponse {
+  registered: boolean
+  full_name: string
+  provenance: string
+  run_id: string | null
+  suggestion_id: string | null
+  reason: string | null
+  warnings: string[]
+}
+
 // ── Metric view output-screen shapes (Prompt 13, MV-D21) ────────────────────
 // Mirror MvDdlArtifact / MvLiftReport / MvCreatedObject /
 // MvCreatedObjectsResponse / decision + drop req-resp in backend/models.py and

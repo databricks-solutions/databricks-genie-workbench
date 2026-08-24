@@ -25,7 +25,10 @@ from genie_space_optimizer.common.config import (
     TABLE_MV_CREATED_OBJECTS,
 )
 from genie_space_optimizer.optimization import mv_state
-from genie_space_optimizer.optimization.ddl import _ALL_DDL
+from genie_space_optimizer.optimization.ddl import (
+    _ALL_DDL,
+    ADDITIVE_COLUMN_MIGRATIONS,
+)
 
 
 # ── A MERGE-replaying fake Delta table ───────────────────────────────────
@@ -48,8 +51,16 @@ _DDL_COLUMN_RE = re.compile(
 
 
 def _ddl_columns(table: str) -> list[str]:
-    """Column names declared by a table's CREATE statement, in order."""
-    return _DDL_COLUMN_RE.findall(_ALL_DDL[table])
+    """Column names a table accepts: its CREATE statement plus additive columns.
+
+    Additive migrations (MV-D23 ``yaml_text``, MV-D24 ``provenance``) land via
+    ``ADDITIVE_COLUMN_MIGRATIONS`` rather than the CREATE body, but a writer may
+    legitimately write them, so the fake's INSERT-column check must accept them
+    exactly as a migrated live table would.
+    """
+    columns = _DDL_COLUMN_RE.findall(_ALL_DDL[table])
+    columns.extend(col for tbl, col, _decl in ADDITIVE_COLUMN_MIGRATIONS if tbl == table)
+    return columns
 
 
 def _decode_literal(literal: str) -> Any:

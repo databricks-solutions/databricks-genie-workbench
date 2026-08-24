@@ -320,6 +320,60 @@ class MvSpaceProposalsResponse(BaseModel):
     proposals: list[MvProposal] = Field(default_factory=list)
 
 
+class MvSuggestResponse(BaseModel):
+    """``POST /spaces/{space_id}/mv/suggest`` — an on-demand advice run (MV-D23).
+
+    The IQ Scan surface asks the advisor to score a space right now, with no
+    optimization run. The backend writes a born-terminal sentinel advice run,
+    runs the SparkSession-free advisor over the space's curated corpus, and
+    returns its outcome plus the persisted proposals.
+
+    ``status`` is the advisor's own ``COMPLETE`` | ``SKIPPED`` | ``FAILED``;
+    ``skip_reason`` distinguishes the honest empties (no parseable SQL, no
+    candidates, an estate that already governs every measure) from a failure, so
+    the panel can render *found* vs *EMPTY* vs *denial* without inferring intent
+    from an empty list. ``proposals`` is the SAME ``MvProposal`` shape the
+    space-scoped and run-keyed lists return, so ``MvSuggestOnlyPanel`` mounts
+    these cards from this space-scoped source with no component change."""
+
+    space_id: str
+    run_id: str
+    status: str
+    skip_reason: str | None = None
+    error: str | None = None
+    proposals: list[MvProposal] = Field(default_factory=list)
+
+
+class MvRegisterRequest(BaseModel):
+    """``POST /spaces/{space_id}/mv/register`` — a bring-your-own view (MV-D24).
+
+    ``full_name`` is the three-part UC identifier of a metric view the user
+    created themselves. ``suggestion_id`` is optional: when the user claims the
+    view implements a specific proposal, the backend checks the claim by
+    comparing dedup fingerprints rather than trusting it."""
+
+    full_name: str
+    suggestion_id: str | None = None
+
+
+class MvRegisterResponse(BaseModel):
+    """Result of a bring-your-own registration (MV-D24).
+
+    A single shape carries both the verified and refused states the panel
+    renders: ``registered`` is the verdict and ``reason`` explains a refusal
+    (not a metric view, not visible, failed validation, claim mismatch). On
+    success ``run_id`` is the sentinel advice run hosting the ``USER_CREATED``
+    ledger row and ``warnings`` are advisory lints that did not block."""
+
+    registered: bool
+    full_name: str
+    provenance: str = "USER_CREATED"
+    run_id: str | None = None
+    suggestion_id: str | None = None
+    reason: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class MvSemanticGraphNode(BaseModel):
     """One node in a space's semantic model graph (Prompt 12, MV-D23).
 

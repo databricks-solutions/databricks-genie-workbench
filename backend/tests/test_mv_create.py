@@ -110,6 +110,51 @@ def test_happy_path_creates_and_attaches_at_the_consented_name(create_env, monke
     assert upserts[0]["created_by"] == "analyst@example.com"
 
 
+def test_candidate_yaml_text_is_the_fallback_when_no_artifact(create_env, monkeypatch):
+    """MV-D23 severs coupling 3: a standalone advice candidate carries the
+    replay body on the row, so an absent run-partitioned artifact is not a skip."""
+    executed, upserts = create_env
+    # No run-keyed artifact (the standalone advice path never wrote one) — the
+    # candidate row carries yaml_text + evidence.join_strategy instead.
+    monkeypatch.setattr(mv_create, "_load_ddl_artifact", lambda *a, **k: None)
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "sug1",
+            "dedup_fingerprint": "fp1",
+            "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+            "evidence": {"join_strategy": "nested"},
+        }],
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+
+    handoff = _run_create()
+
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert any("CREATE VIEW finance.sales.revenue_metrics" in s for s in executed)
+    assert upserts and upserts[0]["status"] == "CREATED"
+
+
+def test_no_artifact_and_no_candidate_body_skips(create_env, monkeypatch):
+    executed, upserts = create_env
+    monkeypatch.setattr(mv_create, "_load_ddl_artifact", lambda *a, **k: None)
+    # Candidate row has no yaml_text either — nothing replayable, so it skips.
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{"suggestion_id": "sug1", "dedup_fingerprint": "fp1"}],
+    )
+
+    handoff = _run_create()
+
+    assert handoff.action_mode == "suggest_only"
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == []
+
+
 def test_revalidation_downgrade_aborts_the_create(create_env, monkeypatch):
     """MV-D22: a rung below the stored one drops the suggestion, never creates."""
     executed, upserts = create_env

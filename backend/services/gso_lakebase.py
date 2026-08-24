@@ -62,6 +62,14 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
     if pool is None:
         return []
 
+    # MV-D23 guardrail (ii): standalone advice runs are real genie_opt_runs rows
+    # but never ran an eval, so every run-listing query routes through the single
+    # pinned MV_ADVICE_RUN_EXCLUSION predicate rather than inlining a filter. A
+    # not-yet-synced table (run_kind column absent) makes this query error and
+    # fall through to the Delta path in load_runs_with_fallback — which is also
+    # gated — so a forgotten filter cannot leak an advice run into history.
+    from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
+
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -70,7 +78,7 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
                           llm_model, benchmark_policy, benchmark_mutation_count,
                           (config_snapshot IS NOT NULL AND length(config_snapshot) > 2) AS has_config_snapshot
                    FROM {_tbl('genie_opt_runs')}
-                   WHERE space_id = $1
+                   WHERE space_id = $1 AND {MV_ADVICE_RUN_EXCLUSION}
                    ORDER BY started_at DESC""",
                 space_id,
             )

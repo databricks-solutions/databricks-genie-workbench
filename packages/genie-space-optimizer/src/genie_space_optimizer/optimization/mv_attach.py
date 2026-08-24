@@ -54,7 +54,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from genie_space_optimizer.common.config import MV_ATTACH_PHASE_NAME
+from genie_space_optimizer.common.config import (
+    MV_ATTACH_PHASE_NAME,
+    MV_PROVENANCE_USER_CREATED,
+)
 
 from .applier import apply_patch_set, rollback
 from .eval_runner import FULL, EvalRunResult, LiftReport, lift_report
@@ -479,7 +482,20 @@ def _attach_and_measure(
                 identifier, run_id,
             )
             return _skip(SKIP_NO_CREATED_OBJECT)
-        if str(row.get("created_by") or "").strip().lower() != granted_by:
+        # MV-D24 narrow relaxation: a USER_CREATED row is a *verified*
+        # bring-your-own registration — the backend asserted the object is a
+        # metric view, recovered and validated its YAML, and recorded the
+        # verifying user as created_by. That verification IS the consent
+        # coverage this guard exists to require, so it does not need to match
+        # the consent's granted_by. The guard still fires for OBO_CREATED rows
+        # (and legacy NULL provenance), which is where a creator/consent
+        # mismatch would signal an object the consent never authorized.
+        provenance = str(row.get("provenance") or "").strip().upper()
+        is_user_created = provenance == MV_PROVENANCE_USER_CREATED
+        if (
+            not is_user_created
+            and str(row.get("created_by") or "").strip().lower() != granted_by
+        ):
             logger.warning(
                 "mv_attach: %s was created by a different identity than the "
                 "consent's granted_by — skipping the phase", identifier,

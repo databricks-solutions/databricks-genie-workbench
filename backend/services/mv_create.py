@@ -30,8 +30,11 @@ artifact.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import re
+import uuid
 from dataclasses import dataclass, field
 
 from backend.models import MvConsentVerification, MvCreatedObject
@@ -40,6 +43,10 @@ from backend.services.auth import (
     require_obo_workspace_client,
 )
 from backend.services import mv_entitlement
+from genie_space_optimizer.common.config import (
+    MV_PROVENANCE_OBO_CREATED,
+    MV_PROVENANCE_USER_CREATED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -272,19 +279,32 @@ def create_and_attach_for_run(
         if not suggestion_id or not fingerprint:
             continue
         try:
+            # MV-D22 replay body. Two sources, one shape: an in-job run writes a
+            # run-partitioned ``mv_candidate_ddl`` artifact, so that is tried
+            # first; a standalone advice run (MV-D23) has no run-keyed artifact
+            # and carries the rendered body on the candidate row itself
+            # (``yaml_text`` + ``evidence.join_strategy``). The artifact is the
+            # authority when present — it pins ``join_strategy`` beside the body
+            # — and the candidate row is the fallback, never a second render.
             artifact = _load_ddl_artifact(
                 sp_ws, warehouse_id, catalog=catalog, schema=schema,
                 fingerprint=fingerprint,
             )
-            if not artifact or not artifact.get("yaml_text"):
+            if artifact and artifact.get("yaml_text"):
+                yaml_text = str(artifact["yaml_text"])
+                stored_strategy = artifact.get("join_strategy")
+                proposed_object = str(artifact.get("proposed_object") or "")
+            elif candidate.get("yaml_text"):
+                yaml_text = str(candidate["yaml_text"])
+                evidence = candidate.get("evidence") or {}
+                stored_strategy = evidence.get("join_strategy") if isinstance(evidence, dict) else None
+                proposed_object = str(candidate.get("proposed_object") or "")
+            else:
                 logger.warning(
                     "No rendered yaml_text for suggestion %s; skipping", suggestion_id
                 )
                 continue
 
-            yaml_text = str(artifact["yaml_text"])
-            stored_strategy = artifact.get("join_strategy")
-            proposed_object = str(artifact.get("proposed_object") or "")
             full_name = _consented_full_name(consent, proposed_object)
 
             # MV-D22 replay-with-revalidation. NOT_COMPARED (no oracle at trigger
@@ -334,6 +354,7 @@ def create_and_attach_for_run(
                 run_id=run_id, suggestion_id=suggestion_id,
                 full_name=full_name, created_by=fresh_probe.checked_as,
                 status="CREATED",
+                provenance=MV_PROVENANCE_OBO_CREATED,
             )
             attach_views.append(full_name)
             created.append(MvCreatedObject(
@@ -363,8 +384,292 @@ def create_and_attach_for_run(
     )
 
 
+# ── Bring-your-own registration (MV-D24) ───────────────────────────────────
+
+_UC_IDENT_PART = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+@dataclass
+class MvRegisterResult:
+    """Outcome of a bring-your-own registration (MV-D24).
+
+    ``registered`` is the verdict; on refusal ``reason`` carries the specific
+    gate that failed (not a metric view, not visible, validation) so the user
+    can act on it. On success ``run_id`` is the sentinel advice run that hosts
+    the ``USER_CREATED`` ledger row and ``suggestion_id`` is the row's key.
+    ``warnings`` are advisory lints (e.g. a non-generated version string) that
+    did not block registration.
+    """
+
+    registered: bool
+    full_name: str
+    provenance: str = MV_PROVENANCE_USER_CREATED
+    run_id: str | None = None
+    suggestion_id: str | None = None
+    reason: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+def _valid_uc_identifier(full_name: str) -> bool:
+    """Three plain UC parts (letters, digits, underscore). Refuses anything else.
+
+    The identifier is user input that is interpolated into ``DESCRIBE`` and, for
+    other rows, ``DROP VIEW`` — so it is constrained to unquoted identifier
+    characters and refused otherwise rather than trusted or best-effort escaped.
+    """
+    parts = [p.strip().strip("`") for p in (full_name or "").split(".")]
+    return len(parts) == 3 and all(bool(_UC_IDENT_PART.match(p)) for p in parts)
+
+
+def _obo_identity(obo_ws) -> str:
+    try:
+        return str(obo_ws.current_user.me().user_name or "").strip()
+    except Exception:
+        return ""
+
+
+def _recover_registered_metric_view(
+    obo_ws, warehouse_id: str, full_name: str
+) -> tuple[bool, str | None, str | None]:
+    """Verify under OBO that ``full_name`` is a metric view; recover its YAML.
+
+    Returns ``(ok, yaml_text, reason)``. Read under the caller's OBO client so
+    the caller's own visibility governs — an object they cannot see is refused,
+    not resolved through the SP. ``DESCRIBE TABLE EXTENDED ... AS JSON`` carries
+    both the ``type`` assertion and the ``view_text`` YAML body.
+    """
+    from genie_space_optimizer.backend.utils import safe_json_parse
+    from genie_space_optimizer.common.warehouse import sql_warehouse_query
+
+    fq = ".".join(f"`{p.strip().strip('`')}`" for p in full_name.split("."))
+    try:
+        df = sql_warehouse_query(
+            obo_ws, warehouse_id, f"DESCRIBE TABLE EXTENDED {fq} AS JSON"
+        )
+    except Exception:
+        logger.warning("register: DESCRIBE failed for %s", full_name, exc_info=True)
+        return (
+            False, None,
+            f"{full_name} could not be described — it may not exist, or you may "
+            "not have access to it",
+        )
+    if getattr(df, "empty", True):
+        return False, None, f"{full_name} returned no metadata"
+
+    envelope = None
+    for cell in df.to_numpy().ravel():
+        parsed = safe_json_parse(cell)
+        if isinstance(parsed, dict):
+            envelope = parsed
+            break
+    if not isinstance(envelope, dict):
+        return (
+            False, None,
+            f"{full_name}: could not parse the DESCRIBE ... AS JSON envelope",
+        )
+
+    type_str = str(envelope.get("type") or "").strip().upper()
+    if type_str != "METRIC_VIEW":
+        return (
+            False, None,
+            f"{full_name} is not a metric view (type={type_str or 'unknown'}); "
+            "only a metric view can be registered",
+        )
+
+    view_text = (
+        envelope.get("view_text")
+        or envelope.get("View Text")
+        or envelope.get("view_definition")
+        or ""
+    )
+    if not isinstance(view_text, str) or not view_text.strip():
+        return (
+            False, None,
+            f"{full_name}: its definition (view_text) is not visible to you — "
+            "you may not be its owner, so it cannot be verified",
+        )
+    return True, view_text, None
+
+
+def _claim_matches_view(
+    sp_ws, warehouse_id: str, *, catalog: str, schema: str,
+    space_id: str, suggestion_id: str, yaml_text: str,
+) -> tuple[bool, str | None]:
+    """Check a claim that this view implements a specific proposal (MV-D24).
+
+    The claim is *checked, not trusted*: each of the view's measures is
+    fingerprinted through the same extractor + ``mv_candidate_fingerprint`` the
+    corpus scan uses, and the claimed candidate's ``dedup_fingerprint`` must be
+    among them. A mismatch refuses the claim (the user can register without it).
+    """
+    import yaml as _yaml
+
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+    from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+
+    candidates = wh_load_mv_candidates(
+        sp_ws, warehouse_id, catalog, schema, target_space_id=space_id
+    )
+    claimed = next(
+        (c for c in candidates if str(c.get("suggestion_id") or "") == suggestion_id),
+        None,
+    )
+    if claimed is None:
+        return False, f"no proposal {suggestion_id} exists for this space to claim"
+    target_fp = str(claimed.get("dedup_fingerprint") or "")
+    if not target_fp:
+        return False, f"proposal {suggestion_id} has no fingerprint to compare against"
+
+    try:
+        definition = _yaml.safe_load(yaml_text) or {}
+    except Exception:
+        definition = {}
+    source = str((definition.get("source") or "")).strip()
+    fingerprints: set[str] = set()
+    for measure in definition.get("measures") or []:
+        if not isinstance(measure, dict):
+            continue
+        expr = str(measure.get("expr") or "").strip()
+        if not expr or not source:
+            continue
+        try:
+            refs = extract_measures(f"SELECT {expr} AS m FROM {source}")
+        except Exception:
+            continue
+        for ref in refs:
+            sources = ref.source_tables or (source,)
+            fingerprints.add(
+                mv_candidate_fingerprint(space_id, ref.canonical_expr, sources)
+            )
+
+    if target_fp in fingerprints:
+        return True, None
+    return (
+        False,
+        f"{definition.get('source') or 'the view'} does not appear to implement "
+        f"proposal {suggestion_id} (measure fingerprint mismatch); register "
+        "without claiming a proposal if it is a different view",
+    )
+
+
+def register_user_created_view(
+    *,
+    space_id: str,
+    full_name: str,
+    claimed_suggestion_id: str | None = None,
+    catalog: str,
+    schema: str,
+    warehouse_id: str,
+) -> MvRegisterResult:
+    """Register a user-created metric view so the app can attach it (MV-D24).
+
+    The copied-DDL path's return trip: the user created the view themselves, in
+    their own SQL editor, under their own identity; this verifies it under OBO
+    and records a ``USER_CREATED`` ledger row so the normal attach-and-lift path
+    can run on the next run.
+
+    Verification, not trust (invariant 2): an identifier that is not a metric
+    view, not visible to the caller, or whose YAML fails the safety lint is
+    refused with the reason and **nothing is written**. Sequencing (item 3): the
+    ledger row is the *last* fallible step — every verification gate passes
+    first, so a row that fails to write surfaces as "registration failed, retry"
+    rather than leaving a verified-but-unrecorded view the attach phase skips.
+    """
+    from genie_space_optimizer.common.warehouse import (
+        wh_create_advice_run,
+        wh_ensure_optimization_tables,
+        wh_upsert_mv_created_object,
+    )
+    from genie_space_optimizer.optimization.mv_yaml import validate_registered
+
+    full_name = (full_name or "").strip()
+    if not _valid_uc_identifier(full_name):
+        return MvRegisterResult(
+            registered=False, full_name=full_name,
+            reason="identifier must be a three-part catalog.schema.name using "
+            "letters, digits, and underscores",
+        )
+
+    obo_ws = require_obo_workspace_client()
+    sp_ws = get_service_principal_client()
+
+    ok, yaml_text, reason = _recover_registered_metric_view(
+        obo_ws, warehouse_id, full_name
+    )
+    if not ok or not yaml_text:
+        return MvRegisterResult(registered=False, full_name=full_name, reason=reason)
+
+    report = validate_registered(yaml_text)
+    if not report.ok:
+        return MvRegisterResult(
+            registered=False, full_name=full_name,
+            reason="the metric view failed validation: "
+            + ("; ".join(report.errors) or "no detail"),
+        )
+
+    if claimed_suggestion_id:
+        matched, why = _claim_matches_view(
+            sp_ws, warehouse_id, catalog=catalog, schema=schema,
+            space_id=space_id, suggestion_id=claimed_suggestion_id,
+            yaml_text=yaml_text,
+        )
+        if not matched:
+            return MvRegisterResult(
+                registered=False, full_name=full_name, reason=why,
+            )
+        suggestion_id = claimed_suggestion_id
+    else:
+        # A stable synthetic id keyed on the object, so re-registering the same
+        # view upserts one row rather than accreting duplicates. The ``user_``
+        # prefix (underscore, not a colon) keeps it inside the suggestion_id
+        # charset the lifecycle routes validate.
+        suggestion_id = "user_" + hashlib.sha256(
+            full_name.lower().encode("utf-8")
+        ).hexdigest()[:32]
+
+    created_by = _obo_identity(obo_ws)
+    if not created_by:
+        return MvRegisterResult(
+            registered=False, full_name=full_name,
+            reason="could not resolve the registering user's identity",
+        )
+
+    # All gates passed. The ledger row is the LAST fallible step (item 3): the
+    # table bootstrap and the sentinel advice run precede it, and the row write
+    # itself is final — if it raises, the caller reports failure and the view is
+    # simply unregistered (the attach phase skips an unrecorded identifier),
+    # never verified-but-half-recorded (invariant 2).
+    wh_ensure_optimization_tables(sp_ws, warehouse_id, catalog, schema)
+    run_id = str(uuid.uuid4())
+    wh_create_advice_run(
+        sp_ws, warehouse_id,
+        run_id=run_id, space_id=space_id, domain="",
+        catalog=catalog, schema=schema,
+        triggered_by=created_by, llm_model="",
+    )
+    wh_upsert_mv_created_object(
+        sp_ws, warehouse_id,
+        catalog=catalog, schema=schema,
+        run_id=run_id, suggestion_id=suggestion_id,
+        full_name=full_name, created_by=created_by,
+        status="CREATED", provenance=MV_PROVENANCE_USER_CREATED,
+    )
+    logger.info(
+        "Registered USER_CREATED metric view %s for space %s (run %s)",
+        full_name, space_id, run_id,
+    )
+    return MvRegisterResult(
+        registered=True, full_name=full_name,
+        run_id=run_id, suggestion_id=suggestion_id,
+        warnings=list(report.warnings),
+    )
+
+
 __all__ = [
     "MvAttachHandoff",
+    "MvRegisterResult",
     "create_and_attach_for_run",
+    "register_user_created_view",
     "verify_consent",
 ]

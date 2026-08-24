@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_runs (
     domain              STRING        NOT NULL COMMENT 'Domain name (e.g. revenue_property)',
     catalog             STRING        NOT NULL COMMENT 'Unity Catalog name',
     uc_schema           STRING        NOT NULL COMMENT 'UC schema (catalog.schema format)',
-    status              STRING        NOT NULL COMMENT 'QUEUED|IN_PROGRESS|CONVERGED|STALLED|MAX_ITERATIONS|FAILED|CANCELLED|SKIPPED',
+    status              STRING        NOT NULL COMMENT 'QUEUED|IN_PROGRESS|CONVERGED|STALLED|MAX_ITERATIONS|FAILED|CANCELLED|SKIPPED|MV_ADVICE (MV-D23 terminal-at-birth advice run)',
     started_at          TIMESTAMP     NOT NULL COMMENT 'When the run was created',
     completed_at        TIMESTAMP              COMMENT 'When the run reached a terminal state',
     job_run_id          STRING                 COMMENT 'Databricks Job run ID',
@@ -337,4 +337,23 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # lands with the attach/lift phase (MV-D16) so existing tables gain it in
     # place rather than needing a recreate.
     (TABLE_MV_CREATED_OBJECTS, "lift_report_json", "STRING COMMENT 'JSON: eval_runner.LiftReport.to_dict() verbatim for the isolated metric-view lift.'"),
+    # MV-D23: the sentinel advice-run discriminator. Added WITHOUT a DEFAULT
+    # because genie_opt_runs does not enable allowColumnDefaults; every reader
+    # treats NULL as 'optimization' (COALESCE), and the exclusion predicate is
+    # the single pinned MV_ADVICE_RUN_EXCLUSION constant (common/config.py), not
+    # a per-caller convention. Standalone advice runs are born terminal
+    # (status=MV_ADVICE) so active-run reconciliation never picks one up.
+    (TABLE_RUNS, "run_kind", "STRING COMMENT 'MV-D23: optimization (default; NULL is treated as optimization) | mv_advice (a standalone metric-view advice request that never ran an eval). Advice runs are excluded from run-history and accuracy aggregates via the MV_ADVICE_RUN_EXCLUSION predicate.'"),
+    # MV-D23: the rendered replay body on the candidate row, so the MV-D22
+    # create path no longer depends on the run-partitioned mv_candidate_ddl
+    # artifact. The in-job advisor keeps writing the artifact byte-unchanged;
+    # the standalone (no-run) advisor writes yaml_text here, and
+    # mv_create._load_ddl_artifact falls back to it.
+    (TABLE_MV_CANDIDATES, "yaml_text", "STRING COMMENT 'MV-D23: the immutable rendered metric-view YAML body for this candidate (MV-D22 replay source), so a standalone advice candidate is replayable without a run-partitioned genie_opt_artifacts row.'"),
+    # MV-D24: the create-path discriminator. NULL/OBO_CREATED = the backend
+    # created it under OBO; USER_CREATED = a bring-your-own view the user
+    # created and registered. The drop route refuses USER_CREATED on provenance
+    # (before the status check), and mv_attach relaxes its created_by identity
+    # guard only for USER_CREATED rows.
+    (TABLE_MV_CREATED_OBJECTS, "provenance", "STRING COMMENT 'MV-D24: OBO_CREATED (default; NULL treated as OBO_CREATED) | USER_CREATED. The app never drops a USER_CREATED view.'"),
 )

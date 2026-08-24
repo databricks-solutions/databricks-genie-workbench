@@ -489,7 +489,7 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2822 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2880 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
@@ -499,7 +499,7 @@ src/genie_space_optimizer/
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
                   mv_fingerprint.py (1368 L), mv_scoring.py (1558 L),
-                  mv_state.py (649 L), mv_yaml.py (1755 L), ...
+                  mv_state.py (654 L), mv_yaml.py (1812 L), ...
 ```
 <!-- END GENERATED: package-layout -->
 
@@ -512,7 +512,7 @@ src/genie_space_optimizer/
 | `optimization/preflight.py` | `_profile_metric_view`, reclassification into `_metric_view_yaml` |
 | `optimization/benchmarking.py` | MV join precheck/repair, `MEASURE()` wrapping, `build_metric_view_measures` |
 | `optimization/wide_schema_history.py` | `system.query.history` mining (`:248`), warehouse-history fallback (`:357`) |
-| `optimization/mv_yaml.py` (1755 L) | `generate` / `validate` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment, echo and capability checks). `CapabilityRow` is the Protocol the backend's `MvCapabilityRow` satisfies structurally |
+| `optimization/mv_yaml.py` (1812 L) | `generate` / `validate` / `validate_registered` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment, echo and capability checks) and its MV-D24 bring-your-own twin `validate_registered` (the safety subset only — generation conventions become warnings, not errors). `CapabilityRow` is the Protocol the backend's `MvCapabilityRow` satisfies structurally |
 
 Note the last row: **query-history demand signal (the POV's **D** component) already
 exists**, including the CMK/unavailable fallback path.
