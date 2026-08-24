@@ -1483,6 +1483,10 @@ HIGH_RISK_PATCHES = {
     "add_tvf",
     "remove_tvf",
     "update_mv_yaml",
+    # MV-D16: attaching a data source changes what Genie may query. High risk
+    # means apply_patch_set queues it unless force_apply=True, which the attach
+    # phase sets because the consent record already authorizes this exact object.
+    "mv_attach_data_source",
 }
 
 # ── 11. Lever Descriptions ─────────────────────────────────────────────
@@ -2000,7 +2004,7 @@ UNIFIED_OPTIMIZER_PATCH_RULES = [
 
 # ── 15. Assessment Sources ─────────────────────────────────────────────
 
-# ── 17. Patch Types (35 entries) ───────────────────────────────────────
+# ── 17. Patch Types (51 entries) ───────────────────────────────────────
 
 PATCH_TYPES = {
     # Lever 1: Tables & Columns — descriptions, visibility, aliases
@@ -2100,6 +2104,17 @@ PATCH_TYPES = {
         "scope": "uc_artifact",
         "risk_level": "high",
         "affects": ["metric_view", "mv_yaml"],
+    },
+    # MV-D16: attaching a metric view the backend already created under OBO is a
+    # ``genie_config`` edit, not a ``uc_artifact`` one — it rewrites
+    # ``data_sources.metric_views`` and touches no UC object. Deliberately absent
+    # from unified_loop._ALLOWED_PATCH_TYPES: that frozenset is the LLM-proposal
+    # surface, and an LLM-proposed attach would carry no consent row.
+    "mv_attach_data_source": {
+        "type": "mv_attach_data_source",
+        "scope": "genie_config",
+        "risk_level": "high",
+        "affects": ["data_sources", "metric_views"],
     },
     # Lever 3: Table-Valued Functions
     "add_tvf_parameter": {
@@ -2475,6 +2490,15 @@ MV_ADVISOR_PHASE_NAME = "mv_advisor"
 
 The phase runs inside the ``optimize`` task (MV-D3 forbids new job tasks), so
 the stage name is what separates its rows from the loop's.
+"""
+
+MV_ATTACH_PHASE_NAME = "mv_attach"
+"""Stage name for the attach + lift phase's ``genie_opt_stages`` rows.
+
+One phase, one stage name, even though it performs two steps: the lift eval is
+not separable from the attach it measures — a recorded attach with no lift would
+be an attach nobody checked. MV-D16 places both after iteration-0 and before the
+first lever patch, inside the optimize task.
 """
 
 MV_ADVISOR_MAX_CANDIDATES = _int_env("GSO_MV_ADVISOR_MAX_CANDIDATES", 10)

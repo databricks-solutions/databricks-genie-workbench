@@ -93,6 +93,10 @@ _CANDIDATE_JSON_COLUMNS = frozenset({
 
 _CONSENT_JSON_COLUMNS = frozenset({"probe_results_json"})
 
+_CREATED_OBJECT_JSON_COLUMNS = frozenset({"lift_report_json"})
+"""Byte-preserving transport, not a decode list: readers get ``lift_report_json``
+as the verbatim ``LiftReport.to_dict()`` string this module was handed."""
+
 
 # ── Idempotency key ──────────────────────────────────────────────────────
 
@@ -523,13 +527,16 @@ def update_mv_created_object_status(
     attach_patch_id: str | None = None,
     baseline_eval_run_id: str | None = None,
     post_attach_eval_run_id: str | None = None,
+    lift_report_json: str | None = None,
 ) -> None:
     """Advance a created object's lifecycle status, optionally recording eval ids.
 
     The two eval-run ids are what make the isolated metric-view lift auditable:
     ``baseline_eval_run_id`` is measured with the view created but not attached,
     ``post_attach_eval_run_id`` immediately after the attach patch and before any
-    lever fires. Only non-``None`` arguments are written.
+    lever fires. ``lift_report_json`` is ``LiftReport.to_dict()`` serialized
+    verbatim — the shape is frozen, so callers must not reshape it. Only
+    non-``None`` arguments are written.
     """
     if status not in MV_CREATED_OBJECT_STATUSES:
         raise ValueError(
@@ -544,6 +551,8 @@ def update_mv_created_object_status(
         updates["baseline_eval_run_id"] = baseline_eval_run_id
     if post_attach_eval_run_id is not None:
         updates["post_attach_eval_run_id"] = post_attach_eval_run_id
+    if lift_report_json is not None:
+        updates["lift_report_json"] = lift_report_json
 
     merge_row(
         spark,
@@ -552,6 +561,7 @@ def update_mv_created_object_status(
         TABLE_MV_CREATED_OBJECTS,
         {"run_id": run_id, "suggestion_id": suggestion_id},
         updates,
+        base64_string_columns=set(_CREATED_OBJECT_JSON_COLUMNS),
     )
     logger.info(
         "Metric view for run %s suggestion %s is now %s", run_id, suggestion_id, status,

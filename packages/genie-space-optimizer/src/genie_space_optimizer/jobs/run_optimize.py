@@ -94,6 +94,8 @@ dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
 dbutils.widgets.text("enable_metric_view_suggestions", "false")
+dbutils.widgets.text("mv_attach_views", "")
+dbutils.widgets.text("mv_consent_id", "")
 
 run_id = dbutils.widgets.get("run_id").strip()
 space_id = dbutils.widgets.get("space_id").strip()
@@ -113,6 +115,14 @@ benchmark_policy = dbutils.widgets.get("benchmark_policy").strip() or "repair_al
 enable_metric_view_suggestions = (
     dbutils.widgets.get("enable_metric_view_suggestions").strip().lower() == "true"
 )
+# MV-D16: the attach phase's two inputs. ``mv_attach_views`` is a JSON list of
+# fully-qualified metric view names the backend already created under OBO;
+# ``mv_consent_id`` carries the consent's PROBE ID, because genie_opt_mv_consents
+# is keyed on probe_id and has no consent_id column. Either one empty skips the
+# phase. Registering these across databricks.yml / gso_job.py / job_launcher.py
+# is Prompt 8's work, as it was for enable_metric_view_suggestions above.
+mv_attach_views = dbutils.widgets.get("mv_attach_views").strip()
+mv_consent_id = dbutils.widgets.get("mv_consent_id").strip()
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
@@ -360,6 +370,8 @@ try:
         wide_schema_parent_artifact_id=plan_record.get("artifact_id"),
         wide_schema_profile_budget=wide_schema_profile_budget,
         diagnostic_callback=_diagnostic,
+        mv_attach_views=mv_attach_views,
+        mv_consent_id=mv_consent_id,
     )
     _log(
         "Optimize loop finished",

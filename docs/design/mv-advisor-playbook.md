@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D15 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D16 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -268,9 +268,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D15)
+## Decisions register (MV-D1–MV-D16)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, and MV-D15 during Prompt 6 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, and MV-D16 during Prompt 7 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -411,6 +411,14 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 *S distinguishes its two zeros; L does not have to.* `SemanticMatch` gains a `status` mirroring the `MV_ECHO_CHECK_COMPARED` / `NOT_COMPARED` pair B4 established, because the recon found a dead endpoint and an absent reference set producing identical payloads. An unconfigured or unreachable endpoint — including the `client is None` case and any `embed` failure — is `UNAVAILABLE`. A client that ran against a real reference set and found no positive cosine is `EMPTY`: that is a measurement. L needs no such split yet because it has no producer at all; when 6a adds one, a lineage read that resolves to two genuinely disjoint column sets is `EMPTY` and a read that could not run is `UNAVAILABLE`.
 
 *In-job generation always lands on rung 3, and Prompt 9 must not replay this artifact.* The job has no entitlement probe — that is a backend/OBO surface under MV-D1 — so `MvProfiling.capabilities` is empty in the advisor phase, and per MV-D13's step-down-on-`UNKNOWN` contract every multi-hop candidate renders as rung 3 (subquery-`source`). The YAML in `genie_opt_artifacts` is therefore correct-on-every-runtime and deliberately more verbose than a probed runtime might allow. **Prompt 9 must REGENERATE the YAML under the backend's probe capabilities rather than replay the run-1 artifact.** Replaying it would ship rung 3 to a workspace whose probe proved rung 2 available, permanently — the artifact records what the job could prove, not what the create path can. The artifact's `content_hash` is the candidate's dedup fingerprint (MV-D7), so the regenerated YAML can be compared against the recorded one for the same candidate rather than guessed at.
+
+**MV-D16 — Attach is not an LLM lever, and it lands after iteration-0.** Taken during Prompt 7 execution, resolving two defects in that prompt's own body. Both were authored from the gap report's description of the unified loop rather than from the loop's code, and both would have been executed as written.
+
+**(a) `mv_attach_data_source` is registered in `PATCH_TYPES` with a real applier action and is deliberately NOT in the `unified_loop` allowlist.** Prompt 7's body said to add it, describing that frozenset as the lever surface. It is not: `_ALLOWED_PATCH_TYPES` is the **LLM-proposal** surface. It is enumerated into the proposal prompt (`unified_loop.py:1317`), used to drop any LLM-returned patch type outside it (`:1389`), and used to decide whether a post-leak pivot has anywhere to go (`:2154`). `apply_patch_set` never reads it. So listing attach there would not "enable the lever" — it would hand the loop's LLM the ability to invent a UC identifier and attach it mid-loop with **no consent row and no `genie_opt_mv_created_objects` entry**, defeating MV-D1's consent chain end to end. The attach phase calls `apply_patch_set` directly and needs no allowlist entry. The type is classified `HIGH_RISK`. This is asserted two ways, because the absence of a line is not self-documenting: one test pins that the type is not in the frozenset, and one drives an LLM response proposing it and asserts the patch is dropped. That second test is the one that protects the consent chain from a future contributor who adds the type to the allowlist for what will look like a good reason.
+
+**(b) Attach and `mv_lift` run AFTER iteration-0 completes and BEFORE the first lever patch — inside `run_unified_optimization_loop`, not before the call.** Prompt 7's body said "ordered BEFORE the unified loop" and, three lines later, "iteration-0 baseline runs first (existing behavior — do not reorder it)". Those cannot both hold, because iteration-0 lives *inside* the loop (`unified_loop.py:2854-2859`). "Before the lever loop" meant before **tuning**; it was written as before the **call**, and that reading is superseded. The reason the distinction matters is not tidiness: attaching before iteration-0 makes the baseline corpus **post-attach SQL**, so the metric view contaminates the very evidence Prompt 6's advisor fingerprints when proposing the next one — a feedback loop in which each attached view biases the case for its successor. With the corrected order, baseline measures the pre-attach space, `mv_lift` measures the attach in isolation against that baseline, and the levers tune on top of whatever foundation survives the lift verdict. Prompt 7's body is corrected in place under the DOC FREEZE factual-error exception so no later prompt re-derives the wrong order; pinned by asserting the baseline eval-run id precedes the attach patch id.
+
+*Three consequences recorded so they are not relitigated.* **Detach uses `applier.rollback` against `apply_log["pre_snapshot"]`, not `integration/revert.py`.** `revert_optimization` (`integration/revert.py:55`) is a backend surface: it reads run history through the warehouse and its `_assert_no_active_space_runs` guard (`:221`) rejects mid-run **by design**. The primitive changes; detach-never-drop does not. **`mv_remove_raw_table` is dropped from the design.** `remove_table` already exists, is `HIGH_RISK` (`common/config.py:1481`), has a working render (`applier.py:3166-3170`) and config applier (`:3880-3886`), and is already outside the LLM allowlist — a twin buys nothing and creates a second path for one behavior. **The `mv_consent_id` job parameter carries a `probe_id`**, because `genie_opt_mv_consents` is keyed on `probe_id` (`ddl.py:235`) and no `consent_id` column exists; the read site says so.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -740,36 +748,54 @@ module under the GSO package following its existing module layout.
 Per MV-D1 the job never creates UC objects; it receives the identifier of a
 metric view the backend already created under OBO. Per MV-D2/MV-D3, implement:
 
-A. New patch types (the applier fix):
-- Register mv_attach_data_source (and mv_remove_raw_table for optional table
-  replacement) in PATCH_TYPES in common/config.py, add them to the unified-loop
-  allowlist (unified_loop.py:79-93 region), and implement REAL applier actions
-  in optimization/applier.py that mutate data_sources.metric_views in the space
-  config — read _apply_action_to_config (:3409) and the Lever-2 MV no-op
-  (:3914-3932) first, and route the new types through a genuine mutation, not
-  the render-only path. Patch dict shape stays type/target/new_text/old_text.
+A. New patch type (the applier fix):
+- Register mv_attach_data_source in PATCH_TYPES in common/config.py, classified
+  HIGH_RISK, and implement a REAL applier action in optimization/applier.py that
+  mutates data_sources.metric_views in the space config — read
+  _apply_action_to_config (:3409) and the Lever-2 MV no-op (:3914-3932) first,
+  and route the new type through a genuine mutation, not the render-only path.
+  Patch dict shape stays type/target/new_text/old_text.
+  [MV-D16(a), superseding this prompt's original text] Do NOT add it to the
+  unified-loop allowlist. _ALLOWED_PATCH_TYPES (unified_loop.py:79-93) is the
+  LLM-PROPOSAL surface, not the lever surface: apply_patch_set never reads it,
+  and listing attach there would let the loop's LLM invent a UC identifier and
+  attach it with no consent row. The attach phase calls apply_patch_set direct.
+  [MV-D16] mv_remove_raw_table is DROPPED. Use the existing remove_table type
+  for optional table replacement — already HIGH_RISK, already rendered and
+  applied, already outside the LLM allowlist.
 - Tests: apply -> serialized_space contains the identifier; snapshot revert
-  (integration/revert.py path) removes it; render_patch output is reviewable.
+  removes it — via applier.rollback against apply_log["pre_snapshot"], NOT
+  integration/revert.py, which is a backend surface whose active-run guard
+  rejects mid-run by design [MV-D16]; render_patch output is reviewable.
 
-B. mv_attach + mv_lift phases in run_optimize, ordered BEFORE the unified loop:
+B. mv_attach + mv_lift phases, ordered AFTER iteration-0 completes and BEFORE
+   the first lever patch — INSIDE run_unified_optimization_loop, not before the
+   call [MV-D16(b), superseding this prompt's original "BEFORE the unified loop"
+   wording, which contradicted step 3 below because iteration-0 lives inside the
+   loop at unified_loop.py:2854-2859; attaching before iteration-0 would make the
+   baseline corpus post-attach SQL and contaminate the evidence Prompt 6's
+   advisor fingerprints]:
 1. Read job widgets: mv_attach_views (JSON list of identifiers), mv_consent_id.
    Empty -> skip both phases silently.
 2. Validate: the consent row exists in genie_opt_mv_consents with verdict
    SUFFICIENT and reverified_at_trigger set; each identifier exists in
    genie_opt_mv_created_objects with status CREATED and was created_by the
    consent's granted_by. Any mismatch -> persist status row, skip (never
-   attach an object the trigger flow didn't just create).
+   attach an object the trigger flow didn't just create). [MV-D16] The
+   mv_consent_id parameter value IS the probe_id — genie_opt_mv_consents is
+   keyed on probe_id and there is no consent_id column.
 3. Iteration-0 baseline runs first (existing behavior — do not reorder it).
 4. Apply the mv_attach patch(es) via apply_patch_set.
-5. mv-lift eval: run_subset over the full benchmark set (or the affected
-   subset if question ids were recorded on the proposal) via the Prompt 2
-   seam, labeled "mv_lift"; store lift_report vs iteration-0 and both
-   eval_run_ids on genie_opt_mv_created_objects; set status ATTACHED.
-6. On regression per lift_report: revert to the pre-attach snapshot (detach),
-   set status DETACHED with the report attached. NEVER drop the UC object.
+5. mv-lift eval: run_subset over the AFFECTED question ids recorded on the
+   proposal via the Prompt 2 seam, labeled "mv_lift"; store lift_report vs
+   iteration-0 and both eval_run_ids on genie_opt_mv_created_objects; set
+   status ATTACHED. lift_report_json persists LiftReport.to_dict() verbatim.
+6. On regression per lift_report: revert to the pre-attach snapshot (detach)
+   via applier.rollback against apply_log["pre_snapshot"] [MV-D16], set status
+   DETACHED with the report attached. NEVER drop the UC object.
    Sandbox mode is out of scope for the job (sandbox creation/teardown is a
    backend concern under MV-D1).
-7. The unified loop then runs on whatever foundation now exists.
+7. The lever attempts then run on whatever foundation now exists.
 Each phase try/except-isolated with Delta status rows; tests cover happy path,
 missing consent row, identifier/creator mismatch, regression->DETACHED, and
 that a phase failure leaves the loop running.

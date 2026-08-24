@@ -15,7 +15,7 @@ written — see [§3 Decisions needed](#3-decisions-needed).
 | Date of survey | 2026-08-23 |
 | Method | Direct file reads. Every quote below was read from the working tree on the date above. Line numbers are from that state. |
 | Scope | Read-only. No feature code was written or modified in producing this report. |
-| Last MV-D9 refresh | 2026-08-23, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
+| Last MV-D9 refresh | 2026-08-23, in the Prompt 7 commit (attach patch type + lift phase). Refreshed here: **six fenced quotes whose line numbers this commit moved** (`unified_loop.py` `79-93` → `80-94` and `2854-2859` → `2862-2867`; `applier.py` `3914-3917` → `3974-3977` and `4550-4560` → `4617-4627`; `ddl.py` `280-290` → `281-291` and `292-297` → `293-298` — the `_ALL_DDL` and migrations fences shifted by the `lift_report_json` column, exactly as MV-D7 anticipated); the `PATCH_TYPES` count (50 → 51) and the now-accurate section comment; the patch-path anchor table (`_apply_action_to_config` `:3409` → `:3442`, `_apply_action_to_uc` `:3942` → `:4002`, `apply_patch_set` `:4025` → `:4091`); the "critical gap — nothing attaches a metric view" paragraph, which this commit closed; the §2.2 parameter preamble (three widget reads landed ahead of Prompt 8's mirrors); five §2.5/§2.6 rows moved off DOES-NOT-EXIST-YET (attach, rollback inheritance, `DETACH_ONLY_NEVER_DROP`, `mv_baseline`, raw-table companion); §3 items 8, 9 and 10 resolved, item 8's `attach_metric_view`/`detach_metric_view` proposal replaced by the shipped `mv_attach_data_source` so two names are not left live; and the `update_mv_yaml` follow-up ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)) closed. **Two quotes were already stale at HEAD and are re-quoted in passing** (`test_phase7_job_dag.py:397-406` → `397-405`, unchanged content one line shorter; `ddl.py:182` `artifact_kind`, whose comment gained `mv_candidate_ddl` in Prompt 6 without the fence being refreshed) — neither file was touched by this commit. All 48 fenced quotes byte-match live source as of this row. Previously, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
 
 ## Headline
 
@@ -434,7 +434,7 @@ has **no precedent in this repo** and would be the first wheel task.
 
 **Task values: forbidden.** Cross-task state is Delta-by-`run_id` only, enforced by test:
 
-```397:406:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
+```397:405:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
 def test_no_dbutils_notebook_run_or_task_values_in_new_notebooks():
     """D9: the new notebook entrypoints must not use dbutils.notebook.run or
     inter-task task values."""
@@ -489,17 +489,17 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2743 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2767 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
   jobs/           the four notebooks + _helpers.py
-  optimization/   applier.py (4721 L), benchmarking.py (4594 L), unified_loop.py (3628 L),
+  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3674 L),
                   preflight.py (3461 L), state.py (1804 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
                   mv_fingerprint.py (1333 L), mv_scoring.py (1327 L),
-                  mv_state.py (639 L), mv_yaml.py (1755 L), ...
+                  mv_state.py (649 L), mv_yaml.py (1755 L), ...
 ```
 <!-- END GENERATED: package-layout -->
 
@@ -620,7 +620,7 @@ though the accuracy is *also* stored, in `overall_accuracy`.
 
 **Baseline eval is in-process, not a task:**
 
-```2854:2859:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
+```2862:2867:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
     baseline_eval = _native_eval(
         w,
         space_id=space_id,
@@ -675,14 +675,17 @@ MLflow run. The champion iteration is selected from ``genie_opt_iterations``
 | `new_value` | `new_text` (with `old_text` for the prior value) |
 | `operation` | `op` on the *rendered command*, one of `add` / `update` / `remove` / `update_section` / `rewrite` |
 
-**Patch types.** The canonical registry is `PATCH_TYPES` in `common/config.py:2005` — 50
-keys (the section comment says 35 and is stale). The Lever-2 metric-view subset exists
-(`add_mv_measure`, `update_mv_measure`, `remove_mv_measure`, `add_mv_dimension`,
-`remove_mv_dimension`, `update_mv_yaml`, all `scope: uc_artifact`) at `config.py:2067-2103`.
+**Patch types.** The canonical registry is `PATCH_TYPES` in `common/config.py:2005` — 51
+keys. The Lever-2 metric-view subset exists (`add_mv_measure`, `update_mv_measure`,
+`remove_mv_measure`, `add_mv_dimension`, `remove_mv_dimension`, `update_mv_yaml`, all
+`scope: uc_artifact`) at `config.py:2068-2103`, joined in Prompt 7 by
+`mv_attach_data_source` (`scope: genie_config`, `HIGH_RISK`) at `config.py:2104-2115`.
 
-But the **live loop allowlist is 11 types and contains no MV type**:
+The **live loop allowlist is 11 types and contains no MV type** — and under **MV-D16** the
+attach type stays out of it deliberately, because this frozenset is the surface the LLM is
+allowed to propose from, not the surface the engine is allowed to apply:
 
-```79:93:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
+```80:94:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
 _ALLOWED_PATCH_TYPES: frozenset[str] = frozenset(
     {
         "update_description",
@@ -706,15 +709,19 @@ _ALLOWED_PATCH_TYPES: frozenset[str] = frozenset(
 |---|---|---|
 | `proposals_to_patches` | `(proposals: list[dict]) -> list[dict]` | `applier.py:2411` |
 | `render_patch` | `(patch: dict, space_id: str, space_config: dict) -> dict` | `applier.py:2926` |
-| `_apply_action_to_config` | `(config: dict, action: dict) -> bool` | `applier.py:3409` |
-| `_apply_action_to_uc` | `(w: WorkspaceClient, action: dict) -> bool` | `applier.py:3942` |
-| `apply_patch_set` | `(w, space_id, patches, metadata_snapshot, *, apply_mode, deploy_target, force_apply, benchmark_corpus) -> dict` | `applier.py:4025` |
+| `_apply_action_to_config` | `(config: dict, action: dict) -> bool` | `applier.py:3442` |
+| `_apply_action_to_uc` | `(w: WorkspaceClient, action: dict) -> bool` | `applier.py:4002` |
+| `apply_patch_set` | `(w, space_id, patches, metadata_snapshot, *, apply_mode, deploy_target, force_apply, benchmark_corpus) -> dict` | `applier.py:4091` |
 
-**Critical gap — nothing attaches a metric view to a space.** `add_table` / `remove_table`
-mutate `data_sources.tables` only (`applier.py:3871-3886`). The MV sections are explicit
-config-level no-ops:
+**This was the report's "critical gap — nothing attaches a metric view to a space", and
+Prompt 7 closed it.** `add_table` / `remove_table` mutate `data_sources.tables` only
+(`applier.py:3905-3919`); the attach now has its own `metric_views` branch beside them
+(`applier.py:3921-3946`), which appends the entry and re-sorts the collection the way the
+Genie API requires. The Lever-2 `uc_artifact` MV sections remain explicit config-level
+no-ops, and that is still correct — they describe an already-attached view's measures and
+dimensions, which live in UC and not in the space config:
 
-```3914:3917:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
+```3974:3977:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
     # ── TVF / MV operations (config-level no-ops for uc_artifact patches) ──
     if section in ("tvf_parameters", "tvf_definition", "tvfs", "mv_measures", "mv_dimensions", "mv_yaml"):
         if section == "tvfs":
@@ -722,7 +729,10 @@ config-level no-ops:
 ```
 
 Only the `tvfs` branch does anything (it appends to `instructions.sql_functions`); the
-three `mv_*` sections fall straight through to `return True` at `applier.py:3932`.
+three `mv_*` sections fall straight through to `return True` at `applier.py:3993`.
+`mv_attach_data_source` is routed nowhere near this region — it has its own `metric_views`
+branch above, which is the point of MV-D16's "a real applier action, not the render-only
+path".
 
 `_apply_action_to_uc` handles only `update_column_description`, `update_description`, and
 `update_tvf_sql` — **no MV DDL**. Repo-wide, `WITH METRICS` now has exactly one hit, and it is
@@ -764,13 +774,17 @@ service-principal reads by design (system tables are not OBO-readable), which is
 "already scoped" sentence needed the correction recorded in this same change: SP-computed
 lineage evidence is filtered at presentation, not at read.
 
-**Open follow-up — `update_mv_yaml` is unvalidated, and Prompt 7 owns it**
+**Closed in Prompt 7 — `update_mv_yaml` is validated**
 ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)).
-`update_mv_yaml` (`config.py:2098`, applied at `applier.py:3391`) is the one path by which
-LLM-authored metric view YAML enters the system, and it transports `new_text` verbatim. Now that
-`mv_yaml.validate` exists, engine-generated YAML is checked on every path and this one is checked
-on none. Prompt 7 already rewrites this applier region for the Lever-2 no-op, so the gate lands
-there rather than in a separate change.
+`update_mv_yaml` (`config.py:2098`) was the one path by which LLM-authored metric view YAML
+entered the system, and it transported `new_text` verbatim while every engine-generated path
+was checked by `mv_yaml.validate`. `render_patch` now runs that same validator on the
+incoming YAML (`applier.py:3392-3404`) and raises `RuntimeError` when it fails, which is the
+existing refusal signal: `apply_patch_set` records the patch as `dropped_validation` and
+keeps applying the rest of the set rather than aborting the attempt. Pinned by
+`test_update_mv_yaml_refuses_yaml_that_fails_validation` and
+`test_update_mv_yaml_accepts_engine_valid_yaml`, the second built from `mv_yaml.generate`
+output so the gate is proven not to reject the engine's own YAML.
 
 Existing patches *can* modify an **already-attached** MV's column metadata, because lookup
 searches both shelves:
@@ -791,7 +805,7 @@ That is the extent of Lever 2 today — "Update metric view column descriptions"
 
 **Rollback is snapshot-based, not patch-inverse.**
 
-```4550:4560:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
+```4617:4627:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
 def rollback(
     apply_log: dict,
     w: WorkspaceClient | None,
@@ -812,10 +826,14 @@ bookkeeping is `state.mark_patches_rolled_back` (`state.py:1101-1108`).
 
 **Consequence for the POV.** POV §7.8 step 6 says the MV attachment "is an ordinary patch,
 [so] it inherits the existing versioning, diff, and rollback machinery." Half true: the
-machinery would carry it, but the patch type, the applier branch, and the DDL execution
-path all have to be built. And POV §7.8's `DETACH_ONLY_NEVER_DROP` semantics — reverting
-*one* patch while leaving a UC object alone — has no analogue in a whole-snapshot rollback
-model.
+machinery carries it, but the patch type and the applier branch had to be built (Prompt 7),
+and the DDL execution path is a backend/OBO surface that the job never gains (MV-D1). And
+POV §7.8's `DETACH_ONLY_NEVER_DROP` semantics — reverting *one* patch while leaving a UC
+object alone — has no analogue in a whole-snapshot rollback model. **MV-D16 resolves that by
+placing the attach where the two coincide**: between iteration-0 and the first lever patch,
+where the pre-attach snapshot differs from the post-attach one by the attach and nothing
+else, so a whole-snapshot revert *is* a targeted detach. The UC object is untouched either
+way — dropping it is an explicit backend endpoint, never a consequence of a measurement.
 
 **Leakage firewall.** `optimization/leakage.py:421-427` `is_benchmark_leak(...)` is the
 entrypoint. Its runtime field map covers only example-SQL types, preceded by the scoping
@@ -848,7 +866,7 @@ and `synonyms` — all free text — so a new MV patch type must be added to
 
 `optimization/ddl.py` is the sole definition point:
 
-```280:290:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```281:291:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
 _ALL_DDL: dict[str, str] = {
     TABLE_RUNS: _GENIE_OPT_RUNS_DDL,
     TABLE_STAGES: _GENIE_OPT_STAGES_DDL,
@@ -892,14 +910,14 @@ Names are constants in `common/config.py:1830-1845`. FQN is
 documented enum in the column comment:
 
 ```182:182:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
-    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record',
+    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record | mv_candidate_ddl',
 ```
 
 #### Migration mechanism
 
 Additive only, via a tuple of `(table, column, "TYPE COMMENT '...'")`:
 
-```292:297:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```293:298:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_RUNS, "job_id", "STRING COMMENT 'Databricks Job definition ID'"),
     (TABLE_PATCHES, "provenance_json", "STRING COMMENT 'JSON: full provenance chain from judge verdicts to this patch'"),
@@ -1381,9 +1399,17 @@ incompatible, and adopting the POV means changing or deleting existing behaviour
 
 ### 2.2 Job parameters (POV §7.7)
 
-Every one is **DOES-NOT-EXIST-YET**; each requires the four-place lockstep of
-[§1.2](#12-the-four-place-parameter-lockstep-requirement). `space_id` is the only
-pre-existing name.
+Every one is **DOES-NOT-EXIST-YET** as a *registered job parameter*; each requires the
+four-place lockstep of [§1.2](#12-the-four-place-parameter-lockstep-requirement). `space_id`
+is the only pre-existing name.
+
+Three widget **reads** have landed ahead of that registration, in the prompt that consumes
+them: `enable_metric_view_suggestions` (Prompt 6) and `mv_attach_views` / `mv_consent_id`
+(Prompt 7, MV-D16) are read in `jobs/run_optimize.py` with widget defaults, so a job whose
+definition does not yet declare them runs unchanged with the phase off. **Prompt 8 owns all
+four mirror sites**; a read without them is inert, not broken. Note the POV's `mv_consent`
+is not the shipped name: the parameter is `mv_consent_id` and its value is a **probe id**,
+because `genie_opt_mv_consents` is keyed on `probe_id`.
 
 | POV parameter | Default | Status |
 |---|---|---|
@@ -1434,15 +1460,15 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 |---|---|---|
 | Patch = `field_path` + `new_value` | **CONFLICTS** | Patches are dicts of `type`/`target`/`new_text`/`old_text` (`applier.py:2649-2659`); `field_path` appears nowhere in `src/` |
 | `field_path: "data_sources.metric_views"`, `operation: "append"` | **CONFLICTS** | No path-addressed patches; `op` ∈ `add`/`update`/`remove`/`update_section`/`rewrite` on the *rendered command* |
-| Attach MV by patching `data_sources.metric_views[]` | **DOES-NOT-EXIST-YET** | `_apply_action_to_config` handles `tables` only (`:3871-3886`); MV sections are no-ops (`:3914-3932`) |
-| Companion patch removing covered raw tables | **PARTIALLY MATCHES** | `remove_table` exists (`applier.py:3880-3886`) but is not in `_ALLOWED_PATCH_TYPES` |
+| Attach MV by patching `data_sources.metric_views[]` | **MATCHES** | `mv_attach_data_source` (`config.py:2104-2115`) with a real `metric_views` branch in `_apply_action_to_config` (`applier.py:3921-3946`); the Lever-2 `uc_artifact` MV sections remain no-ops (`:3975-3993`) and are unrelated |
+| Companion patch removing covered raw tables | **PARTIALLY MATCHES** | `remove_table` exists (`applier.py:3914-3919`) and is not in `_ALLOWED_PATCH_TYPES`; MV-D16 reuses it rather than adding an `mv_remove_raw_table` twin, so the raw-table half is available to a caller and not to the LLM |
 | `CREATE VIEW … WITH METRICS LANGUAGE YAML` | **PARTIALLY MATCHES** | `mv_yaml.create_ddl` builds the statement and `mv_yaml.generate` the YAML body it wraps; nothing executes it yet. Execution is the backend's under OBO at Prompt 9 — the job runs as the SP and never issues it |
 | `EXPLAIN CREATE MATERIALIZED VIEW` precheck | **DOES-NOT-EXIST-YET** | — |
-| "Inherits existing versioning, diff, rollback" | **PARTIALLY MATCHES** | `genie_opt_patches` would carry it; but rollback is whole-snapshot (`applier.py:4550-4560`), so per-patch detach has no analogue |
-| `on_regression: DETACH_ONLY_NEVER_DROP` | **DOES-NOT-EXIST-YET** | And incompatible with snapshot rollback as written |
+| "Inherits existing versioning, diff, rollback" | **MATCHES** | `genie_opt_patches` carries the attach (`mv_attach.py`, keyed `run_id:0:2:idx`); rollback is still whole-snapshot (`applier.py:4617-4627`), which MV-D16 makes sufficient by placing the attach where nothing else is in its snapshot |
+| `on_regression: DETACH_ONLY_NEVER_DROP` | **MATCHES** | `mv_attach._detach` reverts through `applier.rollback` and writes status `DETACHED` with the lift report; no code path drops the UC object |
 | Idempotency key `sha256(space_id \| expr \| sources)` | **PARTIALLY MATCHES (precedent)** | `genie_opt_artifacts.content_hash` exists for exactly this (`ddl.py:184`); the launcher already builds a SHA-256 idempotency token (`job_launcher.py:33-37`) |
 | `tables_freed` / 30-table cap | **DOES-NOT-EXIST-YET** | No table-count ceiling logic |
-| Free text in MV proposals must clear the leakage firewall | **CONFLICTS with current coverage** | `_PATCH_TEXT_FIELDS` covers only example-SQL types (`leakage.py:286-289`); package AGENTS.md requires new text-carrying patch types to be routed through it |
+| Free text in MV proposals must clear the leakage firewall | **CONFLICTS with current coverage** | `_PATCH_TEXT_FIELDS` covers only example-SQL types (`leakage.py:286-289`); package AGENTS.md requires new text-carrying patch types to be routed through it. `mv_attach_data_source` needs no entry — it carries an identifier and no free text — so the obligation still belongs to whatever ships MV `comment`/`synonyms` edits |
 
 ### 2.6 Evaluation (POV §7.8 step 7, Key Finding 2, Recommendation 2)
 
@@ -1458,7 +1484,7 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 | Reasons `EMPTY_RESULT`/`RESULT_MISSING_ROWS`/`RESULT_EXTRA_ROWS`/`RESULT_MISSING_COLUMNS` | **MATCHES** | `genie_eval_taxonomy.py:8-20` |
 | `num_questions`/`num_correct`/`num_needs_review`/`num_done` | **PARTIALLY MATCHES** | `num_needs_review` is a persisted column (`ddl.py:100`); accuracy is `num_correct/num_questions`; `num_done` is not persisted |
 | Store `eval_run_id` not a copied score | **MATCHES** | `genie_opt_iterations.eval_run_id` (`ddl.py:101`) — though `overall_accuracy` is stored too |
-| `mv_baseline` as a separate eval run isolating MV lift | **DOES-NOT-EXIST-YET** | Mechanically feasible in-process (a second `_native_eval` call at iteration 0.5), but costs one full eval run against the ~20 q/min ceiling |
+| `mv_baseline` as a separate eval run isolating MV lift | **MATCHES, without the extra full eval** | MV-D16: iteration-0 *is* the pre-attach baseline, and the lift run is a `run_subset` over the affected question ids (`mv_attach.py`, label `mv_lift`) — so the isolation costs a subset, not a suite |
 | "roughly 15 Delta tables plus Lakebase" | **CONFLICTS** | Nine tables in `_ALL_DDL` (+2 outside it) — MV-D7 added the three `genie_opt_mv_*` tables |
 | "MLflow… still the home for run provenance and versioning" | **CONFLICTS** | Decommissioned in Phase 5 (D3/D7). `models.py:1-16`: *"no MLflow LoggedModel snapshot, no UC Model Registry version, no per-mutation MLflow run."* GSO uses MLflow for **tracing only**. |
 
@@ -1554,19 +1580,40 @@ first parameter is added — retrofitting is worse than starting right.
 > candidate's dedup fingerprint.
 
 **8. Patch-type naming and firewall registration.** If MV attachment becomes a patch, it
-needs a `PATCH_TYPES` key (proposed: `attach_metric_view` / `detach_metric_view`), an
-`_apply_action_to_config` branch for the `metric_views` section, an entry in
-`_ALLOWED_PATCH_TYPES`, and — because it carries `comment`/`synonyms` free text — an entry
-in `leakage._PATCH_TEXT_FIELDS`.
+needs a `PATCH_TYPES` key, an `_apply_action_to_config` branch for the `metric_views`
+section, an entry in `_ALLOWED_PATCH_TYPES`, and — because it carries `comment`/`synonyms`
+free text — an entry in `leakage._PATCH_TEXT_FIELDS`.
+
+> **Resolved by `MV-D2` and `MV-D16`, shipped in Prompt 7.** The key is
+> **`mv_attach_data_source`** (`config.py:2098-2115`), classified `HIGH_RISK`, with a real
+> `metric_views` branch in `_apply_action_to_config`. Two corrections to the proposal above.
+> There is **no `detach_metric_view` twin**: detach is a whole-snapshot revert through
+> `applier.rollback` (see item 9), and removal of a raw table reuses the existing
+> `remove_table`. And the type is deliberately **NOT** in `_ALLOWED_PATCH_TYPES` — that
+> frozenset is the LLM-proposal surface rather than the lever surface, so listing attach
+> there would let the loop's LLM invent a UC identifier and attach it with no consent row;
+> the attach phase calls `apply_patch_set` directly. No `_PATCH_TEXT_FIELDS` entry is needed
+> either: the attach patch carries an identifier and no free text.
 
 **9. Rollback semantics.** POV `DETACH_ONLY_NEVER_DROP` presumes per-patch revert. Today
 rollback restores a whole config snapshot. Decide whether to build a targeted detach path
 or accept that a rollback also reverts unrelated same-iteration patches.
 
+> **Resolved by `MV-D16`:** whole-snapshot revert, and the question of unrelated patches does
+> not arise — the attach phase runs between iteration-0 and the first lever patch, so its
+> `pre_snapshot` contains no other change to lose. `integration/revert.py` is not the
+> primitive: it is a backend surface whose active-run guard rejects mid-run by design.
+
 **10. Where does `mv_baseline` fit?** As a second in-process `_native_eval` inside
 `optimize`, it costs one extra full eval run per run against the ~20 questions/min
 workspace ceiling. Confirm the isolated-lift measurement is worth that, or make it a
 separate opt-in.
+
+> **Resolved by `MV-D16`: there is no second full eval.** Iteration-0's own baseline is the
+> pre-attach measurement — it already runs, and MV-D16 keeps the attach after it precisely so
+> that it stays pre-attach. The lift eval is a `run_subset` over the **affected question ids**
+> recorded on the proposal, so the added cost is that subset rather than a suite, and it is
+> only paid on a run that was given `mv_attach_views`.
 
 **11. Correct the POV's factual claims.** Nine Delta tables not ~15 (MV-D7 added
 three `genie_opt_mv_*` tables); MLflow is tracing-only, not the provenance home;

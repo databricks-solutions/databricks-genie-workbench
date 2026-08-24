@@ -43,6 +43,7 @@ from genie_space_optimizer.optimization.leakage import (
     is_benchmark_leak,
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
+from genie_space_optimizer.optimization.mv_attach import run_mv_attach_phase
 from genie_space_optimizer.optimization.space_quality_enrichment import (
     attach_top_level_description,
     build_prompt_matching_context,
@@ -2586,8 +2587,15 @@ def run_unified_optimization_loop(
     wide_schema_parent_artifact_id: str | None = None,
     wide_schema_profile_budget: dict[str, Any] | None = None,
     diagnostic_callback: Callable[..., None] | None = None,
+    mv_attach_views: str | list[str] | None = None,
+    mv_consent_id: str = "",
 ) -> dict[str, Any]:
-    """Run baseline eval plus bounded LLM patch attempts."""
+    """Run baseline eval plus bounded LLM patch attempts.
+
+    ``mv_attach_views`` / ``mv_consent_id`` gate the metric view attach phase
+    (MV-D16), which runs between the baseline eval and the first lever patch.
+    Both empty — the default — skips it at zero cost.
+    """
     target_accuracy = target_accuracy_percent(float(target_accuracy))
     allowed_levers = [int(l) for l in levers if int(l) in {1, 2, 3, 4, 5, 6}]
     if not allowed_levers:
@@ -2975,6 +2983,44 @@ def run_unified_optimization_loop(
         best_iteration=0,
         best_accuracy=best_accuracy,
     )
+
+    # ── Metric view attach + lift (MV-D16) ───────────────────────────
+    # Here, and not before the call: iteration-0 above had to measure the space
+    # WITHOUT the metric view, because that baseline corpus is what the advisor
+    # phase fingerprints when proposing the next one. Before the first lever patch
+    # so the lift eval attributes the delta to the attach alone.
+    #
+    # run_mv_attach_phase never raises; it writes its own stage row and returns the
+    # config to carry forward — the pre-attach one when it skipped, failed, or
+    # detached on regression. So the loop below runs whatever this left behind.
+    mv_attach_outcome = run_mv_attach_phase(
+        spark,
+        run_id=run_id,
+        space_id=space_id,
+        catalog=catalog,
+        schema=schema,
+        attach_views=mv_attach_views,
+        consent_probe_id=mv_consent_id,
+        config=current_config,
+        baseline_eval=baseline_eval,
+        w=w,
+        eval_runner=OfficialBenchmarkRunner(w) if w is not None else None,
+        apply_mode=apply_mode,
+        benchmark_corpus=benchmark_corpus,
+    )
+    if mv_attach_outcome.config is not None:
+        current_config = mv_attach_outcome.config
+    if mv_attach_outcome.verdict:
+        _emit_diagnostic(
+            "Metric view attach measured",
+            verdict=mv_attach_outcome.verdict,
+            attached=list(mv_attach_outcome.attached),
+            detached=list(mv_attach_outcome.detached),
+            delta_affected=mv_attach_outcome.delta_affected,
+            affected_questions=mv_attach_outcome.affected_question_count,
+            baseline_eval_run_id=mv_attach_outcome.baseline_eval_run_id,
+            lift_eval_run_id=mv_attach_outcome.lift_eval_run_id,
+        )
 
     if best_accuracy >= target_accuracy:
         terminal_reason = "TARGET_REACHED"

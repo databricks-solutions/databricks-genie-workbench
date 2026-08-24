@@ -266,7 +266,8 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_created_objects (
     post_attach_eval_run_id STRING             COMMENT 'Native eval-run id measured immediately after the attach patch, before any lever fires. The delta against baseline_eval_run_id is the isolated metric-view lift',
     status              STRING        NOT NULL COMMENT 'CREATED|ATTACHED|DETACHED|DROPPED',
     on_regression_action STRING                COMMENT 'DETACH_ONLY_NEVER_DROP outside sandbox mode; SANDBOX_AUTO_DROP only for a scratch schema that exists solely for the run',
-    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp - moves with every status transition'
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp - moves with every status transition',
+    lift_report_json    STRING                 COMMENT 'JSON: eval_runner.LiftReport.to_dict() verbatim, comparing baseline_eval_run_id against post_attach_eval_run_id. The isolated metric-view lift, and the evidence for a DETACHED verdict'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -332,4 +333,8 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_ITERATIONS, "next_hypothesis", "STRING COMMENT 'GSO v2 Phase 8 (loop-state): JSON of the next patch idea chosen by the controller from residual failures.'"),
     (TABLE_ITERATIONS, "target_accuracy", "DOUBLE COMMENT 'GSO v2 Phase 8 (loop-state): stop-early target accuracy in force (0-100 scale; default 90.0).'"),
     (TABLE_ITERATIONS, "max_attempts", "INT COMMENT 'GSO v2 Phase 8 (loop-state): patch/eval attempt budget in force (default 3).'"),
+    # MV-D7 deferred this column to the prompt that produces a lift report; it
+    # lands with the attach/lift phase (MV-D16) so existing tables gain it in
+    # place rather than needing a recreate.
+    (TABLE_MV_CREATED_OBJECTS, "lift_report_json", "STRING COMMENT 'JSON: eval_runner.LiftReport.to_dict() verbatim for the isolated metric-view lift.'"),
 )
