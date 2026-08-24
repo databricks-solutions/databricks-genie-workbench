@@ -190,7 +190,11 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 571 backend + 1315 GSO.
+     `uv run --frozen --extra dev`. Expected baseline: 594 backend + 1420 GSO,
+     measured at c4e72077. A count BELOW this is a regression — investigate. A
+     count ABOVE it is normal growth: update this line and the playbook's copy in
+     the same commit that adds the tests (test_rules_parity.py enforces the two
+     copies match, so you cannot update one).
      `--extra dev` is mandatory, not stylistic: `asyncio_mode = "auto"` needs
      pytest-asyncio, which lives in the dev extra, and without it exactly 12
      async backend tests fail on uncollectable coroutines. Those 12 are an
