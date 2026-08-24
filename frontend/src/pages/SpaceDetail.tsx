@@ -3,7 +3,7 @@
  * Tabs: Score (default) | Optimize | History
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw, Network } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
@@ -12,6 +12,7 @@ import { HistoryTab } from "./HistoryTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
+import { SemanticModelTab } from "@/components/model/SemanticModelTab"
 import type { SpaceTab } from "@/lib/navigation"
 import { createScanCoordinator } from "@/lib/scan-coordinator"
 
@@ -152,6 +153,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
 
   const tabs: { id: SpaceTab; label: string; icon: React.ReactNode }[] = [
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
+    { id: "model", label: "Model", icon: <Network className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
   ]
@@ -319,6 +321,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
               )}
             </div>
           </>
+        )}
+
+        {activeTab === "model" && (
+          <SemanticModelTab spaceId={spaceId} />
         )}
 
         {activeTab === "optimize" && (

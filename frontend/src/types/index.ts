@@ -989,3 +989,45 @@ export interface MvSpaceProposalsResponse {
   space_id: string
   proposals: MvProposal[]
 }
+
+// ── Semantic model graph (Prompt 12, MV-D23) ────────────────────────────────
+// Mirrors MvSemanticGraphNode / MvSemanticGraphEdge / MvSemanticGraph in
+// backend/models.py; update together. The base graph is assembled server-side
+// from serialized_space + the space-scoped proposals read; the ghosted proposal
+// overlay is synthesized client-side from `proposals` (no new payload).
+
+export type MvGovernance = "governed" | "curated" | "ungoverned"
+
+// col: 0 = source/fact tables, 1 = joined dimension tables, 2 = metric views,
+// 3 = measure concepts. governance/origin are measure-concept only; proposed is
+// set on the client-synthesized ghost MV overlay node.
+export interface SemanticGraphNode {
+  id: string
+  kind: "table" | "metric_view" | "measure"
+  label: string
+  col: number
+  row: number
+  governance?: MvGovernance | null
+  origin?: string | null
+  proposed?: boolean
+}
+
+// join edges carry the decoded ON predicate, relationship, and SCD2 flag;
+// membership ties a measure to its MV; replaces is the client overlay's dashed
+// "tables freed" edge.
+export interface SemanticGraphEdge {
+  from: string
+  to: string
+  kind: "join" | "membership" | "replaces"
+  on?: string | null
+  relationship?: string | null
+  scd2?: boolean
+}
+
+// GET /spaces/{space_id}/semantic-graph — the space's semantic model.
+export interface SemanticGraphResponse {
+  space_id: string
+  nodes: SemanticGraphNode[]
+  edges: SemanticGraphEdge[]
+  proposals: MvProposal[]
+}

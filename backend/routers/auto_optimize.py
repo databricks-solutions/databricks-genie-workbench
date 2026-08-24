@@ -25,6 +25,9 @@ from backend.models import (
     MvProposalDecisionRequest,
     MvProposalDecisionResponse,
     MvProposalsResponse,
+    MvSemanticGraph,
+    MvSemanticGraphEdge,
+    MvSemanticGraphNode,
     MvSpaceProposalsResponse,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
@@ -43,7 +46,7 @@ from backend.services.auth import (
 from backend.services import gso_lakebase
 from backend.services import lakebase as workbench_lakebase
 from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
-from backend.services.genie_client import get_genie_space
+from backend.services.genie_client import get_genie_space, get_serialized_space
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
 from backend.services import mv_create, mv_entitlement
 from backend.services.mv_entitlement import MvProbeError
@@ -1700,6 +1703,217 @@ async def list_space_mv_proposals(
     return MvSpaceProposalsResponse(
         space_id=space_id, proposals=[_mv_proposal_from_row(r) for r in rows]
     )
+
+
+# ── Semantic model graph (Prompt 12, MV-D23) ────────────────────────────────
+# Deterministic, parse-free assembly of a space's semantic model from
+# serialized_space config fields plus the space-scoped proposals read. No SQL is
+# parsed here — measure extraction from example SQL is Prompt 12b, which also
+# swaps the exact-name concept identity below for canonicalized-expr matching via
+# the one sanctioned parser (optimization/mv_fingerprint).
+
+_RT_PREFIX = "--rt=FROM_RELATIONSHIP_TYPE_"
+
+
+def _short_name(identifier: str) -> str:
+    """Last dotted segment of a UC identifier, backticks stripped."""
+    cleaned = (identifier or "").replace("`", "").strip()
+    return cleaned.split(".")[-1] if cleaned else cleaned
+
+
+def _decode_relationship(rt_annotation: str) -> str | None:
+    """Decode a join_specs ``--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--`` token."""
+    token = (rt_annotation or "").strip()
+    if _RT_PREFIX not in token:
+        return None
+    body = token.split(_RT_PREFIX, 1)[1].rstrip("-").strip()
+    return body.lower().replace("_", "-") if body else None
+
+
+def _clean_predicate(predicate: str) -> str:
+    """Human-readable ON predicate — backticks stripped, whitespace collapsed."""
+    return re.sub(r"\s+", " ", (predicate or "").replace("`", "")).strip()
+
+
+def _join_side_identifier(side: Any) -> str:
+    return side.get("identifier", "") if isinstance(side, dict) else ""
+
+
+def _is_measure_column(col: dict) -> bool:
+    """True only on an explicit measure marker in a metric_view column config.
+
+    IMPORTANT — all five probed keys (``kind``, ``column_type``, ``type``,
+    ``role``, ``is_measure``) are UNDOCUMENTED SPECULATION. None appears in
+    ``backend/references/schema.md`` (``metric_views[].column_configs`` is
+    documented only as sorted by ``column_name``, with no measure/dimension
+    marker anywhere). Do NOT go hunting for the "real" key — there isn't one.
+    The EXPECTED PRODUCTION CASE is therefore "no marker, no chips": the MV
+    still renders as a governed node, just without measure chips. That is the
+    honest fallback — never a fabricated rung.
+
+    Classifying an MV column as measure vs dimension truly needs the MV
+    definition (a DESCRIBE / YAML read). Prompt 12b does that read and DELETES
+    this function — it does not extend the speculative key list above."""
+    for key in ("kind", "column_type", "type", "role"):
+        if str(col.get(key, "")).strip().lower() == "measure":
+            return True
+    return bool(col.get("is_measure"))
+
+
+def _build_semantic_graph(
+    space_data: dict, proposals: list[MvProposal]
+) -> tuple[list[MvSemanticGraphNode], list[MvSemanticGraphEdge]]:
+    """Assemble the base graph nodes/edges from config + proposals (see MvSemanticGraph)."""
+    ds = space_data.get("data_sources")
+    ds = ds if isinstance(ds, dict) else {}
+    instructions = space_data.get("instructions")
+    instructions = instructions if isinstance(instructions, dict) else {}
+
+    tables = [t for t in ds.get("tables", []) if isinstance(t, dict)]
+    metric_views = [m for m in ds.get("metric_views", []) if isinstance(m, dict)]
+    join_specs = [j for j in instructions.get("join_specs", []) if isinstance(j, dict)]
+    snippets = instructions.get("sql_snippets")
+    snippets = snippets if isinstance(snippets, dict) else {}
+    snippet_measures = [m for m in snippets.get("measures", []) if isinstance(m, dict)]
+
+    # A table on the RIGHT ("one") side of a join is a joined dimension (col 1);
+    # everything else the space uses is a source/fact table (col 0).
+    dim_ids: set[str] = set()
+    edges: list[MvSemanticGraphEdge] = []
+    for j in join_specs:
+        left_id = _join_side_identifier(j.get("left"))
+        right_id = _join_side_identifier(j.get("right"))
+        if not left_id or not right_id:
+            continue
+        dim_ids.add(right_id)
+        sql = j.get("sql") if isinstance(j.get("sql"), list) else []
+        predicate = _clean_predicate(sql[0]) if len(sql) >= 1 else ""
+        relationship = _decode_relationship(sql[1]) if len(sql) >= 2 else None
+        edges.append(MvSemanticGraphEdge(
+            **{"from": left_id, "to": right_id},
+            kind="join",
+            on=predicate or None,
+            relationship=relationship,
+            scd2=bool(predicate and "is_current" in predicate.lower()),
+        ))
+
+    nodes: list[MvSemanticGraphNode] = []
+    for t in tables:
+        ident = t.get("identifier", "")
+        if not ident:
+            continue
+        nodes.append(MvSemanticGraphNode(
+            id=ident, kind="table", label=_short_name(ident),
+            col=1 if ident in dim_ids else 0, row=0,
+        ))
+
+    # Metric views (col 2) and any config-marked governed measure chips (col 3).
+    governed_names: set[str] = set()
+    for m in metric_views:
+        ident = m.get("identifier", "")
+        if not ident:
+            continue
+        nodes.append(MvSemanticGraphNode(
+            id=ident, kind="metric_view", label=_short_name(ident), col=2, row=0,
+        ))
+        cols = list(m.get("column_configs") or []) + list(m.get("columns") or [])
+        for c in cols:
+            if not isinstance(c, dict) or not _is_measure_column(c):
+                continue
+            name = c.get("column_name") or c.get("name") or ""
+            if not name or name in governed_names:
+                continue
+            governed_names.add(name)
+            mid = f"measure:{name}"
+            nodes.append(MvSemanticGraphNode(
+                id=mid, kind="measure", label=name, col=3, row=0,
+                governance="governed", origin=f"{_short_name(ident)} (attached MV)",
+            ))
+            edges.append(MvSemanticGraphEdge(**{"from": mid, "to": ident}, kind="membership"))
+
+    # Curated concepts: sql_snippets.measures (structured name+expr — no parsing).
+    # Concept identity FOR THIS PROMPT is EXACT NAME MATCH only: a name already
+    # present at a higher rung (governed) wins and is not re-added. Prompt 12b
+    # replaces this with canonicalized-expr identity via mv_fingerprint.
+    curated_names: set[str] = set()
+    for i, m in enumerate(snippet_measures):
+        name = m.get("display_name") or m.get("id") or f"measure_{i}"
+        if name in governed_names or name in curated_names:
+            continue
+        curated_names.add(name)
+        nodes.append(MvSemanticGraphNode(
+            id=f"measure:{name}", kind="measure", label=name, col=3, row=0,
+            governance="curated", origin="sql_snippets.measures",
+        ))
+
+    # Ungoverned concepts: recur only in proposal evidence, deduped by exact name
+    # against the higher rungs (same highest-rung-wins rule).
+    ungoverned_names: set[str] = set()
+    for p in proposals:
+        name = _short_name(p.proposed_object or "") or (p.suggestion_id or "")
+        if not name or name in governed_names or name in curated_names or name in ungoverned_names:
+            continue
+        ungoverned_names.add(name)
+        recurrence = p.evidence.get("recurrence_count") if isinstance(p.evidence, dict) else None
+        origin = f"proposal evidence · {recurrence}×" if recurrence else "proposal evidence"
+        nodes.append(MvSemanticGraphNode(
+            id=f"measure:{name}", kind="measure", label=name, col=3, row=0,
+            governance="ungoverned", origin=origin,
+        ))
+
+    # Deterministic rows: stable sort within each column by label.
+    by_col: dict[int, list[MvSemanticGraphNode]] = {}
+    for n in nodes:
+        by_col.setdefault(n.col, []).append(n)
+    for col_nodes in by_col.values():
+        col_nodes.sort(key=lambda n: n.label)
+        for row, n in enumerate(col_nodes):
+            n.row = row
+
+    return nodes, edges
+
+
+@router.get("/spaces/{space_id}/semantic-graph", response_model=MvSemanticGraph)
+async def get_space_semantic_graph(space_id: SpaceId):
+    """Assemble a space's semantic model graph, live and space-scoped (MV-D23).
+
+    The base graph (tables, joins, metric views, curated/governed/ungoverned
+    measure concepts) is assembled from a LIVE ``serialized_space`` read via
+    ``get_serialized_space`` — the SAME OBO-tolerant path ``/space/fetch`` uses,
+    so the graph reflects what the signed-in user is entitled to see, never a run
+    artifact or cache. ``proposals`` is the Prompt 11 space-scoped read (SP-side,
+    like every Delta read) carried so the client can synthesize the ghosted
+    proposal overlay from the same MvProposal shape — no new proposal payload.
+    Renders for a never-optimized space: proposals stay empty, the config-derived
+    base graph still returns.
+    """
+    try:
+        space_data = await _offload(get_serialized_space, space_id)
+    except Exception as exc:
+        logger.warning("Could not fetch serialized_space for space %s: %s", space_id, exc)
+        raise HTTPException(status_code=502, detail="Unable to read this Agent's configuration.")
+
+    proposals: list[MvProposal] = []
+    if _is_configured():
+        config = _build_gso_config()
+        if config.warehouse_id:
+            from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+            try:
+                rows = await _offload(
+                    wh_load_mv_candidates,
+                    get_service_principal_client(),
+                    config.warehouse_id,
+                    config.catalog,
+                    config.schema_name,
+                    target_space_id=space_id,
+                )
+                proposals = [_mv_proposal_from_row(r) for r in rows]
+            except Exception as exc:
+                logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
+
+    graph_data = space_data if isinstance(space_data, dict) else {}
+    nodes, edges = _build_semantic_graph(graph_data, proposals)
+    return MvSemanticGraph(space_id=space_id, nodes=nodes, edges=edges, proposals=proposals)
 
 
 @router.get("/runs/{run_id}/mv-ddl", response_model=MvDdlArtifact)

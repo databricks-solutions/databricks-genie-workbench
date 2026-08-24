@@ -38,6 +38,7 @@ import type {
   MvProbeRequest,
   MvProbeResult,
   MvSpaceProposalsResponse,
+  SemanticGraphResponse,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -469,6 +470,18 @@ export async function fetchSpaceMvProposals(
     approvedForRerun === undefined ? "" : `?approved_for_rerun=${approvedForRerun}`
   return fetchWithTimeout<MvSpaceProposalsResponse>(
     `${API_BASE}/auto-optimize/spaces/${spaceId}/mv-proposals${query}`,
+  )
+}
+
+// Space-scoped semantic model graph for the Model tab (Prompt 12, MV-D23). The
+// server assembles nodes/edges live from serialized_space (the same OBO-tolerant
+// read /space/fetch uses) plus the space-scoped proposals read; the ghosted
+// overlay is synthesized client-side from `proposals`.
+export async function fetchSemanticGraph(
+  spaceId: string,
+): Promise<SemanticGraphResponse> {
+  return fetchWithTimeout<SemanticGraphResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/semantic-graph`,
   )
 }
 

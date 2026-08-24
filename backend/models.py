@@ -320,6 +320,69 @@ class MvSpaceProposalsResponse(BaseModel):
     proposals: list[MvProposal] = Field(default_factory=list)
 
 
+class MvSemanticGraphNode(BaseModel):
+    """One node in a space's semantic model graph (Prompt 12, MV-D23).
+
+    ``kind`` is ``table`` | ``metric_view`` | ``measure``. Layout is a
+    deterministic layered layout: ``col`` 0 = source/fact tables, 1 = joined
+    dimension tables, 2 = metric views, 3 = measure concepts; ``row`` orders
+    within a column. ``governance`` (measure concepts only) is the ladder rung —
+    ``governed`` (a measure exposed by an attached metric view) / ``curated``
+    (``instructions.sql_snippets.measures`` — structured name+expr, no parsing) /
+    ``ungoverned`` (recurs only in proposal evidence). ``origin`` is the chip's
+    non-color discriminator. ``proposed`` marks the ghosted overlay MV (the
+    overlay itself is synthesized client-side; the server never emits it).
+
+    No SQL is parsed to build this node set — config fields plus proposal
+    evidence suffice. Measure extraction from example SQL is Prompt 12b."""
+
+    id: str
+    kind: Literal["table", "metric_view", "measure"]
+    label: str
+    col: int
+    row: int
+    governance: Literal["governed", "curated", "ungoverned"] | None = None
+    origin: str | None = None
+    proposed: bool = False
+
+
+class MvSemanticGraphEdge(BaseModel):
+    """One edge in the semantic model graph.
+
+    ``join`` edges come from ``instructions.join_specs`` — ``on`` is the
+    predicate (``sql[0]``), ``relationship`` is decoded from the ``--rt=…--``
+    annotation (``sql[1]``), and ``scd2`` is true when the predicate carries an
+    ``is_current`` guard. ``membership`` links a measure concept to its owning
+    metric view. ``replaces`` is the overlay's dashed edge — client-only."""
+
+    from_: str = Field(..., alias="from")
+    to: str
+    kind: Literal["join", "membership", "replaces"]
+    on: str | None = None
+    relationship: str | None = None
+    scd2: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class MvSemanticGraph(BaseModel):
+    """``GET /spaces/{space_id}/semantic-graph`` — a space's semantic model.
+
+    Space-scoped (MV-D23: ``run_id`` presentational only). ``nodes``/``edges``
+    are assembled LIVE from ``serialized_space`` (``data_sources``,
+    ``instructions.join_specs``, ``instructions.sql_snippets.measures``) plus the
+    Prompt 11 space-scoped proposals read — the same live, never-cached read
+    ``/space/fetch`` performs, so the graph reflects what the signed-in user is
+    entitled to see. ``proposals`` carries the SAME ``MvProposal`` shape the
+    cards use so the client can synthesize the ghosted overlay with no new
+    proposal payload."""
+
+    space_id: str
+    nodes: list[MvSemanticGraphNode] = Field(default_factory=list)
+    edges: list[MvSemanticGraphEdge] = Field(default_factory=list)
+    proposals: list[MvProposal] = Field(default_factory=list)
+
+
 class MvDdlArtifact(BaseModel):
     """``GET /runs/{run_id}/mv-ddl`` — the rendered DDL artifact plus GRANT remediation.
 

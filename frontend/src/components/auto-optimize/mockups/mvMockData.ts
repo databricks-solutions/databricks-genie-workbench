@@ -197,12 +197,13 @@ export const byoVerified: MvByoRegistrationFixture = {
 }
 
 // ── Semantic model graph (Model tab — Prompt 12.0 review mockups) ────────────
-// PRESENTATIONAL ONLY. The real nodes/edges JSON is Prompt 12's
-// GET /api/auto-optimize/spaces/{space_id}/semantic-graph, recorded
-// DOES-NOT-EXIST-YET (owner: Prompt 12) in docs/design/mv-advisor-gap-report.md.
-// These stay LOCAL to the mockups (no mirror in frontend/src/types/index.ts),
-// exactly as the Mv* fixtures above — the gap report notes there is no TS mirror
-// yet for the Mv* models and this prompt adds no wiring.
+// PRESENTATIONAL ONLY. The real nodes/edges JSON now LANDED at Prompt 12:
+// GET /api/auto-optimize/spaces/{space_id}/semantic-graph
+// (backend/routers/auto_optimize.py:1869), typed by SemanticGraphResponse in
+// frontend/src/types/index.ts and rendered by the production Model tab
+// (components/model/SemanticModelTab.tsx). These fixtures stay LOCAL to the
+// mockups as the approved design record until the scaffold is disposed at
+// Prompt 13.5; the production path does not read them.
 //
 // Governance ladder is a TRAFFIC LIGHT on the theme's semantic tokens
 // (governed=success, curated=warning, ungoverned=danger) — the 12.0 correction,

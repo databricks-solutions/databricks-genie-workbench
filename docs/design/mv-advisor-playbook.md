@@ -190,9 +190,9 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 596 backend + 1420 GSO,
-     measured at c4e72077 as 594 + 1420, +2 backend at Prompt 11 (the space-scoped
-     mv-proposals route). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 604 backend + 1420 GSO,
+     measured at 26989309 as 596 + 1420, +8 backend at Prompt 12 (the space-scoped
+     semantic-graph route). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -1483,8 +1483,13 @@ Tests: render-level with fixture spaces (never-optimized space, space with
 joins + snippets, space with an attached MV, proposal overlay on each; single
 MV, multi-join MV, conflict state; each empty state above), per the repo's
 renderToStaticMarkup idiom
-— there is no Storybook in this repo (Prompt 10 finding); add the frames to
-the existing mockup emitter's registry instead so the HTML export covers them.
+— there is no Storybook in this repo (Prompt 10 finding). CORRECTED at the
+Prompt 12 PLAN review: do NOT register the production component in the mockup
+emitter's MOCKUP_FRAMES — that registry is review scaffold disposed at Prompt
+13.5, and wiring ship code into it is a backwards coupling. The original line
+predated the promotion of the frames to production. SemanticModelTab.test.tsx
+is the coverage of record; the 9a-9d mockup frames remain in the emitter
+unchanged as the approved design record.
 
 Deliberately OUT of this prompt: column-level ERD (Catalog Explorer already
 draws it — deep-link table nodes there instead, the frame-5 idiom), and any
