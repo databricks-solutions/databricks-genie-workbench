@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D21 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D22 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -268,7 +268,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D21)
+## Decisions register (MV-D1–MV-D22)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
