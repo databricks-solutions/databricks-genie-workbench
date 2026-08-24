@@ -611,17 +611,26 @@ documents win, and anything you rely on gets restated in-repo rather than cited
 by external path.
 ```
 
-*Why the skill pointer lives here and not in the rules file.* A standing
-named exception in `.cursor/rules/mv-advisor.mdc` would re-introduce exactly
-what the in-repository context rule exists to prevent: an unversioned
-dependency on one machine's filesystem, invisible to a fresh clone and to
-every teammate running these prompts. The rule already carries the right
-mechanism — *"unless the prompt names them explicitly"* — so the pointer
-belongs in the one prompt whose trigger fires. The skill's substance is
-already absorbed in-repo and versioned as MV-D8 and POV Part 4's generation
-standard; the external copy adds reference detail, not authority. Prompt 4
-confirmed the trigger does not fire earlier: scoring authors no YAML and only
-consumes metric-view fields `metric_view_catalog` has already parsed.
+*Why the skill pointer was scoped to this prompt, and why it no longer is.*
+The pointer was originally confined to Prompt 5.5 on the reasoning that a
+standing named exception would re-introduce what the in-repository context rule
+exists to prevent — an unversioned dependency on one machine's filesystem,
+invisible to a fresh clone and to every teammate running these prompts — and
+that the rule already carried the right mechanism in *"unless the prompt names
+them explicitly."* That call was **reversed** in the METRIC VIEW BEST PRACTICES
+bullet in the standing preamble above, which promotes the same folder to a
+standing named exception in both rules copies, on the reasoning that YAML, join
+and level-of-detail semantics were being re-derived from scratch every prompt.
+The trade was accepted deliberately and bounded three ways: the exception is
+the only one, it never outranks repo reality or the gap report or MV-D8, and a
+missing path is a proceed rather than a block.
+
+Two things the reversal does not change. The skill remains a SOURCE and not an
+authority, so anything relied on still gets restated in-repo rather than cited
+by external path — the substance is already absorbed and versioned as MV-D8 and
+POV Part 4's generation standard. And the trigger still does not fire before
+this prompt: Prompt 4 confirmed scoring authors no YAML and only consumes
+metric-view fields `metric_view_catalog` has already parsed.
 
 ---
 

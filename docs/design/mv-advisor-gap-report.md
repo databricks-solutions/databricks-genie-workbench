@@ -15,6 +15,7 @@ written — see [§3 Decisions needed](#3-decisions-needed).
 | Date of survey | 2026-08-23 |
 | Method | Direct file reads. Every quote below was read from the working tree on the date above. Line numbers are from that state. |
 | Scope | Read-only. No feature code was written or modified in producing this report. |
+| Last MV-D9 refresh | 2026-08-23 @ `7b55df61`, before Prompt 5.5. Re-read live: the `config.py` and `mv_scoring.py` line counts in §1.4; the two `WITH METRICS` claims in §2.5 and the patch-path table; the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`) and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
 
 ## Headline
 
@@ -487,7 +488,7 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2506 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2545 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
@@ -496,7 +497,7 @@ src/genie_space_optimizer/
                   preflight.py (3461 L), state.py (1790 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
-                  mv_fingerprint.py (1333 L), mv_scoring.py (945 L),
+                  mv_fingerprint.py (1333 L), mv_scoring.py (1125 L),
                   mv_state.py (639 L), ...
 ```
 
@@ -721,7 +722,16 @@ Only the `tvfs` branch does anything (it appends to `instructions.sql_functions`
 three `mv_*` sections fall straight through to `return True` at `applier.py:3932`.
 
 `_apply_action_to_uc` handles only `update_column_description`, `update_description`, and
-`update_tvf_sql` — **no MV DDL**. Repo-wide grep for `WITH METRICS` returns **zero hits**.
+`update_tvf_sql` — **no MV DDL**. Repo-wide, `WITH METRICS` now has exactly one hit, and it is
+not an executable path — it is the `created_by` column comment on the MV-D7 created-objects
+table added by Commit 1:
+
+```262:262:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+    created_by          STRING        NOT NULL COMMENT 'Identity that executed CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never the service principal',
+```
+
+No code renders or executes metric-view DDL. `yaml.dump` and `yaml.safe_dump` appear nowhere in
+the repository either, so the Prompt 5.5 renderer starts from nothing to displace.
 
 Existing patches *can* modify an **already-attached** MV's column metadata, because lookup
 searches both shelves:
@@ -768,7 +778,7 @@ path all have to be built. And POV §7.8's `DETACH_ONLY_NEVER_DROP` semantics �
 *one* patch while leaving a UC object alone — has no analogue in a whole-snapshot rollback
 model.
 
-**Leakage firewall.** `optimization/leakage.py:414-420` `is_benchmark_leak(...)` is the
+**Leakage firewall.** `optimization/leakage.py:421-427` `is_benchmark_leak(...)` is the
 entrypoint. Its runtime field map covers only example-SQL types, preceded by the scoping
 comment that says why:
 
@@ -1387,7 +1397,7 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 | `field_path: "data_sources.metric_views"`, `operation: "append"` | **CONFLICTS** | No path-addressed patches; `op` ∈ `add`/`update`/`remove`/`update_section`/`rewrite` on the *rendered command* |
 | Attach MV by patching `data_sources.metric_views[]` | **DOES-NOT-EXIST-YET** | `_apply_action_to_config` handles `tables` only (`:3871-3886`); MV sections are no-ops (`:3914-3932`) |
 | Companion patch removing covered raw tables | **PARTIALLY MATCHES** | `remove_table` exists (`applier.py:3880-3886`) but is not in `_ALLOWED_PATCH_TYPES` |
-| `CREATE VIEW … WITH METRICS LANGUAGE YAML` | **DOES-NOT-EXIST-YET** | Zero `WITH METRICS` hits repo-wide |
+| `CREATE VIEW … WITH METRICS LANGUAGE YAML` | **DOES-NOT-EXIST-YET** | The sole repo-wide `WITH METRICS` hit is a column comment (`ddl.py:262`); no code renders or executes the DDL, and there is no `yaml.dump` call anywhere |
 | `EXPLAIN CREATE MATERIALIZED VIEW` precheck | **DOES-NOT-EXIST-YET** | — |
 | "Inherits existing versioning, diff, rollback" | **PARTIALLY MATCHES** | `genie_opt_patches` would carry it; but rollback is whole-snapshot (`applier.py:4550-4560`), so per-patch detach has no analogue |
 | `on_regression: DETACH_ONLY_NEVER_DROP` | **DOES-NOT-EXIST-YET** | And incompatible with snapshot rollback as written |
@@ -1668,7 +1678,7 @@ _EXAMPLE_SQL_PATCH_TYPES: frozenset[str] = frozenset(
 )
 ```
 
-Also at `leakage.py:454`, `:764`, `:927`, `:971`; `applier.py:4045`, `:4063`;
+Also at `leakage.py:454`, `:756`, `:927`, `:971`; `applier.py:4045`, `:4063`;
 `publish.py:32`, `:601`; `test_scored_benchmark_qa_exclusion.py:1`. Note *"no train/held-out
 split per D8"* — the whole scored set is protected.
 
