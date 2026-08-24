@@ -1868,12 +1868,24 @@ async def register_space_mv(space_id: SpaceId, body: MvRegisterRequest):
     )
 
 
-# ── Semantic model graph (Prompt 12, MV-D23) ────────────────────────────────
-# Deterministic, parse-free assembly of a space's semantic model from
-# serialized_space config fields plus the space-scoped proposals read. No SQL is
-# parsed here — measure extraction from example SQL is Prompt 12b, which also
-# swaps the exact-name concept identity below for canonicalized-expr matching via
-# the one sanctioned parser (optimization/mv_fingerprint).
+# ── Semantic model graph (Prompt 12 + 12b, MV-D23) ──────────────────────────
+# Deterministic assembly of a space's semantic model from serialized_space config
+# fields plus the space-scoped proposals read. Prompt 12b adds server-side SQL
+# parsing, always through the ONE parser the advisor already trusts
+# (optimization/mv_fingerprint, sqlglot==30.0.3 — never a second parser, never in
+# the browser):
+#   - governed measure chips read from the real MV definition
+#     (DESCRIBE ... AS JSON view_text, parsed by metric_view_catalog's existing
+#     parsing and flattened by mv_scoring.metric_view_fields) — the speculative
+#     five-key column probe is deleted, not extended;
+#   - curated measure concepts harvested from example_question_sqls via the
+#     curated-harvest reader mv_scoring.example_question_sql_statements and
+#     mv_fingerprint.extract_measures;
+#   - concept identity keyed on mv_fingerprint.canonicalize_expr, the same
+#     canonicalization the fingerprint engine hashes, so the ladder and the
+#     advisor cannot disagree about what one measure is (MV-D21, for concepts).
+# MV-D16(b) binds: nothing extracted here re-enters the advisor corpus as
+# recurrence evidence — this is a read-only view assembler.
 
 _RT_PREFIX = "--rt=FROM_RELATIONSHIP_TYPE_"
 
@@ -1902,31 +1914,93 @@ def _join_side_identifier(side: Any) -> str:
     return side.get("identifier", "") if isinstance(side, dict) else ""
 
 
-def _is_measure_column(col: dict) -> bool:
-    """True only on an explicit measure marker in a metric_view column config.
+def _norm_fqn(identifier: str) -> str:
+    """Lower-cased, backtick-stripped UC identifier — the key both the config MV
+    node and the DESCRIBE-derived ``MetricViewField.mv_fqn`` normalize to, so a
+    governed chip can find its owning metric view node."""
+    return (identifier or "").replace("`", "").strip().lower()
 
-    IMPORTANT — all five probed keys (``kind``, ``column_type``, ``type``,
-    ``role``, ``is_measure``) are UNDOCUMENTED SPECULATION. None appears in
-    ``backend/references/schema.md`` (``metric_views[].column_configs`` is
-    documented only as sorted by ``column_name``, with no measure/dimension
-    marker anywhere). Do NOT go hunting for the "real" key — there isn't one.
-    The EXPECTED PRODUCTION CASE is therefore "no marker, no chips": the MV
-    still renders as a governed node, just without measure chips. That is the
-    honest fallback — never a fabricated rung.
 
-    Classifying an MV column as measure vs dimension truly needs the MV
-    definition (a DESCRIBE / YAML read). Prompt 12b does that read and DELETES
-    this function — it does not extend the speculative key list above."""
-    for key in ("kind", "column_type", "type", "role"):
-        if str(col.get(key, "")).strip().lower() == "measure":
-            return True
-    return bool(col.get("is_measure"))
+def _concept_key(canonical_expr: str, name: str) -> str:
+    """Concept identity (Prompt 12b Debt 3, MV-D21 for concepts).
+
+    The canonicalized measure expression when it parses — ``canonicalize_expr``
+    strips table qualifiers and literals, so ``SUM(o.rev - o.cost)`` and
+    ``SUM(ord.rev - ord.cost)`` are ONE concept, the same identity the
+    fingerprint engine hashes. An expression that will not parse falls back to
+    the lower-cased display name so a name-only curated snippet still dedups."""
+    return (canonical_expr or "").strip() or (name or "").strip().lower()
+
+
+def _curated_sql_measures(space_data: dict) -> list[tuple[str, str]]:
+    """Curated measure concepts harvested from ``example_question_sqls`` (Debt 1).
+
+    Reuses the curated-harvest reader ``mv_scoring.example_question_sql_statements``
+    (the single reader ``trusted_asset_definitions`` also uses, so the ladder and
+    the advisor cannot drift over what a curated asset is) and
+    ``mv_fingerprint.extract_measures`` — the one sanctioned parser. Returns
+    ``(canonical_expr, label)`` pairs; the label is a readable rendering of the
+    aggregate. Best-effort and read-only: a statement that will not parse simply
+    contributes no concept (MV-D16(b): nothing here re-enters the advisor
+    corpus)."""
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+    from genie_space_optimizer.optimization.mv_scoring import (
+        example_question_sql_statements,
+    )
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for _identifier, sql in example_question_sql_statements(space_data):
+        for measure in extract_measures(sql):
+            canon = measure.canonical_expr
+            if not canon or canon in seen:
+                continue
+            seen.add(canon)
+            out.append((canon, measure.canonical_expr))
+    return out
+
+
+def _statement_footprint(sql: str) -> tuple[frozenset[str], frozenset[str]] | None:
+    """``(table_fqns, measure_canonicals)`` one curated statement touches, or None.
+
+    ``None`` marks a parse failure so the coverage lens can report it in the
+    MV-D15 vocabulary rather than silently counting a dropped statement as zero
+    coverage. Tables come from the sqlglot tree the advisor's own parser produced
+    (``parse_statement``); measure identities from ``extract_measures`` — one
+    parser, server-side, never the browser."""
+    from sqlglot import exp
+
+    from genie_space_optimizer.optimization.mv_fingerprint import (
+        extract_measures,
+        parse_statement,
+    )
+
+    tree = parse_statement(sql)
+    if tree is None:
+        return None
+    tables: set[str] = set()
+    for table in tree.find_all(exp.Table):
+        parts = [p for p in (table.catalog, table.db, table.name) if p]
+        if parts:
+            tables.add(".".join(p.lower() for p in parts))
+    measures = {m.canonical_expr for m in extract_measures(sql) if m.canonical_expr}
+    return frozenset(tables), frozenset(measures)
 
 
 def _build_semantic_graph(
-    space_data: dict, proposals: list[MvProposal]
-) -> tuple[list[MvSemanticGraphNode], list[MvSemanticGraphEdge]]:
-    """Assemble the base graph nodes/edges from config + proposals (see MvSemanticGraph)."""
+    space_data: dict,
+    proposals: list[MvProposal],
+    *,
+    governed_fields: Any = (),
+) -> tuple[list[MvSemanticGraphNode], list[MvSemanticGraphEdge], str | None, str | None]:
+    """Assemble the base graph nodes/edges + the SQL-coverage lens (Prompt 12b).
+
+    ``governed_fields`` is the DESCRIBE-derived measure read — a sequence of
+    ``mv_scoring.MetricViewField`` (or field-shaped mappings for tests) with
+    ``mv_fqn`` / ``field_name`` / ``canonical_expr``. Only ``FIELD_MEASURE`` kinds
+    reach here; an empty sequence is the honest "no governed chips" fallback the
+    deleted ``_is_measure_column`` probe used to produce, now truthful instead of
+    speculative. Returns ``(nodes, edges, coverage_status, coverage_reason)``."""
     ds = space_data.get("data_sources")
     ds = ds if isinstance(ds, dict) else {}
     instructions = space_data.get("instructions")
@@ -1961,68 +2035,128 @@ def _build_semantic_graph(
         ))
 
     nodes: list[MvSemanticGraphNode] = []
+    table_ids: set[str] = set()
     for t in tables:
         ident = t.get("identifier", "")
         if not ident:
             continue
+        table_ids.add(ident)
         nodes.append(MvSemanticGraphNode(
             id=ident, kind="table", label=_short_name(ident),
             col=1 if ident in dim_ids else 0, row=0,
         ))
 
-    # Metric views (col 2) and any config-marked governed measure chips (col 3).
-    governed_names: set[str] = set()
+    # Metric view nodes (col 2), indexed by normalized fqn so a governed chip can
+    # find its owner.
+    mv_id_by_fqn: dict[str, str] = {}
     for m in metric_views:
         ident = m.get("identifier", "")
         if not ident:
             continue
+        mv_id_by_fqn[_norm_fqn(ident)] = ident
         nodes.append(MvSemanticGraphNode(
             id=ident, kind="metric_view", label=_short_name(ident), col=2, row=0,
         ))
-        cols = list(m.get("column_configs") or []) + list(m.get("columns") or [])
-        for c in cols:
-            if not isinstance(c, dict) or not _is_measure_column(c):
-                continue
-            name = c.get("column_name") or c.get("name") or ""
-            if not name or name in governed_names:
-                continue
-            governed_names.add(name)
-            mid = f"measure:{name}"
-            nodes.append(MvSemanticGraphNode(
-                id=mid, kind="measure", label=name, col=3, row=0,
-                governance="governed", origin=f"{_short_name(ident)} (attached MV)",
-            ))
-            edges.append(MvSemanticGraphEdge(**{"from": mid, "to": ident}, kind="membership"))
 
-    # Curated concepts: sql_snippets.measures (structured name+expr — no parsing).
-    # Concept identity FOR THIS PROMPT is EXACT NAME MATCH only: a name already
-    # present at a higher rung (governed) wins and is not re-added. Prompt 12b
-    # replaces this with canonicalized-expr identity via mv_fingerprint.
-    curated_names: set[str] = set()
-    for i, m in enumerate(snippet_measures):
-        name = m.get("display_name") or m.get("id") or f"measure_{i}"
-        if name in governed_names or name in curated_names:
-            continue
-        curated_names.add(name)
+    # Governance ladder, deduped by concept identity (Debt 3): governed wins over
+    # curated wins over ungoverned. ``key_by_node`` maps a measure node id to its
+    # concept key so the coverage lens can match statements to measures.
+    governed_keys: set[str] = set()
+    curated_keys: set[str] = set()
+    ungoverned_keys: set[str] = set()
+    key_by_node: dict[str, str] = {}
+    used_ids: set[str] = set()
+
+    def _measure_node(
+        *, key: str, label: str, governance: str, origin: str,
+        benchmark_ids: list[str] | None = None,
+    ) -> str | None:
+        node_id = f"measure:{label}"
+        # Distinct concepts that render the same label get a keyed suffix so one
+        # does not silently swallow the other.
+        if node_id in used_ids:
+            node_id = f"measure:{label}#{key}"
+        if node_id in used_ids:
+            return None
+        used_ids.add(node_id)
+        key_by_node[node_id] = key
         nodes.append(MvSemanticGraphNode(
-            id=f"measure:{name}", kind="measure", label=name, col=3, row=0,
-            governance="curated", origin="sql_snippets.measures",
+            id=node_id, kind="measure", label=label, col=3, row=0,
+            governance=governance, origin=origin,
+            benchmark_question_ids=benchmark_ids or None,
         ))
+        return node_id
 
-    # Ungoverned concepts: recur only in proposal evidence, deduped by exact name
-    # against the higher rungs (same highest-rung-wins rule).
-    ungoverned_names: set[str] = set()
+    # Governed chips: the DESCRIBE-enumerated MV measures (Debt 2). Identity is
+    # the canonicalized expr; membership ties each to its owning MV node.
+    for field_ in governed_fields:
+        fqn = _field_attr(field_, "mv_fqn")
+        name = _field_attr(field_, "field_name") or _field_attr(field_, "name")
+        canonical = _field_attr(field_, "canonical_expr")
+        if not name:
+            continue
+        key = _concept_key(canonical, name)
+        if key in governed_keys:
+            continue
+        governed_keys.add(key)
+        owner = mv_id_by_fqn.get(_norm_fqn(fqn))
+        origin = f"{_short_name(fqn)} (attached MV)" if fqn else "attached MV"
+        node_id = _measure_node(key=key, label=name, governance="governed", origin=origin)
+        if node_id and owner:
+            edges.append(MvSemanticGraphEdge(**{"from": node_id, "to": owner}, kind="membership"))
+
+    # Curated concepts: structured sql_snippets.measures, plus measures harvested
+    # from example_question_sqls (Debt 1). Both keyed by canonical expr so two
+    # spellings of one measure are one chip and a governed measure absorbs its
+    # curated twin.
+    curated_sources: list[tuple[str, str]] = []
+    for i, m in enumerate(snippet_measures):
+        label = m.get("display_name") or m.get("id") or f"measure_{i}"
+        expr = m.get("sql")
+        if isinstance(expr, list):
+            expr = " ".join(str(part) for part in expr if part).strip()
+        canonical = ""
+        if expr:
+            from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
+            canonical = canonicalize_expr(str(expr))
+        curated_sources.append((_concept_key(canonical, label), label))
+    for canonical, label in _curated_sql_measures(space_data):
+        curated_sources.append((_concept_key(canonical, label), label))
+
+    for key, label in curated_sources:
+        if key in governed_keys or key in curated_keys:
+            continue
+        curated_keys.add(key)
+        _measure_node(key=key, label=label, governance="curated", origin="curated SQL")
+
+    # Ungoverned concepts: recur only in proposal evidence, deduped by concept
+    # identity against the higher rungs. Proposals expose a name, not an expr, so
+    # a name-derived key is used and cross-checked against the label of any
+    # higher-rung chip (preserving the highest-rung-wins rule).
+    higher_labels = {n.label for n in nodes if n.kind == "measure"}
     for p in proposals:
         name = _short_name(p.proposed_object or "") or (p.suggestion_id or "")
-        if not name or name in governed_names or name in curated_names or name in ungoverned_names:
+        if not name:
             continue
-        ungoverned_names.add(name)
-        recurrence = p.evidence.get("recurrence_count") if isinstance(p.evidence, dict) else None
+        key = _concept_key("", name)
+        if key in governed_keys or key in curated_keys or key in ungoverned_keys:
+            continue
+        if name in higher_labels:
+            continue
+        ungoverned_keys.add(key)
+        evidence = p.evidence if isinstance(p.evidence, dict) else {}
+        recurrence = evidence.get("recurrence_count")
         origin = f"proposal evidence · {recurrence}×" if recurrence else "proposal evidence"
-        nodes.append(MvSemanticGraphNode(
-            id=f"measure:{name}", kind="measure", label=name, col=3, row=0,
-            governance="ungoverned", origin=origin,
-        ))
+        bench = evidence.get("benchmark_question_ids")
+        bench_ids = [str(b) for b in bench] if isinstance(bench, list) and bench else None
+        _measure_node(
+            key=key, label=name, governance="ungoverned", origin=origin,
+            benchmark_ids=bench_ids,
+        )
+
+    coverage_status, coverage_reason = _apply_coverage(
+        space_data, nodes, edges, table_ids, key_by_node
+    )
 
     # Deterministic rows: stable sort within each column by label.
     by_col: dict[int, list[MvSemanticGraphNode]] = {}
@@ -2033,7 +2167,69 @@ def _build_semantic_graph(
         for row, n in enumerate(col_nodes):
             n.row = row
 
-    return nodes, edges
+    return nodes, edges, coverage_status, coverage_reason
+
+
+def _field_attr(field_: Any, name: str) -> str:
+    """Read a MetricViewField attribute whether it is an object or a mapping."""
+    if isinstance(field_, dict):
+        return str(field_.get(name) or "")
+    return str(getattr(field_, name, "") or "")
+
+
+def _apply_coverage(
+    space_data: dict,
+    nodes: list[MvSemanticGraphNode],
+    edges: list[MvSemanticGraphEdge],
+    table_ids: set[str],
+    key_by_node: dict[str, str],
+) -> tuple[str | None, str | None]:
+    """The SQL-coverage lens (Prompt 12b): how many curated statements touch each
+    table / measure, and per-join edge weight. Mutates ``node.coverage`` and
+    ``edge.weight`` in place; returns ``(status, reason)`` in the MV-D15
+    vocabulary — ``EMPTY`` when the space has no curated SQL (frame-7b honesty),
+    ``UNAVAILABLE`` with a reason when every curated statement failed to parse
+    (never a silently-zero coverage), ``COMPUTED`` otherwise."""
+    from genie_space_optimizer.optimization.mv_scoring import (
+        example_question_sql_statements,
+    )
+
+    statements = [sql for _identifier, sql in example_question_sql_statements(space_data)]
+    if not statements:
+        return "EMPTY", None
+
+    footprints: list[tuple[frozenset[str], frozenset[str]]] = []
+    parse_failures = 0
+    for sql in statements:
+        footprint = _statement_footprint(sql)
+        if footprint is None:
+            parse_failures += 1
+            continue
+        footprints.append(footprint)
+
+    if not footprints:
+        return "UNAVAILABLE", f"all {parse_failures} curated statement(s) failed to parse"
+
+    table_norm = {ident: _norm_fqn(ident) for ident in table_ids}
+    for node in nodes:
+        if node.kind == "table":
+            norm = table_norm.get(node.id, _norm_fqn(node.id))
+            node.coverage = sum(1 for tables, _m in footprints if norm in tables)
+        elif node.kind == "measure":
+            key = key_by_node.get(node.id)
+            if key:
+                node.coverage = sum(1 for _t, measures in footprints if key in measures)
+
+    for edge in edges:
+        if edge.kind != "join":
+            continue
+        left = _norm_fqn(edge.from_)
+        right = _norm_fqn(edge.to)
+        edge.weight = sum(
+            1 for tables, _m in footprints if left in tables and right in tables
+        )
+
+    return "COMPUTED", None
 
 
 @router.get("/spaces/{space_id}/semantic-graph", response_model=MvSemanticGraph)
@@ -2048,13 +2244,18 @@ async def get_space_semantic_graph(space_id: SpaceId):
     like every Delta read) carried so the client can synthesize the ghosted
     proposal overlay from the same MvProposal shape — no new proposal payload.
     Renders for a never-optimized space: proposals stay empty, the config-derived
-    base graph still returns.
+    base graph still returns. The governed measure chips (Prompt 12b) read the
+    real MV definition (DESCRIBE ... AS JSON view_text) under the same
+    OBO-tolerant client, best-effort — a DESCRIBE that cannot run yields no chips,
+    the honest fallback the deleted config-marker probe used to produce.
     """
     try:
         space_data = await _offload(get_serialized_space, space_id)
     except Exception as exc:
         logger.warning("Could not fetch serialized_space for space %s: %s", space_id, exc)
         raise HTTPException(status_code=502, detail="Unable to read this Agent's configuration.")
+
+    graph_data = space_data if isinstance(space_data, dict) else {}
 
     proposals: list[MvProposal] = []
     if _is_configured():
@@ -2074,9 +2275,58 @@ async def get_space_semantic_graph(space_id: SpaceId):
             except Exception as exc:
                 logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
 
-    graph_data = space_data if isinstance(space_data, dict) else {}
-    nodes, edges = _build_semantic_graph(graph_data, proposals)
-    return MvSemanticGraph(space_id=space_id, nodes=nodes, edges=edges, proposals=proposals)
+    governed_fields = await _offload(_read_governed_measure_fields, graph_data)
+
+    nodes, edges, coverage_status, coverage_reason = _build_semantic_graph(
+        graph_data, proposals, governed_fields=governed_fields
+    )
+    return MvSemanticGraph(
+        space_id=space_id,
+        nodes=nodes,
+        edges=edges,
+        proposals=proposals,
+        coverage_status=coverage_status,
+        coverage_reason=coverage_reason,
+    )
+
+
+def _read_governed_measure_fields(space_data: dict) -> list[Any]:
+    """The governed measures of a space's attached metric views (Prompt 12b Debt 2).
+
+    Reads each ``data_sources.metric_views[].identifier`` via
+    ``DESCRIBE ... AS JSON`` through ``metric_view_catalog``'s existing parsing
+    (``estate_metric_view_yamls`` → ``metric_view_fields``) under the
+    OBO-tolerant client, so the chips enumerate what the signed-in user is
+    entitled to see. Best-effort by contract: no warehouse, no configuration, or a
+    failed DESCRIBE yields ``[]`` — the honest "no chips" fallback, never a 500 and
+    never a fabricated rung. Only ``FIELD_MEASURE`` fields are returned; dimensions
+    are not measure concepts."""
+    ds = space_data.get("data_sources") if isinstance(space_data, dict) else None
+    metric_views = (ds or {}).get("metric_views") if isinstance(ds, dict) else None
+    identifiers = [
+        m.get("identifier")
+        for m in (metric_views or [])
+        if isinstance(m, dict) and m.get("identifier")
+    ]
+    if not identifiers or not _is_configured():
+        return []
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return []
+    try:
+        from genie_space_optimizer.optimization.mv_advisor import estate_metric_view_yamls
+        from genie_space_optimizer.optimization.mv_scoring import (
+            FIELD_MEASURE,
+            metric_view_fields,
+        )
+
+        yamls = estate_metric_view_yamls(
+            None, identifiers, w=get_workspace_client(), warehouse_id=config.warehouse_id
+        )
+        return [f for f in metric_view_fields(yamls) if f.kind == FIELD_MEASURE]
+    except Exception as exc:
+        logger.warning("Could not read governed MV measures for graph: %s", exc)
+        return []
 
 
 @router.get("/runs/{run_id}/mv-ddl", response_model=MvDdlArtifact)

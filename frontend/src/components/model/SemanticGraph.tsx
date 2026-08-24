@@ -103,7 +103,10 @@ function EdgeView({
   }
 
   // join — declutter: relationship + SCD2 at rest, full ON predicate on hover.
-  const restLabel = [edge.relationship, edge.scd2 ? "SCD2" : null].filter(Boolean).join(" · ")
+  // Prompt 12b SQL-coverage lens: a positive edge weight (curated statements that
+  // traverse this join) rides the rest label as "×N".
+  const weightLabel = typeof edge.weight === "number" && edge.weight > 0 ? `×${edge.weight}` : null
+  const restLabel = [edge.relationship, edge.scd2 ? "SCD2" : null, weightLabel].filter(Boolean).join(" · ")
   return (
     <g onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)} style={{ cursor: "default" }}>
       <line x1={from.cx} y1={from.cy} x2={to.cx} y2={to.cy} stroke="var(--border-color-strong)" strokeWidth={active ? 2 : 1.5} markerEnd="url(#mv-arrow)" />
@@ -125,6 +128,27 @@ function EdgeView({
   )
 }
 
+// Prompt 12b SQL-coverage lens: a small badge on the node's top-right corner
+// carrying the curated-SQL touch count. 0 is a legible COLD SPOT (a node no
+// curated query exercises), rendered plainly with a dashed ring — the lens's
+// point, not an error. Absent (undefined) coverage renders nothing, so a
+// lens-free Prompt 12 response is unchanged.
+function CoverageBadge({ x, y, w, coverage }: { x: number; y: number; w: number; coverage?: number | null }) {
+  if (coverage == null) return null
+  const cold = coverage === 0
+  const bx = x + w - 12
+  const by = y - 6
+  return (
+    <g aria-label={cold ? "no curated SQL coverage" : `curated SQL coverage ${coverage}`}>
+      <title>{cold ? "cold spot — no curated SQL touches this" : `${coverage} curated statement${coverage === 1 ? "" : "s"}`}</title>
+      <circle cx={bx} cy={by} r="8" fill={cold ? "var(--bg-surface)" : "var(--color-accent)"} opacity={cold ? 1 : 0.85}
+        stroke={cold ? "var(--color-danger)" : "var(--color-accent)"} strokeWidth="1" strokeDasharray={cold ? "2 2" : undefined} />
+      <text x={bx} y={by + 3} textAnchor="middle" fontSize="8" fontWeight="700"
+        fill={cold ? "var(--color-danger)" : "var(--bg-surface)"}>{coverage}</text>
+    </g>
+  )
+}
+
 function NodeView({ p, selected, onSelect }: { p: Placed; selected: boolean; onSelect: (n: SemanticGraphNode) => void }) {
   const { node, x, y, w } = p
   const stroke = selected ? "var(--color-accent)" : undefined
@@ -138,6 +162,7 @@ function NodeView({ p, selected, onSelect }: { p: Placed; selected: boolean; onS
         <rect x={x} y={y} width={w} height={NODE_H} rx="6" fill={g.color} opacity="0.14" stroke={stroke ?? g.color} strokeWidth={selWidth} />
         <text x={x + w / 2} y={y + 14} textAnchor="middle" className="fill-[var(--text-primary)]" fontSize="10" fontWeight="600">{abbreviate(node.label, 18)}</text>
         <text x={x + w / 2} y={y + 26} textAnchor="middle" fill={g.color} fontSize="8" fontWeight="600">{g.label}</text>
+        <CoverageBadge x={x} y={y} w={w} coverage={node.coverage} />
       </g>
     )
   }
@@ -154,8 +179,9 @@ function NodeView({ p, selected, onSelect }: { p: Placed; selected: boolean; onS
   return (
     <g onClick={() => onSelect(node)} style={{ cursor: "pointer" }}>
       <title>{node.label}</title>
-      <rect x={x} y={y} width={w} height={NODE_H} rx="6" fill="var(--bg-surface)" stroke={stroke ?? "var(--border-color-strong)"} strokeWidth={selWidth} />
+      <rect x={x} y={y} width={w} height={NODE_H} rx="6" fill="var(--bg-surface)" stroke={stroke ?? "var(--border-color-strong)"} strokeWidth={selWidth} strokeDasharray={node.coverage === 0 ? "4 3" : undefined} />
       <text x={x + w / 2} y={y + 21} textAnchor="middle" className="fill-[var(--text-secondary)]" fontSize="10">{abbreviate(node.label, 18)}</text>
+      <CoverageBadge x={x} y={y} w={w} coverage={node.coverage} />
     </g>
   )
 }

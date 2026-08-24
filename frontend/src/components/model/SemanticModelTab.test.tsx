@@ -178,6 +178,46 @@ describe("SemanticGraph — selection reveals the full ON predicate", () => {
   })
 })
 
+// Prompt 12b SQL-coverage lens fixtures.
+const WITH_COVERAGE: SemanticGraphResponse = {
+  space_id: "space-1",
+  nodes: [
+    { id: "finance.sales.orders", kind: "table", label: "orders", col: 0, row: 0, coverage: 2 },
+    { id: "finance.ref.unused", kind: "table", label: "unused", col: 1, row: 0, coverage: 0 },
+  ],
+  edges: [],
+  proposals: [],
+  coverage_status: "COMPUTED",
+  coverage_reason: null,
+}
+
+describe("SQL-coverage lens (Prompt 12b) — additive", () => {
+  it("COMPUTED: renders per-node coverage badges and marks the cold spot", () => {
+    const html = render(<SemanticModelView graph={WITH_COVERAGE} isLoading={false} error={null} onRefresh={() => {}} />)
+    expect(html).toContain("Query coverage")
+    expect(html).toContain("2 curated statements")
+    expect(html).toContain("cold spot")
+  })
+
+  it("EMPTY: says coverage is not measured (frame-7b honesty), no invented zero", () => {
+    const empty = { ...JOINS_AND_SNIPPETS, coverage_status: "EMPTY" }
+    const html = render(<SemanticModelView graph={empty} isLoading={false} error={null} onRefresh={() => {}} />)
+    expect(html).toContain("query coverage is not measured")
+  })
+
+  it("UNAVAILABLE: names the reason, never silently zero", () => {
+    const bad = { ...JOINS_AND_SNIPPETS, coverage_status: "UNAVAILABLE", coverage_reason: "all 2 curated statement(s) failed to parse" }
+    const html = render(<SemanticModelView graph={bad} isLoading={false} error={null} onRefresh={() => {}} />)
+    expect(html).toContain("Query coverage unavailable")
+    expect(html).toContain("failed to parse")
+  })
+
+  it("lens-free response (no coverage_status) renders no coverage note — Prompt 12 compatibility", () => {
+    const html = render(<SemanticModelView graph={ATTACHED_MV} isLoading={false} error={null} onRefresh={() => {}} />)
+    expect(html).not.toContain("Query coverage")
+  })
+})
+
 describe("NodeDetail — measure evidence and conflict", () => {
   it("surfaces evidence for a measure backed by a proposal", () => {
     const node = WITH_PROPOSAL.nodes.find((n) => n.id === "measure:order_revenue")!

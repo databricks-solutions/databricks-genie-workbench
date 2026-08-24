@@ -1133,7 +1133,10 @@ export type MvGovernance = "governed" | "curated" | "ungoverned"
 
 // col: 0 = source/fact tables, 1 = joined dimension tables, 2 = metric views,
 // 3 = measure concepts. governance/origin are measure-concept only; proposed is
-// set on the client-synthesized ghost MV overlay node.
+// set on the client-synthesized ghost MV overlay node. coverage (Prompt 12b
+// SQL-coverage lens) is the curated-SQL touch count — 0 is a cold spot, not an
+// error; benchmark_question_ids is the evidence-lens question overlay. Both are
+// ADDITIVE (optional): a lens-free response omits them and renders unchanged.
 export interface SemanticGraphNode {
   id: string
   kind: "table" | "metric_view" | "measure"
@@ -1143,11 +1146,14 @@ export interface SemanticGraphNode {
   governance?: MvGovernance | null
   origin?: string | null
   proposed?: boolean
+  coverage?: number | null
+  benchmark_question_ids?: string[] | null
 }
 
 // join edges carry the decoded ON predicate, relationship, and SCD2 flag;
 // membership ties a measure to its MV; replaces is the client overlay's dashed
-// "tables freed" edge.
+// "tables freed" edge. weight (Prompt 12b) is the curated-SQL traversal count on
+// join edges — ADDITIVE, absent on a lens-free response.
 export interface SemanticGraphEdge {
   from: string
   to: string
@@ -1155,12 +1161,17 @@ export interface SemanticGraphEdge {
   on?: string | null
   relationship?: string | null
   scd2?: boolean
+  weight?: number | null
 }
 
 // GET /spaces/{space_id}/semantic-graph — the space's semantic model.
+// coverage_status/coverage_reason (Prompt 12b) report the SQL-coverage lens in
+// the MV-D15 vocabulary (COMPUTED | EMPTY | UNAVAILABLE) — ADDITIVE, optional.
 export interface SemanticGraphResponse {
   space_id: string
   nodes: SemanticGraphNode[]
   edges: SemanticGraphEdge[]
   proposals: MvProposal[]
+  coverage_status?: string | null
+  coverage_reason?: string | null
 }

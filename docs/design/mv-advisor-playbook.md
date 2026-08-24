@@ -190,9 +190,8 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 628 backend + 1444 GSO,
-     measured 2026-08-24 as 628 + 1444, +20 backend / +17 GSO at Prompt 13.5 (the
-     on-demand suggest route and BYO registration with their route/service tests, the MV-D23 advice-run exclusion pins, the provenance-column writers, and the candidate yaml_text fallback). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 636 backend + 1444 GSO,
+     measured 2026-08-24 as 636 + 1444, +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -1507,22 +1506,60 @@ query-history heat (no corpus producer exists; same honesty rule as frame 7b's
 copy). Both stay out until a decision entry says otherwise.
 ```
 
-### Prompt 12b — Coverage lenses on the semantic model (after Prompt 13.5)
+### Prompt 12b — Coverage lenses + deferred parsing on the semantic model (GATE OPEN — run after 13.5, BEFORE Prompt 14)
 
-*Stub, sequenced after 13.5 because both lenses read curated SQL through the
-space-scoped machinery 13.5 builds. Do not run before it.*
+*Gate opened at Prompt 13.5 (both lenses read curated SQL through the
+space-scoped machinery it built — `advise_from_corpus` and the pyspark-free
+import seam now exist). Sequenced BEFORE Prompt 14 deliberately: 14 audits
+"everything added on this branch" and its exposure sweep classifies every
+response field — 12b's additions must be inside that audit, not after it.
+Upgraded from a two-lens stub at the 13.5 close-out: Prompt 12 deferred THREE
+debts here and left signed swap-point comments in the code; this prompt pays
+all three, or the comments rot into archaeology.*
 
 ```
-Extend the Prompt 12 semantic-graph endpoint and view with two lenses:
+Extend the Prompt 12 semantic-graph endpoint and Model tab. Additive response
+fields ONLY — a Prompt 12 client that never learns about the lenses must keep
+working unchanged. All SQL parsing is server-side via the machinery the
+advisor already trusts (corpus_scan / shapes_in_statement from
+mv_fingerprint, sqlglot==30.0.3) — never a second parser, never in the
+browser.
+
+The three signed debts (each has a swap-point comment naming this prompt —
+find them by grepping "12b" in backend/routers/auto_optimize.py):
+1. Example-SQL curated concepts (:1874): measure concepts extracted from
+   example_question_sqls and benchmark answer SQL join the governance ladder
+   as curated. Reuse the curated-harvest extractors; MV-D16(b) still binds —
+   nothing extracted here re-enters the advisor corpus as recurrence evidence.
+2. DELETE _is_measure_column (:1918): replace the five undocumented
+   speculative key probes with the real read — the MV definition via
+   DESCRIBE ... AS JSON view_text, parsed by metric_view_catalog's existing
+   parsing (do not write a second YAML reader). Governed measure chips then
+   enumerate truthfully. The function is deleted, not extended.
+3. Concept identity (:1999): replace exact-name matching with
+   canonicalized-expr identity via canonicalize_expr — the same
+   canonicalization the fingerprint engine uses, so the ladder and the
+   advisor cannot disagree about what one measure is (the two-readers drift
+   hazard MV-D21 closed for columns, closed here for concepts).
+
+The two lenses:
 - SQL coverage: which example SQLs and benchmark questions touch which tables
-  and measure concepts, computed server-side by reusing corpus_scan /
-  shapes_in_statement from mv_fingerprint (sqlglot==30.0.3) — one parser, the
-  one the advisor already trusts. Renders as edge weight / a per-node coverage
-  badge.
-- Benchmark evidence overlay on proposals: evidence.benchmark_questions ids as
-  weighted edges from questions to the proposed measure.
-Same component, same endpoint, additive response fields only — a Prompt 12
-client that never learns about the lenses must keep working unchanged.
+  and measure concepts. Renders as edge weight / a per-node coverage badge.
+  A table no curated SQL touches is a visible cold spot — that is the lens's
+  point; render it plainly, not as an error.
+- Benchmark evidence overlay on proposals: evidence.benchmark_questions ids
+  as weighted edges from questions to the proposed measure.
+
+Honesty rules carry over: a space with no curated SQL shows no coverage and
+says so (frame-7b rule); parse failures degrade per MV-D15 vocabulary
+(UNAVAILABLE with a reason), never a 500 and never silently-zero coverage.
+
+VERIFY: the Prompt 12 render tests pass unchanged against a response with no
+lens fields (compatibility); new tests for each debt (curated-from-SQL
+concepts, DESCRIBE-enumerated governed chips, expr-identity merging two
+spellings of one measure); coverage lens on a fixture space; the swap-point
+comments are GONE from auto_optimize.py; MV-D9 gap-report refresh + baseline
+lockstep in both rule copies.
 ```
 
 ### Prompt 13 — Output screen panels
@@ -1715,6 +1752,10 @@ Audit test coverage across everything added on this branch and close gaps:
   case; the run-produced-no-SQL case still SKIPping with its own reason; EMPTY
   vs UNAVAILABLE reported distinctly; the space-scoped proposals route; and
   that the in-job advisor behaviour is unchanged by the corpus restructure.
+- 12b lenses: compatibility of the lens-free response with Prompt 12 clients;
+  the expr-identity merge; DESCRIBE-enumerated governed chips; and that no
+  "12b" swap-point comment survives anywhere in backend/ (they were debts,
+  and Prompt 12b's contract is that it paid all three).
 - WRITE-TO-READ EXPOSURE SWEEP (one-time, then pinned). Twice on this branch a
   "wire to existing endpoints" instruction assumed a read that the writing
   side never exposed — the space-scoped proposals read (caught at Prompt 11)
@@ -1833,6 +1874,62 @@ diff against system.information_schema.table_tags, the ALTER ... SET TAGS apply
 plan generator, the blocking firewall scan, and the copy-ready manual-steps
 checklist for UI-only domain/Page creation. No tag writes in this phase.
 Reuse the advisor's consent-gate pattern for the eventual tag-apply mode.
+```
+
+### Prompt 18 — Create Agent semantic-model step (separate branch, after Prompt 16; owns MV-D25)
+
+*Stub, recorded so the design worked out during this branch's reviews is not
+lost. This is the OTHER evidence route: the advisor proposes from recurrence
+(SQL that exists); the Create Agent designs from profiling (tables, column
+metadata, sampling) — MV-D25's owner. Do not blend the two: a profiling-derived
+candidate asserts "this looks computable", a recurrence-backed one asserts
+"people already compute this", and they must never share a confidence scale.*
+
+```
+On a NEW branch off the merged advisor branch:
+- DECIDE MV-D25 first and record it in the register (SCHEMA_DERIVED provenance,
+  capped below the recurrence tiers, suggest-only — or overturn with reasons).
+- A new create-agent step between profiling and plan (STEP_ORDER / STEP_TOOLS /
+  detect_step in prompts_create/__init__.py are declarative — data change plus
+  a prompt file plus one CreateAgentChat.tsx entry). Placement is load-bearing:
+  it needs the profiles, and whether an MV exists changes the SQL rules,
+  example SQLs, and benchmark answers plan_builder generates downstream.
+- A sixth parallel plan_builder section (_gen_metric_views) consuming
+  describe_table / profile_columns / assess_data_quality / assess_readiness
+  and the analytics section's measures + join_specs. It emits
+  MetricViewCandidate shapes ONLY — mv_yaml stays the sole renderer (MV-D8's
+  guard fails anything else), and create-agent SQL never enters the advisor
+  corpus as recurrence evidence (MV-D16(b)).
+- The EXACT-uniqueness probe: a cost-guarded COUNT(DISTINCT k) = COUNT(*) tool
+  on the agent's read-only SQL path — the producer MV-D14 says nothing emits
+  today, which makes rely.at_most_one_match and the nested-join rung reachable
+  for the job path too. KeyUniqueness gains when-measured/against-what.
+- Creation stays out of the agent's tools: the agent proposes in the plan, the
+  user approves in the existing plan-review surface, the BACKEND creates under
+  OBO via the existing mv_create/mv_entitlement seam (MV-D1/D20 invariants).
+  validate_sql_read_only is not relaxed. MV must exist before generate_config
+  (column_configs and example SQLs reference its field names), so the plan
+  step becomes re-entrant: approve -> create -> regenerate affected sections
+  -> create space. Degrade to today's sql_snippets path on decline or probe
+  failure; never block space creation on an MV.
+```
+
+### Prompt 19 — Materialization consent path (separate prompt, after Prompt 16)
+
+*Stub, so the tracked debt has an owner. Prompt 11 shipped no materialize
+control because the path is unbuilt, not unwired (gap-report mv_materialize
+row); the mockup's "Also materialize" checkbox is annotated not-shipped.*
+
+```
+- The EXPLAIN CREATE MATERIALIZED VIEW precheck MV-D1 requires — it exists
+  NOWHERE in the repo today. Surface incremental-eligibility blockers inline
+  before any create.
+- The materialize DDL path as a separate OBO consent (materialize_consented,
+  ddl.py:241 — the column exists, nothing writes it meaningfully), never
+  bundled with create-or-attach (MV-D1).
+- Only then: the run-config control, per the annotated mockup, enabled only
+  when the probe proves the capability.
+- REFRESH POLICY defaults per POV Key Finding 5; cost note in the consent copy.
 ```
 
 ---

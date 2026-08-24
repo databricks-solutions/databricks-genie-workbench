@@ -1,17 +1,23 @@
-"""Tests for the space-scoped semantic model graph route (Prompt 12, MV-D23).
+"""Tests for the space-scoped semantic model graph route (Prompt 12 + 12b, MV-D23).
 
-Two seams matter and are tested without Databricks:
+Seams tested without Databricks:
 
-- **Parse-free assembly** (``_build_semantic_graph``): tables split into
-  source/fact (col 0) vs joined dimension (col 1); join edges carry the decoded
-  ON predicate, relationship, and an SCD2 flag from the ``is_current`` guard;
-  measure concepts land on the governance ladder — governed (a config-marked MV
-  measure), curated (``sql_snippets.measures``), ungoverned (recurs only in
-  proposal evidence) — with EXACT-NAME identity so a name at a higher rung wins.
+- **Assembly** (``_build_semantic_graph``): tables split into source/fact (col 0)
+  vs joined dimension (col 1); join edges carry the decoded ON predicate,
+  relationship, and an SCD2 flag from the ``is_current`` guard; measure concepts
+  land on the governance ladder — governed (DESCRIBE-enumerated MV measures,
+  Prompt 12b Debt 2), curated (``sql_snippets.measures`` + measures harvested
+  from ``example_question_sqls``, Debt 1), ungoverned (recurs only in proposal
+  evidence) — with CANONICALIZED-EXPR identity so two spellings of one measure
+  are one chip and a higher rung absorbs its twin (Debt 3).
+- **Coverage lens** (``_apply_coverage``): curated-SQL touch counts per node,
+  cold spots at 0, the MV-D15 status vocabulary (EMPTY / UNAVAILABLE / COMPUTED).
 - **The route**: the base graph is read the OBO-tolerant way ``/space/fetch``
-  reads (``get_serialized_space``), so it reflects what the signed-in user may
-  see; proposals ride the SP-side Delta read; a never-optimized space still
-  renders; a config-read failure surfaces as 502.
+  reads (``get_serialized_space``); the governed chips ride a best-effort
+  DESCRIBE read; proposals ride the SP-side Delta read; a never-optimized space
+  still renders; a config-read failure surfaces as 502.
+- **Compatibility**: a Prompt 12 client that never learned the lens keeps working
+  — every 12b field is additive.
 """
 
 from __future__ import annotations
@@ -35,13 +41,7 @@ _SPACE = {
             {"identifier": "finance.ref.customer"},
         ],
         "metric_views": [
-            {
-                "identifier": "finance.sales.orders_metrics",
-                "column_configs": [
-                    {"column_name": "order_count", "kind": "measure"},
-                    {"column_name": "order_date", "kind": "dimension"},
-                ],
-            }
+            {"identifier": "finance.sales.orders_metrics"},
         ],
     },
     "instructions": {
@@ -74,6 +74,17 @@ _SPACE = {
 }
 
 
+# A DESCRIBE-derived governed measure (Prompt 12b Debt 2). Field-shaped mapping;
+# _field_attr reads either a mapping or a MetricViewField object.
+def _governed(field_name: str, canonical_expr: str = "", mv_fqn: str = "finance.sales.orders_metrics"):
+    return {
+        "mv_fqn": mv_fqn,
+        "field_name": field_name,
+        "kind": "measure",
+        "canonical_expr": canonical_expr,
+    }
+
+
 def _proposal(proposed_object: str, recurrence: int = 14, **over) -> MvProposal:
     base = dict(
         suggestion_id="sug1",
@@ -91,11 +102,18 @@ def _node(nodes: list[dict], node_id: str) -> dict | None:
     return next((n for n in nodes if n["id"] == node_id), None)
 
 
+def _build(space, proposals, **kw):
+    """Unpack the 4-tuple (nodes, edges, coverage_status, coverage_reason)."""
+    return auto_optimize._build_semantic_graph(space, proposals, **kw)
+
+
 # ── Pure assembly ───────────────────────────────────────────────────────────
 
 
 def test_build_graph_splits_tables_joins_and_ladders_measures():
-    nodes, edges = auto_optimize._build_semantic_graph(_SPACE, [])
+    nodes, edges, _status, _reason = _build(
+        _SPACE, [], governed_fields=[_governed("order_count", "count(1)")]
+    )
     node_by_id = {n.id: n for n in nodes}
 
     # order_items is only ever a left/fact table → col 0; customer is a join's
@@ -103,11 +121,10 @@ def test_build_graph_splits_tables_joins_and_ladders_measures():
     assert node_by_id["finance.sales.order_items"].col == 0
     assert node_by_id["finance.ref.customer"].col == 1
 
-    # Metric view node in col 2; its config-marked measure is a governed chip,
-    # the dimension column is not.
+    # Metric view node in col 2; its DESCRIBE-enumerated measure is a governed
+    # chip tied to it by membership.
     assert node_by_id["finance.sales.orders_metrics"].kind == "metric_view"
     assert node_by_id["measure:order_count"].governance == "governed"
-    assert "measure:order_date" not in node_by_id
 
     # Curated concept from sql_snippets.measures.
     assert node_by_id["measure:gross_margin"].governance == "curated"
@@ -130,8 +147,80 @@ def test_build_graph_splits_tables_joins_and_ladders_measures():
     )
 
 
+def test_build_graph_governed_chips_come_from_describe_not_config_markers():
+    """Debt 2: with no DESCRIBE read (empty governed_fields), the MV still renders
+    as a governed node but WITHOUT fabricated measure chips — the honest fallback
+    the deleted _is_measure_column probe used to produce."""
+    nodes, _edges, _s, _r = _build(_SPACE, [])
+    node_by_id = {n.id: n for n in nodes}
+    assert node_by_id["finance.sales.orders_metrics"].kind == "metric_view"
+    assert not any(n.governance == "governed" for n in nodes)
+    # The deleted speculative probe is gone.
+    assert not hasattr(auto_optimize, "_is_measure_column")
+
+
+def test_build_graph_curated_concept_harvested_from_example_sql():
+    """Debt 1: a measure in example_question_sqls joins the ladder as curated."""
+    space = {
+        "data_sources": {"tables": [{"identifier": "finance.sales.orders"}]},
+        "instructions": {
+            "example_question_sqls": [
+                {"id": "q1", "sql": ["SELECT SUM(o.qty) FROM finance.sales.orders o"]}
+            ]
+        },
+    }
+    nodes, _edges, _s, _r = _build(space, [])
+    curated = [n for n in nodes if n.kind == "measure" and n.governance == "curated"]
+    assert len(curated) == 1
+    assert "sum(qty)" in curated[0].label.lower()
+
+
+def test_build_graph_expr_identity_merges_two_spellings():
+    """Debt 3: a snippet measure and an example-SQL measure that canonicalize to
+    the same expression are ONE chip (qualifiers/aliases differ, identity does
+    not)."""
+    space = {
+        "data_sources": {"tables": [{"identifier": "finance.sales.orders"}]},
+        "instructions": {
+            "sql_snippets": {
+                "measures": [{"id": "m1", "display_name": "margin", "sql": ["SUM(o.rev - o.cost)"]}]
+            },
+            "example_question_sqls": [
+                {"id": "q1", "sql": ["SELECT SUM(ord.rev - ord.cost) FROM finance.sales.orders ord"]}
+            ],
+        },
+    }
+    nodes, _edges, _s, _r = _build(space, [])
+    curated = [n for n in nodes if n.kind == "measure" and n.governance == "curated"]
+    assert len(curated) == 1
+    # The human label from the snippet wins over the raw-expr label.
+    assert curated[0].label == "margin"
+
+
+def test_build_graph_governed_absorbs_its_curated_twin():
+    """Debt 3: a governed measure and a curated snippet that canonicalize the same
+    are one chip at the governed rung (highest rung wins by expr identity)."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],
+            "metric_views": [{"identifier": "finance.sales.m"}],
+        },
+        "instructions": {
+            "sql_snippets": {
+                "measures": [{"id": "m1", "display_name": "revenue", "sql": ["SUM(o.rev)"]}]
+            }
+        },
+    }
+    nodes, _e, _s, _r = _build(
+        space, [], governed_fields=[_governed("revenue", "sum(rev)", mv_fqn="finance.sales.m")]
+    )
+    measures = [n for n in nodes if n.kind == "measure"]
+    assert len(measures) == 1
+    assert measures[0].governance == "governed"
+
+
 def test_build_graph_adds_ungoverned_from_proposal_evidence():
-    nodes, _ = auto_optimize._build_semantic_graph(
+    nodes, _edges, _s, _r = _build(
         _SPACE, [_proposal("finance.sales.order_revenue", recurrence=14)]
     )
     node_by_id = {n.id: n for n in nodes}
@@ -140,22 +229,79 @@ def test_build_graph_adds_ungoverned_from_proposal_evidence():
     assert "14" in (ungoverned.origin or "")
 
 
-def test_build_graph_exact_name_match_prefers_higher_rung():
-    """A proposal whose name matches a curated concept is not re-added ungoverned."""
-    nodes, _ = auto_optimize._build_semantic_graph(
-        _SPACE, [_proposal("finance.sales.gross_margin")]
+def test_build_graph_ungoverned_carries_benchmark_question_ids():
+    """The evidence lens: benchmark question ids ride the ungoverned node."""
+    nodes, _e, _s, _r = _build(
+        _SPACE,
+        [_proposal("finance.sales.order_revenue", evidence={"benchmark_question_ids": ["bq_1", "bq_2"]})],
     )
+    node = next(n for n in nodes if n.id == "measure:order_revenue")
+    assert node.benchmark_question_ids == ["bq_1", "bq_2"]
+
+
+def test_build_graph_name_match_prefers_higher_rung():
+    """A proposal whose name matches a curated concept is not re-added ungoverned."""
+    nodes, _edges, _s, _r = _build(_SPACE, [_proposal("finance.sales.gross_margin")])
     margins = [n for n in nodes if n.label == "gross_margin"]
     assert len(margins) == 1
     assert margins[0].governance == "curated"
 
 
 def test_build_graph_empty_space_has_no_measures_or_edges():
-    nodes, edges = auto_optimize._build_semantic_graph(
+    nodes, edges, status, _reason = _build(
         {"data_sources": {"tables": [{"identifier": "finance.sales.orders"}]}}, []
     )
     assert [n.kind for n in nodes] == ["table"]
     assert edges == []
+    # No curated SQL → the coverage lens is honestly EMPTY, not a zero it invented.
+    assert status == "EMPTY"
+
+
+# ── Coverage lens ────────────────────────────────────────────────────────────
+
+
+def test_coverage_lens_counts_touches_and_marks_cold_spots():
+    space = {
+        "data_sources": {
+            "tables": [
+                {"identifier": "finance.sales.orders"},
+                {"identifier": "finance.ref.customer"},
+                {"identifier": "finance.ref.unused"},
+            ],
+        },
+        "instructions": {
+            "example_question_sqls": [
+                {"id": "q1", "sql": ["SELECT SUM(o.qty) FROM finance.sales.orders o"]},
+                {
+                    "id": "q2",
+                    "sql": [
+                        "SELECT COUNT(1) FROM finance.sales.orders o "
+                        "JOIN finance.ref.customer c ON o.cid = c.id"
+                    ],
+                },
+            ]
+        },
+    }
+    nodes, _edges, status, reason = _build(space, [])
+    assert status == "COMPUTED"
+    assert reason is None
+    node_by_id = {n.id: n for n in nodes}
+    # orders is touched by both statements; customer by one; unused is a cold spot.
+    assert node_by_id["finance.sales.orders"].coverage == 2
+    assert node_by_id["finance.ref.customer"].coverage == 1
+    assert node_by_id["finance.ref.unused"].coverage == 0
+
+
+def test_coverage_lens_unavailable_when_all_statements_fail_to_parse():
+    space = {
+        "data_sources": {"tables": [{"identifier": "finance.sales.orders"}]},
+        "instructions": {
+            "example_question_sqls": [{"id": "q1", "sql": ["not valid ;; sql @@@"]}]
+        },
+    }
+    _nodes, _edges, status, reason = _build(space, [])
+    assert status == "UNAVAILABLE"
+    assert reason and "parse" in reason
 
 
 # ── Route ───────────────────────────────────────────────────────────────────
@@ -168,6 +314,10 @@ def client(monkeypatch) -> TestClient:
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
     monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: MagicMock())
+    # The governed DESCRIBE read is best-effort and Databricks-bound; default it
+    # to the honest empty in the offline route tests, overridden where a chip is
+    # asserted.
+    monkeypatch.setattr(auto_optimize, "_read_governed_measure_fields", lambda space_data: [])
     app = FastAPI()
     app.include_router(auto_optimize.router)
     return TestClient(app)
@@ -175,7 +325,8 @@ def client(monkeypatch) -> TestClient:
 
 def test_semantic_graph_reads_base_from_the_obo_tolerant_config_path(client, monkeypatch):
     """The base graph comes from get_serialized_space (the /space/fetch OBO path),
-    not from a run artifact or an SP-only read."""
+    not from a run artifact or an SP-only read; governed chips ride the DESCRIBE
+    read."""
     seen: dict = {}
 
     def fake_serialized(space_id):
@@ -183,12 +334,15 @@ def test_semantic_graph_reads_base_from_the_obo_tolerant_config_path(client, mon
         return dict(_SPACE)
 
     monkeypatch.setattr(auto_optimize, "get_serialized_space", fake_serialized)
+    monkeypatch.setattr(
+        auto_optimize, "_read_governed_measure_fields",
+        lambda space_data: [_governed("order_count", "count(1)")],
+    )
     monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
 
     resp = client.get("/api/auto-optimize/spaces/space-1/semantic-graph")
     assert resp.status_code == 200
     data = resp.json()
-    # The user-entitled config read is what produced the graph.
     assert seen["space_id"] == "space-1"
     assert data["space_id"] == "space-1"
     assert _node(data["nodes"], "measure:order_count")["governance"] == "governed"
@@ -196,6 +350,19 @@ def test_semantic_graph_reads_base_from_the_obo_tolerant_config_path(client, mon
     # Edges serialize with the "from" alias, not "from_".
     assert all("from" in e for e in data["edges"])
     assert data["proposals"] == []
+
+
+def test_semantic_graph_lens_free_response_is_backward_compatible(client, monkeypatch):
+    """Compatibility: the additive lens fields are present but a Prompt 12 client
+    that ignores them sees an unchanged base graph."""
+    monkeypatch.setattr(auto_optimize, "get_serialized_space", lambda space_id: dict(_SPACE))
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
+    resp = client.get("/api/auto-optimize/spaces/space-1/semantic-graph")
+    assert resp.status_code == 200
+    data = resp.json()
+    # New top-level lens keys exist (additive), and the base shape is unchanged.
+    assert "coverage_status" in data
+    assert {"space_id", "nodes", "edges", "proposals"} <= set(data)
 
 
 def test_semantic_graph_carries_proposals_and_ungoverned_overlay(client, monkeypatch):

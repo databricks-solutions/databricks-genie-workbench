@@ -387,8 +387,15 @@ class MvSemanticGraphNode(BaseModel):
     non-color discriminator. ``proposed`` marks the ghosted overlay MV (the
     overlay itself is synthesized client-side; the server never emits it).
 
-    No SQL is parsed to build this node set — config fields plus proposal
-    evidence suffice. Measure extraction from example SQL is Prompt 12b."""
+    ``coverage`` (Prompt 12b, SQL-coverage lens) is the number of curated SQL
+    statements (``example_question_sqls``, plus curated ``sql_snippets.measures``)
+    that touch this table or measure concept — an ADDITIVE field a Prompt 12
+    client that never learned the lens simply ignores. ``0`` is a legible cold
+    spot (a table no curated SQL exercises), not an error; ``None`` means the
+    lens did not run for this node kind. ``benchmark_question_ids`` (evidence
+    lens) carries the ``evidence.benchmark_question_ids`` of the proposal backing
+    an ungoverned concept, so the question→measure evidence is a first-class,
+    Prompt-14-classifiable field rather than only reachable through the card."""
 
     id: str
     kind: Literal["table", "metric_view", "measure"]
@@ -398,6 +405,8 @@ class MvSemanticGraphNode(BaseModel):
     governance: Literal["governed", "curated", "ungoverned"] | None = None
     origin: str | None = None
     proposed: bool = False
+    coverage: int | None = None
+    benchmark_question_ids: list[str] | None = None
 
 
 class MvSemanticGraphEdge(BaseModel):
@@ -407,7 +416,12 @@ class MvSemanticGraphEdge(BaseModel):
     predicate (``sql[0]``), ``relationship`` is decoded from the ``--rt=…--``
     annotation (``sql[1]``), and ``scd2`` is true when the predicate carries an
     ``is_current`` guard. ``membership`` links a measure concept to its owning
-    metric view. ``replaces`` is the overlay's dashed edge — client-only."""
+    metric view. ``replaces`` is the overlay's dashed edge — client-only.
+
+    ``weight`` (Prompt 12b, SQL-coverage lens) is the number of curated SQL
+    statements that traverse a ``join`` edge (touch both endpoints) — an ADDITIVE
+    field older clients ignore; ``None`` means the lens did not weight this edge
+    kind."""
 
     from_: str = Field(..., alias="from")
     to: str
@@ -415,6 +429,7 @@ class MvSemanticGraphEdge(BaseModel):
     on: str | None = None
     relationship: str | None = None
     scd2: bool = False
+    weight: int | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -429,12 +444,22 @@ class MvSemanticGraph(BaseModel):
     ``/space/fetch`` performs, so the graph reflects what the signed-in user is
     entitled to see. ``proposals`` carries the SAME ``MvProposal`` shape the
     cards use so the client can synthesize the ghosted overlay with no new
-    proposal payload."""
+    proposal payload.
+
+    ``coverage_status`` / ``coverage_reason`` (Prompt 12b, SQL-coverage lens)
+    report the lens outcome in the MV-D15 vocabulary — ``COMPUTED`` when curated
+    SQL parsed and coverage counts are meaningful, ``EMPTY`` when the space has no
+    curated SQL (the frame-7b honesty rule: show no coverage and say so), and
+    ``UNAVAILABLE`` with a named ``coverage_reason`` when parsing degraded (never a
+    500, never a silently-zero coverage). Both are ADDITIVE: a Prompt 12 client
+    that never learned the lens ignores them and renders exactly as before."""
 
     space_id: str
     nodes: list[MvSemanticGraphNode] = Field(default_factory=list)
     edges: list[MvSemanticGraphEdge] = Field(default_factory=list)
     proposals: list[MvProposal] = Field(default_factory=list)
+    coverage_status: str | None = None
+    coverage_reason: str | None = None
 
 
 class MvDdlArtifact(BaseModel):

@@ -48,6 +48,34 @@ export function withOverlay(graph: SemanticGraphResponse): { nodes: SemanticGrap
   return { nodes, edges }
 }
 
+// Prompt 12b SQL-coverage lens status, in the MV-D15 vocabulary. Rendered only
+// when the server reported a status — a lens-free (Prompt 12) response leaves it
+// undefined and this note is absent, so older behavior is unchanged.
+function CoverageNote({ status, reason }: { status?: string | null; reason?: string | null }) {
+  if (!status) return null
+  if (status === "EMPTY") {
+    return (
+      <p className="text-xs text-muted">
+        No curated SQL in this Agent yet, so query coverage is not measured. Add example queries or let an
+        optimization run harvest them.
+      </p>
+    )
+  }
+  if (status === "UNAVAILABLE") {
+    return (
+      <p className="text-xs text-[var(--color-warning)]">
+        Query coverage unavailable{reason ? ` — ${reason}` : ""}.
+      </p>
+    )
+  }
+  return (
+    <p className="text-xs text-muted">
+      Query coverage: badges count the curated queries touching each node; a dashed 0 is a cold spot no curated
+      SQL exercises.
+    </p>
+  )
+}
+
 function GovernanceLadder({ counts }: { counts: Record<MvGovernance, number> }) {
   const present = LADDER_ORDER.filter((rung) => counts[rung] > 0)
   // Honesty rule (both ways): an empty space has found nothing — no green rung it
@@ -175,6 +203,7 @@ export function SemanticModelView({
         {graph && !error && (
           <>
             <GovernanceLadder counts={ladderCounts} />
+            {!isEmpty && <CoverageNote status={graph.coverage_status} reason={graph.coverage_reason} />}
             {isEmpty ? (
               <p className="text-xs text-muted">
                 This Agent's configuration defines no joins, SQL snippets, or metric views yet — the graph shows the config as
