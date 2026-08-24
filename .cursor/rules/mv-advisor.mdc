@@ -57,6 +57,12 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   tests, do not delete or weaken them.
 - Cross-task and cross-phase state passes through Delta tables keyed by
   run_id (genie_opt_* via optimization/ddl.py). NEVER dbutils.jobs.taskValues.
+  SCOPE (MV-D23): this governs state passing INSIDE the job. It does not make
+  run_id the only legitimate key on the MV tables. genie_opt_mv_candidates is
+  partitioned by target_space_id precisely because a candidate outlives the run
+  that proposed it (MV-D7), and wh_load_mv_candidates already reads by
+  target_space_id or run_id. A space-keyed READ of metric-view state is correct
+  and is not a violation of this rule.
 - Job parameters are read with dbutils.widgets. Any new parameter is added
   IN LOCKSTEP to all three job-definition mirrors — root databricks.yml,
   packages/genie-space-optimizer/databricks.yml, and
@@ -79,9 +85,18 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   outside sandbox mode; drop is an explicit backend OBO endpoint.
 - The job runs as the SERVICE PRINCIPAL. Therefore the job NEVER executes
   CREATE VIEW ... WITH METRICS. UC object creation happens ONLY in the
-  FastAPI backend under OBO (require_obo_workspace_client), at trigger time,
-  against a recorded consent. The job attaches (patch), measures, and
+  FastAPI backend under OBO (require_obo_workspace_client), against a
+  recorded consent. The job attaches (patch), measures, and
   reverts — writes it already performs as SP today.
+  "AT TRIGGER TIME" IS NOT ONE OF THE INVARIANTS (MV-D23). Through Prompt 9 it
+  was the only moment a create could happen, so the rule read as though the
+  timing carried the safety. It does not. The four invariants are: the identity
+  (require_obo_workspace_client, which hard-fails — never the SP-tolerant
+  get_workspace_client), a recorded and freshly re-verified consent,
+  downgrade-never-upgrade on any mismatch, and the target being the consented
+  schema and nowhere else. A create initiated outside a run must satisfy all
+  four. Until MV-D23 is decided, do not build one — but do not treat the
+  timing as the reason.
 - Do not reuse GET /permissions/{space_id} for entitlement: it probes the
   SP's privileges, not the user's. The entitlement probe is new OBO code.
 - On entitlement/consent mismatch, DOWNGRADE to suggest_only — never

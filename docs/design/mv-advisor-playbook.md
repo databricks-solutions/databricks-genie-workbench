@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D22 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D23 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -80,6 +80,12 @@
      tests, do not delete or weaken them.
    - Cross-task and cross-phase state passes through Delta tables keyed by
      run_id (genie_opt_* via optimization/ddl.py). NEVER dbutils.jobs.taskValues.
+     SCOPE (MV-D23): this governs state passing INSIDE the job. It does not make
+     run_id the only legitimate key on the MV tables. genie_opt_mv_candidates is
+     partitioned by target_space_id precisely because a candidate outlives the run
+     that proposed it (MV-D7), and wh_load_mv_candidates already reads by
+     target_space_id or run_id. A space-keyed READ of metric-view state is correct
+     and is not a violation of this rule.
    - Job parameters are read with dbutils.widgets. Any new parameter is added
      IN LOCKSTEP to all three job-definition mirrors — root databricks.yml,
      packages/genie-space-optimizer/databricks.yml, and
@@ -102,9 +108,18 @@
      outside sandbox mode; drop is an explicit backend OBO endpoint.
    - The job runs as the SERVICE PRINCIPAL. Therefore the job NEVER executes
      CREATE VIEW ... WITH METRICS. UC object creation happens ONLY in the
-     FastAPI backend under OBO (require_obo_workspace_client), at trigger time,
-     against a recorded consent. The job attaches (patch), measures, and
+     FastAPI backend under OBO (require_obo_workspace_client), against a
+     recorded consent. The job attaches (patch), measures, and
      reverts — writes it already performs as SP today.
+     "AT TRIGGER TIME" IS NOT ONE OF THE INVARIANTS (MV-D23). Through Prompt 9 it
+     was the only moment a create could happen, so the rule read as though the
+     timing carried the safety. It does not. The four invariants are: the identity
+     (require_obo_workspace_client, which hard-fails — never the SP-tolerant
+     get_workspace_client), a recorded and freshly re-verified consent,
+     downgrade-never-upgrade on any mismatch, and the target being the consented
+     schema and nowhere else. A create initiated outside a run must satisfy all
+     four. Until MV-D23 is decided, do not build one — but do not treat the
+     timing as the reason.
    - Do not reuse GET /permissions/{space_id} for entitlement: it probes the
      SP's privileges, not the user's. The entitlement probe is new OBO code.
    - On entitlement/consent mismatch, DOWNGRADE to suggest_only — never
@@ -268,9 +283,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D22)
+## Decisions register (MV-D1–MV-D23)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -491,6 +506,16 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 *The drift hazard, and the pin that closes it.* Two code paths now read and write the same three `genie_opt_mv_*` Delta tables in two languages — `mv_state` (Spark, in-job) and these `wh_*` helpers (warehouse SQL, backend) — the exact "two readers of one field start disagreeing" failure the Prompt 6c harvest guarded against for trusted assets. The `wh_*` helpers must be pinned to the `mv_state` column contract (a shared column-list constant, or a test that asserts the warehouse helper's projected/written columns match `mv_state`'s), so a schema change on either side fails a test rather than a demo. That pin is part of Prompt 9's VERIFY, not a follow-on. `created_by` (the consenting user) already exists on the created-objects row (`mv_state.py:468`), so the drop route's non-owner 403 has a field to authorize against without a schema change. The pin lands as `packages/genie-space-optimizer/tests/unit/test_wh_mv_state.py`.
 
 **MV-D22 — The backend replays the stored YAML with revalidation; it does not regenerate (supersedes MV-D15's regeneration clause).** Recorded during Prompt 9. MV-D15 directed Prompt 9 to regenerate the YAML under the backend's probe rather than replay the run-1 artifact, on the premise that the OBO backend would see richer capabilities than the SP job. That premise is false: `generate()` reads capabilities off `profiling.capabilities` (`mv_yaml.py:288`, rung gated at `:668`), capabilities derive from the compute type not the identity, and the backend probes via SQL warehouse exactly as the job does — so MV-D13 pins both to the same UNKNOWN→unavailable floor, and a regeneration would produce byte-identical YAML to the job's rung-3 render. Regeneration is unachievable regardless, because `generate()`'s inputs (`MetricViewCandidate`, `MvProfiling`) are not persisted. Resolution: the advisor additionally persists the rendered `yaml_text` in the `mv_candidate_ddl` payload (`mv_advisor.py` `_write_ddl_artifact`); at trigger time the backend recovers it, re-wraps it for the consented target via `create_ddl(consented_full_name, yaml_text)` — necessary because `_proposed_object` (`mv_advisor.py:721`) derives the render-time name from source-table location, before consent exists and possibly differing from it — re-validates under the fresh probe, and hard-aborts the create (drops the suggestion) if revalidation returns a `downgrade_to` below the stored rung. The abort guard makes create-time safety independent of MV-D13 rather than silently dependent on it. Firewall unchanged: the persisted `yaml_text` is the already-echo-checked shipped body; because it is immutable between render and create, the backend accepts the render-time echo result and does not require the benchmark oracle at trigger time (`validate` reporting `NOT_COMPARED` without the oracle is not a create failure). The create-and-attach orchestration lives in the backend `mv_create.py` service (MV-D20); the engine's `trigger_optimization` reaches it through an `mv_attach_hook` callback so the dependency arrow stays backend→engine. The abort guard is pinned by `test_mv_create.py::test_revalidation_downgrade_aborts_the_create`.
+
+**MV-D23 — Whether a candidate can exist, and be created, without a run (OPEN — decided at Prompt 13.5).** Recorded from a post-Prompt-9 review of the question the feature cannot currently answer: *can the advisor suggest a metric view for a Genie Agent that has never been optimized?* Today it cannot, and the reason is not a policy — it is four `run_id` constraints that Prompts 1 through 9 each added for good local reasons and that compose into a hard coupling nobody chose. They are recorded here because three of the four cannot be relaxed by the `ADDITIVE_COLUMN_MIGRATIONS` mechanism, so the decision has a schema cost that a later prompt must not discover mid-flight.
+
+*The four couplings, precisely.* **(1)** The corpus is gated, not merely seeded: `_advise` opens with `load = load_iteration_zero_corpus(...)` and returns `STATUS_SKIPPED` on `not load.usable` (`mv_advisor.py:919-928`), so the curated half Prompt 6c shipped is strictly additive to a gate it cannot open — and `curated_corpus_entries` additionally consumes `load.applied_config`, itself derived from the same iteration rows. A space with no eval run has no corpus even when its `example_question_sqls`, `sql_snippets.measures` and benchmark answers are full of recurring measures. **(2)** `genie_opt_mv_candidates.run_id` is `NOT NULL` (`ddl.py`, the candidates DDL) with the comment "the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)" — the comment already concedes the candidate outlives the run, but the column still requires one. **(3)** The rendered body lives in exactly one place: `_write_ddl_artifact` persists `yaml_text` into a `genie_opt_artifacts` row (`artifact_kind = 'mv_candidate_ddl'`), and that table is `run_id NOT NULL` and `PARTITIONED BY (run_id)`. So MV-D22's replay contract — the backend recovers the immutable body rather than regenerating it — has nothing to recover for a candidate proposed outside a run. This is the sharpest of the four, because it makes MV-D22 and a standalone create mutually exclusive as currently built. **(4)** The created-objects ledger is `PARTITIONED BY (run_id)` and keyed `(run_id, suggestion_id)`, and all three backend writers take `run_id: str` non-optionally (`warehouse.py`, `wh_upsert_mv_created_object`, `wh_update_mv_created_object_status`, `wh_load_mv_created_object`).
+
+*What is already fine, and should not be re-solved.* `wh_load_mv_candidates` was built during Prompt 9 accepting `target_space_id` **or** `run_id`, with a guard that refuses to scan every space. The space-scoped read therefore already exists; only the route above it (`GET /runs/{run_id}/mv-proposals`) is run-keyed. The 6a/6b signal producers read through `sql_warehouse_query` rather than Spark, so L and D need no second producer for a backend-side caller. And with L and D wired, `evidence_coverage` is no longer 0.50 — a standalone candidate is not structurally capped at MEDIUM, which was the strongest argument against this path while it held.
+
+*Three options, none chosen here.* **(a) A sentinel advice run.** Standalone advice writes a `genie_opt_runs` row distinguished by kind, and every FK, partition, helper and MV-D22 replay path works untouched. The cost is honest but real: a run row that never ran an eval, which the run-history list and every accuracy aggregate must then exclude by construction rather than by convention — and a filter that is forgotten in one place produces a run with no accuracy rather than an error. **(b) Relax `run_id` and re-key.** Truthful to the model, and the candidate row's own comment argues for it, but `ADDITIVE_COLUMN_MIGRATIONS` can only *add* columns — dropping `NOT NULL` on couplings (2) and (3) and re-partitioning (4) needs table recreates on three tables that already hold customer data on any workspace that has run this branch. **(c) Separate standalone tables.** Cleanest schema, worst outcome for the drift hazard MV-D21 just spent a pin closing: a third reader and writer of the same three concepts in a third dialect. A leaning, for 13.5 to accept or overturn with reasons: **(a)**, with the exclusion expressed as a predicate in the shared run-list query rather than as a rule contributors must remember, plus an additive `yaml_text` column on the candidate row so coupling (3) stops depending on the artifact partition at all — the one genuinely additive part of (b), worth taking whichever option wins.
+
+*What this obliges the prompts between here and 13.5.* Prompt 12's graph and Prompt 13's cards must be built against a proposal payload whose `run_id` is **presentational, not structural** — no component may key state, fetch, or identity on it — because 13.5 supplies the same `ScoredProposal` shape from a space-scoped source and a payload divergence rebuilds both. Prompt 11 must read approved proposals **by space** (see its amended body). And no prompt before 13.5 may add a fifth `run_id` coupling to the MV surface without recording it here.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -1157,6 +1182,21 @@ patterns — local useState, no store):
    baseline vs post-attach accuracy (both eval_run_ids linked), tables_freed,
    regression state with DETACHED badge and the explicit [Drop view] action.
 6. Semantic model visualization (see Prompt 12) — one representative frame.
+7. IQ Scan panel, the pre-optimization surface (MV-D23). This is the ONLY
+   mockup review on this branch, and 13.5 builds this panel, so design it here
+   or pay for a second review: the IQ Scan result screen
+   (frontend/src/pages/IQScoreTab.tsx) gains an advisory metric-view section
+   below the 12 checks, rendering the SAME proposal card as mockup 4 with no
+   run context — no "Lift not measured" label (nothing was run to measure),
+   no [Re-run with this metric view], and a primary action that opens the
+   consent flow directly. Two states, and the second is the common one on a
+   new space: (a) proposals found; (b) the MV-D15 EMPTY state — the corpus was
+   read and no measure recurred. Copy for (b) must say the scan looked and
+   found nothing recurring, NOT that the feature is unavailable or that the
+   scan failed; reuse the empty-table-is-not-a-failed-run framing already
+   agreed for the MV tables in docs/docs/features/auto-optimize.md. Include a
+   third frame for the not-entitled variant, which reuses mockup 3's denial
+   banner unchanged.
 
 Deliver as Storybook stories if the repo has Storybook, otherwise as vitest-
 renderable components plus a static HTML export per screen under
@@ -1175,8 +1215,17 @@ builder frontend/src/components/auto-optimize/optimizationRequest.ts:
 
 - Toggle off by default. First-run state: "Create and attach" disabled with
   the "available after this run produces proposals you approve" copy (MV-D1).
-- Re-run state (approved proposals exist for the space, fetched from
-  GET /runs/{run_id}/mv-proposals of the prior run): proposal checkboxes,
+- Re-run state (approved proposals exist for the space). AMENDED after Prompt 9
+  (MV-D23): the condition here is space-scoped but the Prompt 9 route is
+  run-keyed, so "of the prior run" would make this panel hunt for a prior
+  run_id to stand in for a space-scoped question. Do not do that. The helper
+  already answers it — wh_load_mv_candidates takes target_space_id OR run_id
+  (warehouse.py) — so add the space-scoped route this panel actually needs,
+  GET /api/auto-optimize/spaces/{space_id}/mv-proposals?approved_for_rerun=true,
+  alongside the existing run-keyed one rather than replacing it (the output
+  screen legitimately wants per-run proposals). Prompt 13.5 reuses this route
+  unchanged; a prior-run workaround here would be rewritten there.
+  Then: proposal checkboxes,
   target read from the proposal/consent, probe call to
   POST /api/auto-optimize/mv/probe on expand; granted/denied states per the
   mockups; "Create and attach" enabled only on verdict SUFFICIENT;
@@ -1237,6 +1286,80 @@ Implement mockups 3–4 in the run output/results screen:
   answers silently degrade without it.
 - Wire to the Prompt 9 endpoints; component tests for every state incl.
   downgraded-run and detached-with-drop.
+- Per MV-D23: run_id is presentational in every component added here. Do not
+  key component state, cache identity, or a fetch on it — 13.5 renders these
+  same cards from a space-scoped source, and a structural dependency on run_id
+  means rebuilding them.
+```
+
+### Prompt 13.5 — Suggest metric views without a run (decides MV-D23)
+
+*Sequenced after Prompt 13 and BEFORE Prompt 14, deliberately. The three prompts that follow are closeout — 14 audits "everything added on this branch", 15 is the E2E pass, 16 writes the docs, changelog and PR — so landing this after 16 pays for all three twice and ships a changelog describing an entry point that changes one prompt later. It is placed after 13 rather than before 10 because its UI is Prompt 13's proposal card with a different data source: build the card once, then feed it.*
+
+*Why this is a prompt at all, rather than a follow-on: the feature as built through Prompt 13 can only advise a Genie Agent that has already completed an optimization run, because the advisor's corpus gate requires iteration-0 generated SQL. That inverts the value proposition — the spaces most in need of a governed measure are the ones nobody has optimized yet — and it is the reason MV-D23 was raised the moment Prompt 9 landed.*
+
+```
+DECIDE MV-D23 FIRST and record the decision in the playbook register before
+writing code. The three options and the recorded leaning are in that entry; the
+four run_id couplings it enumerates are the work. Do not start from the leaning
+without re-reading the couplings against the repo — MV-D23 was written from a
+review, not from an implementation attempt, and the anchors may have moved.
+
+Scope, in dependency order:
+
+1. GSO — make the corpus reachable without a run (coupling 1).
+   - mv_advisor._advise currently returns SKIPPED on `not load.usable` before
+     the curated harvest runs. Restructure so the iteration-0 corpus is one
+     contributor rather than a gate: a usable corpus is a non-empty union, and
+     "no iterations" is a recorded contribution reason, not a phase skip.
+   - curated_corpus_entries consumes load.applied_config. Outside a run the
+     config comes from get_space(include_serialized_space=True) — which is
+     where the iteration row's copy originated anyway. Route both callers
+     through one accessor so the two paths cannot disagree about what the
+     applied config is.
+   - Preserve every existing skip reason and its meaning. The empty-corpus trap
+     documented in the module docstring is unchanged: an eval run that produced
+     no SQL is still SKIP with a reason, and must not become "no recurring
+     measures". MV-D15 vocabulary throughout — EMPTY is a measurement,
+     UNAVAILABLE is a read that could not run.
+   - Do NOT weaken the MV-D16(b) contamination rule: nothing generated by this
+     standalone path may re-enter the corpus as recurrence evidence.
+
+2. GSO — a corpus-agnostic entry point callable without a SparkSession.
+   Extract the orchestration _advise performs into a function whose inputs are
+   the corpus, the estate, profiling, capabilities and the signal readers, and
+   whose persistence is injected. run_mv_advisor_phase keeps its signature and
+   becomes one caller (Spark, in-job); the backend becomes the other (warehouse
+   path). The 6a/6b producers already read through sql_warehouse_query, so no
+   second producer is needed. Persistence for the backend caller goes through
+   the wh_* helpers Prompt 9 built (MV-D21) — extend that set if a writer is
+   missing, and extend the MV-D21 column-contract pin along with it. Do NOT
+   import genie_space_optimizer.optimization into the backend.
+
+3. Backend — the route.
+   POST /api/auto-optimize/spaces/{space_id}/mv/suggest, OBO, returning the
+   same ScoredProposal-shaped payload the run-keyed route returns. Reads may
+   use the SP-tolerant client; anything that writes a UC object stays on
+   require_obo_workspace_client per MV-D20. The create path is the Prompt 9
+   mv_create service — reuse it, do not fork it. Whatever MV-D23 decides about
+   couplings 3 and 4 lands here: the create needs a body to replay (MV-D22) and
+   a ledger row to write, and neither has a run.
+
+4. Frontend — the IQ Scan panel from Prompt 10 mockup 7, reusing Prompt 13's
+   proposal card. Both states, EMPTY included, plus the denial variant.
+
+VERIFY:
+- A test proving a space with NO iterations and a non-empty curated corpus
+  produces candidates. This is the whole point of the prompt; if it does not
+  exist, nothing else here matters.
+- A test proving an eval run that produced no SQL still SKIPs with its existing
+  reason, so (1) did not collapse two outcomes into one.
+- A test proving a genuinely empty corpus reports EMPTY, not a failure.
+- The MV-D21 pin still holds after any wh_* addition.
+- The in-job path is byte-unchanged in behaviour: run the existing
+  test_mv_advisor.py suite unmodified, and do not relax an assertion in it.
+- Route tests per the repo's OBO fixture pattern, including a create refused
+  when no OBO token is present (MV-D20).
 ```
 
 ---
@@ -1260,6 +1383,10 @@ Audit test coverage across everything added on this branch and close gaps:
   trigger reads).
 - API: route tests incl. auth failures and coercion.
 - UI: component tests + stories for all states.
+- Standalone path (Prompt 13.5, MV-D23): the no-iterations-plus-curated-corpus
+  case; the run-produced-no-SQL case still SKIPping with its own reason; EMPTY
+  vs UNAVAILABLE reported distinctly; the space-scoped proposals route; and
+  that the in-job advisor behaviour is unchanged by the corpus restructure.
 Additionally: the recon found the ONLY GitHub Actions workflow is docs deploy —
 there is no test CI. Add a test workflow running the backend pytest suite,
 the GSO package pytest suite (pythonpath=["src"]), and frontend vitest on PRs,
@@ -1302,8 +1429,19 @@ Scenario C — approve, re-run, create_and_attach with lift (two runs, per MV-D1
   Teardown: detach + drop the scratch MV, delete scratch objects. Respect the
   ~20 q/min ceiling: subset eval runs, serialized, suite marked slow.
 
+Scenario D — suggest with no run at all (Prompt 13.5, MV-D23):
+  Pick a Genie Agent in the dev workspace that has NEVER been optimized and has
+  curated SQL (example_question_sqls or sql_snippets.measures). Call the
+  space-scoped suggest route. Assert: candidates are produced with no run
+  present; every candidate's evidence cites curated provenance; the IQ Scan
+  panel renders them. Then repeat against a space with no curated SQL and no
+  query history and assert the response is EMPTY with a reason — not an error,
+  not a 500, and not silence. That second half is the case a customer demo hits
+  first, so it is not optional.
+
 Also include a manual smoke checklist for the UI (10 items max) covering the
-consent panel, denial banner, output panels, and the semantic model graph.
+consent panel, denial banner, output panels, the semantic model graph, and the
+IQ Scan panel in both its populated and empty states.
 ```
 
 ### Prompt 16 — Docs, changelog, PR
@@ -1313,7 +1451,10 @@ Finish the branch:
 
 - Update the repo docs (per its docs structure) with: feature overview, the
   consent model, mode table, how to enable, and screenshots exported from the
-  Storybook/mockup states.
+  Storybook/mockup states. Document BOTH entry points (MV-D23): the IQ Scan
+  surface for a space that has not been optimized, and the optimization-run
+  surface for one that has — and say plainly which evidence each rests on, so a
+  reader does not expect history-grade confidence from a space with no history.
 - Add an entry to the changelog/release notes per repo convention.
 - Update docs/design/metric-view-suggestion-engine-pov.md status flags for
   anything the implementation resolved or contradicted, with a short
