@@ -995,6 +995,10 @@
     min-height: calc(var(--spacing) * 4);
   }
 
+  .min-h-16 {
+    min-height: calc(var(--spacing) * 16);
+  }
+
   .min-h-20 {
     min-height: calc(var(--spacing) * 20);
   }
@@ -2542,6 +2546,10 @@
     }
   }
 
+  .bg-white {
+    background-color: var(--color-white);
+  }
+
   .bg-yellow-500\/10 {
     background-color: #edb2001a;
   }
@@ -2634,6 +2642,10 @@
 
   .p-8 {
     padding: calc(var(--spacing) * 8);
+  }
+
+  .px-0\.5 {
+    padding-inline: calc(var(--spacing) * .5);
   }
 
   .px-1 {
@@ -4023,10 +4035,6 @@
 
     .lg\:grid-cols-6 {
       grid-template-columns: repeat(6, minmax(0, 1fr));
-    }
-
-    .lg\:grid-cols-\[1\.6fr_1fr\] {
-      grid-template-columns: 1.6fr 1fr;
     }
 
     .lg\:grid-cols-\[260px_1fr\] {

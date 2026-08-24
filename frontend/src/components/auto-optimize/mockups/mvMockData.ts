@@ -195,3 +195,164 @@ export const byoVerified: MvByoRegistrationFixture = {
   type_confirmed: true,
   validation_passed: true,
 }
+
+// ── Semantic model graph (Model tab — Prompt 12.0 review mockups) ────────────
+// PRESENTATIONAL ONLY. The real nodes/edges JSON is Prompt 12's
+// GET /api/auto-optimize/spaces/{space_id}/semantic-graph, recorded
+// DOES-NOT-EXIST-YET (owner: Prompt 12) in docs/design/mv-advisor-gap-report.md.
+// These stay LOCAL to the mockups (no mirror in frontend/src/types/index.ts),
+// exactly as the Mv* fixtures above — the gap report notes there is no TS mirror
+// yet for the Mv* models and this prompt adds no wiring.
+//
+// Governance ladder is a TRAFFIC LIGHT on the theme's semantic tokens
+// (governed=success, curated=warning, ungoverned=danger) — the 12.0 correction,
+// NOT the Prompt 10 confidence trio (high/medium/low), which is a different axis.
+// Ungoverned is the state the whole feature exists to fix, so it draws the eye
+// (danger), never muted. Presentation pairs every rung with an icon/label so it
+// never relies on hue alone; the color mapping itself lives in
+// MvSemanticModelFrame.tsx (data here carries only the rung + a text origin).
+
+export type MvGovernance = "governed" | "curated" | "ungoverned"
+
+export type MvNodeKind = "table" | "metric_view" | "measure"
+
+export interface MvGraphNodeFixture {
+  id: string
+  kind: MvNodeKind
+  label: string
+  /** Layered layout position: column 0 = source/fact … 3 = field chips. */
+  col: number
+  row: number
+  /** Governance rung — measure concepts (kind="measure") only. */
+  governance?: MvGovernance
+  /** Where the concept is defined — the chip's non-color label discriminator. */
+  origin?: string
+  /** Ghosted proposed-MV overlay node (frame 9c). */
+  proposed?: boolean
+}
+
+export interface MvGraphEdgeFixture {
+  from: string
+  to: string
+  kind: "join" | "membership" | "replaces"
+  /** Join predicate (kind="join"). */
+  on?: string
+  relationship?: "many-to-one" | "one-to-one"
+  /** SCD2 guard present in the predicate (is_current). */
+  scd2?: boolean
+  /**
+   * Reachable strategies only (MV-D14/D15) — never "nested". Omit for a single
+   * direct join. Mirrors MvProposalFixture.join_strategy above.
+   */
+  join_strategy?: "denormalized" | "subquery-source"
+  cardinality?: string
+}
+
+export interface MvSemanticGraphFixture {
+  nodes: MvGraphNodeFixture[]
+  edges: MvGraphEdgeFixture[]
+}
+
+// Populated space (9a base, and the base layer under the 9c overlay): two source
+// tables, one SCD2 dimension join, one existing governed MV, and three measure
+// concepts — one per governance rung, the advisor's story in one glance.
+export const semanticGraphPopulated: MvSemanticGraphFixture = {
+  nodes: [
+    { id: "orders", kind: "table", label: "orders", col: 0, row: 0 },
+    { id: "order_items", kind: "table", label: "order_items", col: 0, row: 1 },
+    { id: "customer", kind: "table", label: "customer", col: 1, row: 0 },
+    { id: "orders_metrics", kind: "metric_view", label: "orders_metrics", col: 2, row: 0 },
+    {
+      id: "order_count",
+      kind: "measure",
+      label: "order_count",
+      col: 3,
+      row: 0,
+      governance: "governed",
+      origin: "orders_metrics (attached MV)",
+    },
+    {
+      id: "gross_margin",
+      kind: "measure",
+      label: "gross_margin",
+      col: 3,
+      row: 1,
+      governance: "curated",
+      origin: "sql_snippets.measures",
+    },
+    {
+      id: "discounted_revenue",
+      kind: "measure",
+      label: "discounted_revenue",
+      col: 3,
+      row: 2,
+      governance: "ungoverned",
+      origin: "proposal evidence · 14×",
+    },
+  ],
+  edges: [
+    { from: "order_items", to: "orders", kind: "join", on: "orders.order_id = items.order_id", relationship: "many-to-one" },
+    {
+      from: "customer",
+      to: "orders",
+      kind: "join",
+      on: "orders.customer_id = customer.id AND customer.is_current = true",
+      relationship: "many-to-one",
+      scd2: true,
+      join_strategy: "subquery-source",
+    },
+    { from: "order_count", to: "orders_metrics", kind: "membership" },
+    { from: "gross_margin", to: "orders", kind: "membership" },
+    { from: "discounted_revenue", to: "orders", kind: "membership" },
+  ],
+}
+
+// Never-optimized space (9b): tables the space uses but which join nothing, all
+// in the first column. No joins, and NO measure concepts — the honesty rule cuts
+// both ways (frame-7b): nothing green because nothing is governed, and nothing
+// red because no ungoverned measure has been *found* yet. An empty ladder, not an
+// alarming one.
+export const semanticGraphEmpty: MvSemanticGraphFixture = {
+  nodes: [
+    { id: "orders", kind: "table", label: "orders", col: 0, row: 0 },
+    { id: "order_items", kind: "table", label: "order_items", col: 0, row: 1 },
+    { id: "customer", kind: "table", label: "customer", col: 0, row: 2 },
+  ],
+  edges: [],
+}
+
+// Proposal overlay (9c): the ghosted proposed MV that would govern the ungoverned
+// `discounted_revenue`, with dashed "replaces" edges from the raw tables it would
+// cover (the tables_freed story). Rendered on top of semanticGraphPopulated.
+export const semanticGraphProposalOverlay: MvSemanticGraphFixture = {
+  nodes: [
+    { id: "order_revenue", kind: "metric_view", label: "order_revenue", col: 2, row: 1, proposed: true },
+  ],
+  edges: [
+    { from: "order_revenue", to: "orders", kind: "replaces" },
+    { from: "order_revenue", to: "order_items", kind: "replaces" },
+  ],
+}
+
+// Node-detail panel fixtures (9d). The measure is the ungoverned protagonist —
+// evidence (recurrence + benchmark questions) exists only for concepts the
+// advisor surfaced, and it reuses proposalRevenue.evidence unchanged. The join is
+// the SCD2 customer join, with a reachable strategy only (MV-D14/D15).
+export const measureDetail = {
+  name: "discounted_revenue",
+  governance: "ungoverned" as MvGovernance,
+  expr: "SUM(items.quantity * items.unit_price * (1 - items.discount))",
+  format: "number",
+  synonyms: ["revenue", "net sales"],
+}
+
+export const joinDetail = {
+  from: "customer",
+  to: "orders",
+  on: "orders.customer_id = customer.id AND customer.is_current = true",
+  cardinality: "many-to-one" as const,
+  scd2: true,
+  // Reachable rung only — "nested" is unreachable on every compute today
+  // (MV-D14/D15), same rule the proposal fixtures follow.
+  join_strategy: "subquery-source" as const,
+}

@@ -12,7 +12,12 @@ import {
   RerunConfigFrame,
 } from "./MvRunConfigMockups"
 import { CreateAndAttachOutputFrame, SuggestOnlyOutputFrame } from "./MvOutputMockups"
-import { SemanticModelFrame } from "./MvSemanticModelFrame"
+import {
+  ModelNodeDetailFrame,
+  ModelTabEmptyFrame,
+  ModelTabPopulatedFrame,
+  ModelTabProposalOverlayFrame,
+} from "./MvSemanticModelFrame"
 import {
   IqScanAdvisoryEmptyFrame,
   IqScanAdvisoryFoundFrame,
@@ -38,7 +43,14 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "3-runconfig-denial", title: "3 · Run config — denial", element: <DenialConfigFrame /> },
   { id: "4-output-suggest-only", title: "4 · Output — suggest only (Lift not measured)", element: <SuggestOnlyOutputFrame /> },
   { id: "5-output-create-attach", title: "5 · Output — create and attach (DETACHED regression)", element: <CreateAndAttachOutputFrame /> },
-  { id: "6-semantic-model", title: "6 · Semantic model (static preview)", element: <SemanticModelFrame /> },
+  // Model tab (Prompt 12.0). Frame 6 was retired into these — 9c is its
+  // descendant (proposal overlay). Kept in frame 6's old array slot so the
+  // emitter's export ordering is unchanged (MOCKUP_FRAMES is order-driven, not
+  // id-sorted); the 9-family numbering follows frame 8 (BYO).
+  { id: "9a-model-populated", title: "9a · Model tab — populated (governance ladder, joins)", element: <ModelTabPopulatedFrame /> },
+  { id: "9b-model-empty", title: "9b · Model tab — never optimized (empty, honest ladder)", element: <ModelTabEmptyFrame /> },
+  { id: "9c-model-proposal-overlay", title: "9c · Model tab — proposal overlay ON", element: <ModelTabProposalOverlayFrame /> },
+  { id: "9d-model-node-detail", title: "9d · Model tab — node detail (measure + join)", element: <ModelNodeDetailFrame /> },
   { id: "7a-iqscan-found", title: "7a · IQ Scan — proposals found", element: <IqScanAdvisoryFoundFrame /> },
   { id: "7b-iqscan-empty", title: "7b · IQ Scan — empty (authored copy, needs review)", element: <IqScanAdvisoryEmptyFrame /> },
   { id: "7c-iqscan-not-entitled", title: "7c · IQ Scan — not entitled", element: <IqScanAdvisoryNotEntitledFrame /> },

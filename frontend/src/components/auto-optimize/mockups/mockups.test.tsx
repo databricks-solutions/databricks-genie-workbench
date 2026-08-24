@@ -16,6 +16,12 @@ import {
 } from "./MvRunConfigMockups"
 import { CreateAndAttachOutputFrame, SuggestOnlyOutputFrame } from "./MvOutputMockups"
 import {
+  ModelNodeDetailFrame,
+  ModelTabEmptyFrame,
+  ModelTabPopulatedFrame,
+  ModelTabProposalOverlayFrame,
+} from "./MvSemanticModelFrame"
+import {
   IqScanAdvisoryEmptyFrame,
   IqScanAdvisoryFoundFrame,
   IqScanAdvisoryNotEntitledFrame,
@@ -104,6 +110,67 @@ describe("frame 5 — create and attach (regression)", () => {
     expect(html).toContain("OBO_CREATED")
     expect(html).not.toContain("Nested join")
     expect(html).not.toContain("evaleval")
+  })
+})
+
+describe("frame 9 — Model tab (Prompt 12.0)", () => {
+  it("9a populated: tab strip, all three governance rungs, labeled SCD2 join", () => {
+    const html = render(<ModelTabPopulatedFrame />)
+    // Tab strip so placement (Score | Model | Optimize | History) is reviewed.
+    for (const tab of ["Score", "Model", "Optimize", "History"]) expect(html).toContain(tab)
+    // Traffic-light ladder: governed=success, curated=warning, ungoverned=danger,
+    // each carrying a non-color label discriminator.
+    expect(html).toContain("Governed")
+    expect(html).toContain("Curated")
+    expect(html).toContain("Ungoverned")
+    expect(html).toContain("--color-success")
+    expect(html).toContain("--color-warning")
+    expect(html).toContain("--color-danger")
+    // Join edge labeled with the ON predicate + relationship + SCD2 flag.
+    expect(html).toContain("ON orders.customer_id = customer.id")
+    expect(html).toContain("SCD2")
+    expect(html).toContain("discounted_revenue")
+  })
+
+  it("9b empty: config-scoped copy names both populators, ladder alarms neither green NOR red", () => {
+    const html = render(<ModelTabEmptyFrame />)
+    // Config-scoped fact, not "run first" — a run is one of two populators, and
+    // suggestions need no run (13.5 / POV Delta 9). Fragments avoid the escaped
+    // apostrophes (renderToStaticMarkup emits &#x27; for Agent's / don't).
+    expect(html).toContain("configuration defines no joins, SQL snippets, or metric views yet")
+    expect(html).toContain("let an optimization run discover and apply")
+    expect(html).toContain("Metric view suggestions")
+    expect(html).toContain("require a run")
+    expect(html).toContain("No measure concepts yet")
+    expect(html).toContain("none have been suggested")
+    // No overlay to overlay on an empty space — the toggle is hidden here (9a keeps it).
+    expect(html).not.toContain("Show proposal overlay")
+    // Nothing green — no governed measure exists.
+    expect(html).not.toContain("--color-success")
+    expect(html).not.toContain("Governed")
+    // Nothing red — an empty space has found nothing ungoverned either, so the
+    // ladder must not draw a danger chip for a measure it never saw.
+    expect(html).not.toContain("--color-danger")
+    expect(html).not.toContain("Ungoverned")
+  })
+
+  it("9c overlay ON: ghosted proposed MV, dashed replaces edge, default-off toggle visible", () => {
+    const html = render(<ModelTabProposalOverlayFrame />)
+    expect(html).toContain("proposed metric view")
+    expect(html).toContain("replaces")
+    expect(html).toContain("Show proposal overlay")
+    expect(html).toContain("default off")
+  })
+
+  it("9d node detail: measure expr/synonyms/format/evidence + join cardinality, reachable strategy only", () => {
+    const html = render(<ModelNodeDetailFrame />)
+    expect(html).toContain("SUM(items.quantity * items.unit_price")
+    expect(html).toContain("net sales")
+    expect(html).toContain("occurrences")
+    expect(html).toContain("many-to-one")
+    expect(html).toContain("Subquery source")
+    // "nested" is unreachable on every compute today (MV-D14/D15).
+    expect(html).not.toContain("Nested join")
   })
 })
 

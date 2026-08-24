@@ -1608,7 +1608,8 @@ root bundle are strings (19 in the package bundle, which omits the Workbench-onl
 | Patch shown as a diff | **DOES-NOT-EXIST-YET (component exists)** | `SqlDiffView.tsx` + `react-diff-viewer-continued` |
 | `ddl_artifact_path` on a Volume | **CONFLICTS** | No Volumes convention for run artifacts; use `genie_opt_artifacts` |
 | `candidate_table: main.genie_workbench.mv_candidates` | **CONFLICTS (location)** | GSO tables live in `{GSO_CATALOG}.{GSO_SCHEMA}` as `genie_opt_*`, not `genie_workbench` |
-| Lineage/graph visualization | **MATCHES** | `react-force-graph-2d` already used in `watch/pages/ResourceGraphView.tsx` |
+| Lineage/graph visualization | **MATCHES (Watch only — not Prompt 12's renderer)** | `react-force-graph-2d` already used in `watch/pages/ResourceGraphView.tsx`, and that is where it stays. The semantic-model view is a deterministic layered SVG per the amended Prompt 12 body (playbook) — do not read this row as an instruction to use force-graph there |
+| `GET /api/auto-optimize/spaces/{space_id}/semantic-graph` | **DOES-NOT-EXIST-YET (owner: Prompt 12)** | Space-scoped nodes/edges JSON from `serialized_space` + the Prompt 11 space-scoped proposals read; no SQL parsing until Prompt 12b (server-side `mv_fingerprint` extractors only) |
 
 ### 2.8 Discover curation (POV §8)
 
@@ -1955,6 +1956,7 @@ persistence · MV detection and YAML extraction (`metric_view_catalog.py`) ·
 `system.query.history` mining with fallback (`wide_schema_history.py`) · artifact-based
 handoff with content hashing (`genie_opt_artifacts`) · consent-checkbox-with-warning UI
 pattern (`OptimizationConfig.tsx:141-164`) · copyable grant-SQL textarea pattern
-(`OptimizationConfig.tsx:284-292`) · diff viewer, SQL code block, force-directed graph,
-charts (all in `frontend/package.json`) · OBO-only client accessor
+(`OptimizationConfig.tsx:284-292`) · diff viewer, SQL code block, force-directed graph
+(Watch resource view only — the semantic-model view is layered SVG per the amended
+Prompt 12 body), charts (all in `frontend/package.json`) · OBO-only client accessor
 (`require_obo_workspace_client`).

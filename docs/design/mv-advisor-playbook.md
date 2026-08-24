@@ -1313,10 +1313,18 @@ add the Model tab frames and STOP for review before Prompt 12 implements:
 
 9a. Model tab, populated: layered columns (source/fact -> dims -> MVs ->
     field chips), join edges labeled with ON predicate + relationship type +
-    SCD2 flag, governance-ladder coloring on measure concepts (governed /
-    curated / ungoverned — reuse the Prompt 10 card tier tokens). Include the
-    tab strip showing Score | Model | Optimize | History so placement is
-    reviewed too.
+    SCD2 flag, governance-ladder coloring on measure concepts. CORRECTED at
+    the 12.0 PLAN review — the original "reuse the Prompt 10 card tier
+    tokens" was wrong: those are the CONFIDENCE trio (high/medium/low =
+    danger/warning/info) and governance is a maturity axis, not a confidence
+    axis. The ladder is a traffic light on the theme's semantic tokens,
+    rhyming with the IQ scan's own passed/warning/failed split (the surface
+    the ladder will live on): governed = success, curated = warning,
+    ungoverned = danger. Ungoverned is the state the whole feature exists to
+    fix — it must draw the eye, never render muted. Every chip also carries a
+    NON-COLOR discriminator (icon or label text) so the ladder never relies
+    on hue alone. Include the tab strip showing
+    Score | Model | Optimize | History so placement is reviewed too.
 9b. Model tab, never-optimized/empty: tables unconnected, "no joins are
     defined" line, ladder with nothing green — the frame-7b honesty rule.
     This is the frame to review hardest; it is most users' first sight of
@@ -1381,8 +1389,22 @@ been optimized):
   the advisor's story made visible: governed (defined in an attached metric
   view) / curated (defined in sql_snippets.measures or example SQL) /
   ungoverned (recurs only in proposal evidence). One glance answers "how
-  governed is this space?". Reuse the tier/status token colors from the
-  Prompt 10 cards; do not invent a new palette.
+  governed is this space?". Derivation, stated precisely because the 12.0
+  review got it wrong TWICE (first the mockup, then the reviewer): the ladder
+  reads CONFIG — attached metric_views (governed), sql_snippets / example SQL
+  (curated) — plus proposals (ungoverned). Config is populated three ways: the
+  user's own edits, the create agent, AND optimization runs, whose patch
+  allowlist includes add_join_spec / update_join_spec (unified_loop.py:91-92,
+  applied at applier.py:3173) and snippet-measure patches. So a run is one
+  legitimate way to populate this tab — never present it as the ONLY way (a
+  never-optimized space with snippets already shows green/amber, and metric
+  view suggestions need no run per Delta 9), and the tab must render whatever
+  the config holds regardless of how it got there. Colors per the 12.0
+  correction: a traffic light on
+  the theme's semantic tokens (governed=success, curated=warning,
+  ungoverned=danger), rhyming with the IQ scan's passed/warning/failed split —
+  NOT the Prompt 10 confidence trio, which is a different axis. Non-color
+  discriminator on every chip. Do not invent a new palette.
 
 Proposal overlay (frame 6's content, on top of the base graph):
 - The proposed MV as a ghosted node with distinct styling; dashed "replaces"

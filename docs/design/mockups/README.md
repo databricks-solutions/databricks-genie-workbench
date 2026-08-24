@@ -21,7 +21,7 @@ verbatim from the review).
 | 3 | Run config — denial |
 | 4 | Output — suggest only (verbatim "Lift not measured…"; card 1 has no join-strategy ladder, card 2 keeps *Subquery source* — reachable states only, MV-D14/D15) |
 | 5 | Output — create and attach (DETACHED regression + Drop view; provenance `OBO_CREATED`) |
-| 6 | Semantic model (static preview; live graph is Prompt 12) |
+| 9a / 9b / 9c / 9d | Model tab (Prompt 12.0) — populated / never-optimized (empty) / proposal overlay ON / node detail. **Frame 6 retired into 9c** (its proposal-overlay ancestor); governance ladder is a traffic light (governed=success · curated=warning · ungoverned=danger), each rung icon+label so it never leans on hue alone |
 | 7a / 7b / 7c | IQ Scan advisory — found / empty / not entitled |
 | 8a / 8b / 8c | BYO registration (MV-D24) — entry points / verified (`USER_CREATED`, no Drop) / refused (not a metric view · not visible) |
 
@@ -44,11 +44,13 @@ visual-regression harness that would give it a second life. Delete it as the
 real panels land:
 
 - **Prompt 11** implements run-config frames 1–3 → delete `MvRunConfigMockups.tsx`.
-- **Prompt 13** implements output frames 4–6 → delete `MvOutputMockups.tsx`,
-  `MvSemanticModelFrame.tsx`.
+- **Prompt 13** implements output frames 4–5 → delete `MvOutputMockups.tsx`.
 - **Prompt 13.5** implements IQ-Scan frame 7 and BYO registration frame 8
   (MV-D24) → delete `MvIqScanAdvisoryMockups.tsx` and `MvByoRegistrationMockups.tsx`,
-  and graduate or delete `MvProposalCard.tsx`.
+  and graduate or delete `MvProposalCard.tsx`. It also wires the last Model-tab
+  consumer → delete `MvSemanticModelFrame.tsx` (frames 9a–9d) here, not at
+  Prompt 13. Prompt 12 upgrades those frames into the live Model tab but leaves
+  the scaffold standing until 13.5, matching the file header.
 
 When the last frame is gone, remove `frontend/src/components/auto-optimize/mockups/`,
 `frontend/scripts/mockups/`, and this `docs/design/mockups/` directory in the same
