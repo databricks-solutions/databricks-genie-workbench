@@ -38,7 +38,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import sqlglot
 import yaml
@@ -50,6 +50,8 @@ from genie_space_optimizer.common.config import (
     MV_CAPABILITY_NESTED_JOINS,
     MV_COMMENT_ECHO_THRESHOLD,
     MV_COMMENT_SECTIONS,
+    MV_ECHO_CHECK_COMPARED,
+    MV_ECHO_CHECK_NOT_COMPARED,
     MV_FORMAT_TYPE_CORRECTIONS,
     MV_FORMAT_TYPES,
     MV_JOIN_STRATEGY_DENORMALIZED,
@@ -78,6 +80,8 @@ from genie_space_optimizer.optimization.mv_scoring import (
 )
 
 __all__ = [
+    "CapabilityRow",
+    "CapabilityRows",
     "ColumnFacts",
     "GeneratedMetricView",
     "JoinHop",
@@ -93,6 +97,39 @@ __all__ = [
     "generate",
     "validate",
 ]
+
+
+# ── Capability input contract ────────────────────────────────────────────
+
+
+@runtime_checkable
+class CapabilityRow(Protocol):
+    """The three fields this module reads off an entitlement-probe capability row.
+
+    Declared here, in the consumer, so the dependency arrow stays backend →
+    engine: the backend's ``MvCapabilityRow`` satisfies this structurally and
+    nothing in this package imports it. ``test_mv_capability_row_satisfies_the_gso_protocol``
+    in the backend suite is what makes that a checked claim rather than a hope —
+    it fails if the model drops or renames any of the three.
+
+    Deliberately minimal. A capability row carries labels, versions and
+    remediation detail too; widening this Protocol to match would couple the
+    engine to fields it never reads.
+    """
+
+    @property
+    def capability(self) -> str: ...
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def optional(self) -> bool: ...
+
+
+CapabilityRows = Mapping[str, str] | Sequence[CapabilityRow | Mapping[str, Any]]
+"""What :func:`validate` accepts: the probe's flat ``results`` map, its typed
+rows, or those rows as the plain dicts a persisted payload round-trips as."""
 
 
 # ── Uniqueness evidence ──────────────────────────────────────────────────
@@ -321,10 +358,16 @@ class GeneratedMetricView:
     evidence: Mapping[str, Any] = field(default_factory=dict)
     conflicts: tuple[Mapping[str, Any], ...] = ()
     rejections: tuple[str, ...] = ()
+    echo_check: str = MV_ECHO_CHECK_NOT_COMPARED
 
     @property
     def ok(self) -> bool:
         return self.verdict == VERDICT_PROPOSE and bool(self.yaml_text)
+
+    @property
+    def echo_checked(self) -> bool:
+        """True only when a corpus was actually compared against."""
+        return self.echo_check == MV_ECHO_CHECK_COMPARED
 
 
 @dataclass(frozen=True)
@@ -335,12 +378,22 @@ class ValidationReport:
     have is not an error in the YAML, it is a reason to re-render at a lower
     ladder rung. Returning "unplannable, try subquery" beats both failing the
     run and shipping YAML that cannot execute.
+
+    ``echo_check`` reports whether the BEST FOR leakage comparison ran, because
+    the oracle is optional and a check that compared nothing must not read as a
+    check that found nothing.
     """
 
     ok: bool = True
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     downgrade_to: str | None = None
+    echo_check: str = MV_ECHO_CHECK_NOT_COMPARED
+
+    @property
+    def echo_checked(self) -> bool:
+        """True only when a corpus was actually compared against."""
+        return self.echo_check == MV_ECHO_CHECK_COMPARED
 
 
 # ── YAML emission ────────────────────────────────────────────────────────
@@ -1169,13 +1222,15 @@ def generate(
         dedup=dedup,
     )
 
-    echoes = _comment_echoes(best_for, oracle=oracle)
+    echoes, echo_compared = _comment_echoes(best_for, oracle=oracle)
+    echo_check = MV_ECHO_CHECK_COMPARED if echo_compared else MV_ECHO_CHECK_NOT_COMPARED
     if echoes:
         return GeneratedMetricView(
             join_strategy=plan.strategy,
             strategy_reason=plan.reason,
             evidence=dict(plan.evidence),
             rejections=echoes,
+            echo_check=echo_check,
         )
 
     definition: dict[str, Any] = {
@@ -1189,6 +1244,9 @@ def generate(
     definition["measures"] = measures
 
     yaml_text = _dump(definition)
+    # The oracle is not forwarded: the BEST FOR lines were just checked above
+    # against the same corpus, and re-deriving them from the rendered comment
+    # would run one comparison twice. `echo_check` below carries that result.
     report = validate(yaml_text, capabilities=profiling.capabilities)
     if not report.ok:
         return GeneratedMetricView(
@@ -1196,6 +1254,7 @@ def generate(
             strategy_reason=plan.reason,
             evidence=dict(plan.evidence),
             rejections=report.errors,
+            echo_check=echo_check,
         )
 
     evidence = dict(plan.evidence)
@@ -1205,6 +1264,7 @@ def generate(
             "join_strategy": plan.strategy,
             "join_strategy_reason": plan.reason,
             "benchmark_question_ids": list(candidate.benchmark_question_ids),
+            "echo_check": echo_check,
         }
     )
     return GeneratedMetricView(
@@ -1214,6 +1274,7 @@ def generate(
         join_strategy=plan.strategy,
         strategy_reason=plan.reason,
         evidence=evidence,
+        echo_check=echo_check,
     )
 
 
@@ -1302,7 +1363,7 @@ def _dimension_entries(
     return entries
 
 
-def _comment_echoes(lines: Sequence[str], *, oracle: Any) -> tuple[str, ...]:
+def _comment_echoes(lines: Sequence[str], *, oracle: Any) -> tuple[tuple[str, ...], bool]:
     """Reject any shipped comment line that echoes a benchmark question.
 
     Reuses ``LeakageOracle.contains_question`` with a higher threshold rather
@@ -1310,12 +1371,16 @@ def _comment_echoes(lines: Sequence[str], *, oracle: Any) -> tuple[str, ...]:
     normalization rules to live. The oracle exposes booleans only, so this can
     check a line against the corpus without either this module or its caller
     ever seeing a benchmark question.
+
+    Returns the rejections *and whether a comparison happened at all*. Without
+    that second value an unconfigured oracle is indistinguishable from a clean
+    corpus, and the caller would report a pass it never earned.
     """
     if oracle is None:
-        return ()
+        return (), False
     contains = getattr(oracle, "contains_question", None)
     if not callable(contains):
-        return ()
+        return (), False
     rejected: list[str] = []
     for line in lines:
         try:
@@ -1327,7 +1392,30 @@ def _comment_echoes(lines: Sequence[str], *, oracle: Any) -> tuple[str, ...]:
                 f"BEST FOR line '{line}' matches a benchmark question at or above "
                 f"{MV_COMMENT_ECHO_THRESHOLD:.2f} normalized similarity"
             )
-    return tuple(rejected)
+    return tuple(rejected), True
+
+
+def _best_for_from_comment(definition: Mapping[str, Any]) -> tuple[str, ...]:
+    """Recover the BEST FOR intents from an already-rendered comment.
+
+    ``validate`` may be handed YAML this module did not render — foreign or
+    LLM-authored text — where the only access to the intents is the comment
+    itself. Emission joins them with ``|`` on one line, so parsing is the
+    inverse of that join.
+    """
+    comment = definition.get("comment")
+    if not isinstance(comment, str):
+        return ()
+    others = [f"{s}:" for s in MV_COMMENT_SECTIONS if s != "BEST FOR"]
+    for block in comment.split("\n"):
+        stripped = block.strip()
+        if not stripped.startswith("BEST FOR:"):
+            continue
+        body = stripped[len("BEST FOR:"):]
+        for marker in others:
+            body = body.split(marker)[0]
+        return tuple(part.strip() for part in body.split("|") if part.strip())
+    return ()
 
 
 # ── Static validation ────────────────────────────────────────────────────
@@ -1336,7 +1424,8 @@ def _comment_echoes(lines: Sequence[str], *, oracle: Any) -> tuple[str, ...]:
 def validate(
     yaml_text: str,
     *,
-    capabilities: Mapping[str, str] | Sequence[Any] = (),
+    capabilities: CapabilityRows = (),
+    oracle: Any = None,
 ) -> ValidationReport:
     """Check emitted YAML statically. No warehouse, no network, no parse of data.
 
@@ -1349,6 +1438,11 @@ def validate(
     that needs nested joins on a runtime that may not have them is not malformed,
     it is the wrong rung of the ladder, and the useful answer is which rung to
     fall back to.
+
+    Passing an ``oracle`` additionally re-checks the BEST FOR lines recovered
+    from the comment, which is the only echo check available for YAML this module
+    did not render. Without one the report says ``NOT_COMPARED`` instead of
+    quietly reporting a clean firewall.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -1384,6 +1478,17 @@ def validate(
     errors.extend(join_errors)
     warnings.extend(join_warnings)
 
+    echoes, echo_compared = _comment_echoes(
+        _best_for_from_comment(definition), oracle=oracle
+    )
+    errors.extend(echoes)
+    echo_check = MV_ECHO_CHECK_COMPARED if echo_compared else MV_ECHO_CHECK_NOT_COMPARED
+    if not echo_compared:
+        warnings.append(
+            "the BEST FOR echo check did not run: no leakage corpus was supplied, "
+            "so no comment line was compared against benchmark questions"
+        )
+
     resolved = _capability_map(capabilities)
     downgrade: str | None = None
     if needs_nested and resolved.get(MV_CAPABILITY_NESTED_JOINS, "UNKNOWN") != "GRANTED":
@@ -1406,6 +1511,7 @@ def validate(
         errors=tuple(errors),
         warnings=tuple(warnings),
         downgrade_to=downgrade,
+        echo_check=echo_check,
     )
 
 
@@ -1595,13 +1701,19 @@ def _column_scope(column: exp.Column) -> str:
     return ".".join(part.name for part in parts[:-1])
 
 
-def _capability_map(capabilities: Mapping[str, str] | Sequence[Any]) -> dict[str, str]:
+def _capability_map(capabilities: CapabilityRows) -> dict[str, str]:
     """Accept either the probe's flat results map or its typed capability rows.
 
-    Duck-typed on purpose. The rows are Pydantic models defined in the backend
-    (``MvCapabilityRow``), and this package must not import the backend — the
-    dependency runs backend to engine, never the reverse. Structural access
-    keeps the typed rows usable here without inverting that.
+    The rows are Pydantic models defined in the backend (``MvCapabilityRow``) and
+    this package must not import the backend — the dependency runs backend to
+    engine, never the reverse. :class:`CapabilityRow` is how that stays typed
+    without inverting the arrow: the shape is declared here, the backend model
+    satisfies it structurally, and a conformance test in the backend suite fails
+    if it stops doing so.
+
+    Plain mappings are still accepted because a persisted ``probe_results``
+    payload round-trips as dicts, and re-hydrating models to read two fields
+    would be ceremony.
     """
     if isinstance(capabilities, Mapping):
         return {str(k): str(v).upper() for k, v in capabilities.items()}

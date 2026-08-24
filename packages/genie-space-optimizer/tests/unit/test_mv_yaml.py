@@ -10,6 +10,7 @@ diff instead of re-baselining four near-identical documents.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -19,6 +20,8 @@ import yaml
 from genie_space_optimizer.common.config import (
     MV_CAPABILITY_NESTED_JOINS,
     MV_COMMENT_SECTIONS,
+    MV_ECHO_CHECK_COMPARED,
+    MV_ECHO_CHECK_NOT_COMPARED,
     MV_JOIN_STRATEGY_DENORMALIZED,
     MV_JOIN_STRATEGY_DIRECT,
     MV_JOIN_STRATEGY_NESTED,
@@ -740,6 +743,117 @@ def test_benchmark_verbatim_best_for_line_is_rejected():
     assert any("BEST FOR" in reason for reason in result.rejections)
 
 
+def test_a_line_at_exactly_the_threshold_is_rejected():
+    """The echo comparison is inclusive, and this test is what pins it.
+
+    ``leakage.contains_question`` compares ``score >= threshold``, so a line
+    landing on exactly 0.90 is a rejection. MV-D8 originally read ">0.9" and was
+    corrected to the code rather than the reverse; an operator flipped back to
+    ``>`` fails here.
+    """
+    shared = "revenue margin freight discount segment nation quarter shipment supplier"
+    oracle = LeakageOracle(
+        BenchmarkCorpus.from_benchmarks(
+            [{"id": "b1", "question": shared, "expected_sql": "SELECT 1"}]
+        )
+    )
+    # Nine shared content tokens over a ten-token union is 0.90 exactly — the
+    # threshold itself. Dropping one shared token instead gives 8/10 = 0.80.
+    at_threshold = f"{shared} returns"
+    below_threshold = "revenue margin freight discount segment nation quarter shipment returns"
+
+    rejected_at, compared_at = mv_yaml_module._comment_echoes([at_threshold], oracle=oracle)
+    rejected_below, compared_below = mv_yaml_module._comment_echoes(
+        [below_threshold], oracle=oracle
+    )
+
+    assert rejected_at and compared_at
+    assert not rejected_below and compared_below
+
+
+def test_an_unconfigured_echo_check_reports_that_it_compared_nothing():
+    """A firewall that cannot run must not read like a firewall that found nothing.
+
+    The oracle is optional input, so the vacuous case is the *common* one, and a
+    caller reading only ``ok`` would record a clean pass the check never earned.
+    """
+    profiling = _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN)
+
+    without = generate(_candidate(), profiling)
+    assert without.ok
+    assert without.echo_check == MV_ECHO_CHECK_NOT_COMPARED
+    assert not without.echo_checked
+    assert without.evidence["echo_check"] == MV_ECHO_CHECK_NOT_COMPARED
+
+    with_oracle = generate(
+        _candidate(),
+        profiling,
+        oracle=LeakageOracle(
+            BenchmarkCorpus.from_benchmarks(
+                [{"id": "x", "question": "How many suppliers ship from Peru?",
+                  "expected_sql": "SELECT 1"}]
+            )
+        ),
+    )
+    assert with_oracle.ok
+    assert with_oracle.echo_check == MV_ECHO_CHECK_COMPARED
+    assert with_oracle.echo_checked
+
+
+def test_validate_reports_the_vacuous_echo_check_as_a_warning():
+    """``validate`` carries the same distinction, for YAML it did not render."""
+    yaml_text = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+    ).yaml_text
+
+    bare = validate(yaml_text)
+    assert bare.ok
+    assert bare.echo_check == MV_ECHO_CHECK_NOT_COMPARED
+    assert not bare.echo_checked
+    assert any("did not run" in w for w in bare.warnings)
+
+    checked = validate(
+        yaml_text,
+        oracle=LeakageOracle(
+            BenchmarkCorpus.from_benchmarks(
+                [{"id": "x", "question": "How many suppliers ship from Peru?",
+                  "expected_sql": "SELECT 1"}]
+            )
+        ),
+    )
+    assert checked.ok
+    assert checked.echo_check == MV_ECHO_CHECK_COMPARED
+    assert not any("did not run" in w for w in checked.warnings)
+
+
+def test_validate_catches_an_echoed_best_for_line_in_foreign_yaml():
+    """The recovered-intent path is what protects LLM-authored YAML.
+
+    ``generate`` checks the lines it just built; YAML arriving from elsewhere has
+    no such provenance, so the intents are parsed back out of the comment.
+    """
+    yaml_text = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+    ).yaml_text
+    best_for = mv_yaml_module._best_for_from_comment(yaml.safe_load(yaml_text))
+    assert best_for, "the comment must expose its BEST FOR intents"
+
+    report = validate(
+        yaml_text,
+        oracle=LeakageOracle(
+            BenchmarkCorpus.from_benchmarks(
+                [{"id": "leak", "question": best_for[0], "expected_sql": "SELECT 1"}]
+            )
+        ),
+    )
+
+    assert not report.ok
+    assert any("BEST FOR" in e for e in report.errors)
+    assert report.echo_check == MV_ECHO_CHECK_COMPARED
+
+
 def test_unrelated_benchmarks_do_not_block_generation():
     corpus = BenchmarkCorpus.from_benchmarks(
         [{"id": "x", "question": "How many suppliers ship from Peru?", "expected_sql": "SELECT 1"}]
@@ -801,6 +915,116 @@ def test_validate_flags_unsupported_top_level_and_join_fields():
     assert "unsupported top-level field 'name'" in joined
     assert "unsupported top-level field 'time_dimension'" in joined
     assert "unsupported field 'join_type'" in joined
+
+
+# A valid nested-join document, used to prove the unsupported-field rules are
+# bound to a *path* rather than to a bare key name. Nested so the same key can be
+# planted at the top level, at a first-level join and at a deeper one.
+PATH_BASE_YAML = """
+version: '1.1'
+comment: |
+  PURPOSE: p
+
+  BEST FOR: a
+
+  NOT FOR: b
+
+  DIMENSIONS: c
+
+  MEASURES: d
+
+  SOURCE: e
+
+  JOINS: f
+
+  NOTE: g
+source: main.sales.fact_orders
+joins:
+  - name: dim_customer
+    source: main.sales.dim_customer
+    'on': source.customer_id = dim_customer.customer_id
+    joins:
+      - name: dim_nation
+        source: main.sales.dim_nation
+        'on': dim_customer.nation_id = dim_nation.nation_id
+dimensions:
+  - name: nation_name
+    expr: dim_customer.dim_nation.nation_name
+    synonyms: [nation, country, nation name]
+measures:
+  - name: total_revenue
+    expr: SUM(source.net_revenue)
+    synonyms: [revenue, sales, total revenue]
+"""
+
+_NESTED_GRANTED = {MV_CAPABILITY_NESTED_JOINS: "GRANTED"}
+
+
+def test_the_path_base_document_is_valid_before_anything_is_planted():
+    """Positive control. Without it, a rejection below proves nothing."""
+    report = validate(PATH_BASE_YAML, capabilities=_NESTED_GRANTED)
+
+    assert report.ok, report.errors
+
+
+def test_window_measures_is_rejected_at_the_top_level_and_ignored_below_it():
+    """The unsupported *array* form is a top-level key; ``window:`` per measure is not.
+
+    Two rules share the word: the top-level ``window_measures`` array fails to
+    create, while a per-measure ``window`` property is supported. A check keyed on
+    the bare name could not tell them apart, so this pins that the top-level rule
+    is applied only to top-level keys.
+    """
+    planted_at_top = PATH_BASE_YAML.replace(
+        "source: main.sales.fact_orders\n",
+        "source: main.sales.fact_orders\nwindow_measures:\n  - name: rolling_revenue\n",
+    )
+    report = validate(planted_at_top, capabilities=_NESTED_GRANTED)
+    assert not report.ok
+    assert any("unsupported top-level field 'window_measures'" in e for e in report.errors)
+
+    # The supported per-measure form, one level down, must survive untouched.
+    per_measure_window = PATH_BASE_YAML.replace(
+        "    expr: SUM(source.net_revenue)\n",
+        "    expr: SUM(source.net_revenue)\n    window: [order_date]\n",
+    )
+    report = validate(per_measure_window, capabilities=_NESTED_GRANTED)
+    assert report.ok, report.errors
+    assert not any("window" in e for e in report.errors)
+
+
+def test_table_is_rejected_inside_any_join_and_allowed_at_legal_positions():
+    """``joins[].table`` is the wrong relation key; the word itself is not banned."""
+    at_first_level = PATH_BASE_YAML.replace(
+        "    source: main.sales.dim_customer\n",
+        "    source: main.sales.dim_customer\n    table: main.sales.dim_customer\n",
+    )
+    report = validate(at_first_level, capabilities=_NESTED_GRANTED)
+    assert not report.ok
+    assert any(
+        "join 'dim_customer': unsupported field 'table'" in e
+        and "the relation key is 'source'" in e
+        for e in report.errors
+    )
+
+    # Depth matters: the walk recurses, so a nested join is checked identically.
+    at_nested_level = PATH_BASE_YAML.replace(
+        "        source: main.sales.dim_nation\n",
+        "        source: main.sales.dim_nation\n        table: main.sales.dim_nation\n",
+    )
+    report = validate(at_nested_level, capabilities=_NESTED_GRANTED)
+    assert not report.ok
+    assert any("join 'dim_nation': unsupported field 'table'" in e for e in report.errors)
+
+    # Legal positions for the same word: a field name, a synonym, and a relation
+    # name. None of these is the join key, so none may be rejected.
+    legal = (
+        PATH_BASE_YAML.replace("main.sales.fact_orders", "main.sales.fact_order_table")
+        .replace("  - name: nation_name\n", "  - name: table\n")
+        .replace("synonyms: [nation, country, nation name]", "synonyms: [table, tables, source table]")
+    )
+    report = validate(legal, capabilities=_NESTED_GRANTED)
+    assert report.ok, report.errors
 
 
 def test_every_generated_field_has_synonyms_within_bounds():
@@ -900,3 +1124,91 @@ def test_mv_yaml_is_the_only_module_that_renders_yaml():
             offenders.append(str(path.relative_to(package_root)))
 
     assert offenders == [], f"YAML is rendered outside mv_yaml.py: {offenders}"
+
+
+# The sanctioned non-mv_yaml occurrences of metric-view DDL text, pinned by exact
+# location. Not a substring exemption: the phrase is allowed at *these lines* and
+# nowhere else, so a new assembly site fails even if it copies this wording. If an
+# edit shifts these lines, re-pin deliberately — that is the same discipline
+# MV-D9 applies to quoted anchors.
+SANCTIONED_DDL_TEXT_SITES: dict[tuple[str, int], str] = {
+    ("optimization/ddl.py", 262): (
+        "created_by          STRING        NOT NULL COMMENT 'Identity that executed "
+        "CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never "
+        "the service principal',"
+    ),
+}
+
+
+def _executable_string_lines(source: str) -> set[int]:
+    """Physical line numbers covered by string literals that are not docstrings.
+
+    Docstrings and ``#`` comments describe DDL; an executable string *is* DDL, or
+    becomes it. Only the latter can put a statement on a warehouse, so only the
+    latter needs pinning. f-string segments count — assembling the statement with
+    an f-string is the evasion this distinction has to catch.
+    """
+    tree = ast.parse(source)
+    docstring_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", [])
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstring_ids.add(id(body[0].value))
+        # A bare string expression statement is a field/constant docstring.
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            if isinstance(node.value.value, str):
+                docstring_ids.add(id(node.value))
+
+    covered: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in docstring_ids:
+                continue
+            covered.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return covered
+
+
+def test_mv_yaml_is_the_only_module_that_builds_metric_view_ddl():
+    """The YAML guard above stops a second renderer; this stops a second *statement*.
+
+    ``create_ddl`` is the only sanctioned assembler of
+    ``CREATE VIEW ... WITH METRICS LANGUAGE YAML``. An f-string in any other module
+    would bypass every check in this file — the validator never sees text that was
+    never rendered here — so the phrase is forbidden in executable strings package
+    wide, with the known documentation sites pinned by location.
+    """
+    package_root = Path(mv_yaml_module.__file__).resolve().parents[1]
+    phrases = ("WITH METRICS", "CREATE VIEW")
+    unpinned: list[str] = []
+    stale_pins = dict(SANCTIONED_DDL_TEXT_SITES)
+
+    for path in sorted(package_root.rglob("*.py")):
+        if path.name == "mv_yaml.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        if not any(phrase in source for phrase in phrases):
+            continue
+        executable = _executable_string_lines(source)
+        rel = str(path.relative_to(package_root))
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if not any(phrase in line for phrase in phrases):
+                continue
+            if lineno not in executable:
+                continue  # a docstring or comment describing DDL, not building it
+            pinned = stale_pins.pop((rel, lineno), None)
+            if pinned is None:
+                unpinned.append(f"{rel}:{lineno}: {line.strip()[:100]}")
+            elif pinned != line.strip():
+                unpinned.append(
+                    f"{rel}:{lineno}: pinned text no longer matches — re-pin.\n"
+                    f"  pinned: {pinned}\n  actual: {line.strip()}"
+                )
+
+    assert unpinned == [], "metric-view DDL is assembled outside mv_yaml.py:\n" + "\n".join(unpinned)
+    assert stale_pins == {}, f"pinned DDL sites no longer exist — remove the pin: {sorted(stale_pins)}"

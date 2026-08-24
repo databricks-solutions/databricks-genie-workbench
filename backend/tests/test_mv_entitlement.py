@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import pytest
 
+from genie_space_optimizer.optimization.mv_yaml import CapabilityRow, _capability_map
+
+from backend.models import MvCapabilityRow
 from backend.services import auth, mv_entitlement
 from backend.services.mv_entitlement import MvProbeError
 
@@ -553,6 +556,56 @@ def test_probe_requires_obo_and_never_falls_back_to_the_service_principal(monkey
 
     with pytest.raises(RuntimeError, match="user authorization"):
         _probe()
+
+
+# ── Cross-package contract ───────────────────────────────────────────────
+
+
+def test_mv_capability_row_satisfies_the_gso_protocol():
+    """The engine reads these rows structurally, so the shape is the contract.
+
+    ``mv_yaml.validate`` types its ``capabilities`` argument against
+    ``CapabilityRow``, a Protocol declared in the engine because the dependency
+    arrow runs backend → engine and never back. Nothing imports this model there,
+    so renaming or dropping one of the three fields would be silent — this test is
+    the only thing that makes it loud. It lives in the backend suite for the same
+    reason: the engine cannot import the model to check it.
+    """
+    row = MvCapabilityRow(
+        capability="mv_nested_joins",
+        label="Nested joins",
+        required_dbr="17.1",
+        status="GRANTED",
+        optional=True,
+    )
+
+    assert isinstance(row, CapabilityRow)
+    # isinstance on a runtime_checkable Protocol only proves the attributes are
+    # present, so also assert the engine reads the values it expects to.
+    assert _capability_map([row]) == {"mv_nested_joins": "GRANTED"}
+
+    # And the dict form a persisted probe_results payload round-trips as.
+    assert _capability_map([row.model_dump(mode="json")]) == {"mv_nested_joins": "GRANTED"}
+
+    # Negative control: the Protocol must actually discriminate, or the assertion
+    # above proves nothing. Drop one of the three fields and conformance fails.
+    class _MissingOptional:
+        capability = "mv_nested_joins"
+        status = "GRANTED"
+
+    assert not isinstance(_MissingOptional(), CapabilityRow)
+
+
+def test_probe_capability_rows_are_consumable_by_the_engine(obo_client):
+    """End to end: a real probe's rows drive the engine's capability lookup."""
+    result = _probe()
+
+    assert result.capabilities
+    assert all(isinstance(row, CapabilityRow) for row in result.capabilities)
+    resolved = _capability_map(result.capabilities)
+    assert set(resolved) == {row.capability for row in result.capabilities}
+    # The flat results map is keyed by capability id too, so both inputs agree.
+    assert all(resolved[k] == result.results[k] for k in resolved)
 
 
 def test_no_code_path_issues_ddl(obo_client, monkeypatch):

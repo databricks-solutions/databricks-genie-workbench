@@ -212,9 +212,11 @@ class MvProbeResult(BaseModel):
 
     Shape follows POV §7.3.1 verbatim (``results`` is the flat
     check-label-to-status map that section prints) and adds the typed
-    ``privileges`` / ``capabilities`` rows the UI and ``mv_yaml.validate``
-    consume. Never carries a token or an SP identity: every check runs under the
-    signed-in user's OBO client."""
+    ``privileges`` / ``capabilities`` rows the UI renders. ``capabilities`` rows
+    also satisfy the ``CapabilityRow`` Protocol that the engine's
+    ``mv_yaml.validate`` reads them through — structurally, since the engine does
+    not import this module; keep the three fields it names. Never carries a token
+    or an SP identity: every check runs under the signed-in user's OBO client."""
 
     probe_id: str
     checked_as: str

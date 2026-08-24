@@ -2548,7 +2548,26 @@ MV_OPTIONAL_CAPABILITIES: frozenset[str] = frozenset({
 # ── 25. Metric View Advisor YAML vocabulary (MV-D8) ─────────────────────
 
 MV_YAML_VERSION = "1.1"
-"""Emitted quoted. The one schema version this engine writes and validates."""
+"""Emitted quoted. The one schema version this engine writes and validates.
+
+**This pins the dialect this generator emits. It is not an assertion about what
+a workspace supports.** Two jobs could hide behind one constant, and only the
+first belongs here: the renderer emits exactly the field vocabulary of metric
+view YAML 1.1 — the version the MV-D8 generation standard was written against,
+and the version whose unsupported-field and format-type lints in this section
+were derived from — and :func:`mv_yaml.validate` requires that same literal so
+a document from anywhere else cannot claim a schema the lints do not describe.
+Whether a *workspace* can plan a given construct is the second job, and capability
+rows already do it: ``MV_CAPABILITY_FLOORS`` states runtime floors and MV-D13
+resolves the undecidable case by stepping down the join ladder.
+
+So a workspace reporting a different metric view schema version is **not** a
+signal to widen or bump this constant at runtime. Emitting 1.2 fields because a
+runtime advertises 1.2 would ship YAML this module's lints have never checked,
+which is the unvalidated-construct failure MV-D8 exists to prevent. A version
+bump is a deliberate code change — new vocabulary in this section, the lints
+updated with it, goldens re-baselined — and until that change lands, YAML at any
+other version is refused by ``validate`` rather than passed through."""
 
 MV_FORMAT_TYPES: frozenset[str] = frozenset({
     "byte", "currency", "date", "date_time", "number", "percentage",
@@ -2624,9 +2643,27 @@ MV_COMMENT_ECHO_THRESHOLD = _float_env("GSO_MV_COMMENT_ECHO_THRESHOLD", 0.90)
 """Normalized-similarity ceiling for one shipped comment line against one
 benchmark question, checked through ``leakage.LeakageOracle.contains_question``.
 
+**The comparison is ``>=``, so a line landing on exactly this value is
+rejected.** That is `contains_question`'s operator, not a second convention
+adopted here, and MV-D8's prose was corrected to match it rather than the
+reverse: the function is shared with the example-SQL firewall at 0.85, so
+changing the operator for one caller would move another path's boundary in the
+permissive direction. Ties belong to rejection in a firewall.
+
 Higher than the example-SQL threshold (0.85) and deliberately so: a comment's
 BEST FOR line is a *paraphrase of an intent*, so it is supposed to share topic
 vocabulary with questions about that intent. Only near-verbatim echo is
 leakage. This is defense in depth rather than the primary guarantee —
 ``MetricViewCandidate`` carries ``benchmark_question_ids`` and no benchmark
 text, so verbatim text has no route into a comment to begin with."""
+
+MV_ECHO_CHECK_COMPARED = "COMPARED"
+MV_ECHO_CHECK_NOT_COMPARED = "NOT_COMPARED"
+"""Whether the BEST FOR echo check actually compared anything.
+
+The leakage oracle is an optional input, so "no echo found" and "no corpus was
+supplied, nothing was compared" are different facts that a boolean pass would
+render identical. A check that cannot run reports ``NOT_COMPARED`` on the result
+rather than logging and returning clean, because the reader of a stored
+validation payload is not reading the logs. ``NOT_COMPARED`` is the default:
+absent evidence of a comparison, none is claimed."""

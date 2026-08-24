@@ -15,7 +15,7 @@ written — see [§3 Decisions needed](#3-decisions-needed).
 | Date of survey | 2026-08-23 |
 | Method | Direct file reads. Every quote below was read from the working tree on the date above. Line numbers are from that state. |
 | Scope | Read-only. No feature code was written or modified in producing this report. |
-| Last MV-D9 refresh | 2026-08-23, in the Prompt 5.5 commit. Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
+| Last MV-D9 refresh | 2026-08-23, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
 
 ## Headline
 
@@ -484,11 +484,12 @@ read it downstream by `run_id`.
 
 #### Package layout
 
+<!-- BEGIN GENERATED: package-layout (scripts/gap_report_counts.py) -->
 ```text
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2632 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2669 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
@@ -498,8 +499,9 @@ src/genie_space_optimizer/
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
                   mv_fingerprint.py (1333 L), mv_scoring.py (1125 L),
-                  mv_state.py (639 L), mv_yaml.py (1643 L), ...
+                  mv_state.py (639 L), mv_yaml.py (1755 L), ...
 ```
+<!-- END GENERATED: package-layout -->
 
 **Existing metric-view surface** (relevant — the advisor is not starting from zero):
 
@@ -510,7 +512,7 @@ src/genie_space_optimizer/
 | `optimization/preflight.py` | `_profile_metric_view`, reclassification into `_metric_view_yaml` |
 | `optimization/benchmarking.py` | MV join precheck/repair, `MEASURE()` wrapping, `build_metric_view_measures` |
 | `optimization/wide_schema_history.py` | `system.query.history` mining (`:248`), warehouse-history fallback (`:357`) |
-| `optimization/mv_yaml.py` (1643 L) | `generate` / `validate` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment and capability checks) |
+| `optimization/mv_yaml.py` (1755 L) | `generate` / `validate` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment, echo and capability checks). `CapabilityRow` is the Protocol the backend's `MvCapabilityRow` satisfies structurally |
 
 Note the last row: **query-history demand signal (the POV's **D** component) already
 exists**, including the CMK/unavailable fallback path.
@@ -734,10 +736,21 @@ table added by Commit 1:
 The apply path still executes no metric-view DDL, and that is unchanged. What did change with
 Prompt 5.5 is where the statement is *built*: `optimization/mv_yaml.py` renders both the YAML
 body and the wrapping `CREATE VIEW … WITH METRICS LANGUAGE YAML` (`mv_yaml.create_ddl`), and is
-the only module in the package that renders either — pinned by
-`test_mv_yaml_is_the_only_module_that_renders_yaml`, which fails on a `yaml.dump` anywhere else.
-Execution remains the backend's under OBO (MV-D1); the job, which runs as the service principal,
-still never issues the statement.
+the only module in the package that renders either — pinned by two guards:
+`test_mv_yaml_is_the_only_module_that_renders_yaml`, which fails on a `yaml.dump` anywhere else,
+and `test_mv_yaml_is_the_only_module_that_builds_metric_view_ddl`, which fails on `CREATE VIEW`
+or `WITH METRICS` in any executable string outside it — the `ddl.py:262` comment above is
+allowed by exact `(path, line)` pin, not by a substring exemption, so a new f-string assembly
+site fails even if it copies that wording. Execution remains the backend's under OBO (MV-D1);
+the job, which runs as the service principal, still never issues the statement.
+
+**Open follow-up — `update_mv_yaml` is unvalidated, and Prompt 7 owns it**
+([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)).
+`update_mv_yaml` (`config.py:2098`, applied at `applier.py:3391`) is the one path by which
+LLM-authored metric view YAML enters the system, and it transports `new_text` verbatim. Now that
+`mv_yaml.validate` exists, engine-generated YAML is checked on every path and this one is checked
+on none. Prompt 7 already rewrites this applier region for the Lever-2 no-op, so the gate lands
+there rather than in a separate change.
 
 Existing patches *can* modify an **already-attached** MV's column metadata, because lookup
 searches both shelves:
