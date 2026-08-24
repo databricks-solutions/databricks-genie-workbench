@@ -96,6 +96,8 @@ dbutils.widgets.text("llm_model", "")
 dbutils.widgets.text("enable_metric_view_suggestions", "false")
 dbutils.widgets.text("mv_attach_views", "")
 dbutils.widgets.text("mv_consent_id", "")
+dbutils.widgets.text("mv_action_mode", "suggest_only")
+dbutils.widgets.text("mv_min_confidence", "75")
 
 run_id = dbutils.widgets.get("run_id").strip()
 space_id = dbutils.widgets.get("space_id").strip()
@@ -123,6 +125,14 @@ enable_metric_view_suggestions = (
 # is Prompt 8's work, as it was for enable_metric_view_suggestions above.
 mv_attach_views = dbutils.widgets.get("mv_attach_views").strip()
 mv_consent_id = dbutils.widgets.get("mv_consent_id").strip()
+# Declared-but-unconsumed today (MV-D5 / gap report §2.2). Read here so the job
+# parameters registered in Prompt 8 actually flow to this notebook rather than
+# silently resolving to a widget default that nothing set. Consumers land later:
+# mv_action_mode gates suggest_only vs create_and_attach in the advisor/attach
+# phase (Prompt 9 trigger flow), and mv_min_confidence is the advisor's proposal
+# confidence cutoff. Kept as module reads, not passed downstream yet.
+mv_action_mode = dbutils.widgets.get("mv_action_mode").strip() or "suggest_only"
+mv_min_confidence = dbutils.widgets.get("mv_min_confidence").strip() or "75"
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 

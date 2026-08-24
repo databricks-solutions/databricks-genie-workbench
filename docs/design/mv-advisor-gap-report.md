@@ -1312,7 +1312,7 @@ provides `mock_ws`, `mock_spark`, `patch_llm_client`, `sample_run`, `sample_meta
 
 | Test | Guards |
 |---|---|
-| `test_phase7_job_dag.py` (405 L) | The DABs job shape: four linear tasks, no condition tasks, no task values, parameter defaults, launcher parameter threading |
+| `test_phase7_job_dag.py` (477 L) | The DABs job shape: four linear tasks, no condition tasks, no task values, parameter defaults (incl. the five MV advisor params, Prompt 8), launcher parameter threading |
 | `test_four_notebook_architecture.py` (85 L) | AST-walks the import closure of all four notebooks and fails on any import of 17 retired modules |
 | `test_debug_prompt_contract.py` | `docs/debug-prompt.md` SQL stays read-only and current |
 | `backend/tests/test_deploy_lib.py` | The installer mirrors the bundle |
@@ -1432,32 +1432,45 @@ incompatible, and adopting the POV means changing or deleting existing behaviour
 
 ### 2.2 Job parameters (POV §7.7)
 
-Every one is **DOES-NOT-EXIST-YET** as a *registered job parameter*; each requires the
-four-place lockstep of [§1.2](#12-the-four-place-parameter-lockstep-requirement). `space_id`
-is the only pre-existing name.
+As of **Prompt 8**, the five shipped advisor parameters are **registered job parameters**
+with the four-place lockstep of [§1.2](#12-the-four-place-parameter-lockstep-requirement)
+complete: declared in the root bundle (`databricks.yml:115-124`), the package bundle
+(`packages/genie-space-optimizer/databricks.yml:81-90`), `gso_job.JOB_PARAMETERS`
+(`scripts/deploy_lib/gso_job.py:111-115`), and the launcher's run_now map
+(`backend/job_launcher.py:137-141`, with defaulted keyword-only kwargs at `:85-89` so the
+sole caller `integration/trigger.py:281` is untouched until Prompt 9). Each is also passed
+to the **optimize task's** `base_parameters` in every mirror (`databricks.yml:194-198`,
+`packages/genie-space-optimizer/databricks.yml:156-160`, `gso_job.py:70-71` base_param_keys)
+— the pass-through step that actually delivers a job value to the `run_optimize.py` widget;
+a parameter declared but omitted there silently resolves to the widget default. `space_id`
+remains the only name that pre-existed the feature.
 
-Three widget **reads** have landed ahead of that registration, in the prompt that consumes
-them: `enable_metric_view_suggestions` (Prompt 6) and `mv_attach_views` / `mv_consent_id`
-(Prompt 7, MV-D16) are read in `jobs/run_optimize.py` with widget defaults, so a job whose
-definition does not yet declare them runs unchanged with the phase off. **Prompt 8 owns all
-four mirror sites**; a read without them is inert, not broken. Note the POV's `mv_consent`
-is not the shipped name: the parameter is `mv_consent_id` and its value is a **probe id**,
-because `genie_opt_mv_consents` is keyed on `probe_id`.
+The shipped job set diverges from the POV's seven, per the playbook's Prompt 8 scope:
+`mv_attach_views` (the MV-D16 attach input) and `mv_consent_id` (the POV's `mv_consent`,
+shipped as a **probe id** because `genie_opt_mv_consents` is keyed on `probe_id`) are in the
+job; `mv_target_catalog` / `mv_target_schema` (they live on the consent row) and
+`mv_materialize` (a backend/OBO concern, MV-D1) are deliberately **not** job parameters. The
+three widget reads that landed ahead of registration (`enable_metric_view_suggestions`,
+Prompt 6; `mv_attach_views` / `mv_consent_id`, Prompt 7/MV-D16) plus the two Prompt 8 added
+(`mv_action_mode` / `mv_min_confidence`) now all receive real job values via the
+base_parameters wiring above; before Prompt 8 every one resolved to its widget default.
 
-| POV parameter | Default | Status |
+| Parameter | Default | Status |
 |---|---|---|
 | `space_id` | `""` | **MATCHES** — `databricks.yml:77-78` |
-| `enable_metric_view_suggestions` | `"false"` | **DOES-NOT-EXIST-YET** |
-| `mv_action_mode` | `"suggest_only"` | **DOES-NOT-EXIST-YET** |
-| `mv_target_catalog` | `""` | **DOES-NOT-EXIST-YET** |
-| `mv_target_schema` | `""` | **DOES-NOT-EXIST-YET** — note `schema` already exists with a *different* meaning (the GSO state schema), so the `mv_` prefix is load-bearing |
-| `mv_materialize` | `"false"` | **DOES-NOT-EXIST-YET** |
-| `mv_consent` | `""` (JSON) | **DOES-NOT-EXIST-YET** |
-| `mv_min_confidence` | `"75"` | **DOES-NOT-EXIST-YET** |
+| `enable_metric_view_suggestions` | `"false"` | **MATCHES (Prompt 8)** — declared `databricks.yml:115`, pkg `:81`, `gso_job.py:111`, launcher `:137`/`:85`; passed to optimize `databricks.yml:194`; consumed as the advisor gate `run_optimize.py:117-118`, `:461` |
+| `mv_attach_views` | `""` | **MATCHES (Prompt 8)** — declared `databricks.yml:119`, pkg `:85`, `gso_job.py:113`, launcher `:139`/`:87`; passed to optimize `:196`; consumed by the MV-D16 attach phase `run_optimize.py:126`, `:383`. Shipped attach input, not in the POV's list |
+| `mv_consent_id` | `""` | **MATCHES (Prompt 8)** — declared `databricks.yml:121`, pkg `:87`, `gso_job.py:114`, launcher `:140`/`:88`; passed to optimize `:197`; consumed `run_optimize.py:127`, `:384`. Shipped name for the POV's `mv_consent`; value is a **probe id** |
+| `mv_action_mode` | `"suggest_only"` | **MATCHES, UNCONSUMED (Prompt 8)** — declared `databricks.yml:117`, pkg `:83`, `gso_job.py:112`, launcher `:138`/`:86`; passed to optimize `:195`; read at `run_optimize.py:134` but not yet consumed. **Future owner:** the advisor/attach phase's `suggest_only`↔`create_and_attach` gate, wired by the **Prompt 9 trigger flow** |
+| `mv_min_confidence` | `"75"` | **MATCHES, UNCONSUMED (Prompt 8)** — declared `databricks.yml:123`, pkg `:89`, `gso_job.py:115`, launcher `:141`/`:89`; passed to optimize `:198`; read at `run_optimize.py:135` but not yet consumed. **Future owner:** the advisor's **proposal confidence cutoff** in `mv_advisor` / `mv_scoring` candidate filtering (plausibly a 6b follow-on or the Prompt 9 trigger flow) |
+| `mv_target_catalog` | `""` | **DOES-NOT-EXIST-YET (out of job scope)** — the target lives on the consent row, not a job parameter (playbook Prompt 8) |
+| `mv_target_schema` | `""` | **DOES-NOT-EXIST-YET (out of job scope)** — same; note `schema` already means the GSO state schema, so the `mv_` prefix would be load-bearing if it were ever added |
+| `mv_materialize` | `"false"` | **DOES-NOT-EXIST-YET (out of job scope)** — materialization is a separate backend/OBO consent (MV-D1), never a job parameter |
 | `enable_discover_curation` (§8.6) | — | **DOES-NOT-EXIST-YET** |
 
-String-typed parameters are **MATCHES** as a convention: all 15 existing parameters are
-strings, including the numeric ones (`"3"`, `"0.90"`).
+String-typed parameters are **MATCHES** as a convention: all 20 declared parameters in the
+root bundle are strings (19 in the package bundle, which omits the Workbench-only
+`llm_model`), including the numeric ones (`"3"`, `"0.90"`, and the new `"75"`).
 
 ### 2.3 Task values (POV §7.7 parameters, §7.7.1 contract)
 
