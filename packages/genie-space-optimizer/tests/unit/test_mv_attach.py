@@ -18,8 +18,10 @@ Three things here are load-bearing beyond ordinary coverage:
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -825,3 +827,400 @@ def test_the_loop_carries_forward_the_config_the_phase_returned(monkeypatch) -> 
     )
 
     assert captured["config"]["data_sources"]["metric_views"] == []
+
+
+# ── Does the attach survive finalize? (MV-D18) ───────────────────────────
+#
+# Publish never re-deploys a config (``publish.py`` promotes the champion in
+# Delta only), so "what is deployed" is whatever the optimize task left live.
+# Four trajectories, one test each, plus the reconciliation that keeps
+# ``genie_opt_mv_created_objects.status`` true of the config the run ends on.
+
+
+def _observed_config_updates(spark: FakeDeltaSpark) -> list[dict[str, Any]]:
+    """Decode every ``observed_config_json`` UPDATE the phase issued.
+
+    The fake applies MERGEs and serves SELECTs but ignores UPDATEs, so the
+    assertion reads the statement log. Decoding the base64 payload rather than
+    grepping the SQL is the point: it proves what would land in the column.
+    """
+    out: list[dict[str, Any]] = []
+    for statement in spark.statements:
+        if "observed_config_json" not in statement or not statement.startswith("UPDATE"):
+            continue
+        encoded = re.search(r"unbase64\('([^']+)'\)", statement)
+        iteration = re.search(r"iteration = (\d+)", statement)
+        assert encoded and iteration, statement
+        out.append(
+            {
+                "iteration": int(iteration.group(1)),
+                "config": json.loads(base64.b64decode(encoded.group(1)).decode("utf-8")),
+                "statement": statement,
+            }
+        )
+    return out
+
+
+def _loop(
+    monkeypatch, *, attach, accuracies, spark=None, raise_at=None, observed="live",
+):
+    """Drive the loop with a fixed attach outcome and accuracy trajectory.
+
+    ``accuracies[0]`` is the baseline; the rest are candidate attempts. The
+    applier and rollback are the real ones — the whole question in cases 1 and 2
+    is what the real ``pre_snapshot`` contract does to a post-attach config.
+
+    ``observed`` models the per-iteration authoritative read-back at
+    ``unified_loop.py:3382``, which the loop prefers over its own submitted
+    config. Both settings are production paths and they reach the attach by
+    different routes, so the cases are asserted under each:
+
+    * ``"live"`` — the GET answers with the space as the attach left it, which is
+      what really happens because the attach PATCHed it.
+    * ``None`` — the read-back was unavailable, so the loop falls back to its own
+      submitted config. This is the stricter case: it proves the attach survives
+      through the loop's *own* config lineage and not merely because the live
+      space happens to hold it.
+    """
+    pre_attach = _config()
+    attached_config = copy.deepcopy(attach.config) if attach.config else pre_attach
+    evals = iter(accuracies)
+    stamped: dict[str, Any] = {}
+    calls: list[str] = []
+
+    def evaluate(*_args, **_kwargs):
+        accuracy = next(evals)
+        calls.append(f"eval:{accuracy}")
+        if raise_at is not None and len(calls) >= raise_at:
+            raise RuntimeError("optimize blew up mid-loop")
+        # Six questions, all moving the same way: enough for the loop's paired
+        # sign test to reach significance, so an improvement is actually accepted
+        # rather than rejected on insufficient evidence.
+        verdict = "GOOD" if accuracy > 50 else "BAD"
+        rows = [_row(f"rev_{n:03d}", verdict) for n in range(1, 7)]
+        return {
+            "overall_accuracy": accuracy,
+            "total_questions": len(rows),
+            "correct_count": sum(1 for r in rows if r["assessment"] == "GOOD"),
+            "scores": {},
+            "failures": [],
+            "remaining_failures": [],
+            "thresholds_met": False,
+            "rows": rows,
+            "eval_run_id": f"eval-{accuracy}",
+            "eval_run_status": "DONE",
+        }
+
+    monkeypatch.setattr(
+        unified_loop,
+        "fetch_space_config",
+        lambda *_a, **_k: {"_parsed_space": copy.deepcopy(pre_attach)},
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "run_space_quality_enrichment",
+        lambda *_a, **_k: SimpleNamespace(current_config=copy.deepcopy(pre_attach)),
+    )
+    monkeypatch.setattr(unified_loop, "_native_eval", evaluate)
+    monkeypatch.setattr(unified_loop, "run_mv_attach_phase", lambda *_a, **_k: attach)
+    monkeypatch.setattr(
+        unified_loop,
+        "_read_observed_config_after_evaluation",
+        lambda *_a, **_k: (copy.deepcopy(attached_config) if observed == "live" else None),
+    )
+    monkeypatch.setattr(
+        unified_loop,
+        "propose_patches",
+        lambda *_a, **_k: (
+            1,
+            "add a description",
+            [
+                {
+                    "type": "update_description",
+                    "target": "main.sales.fact_orders",
+                    "new_text": "Order facts.",
+                    "lever": 1,
+                }
+            ],
+            "{}",
+        ),
+    )
+    monkeypatch.setattr(unified_loop, "write_iteration", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "update_run_status", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "update_iteration_loop_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "mark_patches_rolled_back", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "mark_iteration_rolled_back", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "write_patch", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "_stamp_terminal", lambda *_a, **kw: stamped.update(kw))
+
+    out = unified_loop.run_unified_optimization_loop(
+        None,
+        spark if spark is not None else MagicMock(),
+        run_id=RUN_ID,
+        space_id=SPACE_ID,
+        benchmarks=[],
+        catalog=CATALOG,
+        schema=SCHEMA,
+        levers=[1],
+        max_attempts=max(0, len(accuracies) - 1),
+        target_accuracy=99.0,
+        mv_attach_views=f'["{MV_NAME}"]',
+        mv_consent_id=PROBE_ID,
+    )
+    return out, stamped
+
+
+def _kept_attach() -> mv_attach.AttachOutcome:
+    return mv_attach.AttachOutcome(
+        status=mv_attach.STATUS_COMPLETE,
+        verdict=mv_attach.VERDICT_ATTACHED,
+        attached=(MV_NAME,),
+        config=_config([{"identifier": MV_NAME}]),
+    )
+
+
+@pytest.mark.parametrize("observed", ["live", None])
+def test_case_1_a_late_champion_still_carries_the_metric_view(
+    monkeypatch, observed,
+) -> None:
+    """Lift passes, the loop improves, the champion is a late iteration.
+
+    Asserted under both read-back paths, because they reach the attach
+    differently: with a live read-back the champion has the view because the
+    attach PATCHed the space, and with the read-back unavailable it has the view
+    because the loop's own submitted config descends from the post-attach config.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+    _out, stamped = _loop(
+        monkeypatch,
+        attach=_kept_attach(),
+        accuracies=[10.0, 80.0],
+        spark=spark,
+        observed=observed,
+    )
+
+    assert stamped["iteration"] == 1
+    assert stamped["config"]["data_sources"]["metric_views"] == [{"identifier": MV_NAME}]
+    assert _created_row(spark)["status"] == "ATTACHED"
+
+
+def test_case_2_a_regressing_loop_keeps_a_view_that_passed_its_own_lift(
+    monkeypatch,
+) -> None:
+    """Lift passes, every lever attempt is rejected, the champion is iteration 0.
+
+    This is the case worth defending. A rejected attempt reverts to that
+    attempt's ``pre_snapshot``, which is the post-attach config the loop was
+    handed — so unrelated levers regressing must not cost a metric view that
+    measurably helped.
+
+    Read-back unavailable is the deliberate setting: it removes the live space
+    from the answer, so what survives is what the loop's own rollback restored.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+    _out, stamped = _loop(
+        monkeypatch,
+        attach=_kept_attach(),
+        accuracies=[80.0, 10.0],
+        spark=spark,
+        observed=None,
+    )
+
+    assert stamped["iteration"] == 0
+    assert stamped["config"]["data_sources"]["metric_views"] == [{"identifier": MV_NAME}]
+    # The rejected lever patch is gone; the consent-backed attach is not.
+    assert stamped["config"]["data_sources"]["tables"] == [
+        {"identifier": "main.sales.fact_orders"}
+    ]
+    assert _created_row(spark)["status"] == "ATTACHED"
+
+
+def test_case_2_the_champion_record_is_repointed_at_the_attached_config() -> None:
+    """The half a live-space check cannot see.
+
+    Iteration 0's row is written before the attach, and it becomes the champion
+    whenever no attempt is accepted. ``revert_optimization(target="champion")``
+    resolves to ``observed_config_json``, so without this the button a user
+    presses to KEEP the optimized config would strip the view.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    outcome = _run_phase(
+        spark,
+        config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=_FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+    )
+    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+
+    updates = _observed_config_updates(spark)
+    assert len(updates) == 1
+    assert updates[0]["iteration"] == 0
+    assert updates[0]["config"]["data_sources"]["metric_views"] == [
+        {"identifier": MV_NAME}
+    ]
+    # Scoped to the full-scope row, so a same-iteration slice row is untouched.
+    assert "eval_scope = 'full'" in updates[0]["statement"]
+
+
+def test_case_2_the_submitted_baseline_config_is_left_pre_attach() -> None:
+    """``config_json`` records what was scored, and the baseline WAS pre-attach.
+
+    Correcting the observed column is a fidelity fix; rewriting the submitted one
+    would be a misattribution — iteration 0's accuracy was measured without the
+    view.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    _run_phase(
+        spark,
+        config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=_FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+    )
+    assert not [s for s in spark.statements if "SET config_json" in s]
+
+
+def test_case_3_a_mid_loop_failure_leaves_the_status_alone(monkeypatch) -> None:
+    """Lift passes, the loop raises. The view is still live, so the row stands.
+
+    ``run_optimize`` writes a failure stage and re-raises without reverting, and
+    reconciliation never runs — which is the right outcome, because demoting a
+    row here would deny an attachment that is genuinely still on the space.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+    with pytest.raises(RuntimeError, match="blew up mid-loop"):
+        _loop(
+            monkeypatch,
+            attach=_kept_attach(),
+            accuracies=[10.0, 20.0],
+            spark=spark,
+            raise_at=2,
+        )
+
+    assert _created_row(spark)["status"] == "ATTACHED"
+
+
+def test_case_4_a_failed_lift_leaves_no_view_and_no_claim(monkeypatch) -> None:
+    """Lift fails, the attach is already reverted, the loop runs on normally."""
+    spark = FakeDeltaSpark()
+    _seed(spark, status="DETACHED")
+    detached = mv_attach.AttachOutcome(
+        status=mv_attach.STATUS_COMPLETE,
+        verdict=mv_attach.VERDICT_DETACHED,
+        detached=(MV_NAME,),
+        config=_config(),
+    )
+    _out, stamped = _loop(
+        monkeypatch, attach=detached, accuracies=[10.0, 80.0], spark=spark,
+    )
+
+    assert stamped["config"]["data_sources"]["metric_views"] == []
+    assert _created_row(spark)["status"] == "DETACHED"
+
+
+# ── Status truthfulness: end-of-run reconciliation ───────────────────────
+
+
+def test_reconciliation_demotes_a_claim_the_final_config_does_not_carry() -> None:
+    """An ATTACHED row pointing at a space without the view is worse than no row.
+
+    Prompt 9's re-run flow and Prompt 13's UI both read this column, so the run
+    does not end on an unverified status.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+
+    result = mv_attach.reconcile_attached_objects(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+    )
+
+    assert result == {
+        "checked": 1,
+        "verified": 0,
+        "demoted": 1,
+        "identifiers": [MV_NAME],
+    }
+    assert _created_row(spark)["status"] == "DETACHED"
+
+
+def test_reconciliation_leaves_a_verified_claim_untouched() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+    before = len(spark.statements)
+
+    result = mv_attach.reconcile_attached_objects(
+        spark,
+        run_id=RUN_ID,
+        catalog=CATALOG,
+        schema=SCHEMA,
+        config=_config([{"identifier": MV_NAME}]),
+    )
+
+    assert (result["verified"], result["demoted"]) == (1, 0)
+    assert _created_row(spark)["status"] == "ATTACHED"
+    # No status write at all on the verified path, so it is safe to call at every
+    # loop exit.
+    assert not [s for s in spark.statements[before:] if s.startswith("MERGE INTO")]
+
+
+def test_reconciliation_matches_identifiers_case_insensitively() -> None:
+    """UC identifiers are case-insensitive; a case difference is not a detach."""
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+
+    result = mv_attach.reconcile_attached_objects(
+        spark,
+        run_id=RUN_ID,
+        catalog=CATALOG,
+        schema=SCHEMA,
+        config=_config([{"identifier": MV_NAME.upper()}]),
+    )
+
+    assert (result["verified"], result["demoted"]) == (1, 0)
+
+
+def test_reconciliation_never_drops_the_uc_object() -> None:
+    """Demotion is a status correction. Drop stays an explicit backend endpoint."""
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+
+    mv_attach.reconcile_attached_objects(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+    )
+
+    # The rollback_policy literal DETACH_ONLY_NEVER_DROP contains the word, so
+    # match a statement that would actually drop something.
+    assert not [
+        s for s in spark.statements if re.search(r"\bDROP\s+(VIEW|TABLE)\b", s, re.I)
+    ]
+
+
+def test_reconciliation_is_idempotent() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+    kwargs = {"run_id": RUN_ID, "catalog": CATALOG, "schema": SCHEMA, "config": _config()}
+
+    first = mv_attach.reconcile_attached_objects(spark, **kwargs)
+    second = mv_attach.reconcile_attached_objects(spark, **kwargs)
+
+    assert first["demoted"] == 1
+    # Already DETACHED, so the second pass has nothing to check or correct.
+    assert second == {"checked": 0, "verified": 0, "demoted": 0, "identifiers": []}
+
+
+def test_reconciliation_survives_an_unreadable_table() -> None:
+    """A read failure must not cost the run its terminal stamp."""
+    result = mv_attach.reconcile_attached_objects(
+        MagicMock(), run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+    )
+    assert result["checked"] == 0
+
+
+def test_attached_identifiers_tolerates_a_shapeless_config() -> None:
+    assert mv_attach.attached_identifiers(None) == set()
+    assert mv_attach.attached_identifiers({}) == set()
+    assert mv_attach.attached_identifiers({"data_sources": {"metric_views": ["x"]}}) == set()

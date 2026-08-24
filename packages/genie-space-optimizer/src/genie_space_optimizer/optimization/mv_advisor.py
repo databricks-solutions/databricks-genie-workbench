@@ -53,6 +53,7 @@ a first-class ``SKIP`` with a recorded reason.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -76,6 +77,7 @@ from .mv_scoring import (
     metric_view_fields,
     persist_proposal,
     score_candidate,
+    trusted_asset_definitions,
 )
 from .mv_yaml import ColumnFacts, MeasureRequest, MvProfiling, create_ddl, generate, validate
 from .state import load_all_full_iterations, write_artifact, write_stage
@@ -128,6 +130,13 @@ class CorpusLoad:
     rows_seen: int = 0
     rows_with_sql: int = 0
     skip_reason: str | None = None
+    applied_config: Mapping[str, Any] | None = field(default=None, repr=False)
+    """The space configuration the run ended on, for the conflict surface.
+
+    Carried out of the same read rather than fetched separately: the iteration
+    rows this function already loaded contain it, and a second Delta read or a
+    Genie GET to recover something in hand would be cost for nothing.
+    """
 
     @property
     def usable(self) -> bool:
@@ -265,7 +274,57 @@ def load_iteration_zero_corpus(
         entries=tuple(entries),
         rows_seen=len(payload),
         rows_with_sql=len(entries),
+        applied_config=_applied_config(rows),
     )
+
+
+def _applied_config(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The configuration the run ended on, from the iteration rows already read.
+
+    Prefers the champion row, since that is the configuration the run stands
+    behind, and falls back to the highest iteration for a run whose champion was
+    never stamped (a mid-loop failure). Within a row the authoritative observed
+    read-back wins over the submitted config, matching how
+    ``integration/revert.py`` resolves the same pair.
+
+    Note the consequence for the trusted assets read out of it: the loop can add
+    example SQL, so the curated set the conflict surface compares against is the
+    set as of the end of the run, not as of iteration 0. That is the right one —
+    a proposal has to be consistent with the answers the space actually ships.
+    """
+    champion = next((r for r in rows if _is_true(r.get("is_champion"))), None)
+    if champion is None:
+        ranked = sorted(
+            (r for r in rows if _as_int(r.get("iteration")) is not None),
+            key=lambda r: _as_int(r.get("iteration")) or 0,
+        )
+        champion = ranked[-1] if ranked else None
+    if champion is None:
+        return None
+    for column in ("observed_config_json", "config_json"):
+        parsed = _as_mapping(champion.get(column))
+        if parsed:
+            return parsed
+    return None
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            loaded = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(loaded, Mapping):
+            return loaded
+    return None
+
+
+def _is_true(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
 
 
 def _as_int(value: Any) -> int | None:
@@ -645,6 +704,11 @@ def _advise(
         estate_metric_view_yamls(spark, tables, w=w, warehouse_id=warehouse_id)
     )
     table_columns = column_facts_from_inventory(wide_schema_inventory)
+    # POV Part 5 step 3: trusted assets are authoritative in a conflict. They live
+    # in example_question_sqls, a different field from text_instructions, so
+    # without this the gate could only see governed metric views and a proposal
+    # contradicting a curated answer would reach PROPOSE unchallenged.
+    trusted_assets = trusted_asset_definitions(load.applied_config)
 
     persisted = 0
     artifacts = 0
@@ -659,6 +723,7 @@ def _advise(
             candidate,
             run_id=run_id,
             mv_fields=mv_fields,
+            instructions=trusted_assets,
             intent_texts=intent_texts,
             embedding_client=embedding_client,
             statuses=advisor_statuses(),

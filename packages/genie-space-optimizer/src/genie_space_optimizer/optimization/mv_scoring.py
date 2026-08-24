@@ -283,12 +283,23 @@ class InstructionDefinition:
     claims to define (the name a reader would match against a proposed measure)
     and ``canonical_expr`` is how it defines it. A definition of the same concept
     with a different canonical expression is the POV Part 5 conflict.
+
+    ``measure_columns`` and ``aggregate`` carry the second way a definition can
+    be matched, which is what makes trusted-asset SQL usable here at all. A
+    curated answer has no concept *name* to match on — it has a question, and
+    question text is firewall-forbidden as a persisted or compared string. What it
+    does have is a measure: an aggregate over a column set. Two measures that
+    aggregate the same function over the same columns are claims about the same
+    quantity, so when their canonical expressions differ, one of them is wrong.
+    Both fields empty means only the concept-name route applies.
     """
 
     source: str
     concept: str
     expr: str = ""
     canonical_expr: str = ""
+    measure_columns: frozenset[str] = frozenset()
+    aggregate: str = ""
 
 
 class SemanticReference(Protocol):
@@ -852,6 +863,78 @@ def metric_view_fields(yamls: Mapping[str, Mapping[str, Any]]) -> tuple[MetricVi
     return tuple(out)
 
 
+TRUSTED_ASSET_SOURCE_PREFIX = "trusted_asset"
+"""Prefix on a conflict's ``source`` when the authority is a curated answer.
+
+The suffix is the asset's **id**, never its question. ``conflicts[]`` is
+persisted and rendered, and a benchmark question copied into it would be exactly
+the leak the firewall exists to stop — while the id is enough for a reviewer to
+open the asset in the space.
+"""
+
+
+def trusted_asset_definitions(
+    config: Mapping[str, Any] | None,
+) -> tuple[InstructionDefinition, ...]:
+    """Measure definitions carried by ``instructions.example_question_sqls``.
+
+    POV Part 5 step 3 makes trusted assets authoritative in a conflict, but they
+    live in a different field from ``text_instructions`` and were never read here,
+    so a proposal could contradict a curated answer and reach ``PROPOSE``
+    unchallenged. This closes that: every curated SQL is parsed through
+    ``mv_fingerprint.extract_measures`` — the same extractor the corpus scan uses,
+    so a measure means one thing in this codebase — and each aggregate it finds
+    becomes a definition the dedup gate can disagree with.
+
+    Only the SQL is read. The question text beside it is not consumed, compared,
+    or persisted; ``concept`` stays empty precisely because the only name on offer
+    is that text. Matching therefore happens on the measure, which is what
+    ``_defines_same_quantity`` is for.
+    """
+    if not isinstance(config, Mapping):
+        return ()
+    instructions = config.get("instructions")
+    if not isinstance(instructions, Mapping):
+        return ()
+
+    out: list[InstructionDefinition] = []
+    seen: set[tuple[str, str]] = set()
+    for ordinal, asset in enumerate(instructions.get("example_question_sqls") or ()):
+        if not isinstance(asset, Mapping):
+            continue
+        sql = str(asset.get("sql") or asset.get("answer") or "").strip()
+        if not sql:
+            continue
+        identifier = str(asset.get("id") or "").strip() or f"index:{ordinal}"
+        source = f"{TRUSTED_ASSET_SOURCE_PREFIX}:{identifier}"
+        try:
+            measures = extract_measures(sql)
+        except Exception:
+            logger.warning(
+                "mv_scoring: could not parse trusted asset %s for conflict "
+                "detection", source, exc_info=True,
+            )
+            continue
+        for measure in measures:
+            if not measure.canonical_expr:
+                continue
+            key = (source, measure.canonical_expr)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                InstructionDefinition(
+                    source=source,
+                    concept="",
+                    expr=measure.canonical_expr,
+                    canonical_expr=measure.canonical_expr,
+                    measure_columns=frozenset(measure.source_columns),
+                    aggregate=measure.aggregate,
+                )
+            )
+    return tuple(out)
+
+
 def _field_text(name: str, entry: Mapping[str, Any]) -> str:
     """Assemble the natural-language surface of a field for embedding."""
     parts = [name, str(entry.get("display_name") or ""), str(entry.get("comment") or "")]
@@ -889,12 +972,12 @@ def dedup_gate(
 
     Three outcomes, in precedence order:
 
-    1. The candidate's canonical measure matches a governed measure **and** an
-       instruction or trusted asset defines the same concept differently ->
+    1. An instruction or trusted asset defines the same thing differently ->
        ``CONFLICT``. Never a suggestion, never auto-resolved: the reviewer sees
        both definitions and adjudicates.
-    2. It matches a governed measure -> ``BLOCKED``, with a pointer to the
-       metric view and field that already governs it.
+    2. The candidate's canonical measure matches a governed measure ->
+       ``BLOCKED``, with a pointer to the metric view and field that already
+       governs it.
     3. Otherwise -> ``PROPOSE``, with any partially-overlapping governed fields
        ranked into ``alternatives[]``.
 
@@ -902,6 +985,21 @@ def dedup_gate(
     weaker answer is the wrong one: silently blocking on a governed measure that
     an instruction contradicts hides the contradiction, which is the failure
     POV Part 5 exists to prevent.
+
+    Whether a governed metric view must exist depends on *how* the definition was
+    matched, and the difference is the strength of the evidence:
+
+    * Matched by **measure** — same aggregate over the same columns, different
+      canonical form. This is direct evidence about the very expression being
+      proposed, and it needs no corroboration: a curated trusted asset already
+      answers this question differently, and shipping a second answer is the
+      silently-wrong-numbers outcome. POV Part 5 step 3 puts the trusted asset on
+      the authoritative side.
+    * Matched by **concept name** — a text instruction claims the same concept.
+      That still requires a governed measure to contradict, because a prose
+      instruction naming "revenue" is not yet a definition of *this* expression;
+      an instruction alone is what the advisor exists to act on rather than
+      escalate.
     """
     canonical = candidate.canonical_measure_expr
     if not canonical:
@@ -909,14 +1007,16 @@ def dedup_gate(
 
     measures = [f for f in mv_fields if f.kind == FIELD_MEASURE]
     exact = [f for f in measures if f.canonical_expr and f.canonical_expr == canonical]
-    conflicting = _conflicting_definitions(candidate, canonical, instructions)
+    by_measure, by_concept = _conflicting_definitions(candidate, canonical, instructions)
+    conflicting = by_measure + (by_concept if exact else ())
 
-    if exact and conflicting:
+    if conflicting:
         return DedupOutcome(
             verdict=VERDICT_CONFLICT,
-            blocked_by=exact[0].pointer,
+            blocked_by=exact[0].pointer if exact else "",
             conflicts=tuple(
-                _conflict_entry(definition, canonical, exact[0]) for definition in conflicting
+                _conflict_entry(definition, canonical, exact[0] if exact else None)
+                for definition in conflicting
             ),
         )
     if exact:
@@ -931,34 +1031,103 @@ def _conflicting_definitions(
     candidate: MetricViewCandidate,
     canonical: str,
     instructions: Sequence[InstructionDefinition],
-) -> tuple[InstructionDefinition, ...]:
-    """Instructions naming the candidate's concept but defining it differently."""
+) -> tuple[tuple[InstructionDefinition, ...], tuple[InstructionDefinition, ...]]:
+    """Definitions that disagree with the candidate, split by how they matched.
+
+    Returned as ``(by_measure, by_concept)`` because the caller weighs the two
+    differently — see :func:`dedup_gate`. Two routes exist because the two
+    definition sources identify themselves differently: a text instruction names
+    a concept, so it matches on that name, while a trusted-asset SQL has no name.
+    Matching an asset on its question text would be both unreliable and a firewall
+    violation, so it matches on the measure itself: same aggregate, same columns.
+
+    Divergence is required in either route. An identical canonical expression is
+    agreement, and agreement is not something to escalate.
+    """
     concept = (candidate.concept or "").strip().lower()
-    if not concept:
-        return ()
-    out = []
+    by_measure: list[InstructionDefinition] = []
+    by_concept: list[InstructionDefinition] = []
     for definition in instructions:
-        if (definition.concept or "").strip().lower() != concept:
-            continue
         existing = definition.canonical_expr or canonicalize_expr(definition.expr)
-        if existing and existing != canonical:
-            out.append(definition)
-    return tuple(out)
+        if not existing or existing == canonical:
+            continue
+        if _defines_same_quantity(definition, candidate):
+            by_measure.append(definition)
+        elif bool(concept) and (definition.concept or "").strip().lower() == concept:
+            by_concept.append(definition)
+    return tuple(by_measure), tuple(by_concept)
+
+
+def _defines_same_quantity(
+    definition: InstructionDefinition,
+    candidate: MetricViewCandidate,
+) -> bool:
+    """Whether a definition and a candidate aggregate the same columns the same way.
+
+    Both sides must actually carry a column set: an empty one is unknown
+    provenance, and treating unknown as a match would let one unparsed asset
+    conflict with every candidate in the space.
+    """
+    left = _bare_columns(definition.measure_columns)
+    right = _bare_columns(candidate.measure_columns)
+    if not left or not right or left != right:
+        return False
+    aggregate = (definition.aggregate or "").strip().lower()
+    return bool(aggregate) and aggregate == _leading_aggregate(
+        candidate.canonical_measure_expr
+    )
+
+
+def _bare_columns(columns: Iterable[str]) -> frozenset[str]:
+    """Unqualified lowercase column names.
+
+    Both sides are reduced the same way because they arrive differently:
+    ``candidate_from_measure`` already strips qualifiers, while a definition read
+    off a trusted asset carries whatever the SQL wrote. Comparing the two without
+    agreeing on the spelling would make ``lineitem.l_extendedprice`` and
+    ``l_extendedprice`` look like different columns and quietly disable the check.
+    """
+    return frozenset(
+        str(column).strip().rpartition(".")[2].strip("`").lower()
+        for column in columns
+        if str(column).strip()
+    )
+
+
+def _leading_aggregate(canonical: str) -> str:
+    """The function name a canonical measure expression opens with.
+
+    Canonical forms are rendered lowercase with the function first
+    (``sum(l_extendedprice * (?n - l_discount))``), so the name is the text before
+    the first parenthesis. Read rather than stored because the candidate's
+    aggregate is not a field on it, and re-canonicalizing to recover one would be
+    a second implementation of the thing MV-D10 keeps single.
+    """
+    head = str(canonical or "").split("(", 1)[0].strip().lower()
+    return head if head.isidentifier() else ""
 
 
 def _conflict_entry(
     definition: InstructionDefinition,
     canonical: str,
-    governed: MetricViewField,
+    governed: MetricViewField | None,
 ) -> dict[str, Any]:
     """One ``conflicts[]`` entry. Both expressions are canonical, hence
-    literal-free and safe to persist and render."""
+    literal-free and safe to persist and render.
+
+    ``authoritative`` records which side wins if a reviewer just applies the
+    house rule: the existing definition, per POV Part 5 step 3. It is stated
+    rather than acted on — ``resolution`` stays human adjudication, because the
+    engine knowing which side is authoritative is not the same as it knowing
+    which side is right.
+    """
     return {
         "source": definition.source,
         "concept": definition.concept,
         "existing_expr": definition.canonical_expr or canonicalize_expr(definition.expr),
         "proposed_expr": canonical,
-        "governed_by": governed.pointer,
+        "governed_by": governed.pointer if governed is not None else None,
+        "authoritative": definition.source,
         "resolution": "requires_human_adjudication",
     }
 
@@ -1310,7 +1479,9 @@ __all__ = [
     "blended_score",
     "capped_tier",
     "coverage_ceiling",
+    "TRUSTED_ASSET_SOURCE_PREFIX",
     "dedup_gate",
+    "trusted_asset_definitions",
     "demand_decay",
     "demand_score",
     "lineage_overlap_score",

@@ -90,6 +90,8 @@
 | **Query-history patterns** | `system.query.history` | Rank by frequency × cost; top filter columns; recurring aggregations; distinct-user breadth | Ranked demand list |
 | **Optimized-space harvest** (highest value) | GSO `patches` + applied `serialized_space` | Extract the joins, `metric_views` entries, instructions, and trusted-asset SQL the optimizer already produced | High-confidence seed proposals |
 
+> **Not yet built, despite being the highest-value row.** The shipped corpus (playbook Prompt 6) loads only generated SQL and benchmark SQL; the curated half above is unmined, and equal per-occurrence weighting in Y would currently let high-recurrence generated SQL outrank it. **Playbook Prompt 6c** harvests these sources and must decide the evidence-tiering question registered as MV-D17. Prompt 7 closed only the safety-critical slice — `instructions.example_question_sqls` now reaches the conflict gate as an authoritative side (Part 5 step 3) — which is not the same as seeding proposals from it.
+
 ---
 
 ### Part 3 — Matching Algorithm & Scoring Logic

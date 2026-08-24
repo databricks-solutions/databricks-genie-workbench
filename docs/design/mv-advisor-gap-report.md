@@ -15,7 +15,7 @@ written — see [§3 Decisions needed](#3-decisions-needed).
 | Date of survey | 2026-08-23 |
 | Method | Direct file reads. Every quote below was read from the working tree on the date above. Line numbers are from that state. |
 | Scope | Read-only. No feature code was written or modified in producing this report. |
-| Last MV-D9 refresh | 2026-08-23, in the Prompt 7 commit (attach patch type + lift phase). Refreshed here: **six fenced quotes whose line numbers this commit moved** (`unified_loop.py` `79-93` → `80-94` and `2854-2859` → `2862-2867`; `applier.py` `3914-3917` → `3974-3977` and `4550-4560` → `4617-4627`; `ddl.py` `280-290` → `281-291` and `292-297` → `293-298` — the `_ALL_DDL` and migrations fences shifted by the `lift_report_json` column, exactly as MV-D7 anticipated); the `PATCH_TYPES` count (50 → 51) and the now-accurate section comment; the patch-path anchor table (`_apply_action_to_config` `:3409` → `:3442`, `_apply_action_to_uc` `:3942` → `:4002`, `apply_patch_set` `:4025` → `:4091`); the "critical gap — nothing attaches a metric view" paragraph, which this commit closed; the §2.2 parameter preamble (three widget reads landed ahead of Prompt 8's mirrors); five §2.5/§2.6 rows moved off DOES-NOT-EXIST-YET (attach, rollback inheritance, `DETACH_ONLY_NEVER_DROP`, `mv_baseline`, raw-table companion); §3 items 8, 9 and 10 resolved, item 8's `attach_metric_view`/`detach_metric_view` proposal replaced by the shipped `mv_attach_data_source` so two names are not left live; and the `update_mv_yaml` follow-up ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)) closed. **Two quotes were already stale at HEAD and are re-quoted in passing** (`test_phase7_job_dag.py:397-406` → `397-405`, unchanged content one line shorter; `ddl.py:182` `artifact_kind`, whose comment gained `mv_candidate_ddl` in Prompt 6 without the fence being refreshed) — neither file was touched by this commit. All 48 fenced quotes byte-match live source as of this row. Previously, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
+| Last MV-D9 refresh | 2026-08-23, in the Prompt 7 review commit (MV-D18 champion-record fix, end-of-run reconciliation, trusted-asset conflict surface). Refreshed here: **two fenced quotes this commit moved** (`unified_loop.py` `80-94` → `83-97` and `2862-2867` → `2894-2899`, both shifted by the reconciliation import and helper) and **six line anchors** — `unified_loop.py:3287-3292` → `:3373-3378` (candidate eval), `:2854-2859` → `:2894-2899` (Appendix baseline row), `:133-146` → `:137-150` (`_TRANSIENT_EVAL_STATUSES`, which had drifted onto the leak-drop frozenset), `state.py:923-966` → `:889` + `:983-1004` (`write_iteration` and its `eval_run_status` columns), `state.py:1101-1108` → `:1168-1175` (`mark_patches_rolled_back`), and `mv_scoring.py:150` → `:158` (`LineageOverlap`, shifted by the trusted-asset docstring). **The two fences that were already stale at HEAD are now clean**: `ddl.py:182` byte-matches (the `artifact_kind` enum gained `mv_candidate_ddl` in Prompt 6) and `test_phase7_job_dag.py:397-405` matches. The generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`unified_loop.py` 3674 → 3727 L, `state.py` 1804 → 1871 L, `mv_scoring.py` 1327 → 1498 L). All 48 fenced quotes byte-match live source as of this row; the third staleness class this exposed is recorded in MV-D9. Previously, in the Prompt 7 commit (attach patch type + lift phase). Refreshed there: **six fenced quotes whose line numbers this commit moved** (`unified_loop.py` `79-93` → `80-94` and `2854-2859` → `2862-2867`; `applier.py` `3914-3917` → `3974-3977` and `4550-4560` → `4617-4627`; `ddl.py` `280-290` → `281-291` and `292-297` → `293-298` — the `_ALL_DDL` and migrations fences shifted by the `lift_report_json` column, exactly as MV-D7 anticipated); the `PATCH_TYPES` count (50 → 51) and the now-accurate section comment; the patch-path anchor table (`_apply_action_to_config` `:3409` → `:3442`, `_apply_action_to_uc` `:3942` → `:4002`, `apply_patch_set` `:4025` → `:4091`); the "critical gap — nothing attaches a metric view" paragraph, which this commit closed; the §2.2 parameter preamble (three widget reads landed ahead of Prompt 8's mirrors); five §2.5/§2.6 rows moved off DOES-NOT-EXIST-YET (attach, rollback inheritance, `DETACH_ONLY_NEVER_DROP`, `mv_baseline`, raw-table companion); §3 items 8, 9 and 10 resolved, item 8's `attach_metric_view`/`detach_metric_view` proposal replaced by the shipped `mv_attach_data_source` so two names are not left live; and the `update_mv_yaml` follow-up ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)) closed. **Two quotes were already stale at HEAD and are re-quoted in passing** (`test_phase7_job_dag.py:397-406` → `397-405`, unchanged content one line shorter; `ddl.py:182` `artifact_kind`, whose comment gained `mv_candidate_ddl` in Prompt 6 without the fence being refreshed) — neither file was touched by this commit. All 48 fenced quotes byte-match live source as of this row. Previously, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
 
 ## Headline
 
@@ -494,11 +494,11 @@ src/genie_space_optimizer/
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
   jobs/           the four notebooks + _helpers.py
-  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3674 L),
-                  preflight.py (3461 L), state.py (1804 L), publish.py, ddl.py,
+  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3727 L),
+                  preflight.py (3461 L), state.py (1871 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
-                  mv_fingerprint.py (1333 L), mv_scoring.py (1327 L),
+                  mv_fingerprint.py (1333 L), mv_scoring.py (1498 L),
                   mv_state.py (649 L), mv_yaml.py (1755 L), ...
 ```
 <!-- END GENERATED: package-layout -->
@@ -606,7 +606,7 @@ Fixed 20 s interval (no backoff), 2700 s deadline, never sleeping past the deadl
 (`eval_runner.py:633-655`). An **outer** transient retry sits in `unified_loop.py`: up to
 `_MAX_TRANSIENT_EVAL_RETRIES = 2` extra attempts, but only for
 `_TRANSIENT_EVAL_STATUSES = {"EVALUATION_TIMEOUT", "EVALUATION_CANCELLED"}` —
-`EVALUATION_FAILED` is returned on the first attempt (`unified_loop.py:133-146`,
+`EVALUATION_FAILED` is returned on the first attempt (`unified_loop.py:137-150`,
 `:1278-1298`).
 
 `tests/unit/test_eval_timeouts.py` covers conversation/statement timeouts, **not** the
@@ -614,13 +614,13 @@ eval-run adapter. Seam contract tests (terminal statuses, taxonomy reasons, `run
 serialization, `lift_report`) live in `tests/unit/test_eval_runner.py`.
 
 **Where `eval_run_id` is stored:** `genie_opt_iterations.eval_run_id` /
-`.eval_run_status`, written by `state.write_iteration` (`state.py:923-966`). This
+`.eval_run_status`, written by `state.write_iteration` (`state.py:889`, columns at `:983-1004`). This
 directly satisfies POV Recommendation 2 ("store the `eval_run_id`, not a copied score") —
 though the accuracy is *also* stored, in `overall_accuracy`.
 
 **Baseline eval is in-process, not a task:**
 
-```2862:2867:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
+```2894:2899:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
     baseline_eval = _native_eval(
         w,
         space_id=space_id,
@@ -630,7 +630,7 @@ though the accuracy is *also* stored, in `overall_accuracy`.
 ```
 
 reached from `jobs/run_optimize.py:337` → `run_unified_optimization_loop(...)`. Candidate
-evals run in the same loop at `unified_loop.py:3287-3292`.
+evals run in the same loop at `unified_loop.py:3373-3378`.
 
 ---
 
@@ -685,7 +685,7 @@ The **live loop allowlist is 11 types and contains no MV type** — and under **
 attach type stays out of it deliberately, because this frozenset is the surface the LLM is
 allowed to propose from, not the surface the engine is allowed to apply:
 
-```80:94:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
+```83:97:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
 _ALLOWED_PATCH_TYPES: frozenset[str] = frozenset(
     {
         "update_description",
@@ -759,7 +759,7 @@ Recorded during Prompt 6 so the grant question is visible now rather than discov
 tries to build a lineage producer. `WATCH_SYSTEM_GRANTS` (`scripts/deploy_lib/uc.py:30-43`) is
 the single source of truth for the app service principal's system-table reads, and it grants
 `SELECT` on `system.access.table_lineage` (`:40`) — **table-level lineage only**. The **L**
-signal is a Jaccard over *column* sets (`mv_scoring.py:150`, `LineageOverlap`), which needs
+signal is a Jaccard over *column* sets (`mv_scoring.py:158`, `LineageOverlap`), which needs
 `system.access.column_lineage`, and that table appears nowhere in the list. So L is not a
 code-only change: it needs a grant addition in `uc.py`, which both install paths pick up, plus
 a re-run of `scripts/grant_permissions.py` against existing deployments — and the grant is
@@ -822,7 +822,7 @@ def rollback(
 User-facing revert: `integration/revert.py:55-63` `revert_optimization(...)` with
 `target: RevertTarget = "champion" | "baseline"`; discard:
 `integration/discard.py:28-33`. All three restore a **whole serialized config**. Delta
-bookkeeping is `state.mark_patches_rolled_back` (`state.py:1101-1108`).
+bookkeeping is `state.mark_patches_rolled_back` (`state.py:1168-1175`).
 
 **Consequence for the POV.** POV §7.8 step 6 says the MV attachment "is an ordinary patch,
 [so] it inherits the existing versioning, diff, and rollback machinery." Half true: the
@@ -1380,7 +1380,7 @@ incompatible, and adopting the POV means changing or deleting existing behaviour
 | POV assumption | Status | Evidence |
 |---|---|---|
 | `preflight` task | **CONFLICTS** | Split into `intake_and_snapshot` + `benchmark_qc_and_repair`; `test_phase7_job_dag.py:57-67` asserts `preflight` absent |
-| `baseline` task | **CONFLICTS** | In-process iteration 0 in `optimize` (`unified_loop.py:2854-2859`); `baseline_eval` asserted absent |
+| `baseline` task | **CONFLICTS** | In-process iteration 0 in `optimize` (`unified_loop.py:2894-2899`); `baseline_eval` asserted absent |
 | `enrichment` task | **CONFLICTS** | Absorbed into `optimize` as lever 0; asserted absent |
 | `lever_loop` task | **CONFLICTS** | `run_unified_optimization_loop` in-process (`run_optimize.py:337`); asserted absent |
 | `finalize` task | **CONFLICTS** | Renamed `publish_and_audit`; asserted absent |

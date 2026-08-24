@@ -43,6 +43,7 @@ from genie_space_optimizer.optimization.mv_scoring import (
     suggestion_id_for,
     syntactic_score,
     tier_for,
+    trusted_asset_definitions,
 )
 
 GOVERNED_FIELDS = mv_scoring.SEMANTIC_REF_GOVERNED_MV_FIELDS
@@ -1465,3 +1466,202 @@ def test_the_prod_adapter_defaults_to_the_configured_advisor_endpoint() -> None:
     client = mv_scoring.FoundationModelEmbeddingClient(object())
     assert client._endpoint == config.MV_EMBEDDING_ENDPOINT
     assert config.MV_EMBEDDING_ENDPOINT == "databricks-gte-large-en"
+
+
+# ── Trusted assets as a conflict surface (POV Part 5 step 3) ─────────────
+#
+# example_question_sqls is a different field from text_instructions, and the gate
+# used to read neither it nor anything but governed metric views — so a proposal
+# could contradict a curated answer and reach PROPOSE unchallenged. These pin the
+# route that closes it, including the firewall boundary: curated SQL is legitimate
+# fingerprint input, and the question beside it is not input at all.
+
+
+REVENUE_COLUMNS = frozenset({"l_extendedprice", "l_discount"})
+
+
+def _space(*assets: dict) -> dict:
+    return {"instructions": {"example_question_sqls": list(assets)}}
+
+
+def _asset(sql: str, *, asset_id: str = "eq_7") -> dict:
+    return {"id": asset_id, "question": BENCHMARK_TEXT, "sql": sql}
+
+
+def _revenue_candidate(**overrides) -> MetricViewCandidate:
+    return candidate(measure_columns=REVENUE_COLUMNS, **overrides)
+
+
+def test_trusted_asset_definitions_reads_measures_out_of_curated_sql() -> None:
+    definitions = trusted_asset_definitions(
+        _space(_asset(f"SELECT {LIST_REVENUE} FROM {LINEITEM}"))
+    )
+
+    assert len(definitions) == 1
+    assert definitions[0].source == "trusted_asset:eq_7"
+    assert definitions[0].canonical_expr == canonicalize_expr(LIST_REVENUE)
+    assert definitions[0].aggregate.lower() == "sum"
+    assert definitions[0].measure_columns == frozenset({"l_extendedprice"})
+
+
+def test_a_trusted_asset_definition_carries_no_question_text() -> None:
+    """The firewall boundary. ``conflicts[]`` is persisted and rendered, so a
+    question copied into it would be exactly the leak the oracle exists to stop.
+    The asset's id is what a reviewer needs, and all they get."""
+    definitions = trusted_asset_definitions(
+        _space(_asset(f"SELECT {LIST_REVENUE} FROM {LINEITEM}"))
+    )
+
+    blob = repr(definitions)
+    assert BENCHMARK_TEXT not in blob
+    for word in ("discounted", "region", "quarter"):
+        assert word not in blob.lower().replace("discounted_revenue", "")
+    # ``concept`` is empty precisely because the only name on offer is that text.
+    assert definitions[0].concept == ""
+
+
+def test_a_divergent_trusted_asset_conflicts_with_no_governed_metric_view() -> None:
+    """The case the gate could not previously reach.
+
+    A space with no metric views yet, whose curated answer defines revenue one
+    way, and a candidate proposing another. Same aggregate over the same columns,
+    different arithmetic: one of the two is wrong, and it is not the shipped one.
+    """
+    divergent = "SUM(l_extendedprice - l_discount)"
+    outcome = dedup_gate(
+        _revenue_candidate(measure_expr=divergent),
+        mv_fields=(),
+        instructions=trusted_asset_definitions(
+            _space(_asset(f"SELECT {DISCOUNTED_REVENUE} FROM {LINEITEM}"))
+        ),
+    )
+
+    assert outcome.verdict == mv_scoring.VERDICT_CONFLICT
+    entry = outcome.conflicts[0]
+    assert entry["authoritative"] == "trusted_asset:eq_7"
+    assert entry["existing_expr"] == canonicalize_expr(DISCOUNTED_REVENUE)
+    assert entry["proposed_expr"] == canonicalize_expr(divergent)
+    assert entry["resolution"] == "requires_human_adjudication"
+    # No governed metric view exists, and the conflict does not pretend one does.
+    assert entry["governed_by"] is None
+    assert outcome.blocked_by == ""
+
+
+def test_an_agreeing_trusted_asset_is_not_a_conflict() -> None:
+    """Agreement is the good outcome, not something to escalate."""
+    outcome = dedup_gate(
+        _revenue_candidate(),
+        mv_fields=(),
+        instructions=trusted_asset_definitions(
+            _space(_asset(f"SELECT {DISCOUNTED_REVENUE} FROM {LINEITEM}"))
+        ),
+    )
+
+    assert outcome.verdict == mv_scoring.VERDICT_PROPOSE
+
+
+def test_a_trusted_asset_over_other_columns_is_not_a_conflict() -> None:
+    """Different columns are a different quantity, however similar the shape."""
+    outcome = dedup_gate(
+        _revenue_candidate(),
+        mv_fields=(),
+        instructions=trusted_asset_definitions(
+            _space(_asset(f"SELECT SUM(o_totalprice) FROM {ORDERS}"))
+        ),
+    )
+
+    assert outcome.verdict == mv_scoring.VERDICT_PROPOSE
+
+
+def test_a_trusted_asset_with_a_different_aggregate_is_not_a_conflict() -> None:
+    """``AVG`` over the same columns answers a different question from ``SUM``."""
+    outcome = dedup_gate(
+        _revenue_candidate(),
+        mv_fields=(),
+        instructions=trusted_asset_definitions(
+            _space(_asset(f"SELECT AVG(l_extendedprice * (1 - l_discount)) FROM {LINEITEM}"))
+        ),
+    )
+
+    assert outcome.verdict == mv_scoring.VERDICT_PROPOSE
+
+
+def test_a_qualified_trusted_asset_still_matches_an_unqualified_candidate() -> None:
+    """Candidates carry bare column names; curated SQL carries whatever it wrote.
+
+    Without a shared normalization the check would silently never fire on any
+    asset that qualified its columns — which is most of them.
+    """
+    outcome = dedup_gate(
+        _revenue_candidate(measure_expr="SUM(l_extendedprice - l_discount)"),
+        mv_fields=(),
+        instructions=trusted_asset_definitions(
+            _space(
+                _asset(
+                    "SELECT SUM(l.l_extendedprice * (1 - l.l_discount)) "
+                    f"FROM {LINEITEM} AS l"
+                )
+            )
+        ),
+    )
+
+    assert outcome.verdict == mv_scoring.VERDICT_CONFLICT
+
+
+def test_a_trusted_asset_conflict_beats_a_governed_block() -> None:
+    """Blocking silently on a governed measure a curated answer contradicts hides
+    the contradiction, which is the failure POV Part 5 exists to prevent."""
+    outcome = dedup_gate(
+        _revenue_candidate(),
+        mv_fields=metric_view_fields(governed_revenue_yaml()),
+        instructions=trusted_asset_definitions(
+            _space(_asset(f"SELECT SUM(l_extendedprice + l_discount) FROM {LINEITEM}"))
+        ),
+    )
+
+    assert outcome.verdict == mv_scoring.VERDICT_CONFLICT
+    assert outcome.conflicts[0]["governed_by"] == f"{GOVERNED_MV}.discounted_revenue"
+
+
+def test_a_candidate_without_resolved_columns_cannot_be_conflicted() -> None:
+    """An unknown column set is absence of evidence. Treating it as a match would
+    let one asset conflict with every candidate in the space."""
+    outcome = dedup_gate(
+        candidate(measure_expr="SUM(l_extendedprice - l_discount)", concept=""),
+        mv_fields=(),
+        instructions=trusted_asset_definitions(
+            _space(_asset(f"SELECT {DISCOUNTED_REVENUE} FROM {LINEITEM}"))
+        ),
+    )
+
+    assert outcome.verdict == mv_scoring.VERDICT_PROPOSE
+
+
+def test_trusted_asset_definitions_tolerates_unusable_input() -> None:
+    assert trusted_asset_definitions(None) == ()
+    assert trusted_asset_definitions({}) == ()
+    assert trusted_asset_definitions(_space()) == ()
+    # Unparseable SQL costs that asset's definitions and nothing else.
+    assert trusted_asset_definitions(_space(_asset("SELECT FROM WHERE ("))) == ()
+    # A statement with no aggregate defines no measure.
+    assert trusted_asset_definitions(_space(_asset("SELECT l_orderkey FROM x"))) == ()
+
+
+def test_trusted_asset_definitions_deduplicates_within_one_asset() -> None:
+    """One asset repeating a measure is one definition, not two identical rows."""
+    definitions = trusted_asset_definitions(
+        _space(
+            _asset(
+                f"SELECT {LIST_REVENUE} AS a, {LIST_REVENUE} AS b FROM {LINEITEM}"
+            )
+        )
+    )
+    assert len(definitions) == 1
+
+
+def test_an_asset_without_an_id_is_identified_by_position() -> None:
+    """A conflict must be locatable even when the asset carries no id."""
+    definitions = trusted_asset_definitions(
+        {"instructions": {"example_question_sqls": [{"sql": f"SELECT {LIST_REVENUE} FROM x"}]}}
+    )
+    assert definitions[0].source == "trusted_asset:index:0"

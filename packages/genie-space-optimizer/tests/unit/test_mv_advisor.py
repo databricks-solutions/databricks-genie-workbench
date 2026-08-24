@@ -9,6 +9,8 @@ the oracle actually being wired — rather than about SQL round-trips.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from genie_space_optimizer.common import config
@@ -706,3 +708,175 @@ def test_a_skipped_outcome_always_names_a_reason() -> None:
     from a swallowed exception."""
     assert AdvisorOutcome(status=mv_advisor.STATUS_SKIPPED, skip_reason="X").skip_reason == "X"
     assert AdvisorOutcome(status=mv_advisor.STATUS_COMPLETE).skip_reason is None
+
+
+# ── Trusted assets reach the gate (POV Part 5 step 3) ────────────────────
+
+
+CURATED_DIVERGENT_SQL = (
+    f"SELECT SUM(l_extendedprice - l_discount) AS revenue FROM {LINEITEM}"
+)
+
+
+def _with_config(rows, config, *, champion: bool = True):
+    """Attach an applied config to the iteration rows, as Delta stores it."""
+    out = []
+    for index, row in enumerate(rows):
+        enriched = dict(row)
+        enriched["config_json"] = json.dumps(config)
+        enriched["is_champion"] = champion and index == len(rows) - 1
+        out.append(enriched)
+    return out
+
+
+def test_a_proposal_contradicting_a_curated_answer_reaches_conflict(monkeypatch) -> None:
+    """The wiring, not just the gate.
+
+    ``score_candidate`` was called without ``instructions`` at all, so the whole
+    conflict path was unreachable however well it worked in isolation. This drives
+    the phase end to end: the corpus proposes discounted revenue, the space's own
+    curated answer defines it differently, and the proposal must be flagged rather
+    than shipped as a second answer.
+    """
+    _stages, _artifacts, upserts = patch_writes(monkeypatch)
+    outcome = advise(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring())],
+            {
+                "instructions": {
+                    "example_question_sqls": [
+                        {"id": "eq_3", "question": "revenue?", "sql": CURATED_DIVERGENT_SQL}
+                    ]
+                }
+            },
+        ),
+    )
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    conflicted = [p for p in outcome.proposals if p.verdict == "CONFLICT"]
+    assert conflicted, [p.verdict for p in outcome.proposals]
+    entry = conflicted[0].conflicts[0]
+    assert entry["authoritative"] == "trusted_asset:eq_3"
+    # Persisted for adjudication (CONFLICT is a persistable verdict), never as a
+    # suggestion.
+    assert any(u["proposal"].verdict == "CONFLICT" for u in upserts)
+    assert not conflicted[0].is_suggestion
+
+
+def test_an_agreeing_curated_answer_leaves_the_proposal_alone(monkeypatch) -> None:
+    patch_writes(monkeypatch)
+    outcome = advise(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring())],
+            {
+                "instructions": {
+                    "example_question_sqls": [{"id": "eq_3", "sql": REVENUE_SQL}]
+                }
+            },
+        ),
+    )
+
+    assert [p.verdict for p in outcome.proposals] == ["PROPOSE"]
+
+
+def test_a_space_with_no_curated_answers_is_unaffected(monkeypatch) -> None:
+    """The common case must not change: no assets, no conflicts, no extra reads."""
+    patch_writes(monkeypatch)
+    outcome = advise(monkeypatch, [iteration(recurring())])
+
+    assert [p.verdict for p in outcome.proposals] == ["PROPOSE"]
+
+
+def test_the_applied_config_prefers_the_champion_row(monkeypatch) -> None:
+    """The conflict surface compares against the config the run stands behind."""
+    patch_iterations(
+        monkeypatch,
+        [
+            {
+                **iteration(recurring()),
+                "config_json": json.dumps({"instructions": {"example_question_sqls": []}}),
+                "is_champion": False,
+            },
+            {
+                **iteration(recurring(), number=1),
+                "config_json": json.dumps(
+                    {
+                        "instructions": {
+                            "example_question_sqls": [
+                                {"id": "eq_9", "sql": CURATED_DIVERGENT_SQL}
+                            ]
+                        }
+                    }
+                ),
+                "is_champion": True,
+            },
+        ],
+    )
+    patch_estate(monkeypatch)
+    patch_writes(monkeypatch)
+
+    load = load_iteration_zero_corpus(
+        FakeSpark(), run_id="r1", catalog="main", schema="gso",
+    )
+
+    assert load.applied_config is not None
+    assert load.applied_config["instructions"]["example_question_sqls"][0]["id"] == "eq_9"
+
+
+def test_the_applied_config_falls_back_to_the_last_iteration(monkeypatch) -> None:
+    """A run that failed mid-loop never stamped a champion, and its curated
+    answers are still the ones the space ships."""
+    patch_iterations(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring()), iteration(recurring(), number=1)],
+            {"instructions": {"example_question_sqls": [{"id": "eq_1", "sql": REVENUE_SQL}]}},
+            champion=False,
+        ),
+    )
+
+    load = load_iteration_zero_corpus(
+        FakeSpark(), run_id="r1", catalog="main", schema="gso",
+    )
+
+    assert load.applied_config is not None
+    assert load.applied_config["instructions"]["example_question_sqls"][0]["id"] == "eq_1"
+
+
+def test_the_observed_config_wins_over_the_submitted_one(monkeypatch) -> None:
+    """Matching how ``integration/revert.py`` resolves the same pair."""
+    patch_iterations(
+        monkeypatch,
+        [
+            {
+                **iteration(recurring()),
+                "config_json": json.dumps({"instructions": {"example_question_sqls": []}}),
+                "observed_config_json": json.dumps(
+                    {"instructions": {"example_question_sqls": [{"id": "eq_live", "sql": REVENUE_SQL}]}}
+                ),
+                "is_champion": True,
+            }
+        ],
+    )
+
+    load = load_iteration_zero_corpus(
+        FakeSpark(), run_id="r1", catalog="main", schema="gso",
+    )
+
+    assert load.applied_config["instructions"]["example_question_sqls"][0]["id"] == "eq_live"
+
+
+def test_an_unusable_applied_config_is_not_a_failure(monkeypatch) -> None:
+    patch_iterations(
+        monkeypatch,
+        [{**iteration(recurring()), "config_json": "not json at all", "is_champion": True}],
+    )
+
+    load = load_iteration_zero_corpus(
+        FakeSpark(), run_id="r1", catalog="main", schema="gso",
+    )
+
+    assert load.usable
+    assert load.applied_config is None

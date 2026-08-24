@@ -43,7 +43,10 @@ from genie_space_optimizer.optimization.leakage import (
     is_benchmark_leak,
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
-from genie_space_optimizer.optimization.mv_attach import run_mv_attach_phase
+from genie_space_optimizer.optimization.mv_attach import (
+    reconcile_attached_objects,
+    run_mv_attach_phase,
+)
 from genie_space_optimizer.optimization.space_quality_enrichment import (
     attach_top_level_description,
     build_prompt_matching_context,
@@ -2502,6 +2505,35 @@ def _best_persisted_iteration(
     return best_iter, best_acc
 
 
+def _reconcile_mv_attachment(
+    spark: Any,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    config: dict[str, Any] | None,
+    emit: Any,
+) -> None:
+    """Verify every recorded attachment against the config the run ends on.
+
+    Called at each loop exit that can follow the attach phase (MV-D18). Silent
+    unless something was actually checked, so a run with the phase off adds no
+    noise, and it emits only when a row had to be demoted — the interesting case
+    is an attachment the run lost track of, not a routine confirmation.
+    """
+    outcome = reconcile_attached_objects(
+        spark, run_id=run_id, catalog=catalog, schema=schema, config=config,
+    )
+    if outcome.get("demoted"):
+        emit(
+            "Metric view attachment reconciled",
+            checked=outcome.get("checked"),
+            verified=outcome.get("verified"),
+            demoted=outcome.get("demoted"),
+            demoted_identifiers=outcome.get("identifiers"),
+        )
+
+
 def _stamp_terminal(
     spark: Any,
     *,
@@ -3024,6 +3056,14 @@ def run_unified_optimization_loop(
 
     if best_accuracy >= target_accuracy:
         terminal_reason = "TARGET_REACHED"
+        _reconcile_mv_attachment(
+            spark,
+            run_id=run_id,
+            catalog=catalog,
+            schema=schema,
+            config=current_config,
+            emit=_emit_diagnostic,
+        )
         _stamp_terminal(
             spark,
             run_id=run_id,
@@ -3606,6 +3646,19 @@ def run_unified_optimization_loop(
 
     if terminal_reason is None:
         terminal_reason = "MAX_ATTEMPTS"
+
+    # MV-D18. The loop is done mutating the space, so this is the last moment the
+    # in-memory config and the live space are known to agree. Reconcile before
+    # stamping, so a champion is never flagged while a created-object row still
+    # claims an attachment the champion's own config does not carry.
+    _reconcile_mv_attachment(
+        spark,
+        run_id=run_id,
+        catalog=catalog,
+        schema=schema,
+        config=current_config,
+        emit=_emit_diagnostic,
+    )
 
     # Option A-min: on a candidate-eval EVAL_INVALID (the mid-loop transient
     # failure path), preserve a higher-accuracy champion a prior execution

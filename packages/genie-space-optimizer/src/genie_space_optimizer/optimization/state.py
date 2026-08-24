@@ -819,6 +819,73 @@ def update_iteration_loop_state(
         )
 
 
+def update_iteration_observed_config(
+    spark: SparkSession,
+    run_id: str,
+    iteration: int,
+    *,
+    catalog: str,
+    schema: str,
+    observed_config_snapshot: dict,
+    eval_scope: str | None = None,
+) -> bool:
+    """Re-point an iteration row's ``observed_config_json`` at the live space.
+
+    ``observed_config_json`` means one specific thing (see the note above
+    ``write_iteration``'s projection): the authoritative ``serialized_space`` as
+    the API reports it *after* the write, i.e. what is actually deployed.
+    ``config_json`` is the other half — what this iteration submitted and was
+    scored on. The two are usually written together and never diverge.
+
+    They diverge in exactly one place. MV-D16 puts the metric view attach after
+    iteration 0's row is already committed, so a kept attach leaves iteration 0
+    claiming an observed config that no longer matches the space. When no lever
+    attempt is accepted, that stale row is also the **champion**, and
+    ``integration/revert.py`` resolves a champion revert to
+    ``observed_config_json or config_json`` — so a consent-backed view that
+    passed its own lift gate would be stripped by the button a user presses to
+    *keep* the optimized configuration (MV-D18).
+
+    This writer exists to correct that one column and nothing else. It does not
+    touch ``config_json``: the baseline was genuinely scored pre-attach, and
+    rewriting what was measured to match what is deployed would trade a stale
+    record for a false one.
+
+    Returns whether the UPDATE was issued. Best-effort, like the other
+    post-decision iteration writers — a failure here costs a revert-fidelity
+    correction, and must not cost the run.
+    """
+    payload = _project_config_for_iteration(observed_config_snapshot)
+    if not payload:
+        return False
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("'", "''")
+
+    # base64 for the same reason write_iteration uses it: the payload carries SQL
+    # and free text whose backslashes must survive Spark's own string parsing.
+    encoded = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    where = f"run_id = '{_esc(str(run_id))}' AND iteration = {int(iteration)}"
+    if eval_scope:
+        where += f" AND eval_scope = '{_esc(str(eval_scope))}'"
+    try:
+        execute_delta_write_with_retry(
+            spark,
+            f"UPDATE {fqn} SET observed_config_json = "
+            f"CAST(unbase64('{encoded}') AS STRING) WHERE {where}",
+            operation_name="update_iteration_observed_config",
+            table_name=fqn,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to update observed config for run %s iteration %s (non-fatal)",
+            run_id, iteration, exc_info=True,
+        )
+        return False
+    return True
+
+
 def write_iteration(
     spark: SparkSession,
     run_id: str,

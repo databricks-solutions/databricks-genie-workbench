@@ -32,6 +32,18 @@ recorded ``CREATED`` by the same identity that granted the consent. Any mismatch
 skips the whole phase with a recorded reason — never a partial attach of the
 identifiers that happened to check out, because a request carrying one bad
 identifier has told us something about the request as a whole.
+
+How a kept attach survives the rest of the run (MV-D18)
+-------------------------------------------------------
+Nothing downstream re-deploys a config: ``publish_and_audit`` promotes the
+champion in Delta only. So a kept attach stays live through every loop outcome,
+because each lever rollback restores that iteration's ``pre_snapshot``, which is
+the post-attach config the loop was handed. What does *not* follow the live space
+is iteration 0's recorded ``observed_config_json``, written before this phase ran
+— and when no lever attempt is accepted, iteration 0 is the champion. Since a
+champion revert resolves to that column, the phase re-points it at the
+post-attach config on the kept path, and reconciliation at end of run demotes any
+``ATTACHED`` row the final config does not actually reference.
 """
 
 from __future__ import annotations
@@ -45,14 +57,14 @@ from typing import TYPE_CHECKING, Any
 from genie_space_optimizer.common.config import MV_ATTACH_PHASE_NAME
 
 from .applier import apply_patch_set, rollback
-from .eval_runner import EvalRunResult, LiftReport, lift_report
+from .eval_runner import FULL, EvalRunResult, LiftReport, lift_report
 from .mv_state import (
     load_mv_candidates,
     load_mv_consent,
     load_mv_created_objects,
     update_mv_created_object_status,
 )
-from .state import write_patch, write_stage
+from .state import update_iteration_observed_config, write_patch, write_stage
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -609,6 +621,20 @@ def _attach_and_measure(
             post_attach_eval_run_id=lift_run.eval_run_id,
             lift_report_json=report_json,
         )
+    # MV-D18. Iteration 0's observed config was committed before this phase ran,
+    # and it becomes the champion whenever no lever attempt is accepted — the case
+    # where a champion revert would otherwise strip a view that just proved
+    # itself. The submitted config_json stays pre-attach: the baseline score
+    # really was measured without the view.
+    update_iteration_observed_config(
+        spark,
+        run_id,
+        _ATTACH_ITERATION,
+        catalog=catalog,
+        schema=schema,
+        observed_config_snapshot=attached_config,
+        eval_scope=FULL,
+    )
     return replace(
         base,
         verdict=VERDICT_ATTACHED,
@@ -749,6 +775,121 @@ def _update_object(
             "mv_attach: could not record status %s for suggestion %s",
             status, suggestion_id, exc_info=True,
         )
+
+
+# ── End-of-run reconciliation (MV-D18) ───────────────────────────────────
+
+
+RECONCILE_PHASE_NAME = f"{MV_ATTACH_PHASE_NAME}_reconcile"
+
+RECONCILE_DEMOTION_REASON = "NOT_IN_FINAL_CONFIG"
+
+
+def attached_identifiers(config: Mapping[str, Any] | None) -> set[str]:
+    """The identifiers on ``data_sources.metric_views``, lowercased.
+
+    Reads the same shelf the applier writes (``applier._apply_action_to_config``'s
+    ``metric_views`` branch), so "is it attached" is answered by the config itself
+    rather than by a status column claiming to describe it.
+    """
+    if not isinstance(config, Mapping):
+        return set()
+    sources = config.get("data_sources")
+    if not isinstance(sources, Mapping):
+        return set()
+    out: set[str] = set()
+    for entry in sources.get("metric_views") or ():
+        if isinstance(entry, Mapping):
+            identifier = str(entry.get("identifier") or "").strip().lower()
+            if identifier:
+                out.add(identifier)
+    return out
+
+
+def reconcile_attached_objects(
+    spark: SparkSession,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Make ``genie_opt_mv_created_objects.status`` true of the final config.
+
+    An ``ATTACHED`` row pointing at a space that no longer references the view is
+    worse than no row at all: Prompt 9's re-run flow and Prompt 13's UI both read
+    this column and would offer to keep, or claim credit for, an attachment that
+    is not there. So the run does not end on an unverified status — every
+    ``ATTACHED`` row is checked against the configuration the run actually left
+    behind, and one that fails is demoted to ``DETACHED``.
+
+    Demote rather than delete, and never touch the UC object: the object was
+    created under a consent and is still there. ``DETACHED`` is the true statement
+    about it. Verified rows are left completely alone so this is idempotent across
+    the loop's several exits.
+
+    Never raises. Returns the counts for the caller's diagnostic.
+    """
+    result: dict[str, Any] = {"checked": 0, "verified": 0, "demoted": 0, "identifiers": []}
+    try:
+        rows = load_mv_created_objects(
+            spark, run_id, catalog, schema, status=VERDICT_ATTACHED,
+        )
+    except Exception:
+        logger.warning(
+            "mv_attach: could not read created objects to reconcile run %s",
+            run_id, exc_info=True,
+        )
+        return result
+
+    live = attached_identifiers(config)
+    demoted: list[str] = []
+    for row in rows:
+        result["checked"] += 1
+        full_name = str(row.get("full_name") or "").strip()
+        if full_name.lower() in live:
+            result["verified"] += 1
+            continue
+        demoted.append(full_name)
+        logger.warning(
+            "mv_attach: %s is recorded ATTACHED but is not on the final config for "
+            "run %s — demoting to DETACHED", full_name or "?", run_id,
+        )
+        _update_object(
+            spark,
+            run_id=run_id,
+            suggestion_id=str(row.get("suggestion_id") or ""),
+            catalog=catalog,
+            schema=schema,
+            status=VERDICT_DETACHED,
+        )
+    result["demoted"] = len(demoted)
+    result["identifiers"] = demoted
+
+    if result["checked"]:
+        try:
+            write_stage(
+                spark,
+                run_id,
+                RECONCILE_PHASE_NAME.upper(),
+                STATUS_COMPLETE,
+                task_key="optimize",
+                catalog=catalog,
+                schema=schema,
+                detail={
+                    "phase": RECONCILE_PHASE_NAME,
+                    "checked": result["checked"],
+                    "verified": result["verified"],
+                    "demoted": result["demoted"],
+                    "demoted_identifiers": demoted,
+                    "reason": RECONCILE_DEMOTION_REASON if demoted else None,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "mv_attach: could not write the reconciliation stage row", exc_info=True,
+            )
+    return result
 
 
 def _record(
