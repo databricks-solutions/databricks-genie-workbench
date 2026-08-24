@@ -1741,6 +1741,82 @@ eval-run status field is `eval_run_status` not `status`.
 harness. Decide whether the MV advisor ships with a CI workflow, and how the OBO
 entitlement probe and the DDL path get tested at all given they cannot run offline.
 
+> **Partially resolved (Prompt 14, 2026-08-24).** `.github/workflows/test.yml` adds the
+> first non-docs workflow — the backend suite, the GSO suite (`pythonpath=["src"]`), and
+> frontend `vitest` on pull requests, all through `./scripts/test.sh` semantics
+> (`uv run --frozen --extra dev`). It does **not** wire `uv lock --check` (structural
+> failure on this repo's dynamic GSO version). The OBO probe and the `CREATE … WITH
+> METRICS` DDL path stay offline-untestable — the open half of this item. Detail in §3A.
+
+---
+
+## 3A. Prompt 14 — test-hardening audit (2026-08-24)
+
+Self-dated addendum. Audits the coverage this branch added (Prompts 1–13.5 plus 12b),
+closes gaps, and records the write-to-read exposure sweep. The sweep's matrix lives at
+`docs/design/mv-advisor-exposure-matrix.md`, pinned by `test_exposure_matrix.py`.
+
+**Exposure sweep — first run, clean on the two historical near-misses.** 49 MV columns
+classified: `genie_opt_mv_candidates` (23), `genie_opt_mv_consents` (12),
+`genie_opt_mv_created_objects` (13), plus `genie_opt_runs.run_kind` (MV-D23). Scope is
+**MV columns wherever they live**, not only the three `genie_opt_mv_*` tables the body
+names, so the sentinel discriminator on `genie_opt_runs` cannot drift unclassified. The
+two reads a prior "wire to existing endpoints" instruction assumed but the writing side
+never exposed both classify **SERVED** on the matrix's first run — the space-scoped
+proposals read (Prompt 11, `GET spaces/{space_id}/mv-proposals`) and the
+created-objects/lift read (Prompt 13 step 0, `GET runs/{run_id}/mv-created`) — so the
+matrix reopened neither.
+
+**GAP (1) — `genie_opt_mv_created_objects.provenance`.** The MV-D24 create-path
+discriminator. Written by route 5 (`register`, value `USER_CREATED`); it gates route 9
+(`drop` refuses `USER_CREATED`) and the attach-phase identity relaxation server-side, but
+route 10 (`mv-created`) does **not** return it. A reloaded UI therefore cannot tell
+`USER_CREATED` from `OBO_CREATED`, so it cannot hide the Drop affordance the mockups
+(frame 8b) omit for bring-your-own views. Raised, not fixed in Prompt 14 — the fix is
+additive (surface `provenance` on the `mv-created` payload and `MvCreatedObject`) and
+belongs to a later prompt.
+
+**Finding — the exclusion-predicate pin is comment-satisfiable (narrow, not broken).**
+`test_mv_advice_run_exclusion_pin.py::test_every_run_listing_site_routes_through_the_pinned_predicate`
+asserts `"MV_ADVICE_RUN_EXCLUSION" in inspect.getsource(fn)`. `inspect.getsource` includes
+comments, so an **in-place** regression that inlines the raw predicate while leaving the
+explanatory comment (`# … pinned MV_ADVICE_RUN_EXCLUSION predicate …`) in
+`load_gso_runs_for_space` does not trip it — verified by mutation. The pin still fires for
+the threat it was written against, a **brand-new** listing site, which carries no such
+comment (removing the comment token as well makes the assertion fail as expected). Logged,
+not tightened in Prompt 14; a stricter form would strip comments before the membership
+check or assert the predicate is not inlined.
+
+**Audit-the-audit (mutate → observe red → revert).** Each branch-added guard was confirmed
+to fail when it should, not merely to pass:
+
+| Guard | Mutation | Result |
+|---|---|---|
+| `test_rules_parity` | drift one baseline copy | red (byte-diff) |
+| `gap_report_counts.py --check` (`test_gap_report_counts.py`) | wrong line-count claim | red |
+| MV-D21 column pin (`test_wh_mv_state.py`) | drop `yaml_text` from the writer's `value_cols` | red (written set 19 → 18) |
+| Debug-prompt contract (`test_debug_prompt_contract.py`) | inject retired column `best_repeatability` into a `sql` block | red |
+| Exclusion pin (`test_mv_advice_run_exclusion_pin.py`) | inline predicate, drop the comment token | red (see finding above for the comment-satisfiable caveat) |
+
+**Coverage summary.** Backend 636, GSO 1452 (measured 2026-08-24, `./scripts/test.sh`).
+`+8` GSO this prompt: the exposure-matrix pin (`test_exposure_matrix.py`) and the
+advice-run dry-run harness (`test_mv_dry_run_harness.py`). The harness extends the in-job
+Delta-by-`run_id` handoff with the 13.5 standalone path end to end — `suggest` → sentinel
+advice run (born terminal, excluded by `MV_ADVICE_RUN_EXCLUSION`) → candidate row carrying
+`yaml_text` → `register` (`USER_CREATED`) → attach-phase acceptance. Baseline lockstep is
+updated in both copies (`.cursor/rules/mv-advisor.mdc` and the playbook fenced block);
+`test_rules_parity` holds.
+
+**Intentionally untested, with reason (MV-D9).**
+- Live OBO entitlement probe and the UC `CREATE … WITH METRICS` DDL path — no OBO, no
+  warehouse offline; exercised only by deploy-time E2E, per the repo's no-local-server
+  rule. This is item 12's remaining open half.
+- Frontend "stories for all states" — there is no Storybook on this branch (Prompt 10
+  finding). The established substitute is the mockup emitter's static HTML render, which
+  `mockups.test.tsx` already asserts frame by frame; component tests cover the live panels.
+- The `inspect.getsource` comment-inclusion edge on the exclusion pin (above) —
+  characterized, deliberately not converted to a stricter assertion in this prompt.
+
 ---
 
 ## 4. Decision record — D1 through D6 (and D7–D9)

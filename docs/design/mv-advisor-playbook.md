@@ -1801,6 +1801,36 @@ existing workflow's conventions.
 Report a coverage summary and list anything intentionally untested with why.
 ```
 
+### Prompt 14.1 — Close the exposure matrix's first GAP (small, single commit)
+
+*Inserted after Prompt 14 ran. The sweep's raise-don't-fix contract was right for
+the audit prompt, but this GAP cannot survive into Prompt 15: Scenario D's BYO
+leg exercises the exact screen it breaks, and a server-side 403 behind a visible
+button is not a pass. Prompt 15's body already asserts the fixed behavior.*
+
+```
+The matrix's own first run found it (mv-advisor-exposure-matrix.md:112):
+genie_opt_mv_created_objects.provenance is written by register and gates drop
+and the attach identity relaxation SERVER-side — but GET /runs/{run_id}/
+mv-created (route 10) never returns it, so a reloaded output panel cannot
+distinguish USER_CREATED from OBO_CREATED and renders a Drop affordance that
+will 403.
+
+1. Add provenance to MvCreatedObject (Pydantic + the TS mirror), served by
+   route 10 — wh_load_mv_created_objects' decode already carries the column,
+   so this is surface plumbing only. NULL reads as the legacy value
+   OBO_CREATED (the additive-migration convention).
+2. MvCreateAttachPanel: hide the Drop affordance when provenance ===
+   "USER_CREATED" and render the USER_CREATED badge instead (frame 8b's
+   vocabulary — "dropping this one stays in your hands"). The server-side
+   guard is untouched; this is truthfulness, not enforcement.
+3. Tests: route returns provenance; panel renders no Drop for USER_CREATED
+   and still renders it for OBO_CREATED + DETACHED.
+4. Same commit: matrix row GAP -> SERVED (route 10) with the ddl-walking pin
+   still green; resolve the gap-report row (MV-D9, self-dated); baseline
+   lockstep in both rule copies if counts move.
+```
+
 ### Prompt 15 — E2E playbook against the dev workspace
 
 ```
