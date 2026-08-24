@@ -1325,10 +1325,16 @@ add the Model tab frames and STOP for review before Prompt 12 implements:
     NON-COLOR discriminator (icon or label text) so the ladder never relies
     on hue alone. Include the tab strip showing
     Score | Model | Optimize | History so placement is reviewed too.
-9b. Model tab, never-optimized/empty: tables unconnected, "no joins are
-    defined" line, ladder with nothing green — the frame-7b honesty rule.
-    This is the frame to review hardest; it is most users' first sight of
-    the tab.
+9b. Model tab, never-optimized/empty: tables unconnected, and the
+    config-scoped empty line, verbatim as approved at the 12.0 review —
+    "This Agent's configuration defines no joins, SQL snippets, or metric
+    views yet — the graph shows the config as it is now. Connect it by adding
+    join specs and snippets yourself, or let an optimization run discover and
+    apply them. Metric view suggestions don't require a run." The ladder shows
+    nothing green (frame-7b honesty rule) and, cutting both ways, nothing red
+    either — an empty space has surfaced no ungoverned measure to alarm about.
+    This is the frame to review hardest; it is most users' first sight of the
+    tab.
 9c. Proposal overlay ON: ghosted proposed MV, dashed replaces edges, the
     default-off toggle visible.
 9d. Node detail panel: one measure (expr, synonyms, format, evidence) and one
@@ -1387,8 +1393,15 @@ been optimized):
   is_current guard.
 - Governance ladder coloring on every MEASURE CONCEPT the space knows about —
   the advisor's story made visible: governed (defined in an attached metric
-  view) / curated (defined in sql_snippets.measures or example SQL) /
-  ungoverned (recurs only in proposal evidence). One glance answers "how
+  view) / curated (defined in sql_snippets.measures — structured name+expr
+  fields, no parsing needed; example-SQL-derived curated concepts are Prompt
+  12b's, because extracting a measure from SQL text is exactly the parsing
+  this prompt defers) / ungoverned (recurs only in proposal evidence).
+  Concept identity FOR THIS PROMPT is exact name match only — an MV measure,
+  a snippet measure, and a proposal sharing a name are one concept at its
+  highest rung; anything subtler (canonicalized-expr matching) is server-side
+  12b work via the one sanctioned parser. State the name-match rule in a
+  comment where it is implemented, so 12b replaces it knowingly. One glance answers "how
   governed is this space?". Derivation, stated precisely because the 12.0
   review got it wrong TWICE (first the mockup, then the reviewer): the ladder
   reads CONFIG — attached metric_views (governed), sql_snippets / example SQL
@@ -1413,14 +1426,24 @@ Proposal overlay (frame 6's content, on top of the base graph):
   the evidence (recurrence count, contributing benchmark question ids); for a
   join, cardinality if known. join_strategy chips show only reachable states
   (the mockup fixture type already enforces this — MV-D14/D15).
-- Diff mode toggle: current space data sources vs post-attach state.
+- Diff mode toggle: current space data sources vs post-attach state. The
+  post-attach side is SYNTHESIZED client-side — current data_sources with the
+  proposal's proposed_object appended to metric_views[] (and its replaced raw
+  tables marked) — because no attach has happened and the run-keyed DDL
+  artifact is not a dependency of this space-scoped tab. No new endpoint for
+  this.
 
 Data:
 - Add GET /api/auto-optimize/spaces/{space_id}/semantic-graph returning
   nodes/edges JSON (schema in the OpenAPI spec), assembled from
   serialized_space (data_sources, join_specs, sql_snippets) plus the
   space-scoped proposals read Prompt 11 added. Space-scoped, not run-scoped
-  (MV-D23: run_id presentational only). Any SQL parsing happens SERVER-side
+  (MV-D23: run_id presentational only). Read-only route: the SP-tolerant
+  get_workspace_client is fine here per MV-D20 (only UC writes require the
+  hard-fail OBO client), but MV-D1's presentation rule applies — do not
+  invent per-user evidence filtering here; surface proposals exactly as the
+  run-keyed route already does, and note any gap it has rather than fixing
+  it silently. Any SQL parsing happens SERVER-side
   with the sqlglot machinery that already exists (mv_fingerprint's
   extractors) — never a second parser in the browser. For THIS prompt the
   endpoint does not parse SQL at all: config fields and proposal evidence
@@ -1449,6 +1472,12 @@ later prompts to mount:
   a spinner that resolves to nothing.
 - A refresh affordance on the tab (the config can change under it); loading
   and fetch-failure states per the repo's existing tab patterns.
+- Overflow: the SVG lives in a scroll/zoom container — a 30-table space must
+  not squash into an unreadable viewBox, and the page body must never scroll
+  horizontally. Simple pan/zoom (wheel + drag, or fit/actual-size buttons) is
+  in scope; do not add a library for it. Edge-label decluttering: midpoint ON
+  labels collide on crossing edges (12.0 carry-forward) — show full labels on
+  hover/selection and abbreviate at rest.
 
 Tests: render-level with fixture spaces (never-optimized space, space with
 joins + snippets, space with an attached MV, proposal overlay on each; single
