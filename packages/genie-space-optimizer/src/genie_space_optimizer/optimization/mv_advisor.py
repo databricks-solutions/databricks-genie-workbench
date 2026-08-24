@@ -66,21 +66,28 @@ from genie_space_optimizer.common.config import (
 )
 
 from .leakage import BenchmarkCorpus, LeakageOracle
-from .mv_fingerprint import CorpusScan, FingerprintRecurrence, corpus_scan
+from .mv_fingerprint import (
+    CURATED_PROVENANCE_KIND,
+    CorpusScan,
+    FingerprintRecurrence,
+    corpus_scan,
+)
 from .mv_scoring import (
+    FIELD_MEASURE,
     DemandSignal,
     LineageOverlap,
     MetricViewCandidate,
     RecurrenceSignal,
     ScoredProposal,
     SourceColumnMetadata,
+    example_question_sql_statements,
     metric_view_fields,
     persist_proposal,
     score_candidate,
     trusted_asset_definitions,
 )
 from .mv_yaml import ColumnFacts, MeasureRequest, MvProfiling, create_ddl, generate, validate
-from .state import load_all_full_iterations, write_artifact, write_stage
+from .state import load_all_full_iterations, load_patches, write_artifact, write_stage
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -334,6 +341,184 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+# ── Curated corpus (Prompt 6c) ───────────────────────────────────────────
+#
+# The generated half of the corpus is iteration-0 benchmark SQL. This is the
+# *curated* half — SQL a human (or a prior GSO patch) wrote into the space — fed
+# through the same ``corpus_scan`` extractors so a curated measure means the same
+# thing a generated one does, then tagged ``CURATED_PROVENANCE_KIND`` so
+# ``mv_scoring`` can up-weight it (MV-D17). Three sources reach the scan here;
+# governed ``data_sources.metric_views`` are handled differently — see
+# :func:`_advise`'s post-scan seed filter — because feeding them would only
+# produce candidates the dedup gate blocks with the very MV they came from
+# (MV-D17 / blocker 4). ``sql_functions`` is deliberately absent: it carries only
+# an id and identifier in ``serialized_space`` (no body), so harvesting it would
+# need a ``DESCRIBE FUNCTION`` UC read outside this prompt's boundary — its
+# curated-measure role is served by ``sql_snippets.measures`` instead (MV-D17).
+# ``join_specs`` is also absent: its ``sql`` is a bare predicate fragment that no
+# extractor reads without synthetic wrapping, and join keys do not feed Y for
+# measure candidates (MV-D17, deferred).
+
+_CURATED_SQL_PATCH_TYPES: frozenset[str] = frozenset(
+    {
+        "add_sql_snippet_measure",
+        "add_sql_snippet_expression",
+        "add_sql_snippet_filter",
+        "add_example_sql",
+        "update_example_sql",
+        "add_mv_measure",
+        "update_mv_measure",
+    }
+)
+"""GSO-applied patch types whose payload carries curated SQL worth harvesting.
+
+Measure/expression/example patches route through ``extract_measures`` the same
+way the config snippets do. These overlap the champion config's snippets and
+example SQL (an applied patch is also visible in the config it produced), which
+is harmless: a duplicate lands as one more distinct curated source on the same
+canonical bucket, and the MV-D17 clamp absorbs the extra count."""
+
+_CURATED_PATCH_SQL_KEYS: tuple[str, ...] = ("sql", "example_sql", "new_text", "expr")
+
+
+def _curated_provenance(source_id: str) -> dict[str, str]:
+    """A provenance mapping ``corpus_scan`` coerces, marked curated (MV-D17).
+
+    ``kind`` is what the bucket reads to count curated sources; the ``id`` prefix
+    (``trusted_asset:`` / ``sql_snippet:`` / ``gso_patch:``) is for a reviewer's
+    traceability only and is never what makes an occurrence curated.
+    """
+    return {"id": source_id, "kind": CURATED_PROVENANCE_KIND}
+
+
+def _curated_sql_text(value: Any) -> str:
+    """One curated SQL string whether the field held a string or a ``list[str]``.
+
+    ``example_question_sqls[].sql`` and the ``sql_snippets`` collections are
+    ``list[str]`` in the serialized_space contract; both collapse to one
+    whitespace-joined statement so the extractors see a single fragment.
+    """
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(part) for part in value if part).strip()
+    return str(value or "").strip()
+
+
+def _snippet_corpus_entries(
+    applied_config: Mapping[str, Any] | None,
+) -> list[tuple[str, dict[str, str]]]:
+    """Curated corpus entries from ``instructions.sql_snippets`` (MV-D17).
+
+    Reads all three collections — ``measures``, ``filters``, ``expressions`` —
+    each a list of snippets carrying ``sql: list[str]``. ``measures`` is the one
+    that seeds new candidates; the other two rarely yield an aggregate but are
+    harvested for completeness and cost nothing when they don't.
+    """
+    if not isinstance(applied_config, Mapping):
+        return []
+    instructions = applied_config.get("instructions")
+    if not isinstance(instructions, Mapping):
+        return []
+    snippets = instructions.get("sql_snippets")
+    if not isinstance(snippets, Mapping):
+        return []
+    entries: list[tuple[str, dict[str, str]]] = []
+    for collection in ("measures", "filters", "expressions"):
+        for ordinal, snippet in enumerate(snippets.get(collection) or ()):
+            if not isinstance(snippet, Mapping):
+                continue
+            sql = _curated_sql_text(snippet.get("sql"))
+            if not sql:
+                continue
+            identifier = str(snippet.get("id") or "").strip() or f"index:{ordinal}"
+            entries.append(
+                (sql, _curated_provenance(f"sql_snippet:{collection}:{identifier}"))
+            )
+    return entries
+
+
+def _patch_records(rows: Any) -> list[Mapping[str, Any]]:
+    """Normalize whatever ``load_patches`` returned into a list of row mappings.
+
+    ``load_patches`` returns a pandas ``DataFrame`` in production; tests stub it
+    with a list of dicts. Both are accepted so the harvest has no pandas coupling
+    in its own logic.
+    """
+    if rows is None:
+        return []
+    if hasattr(rows, "empty") and hasattr(rows, "to_dict"):
+        return [] if rows.empty else list(rows.to_dict("records"))
+    if isinstance(rows, Mapping):
+        return [rows]
+    if isinstance(rows, Iterable):
+        return [row for row in rows if isinstance(row, Mapping)]
+    return []
+
+
+def _patch_corpus_entries(
+    spark: SparkSession, *, run_id: str, catalog: str, schema: str
+) -> list[tuple[str, dict[str, str]]]:
+    """Curated corpus entries from this run's ``genie_opt_patches`` (MV-D17).
+
+    Best-effort, like the estate scan: a Delta read that could not run costs the
+    curated backstop and the run nothing. Only SQL-bearing patch types are read,
+    and only the SQL payload — never the patch's natural-language rationale.
+    """
+    try:
+        rows = load_patches(spark, run_id, catalog, schema)
+    except Exception:
+        logger.warning(
+            "mv_advisor: could not read genie_opt_patches; curated patch harvest "
+            "skipped", exc_info=True,
+        )
+        return []
+    entries: list[tuple[str, dict[str, str]]] = []
+    for record in _patch_records(rows):
+        patch_type = str(record.get("patch_type") or "")
+        if patch_type not in _CURATED_SQL_PATCH_TYPES:
+            continue
+        patch = _as_mapping(record.get("patch_json")) or {}
+        sql = ""
+        for key in _CURATED_PATCH_SQL_KEYS:
+            sql = _curated_sql_text(patch.get(key))
+            if sql:
+                break
+        if not sql:
+            continue
+        source_id = (
+            f"gso_patch:{record.get('iteration')}:{record.get('lever')}:"
+            f"{record.get('patch_index')}"
+        )
+        entries.append((sql, _curated_provenance(source_id)))
+    return entries
+
+
+def curated_corpus_entries(
+    spark: SparkSession,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    applied_config: Mapping[str, Any] | None,
+) -> tuple[tuple[str, dict[str, str]], ...]:
+    """The curated half of the corpus, tagged for the MV-D17 up-weight.
+
+    Trusted-asset SQL comes through :func:`example_question_sql_statements` — the
+    single reader ``trusted_asset_definitions`` also uses, so the conflict surface
+    and the harvest cannot drift over what a curated asset is. Snippets and
+    patches follow. Governed metric views are intentionally *not* here; they are
+    a seed exclusion in :func:`_advise`, not corpus evidence.
+    """
+    entries: list[tuple[str, dict[str, str]]] = [
+        (sql, _curated_provenance(f"trusted_asset:{identifier}"))
+        for identifier, sql in example_question_sql_statements(applied_config)
+    ]
+    entries.extend(_snippet_corpus_entries(applied_config))
+    entries.extend(
+        _patch_corpus_entries(spark, run_id=run_id, catalog=catalog, schema=schema)
+    )
+    return tuple(entries)
+
+
 # ── Estate index and column facts ────────────────────────────────────────
 
 
@@ -481,6 +666,7 @@ def candidate_from_measure(
             canonical_expr=measure.canonical_expr,
             recurrence=measure.recurrence,
             provenance_count=measure.provenance_count,
+            curated_provenance_count=measure.curated_provenance_count,
             ast_equivalent=True,
         ),
         demand=DemandSignal(),
@@ -676,7 +862,19 @@ def _advise(
             statements_scanned=0,
         )
 
-    scan = corpus_scan(load.entries)
+    # Prompt 6c: the corpus is the generated iteration-0 SQL plus the curated
+    # half — trusted-asset SQL, curated snippets, GSO-applied patches — routed
+    # through the same extractors and tagged so MV-D17 can up-weight them. One
+    # scan over both halves keeps a curated measure and a generated one in the
+    # same bucket, which is what makes the provenance count meaningful.
+    curated = curated_corpus_entries(
+        spark,
+        run_id=run_id,
+        catalog=catalog,
+        schema=schema,
+        applied_config=load.applied_config,
+    )
+    scan = corpus_scan((*load.entries, *curated))
     if not scan.statements_scanned:
         return AdvisorOutcome(
             status=STATUS_SKIPPED,
@@ -698,11 +896,30 @@ def _advise(
     oracle = LeakageOracle(BenchmarkCorpus.from_benchmarks(list(benchmarks or ())))
 
     limit = MV_ADVISOR_MAX_CANDIDATES if max_candidates is None else max_candidates
-    measures = scan.measures[: max(0, limit)]
-    tables = {t for m in measures for t in m.source_tables}
+    tables = {t for m in scan.measures for t in m.source_tables}
     mv_fields = metric_view_fields(
         estate_metric_view_yamls(spark, tables, w=w, warehouse_id=warehouse_id)
     )
+    # MV-D17 / blocker 4: a governed metric view already defines these, so seeding
+    # them would only produce candidates the dedup gate blocks with the very MV
+    # they came from. corpus_scan has no evidence-only channel — anything it scans
+    # becomes a seed — so the exclusion is applied here, at the assembly site that
+    # already holds the estate index, rather than by complicating the scan.
+    governed = {
+        field_.canonical_expr
+        for field_ in mv_fields
+        if field_.kind == FIELD_MEASURE and field_.canonical_expr
+    }
+    seed_measures = tuple(m for m in scan.measures if m.canonical_expr not in governed)
+    if not seed_measures:
+        return AdvisorOutcome(
+            status=STATUS_SKIPPED,
+            skip_reason=SKIP_NO_CANDIDATES,
+            statements_scanned=scan.statements_scanned,
+            parse_failures=scan.parse_failures,
+            measures_found=len(scan.measures),
+        )
+    measures = seed_measures[: max(0, limit)]
     table_columns = column_facts_from_inventory(wide_schema_inventory)
     # POV Part 5 step 3: trusted assets are authoritative in a conflict. They live
     # in example_question_sqls, a different field from text_instructions, so

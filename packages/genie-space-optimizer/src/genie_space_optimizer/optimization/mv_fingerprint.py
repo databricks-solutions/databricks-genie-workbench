@@ -217,11 +217,31 @@ class ShapeMatch:
         return payload
 
 
+CURATED_PROVENANCE_KIND = "curated"
+"""``Provenance.kind`` value that marks an occurrence as coming from a *curated*
+source (a trusted-asset SQL, a curated SQL snippet, a GSO-applied patch) rather
+than from generated benchmark SQL.
+
+Curated-ness is carried as an explicit recorded kind, never inferred from a
+``provenance_ids`` prefix (MV-D17). The prefix route is available — the ids do
+survive :meth:`_Bucket.freeze` and ``mv_scoring.TRUSTED_ASSET_SOURCE_PREFIX``
+already establishes the convention — but making a string prefix structural to
+scoring is exactly the inference this codebase avoids everywhere else
+(``LineageOverlap.reference_kind``, ``Provenance.kind``, the MV-D15 status
+vocabulary all record a kind rather than deduce one). The corpus scan counts how
+many *distinct curated sources* re-derived each expression into
+:attr:`FingerprintRecurrence.curated_provenance_count`, which ``mv_scoring``
+reads as the MV-D17 provenance up-weight.
+"""
+
+
 @dataclass(frozen=True)
 class Provenance:
     """Where one statement came from. ``kind`` is free-form by design — the
     corpus mixes benchmark-generated SQL with ``system.query.history`` rows and
-    the scanner has no reason to police the vocabulary."""
+    the scanner has no reason to police the vocabulary. The one kind it *does*
+    read is :data:`CURATED_PROVENANCE_KIND`, which the aggregation counts
+    separately (MV-D17)."""
 
     id: str
     kind: str = ""
@@ -236,6 +256,14 @@ class FingerprintRecurrence:
     twice); ``provenance_count`` counts the distinct sources that used it, which
     is the number that matters for demand — sixty occurrences from one query is
     not a recurring measure.
+
+    ``curated_provenance_count`` is a strict subset of ``provenance_count``: the
+    distinct sources whose :attr:`Provenance.kind` was
+    :data:`CURATED_PROVENANCE_KIND`. It is what ``mv_scoring`` reads to up-weight
+    Y for expressions a human (or a prior GSO patch) curated, as opposed to ones
+    only the benchmark generator produced (MV-D17). It is deliberately separate
+    from the breadth question ``provenance_count`` would answer — damping raw
+    recurrence by distinct-source breadth is a distinct, deferred fix (MV-D17).
     """
 
     fingerprint: str
@@ -244,6 +272,7 @@ class FingerprintRecurrence:
     recurrence: int
     provenance_ids: tuple[str, ...]
     provenance_count: int
+    curated_provenance_count: int = 0
     first_seen: str | None = None
     last_seen: str | None = None
     source_columns: tuple[str, ...] = ()
@@ -1088,6 +1117,7 @@ class _Bucket:
     __slots__ = (
         "canonical_expr",
         "columns",
+        "curated_provenance_ids",
         "first_seen",
         "first_ts",
         "fingerprint",
@@ -1106,6 +1136,7 @@ class _Bucket:
         self.kind = kind
         self.recurrence = 0
         self.provenance_ids: set[str] = set()
+        self.curated_provenance_ids: set[str] = set()
         self.columns: set[str] = set()
         self.tables: set[str] = set()
         self.shapes: set[str] = set()
@@ -1123,6 +1154,8 @@ class _Bucket:
         self.recurrence += 1
         if provenance.id:
             self.provenance_ids.add(provenance.id)
+            if provenance.kind == CURATED_PROVENANCE_KIND:
+                self.curated_provenance_ids.add(provenance.id)
         self.columns.update(columns)
         self.tables.update(tables)
 
@@ -1149,6 +1182,7 @@ class _Bucket:
             recurrence=self.recurrence,
             provenance_ids=tuple(sorted(self.provenance_ids)),
             provenance_count=len(self.provenance_ids),
+            curated_provenance_count=len(self.curated_provenance_ids),
             first_seen=self.first_seen,
             last_seen=self.last_seen,
             source_columns=tuple(sorted(self.columns)),
@@ -1301,6 +1335,7 @@ def classify_shapes(corpus: Iterable[Any]) -> tuple[ShapeMatch, ...]:
 
 
 __all__ = [
+    "CURATED_PROVENANCE_KIND",
     "DIALECT",
     "MEASURE_AGGREGATES",
     "NUMERIC_PLACEHOLDER",

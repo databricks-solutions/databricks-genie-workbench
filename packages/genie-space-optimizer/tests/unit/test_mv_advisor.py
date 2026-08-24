@@ -789,6 +789,152 @@ def test_a_space_with_no_curated_answers_is_unaffected(monkeypatch) -> None:
     assert [p.verdict for p in outcome.proposals] == ["PROPOSE"]
 
 
+# ── The curated half of the corpus (Prompt 6c / MV-D17) ──────────────────
+
+
+def test_trusted_asset_sql_reaches_the_corpus_as_a_curated_occurrence(
+    monkeypatch,
+) -> None:
+    """POV Part 5 read it for conflicts; 6c also feeds it to the scan.
+
+    The curated answer restates the measure the generated corpus already recurs,
+    so it lands in the same bucket and raises the curated count the MV-D17
+    up-weight reads — proof the trusted-asset SQL reached ``corpus_scan`` through
+    the same reader the conflict surface uses, not a second one that could drift.
+    """
+    patch_writes(monkeypatch)
+    outcome = advise(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring())],
+            {"instructions": {"example_question_sqls": [{"id": "eq_3", "sql": REVENUE_SQL}]}},
+        ),
+    )
+
+    assert outcome.proposals[0].evidence["ast_curated_provenance_count"] == 1
+
+
+def test_curated_sql_snippets_reach_the_corpus(monkeypatch) -> None:
+    """``sql_snippets.measures`` is the substitute for the bodyless
+    ``sql_functions`` (MV-D17). Its inline SQL restates the recurring measure, so
+    it merges into that bucket and raises the curated count."""
+    _stages, _artifacts, _upserts = patch_writes(monkeypatch)
+    outcome = advise(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring())],
+            {
+                "instructions": {
+                    "sql_snippets": {
+                        "measures": [
+                            {"id": "m1", "sql": ["SUM(l_extendedprice * (1 - l_discount))"]}
+                        ]
+                    }
+                }
+            },
+        ),
+        wide_schema_inventory=INVENTORY,
+    )
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert outcome.proposals[0].evidence["ast_curated_provenance_count"] >= 1
+
+
+def test_gso_applied_patches_reach_the_corpus_as_curated(monkeypatch) -> None:
+    """A measure GSO itself patched in counts as curated, not generated (6c).
+
+    ``load_patches`` is stubbed with one SQL-bearing patch whose fragment restates
+    the recurring measure; it must reach the scan and raise the curated count.
+    """
+    patch_writes(monkeypatch)
+    monkeypatch.setattr(
+        mv_advisor,
+        "load_patches",
+        lambda *a, **k: [
+            {
+                "patch_type": "add_sql_snippet_measure",
+                "iteration": 1,
+                "lever": 6,
+                "patch_index": 0,
+                "patch_json": json.dumps({"sql": "SUM(l_extendedprice * (1 - l_discount))"}),
+            }
+        ],
+    )
+    outcome = advise(monkeypatch, [iteration(recurring())])
+
+    assert outcome.proposals[0].evidence["ast_curated_provenance_count"] == 1
+
+
+def test_a_non_sql_patch_type_is_not_harvested(monkeypatch) -> None:
+    """Only SQL-bearing patch types are read; a description patch's text must not
+    reach the scan (and its ``new_text`` prose would not parse anyway)."""
+    patch_writes(monkeypatch)
+    monkeypatch.setattr(
+        mv_advisor,
+        "load_patches",
+        lambda *a, **k: [
+            {
+                "patch_type": "add_description",
+                "iteration": 1,
+                "lever": 1,
+                "patch_index": 0,
+                "patch_json": json.dumps({"new_text": "this table holds line items"}),
+            }
+        ],
+    )
+    outcome = advise(monkeypatch, [iteration(recurring())])
+
+    assert outcome.proposals[0].evidence["ast_curated_provenance_count"] == 0
+
+
+def test_a_bodyless_sql_function_is_skipped_not_harvested(monkeypatch) -> None:
+    """``sql_functions`` was dropped from 6c (no body in ``serialized_space``).
+
+    A bodyless entry — the shape the synthetic-data path appends — must be ignored
+    rather than crash the loader, and must contribute nothing curated.
+    """
+    patch_writes(monkeypatch)
+    outcome = advise(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring())],
+            {"instructions": {"sql_functions": [{"id": "fn_1", "identifier": "cat.sch.fn"}]}},
+        ),
+    )
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert outcome.proposals[0].evidence["ast_curated_provenance_count"] == 0
+
+
+def test_a_governed_measure_is_excluded_from_the_seed_set(monkeypatch) -> None:
+    """MV-D17 / blocker 4: governed metric-view measures are evidence, not seeds.
+
+    Seeding one would only produce a candidate the dedup gate blocks with the very
+    MV it came from, so the exclusion happens post-scan at the assembly site. Here
+    the only recurring measure is already governed, so the run is a clean
+    ``NO_CANDIDATES`` skip rather than a proposal that would be blocked.
+    """
+    _stages, _artifacts, upserts = patch_writes(monkeypatch)
+    patch_estate(
+        monkeypatch,
+        {
+            "samples.tpch.revenue_metrics": {
+                "source": LINEITEM,
+                "measures": [
+                    {
+                        "name": "discounted_revenue",
+                        "expr": "SUM(l_extendedprice * (1 - l_discount))",
+                    }
+                ],
+            }
+        },
+    )
+    outcome = advise(monkeypatch, [iteration(recurring())], stub_estate=False)
+
+    assert outcome.skip_reason == mv_advisor.SKIP_NO_CANDIDATES
+    assert upserts == []
+
+
 def test_the_applied_config_prefers_the_champion_row(monkeypatch) -> None:
     """The conflict surface compares against the config the run stands behind."""
     patch_iterations(

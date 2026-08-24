@@ -72,6 +72,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from genie_space_optimizer.common.config import (
     MV_ADVISOR_GENERATED_BY,
+    MV_CURATED_OCCURRENCE_EQUIVALENT,
     MV_DEMAND_BREADTH_SATURATION,
     MV_DEMAND_COST_SATURATION_MS,
     MV_DEMAND_FREQUENCY_SATURATION,
@@ -188,12 +189,20 @@ class RecurrenceSignal:
     occurrence canonicalizes to ``canonical_expr``. A consumer that bucketed by
     anything looser than canonical equality must pass False, which zeroes Y
     rather than letting a soft match masquerade as a governed-measure case.
+
+    ``curated_provenance_count`` is the subset of ``provenance_count`` whose
+    sources were curated (a trusted-asset SQL, a curated snippet, a prior GSO
+    patch — see ``mv_fingerprint.CURATED_PROVENANCE_KIND``). It is the MV-D17
+    occurrence-equivalent credit :func:`syntactic_score` reads; ``provenance_count``
+    itself remains unread by scoring (the distinct-source *breadth* damping it
+    would enable is a separate, deferred MV-D17 fix).
     """
 
     canonical_expr: str = ""
     recurrence: int = 0
     provenance_count: int = 0
     ast_equivalent: bool = True
+    curated_provenance_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -452,16 +461,34 @@ def normalized_recurrence(recurrence: int, saturation: int | None = None) -> flo
 
 
 def syntactic_score(signal: RecurrenceSignal, saturation: int | None = None) -> float:
-    """**Y**: normalized recurrence times the corpus-internal equivalence flag.
+    """**Y**: log-saturated recurrence over the corpus-internal equivalence flag,
+    with curated provenance credited as extra occurrences (MV-D17).
 
     See the module docstring: the flag says the counted occurrences share one
     canonical form. It does *not* ask whether a governed metric view already
     defines the measure — that question is the dedup gate's, and its answer
     blocks rather than damps.
+
+    Each distinct curated source is credited as
+    :data:`config.MV_CURATED_OCCURRENCE_EQUIVALENT` (``k``) generated occurrences,
+    added to the count *inside* the saturating curve —
+    ``normalized_recurrence(recurrence + k * curated_provenance_count)`` — so the
+    credit is monotone throughout Y's range rather than a multiplier that walls at
+    the clamp. It is neutral by construction when ``curated_provenance_count`` is 0
+    (``k * 0 == 0`` returns the identical float), leaving generated-only
+    candidates — the pinned POV worked examples included — and the MV-D15 divisor
+    exactly as they were. Whether ``k`` is large enough for one curated source to
+    outrank a heavily-recurring generated one is ``k``'s authored value, not a
+    property of this function: at the default ``k = 20`` a single curated source
+    beats a lightly-recurring generated measure but not sixty derivations of one.
     """
     if not signal.ast_equivalent:
         return 0.0
-    return normalized_recurrence(signal.recurrence, saturation)
+    effective_recurrence = (
+        signal.recurrence
+        + MV_CURATED_OCCURRENCE_EQUIVALENT * signal.curated_provenance_count
+    )
+    return normalized_recurrence(effective_recurrence, saturation)
 
 
 def _l2_normalize(vector: Sequence[float]) -> list[float]:
@@ -873,6 +900,49 @@ open the asset in the space.
 """
 
 
+def _coerce_curated_sql(value: Any) -> str:
+    """One curated SQL string, whether the field stored a string or a list.
+
+    ``example_question_sqls[].sql`` (and the snippet collections) is ``list[str]``
+    in the serialized_space contract but a bare string in some
+    programmatic/legacy payloads and in the tests. Both collapse to one
+    whitespace-joined statement here so a single reader serves every consumer.
+    """
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(part) for part in value if part).strip()
+    return str(value or "").strip()
+
+
+def example_question_sql_statements(
+    config: Mapping[str, Any] | None,
+) -> tuple[tuple[str, str], ...]:
+    """``(identifier, sql)`` for every ``instructions.example_question_sqls`` entry.
+
+    The single reader of that field. :func:`trusted_asset_definitions` (the
+    conflict surface) and the advisor's curated-corpus harvest both consume it, so
+    the two cannot drift over what counts as a curated asset or how its id is
+    formed — a second reader of the same field is how they would start
+    disagreeing. ``identifier`` is the asset id, falling back to ``index:<n>`` so
+    an id-less asset stays locatable; the SQL is coerced but not otherwise
+    parsed here.
+    """
+    if not isinstance(config, Mapping):
+        return ()
+    instructions = config.get("instructions")
+    if not isinstance(instructions, Mapping):
+        return ()
+    out: list[tuple[str, str]] = []
+    for ordinal, asset in enumerate(instructions.get("example_question_sqls") or ()):
+        if not isinstance(asset, Mapping):
+            continue
+        sql = _coerce_curated_sql(asset.get("sql") or asset.get("answer"))
+        if not sql:
+            continue
+        identifier = str(asset.get("id") or "").strip() or f"index:{ordinal}"
+        out.append((identifier, sql))
+    return tuple(out)
+
+
 def trusted_asset_definitions(
     config: Mapping[str, Any] | None,
 ) -> tuple[InstructionDefinition, ...]:
@@ -891,21 +961,9 @@ def trusted_asset_definitions(
     is that text. Matching therefore happens on the measure, which is what
     ``_defines_same_quantity`` is for.
     """
-    if not isinstance(config, Mapping):
-        return ()
-    instructions = config.get("instructions")
-    if not isinstance(instructions, Mapping):
-        return ()
-
     out: list[InstructionDefinition] = []
     seen: set[tuple[str, str]] = set()
-    for ordinal, asset in enumerate(instructions.get("example_question_sqls") or ()):
-        if not isinstance(asset, Mapping):
-            continue
-        sql = str(asset.get("sql") or asset.get("answer") or "").strip()
-        if not sql:
-            continue
-        identifier = str(asset.get("id") or "").strip() or f"index:{ordinal}"
+    for identifier, sql in example_question_sql_statements(config):
         source = f"{TRUSTED_ASSET_SOURCE_PREFIX}:{identifier}"
         try:
             measures = extract_measures(sql)
@@ -1351,6 +1409,7 @@ def _evidence(candidate: MetricViewCandidate, semantic: SemanticMatch) -> dict[s
     return {
         "ast_fingerprint_recurrence": candidate.recurrence.recurrence,
         "ast_equivalent": candidate.recurrence.ast_equivalent,
+        "ast_curated_provenance_count": candidate.recurrence.curated_provenance_count,
         "benchmark_questions": list(candidate.benchmark_question_ids),
         "query_history_statement_ids": list(candidate.query_history_statement_ids),
         "lineage_source_tables": list(candidate.source_tables),
@@ -1481,6 +1540,7 @@ __all__ = [
     "coverage_ceiling",
     "TRUSTED_ASSET_SOURCE_PREFIX",
     "dedup_gate",
+    "example_question_sql_statements",
     "trusted_asset_definitions",
     "demand_decay",
     "demand_score",

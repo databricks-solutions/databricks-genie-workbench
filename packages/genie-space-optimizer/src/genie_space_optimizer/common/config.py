@@ -2561,6 +2561,46 @@ did not. At the POV's worked-example recurrence of 60 this yields 0.9492, which
 is the 0.95 that example asserts.
 """
 
+MV_CURATED_OCCURRENCE_EQUIVALENT = _int_env("GSO_MV_CURATED_OCCURRENCE_EQUIVALENT", 20)
+"""How many generated occurrences one curated source is worth in **Y** (MV-D17).
+
+The credit is added to the occurrence count *inside* the log-saturating curve —
+``Y = normalized_recurrence(r + k * curated_provenance_count)`` — not multiplied
+onto its output. Multiplying a log-saturated base by a linear factor was the
+original shape error: it under-credited the modal case (one human curates a
+measure the generator derived once: ``0.115 * 2 = 0.23``, still buried) and
+walled at the 1.0 clamp for anything already recurring, so Y stopped
+discriminating among curated candidates almost immediately. Adding inside the log
+is monotone throughout and clamps only at genuinely saturating effective counts.
+
+Neutral at zero *by construction*: ``k * 0 == 0`` returns the identical float, so
+generated-only candidates — the two IEEE-exact POV worked examples included — and
+the MV-D15 coverage divisor keep exactly the guarantee they had before the credit
+existed. That neutrality is why MV-D17 puts the credit inside Y rather than in a
+fifth blend weight.
+
+``k`` is an authored judgment about the POV evidence hierarchy, not a free knob.
+At the default ``k = 20`` (with ``MV_RECURRENCE_SATURATION = 75``): a single
+curated source with ``r = 1`` scores ``normalized_recurrence(21) = 0.714`` — worth
+~21 generated derivations, decisively above a lightly-recurring generated measure
+and below a heavily-recurring one (``r = 60 -> 0.949``); the MV-D17 named example
+of 3 curated occurrences scores ``normalized_recurrence(63) = 0.960`` and clears
+60 generated.
+
+Do **not** raise ``k`` toward 60 to "make one curated source outrank sixty": at
+``k = 60`` the single-curated case scores 0.953 against generated-sixty's 0.949 —
+both saturated, so Y stops ordering (the clamp cliff, reintroduced through the env
+var). Y is recurrence evidence only; a measure's *authority* rides other channels
+(the ``trusted_asset_definitions`` conflict path, the dedup gate), so sixty
+independent re-derivations should outrank a never-re-derived curated measure on Y
+while it still surfaces. A curated candidate landing in the LOW tier under partial
+signal coverage (``evidence_coverage = 0.50`` when L and D are unavailable and S
+is empty) is a signal-availability problem for the L/D producers to fix, not a
+reason to raise ``k``.
+
+This credit is *only* about provenance; damping raw recurrence by distinct-source
+breadth is a separate, deferred fix (MV-D17)."""
+
 MV_DEMAND_FREQUENCY_SATURATION = _int_env("GSO_MV_DEMAND_FREQUENCY_SATURATION", 100)
 """Query count at which the **D** frequency factor saturates."""
 

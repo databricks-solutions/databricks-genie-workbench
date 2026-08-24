@@ -502,6 +502,69 @@ def test_corpus_scan_counts_recurrence_and_distinct_provenance() -> None:
     assert top.kind == "measure"
 
 
+def test_corpus_scan_counts_curated_provenance_as_a_subset_of_distinct(
+) -> None:
+    """MV-D17: only sources whose kind is ``curated`` raise the curated count.
+
+    Three occurrences of one measure, two of them from curated sources. The
+    distinct count is 3 (nothing changed there); the curated count is 2, and it
+    is what ``mv_scoring`` reads to up-weight Y. A generated occurrence must not
+    move it — otherwise the up-weight would fire for measures no human curated.
+    """
+    sql = DISCOUNTED_REVENUE_VARIANTS["bare"]
+    scan = corpus_scan(
+        [
+            (sql, Provenance(id="bmk_0", kind="benchmark")),
+            (sql, Provenance(id="trusted_asset:eq_1", kind=mf.CURATED_PROVENANCE_KIND)),
+            (sql, Provenance(id="sql_snippet:measures:m1", kind=mf.CURATED_PROVENANCE_KIND)),
+        ]
+    )
+    top = scan.measures[0]
+    assert top.recurrence == 3
+    assert top.provenance_count == 3
+    assert top.curated_provenance_count == 2
+
+
+def test_curated_count_ignores_a_curated_id_without_a_curated_kind() -> None:
+    """The prefix is not the signal (MV-D17). An id that merely looks curated but
+    carries no curated ``kind`` must not raise the curated count — curated-ness is
+    a recorded kind, never an inference from ``provenance_ids``."""
+    sql = DISCOUNTED_REVENUE_VARIANTS["bare"]
+    scan = corpus_scan([(sql, Provenance(id="trusted_asset:eq_1", kind=""))])
+    assert scan.measures[0].curated_provenance_count == 0
+
+
+def test_fingerprint_recurrence_to_dict_key_set_is_pinned() -> None:
+    """A frozen-contract pin so ``curated_provenance_count`` (and any later field)
+    is a deliberate addition to persisted ``evidence_json``, not an accident."""
+    scan = corpus_scan([(DISCOUNTED_REVENUE_VARIANTS["bare"], "bmk_0")])
+    assert set(scan.measures[0].to_dict()) == {
+        "fingerprint",
+        "canonical_expr",
+        "kind",
+        "recurrence",
+        "provenance_ids",
+        "provenance_count",
+        "curated_provenance_count",
+        "first_seen",
+        "last_seen",
+        "source_columns",
+        "source_tables",
+        "shapes",
+    }
+
+
+@pytest.mark.parametrize("sql", CORPUS)
+def test_no_curated_corpus_statement_leaks_a_quoted_literal(sql: str) -> None:
+    """The firewall holds for the curated half too (MV-D17). Curated SQL routed
+    through the scan is canonicalized by the same path, so a quoted literal a
+    human wrote into a snippet or example is erased before it can reach a bucket's
+    ``canonical_expr`` — the text that survives into persisted evidence."""
+    scan = corpus_scan([(sql, {"id": "curated_1", "kind": mf.CURATED_PROVENANCE_KIND})])
+    for bucket in (*scan.measures, *scan.dimensions, *scan.filters, *scan.join_keys):
+        assert "'" not in bucket.canonical_expr
+
+
 def test_corpus_scan_counts_parse_failures_without_raising() -> None:
     scan = corpus_scan([(DISCOUNTED_REVENUE_VARIANTS["bare"], "bmk_1"), ("NOT SQL AT ALL (((", "q_9")])
     assert scan.statements_scanned == 1

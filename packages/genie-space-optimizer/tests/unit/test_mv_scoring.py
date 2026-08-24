@@ -460,6 +460,105 @@ def test_y_is_zero_when_the_corpus_did_not_collapse_to_one_canonical_form() -> N
     assert syntactic_score(RecurrenceSignal(recurrence=60, ast_equivalent=True)) > 0.9
 
 
+def test_curated_provenance_is_neutral_at_zero() -> None:
+    """MV-D17's load-bearing property: the credit is exactly zero occurrences when
+    no source was curated (``k * 0 == 0`` returns the identical float), so a
+    generated-only candidate — including the pinned POV worked examples — scores
+    precisely as it did before the credit existed."""
+    generated = RecurrenceSignal(recurrence=60, ast_equivalent=True)
+    assert syntactic_score(generated) == normalized_recurrence(60)
+    assert round(syntactic_score(generated), 2) == 0.95
+
+
+def test_a_single_curated_source_discriminates_at_the_modal_case() -> None:
+    """MV-D17's modal case — the one a ceiling-clamped test cannot see: one human
+    curates a measure the generator derived once. The credit must lift Y off the
+    generated floor *without* clamping, so the ordering it produces is a real
+    ordering. The credit is added inside the log (``r + k*c``), so a single
+    curated source is worth ``k`` generated occurrences: it outranks a measure the
+    generator produced ``k`` times, and — because the credit is finite — it does
+    not dominate an arbitrarily high generated volume."""
+    k = config.MV_CURATED_OCCURRENCE_EQUIVALENT
+    single_curated = RecurrenceSignal(
+        recurrence=1, curated_provenance_count=1, ast_equivalent=True
+    )
+    # Exact functional form: credit added inside the log, not multiplied onto it.
+    assert syntactic_score(single_curated) == normalized_recurrence(1 + k)
+    # Discriminates rather than clamps — the property the old ceiling test masked.
+    assert syntactic_score(single_curated) < 1.0
+    # Worth ~k generated occurrences: strictly beats a measure generated k times.
+    assert syntactic_score(single_curated) > syntactic_score(
+        RecurrenceSignal(recurrence=k, ast_equivalent=True)
+    )
+    # Finite credit: one curated source does not swamp far larger generated volume.
+    assert syntactic_score(single_curated) < syntactic_score(
+        RecurrenceSignal(recurrence=2 * k + 2, ast_equivalent=True)
+    )
+
+
+def test_curated_credit_is_monotone_and_clamp_free_in_the_realistic_grid() -> None:
+    """The shape guarantee MV-D17 buys: over a realistic grid (r ≤ 12, ≤ 3 curated
+    sources) each additional curated source strictly increases Y and none pins it
+    to 1.0. This is the "no wall / no cliff" property the multiplier form violated
+    (it clamped a single curated source at r ≥ 8). The ``r + k*c < sat`` guard
+    documents that the authored default calibration keeps this grid below the
+    log's saturation point; if it fails, the default k has outgrown the grid."""
+    k = config.MV_CURATED_OCCURRENCE_EQUIVALENT
+    sat = config.MV_RECURRENCE_SATURATION
+    for r in range(1, 13):
+        previous = -1.0
+        for c in range(0, 4):
+            signal = RecurrenceSignal(
+                recurrence=r, curated_provenance_count=c, ast_equivalent=True
+            )
+            y = syntactic_score(signal)
+            assert r + k * c < sat, (r, c)
+            assert y < 1.0, (r, c, y)
+            assert y > previous, (r, c, y, previous)
+            previous = y
+
+
+def test_curated_credit_still_zeroes_on_a_non_equivalent_corpus() -> None:
+    """The equivalence flag governs first (MV-D11): a curated source cannot buy Y
+    for a bucket whose occurrences did not share one canonical form."""
+    signal = RecurrenceSignal(
+        recurrence=60, curated_provenance_count=5, ast_equivalent=False
+    )
+    assert syntactic_score(signal) == 0.0
+
+
+def test_curated_credit_still_saturates_at_extreme_counts() -> None:
+    """Y stays a [0, 1] signal: the credit is additive inside the log, so a
+    genuinely saturating effective count still clamps at the ceiling — the clamp
+    is a boundary for extremes, not the operating point for realistic curation."""
+    signal = RecurrenceSignal(
+        recurrence=60, curated_provenance_count=10, ast_equivalent=True
+    )
+    assert syntactic_score(signal) == 1.0
+
+
+def test_mv_d17_register_worked_numbers_hold_at_the_default_k() -> None:
+    """Pin the exact Y values the MV-D17 register and the gap-report Y row cite for
+    the authored default, so the committed arithmetic cannot drift from the code —
+    the committed-text-contradicts-code class the gap report exists to catch. The
+    named inversion (3 curated losing to 60 generated) is fixed; the conservative
+    default declines to let one curated source do the same."""
+    assert config.MV_CURATED_OCCURRENCE_EQUIVALENT == 20
+    assert config.MV_RECURRENCE_SATURATION == 75
+    single_curated = RecurrenceSignal(
+        recurrence=1, curated_provenance_count=1, ast_equivalent=True
+    )
+    three_curated = RecurrenceSignal(
+        recurrence=3, curated_provenance_count=3, ast_equivalent=True
+    )
+    sixty_generated = RecurrenceSignal(recurrence=60, ast_equivalent=True)
+    assert round(syntactic_score(single_curated), 3) == 0.714
+    assert round(syntactic_score(three_curated), 3) == 0.960
+    assert round(syntactic_score(sixty_generated), 3) == 0.949
+    assert syntactic_score(three_curated) > syntactic_score(sixty_generated)
+    assert syntactic_score(single_curated) < syntactic_score(sixty_generated)
+
+
 def test_y_does_not_require_a_governed_metric_view_match() -> None:
     """POV Part 3's first worked example scores Y=0.95 for a measure with *no* MV
     equivalent. An MV-matching flag would zero the signal that example exists to
