@@ -1439,6 +1439,20 @@ unchanged. Implementation must satisfy all of them.
 
 **The honest limit, stated so a demo does not discover it.** A run-free suggestion is only as strong as the run-free corpus. On a Genie Agent that is genuinely new — no curated example SQL, no snippets, no query history — the correct output is `EMPTY` under `MV-D15`'s vocabulary: the corpus was read and nothing recurred. That is a measurement, not a failure and not an absent feature, and it must present as one. The signal that actually carries the pre-optimization case is **query history** (`D`), not the scan's own inputs, so a space with no traffic and no curated SQL will legitimately have nothing to say about it.
 
+#### Delta 10 — Part 8 pivots: Pages first, space-scoped, on this branch; domain-tag curation deferred
+
+*(Recorded at the Prompt 17 redraft. Supersedes the original Prompt 17's reading of
+Part 8 as a separate-branch domain/tag curator; that work is preserved as playbook
+Prompt 20, deferred, unchanged in substance.)*
+
+**What changes.** Part 8 treated Discover curation as one feature with two halves — domain/subdomain membership via governed tags, and Pages. The halves have opposite risk-and-leverage profiles, and the original sequencing picked the wrong one first. Domain-tag automation is an estate-wide write surface (`ALTER … SET TAGS` across catalogs) with diffuse benefit; Pages are the **human-modeled layer of the Genie Ontology** — Genie One prioritizes a Page's definition over inferred context and cites it in answers — which makes Page curation a *direct accuracy lever on the same axis as the metric view advisor*, per-space, propose-first, and consent-gated with machinery this branch already built. So the Pages half moves onto this branch as the space-scoped **Ontology Pages track** (playbook Prompts 17.0–17d), and the tag half defers.
+
+**The constraint that shapes the design.** API-ask #4 stands, re-verified 2026-08-24: Pages have no public create/update endpoint — they are created in the Discover UI, with Genie Code assist inside the Page editor. The feature is therefore dual-output. The API-writable half augments the space's own `text_instructions` (inside the GSL instruction schema, under OBO with diff preview and explicit consent — the MV-D1 invariants transposed to a new target). The manual half is a copy-ready Page draft in a standardized format — title-prefixed by one of eight archetypes (Disambiguation, Method, Routing, Taxonomy, Guardrail, Defaults, Rule, Cross-domain), with Definition, optional labeled-and-sourced "Recent context", and Draft/Publish lifecycle — for paste into Discover: the DDL-panel pattern, applied to prose.
+
+**Evidence route.** Suggestions derive from the space context the branch already assembles — the semantic graph's governance ladder and coverage lens, fingerprint shapes and CONFLICT states, curated snippets and example SQL, profiling, join topology — with LLM synthesis through the workbench's model-serving path and *optional* web enrichment that degrades to a complete workspace-evidence-only draft when unavailable, labeled and sourced when present. Deterministic detection first, synthesis second, the advisor's own shape.
+
+**What does not change.** Domain membership automation, tag automations, and the discover_gate task remain exactly as Part 8 describes them, deferred to their own branch (playbook Prompt 20). API-asks #2 (field attribution) and #4 (Pages/domains CRUD) remain open; #4 gains a second motivation — a Pages API would let the manual half of this track become a consented write.
+
 ### What this appendix does not decide
 
 Open items, deferred to `docs/design/mv-advisor-gap-report.md` §3: names for the two new

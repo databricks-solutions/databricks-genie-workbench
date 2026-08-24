@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D25 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D28 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -135,6 +135,20 @@
      writing a second scanner. No literals, sample values, or PII in shipped
      metadata, DDL comments, or logs.
    - Materialization is a separate consent (mv_materialize); never bundled.
+   - ONTOLOGY PAGES (Prompt 17.x): Databricks Pages have NO public create/update
+     API — they are created in the Discover UI. Never invent a Pages endpoint.
+     The workbench emits copy-ready Page drafts (manual paste) and API-writes
+     ONLY text_instructions, under OBO with diff preview and explicit consent,
+     never auto-applied. The GSL instruction schema
+     (docs/docs/platform/gsl-instruction-schema.md) is authoritative for every
+     instruction write; single text_instruction; respect the length budget.
+   - Web enrichment in Page drafts is BEST-EFFORT and labeled: "informational,
+     as of DATE — not certified" plus a Sources list, or the section is absent.
+     A failed search never blocks a suggestion and never hangs a route. All LLM
+     calls go through llm_utils.call_serving_endpoint with
+     model_catalog.validate_chat_model — no second client. Benchmark question
+     text never lands verbatim in a Page draft or instruction delta (extend
+     LeakageOracle, no second scanner).
    - GAP-REPORT FRESHNESS (MV-D9): the gap report outranks the POV, so a stale
      quote there actively misleads. Any commit that changes something the gap
      report quotes or counts — _ALL_DDL membership, task keys, patch shape,
@@ -190,8 +204,8 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 636 backend + 1444 GSO,
-     measured 2026-08-24 as 636 + 1444, +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 636 backend + 1452 GSO,
+     measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -300,9 +314,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D25)
+## Decisions register (MV-D1–MV-D28)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -551,6 +565,12 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 *DECISION (Prompt 13.5): the registration path, accepted as the resolution shape above, with the anchor corrected.* A new additive `provenance` column on `genie_opt_mv_created_objects` (`OBO_CREATED` default | `USER_CREATED`) discriminates the two create paths; `mv_create.create_and_attach_for_run` (unforked) records `OBO_CREATED`. Bring-your-own registration is a new OBO backend service + route: the caller reports an identifier, the backend verifies under OBO (`DESCRIBE EXTENDED` asserts `Type: METRIC_VIEW`; the YAML is recovered via `DESCRIBE … AS JSON` `view_text`; `mv_yaml.validate` lints it; and when the caller claims a specific proposal, the dedup fingerprint is compared so the claim is checked, not trusted), then writes a `USER_CREATED` ledger row under the space's advice run (MV-D23) with `created_by` = the verifying user. The `mv_attach` identity guard the register cited as `mv_attach.py:484` **has moved to `mv_attach.py:482`** (the `created_by != granted_by` skip returning `SKIP_CREATOR_MISMATCH`); the sanctioned narrow relaxation applies there and only for `provenance = USER_CREATED` rows — a verified registration is the consent coverage that guard exists to require. Invariant 1 lands as a provenance check placed **before** the existing status check in the drop route (`auto_optimize.py:2070-2075`): a `USER_CREATED` row is refused on provenance even when `status = DETACHED`. Invariant 2 lands as: an unverifiable identifier returns the reason and writes nothing. `mv_entitlement.probe` + `_remediation_sql` (`backend/services/mv_entitlement.py:273`, `:406`) supply the self-create GRANT guidance — no second probe is built.
 
 **MV-D25 — Schema-only (cold-start) metric view suggestion (OPEN — owner: the create-agent branch, after Prompt 16; NOT decided on this branch).** Recorded before Prompt 12, from a direct capability question. The engine cannot suggest a metric view from tables, column metadata, and data sampling alone, and this is by construction, not omission: the sole candidate producer is `candidate_from_measure` over a `FingerprintRecurrence` (`mv_advisor.py:646`) — every candidate is a measure that RECURRED in SQL somebody or something wrote. No SQL corpus, no candidates, and Delta 9's honest limit says that state presents as `EMPTY`. The blend enforces the same epistemology: Y is recurrence, S needs a candidate to compare, L and D score evidence about usage — none of the four can conjure a proposal from a schema. The reason this is a feature and not a gap on THIS branch: proposals arrive pre-trusted (MV-D8's premise), and a recurrence-backed proposal asserts "people already compute this"; a schema-derived one asserts "this looks computable" — a categorically weaker claim that must never share a confidence scale with the first. Where the capability actually lives: the create-agent branch, whose evidence route is profiling by design — `plan_builder`'s analytics section already generates measures and join_specs from table context via LLM, `assess_readiness` already grades modelability, and the EXACT-uniqueness probe planned there supplies MV-D14's missing evidence. If a cold-start mode is ever wanted on the IQ Scan surface too, the shape is: a separate producer emitting a new candidate provenance (`SCHEMA_DERIVED`), hard-capped below the recurrence tiers, suggest-only forever, never blended into the LYDS score — but that is that branch's decision to take, with its own MV-D entry.
+
+**MV-D26 — Page-candidate persistence and exposure (OPEN — decided at Prompt 17a).** The Ontology Pages track produces per-space suggestion state (archetype, evidence, draft body, decision, applied-instruction pointer) that outlives any single request. The MV-D7 pattern is the presumptive answer — a `genie_opt_page_candidates` Delta table, space-partitioned, with `wh_*` twins and the MV-D21 column pin extended — but 17a must weigh whether the draft *body* belongs in the candidate row (the MV-D23 `yaml_text` precedent, replay without a run-partitioned artifact) and must classify every column in the Prompt 14 exposure matrix from birth, since the sweep's ddl-walking pin will force it anyway. Suggestion state under a sentinel advice run (MV-D23's machinery) versus request-scoped rows is 17a's call to record.
+
+**MV-D27 — The instruction-augmentation write path (OPEN — decided at Prompt 17c).** Accepting a Page suggestion may write `text_instructions[0]` — the first workbench surface where an LLM-drafted artifact lands in live space config outside an optimization run's eval-gated loop. Constraints that are NOT open: the GSL instruction schema (`docs/docs/platform/gsl-instruction-schema.md`) is authoritative and CLAUDE.md mandates reading it before touching instruction handling; the single-text_instruction cap (`genie_creator._enforce_constraints`) and the IQ-scan length warning (~2000 chars, check 4) bound the budget; the write is OBO with diff preview and explicit consent, never auto-applied (MV-D1's invariants transpose: identity, recorded consent, downgrade-never-upgrade, and the consented TARGET here is the instruction block, nowhere else); benchmark text never lands verbatim (firewall). What 17c decides: direct OBO `update_space` versus the patch machinery, undo semantics (snapshot the prior block on the decision row), and how an augmentation marks its provenance inside the block so a later suggestion can find and supersede its own section rather than append forever.
+
+**MV-D28 — Web enrichment mechanics (OPEN — decided at Prompt 17b).** The Page standard's "Recent context" section is enriched from public sources when possible. Non-negotiable regardless of mechanics: enrichment is BEST-EFFORT — a failed or unavailable search degrades to workspace-evidence-only and still yields a complete, useful draft (the user's stated requirement, and the frame-7b honesty rule transposed); every enriched section is labeled "informational, as of DATE — not certified operational data" with sources listed (the demonstrator Pages' own convention); enrichment status reports in MV-D15 vocabulary (COMPUTED / EMPTY / UNAVAILABLE with a reason). What 17b decides: the mechanism (tool-capable serving endpoint via the workbench's model selection, versus direct egress from the Databricks App, versus skip-only in v1), and its timeout/failure contract — the suggest route must degrade, never hang, the same rule the MV suggest route's embedding path follows.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -1827,7 +1847,11 @@ Scenario D — suggest with no run at all (Prompt 13.5, MV-D23):
   BYO leg (MV-D24): create a metric view manually in the scratch schema from
   the copied DDL, register it through the route, assert the ledger row says
   USER_CREATED with the registering user, and that the next run attaches and
-  measures it. Then assert the drop route refuses it. Teardown drops it
+  measures it. Then assert the drop route refuses it AND that the reloaded
+  run-output panel shows no Drop affordance for it (route 10 returns
+  provenance and the panel hides Drop for USER_CREATED — the Prompt 14.1 fix
+  of the exposure matrix's first GAP; a server-side 403 behind a visible
+  button is not a pass). Teardown drops it
   manually — the app must never have.
 
 Also include a manual smoke checklist for the UI (10 items max) covering the
@@ -1846,6 +1870,10 @@ Finish the branch:
   surface for a space that has not been optimized, and the optimization-run
   surface for one that has — and say plainly which evidence each rests on, so a
   reader does not expect history-grade confidence from a space with no history.
+  If the Ontology Pages track (Prompt 17.x) has landed, document it as its own
+  feature page: the eight archetypes, the dual output (instruction
+  augmentation is API-applied under consent; Pages are pasted into Discover
+  manually because no Pages API exists), and the enrichment labeling contract.
 - Add an entry to the changelog/release notes per repo convention.
 - Update docs/design/metric-view-suggestion-engine-pov.md status flags for
   anything the implementation resolved or contradicted, with a short
@@ -1864,16 +1892,172 @@ Finish the branch:
 
 ## Optional follow-on branch
 
-### Prompt 17 — Discover curator (Part 8), separate branch
+### Prompt 17 — Ontology Pages track (REDRAFTED: space-scoped Page suggestions, SAME branch)
+
+*Redrafted at the post-12b review, superseding the original separate-branch
+domain-tag curator (preserved as Prompt 20, deferred — POV Appendix A Delta 10
+records the pivot). What changed and why: Pages are the human-modeled layer of
+the Genie Ontology — Genie One PRIORITIZES a Page's definition over inferred
+context and CITES it in answers — which makes Page curation a direct accuracy
+lever on the same axis this branch already works. But Pages have NO public
+create/update API: they are created in the Discover UI (with Genie Code assist
+inside the Page editor). POV API-ask #4 stands, re-verified 2026-08-24. So the
+feature is DUAL-OUTPUT: (a) the API-writable half — consent-gated augmentation
+of the space's text_instructions, inside the GSL schema; (b) the manual half —
+a copy-ready Page draft in the standardized format for paste into Discover,
+the DDL-panel pattern. Evidence comes from the space context this branch
+already assembles: the semantic graph and its governance ladder and coverage
+lens (12/12b), fingerprint shapes and CONFLICT candidates, curated snippets and
+example SQL, profiling, and join topology. SEQUENCING: runs after Prompt 15 and
+before Prompt 16 — 14/15 predate this track, so 17d carries the track's OWN
+hardening and E2E, and Prompt 16 closes the whole branch including it.
+Decisions MV-D26 (persistence, 17a), MV-D27 (instruction write path, 17c),
+MV-D28 (web enrichment, 17b) are OPEN in the register; each sub-prompt decides
+its own and records it BEFORE writing code, the 13.5 discipline.*
+
+**The eight archetypes (the standard 17.0 codifies — title prefix is part of
+the format):**
+
+| Archetype | Title prefix | What it does |
+|---|---|---|
+| Disambiguation | `[Disambiguation]` | Same English phrase, several valid answers — pick which grain/count/role |
+| Method selection | `[Method]` | Several correct metrics; pick by the question, not habit |
+| Metric routing | `[Routing]` | Map NL questions to the metric view + measure |
+| Status / enum decode | `[Taxonomy]` | Decode codes, buckets, glossaries |
+| Guardrail / non-additivity | `[Guardrail]` | Never average rates; recompute from numerator/denominator |
+| Default assumptions | `[Defaults]` | What to assume when the question is silent |
+| Comparability / break | `[Rule]` | A rule that makes periods or universes incomparable |
+| Cross-domain traversal | `[Cross-domain]` | Shared spines and join keys across domains |
+
+### Prompt 17.0 — Page standard, recon, and mockups (review checkpoint)
 
 ```
-On a NEW branch feature/discover-curator off the merged advisor branch,
-implement POV Part 8 phase 1 only: the discover_gate + discover_curator task
-(propose-only), domain/subdomain proposal scoring per POV 8.3, the membership
-diff against system.information_schema.table_tags, the ALTER ... SET TAGS apply
-plan generator, the blocking firewall scan, and the copy-ready manual-steps
-checklist for UI-only domain/Page creation. No tag writes in this phase.
-Reuse the advisor's consent-gate pattern for the eventual tag-apply mode.
+No production code. Three deliverables, then STOP for review:
+1. docs/design/page-archetypes.md — the Page standard: the eight-archetype
+   table above (verbatim), plus the format template drawn from the
+   demonstrator Pages: title = "[Archetype] Name"; header fields Domain,
+   Owner, Synonyms, Description (one line); a Definition body that answers
+   the archetype's question with the space's OWN identifiers (tables,
+   columns, measures — backticked); an OPTIONAL "Recent context
+   (informational, as of DATE)" section that MUST end with the disclaimer
+   line "Informational context summarised by an LLM from public sources as
+   of DATE. Not certified operational data." and MUST have a Sources list;
+   Draft/Publish lifecycle notes. Also: which archetypes default to
+   instruction augmentation vs Page-draft-only — instruction space is scarce
+   (single block, ~2000-char warning), so Routing/Guardrail/Defaults/
+   Disambiguation earn instruction lines; long Taxonomies are Page-first
+   with a one-line instruction pointer.
+2. A gap-report "Ontology surfaces" section: the reuse inventory with live
+   anchors — semantic-graph assembly + governance/coverage (auto_optimize),
+   fingerprint shapes + CONFLICT states (mv_fingerprint / mv_scoring),
+   llm_utils.call_serving_endpoint (:24) + parse_json_from_llm_response
+   (:179), model_catalog.validate_chat_model (:90), LeakageOracle,
+   the Model-tab wiring precedent (navigation.ts / SpaceDetail.tsx), and
+   the OBO space-update path (find it — create agent's update_space /
+   genie_creator; quote it, do not invent one).
+3. Mockups in the existing scaffold + emitter, both themes: the "Ontology"
+   tab (Score | Model | Optimize | History | Ontology) — suggestions list
+   grouped by archetype with evidence chips; the Page-draft view with copy
+   button and the labeled Recent-context section; the instruction-
+   augmentation diff preview (react-diff-viewer, GSL sections visible);
+   empty state (honest: what was read, what would change the answer);
+   enrichment-failed state (draft complete, Recent-context absent, reason
+   shown). STOP for review before 17a.
+```
+
+### Prompt 17a — Evidence assembly + deterministic archetype detectors (decides MV-D26)
+
+```
+DECIDE MV-D26 first, record it in the register. Then, backend only, NO LLM
+calls in this prompt:
+- A space-context assembler reusing the semantic-graph reader, fingerprint
+  shapes, curated harvest, and profiling — one read path, not a parallel one.
+- Per-archetype DETECTORS emitting PageCandidate(archetype, evidence,
+  confidence) from deterministic signals only: [Disambiguation] from CONFLICT
+  candidates and same-concept-different-expr fingerprints; [Routing] from
+  data_sources.metric_views + their measures; [Guardrail] from
+  ratio/percentage-format measures and AVG-of-rate shapes; [Taxonomy] from
+  low-cardinality coded columns (profiling distinct values + column comments);
+  [Method] from same-family curated measures; [Cross-domain] from join-spine
+  topology; [Defaults]/[Rule] may emit LOW-confidence stubs (their substance
+  is 17b's synthesis). A detector with no evidence emits NOTHING — no
+  fabricated candidates.
+- Persistence per the MV-D26 decision; wh_* twins; MV-D21 pin extended;
+  every new column classified in the Prompt 14 exposure matrix in the SAME
+  commit (the ddl-walking pin will fail otherwise, by design).
+- Tests per detector: fires on a fixture that has the signal, silent on one
+  that lacks it.
+```
+
+### Prompt 17b — LLM synthesis + web enrichment (decides MV-D28)
+
+```
+DECIDE MV-D28 first, record it. Then:
+- Draft synthesis through the workbench's LLM path ONLY:
+  llm_utils.call_serving_endpoint with the model override validated by
+  model_catalog.validate_chat_model — no new client, no direct SDK chat
+  calls. Input: the PageCandidate + its evidence + the space's own
+  identifiers. Output: the Page standard format, validated structurally
+  (title prefix from the eight, required sections present, identifiers
+  backticked and EXISTING in the space — an LLM-invented column name fails
+  validation, it does not ship).
+- Firewall: extend LeakageOracle for Page bodies and instruction deltas —
+  benchmark question text never lands verbatim (the MV-D8 comment-echo rule
+  transposed; same oracle, no second scanner).
+- Web enrichment per the MV-D28 decision: best-effort, hard timeout, degrades
+  to a complete draft without the Recent-context section, status in MV-D15
+  vocabulary. Every enriched section carries the disclaimer line and Sources
+  — a draft with unsourced enrichment fails validation.
+- The instruction-augmentation delta: for archetypes that earn instruction
+  lines (per the 17.0 standard), synthesize the GSL-schema-compliant delta
+  alongside the Page draft — targeted at the correct canonical section,
+  within the length budget, marked with a provenance tag so a later
+  suggestion supersedes rather than appends (the MV-D27 entry names this).
+- Tests: format validation (golden Page fixture), identifier-existence gate,
+  firewall assertions, enrichment-degradation, budget enforcement.
+```
+
+### Prompt 17c — Ontology tab + consent-gated instruction augmentation (decides MV-D27)
+
+```
+DECIDE MV-D27 first, record it. READ docs/docs/platform/gsl-instruction-schema.md
+before touching anything near instructions — CLAUDE.md mandates it. Then:
+- Routes under /api/auto-optimize: suggest (space-scoped, OBO-tolerant reads,
+  blocking with the same degrade-not-hang contract as /mv/suggest), list,
+  decision (approve/reject with suppression), and APPLY — the instruction
+  augmentation write, OBO via require_obo_workspace_client (hard-fail, never
+  SP), preceded by a fresh read of the current block, applied per the MV-D27
+  decision, with the prior block snapshotted on the decision row for undo.
+  Never auto-applied; the diff preview is what the user consents to, so a
+  block that changed since preview REFUSES and re-previews (the MV-D22
+  immutable-body principle transposed).
+- The Ontology tab per the 17.0 mockups: fifth SpaceDetail tab, prop-driven
+  cards (the MV-D23 obligation — 18's create-agent branch will want these
+  components), archetype grouping, Page-draft copy panel, the augmentation
+  diff + [Apply to instructions] + [Copy Page for Discover] dual actions,
+  the manual-steps line for Discover paste (Pages are UI-created — say so
+  plainly rather than pretending an API).
+- Empty/failed states per the mockups; run_kind machinery reused if MV-D26
+  chose advice-run scoping.
+- Tests: route tests incl. the changed-block refusal and apply-refused-
+  without-OBO; component tests per state.
+```
+
+### Prompt 17d — Ontology track hardening + E2E
+
+```
+The track's own Phase 4, because Prompts 14/15 predate it:
+- Extend the exposure matrix + its pin to the new tables/routes; extend the
+  dry-run harness with suggest -> synthesize -> approve -> apply -> undo.
+- Mutation-test the new pins (format validator, identifier gate, firewall
+  extension) — red when broken, not just green when whole.
+- E2E scenario against the dev workspace: a real space, suggestions produced,
+  one augmentation applied and verified in the live serialized_space (GSL
+  sections intact, budget respected), then undone; one Page draft manually
+  pasted into Discover and the manual-steps checklist validated by doing it.
+  Enrichment-off leg proves the degraded draft is still complete.
+- Baseline lockstep both rule copies, self-dated; MV-D9 sweep; then Prompt 16
+  closes the branch with BOTH tracks documented.
 ```
 
 ### Prompt 18 — Create Agent semantic-model step (separate branch, after Prompt 16; owns MV-D25)
@@ -1930,6 +2114,23 @@ row); the mockup's "Also materialize" checkbox is annotated not-shipped.*
 - Only then: the run-config control, per the annotated mockup, enabled only
   when the probe proves the capability.
 - REFRESH POLICY defaults per POV Key Finding 5; cost note in the consent copy.
+```
+
+### Prompt 20 — Discover domain curator (DEFERRED, separate branch — the original Prompt 17)
+
+*The pre-redraft Prompt 17 body, preserved verbatim so POV Part 8's domain/tag
+half is not lost. Deferred behind the Ontology Pages track (Delta 10): Pages
+proved the higher-leverage half of Part 8 for this workbench, and tag-apply
+automation carries write risks the space-scoped track does not.*
+
+```
+On a NEW branch feature/discover-curator off the merged advisor branch,
+implement POV Part 8 phase 1 only: the discover_gate + discover_curator task
+(propose-only), domain/subdomain proposal scoring per POV 8.3, the membership
+diff against system.information_schema.table_tags, the ALTER ... SET TAGS apply
+plan generator, the blocking firewall scan, and the copy-ready manual-steps
+checklist for UI-only domain/Page creation. No tag writes in this phase.
+Reuse the advisor's consent-gate pattern for the eventual tag-apply mode.
 ```
 
 ---
