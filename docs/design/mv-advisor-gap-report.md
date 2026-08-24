@@ -1656,6 +1656,18 @@ carefully guarded; (c) **a separate job** triggered independently — cleanest i
 abandons the POV's "single toggle, one tool" premise. Recommendation: **(a)**, with the
 gate as an early `if` in the notebook.
 
+> **Recorded OPEN as `MV-D23` (decided at playbook Prompt 13.5).** All three options
+> above presume the advisor runs *inside* an optimization run. Whether it must — whether
+> a candidate can be proposed and created for a space that has never been optimized — is
+> now a recorded open decision rather than an unexamined assumption. Four `run_id`
+> couplings built through Prompt 9 make today's answer "only inside a run": the `_advise`
+> corpus gate, `genie_opt_mv_candidates.run_id` `NOT NULL`, the `mv_candidate_ddl` body's
+> `run_id`-partitioned `genie_opt_artifacts` home (the sole thing `MV-D22` can replay),
+> and the created-objects `(run_id, suggestion_id)` key. Three cannot be relaxed
+> additively — `ADDITIVE_COLUMN_MIGRATIONS` only appends columns — so the decision
+> carries a schema cost a later prompt must not discover mid-flight. The four anchors and
+> the three options are in the playbook `MV-D23` entry.
+
 **4. Which identity performs the UC write?** This is the sharpest conflict. The job runs
 as the SP; the POV requires OBO and explicitly forbids SP writes. Options: (a) **drop
 `create_and_attach` from v1** and ship `suggest_only` only — no write, no conflict, and

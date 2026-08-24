@@ -189,9 +189,17 @@
      The repo has NO test CI — run the suites locally and report results in
      every VERIFY section.
 
+   - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
+     `uv run --frozen --extra dev`. Expected baseline: 571 backend + 1315 GSO.
+     `--extra dev` is mandatory, not stylistic: `asyncio_mode = "auto"` needs
+     pytest-asyncio, which lives in the dev extra, and without it exactly 12
+     async backend tests fail on uncollectable coroutines. Those 12 are an
+     INVOCATION defect. Do NOT report them as pre-existing and do NOT debug the
+     code — fix the command. If you call pytest directly, it is
+     `uv run --frozen --extra dev pytest`.
    - IMPORT RESOLUTION IS PART OF EVERY VERIFY THAT RUNS BACKEND TESTS: before
      trusting any backend pytest result, print
-     `python -c "import genie_space_optimizer; print(genie_space_optimizer.__file__)"`
+     `uv run --frozen --extra dev python -c "import genie_space_optimizer as g; print(g.__file__)"`
      and confirm the path resolves inside THIS repository checkout. A test run
      against a foreign checkout is void — report it, do not interpret it.
    - PINNED-DEPENDENCY RESOLUTION: for any behavior that depends on a pinned
@@ -200,6 +208,11 @@
      the pyenv global carries sqlglot 30.0.1 against the pinned 30.0.3, and
      canonicalization output can differ across parser patch releases. Report
      the resolved version in VERIFY alongside the import path.
+   - `uv lock --check` FAILS STRUCTURALLY on this repo and is NOT drift: the GSO
+     package version is dynamic (git-describe), so re-resolution differs from the
+     lockfile at every commit, on a clean tree. Verify with
+     `git status -- uv.lock` instead. Never run `uv lock` to silence it, and do
+     not wire `uv lock --check` into CI.
    ```
 
 3. **Have a dev workspace ready** with the TPC-H samples catalog, a scratch schema you own (e.g. `main.mv_advisor_dev`), a small Genie Space with 10–15 benchmark questions, and a second test identity that *lacks* `CREATE TABLE` on the scratch schema (you need it for the denial-path E2E test).
@@ -509,7 +522,7 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D23 — Whether a candidate can exist, and be created, without a run (OPEN — decided at Prompt 13.5).** Recorded from a post-Prompt-9 review of the question the feature cannot currently answer: *can the advisor suggest a metric view for a Genie Agent that has never been optimized?* Today it cannot, and the reason is not a policy — it is four `run_id` constraints that Prompts 1 through 9 each added for good local reasons and that compose into a hard coupling nobody chose. They are recorded here because three of the four cannot be relaxed by the `ADDITIVE_COLUMN_MIGRATIONS` mechanism, so the decision has a schema cost that a later prompt must not discover mid-flight.
 
-*The four couplings, precisely.* **(1)** The corpus is gated, not merely seeded: `_advise` opens with `load = load_iteration_zero_corpus(...)` and returns `STATUS_SKIPPED` on `not load.usable` (`mv_advisor.py:919-928`), so the curated half Prompt 6c shipped is strictly additive to a gate it cannot open — and `curated_corpus_entries` additionally consumes `load.applied_config`, itself derived from the same iteration rows. A space with no eval run has no corpus even when its `example_question_sqls`, `sql_snippets.measures` and benchmark answers are full of recurring measures. **(2)** `genie_opt_mv_candidates.run_id` is `NOT NULL` (`ddl.py`, the candidates DDL) with the comment "the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)" — the comment already concedes the candidate outlives the run, but the column still requires one. **(3)** The rendered body lives in exactly one place: `_write_ddl_artifact` persists `yaml_text` into a `genie_opt_artifacts` row (`artifact_kind = 'mv_candidate_ddl'`), and that table is `run_id NOT NULL` and `PARTITIONED BY (run_id)`. So MV-D22's replay contract — the backend recovers the immutable body rather than regenerating it — has nothing to recover for a candidate proposed outside a run. This is the sharpest of the four, because it makes MV-D22 and a standalone create mutually exclusive as currently built. **(4)** The created-objects ledger is `PARTITIONED BY (run_id)` and keyed `(run_id, suggestion_id)`, and all three backend writers take `run_id: str` non-optionally (`warehouse.py`, `wh_upsert_mv_created_object`, `wh_update_mv_created_object_status`, `wh_load_mv_created_object`).
+*The four couplings, precisely.* **(1)** The corpus is gated, not merely seeded: `_advise` opens with `load = load_iteration_zero_corpus(...)` and returns `STATUS_SKIPPED` on `not load.usable` (`mv_advisor.py:922-928`), so the curated half Prompt 6c shipped is strictly additive to a gate it cannot open — and `curated_corpus_entries` additionally consumes `load.applied_config`, itself derived from the same iteration rows. A space with no eval run has no corpus even when its `example_question_sqls`, `sql_snippets.measures` and benchmark answers are full of recurring measures. **(2)** `genie_opt_mv_candidates.run_id` is `NOT NULL` (`ddl.py`, the candidates DDL) with the comment "the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)" — the comment already concedes the candidate outlives the run, but the column still requires one. **(3)** The rendered body lives in exactly one place: `_write_ddl_artifact` persists `yaml_text` into a `genie_opt_artifacts` row (`artifact_kind = 'mv_candidate_ddl'`), and that table is `run_id NOT NULL` and `PARTITIONED BY (run_id)`. So MV-D22's replay contract — the backend recovers the immutable body rather than regenerating it — has nothing to recover for a candidate proposed outside a run. This is the sharpest of the four, because it makes MV-D22 and a standalone create mutually exclusive as currently built. **(4)** The created-objects ledger is `PARTITIONED BY (run_id)` and keyed `(run_id, suggestion_id)`, and all three backend writers take `run_id: str` non-optionally (`warehouse.py`, `wh_upsert_mv_created_object`, `wh_update_mv_created_object_status`, `wh_load_mv_created_object`).
 
 *What is already fine, and should not be re-solved.* `wh_load_mv_candidates` was built during Prompt 9 accepting `target_space_id` **or** `run_id`, with a guard that refuses to scan every space. The space-scoped read therefore already exists; only the route above it (`GET /runs/{run_id}/mv-proposals`) is run-keyed. The 6a/6b signal producers read through `sql_warehouse_query` rather than Spark, so L and D need no second producer for a backend-side caller. And with L and D wired, `evidence_coverage` is no longer 0.50 — a standalone candidate is not structurally capped at MEDIUM, which was the strongest argument against this path while it held.
 
