@@ -1,0 +1,3 @@
+# Build temp dirs for the MV-advisor mockup emitter (review scaffold).
+.dist/
+.dist-css/
