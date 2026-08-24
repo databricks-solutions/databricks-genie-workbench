@@ -14,7 +14,6 @@ import type {
   LeaderboardEntry,
   AlertItem,
   CurrentUser,
-  FixAgentEvent,
   UcCatalog,
   UcSchema,
   UcTable,
@@ -31,6 +30,11 @@ import type {
   GSOQuestionDetail,
   GSOPermissionCheck,
   GSOPatch,
+  GSOBenchmarkChanges,
+  GSOLoopStateResponse,
+  GSOPublishRecordResponse,
+  CurrentVersionResponse,
+  GSORevertOptions,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -38,16 +42,21 @@ const API_BASE = "/api"
 // Request timeout values (in milliseconds)
 const DEFAULT_TIMEOUT = 30_000 // 30 seconds for most requests
 const LONG_TIMEOUT = 300_000 // 5 minutes for LLM operations (optimization can be slow)
+// Warehouse statements can block up to their 50s server-side wait_timeout.
+// Current-version's worst path is two sequential statements (the concurrent
+// runs/champions pair, then a status re-read after zombie reconciliation) plus
+// Jobs-API calls — 120s covers it where the 30s default would silently lose
+// the badge on a cold warehouse.
+const CURRENT_VERSION_TIMEOUT = 120_000
 
 class ApiError extends Error {
   status: number
   /**
    * Structured error payload from the backend, when the router raises
    * `HTTPException(detail={...})`. Callers that care about fields like
-   * `reason_code`, `error_code`, `actionable_by`, or `prompt_registry_available`
-   * (e.g. the Auto-Optimize PermissionAlert) should read from here rather
-   * than parsing `message`. `null` when the response didn't carry one, or
-   * when `detail` was already a string.
+   * `reason_code`, `error_code`, or `actionable_by` should read from here
+   * rather than parsing `message`. `null` when the response didn't carry one,
+   * or when `detail` was already a string.
    */
   detail: Record<string, unknown> | null
 
@@ -139,7 +148,7 @@ async function fetchWithTimeout<T>(
 }
 
 /**
- * Fetch a Genie Space by ID.
+ * Fetch a Genie Agent by ID.
  */
 export async function fetchSpace(
   genieSpaceId: string
@@ -156,7 +165,7 @@ export async function fetchSpace(
 }
 
 /**
- * Parse pasted Genie Space JSON.
+ * Parse pasted Genie Agent JSON.
  */
 export async function parseSpaceJson(
   jsonContent: string
@@ -250,50 +259,6 @@ export async function getAlerts(): Promise<AlertItem[]> {
 
 export async function getCurrentUser(): Promise<CurrentUser> {
   return fetchWithTimeout<CurrentUser>(`${API_BASE}/auth/me`, {}, DEFAULT_TIMEOUT)
-}
-
-export function streamFixAgent(
-  spaceId: string,
-  findings: string[],
-  spaceConfig: Record<string, unknown>,
-  onEvent: (event: FixAgentEvent) => void,
-  onError: (error: Error) => void
-): () => void {
-  const abortController = new AbortController()
-
-  fetch(`${API_BASE}/spaces/${spaceId}/fix`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ space_id: spaceId, findings, space_config: spaceConfig }),
-    signal: abortController.signal,
-  })
-    .then(async (response) => {
-      if (!response.ok) throw new ApiError("Fix agent request failed", response.status)
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error("No response body")
-      const decoder = new TextDecoder()
-      let buffer = ""
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n\n")
-        buffer = lines.pop() || ""
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const event = JSON.parse(line.slice(6)) as FixAgentEvent
-              onEvent(event)
-            } catch { /* ignore */ }
-          }
-        }
-      }
-    })
-    .catch((error) => {
-      if (error.name !== "AbortError") onError(error)
-    })
-
-  return () => abortController.abort()
 }
 
 // ── Create Wizard ────────────────────────────────────────────────────────────
@@ -458,11 +423,9 @@ export async function getAutoOptimizeHealth(): Promise<{ configured: boolean; is
 
 export async function getAutoOptimizePermissions(
   spaceId: string,
-  options?: { refresh?: boolean },
 ): Promise<GSOPermissionCheck> {
-  const qs = options?.refresh ? "?refresh=true" : ""
   return fetchWithTimeout<GSOPermissionCheck>(
-    `${API_BASE}/auto-optimize/permissions/${spaceId}${qs}`,
+    `${API_BASE}/auto-optimize/permissions/${spaceId}`,
   )
 }
 
@@ -506,6 +469,32 @@ export async function discardAutoOptimize(runId: string): Promise<{ status: stri
   )
 }
 
+export async function revertAutoOptimizeRun(
+  runId: string,
+  options: {
+    configTarget: "champion" | "baseline"
+    benchmarkTarget: "current" | "champion" | "baseline"
+  } = { configTarget: "champion", benchmarkTarget: "current" },
+): Promise<{ status: string; runId: string; message: string }> {
+  const query = new URLSearchParams({
+    config_target: options.configTarget,
+    benchmark_target: options.benchmarkTarget,
+  })
+  return fetchWithTimeout<{ status: string; runId: string; message: string }>(
+    `${API_BASE}/auto-optimize/runs/${runId}/revert?${query.toString()}`,
+    { method: "POST", headers: { "Content-Type": "application/json" } },
+    DEFAULT_TIMEOUT
+  )
+}
+
+export async function getAutoOptimizeRevertOptions(
+  runId: string,
+): Promise<GSORevertOptions> {
+  return fetchWithTimeout<GSORevertOptions>(
+    `${API_BASE}/auto-optimize/runs/${runId}/revert-options`,
+  )
+}
+
 export async function getActiveRunForSpace(
   spaceId: string
 ): Promise<{ hasActiveRun: boolean; activeRunId: string | null; activeRunStatus: string | null }> {
@@ -518,14 +507,47 @@ export async function getAutoOptimizeRunsForSpace(spaceId: string): Promise<GSOR
   return fetchWithTimeout<GSORunSummary[]>(`${API_BASE}/auto-optimize/spaces/${spaceId}/runs`)
 }
 
+export async function removeAutoOptimizeRunFromHistory(
+  runId: string,
+): Promise<{ status: string; runId: string; spaceId: string; message: string }> {
+  return fetchWithTimeout<{ status: string; runId: string; spaceId: string; message: string }>(
+    `${API_BASE}/auto-optimize/runs/${runId}/history-entry`,
+    { method: "DELETE" },
+    DEFAULT_TIMEOUT,
+  )
+}
+
+/**
+ * Which known optimization versions the live agent's config and benchmarks
+ * currently match. Fail-open on the backend: "unavailable" /
+ * "no_known_versions" mean "show nothing".
+ */
+export async function getCurrentVersion(
+  spaceId: string,
+  refresh = false,
+): Promise<CurrentVersionResponse> {
+  const query = refresh ? "?refresh=true" : ""
+  return fetchWithTimeout<CurrentVersionResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/current-version${query}`,
+    {},
+    CURRENT_VERSION_TIMEOUT
+  )
+}
+
 export async function getAutoOptimizeIterations(runId: string): Promise<GSOIterationResult[]> {
   return fetchWithTimeout<GSOIterationResult[]>(`${API_BASE}/auto-optimize/runs/${runId}/iterations`)
 }
 
-export async function getAutoOptimizeAsiResults(runId: string, iteration: number): Promise<GSOQuestionResult[]> {
-  return fetchWithTimeout<GSOQuestionResult[]>(
-    `${API_BASE}/auto-optimize/runs/${runId}/asi-results?iteration=${iteration}`
-  )
+// GSO v2 Phase 6 — lightweight official eval-results (assessment +
+// assessment_reasons per question). Replaces the retired per-judge ASI rows.
+export async function getAutoOptimizeEvalResults(runId: string, iteration: number): Promise<GSOQuestionResult[]> {
+  try {
+    return await fetchWithTimeout<GSOQuestionResult[]>(
+      `${API_BASE}/auto-optimize/runs/${runId}/eval-results?iteration=${iteration}`
+    )
+  } catch {
+    return []
+  }
 }
 
 export async function getAutoOptimizeQuestionResults(runId: string, iteration: number): Promise<GSOQuestionDetail[]> {
@@ -548,13 +570,41 @@ export async function getAutoOptimizePatches(runId: string): Promise<GSOPatch[]>
   }
 }
 
-export async function getAutoOptimizeSuggestions(runId: string): Promise<import("@/types").GSOSuggestion[]> {
+// GSO v2 Phase 6 (§3.5) — benchmark provenance ledger (added/removed/changed
+// questions GSO made in the live Genie Agent). GSO v2 (item 7): the response
+// also carries `qc` (30–40 window status, repair tries, validity findings).
+export async function getAutoOptimizeBenchmarkChanges(runId: string): Promise<GSOBenchmarkChanges | null> {
   try {
-    return await fetchWithTimeout<import("@/types").GSOSuggestion[]>(
-      `${API_BASE}/auto-optimize/runs/${runId}/suggestions`
+    return await fetchWithTimeout<GSOBenchmarkChanges>(
+      `${API_BASE}/auto-optimize/runs/${runId}/benchmark-changes`
     )
   } catch {
-    return []
+    return null
+  }
+}
+
+// GSO v2 (arch §7.4) — 03_optimize controller loop-state + per-attempt ledger.
+// Returns loopState=null + attempts=[] for legacy 6-step runs.
+export async function getAutoOptimizeLoopState(runId: string): Promise<GSOLoopStateResponse | null> {
+  try {
+    return await fetchWithTimeout<GSOLoopStateResponse>(
+      `${API_BASE}/auto-optimize/runs/${runId}/loop-state`
+    )
+  } catch {
+    return null
+  }
+}
+
+// GSO v2 (arch §7.3) — publish_and_audit record (audit summary + improvement
+// trajectory + concerns + champion pointer). publishRecord is null before the
+// run reaches publish, or for legacy runs.
+export async function getAutoOptimizePublishRecord(runId: string): Promise<GSOPublishRecordResponse | null> {
+  try {
+    return await fetchWithTimeout<GSOPublishRecordResponse>(
+      `${API_BASE}/auto-optimize/runs/${runId}/publish`
+    )
+  } catch {
+    return null
   }
 }
 

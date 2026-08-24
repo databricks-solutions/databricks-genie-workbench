@@ -9,14 +9,14 @@ const badgeVariants = cva(
     variants: {
       variant: {
         default: "bg-accent/10 text-accent dark:bg-accent/20",
-        success: "bg-success/10 text-success dark:bg-success/20",
-        warning: "bg-warning/10 text-warning dark:bg-warning/20",
-        danger: "bg-danger/10 text-danger dark:bg-danger/20",
-        info: "bg-info/10 text-info dark:bg-info/20",
+        success: "bg-success/10 text-success-foreground dark:bg-success/20",
+        warning: "bg-warning/10 text-warning-foreground dark:bg-warning/20",
+        danger: "bg-danger/10 text-danger-foreground dark:bg-danger/20",
+        info: "bg-info/10 text-info-foreground dark:bg-info/20",
         secondary: "bg-elevated text-muted border border-default",
-        high: "bg-danger/15 text-danger dark:bg-danger/25",
-        medium: "bg-warning/15 text-warning dark:bg-warning/25",
-        low: "bg-info/15 text-info dark:bg-info/25",
+        high: "bg-danger/15 text-danger-foreground dark:bg-danger/25",
+        medium: "bg-warning/15 text-warning-foreground dark:bg-warning/25",
+        low: "bg-info/15 text-info-foreground dark:bg-info/25",
       },
     },
     defaultVariants: {

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from genie_space_optimizer.optimization.evaluation import extract_genie_space_benchmarks
+from genie_space_optimizer.optimization.benchmarking import (
+    extract_genie_space_benchmarks,
+    extract_review_only_benchmarks,
+)
 
 
 def _hex(seed: str) -> str:
@@ -75,10 +78,54 @@ def test_extracts_user_benchmarks_and_sample_questions_but_not_example_sqls() ->
 
     by_question = {row["question"]: row for row in rows}
     assert by_question["What is sales by market?"]["source"] == "genie_benchmark"
+    assert by_question["What is sales by market?"]["space_question_id"] == _hex("c")
     assert by_question["What is sales by market?"]["expected_sql"].startswith("SELECT market")
     assert by_question["What were total sales yesterday?"]["source"] == "sample_question"
     assert by_question["What were total sales yesterday?"]["expected_sql"] == ""
     assert all("example function" not in row["question"].lower() for row in rows)
+
+
+def test_extracts_complete_sql_from_multiple_content_fragments() -> None:
+    config = _space_config()
+    config["_parsed_space"]["benchmarks"]["questions"][0]["answer"][0]["content"] = [
+        "SELECT market, ",
+        "SUM(sales) FROM cat.sch.fact_sales ",
+        "GROUP BY market",
+    ]
+
+    with patch(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        return_value=(True, ""),
+    ):
+        rows = extract_genie_space_benchmarks(
+            config,
+            spark=MagicMock(),
+            catalog="cat",
+            schema="sch",
+        )
+
+    benchmark = next(row for row in rows if row["source"] == "genie_benchmark")
+    assert benchmark["expected_sql"] == (
+        "SELECT market, SUM(sales) FROM cat.sch.fact_sales GROUP BY market"
+    )
+
+
+def test_review_only_extracts_native_benchmarks_without_sample_questions() -> None:
+    with patch(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        return_value=(True, ""),
+    ):
+        rows = extract_review_only_benchmarks(
+            _space_config(),
+            spark=MagicMock(),
+            catalog="cat",
+            schema="sch",
+        )
+
+    assert rows
+    assert all(row["source"] == "genie_benchmark" for row in rows)
+    assert all(row.get("space_question_id") for row in rows)
+    assert all(row["category"] == "user_benchmark" for row in rows)
 
 
 def test_invalid_user_benchmark_sql_is_kept_question_only_for_sql_regeneration() -> None:
@@ -98,6 +145,26 @@ def test_invalid_user_benchmark_sql_is_kept_question_only_for_sql_regeneration()
     assert user_row["expected_sql"] == ""
     assert user_row["validation_status"] == "question_only"
     assert user_row["validation_reason_code"] == "invalid_source_sql"
+
+
+def test_review_only_preserves_invalid_source_sql_for_accurate_qc() -> None:
+    with patch(
+        "genie_space_optimizer.optimization.benchmarks.validate_ground_truth_sql",
+        return_value=(False, "TABLE_OR_VIEW_NOT_FOUND"),
+    ):
+        rows = extract_review_only_benchmarks(
+            _space_config(),
+            spark=MagicMock(),
+            catalog="cat",
+            schema="sch",
+        )
+
+    assert len(rows) == 1
+    user_row = rows[0]
+    assert user_row["expected_sql"].startswith("SELECT market")
+    assert user_row["validation_status"] == "invalid"
+    assert user_row["validation_reason_code"] == "invalid_source_sql"
+    assert user_row["validation_error"] == "TABLE_OR_VIEW_NOT_FOUND"
 
 
 def test_legacy_auto_optimize_prefix_is_normalized_when_reading_native_benchmarks() -> None:
@@ -136,7 +203,7 @@ def test_legacy_auto_optimize_prefix_is_normalized_when_reading_native_benchmark
 
 
 def test_benchmark_rows_matching_example_sql_questions_are_filtered() -> None:
-    from genie_space_optimizer.optimization.evaluation import (
+    from genie_space_optimizer.optimization.benchmarking import (
         _filter_example_sql_mirrored_benchmarks,
     )
 

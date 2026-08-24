@@ -203,6 +203,18 @@ async def _ensure_schema():
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_optimization_runs_space_id ON genie.optimization_runs(space_id)"
             )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.hidden_optimization_runs (
+                    run_id      VARCHAR(36) PRIMARY KEY,
+                    space_id    VARCHAR(128) NOT NULL,
+                    hidden_by   TEXT NOT NULL,
+                    hidden_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hidden_optimization_runs_space_id "
+                "ON genie.hidden_optimization_runs(space_id)"
+            )
 
             # ── GenieWatch tables (read-only observability) ──
             await conn.execute("""
@@ -270,7 +282,7 @@ async def _ensure_schema():
                 "CREATE INDEX IF NOT EXISTS idx_watch_rollup_day ON genie.watch_daily_usage_rollup(day DESC)"
             )
         _lakebase_available = True
-        logger.info("Lakebase schema ready (4 workbench tables + 6 watch tables)")
+        logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables)")
     except Exception as e:
         logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
         _lakebase_available = False
@@ -664,6 +676,72 @@ async def get_latest_optimization_run(space_id: str) -> Optional[dict]:
             "accuracy": float(row["accuracy"]),
             "created_at": row["created_at"].isoformat(),
         }
+
+
+async def hide_optimization_run_from_history(
+    run_id: str,
+    space_id: str,
+    hidden_by: str,
+) -> None:
+    """Persist a Workbench-only tombstone for a GSO optimization run.
+
+    The durable GSO Delta audit rows are intentionally left untouched. Unlike
+    low-risk read paths, this mutation fails closed when Lakebase is
+    unavailable so the API never reports a removal that would be lost on app
+    restart.
+    """
+    await _maybe_retry_schema()
+    if not is_available():
+        raise RuntimeError("Lakebase is unavailable; history removal was not persisted.")
+
+    assert _pool is not None
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO genie.hidden_optimization_runs
+                (run_id, space_id, hidden_by, hidden_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (run_id) DO UPDATE SET
+                space_id = EXCLUDED.space_id,
+                hidden_by = EXCLUDED.hidden_by,
+                hidden_at = NOW()
+            """,
+            run_id,
+            space_id,
+            hidden_by or "unknown",
+        )
+
+
+async def get_hidden_optimization_run_ids(space_id: str) -> set[str]:
+    """Return run IDs hidden from Workbench history for one Genie Agent.
+
+    Reads fail open so a transient Lakebase issue does not make the entire
+    optimization history endpoint unavailable. The write path above remains
+    fail closed and never promises ephemeral removal.
+    """
+    await _maybe_retry_schema()
+    if not is_available():
+        return set()
+
+    assert _pool is not None
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT run_id
+                FROM genie.hidden_optimization_runs
+                WHERE space_id = $1
+                """,
+                space_id,
+            )
+        return {str(row["run_id"]) for row in rows}
+    except Exception:
+        logger.warning(
+            "Failed to read hidden optimization runs for space %s",
+            space_id,
+            exc_info=True,
+        )
+        return set()
 
 
 # ─────────────────────────────────────────────────────────────────────────

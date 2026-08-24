@@ -32,10 +32,21 @@ from genie_space_optimizer.iq_scan.scoring import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
-# Terminal GSO run statuses that indicate a completed optimization.
-# Subset of auto_optimize._TERMINAL_RUN_STATUSES — only includes statuses
-# where best_accuracy is meaningful for IQ scoring.
-_GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS"}
+# Terminal GSO run statuses whose ``best_accuracy`` is meaningful for the IQ
+# header's "% benchmark accuracy". Subset of auto_optimize._TERMINAL_RUN_STATUSES.
+#
+# APPLIED is included: applying an optimization flips the run status to APPLIED
+# (integration/apply.py) while preserving best_accuracy, and the applied
+# champion IS the live config — so its measured accuracy is exactly what the
+# header should report. Omitting it was the "header shows stale pre-GSO score
+# after a successful apply" bug: the applied 90% run was skipped and the scan
+# fell back to the legacy optimization_runs baseline.
+#
+# DISCARDED is deliberately EXCLUDED: a discard reverts the live space config,
+# so the discarded run's accuracy no longer describes what's deployed — the
+# header should fall back to baseline rather than claim it.
+# FAILED / CANCELLED are excluded because best_accuracy is absent or unreliable.
+_GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS", "APPLIED"}
 
 # Shared thread pool for UC metadata fetches — avoids per-scan pool churn.
 _uc_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="uc-enrich")
@@ -55,7 +66,7 @@ def _enrich_with_uc_descriptions(space_data: dict, ws) -> int:
     """Fetch UC table/column descriptions and merge into *space_data* in-place.
 
     Only fills blanks — never overwrites existing ``description`` or ``comment``
-    values in the Genie Space config.  Returns the number of enriched items.
+    values in the Genie Agent config.  Returns the number of enriched items.
     """
     ds = space_data.get("data_sources", {})
     all_sources = list(ds.get("tables", [])) + list(ds.get("metric_views", []))
@@ -137,19 +148,19 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
     """Fetch space config, calculate IQ score, and persist to Lakebase.
 
     Args:
-        space_id: The Genie Space ID
+        space_id: The Genie Agent ID
         user_token: Optional user token for OBO auth (not used directly, SDK handles this)
 
     Returns:
         ScanResult dict with score, maturity, breakdown, checks, findings, next_steps
     """
-    logger.info(f"Scanning space: {space_id}")
+    logger.info(f"Scanning agent: {space_id}")
 
     try:
-        space_data = get_serialized_space(space_id)
+        space_data = get_serialized_space(space_id, include_top_level_description=True)
     except Exception as e:
-        logger.error(f"Failed to fetch space {space_id}: {e}")
-        raise ValueError(f"Cannot scan space {space_id}: {e}")
+        logger.error(f"Failed to fetch agent {space_id}: {e}")
+        raise ValueError(f"Cannot scan agent {space_id}: {e}")
 
     # Enrich with UC descriptions so checks 2-3 reflect upstream metadata (#62)
     try:

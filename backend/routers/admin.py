@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/admin")
 
 
 def _list_genie_spaces_safe() -> list[dict]:
-    """Fetch all Genie Spaces, returning empty list on failure (non-critical for admin views)."""
+    """Fetch all Genie Agents, returning empty list on failure (non-critical for admin views)."""
     try:
         return list_genie_spaces()
     except Exception as e:

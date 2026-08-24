@@ -1,20 +1,16 @@
-"""
-Benchmark management — loading, validation, splitting, and corrections.
-
-Benchmarks are stored as MLflow evaluation datasets in UC (no YAML files).
-"""
+"""Benchmark loading, Delta persistence, validation, and normalization."""
 
 from __future__ import annotations
 
 import hashlib
 import io
 import logging
-import random
 import re as _re
 from contextlib import contextmanager
 from typing import Any
 
-from genie_space_optimizer.common.config import HELD_OUT_RATIO, TEMPLATE_VARIABLES
+from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT, TEMPLATE_VARIABLES
+from genie_space_optimizer.common.delta_helpers import retry_delta_write
 from genie_space_optimizer.common.genie_client import detect_asset_type
 
 logger = logging.getLogger(__name__)
@@ -149,13 +145,7 @@ def fix_mv_alias_sort_collision(sql: str) -> str:
 
 
 def _normalize_benchmark_row(row: dict) -> dict:
-    """Flatten MLflow evaluation dataset nested structs to a flat benchmark dict.
-
-    MLflow ``genai.datasets`` stores records as ``{inputs: {...}, expectations: {...}}``.
-    All downstream consumers expect flat dicts with top-level ``question``,
-    ``expected_sql``, ``id``, etc.  This function handles both formats so the
-    loader is resilient to schema changes.
-    """
+    """Flatten the persisted ``inputs``/``expectations`` structs."""
     if "inputs" not in row and "expectations" not in row:
         return row
 
@@ -178,6 +168,13 @@ def _normalize_benchmark_row(row: dict) -> dict:
 
     if flat.get("question_id") and not flat.get("id"):
         flat["id"] = flat["question_id"]
+    # The QC publisher reconciles persisted handoff question IDs to native
+    # Genie benchmark IDs. Native IDs are 32 lowercase hex characters; only
+    # promote IDs with that shape so legacy/internal corpus IDs do not get
+    # misrepresented as live IDs.
+    question_id = str(flat.get("question_id") or "")
+    if _re.fullmatch(r"[0-9a-f]{32}", question_id):
+        flat["space_question_id"] = question_id
 
     for k, v in row.items():
         if k not in ("inputs", "expectations") and k not in flat:
@@ -186,19 +183,19 @@ def _normalize_benchmark_row(row: dict) -> dict:
     return flat
 
 
-def load_benchmarks_from_dataset(
+def load_benchmark_corpus(
     spark_or_dataset: Any,
     uc_schema: str,
     domain: str,
     _max_retries: int = 3,
 ) -> list[dict]:
-    """Load benchmarks from an MLflow evaluation dataset in UC.
+    """Load the benchmark corpus directly from its Unity Catalog Delta table.
 
     Table name convention: ``{uc_schema}.genie_benchmarks_{domain}``.
 
     Issues ``REFRESH TABLE`` before reading to avoid
     ``DELTA_SCHEMA_CHANGE_SINCE_ANALYSIS`` when the table was recently
-    dropped and recreated by the preflight task.
+    overwritten by the benchmark-QC task.
 
     Args:
         spark_or_dataset: A Spark session or a pre-loaded DataFrame/list.
@@ -211,8 +208,17 @@ def load_benchmarks_from_dataset(
     """
     table_name = f"{uc_schema}.genie_benchmarks_{domain}"
 
+    def _finalize(benchmarks: list[dict]) -> list[dict]:
+        deduped, rejected = deduplicate_benchmark_corpus(benchmarks)
+        if rejected:
+            logger.warning(
+                "Dropped %d duplicate benchmark row(s) while loading %s",
+                len(rejected), table_name,
+            )
+        return benchmark_corpus_for_optimization(deduped[:MAX_BENCHMARK_COUNT])
+
     if isinstance(spark_or_dataset, list):
-        return spark_or_dataset
+        return _finalize(spark_or_dataset)
 
     try:
         if hasattr(spark_or_dataset, "read"):
@@ -225,11 +231,8 @@ def load_benchmarks_from_dataset(
                     rows = df.collect()
                     benchmarks = [_normalize_benchmark_row(r.asDict(recursive=True)) for r in rows]
                     if rows and "inputs" in (rows[0].asDict()):
-                        logger.debug("Normalized %d benchmark rows from nested MLflow format", len(rows))
-                    from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
-                    if len(benchmarks) > MAX_BENCHMARK_COUNT:
-                        benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
-                    return benchmarks
+                        logger.debug("Normalized %d benchmark rows from nested Delta format", len(rows))
+                    return _finalize(benchmarks)
                 except Exception as read_err:
                     err_msg = str(read_err)
                     if "DELTA_SCHEMA_CHANGE_SINCE_ANALYSIS" in err_msg and attempt < _max_retries - 1:
@@ -246,10 +249,7 @@ def load_benchmarks_from_dataset(
             df = spark_or_dataset
             rows = df.collect()
             benchmarks = [_normalize_benchmark_row(r.asDict(recursive=True)) for r in rows]
-            from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
-            if len(benchmarks) > MAX_BENCHMARK_COUNT:
-                benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
-            return benchmarks
+            return _finalize(benchmarks)
     except Exception:
         logger.exception("Failed to load benchmarks from %s", table_name)
         return []
@@ -272,8 +272,8 @@ def assert_benchmark_handoff_visible(
         "Benchmark handoff mismatch before evaluation: "
         f"preflight published {expected_total} benchmark(s) for domain={domain}, "
         f"but baseline loaded {actual_total} from {table_name}. "
-        "This usually means the UC evaluation dataset table is stale or merge_records "
-        "has not become visible. Retry the load or fail before mlflow.genai.evaluate."
+        "This usually means the UC Delta benchmark table is stale or its overwrite "
+        "has not become visible. Retry the load before starting the official Genie eval run."
     )
 
 
@@ -326,7 +326,7 @@ def _verify_table_exists(
         return True, ""
     try:
         if w and warehouse_id:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 _execute_sql_via_warehouse,
             )
             _execute_sql_via_warehouse(
@@ -363,7 +363,7 @@ def _resolve_params_with_defaults(
     if not parameters:
         return sql, False
 
-    from genie_space_optimizer.optimization.evaluation import _extract_sql_params
+    from genie_space_optimizer.optimization.benchmarking import _extract_sql_params
 
     params_in_sql = _extract_sql_params(sql)
     if not params_in_sql:
@@ -431,7 +431,7 @@ def validate_ground_truth_sql(
         return False, "Empty SQL"
     resolved = fix_mv_alias_sort_collision(resolved)
 
-    from genie_space_optimizer.optimization.evaluation import _extract_sql_params
+    from genie_space_optimizer.optimization.benchmarking import _extract_sql_params
 
     _params = _extract_sql_params(resolved)
     if _params:
@@ -454,7 +454,7 @@ def validate_ground_truth_sql(
 
     try:
         if w and warehouse_id:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 _execute_sql_via_warehouse,
             )
             explain_df = _execute_sql_via_warehouse(
@@ -501,7 +501,7 @@ def validate_ground_truth_sql(
             #       handles the case where Spark collapses the
             #       failure into a plain UNRESOLVED_COLUMN while
             #       still being a measure issue.
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 metric_view_error_kind,
             )
 
@@ -575,7 +575,7 @@ def validate_ground_truth_sql(
     if execute:
         if w and warehouse_id:
             try:
-                from genie_space_optimizer.optimization.evaluation import (
+                from genie_space_optimizer.optimization.benchmarking import (
                     _execute_sql_via_warehouse,
                 )
                 result_df = _execute_sql_via_warehouse(
@@ -724,13 +724,7 @@ def validate_question_sql_alignment(
         )
 
         try:
-            from genie_space_optimizer.optimization.evaluation import (
-                _link_prompt_to_trace,
-                get_registered_prompt_name,
-            )
             from genie_space_optimizer.optimization.llm_client import call_llm
-
-            _link_prompt_to_trace(get_registered_prompt_name("benchmark_alignment_check"))
 
             raw, _response = call_llm(
                 None,
@@ -866,7 +860,7 @@ def validate_predicate_values(
         profile_lower[norm_key] = {"columns": cols_lower}
 
     results: list[dict] = []
-    for b in benchmarks:
+    for b in benchmark_corpus_for_optimization(benchmarks):
         sql = b.get("expected_sql", "")
         question = b.get("question", "")
         if not sql or not sql.strip():
@@ -973,7 +967,7 @@ def validate_gt_returns_results(
 
     Returns a list of ``{question, has_results, row_count, error}`` dicts.
     """
-    from genie_space_optimizer.optimization.evaluation import _exec_sql
+    from genie_space_optimizer.optimization.benchmarking import _exec_sql
 
     _sql_kw: dict[str, Any] = dict(w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema)
     results: list[dict] = []
@@ -1020,68 +1014,217 @@ def validate_gt_returns_results(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3. Train/Held-Out Split
+# 3. Benchmark Corpus Normalization
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def benchmark_corpus_for_optimization(benchmarks: list[dict] | None) -> list[dict]:
+    """Return the V2 optimization corpus: every validated benchmark question.
+
+    Legacy rows may still carry ``split=train`` / ``split=held_out`` from older
+    runs. V2 treats the whole benchmark set as held out by nature, so monitoring
+    and evaluation handoffs must ignore those labels.
+    """
+    corpus: list[dict] = []
+    for benchmark in benchmarks or []:
+        normalized = dict(benchmark)
+        normalized["split"] = "full"
+        corpus.append(normalized)
+    return corpus
+
+
+_USER_AUTHORED_SOURCES = frozenset({
+    "genie_benchmark",
+    "genie_space",
+    "sample_question",
+    "user",
+    "user_authored",
+})
+_CURATED_PROVENANCE = frozenset({"curated", "curated_sql_generated"})
+
+
+def normalize_benchmark_question(question: Any) -> str:
+    """Return the canonical exact-dedup key for a benchmark question."""
+    text = str(question or "").strip()
+    prefix = "[auto-optimize] "
+    if text.casefold().startswith(prefix):
+        text = text[len(prefix):]
+    return _re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _benchmark_id(benchmark: dict) -> str:
+    return str(benchmark.get("id") or benchmark.get("question_id") or "")
+
+
+def live_benchmark_question_id(benchmark: dict) -> str:
+    """Return the native live question ID, or empty for candidate-only rows.
+
+    Synthetic repair/generation candidates also have stable internal IDs, but
+    those IDs never existed in ``serialized_space.benchmarks.questions`` and
+    must not be represented as live benchmark mutations or exclusions.
+    """
+    explicit_id = str(
+        benchmark.get("space_question_id")
+        or benchmark.get("genie_question_id")
+        or benchmark.get("benchmark_question_id")
+        or ""
+    ).strip()
+    if explicit_id:
+        return explicit_id
+    if str(benchmark.get("source") or "").strip().casefold() == "genie_benchmark":
+        return _benchmark_id(benchmark).strip()
+    return ""
+
+
+def _duplicate_retention_priority(benchmark: dict, index: int) -> tuple[int, int, int, int]:
+    """Rank duplicate candidates without changing stable input ordering."""
+    source = str(benchmark.get("source") or "").strip().casefold()
+    provenance = str(benchmark.get("provenance") or "").strip().casefold()
+    priority = str(benchmark.get("priority") or "").strip().upper()
+    status = str(benchmark.get("validation_status") or "").strip().casefold()
+    has_valid_sql = bool(str(benchmark.get("expected_sql") or "").strip()) and status == "valid"
+    user_authored = source in _USER_AUTHORED_SOURCES
+    curated_or_p0 = provenance in _CURATED_PROVENANCE or priority == "P0"
+    return (
+        int(user_authored),
+        int(has_valid_sql),
+        int(curated_or_p0),
+        -index,
+    )
+
+
+def deduplicate_benchmark_corpus(
+    benchmarks: list[dict] | None,
+) -> tuple[list[dict], list[dict]]:
+    """Keep one deterministic winner per normalized question.
+
+    Winner priority is user/Genie-authored, then SQL-valid, then curated/P0,
+    then stable input order. Rejected rows carry the retained question id and
+    normalized key so callers can persist useful provenance.
+    """
+    rows = [dict(row) for row in benchmarks or []]
+    grouped: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        key = normalize_benchmark_question(row.get("question"))
+        if key:
+            grouped.setdefault(key, []).append(index)
+
+    winner_by_key = {
+        key: max(indices, key=lambda index: _duplicate_retention_priority(rows[index], index))
+        for key, indices in grouped.items()
+    }
+    winner_indices = set(winner_by_key.values())
+    retained = [
+        row
+        for index, row in enumerate(rows)
+        if index in winner_indices
+        or not normalize_benchmark_question(row.get("question"))
+    ]
+    rejected: list[dict] = []
+    for key, indices in grouped.items():
+        winner_index = winner_by_key[key]
+        retained_id = _benchmark_id(rows[winner_index])
+        for index in indices:
+            if index == winner_index:
+                continue
+            duplicate = dict(rows[index])
+            duplicate["validation_status"] = "excluded"
+            duplicate["validation_reason_code"] = "duplicate_normalized_question"
+            duplicate["validation_error"] = (
+                "Duplicate normalized question; retained "
+                f"question_id={retained_id or '(missing)'}"
+            )
+            duplicate["duplicate_retained_question_id"] = retained_id
+            duplicate["duplicate_normalized_question"] = key
+            rejected.append(duplicate)
+
+    if rejected:
+        logger.warning(
+            "Rejected %d duplicate benchmark candidate(s) by normalized question",
+            len(rejected),
+        )
+    return retained, rejected
+
+
+def duplicate_rejection_mutations(rejected: list[dict]) -> list[dict]:
+    """Build exclusion ledger rows only for duplicates that existed live."""
+    return [
+        {
+            "question_id": live_benchmark_question_id(duplicate),
+            "op": "excluded",
+            "before": {
+                "question": duplicate.get("question", ""),
+                "sql": duplicate.get("expected_sql", ""),
+                "retained_question_id": duplicate.get(
+                    "duplicate_retained_question_id", "",
+                ),
+                "normalized_question": duplicate.get(
+                    "duplicate_normalized_question", "",
+                ),
+            },
+            # Exclusion is non-mutating: the live state is unchanged.
+            "after": {
+                "question": duplicate.get("question", ""),
+                "sql": duplicate.get("expected_sql", ""),
+                "retained_question_id": duplicate.get(
+                    "duplicate_retained_question_id", "",
+                ),
+                "normalized_question": duplicate.get(
+                    "duplicate_normalized_question", "",
+                ),
+            },
+            "reason": "duplicate_normalized_question",
+        }
+        for duplicate in rejected
+        if live_benchmark_question_id(duplicate)
+    ]
 
 
 def assign_splits(
     benchmarks: list[dict],
-    train_ratio: float = 1.0 - HELD_OUT_RATIO,
+    train_ratio: float = 1.0,
     seed: int = 42,
 ) -> list[dict]:
-    """Assign ``split`` field using deterministic random sampling.
-
-    Split assignment is intentionally independent of benchmark provenance.
-    User-authored, sample-derived, synthetic, and gap-fill questions all
-    participate in the same random split so the held-out set is a real random
-    sample of the final validated corpus.
-    """
-    from genie_space_optimizer.common.config import (
-        MIN_HELD_OUT_BENCHMARK_COUNT,
-        MIN_TRAIN_BENCHMARK_COUNT,
-    )
-
-    n = len(benchmarks)
-    if n == 0:
-        return benchmarks
-    if n == 1:
-        benchmarks[0]["split"] = "train"
-        return benchmarks
-
-    if n >= MIN_TRAIN_BENCHMARK_COUNT + MIN_HELD_OUT_BENCHMARK_COUNT:
-        held_out_count = MIN_HELD_OUT_BENCHMARK_COUNT
-    else:
-        held_out_count = max(1, min(n - 1, int(round(n * (1.0 - train_ratio)))))
-
-    indices = list(range(n))
-    rng = random.Random(seed)
-    rng.shuffle(indices)
-    held_out_indices = set(indices[:held_out_count])
-
-    for i, benchmark in enumerate(benchmarks):
-        benchmark["split"] = "held_out" if i in held_out_indices else "train"
-
+    """Compatibility wrapper for the V2 no-split benchmark contract."""
+    _ = (train_ratio, seed)
+    for benchmark in benchmarks:
+        benchmark["split"] = "full"
     return benchmarks
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4. MLflow Record Building
+# 4. Delta Handoff Record Building
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def build_eval_records(benchmarks: list[dict]) -> list[dict]:
-    """Convert benchmarks to MLflow evaluation record format.
+def build_benchmark_handoff_records(
+    benchmarks: list[dict],
+    *,
+    space_id: str = "",
+    catalog: str = "",
+    gold_schema: str = "",
+) -> list[dict]:
+    """Convert benchmarks to the stable nested Delta handoff schema.
 
-    Each record has ``inputs`` (question, question_id) and ``expectations``
-    (expected_sql, expected_asset, expected_facts, required_tables, etc.).
+    Each record has ``inputs`` (question, question_id, expected_sql) and
+    ``expectations`` (expected_response, expected_asset, required tables, etc.).
     """
     _VALID_ASSET_TYPES = frozenset({"MV", "TVF", "TABLE"})
+
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if item is not None]
+
     records: list[dict] = []
-    for b in benchmarks:
+    for b in benchmark_corpus_for_optimization(benchmarks):
         question = b.get("question", "")
-        qid = b.get("question_id") or hashlib.md5(
-            question.encode()
-        ).hexdigest()[:8]
+        qid = (
+            b.get("space_question_id")
+            or b.get("id")
+            or b.get("question_id")
+            or hashlib.md5(question.encode()).hexdigest()[:8]
+        )
 
         _raw_asset = b.get("expected_asset", "TABLE")
         _esql = b.get("expected_sql", "")
@@ -1094,221 +1237,131 @@ def build_eval_records(benchmarks: list[dict]) -> list[dict]:
         records.append(
             {
                 "inputs": {
-                    "question": question,
-                    "question_id": qid,
+                    "question": str(question or ""),
+                    "question_id": str(qid or ""),
+                    "space_id": str(space_id or ""),
+                    "expected_sql": str(b.get("expected_sql") or ""),
+                    "catalog": str(catalog or ""),
+                    "gold_schema": str(gold_schema or ""),
+                    "order_sensitive": bool(b.get("order_sensitive", False)),
                 },
                 "expectations": {
-                    "expected_sql": b.get("expected_sql", ""),
+                    "expected_response": str(b.get("expected_sql") or ""),
                     "expected_asset": _asset,
-                    "expected_facts": b.get("expected_facts", []),
-                    "required_tables": b.get("required_tables", []),
-                    "required_columns": b.get("required_columns", []),
-                    "category": b.get("category", ""),
-                    "split": b.get("split", "train"),
+                    "expected_facts": _string_list(b.get("expected_facts")),
+                    "required_tables": _string_list(b.get("required_tables")),
+                    "required_columns": _string_list(b.get("required_columns")),
+                    "category": str(b.get("category") or ""),
+                    "source": str(b.get("source") or ""),
+                    "provenance": str(b.get("provenance") or ""),
+                    "validation_status": str(b.get("validation_status") or ""),
+                    "validation_reason_code": str(b.get("validation_reason_code") or ""),
+                    "validation_error": (
+                        str(b.get("validation_error"))
+                        if b.get("validation_error") is not None
+                        else None
+                    ),
+                    "correction_source": str(b.get("correction_source") or ""),
+                    "temporal_stale": bool(b.get("temporal_stale", False)),
+                    "asset_fingerprint": str(b.get("asset_fingerprint") or ""),
+                    "split": str(b.get("split") or "full"),
                 },
             }
         )
     return records
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# 5. Corrections
-# ═══════════════════════════════════════════════════════════════════════
-
-
-_CORRECTABLE_VERDICTS = {"genie_correct", "arbiter_repair"}
-
-
-def apply_benchmark_corrections(
-    corrections: list[dict],
+def persist_benchmark_corpus(
     spark: Any,
+    benchmarks: list[dict],
     uc_schema: str,
     domain: str,
     *,
-    w: Any = None,
-    warehouse_id: str = "",
-    data_profile: dict | None = None,
-) -> dict:
-    """Apply arbiter corrections to the MLflow evaluation dataset.
-
-    Each correction dict should have:
-    - ``question``: the benchmark question to correct
-    - ``new_expected_sql``: the corrected SQL
-    - ``verdict``: ``genie_correct`` or ``arbiter_repair``
-
-    Before applying, validates:
-    1. Syntactic validity (EXPLAIN)
-    2. Semantic alignment with the question (LLM check)
-    3. Predicate values against data profile (if available)
-
-    Returns ``{applied: int, skipped: int, errors: list[str]}``.
-    """
-    table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-    applied = 0
-    skipped = 0
-    errors: list[str] = []
-
-    for c in corrections:
-        question = c.get("question", "")
-        new_sql = c.get("new_expected_sql", "")
-        verdict = c.get("verdict", "")
-
-        if verdict not in _CORRECTABLE_VERDICTS:
-            skipped += 1
-            continue
-
-        if not new_sql:
-            errors.append(f"Empty new_expected_sql for question: {question[:50]}")
-            skipped += 1
-            continue
-
-        is_valid, val_err = validate_ground_truth_sql(
-            new_sql, spark, execute=True, w=w, warehouse_id=warehouse_id,
+    space_id: str = "",
+    catalog: str = "",
+    gold_schema: str = "",
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+) -> dict[str, Any]:
+    """Atomically overwrite the run handoff table using Spark/Delta only."""
+    deduped, rejected_duplicates = deduplicate_benchmark_corpus(benchmarks)
+    if len(deduped) > max_benchmark_count:
+        logger.warning(
+            "Truncated benchmark Delta handoff from %d to %d rows",
+            len(deduped), max_benchmark_count,
         )
-        if not is_valid:
-            errors.append(
-                f"Correction SQL invalid for '{question[:50]}': {val_err[:200]}"
-            )
-            logger.warning(
-                "Skipping arbiter correction — SQL fails validation: %s — %s",
-                question[:60], val_err[:200],
-            )
-            skipped += 1
-            continue
-
-        try:
-            alignment = validate_question_sql_alignment(
-                [{"question": question, "expected_sql": new_sql}]
-            )
-            if alignment and not alignment[0].get("aligned", True):
-                issues = "; ".join(alignment[0].get("issues", []))
-                logger.warning(
-                    "Skipping arbiter correction — SQL misaligned with question: "
-                    "'%s' — issues: %s",
-                    question[:60], issues,
-                )
-                errors.append(
-                    f"Alignment mismatch for '{question[:50]}': {issues[:150]}"
-                )
-                skipped += 1
-                continue
-        except Exception:
-            logger.debug(
-                "Alignment check failed for correction, proceeding cautiously",
-                exc_info=True,
-            )
-
-        if data_profile:
-            try:
-                pred_results = validate_predicate_values(
-                    [{"question": question, "expected_sql": new_sql}],
-                    data_profile,
-                )
-                if pred_results and not pred_results[0]["valid"]:
-                    unfixable = [
-                        m for m in pred_results[0]["mismatches"]
-                        if not m.get("suggestion")
-                    ]
-                    if unfixable:
-                        mm_desc = "; ".join(
-                            f"{m['column']}='{m['literal']}'" for m in unfixable
-                        )
-                        logger.warning(
-                            "Skipping arbiter correction — predicate value "
-                            "mismatch: '%s' — %s",
-                            question[:60], mm_desc,
-                        )
-                        errors.append(
-                            f"Predicate mismatch for '{question[:50]}': {mm_desc[:150]}"
-                        )
-                        skipped += 1
-                        continue
-            except Exception:
-                logger.debug(
-                    "Predicate check failed for correction, proceeding cautiously",
-                    exc_info=True,
-                )
-
-        try:
-            escaped_sql = new_sql.replace("'", "\\'")
-            escaped_q = question.replace("'", "\\'")
-            spark.sql(
-                f"""
-                UPDATE {table_name}
-                SET expected_sql = '{escaped_sql}',
-                    corrected_by = 'arbiter',
-                    correction_verdict = '{verdict}'
-                WHERE question = '{escaped_q}'
-                """
-            )
-            applied += 1
-        except Exception as e:
-            errors.append(f"Failed to update '{question[:50]}': {e}")
-            skipped += 1
-
-    return {"applied": applied, "skipped": skipped, "errors": errors}
-
-
-def quarantine_benchmark_question(
-    spark: Any,
-    uc_schema: str,
-    domain: str,
-    question: str,
-    *,
-    reason: str = "",
-) -> bool:
-    """Quarantine a benchmark question by setting ``quarantined_at`` and ``quarantine_reason``.
-
-    Quarantined questions are excluded from the accuracy denominator so the
-    optimizer stops wasting lever budget on questions with broken ground truth.
-
-    The columns are added dynamically if they don't exist yet (safe for
-    existing tables that predate this feature).
-
-    Returns ``True`` if the row was updated, ``False`` otherwise.
-    """
-    table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-
-    for col, dtype in [("quarantined_at", "TIMESTAMP"), ("quarantine_reason", "STRING")]:
-        try:
-            spark.sql(f"ALTER TABLE {table_name} ADD COLUMN {col} {dtype}")
-        except Exception:
-            pass
-
-    escaped_q = question.replace("'", "\\'")
-    escaped_reason = reason.replace("'", "\\'")
-    try:
-        spark.sql(
-            f"""
-            UPDATE {table_name}
-            SET quarantined_at = CURRENT_TIMESTAMP(),
-                quarantine_reason = '{escaped_reason}'
-            WHERE question = '{escaped_q}'
-              AND quarantined_at IS NULL
-            """
+        deduped = deduped[:max_benchmark_count]
+    corpus = benchmark_corpus_for_optimization(deduped)
+    records = build_benchmark_handoff_records(
+        corpus,
+        space_id=space_id,
+        catalog=catalog,
+        gold_schema=gold_schema,
+    )
+    question_ids = [record["inputs"]["question_id"] for record in records]
+    if len(question_ids) != len(set(question_ids)):
+        raise RuntimeError(
+            f"Duplicate benchmark question_id values before Delta persistence: {question_ids}"
         )
-        return True
-    except Exception as e:
-        logger.warning("Failed to quarantine question '%s': %s", question[:60], e)
-        return False
 
-
-def get_quarantined_questions(
-    spark: Any,
-    uc_schema: str,
-    domain: str,
-) -> set[str]:
-    """Return the set of question IDs that are currently quarantined."""
+    # A DDL schema string works with classic Spark and Spark Connect while
+    # keeping this module importable in the lightweight offline test env.
+    schema = """
+        inputs STRUCT<
+            question_id: STRING,
+            question: STRING,
+            space_id: STRING,
+            expected_sql: STRING,
+            catalog: STRING,
+            gold_schema: STRING,
+            order_sensitive: BOOLEAN
+        >,
+        expectations STRUCT<
+            expected_response: STRING,
+            expected_asset: STRING,
+            expected_facts: ARRAY<STRING>,
+            required_tables: ARRAY<STRING>,
+            required_columns: ARRAY<STRING>,
+            category: STRING,
+            source: STRING,
+            provenance: STRING,
+            validation_status: STRING,
+            validation_reason_code: STRING,
+            validation_error: STRING,
+            correction_source: STRING,
+            temporal_stale: BOOLEAN,
+            asset_fingerprint: STRING,
+            split: STRING
+        >
+    """
+    frame = spark.createDataFrame(records, schema=schema)
     table_name = f"{uc_schema}.genie_benchmarks_{domain}"
-    try:
-        df = spark.sql(
-            f"SELECT question_id FROM {table_name} WHERE quarantined_at IS NOT NULL"
-        ).toPandas()
-        return set(df["question_id"].dropna().astype(str).tolist())
-    except Exception:
-        return set()
+    quoted_table_name = _quote_identifier_fqn(table_name)
+
+    def _overwrite() -> None:
+        (
+            frame.write
+            .format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .saveAsTable(quoted_table_name)
+        )
+
+    retry_delta_write(
+        _overwrite,
+        operation_name="benchmark_corpus.overwrite",
+        table_name=table_name,
+    )
+    logger.info("Persisted %d benchmark rows directly to %s", len(records), table_name)
+    return {
+        "table_name": table_name,
+        "input_count": len(benchmarks),
+        "record_count": len(records),
+        "unique_question_id_count": len(set(question_ids)),
+        "rejected_duplicates": rejected_duplicates,
+    }
 
 
+# ═══════════════════════════════════════════════════════════════════════
 # ── SQL Snippet Validation (Lever 6) ──────────────────────────────────
 
 
@@ -1339,6 +1392,57 @@ def _extract_primary_table(sql: str, metadata_snapshot: dict) -> str | None:
         return next(iter(table_ids.values()))
 
     return None
+
+
+def _primary_table_for_snippet(
+    sql: str,
+    metadata_snapshot: dict,
+    *,
+    target_table: str = "",
+) -> str | None:
+    """Resolve the table a snippet expression should be validated against.
+
+    A bare snippet expression (``PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY
+    amount_usd)``) has no ``FROM`` and no table reference by design, so
+    :func:`_extract_primary_table`'s text-scan finds nothing and silently
+    falls back to the FIRST table in the space. When the LLM patch already
+    tells us the table (``target_table``), that guess is both unnecessary and
+    frequently wrong (it qualifies columns against — and EXPLAINs against —
+    the wrong table, so every correct snippet is rejected).
+
+    Prefer the caller-supplied ``target_table`` hint: match it against the
+    snapshot's data_sources by fully-qualified or short name and return the
+    snapshot's canonical identifier. If the hint doesn't match any known
+    source, return it verbatim (the caller was explicit; let the downstream
+    EXPLAIN surface a real error rather than silently validating the wrong
+    table). Fall back to :func:`_extract_primary_table` only when no hint is
+    given — preserving behavior for callers (proactive seeding, cluster
+    synthesis) that don't pass one.
+    """
+    hint = str(target_table or "").strip()
+    if not hint:
+        return _extract_primary_table(sql, metadata_snapshot)
+
+    ds = metadata_snapshot.get("data_sources", {})
+    all_sources: list = []
+    if isinstance(ds, dict):
+        all_sources.extend(ds.get("tables", []) or [])
+        all_sources.extend(ds.get("metric_views", []) or [])
+    table_ids = {
+        t.get("identifier", "").lower(): t.get("identifier", "")
+        for t in all_sources
+        if isinstance(t, dict) and t.get("identifier")
+    }
+
+    hint_lower = hint.lower()
+    if hint_lower in table_ids:
+        return table_ids[hint_lower]
+    hint_short = hint_lower.split(".")[-1]
+    for tid_lower, tid in table_ids.items():
+        if tid_lower.split(".")[-1] == hint_short:
+            return tid
+    # Explicit hint that matched nothing in the snapshot — trust it verbatim.
+    return hint
 
 
 def _resolve_primary_table_fqn(
@@ -1583,6 +1687,7 @@ def normalize_sql_snippet(
     spark: Any = None,
     w: Any = None,
     warehouse_id: str = "",
+    target_table: str = "",
 ) -> tuple[str, list[str]]:
     """Return the stored form of a SQL snippet: strip wrappers, FQ-prefix, EXPLAIN.
 
@@ -1626,8 +1731,14 @@ def normalize_sql_snippet(
         if upper.startswith("WHERE "):
             cleaned = cleaned[6:].lstrip()
 
-    # Locate the primary table so we can FQ-prefix.
-    table = _extract_primary_table(cleaned, metadata_snapshot)
+    # Locate the primary table so we can FQ-prefix. A caller-supplied
+    # ``target_table`` (the snippet patch's authored table) takes precedence
+    # over scanning the bare expression text — a bare expression names no
+    # table, so the scan would otherwise fall back to the first table in the
+    # space and prefix columns against the wrong table.
+    table = _primary_table_for_snippet(
+        cleaned, metadata_snapshot, target_table=target_table,
+    )
     if not table:
         warnings.append("cannot determine primary table; skipping FQ-prefix")
         prefixed_sql = cleaned
@@ -1650,7 +1761,7 @@ def normalize_sql_snippet(
             wrapped = f"SELECT {prefixed_sql} FROM {resolved_table} LIMIT 1"
         try:
             if w and warehouse_id:
-                from genie_space_optimizer.optimization.evaluation import (
+                from genie_space_optimizer.optimization.benchmarking import (
                     _execute_sql_via_warehouse,
                 )
                 _execute_sql_via_warehouse(
@@ -1731,6 +1842,7 @@ def validate_sql_snippet(
     gold_schema: str = "",
     w: Any = None,
     warehouse_id: str = "",
+    target_table: str = "",
 ) -> tuple[bool, str, str]:
     """Validate a SQL snippet: normalize + EXPLAIN + execute.
 
@@ -1758,13 +1870,23 @@ def validate_sql_snippet(
       total`` (the filter restricts nothing). If the table is empty
       (``total == 0``) we skip the check — emptiness cannot prove vacuity.
 
+    ``target_table`` is the table the snippet is authored against (the
+    ``target_table`` field on an ``add_sql_snippet_*`` patch). When supplied it
+    is used as the primary table for both FQ-column prefixing and the EXPLAIN
+    wrapper, bypassing :func:`_extract_primary_table`'s text-scan+first-table
+    fallback — a bare expression names no table, so that fallback would
+    otherwise validate against the wrong (first) table in the space. Omit it to
+    preserve the legacy scan-based behavior.
+
     Returns ``(is_valid, error_message, prefixed_sql)`` — callers should
     use ``prefixed_sql`` (the 3rd element) when storing the snippet so
     the FQ form is persisted.
     """
     from genie_space_optimizer.common.config import REJECT_VACUOUS_FILTERS
 
-    table = _extract_primary_table(sql, metadata_snapshot)
+    table = _primary_table_for_snippet(
+        sql, metadata_snapshot, target_table=target_table,
+    )
     if not table:
         return False, "Cannot determine primary table for SQL snippet", sql
 
@@ -1772,6 +1894,7 @@ def validate_sql_snippet(
         sql, snippet_type, metadata_snapshot,
         catalog=catalog, gold_schema=gold_schema,
         spark=spark, w=w, warehouse_id=warehouse_id,
+        target_table=target_table,
     )
     # ``normalize_sql_snippet`` surfaces EXPLAIN failures via warnings.
     for warning in warnings:
@@ -1797,7 +1920,7 @@ def validate_sql_snippet(
 
     def _run_sql(statement: str) -> Any:
         if w and warehouse_id:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 _execute_sql_via_warehouse,
             )
             return _execute_sql_via_warehouse(
@@ -1860,7 +1983,7 @@ def validate_sql_snippet(
                 prefixed_sql,
             )
         try:
-            from genie_space_optimizer.optimization.evaluation import (
+            from genie_space_optimizer.optimization.benchmarking import (
                 is_metric_view_error,
             )
             if is_metric_view_error(_msg):

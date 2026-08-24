@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from databricks.sdk import WorkspaceClient
 
@@ -12,6 +13,8 @@ from backend.services.llm_utils import get_llm_model
 logger = logging.getLogger(__name__)
 
 _CURATED_COMPATIBLE_CHAT_MODELS: tuple[tuple[str, str], ...] = (
+    ("databricks-claude-opus-5", "Claude Opus 5"),
+    ("databricks-claude-sonnet-5", "Claude Sonnet 5"),
     ("databricks-claude-opus-4-8", "Claude Opus 4.8"),
     ("databricks-claude-opus-4-7", "Claude Opus 4.7"),
     ("databricks-claude-sonnet-4-6", "Claude Sonnet 4.6"),
@@ -23,6 +26,15 @@ _CURATED_COMPATIBLE_CHAT_MODELS: tuple[tuple[str, str], ...] = (
 _CURATED_COMPATIBLE_CHAT_MODEL_NAMES = {
     name for name, _display_name in _CURATED_COMPATIBLE_CHAT_MODELS
 }
+
+
+def _optimizer_prompt_budget_chars() -> int:
+    raw = os.getenv("GSO_OPTIMIZER_PROMPT_MAX_CHARS", "60000").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("Invalid GSO_OPTIMIZER_PROMPT_MAX_CHARS=%r; using 60000", raw)
+        return 60_000
 
 
 class ModelCatalogError(RuntimeError):
@@ -46,6 +58,8 @@ def _curated_model_infos(default_model: str) -> list[LLMModelInfo]:
             name=name,
             displayName=display_name,
             isDefault=name == default_model,
+            optimizerPromptBudgetChars=_optimizer_prompt_budget_chars(),
+            contextTier="long",
         )
         for name, display_name in _CURATED_COMPATIBLE_CHAT_MODELS
     ]

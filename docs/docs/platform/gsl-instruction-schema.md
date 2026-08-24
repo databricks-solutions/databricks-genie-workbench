@@ -44,8 +44,12 @@ sections** — do not leave an empty header.
 - **Blank line between sections.**
 - **No SQL inside bullets.** SQL goes in `sql_snippets` (reusable
   expressions and measures) or `example_question_sqls` (full query
-  patterns). This is the scanner's rule — see `_SQL_IN_TEXT_RE` in
-  `backend/services/scanner.py`.
+  patterns). The detector is structure-aware (scanner v2) — natural-language
+  prose like "Do not join X to Y" or "Where applicable" is NOT flagged; only
+  SQL with clause structure (`SELECT … FROM`, `WHERE ident op`,
+  `JOIN ident ON`, `GROUP BY col`, etc.) triggers the check. Source:
+  `looks_like_sql_in_prose` / `sql_in_text_findings` in
+  `packages/genie-space-optimizer/src/genie_space_optimizer/iq_scan/scoring.py`.
 - **Keep total content ≤ 2,000 characters** — the IQ Scanner's soft
   threshold in check #4 (text-instructions length). Longer blocks push
   out higher-value SQL context in the Genie prompt window.
@@ -117,7 +121,7 @@ shared Python module) is tracked in epic #173.
 ## References
 
 - Databricks best practices: https://docs.databricks.com/aws/en/genie/best-practices
-- Genie Space serialized schema: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field
+- Genie Agent serialized schema: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field
 - Near-term epic: #87 (this doc + #89 Create Agent)
 - Full unification epic: #173 (Workbench 0.1)
 - IQ Scanner check this schema supports: `backend/services/scanner.py` check #4 (text-instructions length + SQL-in-text)

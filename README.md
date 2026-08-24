@@ -1,12 +1,11 @@
 # Genie Workbench
 
-Genie Workbench is a Databricks App for creating, scoring, and optimizing Databricks Genie Spaces. It combines a FastAPI backend, React/Vite frontend, Databricks On-Behalf-Of auth, Lakebase persistence, and the Genie Space Optimizer (GSO) benchmark pipeline.
+Genie Workbench is a Databricks App for creating, scoring, and optimizing Databricks Genie Agents. It combines a FastAPI backend, React/Vite frontend, Databricks On-Behalf-Of auth, Lakebase persistence, and the Genie Space Optimizer (GSO) benchmark pipeline.
 
 Use it to:
 
-- Create Genie Spaces from business requirements and Unity Catalog data sources
-- Score Genie Space quality with an instant rule-based IQ scan
-- Apply quick fixes to existing spaces
+- Create Genie Agents from business requirements and Unity Catalog data sources
+- Score Genie Agent quality with an instant rule-based IQ scan
 - Run benchmark-driven optimization through the Auto-Optimize pipeline
 - Track scan history, starred spaces, sessions, and optimization state
 
@@ -18,14 +17,14 @@ The recommended install path is the Databricks notebook installer.
 
 1. Clone this repo into a Databricks Git folder.
 2. Open `notebooks/install.py`.
-3. Set the notebook widgets:
+3. Attach a Serverless compute session (environment v5).
+4. Set the notebook widgets:
    - `app_name`
    - `catalog`
    - `warehouse_id`
-   - `llm_model`
-   - `lakebase_mode`
+   - `lakebase_mode` (`create` / `existing` / `skip`)
    - `lakebase_project_name`
-4. Run the notebook from the top.
+5. Run the notebook from the top.
 
 The notebook uses notebook-native `WorkspaceClient()` auth, creates a generated deployment source folder under `/Workspace/Users/<you>/.genie-workbench-deploy/<app-name>/app`, patches `app.yaml` there, provisions UC/Lakebase/GSO resources, and deploys the Databricks App from that generated source. The Git folder remains unchanged.
 
@@ -50,6 +49,10 @@ For subsequent local terminal updates:
 
 Do not run `databricks bundle init`; this project already has its bundle configuration.
 
+## Demo Data
+
+If you do not have a dataset ready, `notebooks/demo-data/` includes standalone Databricks notebooks that generate synthetic Unity Catalog datasets for banking, healthcare, retail, SaaS churn, talent advisory, and wind turbine maintenance demos. See [notebooks/demo-data/README.md](notebooks/demo-data/README.md) for the available schemas, configuration variables, and permissions.
+
 ## Prerequisites
 
 Notebook installer:
@@ -67,7 +70,7 @@ Local terminal installer additionally requires:
 - uv
 - Node.js and npm
 
-Auto-Optimize requires MLflow Prompt Registry to be enabled in the workspace. Lakebase is optional, but without it scan history, starred spaces, and agent sessions are stored in memory only.
+Lakebase is optional, but without it scan history, starred spaces, and agent sessions are stored in memory only.
 
 ### Installer permissions
 
@@ -79,8 +82,7 @@ The installer creates a Databricks App, UC schema/volume/tables, a Lakebase Auto
 - Lakebase Autoscaling project creation and ownership (to create the Postgres role and run database `GRANT`s)
 - Workspace files write for `databricks sync` and the MLflow experiment path
 - Jobs create entitlement and `CAN_MANAGE` on the GSO job
-- `CAN_MANAGE` on any Genie Spaces being granted to the app SP (optional step)
-- Workspace admin to enable MLflow Prompt Registry, if it is not already on
+- `CAN_MANAGE` on any Genie Agents being granted to the app SP (optional step)
 
 For the full entitlement list, see [Installer permissions](docs/docs/getting-started/deployment-guide.md#installer-permissions) and [Authentication & Permissions](docs/docs/platform/authentication.md).
 
@@ -105,9 +107,7 @@ This app runs only on Databricks Apps. Do not run a local `uvicorn` server for a
 Dependency lock files are the source of truth and should be committed when changed:
 
 - `uv.lock`
-- `packages/genie-space-optimizer/uv.lock`
 - `frontend/package-lock.json`
-- `packages/genie-space-optimizer/package-lock.json`
 
 Do not edit `requirements.txt` manually. It is generated from `uv.lock` and excluded from Databricks App deployment so the platform uses `uv sync` from `pyproject.toml` and `uv.lock`.
 

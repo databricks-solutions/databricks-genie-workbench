@@ -88,7 +88,7 @@ cycler==0.12.1
     # via matplotlib
 databricks-agents==1.9.3
     # via mlflow
-databricks-sdk==0.102.0
+databricks-sdk==0.117.0
     # via
     #   databricks-agents
     #   genie-space-optimizer
@@ -529,6 +529,7 @@ urllib3==2.6.3
     # via
     #   botocore
     #   databricks-agents
+    #   databricks-sdk
     #   docker
     #   requests
 uuid-utils==0.14.1

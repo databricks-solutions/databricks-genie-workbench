@@ -82,37 +82,31 @@ class TestScoreEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# Check 1: Data sources exist
+# Check 1: Agent description
 # ---------------------------------------------------------------------------
 
-class TestDataSourcesExist:
-    def test_no_tables(self, empty_space_data):
+class TestSpaceDescription:
+    def test_missing_description_fails(self, empty_space_data):
         result = calculate_score(empty_space_data)
-        check = _check_by_label(result, "Data sources exist")
+        check = _check_by_label(result, "Agent description")
         assert check["passed"] is False
 
-    def test_has_tables(self, full_space_data):
-        check = _check_by_label(calculate_score(full_space_data), "Data sources exist")
+    def test_meaningful_description_passes(self, full_space_data):
+        check = _check_by_label(calculate_score(full_space_data), "Agent description")
         assert check["passed"] is True
 
-    def test_metric_views_only_passes(self, metric_view_only_space):
-        check = _check_by_label(calculate_score(metric_view_only_space), "Data sources exist")
+    def test_short_but_meaningful_description_warns(self, full_space_data):
+        data = copy.deepcopy(full_space_data)
+        data["description"] = "Sales analytics space for finance teams."
+        check = _check_by_label(calculate_score(data), "Agent description")
         assert check["passed"] is True
-        assert "1 metric view(s)" in check["detail"]
+        assert check["severity"] == "warning"
 
-    def test_both_tables_and_metric_views(self):
-        data = {
-            "data_sources": {
-                "tables": [{"name": "t1", "columns": []}],
-                "metric_views": [{"identifier": "cat.sch.mv1"}],
-            },
-            "instructions": {},
-            "benchmarks": {},
-        }
-        check = _check_by_label(calculate_score(data), "Data sources exist")
-        assert check["passed"] is True
-        assert "1 table(s)" in check["detail"]
-        assert "1 metric view(s)" in check["detail"]
+    def test_placeholder_description_fails(self, full_space_data):
+        data = copy.deepcopy(full_space_data)
+        data["description"] = "TBD"
+        check = _check_by_label(calculate_score(data), "Agent description")
+        assert check["passed"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +122,7 @@ class TestTableDescriptions:
     def test_80_pct_boundary_pass(self):
         """4/5 = 80% should pass."""
         tables = [
-            {"name": f"t{i}", "description": f"desc{i}", "columns": []} for i in range(4)
+            {"name": f"t{i}", "description": f"Useful table description {i}", "columns": []} for i in range(4)
         ] + [{"name": "t4", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Table descriptions")
@@ -138,7 +132,7 @@ class TestTableDescriptions:
     def test_79_pct_boundary_fail(self):
         """3/4 = 75% should fail (below 80%)."""
         tables = [
-            {"name": f"t{i}", "description": f"desc{i}", "columns": []} for i in range(3)
+            {"name": f"t{i}", "description": f"Useful table description {i}", "columns": []} for i in range(3)
         ] + [{"name": "t3", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Table descriptions")
@@ -146,7 +140,7 @@ class TestTableDescriptions:
 
     def test_comment_counts_as_description(self):
         """Tables with 'comment' instead of 'description' should count."""
-        tables = [{"name": "t0", "comment": "has comment", "columns": []}]
+        tables = [{"name": "t0", "comment": "Useful table comment", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Table descriptions")
         assert check["passed"] is True
@@ -170,7 +164,7 @@ class TestColumnDescriptions:
     def test_50_pct_boundary_pass(self):
         """1/2 = 50% should pass."""
         tables = [{"name": "t", "columns": [
-            {"name": "a", "description": "desc"},
+            {"name": "a", "description": "Useful column description"},
             {"name": "b"},
         ]}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
@@ -180,7 +174,7 @@ class TestColumnDescriptions:
     def test_below_50_pct_fail(self):
         """1/3 = 33% should fail."""
         tables = [{"name": "t", "columns": [
-            {"name": "a", "description": "desc"},
+            {"name": "a", "description": "Useful column description"},
             {"name": "b"},
             {"name": "c"},
         ]}]
@@ -201,7 +195,7 @@ class TestColumnDescriptions:
     def test_column_configs_counted(self):
         """column_configs should be counted alongside columns."""
         tables = [{"name": "t", "columns": [], "column_configs": [
-            {"name": "a", "description": "desc"},
+            {"name": "a", "description": "Useful column description"},
             {"name": "b"},
         ]}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
@@ -289,20 +283,35 @@ class TestJoinSpecs:
         check = _check_by_label(calculate_score(full_space_data), "Join specifications")
         assert check["passed"] is True
 
-    def test_absent_multi_source_generates_finding(self):
+    def test_absent_multi_table_generates_finding(self):
         tables = [{"name": "t1", "columns": []}, {"name": "t2", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
-        assert "No join specifications for multi-source space" in result["findings"]
+        assert "No join specifications for multi-table agent" in result["findings"]
 
     def test_absent_single_table_no_finding(self):
         tables = [{"name": "t1", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
-        assert "No join specifications for multi-source space" not in result["findings"]
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert "No join specifications for multi-table agent" not in result["findings"]
 
-    def test_absent_with_table_and_metric_view(self):
-        """1 table + 1 metric view = 2 sources → finding generated."""
+    def test_partial_multi_table_join_coverage_warns(self):
+        tables = [{"name": f"t{i}", "columns": []} for i in range(3)]
+        data = {
+            "data_sources": {"tables": tables},
+            "instructions": {"join_specs": [{"id": "j1"}]},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert check["severity"] == "warning"
+        assert any("relationship coverage" in w for w in result["warnings"])
+
+    def test_absent_with_table_and_metric_view_passes(self):
+        """Metric views do not create a join-spec requirement."""
         data = {
             "data_sources": {
                 "tables": [{"name": "t1", "columns": []}],
@@ -312,7 +321,66 @@ class TestJoinSpecs:
             "benchmarks": {},
         }
         result = calculate_score(data)
-        assert "No join specifications for multi-source space" in result["findings"]
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert "No join specifications for multi-table agent" not in result["findings"]
+
+    def test_absent_with_multiple_metric_views_passes(self):
+        data = {
+            "data_sources": {
+                "tables": [],
+                "metric_views": [
+                    {"identifier": "cat.sch.mv1"},
+                    {"identifier": "cat.sch.mv2"},
+                    {"identifier": "cat.sch.mv3"},
+                ],
+            },
+            "instructions": {},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert check["detail"] == "0 join spec(s) for 0 table(s)"
+
+    def test_metric_views_do_not_hide_missing_table_joins(self):
+        data = {
+            "data_sources": {
+                "tables": [
+                    {"name": "t1", "columns": []},
+                    {"name": "t2", "columns": []},
+                ],
+                "metric_views": [{"identifier": "cat.sch.mv1"}],
+            },
+            "instructions": {},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is False
+        assert "No join specifications for multi-table agent" in result["findings"]
+
+    def test_metric_views_do_not_inflate_join_coverage_requirement(self):
+        data = {
+            "data_sources": {
+                "tables": [
+                    {"name": "t1", "columns": []},
+                    {"name": "t2", "columns": []},
+                    {"name": "t3", "columns": []},
+                ],
+                "metric_views": [
+                    {"identifier": "cat.sch.mv1"},
+                    {"identifier": "cat.sch.mv2"},
+                ],
+            },
+            "instructions": {"join_specs": [{"id": "j1"}, {"id": "j2"}]},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        check = _check_by_label(result, "Join specifications")
+        assert check["passed"] is True
+        assert check["severity"] == "pass"
+        assert check["detail"] == "2 join spec(s) for 3 table(s)"
 
 
 # ---------------------------------------------------------------------------
@@ -336,14 +404,14 @@ class TestTableCount:
         check = _check_by_label(calculate_score(data), "Data source count 1-12")
         assert check["passed"] is True
 
-    def test_9_tables_clean_pass(self):
+    def test_9_tables_passes_with_warning(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(9)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
         check = _check_by_label(result, "Data source count 1-12")
         assert check["passed"] is True
-        assert check["severity"] == "pass"
-        assert not any("focused rooms" in w for w in result["warnings"])
+        assert check["severity"] == "warning"
+        assert any("focused" in w for w in result["warnings"])
 
     def test_13_tables_fails(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(13)]
@@ -361,61 +429,48 @@ class TestTableCount:
 
 
 # ---------------------------------------------------------------------------
-# Check 7: 8+ example SQLs
+# Check 7: SQL guidance artifacts
 # ---------------------------------------------------------------------------
 
-class TestExampleSqls:
-    def test_0_examples_fails(self, empty_space_data):
-        check = _check_by_label(calculate_score(empty_space_data), "8+ example SQLs")
+class TestSqlGuidanceArtifacts:
+    def test_none_fails(self, empty_space_data):
+        check = _check_by_label(calculate_score(empty_space_data), "SQL guidance artifacts")
         assert check["passed"] is False
 
-    def test_7_examples_fails(self):
+    def test_one_example_sql_passes(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(7)]},
+                "instructions": {"example_question_sqls": [{"id": "1"}]},
                 "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
-        assert check["passed"] is False
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
+        assert check["passed"] is True
 
-    def test_8_examples_passes(self):
+    def test_sql_function_passes(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(8)]},
+                "instructions": {"sql_functions": [{"id": "f1"}]},
                 "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
+        assert check["passed"] is True
+
+    def test_sql_snippets_pass_with_missing_type_warning(self):
+        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
+                "instructions": {"sql_snippets": {"measures": [{"id": "m1"}]}},
+                "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
         assert check["passed"] is True
         assert check["severity"] == "warning"
 
-    def test_9_examples_warning_for_sweet_spot(self):
-        """8-9 examples pass but warn to reach the 10-15 target band."""
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(9)]},
-                "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
-        assert check["passed"] is True
-        assert check["severity"] == "warning"
-
-    def test_10_examples_clean_pass(self):
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(10)]},
-                "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+    def test_all_sql_guidance_types_pass_cleanly(self, full_space_data):
+        check = _check_by_label(calculate_score(full_space_data), "SQL guidance artifacts")
         assert check["passed"] is True
         assert check["severity"] == "pass"
 
-    def test_12_examples_clean_pass(self):
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(12)]},
-                "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
-        assert check["passed"] is True
-        assert check["severity"] == "pass"
-
-    def test_15_examples_no_warning(self):
+    def test_examples_with_usage_guidance_pass_cleanly(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
                 "instructions": {"example_question_sqls": [
-                    {"id": str(i), "usage_guidance": ["g"]} for i in range(15)
+                    {"id": str(i), "usage_guidance": ["Use for regional aggregation questions"]} for i in range(3)
                 ]},
                 "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+        check = _check_by_label(calculate_score(data), "SQL guidance artifacts")
         assert check["passed"] is True
         assert check["severity"] == "pass"
 
@@ -426,32 +481,6 @@ class TestExampleSqls:
                 "benchmarks": {}}
         result = calculate_score(data)
         assert any("lack usage_guidance" in w for w in result["warnings"])
-
-
-# ---------------------------------------------------------------------------
-# Check 8: SQL snippets
-# ---------------------------------------------------------------------------
-
-class TestSqlSnippets:
-    def test_none_fails(self, empty_space_data):
-        label = "SQL snippets (functions/expressions/measures/filters)"
-        check = _check_by_label(calculate_score(empty_space_data), label)
-        assert check["passed"] is False
-
-    def test_functions_only_passes_with_warning(self):
-        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
-                "instructions": {"sql_functions": [{"id": "f1"}]},
-                "benchmarks": {}}
-        label = "SQL snippets (functions/expressions/measures/filters)"
-        check = _check_by_label(calculate_score(data), label)
-        assert check["passed"] is True
-        assert check["severity"] == "warning"  # missing filters and measures
-
-    def test_all_types_pass(self, full_space_data):
-        label = "SQL snippets (functions/expressions/measures/filters)"
-        check = _check_by_label(calculate_score(full_space_data), label)
-        assert check["passed"] is True
-        assert check["severity"] == "pass"
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +524,7 @@ class TestEntityFormatMatching:
 
 
 # ---------------------------------------------------------------------------
-# Check 10: 10+ benchmark questions
+# Check 9: 10+ benchmark questions
 # ---------------------------------------------------------------------------
 
 class TestBenchmarks:
@@ -515,6 +544,56 @@ class TestBenchmarks:
                 "instructions": {},
                 "benchmarks": {"questions": [{"id": str(i)} for i in range(10)]}}
         check = _check_by_label(calculate_score(data), "10+ benchmark questions")
+        assert check["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Check 10: Column visibility / noise control
+# ---------------------------------------------------------------------------
+
+class TestColumnVisibilityNoiseControl:
+    def test_clean_small_schema_passes(self, full_space_data):
+        check = _check_by_label(calculate_score(full_space_data), "Column visibility / noise control")
+        assert check["passed"] is True
+        assert check["severity"] == "pass"
+
+    def test_noisy_large_schema_warns_at_15_pct(self):
+        cols = [{"name": f"business_col_{i}", "description": "Useful business column"} for i in range(17)]
+        cols += [{"name": "etl_batch_id"}, {"name": "raw_payload_json"}, {"name": "debug_flag"}]
+        data = {"data_sources": {"tables": [{"name": "t", "columns": cols}]}, "instructions": {}, "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Column visibility / noise control")
+        assert check["passed"] is True
+        assert check["severity"] == "warning"
+
+    def test_noisy_large_schema_fails_at_30_pct(self):
+        cols = [{"name": f"business_col_{i}", "description": "Useful business column"} for i in range(14)]
+        cols += [
+            {"name": "etl_batch_id"},
+            {"name": "raw_payload_json"},
+            {"name": "debug_flag"},
+            {"name": "audit_user"},
+            {"name": "col_1"},
+            {"name": "load_timestamp"},
+        ]
+        data = {"data_sources": {"tables": [{"name": "t", "columns": cols}]}, "instructions": {}, "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Column visibility / noise control")
+        assert check["passed"] is False
+        assert any("visible columns look internal/noisy" in f for f in result["findings"])
+
+    def test_excluded_noise_columns_do_not_count(self):
+        cols = [{"name": f"business_col_{i}", "description": "Useful business column"} for i in range(14)]
+        cols += [
+            {"name": "etl_batch_id", "exclude": True},
+            {"name": "raw_payload_json", "exclude": True},
+            {"name": "debug_flag", "exclude": True},
+            {"name": "audit_user", "exclude": True},
+            {"name": "col_1", "exclude": True},
+            {"name": "load_timestamp", "exclude": True},
+        ]
+        data = {"data_sources": {"tables": [{"name": "t", "columns": cols}]}, "instructions": {}, "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "Column visibility / noise control")
         assert check["passed"] is True
 
 
@@ -548,12 +627,12 @@ class TestOptimization:
 
 
 # ---------------------------------------------------------------------------
-# Check 9 addendum: Metric view entity matching
+# Check 8 addendum: Metric view entity matching
 # ---------------------------------------------------------------------------
 
 class TestMetricViewEntityMatching:
     def test_metric_view_entity_matching_counted(self):
-        """Metric view columns with entity matching should pass Check 9."""
+        """Metric view columns with entity matching should pass Check 8."""
         data = {
             "data_sources": {
                 "tables": [],
@@ -571,7 +650,7 @@ class TestMetricViewEntityMatching:
         assert check["passed"] is True
 
     def test_metric_view_format_assistance_counted(self):
-        """Metric view columns with format assistance should pass Check 9."""
+        """Metric view columns with format assistance should pass Check 8."""
         data = {
             "data_sources": {
                 "tables": [],
@@ -749,8 +828,8 @@ class TestUCEnrichment:
         ws.tables.get.return_value = _mock_table_info(
             comment="Orders",
             columns=[
-                {"name": "order_id", "comment": "PK"},
-                {"name": "amount", "comment": "Total"},
+                {"name": "order_id", "comment": "Primary key column"},
+                {"name": "amount", "comment": "Order total amount"},
             ],
         )
         _enrich_with_uc_descriptions(space_data, ws)
@@ -804,3 +883,163 @@ class TestParseIdentifier:
 
     def test_empty_string(self):
         assert _parse_identifier("") == ("", "", "")
+
+
+# ---------------------------------------------------------------------------
+# scan_space: GSO run selection for the header "% benchmark accuracy"
+# ---------------------------------------------------------------------------
+
+
+class TestScanSpaceGsoSelection:
+    """The header pulls optimization_accuracy from the latest terminal GSO run's
+    best_accuracy (scan_space), NOT from the Optimize tab's per-iteration path.
+    These lock in which run statuses count — the APPLIED case is the regression
+    that showed a stale pre-GSO score after a successful apply.
+    """
+
+    @staticmethod
+    def _patch_common(monkeypatch, *, gso_runs, legacy_run=None):
+        """Stub scan_space's external reads: config fetch, UC enrichment,
+        legacy optimization_runs, GSO runs, and persistence."""
+        import backend.services.scanner as scanner
+        import backend.services.gso_lakebase as gso_lakebase
+        import backend.services.auth as auth
+
+        # Minimal scorable config (1 table, no benchmarks needed for accuracy).
+        space_data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
+                      "instructions": {}, "benchmarks": {"questions": []}}
+        monkeypatch.setattr(
+            scanner,
+            "get_serialized_space",
+            lambda _sid, *, include_top_level_description=False: space_data,
+        )
+        # Skip UC enrichment (it's already wrapped in try/except, but make it a
+        # clean no-op so the test doesn't depend on a WorkspaceClient).
+        monkeypatch.setattr(auth, "get_workspace_client", lambda: MagicMock())
+        monkeypatch.setattr(scanner, "_enrich_with_uc_descriptions", lambda *a, **k: 0)
+
+        async def _legacy(_sid):
+            return legacy_run
+        monkeypatch.setattr(scanner, "get_latest_optimization_run", _legacy)
+
+        async def _gso(_sid):
+            return list(gso_runs)
+        monkeypatch.setattr(gso_lakebase, "load_gso_runs_for_space", _gso)
+
+        async def _save(_sid, _result):
+            return None
+        monkeypatch.setattr(scanner, "save_scan_result", _save)
+
+    @pytest.mark.asyncio
+    async def test_applied_run_supplies_accuracy(self, monkeypatch):
+        """An APPLIED run's best_accuracy IS the live config — it must drive the
+        header. This is the reported bug: applying a 90% run left the header on
+        the stale legacy score."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "APPLIED", "best_accuracy": 90.0,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+            legacy_run={"accuracy": 0.53},  # stale pre-GSO baseline
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.90
+
+    @pytest.mark.asyncio
+    async def test_converged_run_supplies_accuracy(self, monkeypatch):
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "CONVERGED", "best_accuracy": 88.0,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.88
+
+    @pytest.mark.asyncio
+    async def test_discarded_run_is_ignored(self, monkeypatch):
+        """A DISCARDED run reverted the live config, so its accuracy must NOT
+        drive the header — fall back to the legacy baseline instead."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "DISCARDED", "best_accuracy": 90.0,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+            legacy_run={"accuracy": 0.53},
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.53
+
+    @pytest.mark.asyncio
+    async def test_scan_requests_top_level_space_description(self, monkeypatch):
+        """scan_space must score the API-level agent description, not only the
+        parsed serialized_space payload."""
+        import backend.services.scanner as scanner
+        import backend.services.gso_lakebase as gso_lakebase
+        import backend.services.auth as auth
+
+        def _get_serialized_space(_sid, *, include_top_level_description=False):
+            assert include_top_level_description is True
+            return {
+                "description": "Useful top-level description for this sales analytics space.",
+                "data_sources": {"tables": [{"name": "t", "columns": []}]},
+                "instructions": {},
+                "benchmarks": {"questions": []},
+            }
+
+        monkeypatch.setattr(scanner, "get_serialized_space", _get_serialized_space)
+        monkeypatch.setattr(auth, "get_workspace_client", lambda: MagicMock())
+        monkeypatch.setattr(scanner, "_enrich_with_uc_descriptions", lambda *a, **k: 0)
+
+        async def _legacy(_sid):
+            return None
+        monkeypatch.setattr(scanner, "get_latest_optimization_run", _legacy)
+
+        async def _gso(_sid):
+            return []
+        monkeypatch.setattr(gso_lakebase, "load_gso_runs_for_space", _gso)
+
+        async def _save(_sid, _result):
+            return None
+        monkeypatch.setattr(scanner, "save_scan_result", _save)
+
+        result = await scanner.scan_space("space-1")
+        check = _check_by_label(result, "Agent description")
+        assert check["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_applied_beats_older_converged(self, monkeypatch):
+        """Most-recent APPLIED run wins over an older CONVERGED run (runs arrive
+        most-recent-first)."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[
+                {"status": "APPLIED", "best_accuracy": 90.0, "completed_at": "2026-07-08T00:00:00Z"},
+                {"status": "CONVERGED", "best_accuracy": 70.0, "completed_at": "2026-07-01T00:00:00Z"},
+            ],
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.90
+
+    @pytest.mark.asyncio
+    async def test_fraction_scale_accuracy_not_double_normalized(self, monkeypatch):
+        """best_accuracy already on the 0–1 scale (<=1.0) is passed through, not
+        divided by 100 again."""
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch,
+            gso_runs=[{"status": "APPLIED", "best_accuracy": 0.9,
+                       "completed_at": "2026-07-08T00:00:00Z"}],
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.90
+
+    @pytest.mark.asyncio
+    async def test_no_gso_falls_back_to_legacy(self, monkeypatch):
+        from backend.services.scanner import scan_space
+        self._patch_common(
+            monkeypatch, gso_runs=[], legacy_run={"accuracy": 0.53},
+        )
+        result = await scan_space("space-1")
+        assert result["optimization_accuracy"] == 0.53

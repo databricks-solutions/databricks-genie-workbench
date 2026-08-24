@@ -34,7 +34,7 @@ def build_mock_session_after_inspection() -> AgentSession:
     # User message with auto-pilot
     session.history.append({
         "role": "user",
-        "content": "Create a Genie Space for banking analytics\n\n[User selections: {\"auto_pilot\": true}]",
+        "content": "Create a Genie Agent for banking analytics\n\n[User selections: {\"auto_pilot\": true}]",
     })
 
     tables = [

@@ -1,8 +1,8 @@
 """
 Genie Workbench - Main entry point.
 
-Unified Databricks Genie Space management platform combining:
-- GenieRx: Deep LLM analysis, optimization suggestions, fix agent
+Unified Databricks Genie Agent management platform combining:
+- GenieRx: Deep LLM analysis, optimization suggestions
 - GenieIQ: Org-wide IQ scoring, Lakebase persistence, admin dashboard
 """
 
@@ -78,6 +78,7 @@ from backend.watch.routers import (
     watch_resources_router,
     watch_settings_router,
     watch_spaces_router,
+    watch_traffic_gaps_router,
     watch_usage_router,
 )
 from backend.watch.services.system_tables import warm_cost_overview_cache
@@ -134,7 +135,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(
     title="Genie Workbench",
-    description="Unified Databricks Genie Space management platform",
+    description="Unified Databricks Genie Agent management platform",
     version="1.0.0",
 )
 
@@ -217,6 +218,7 @@ app.include_router(auto_optimize_router)
 
 # GenieWatch (observability) — all routes under /api/watch/*
 app.include_router(watch_spaces_router)
+app.include_router(watch_traffic_gaps_router)
 app.include_router(watch_cost_router)
 app.include_router(watch_usage_router)
 app.include_router(watch_feedback_router)

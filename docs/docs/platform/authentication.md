@@ -33,11 +33,21 @@ flowchart LR
    The explicit `auth_type="pat"` is required because the Databricks Apps environment has `DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` set for the SP. Without it, the SDK would default to OAuth M2M instead of the user's token.
    :::
 
-4. All downstream service calls use `get_workspace_client()`, which returns the OBO client if set, otherwise falls back to the SP singleton.
+4. Most downstream service calls use `get_workspace_client()`, which returns the OBO client if set, otherwise falls back to the SP singleton.
+
+5. Routes whose visibility must stay bound to the signed-in user instead call `require_obo_workspace_client()`, which returns only the request's user client and **never** falls back to the SP. If no OBO client is set, the request fails rather than widening access. GenieWatch traffic-gap reads use this path — see [OBO-only routes](#obo-only-routes).
 
 ### SSE streaming caveat
 
 For the Create Agent's Server-Sent Events endpoint, the `ContextVar` is **not** cleared after `call_next` in the middleware. This is because the response body streams lazily — the generator runs after the middleware returns. Streaming handlers stash the raw token on `request.state.user_token` and re-set it inside the generator function.
+
+### OBO-only routes
+
+Some reads expose data that the app's SP could see but the signed-in user must not. Those routes require user authorization and have no SP fallback.
+
+| Route | Requirement | Reason |
+|-------|-------------|--------|
+| `GET /api/watch/spaces/{space_id}/traffic-gaps` | OBO only, user needs `CAN_MANAGE` on the Agent | Reads production conversation traffic. The Genie [list conversations API](https://docs.databricks.com/api/azure/workspace/genie/listconversations) requires `CAN_MANAGE`, so SP fallback would let a non-manager read other users' questions. |
 
 ### What OBO protects
 
@@ -77,7 +87,7 @@ The job is configured to `run_as` the app's SP. At startup, `_ensure_gso_job_run
 
 #### 3. GSO Delta table operations
 
-Reads and writes to the optimizer state tables (12 Delta tables under `GSO_CATALOG.GSO_SCHEMA`) use the SP because these tables are owned by the SP and are not user-scoped.
+Reads and writes to the optimizer state tables under `GSO_CATALOG.GSO_SCHEMA` use the SP because these tables are owned by the SP and are not user-scoped. See [Durable state](/docs/features/auto-optimize#durable-state) for the table list.
 
 ## Optimization Trigger Flow
 
@@ -96,7 +106,7 @@ flowchart TB
     end
     subgraph r3 [" "]
         direction LR
-        s5["5 · wh_create_run (OBO)<br/>insert run row in Delta"] --> s6["6 · submit_optimization (SP)<br/>jobs.run_now() → Lakeflow Job"] --> s7["7 · 6-task DAG executes (SP)<br/>preflight → baseline →<br/>enrichment → lever_loop →<br/>finalize → deploy"]
+        s5["5 · wh_create_run (OBO)<br/>insert run row in Delta"] --> s6["6 · submit_optimization (SP)<br/>jobs.run_now() → Lakeflow Job"] --> s7["7 · 4-task DAG executes (SP)<br/>intake → benchmark QC →<br/>optimize → publish"]
     end
     r1 --> r2 --> r3
     style r1 fill:none,stroke:none
@@ -119,9 +129,8 @@ The `user_api_scopes` in `app.yaml` request these scopes for the user's OBO toke
 | `catalog.schemas:read` | Browse Unity Catalog schemas |
 | `catalog.tables:read` | Browse Unity Catalog tables |
 | `files.files` | Access workspace files |
-| `iam.access-control:read` | Read ACLs for permission checks |
 
-If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`).
+If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`). [OBO-only routes](#obo-only-routes) are the exception: they return `401` instead of falling back.
 
 ## SP Permissions Required
 
@@ -131,7 +140,7 @@ If the workspace or user's OAuth consent doesn't grant all scopes, the app degra
 |-----------|---------|
 | `CAN_MANAGE` | API fallback when user token lacks Genie scope; applying optimization patches during the GSO pipeline |
 
-Grant via the Genie Agent sharing UI or the installer (`scripts/install.sh` automates this).
+Grant via the Genie Agent sharing UI, or let the installer do it — both `notebooks/install.py` and `scripts/install.sh` grant the SP access to your visible Genie Agents.
 
 ### Per referenced data schema
 
@@ -159,7 +168,7 @@ The SP needs full access to the optimizer state schema (`<GSO_CATALOG>.genie_spa
 | `MODIFY` | Write optimizer state tables |
 | `CREATE_TABLE` | Create state tables on first run |
 | `CREATE_FUNCTION` | Create UDFs if needed |
-| `CREATE_MODEL` | MLflow model registration |
+| `CREATE_MODEL` | Granted for historical/forward compatibility; the pipeline no longer registers models |
 | `CREATE_VOLUME` | Artifact storage |
 | `EXECUTE` | Execute functions |
 | `MANAGE` | Schema management |
@@ -171,12 +180,13 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | Operation | Identity | Code Reference | Rationale |
 |-----------|----------|---------------|-----------|
 | Browse Genie Agents, UC catalogs/schemas/tables | OBO (user) | `services/uc_client.py`, `routers/create.py` | User sees only what they have access to |
+| GenieWatch traffic-gap analysis | OBO only, no SP fallback | `watch/routers/traffic_gaps.py` `require_obo_workspace_client()` | Conversation traffic requires `CAN_MANAGE`; SP fallback would leak other users' questions |
 | Genie API — fetch/list agents | OBO → SP fallback | `services/genie_client.py` `_is_scope_error()` | User token may lack `dashboards.genie` scope |
 | Create Agent — tools, SQL, agent creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Agent created under user identity |
 | Trigger optimization — permission check | OBO (user) | `integration/trigger.py` `user_can_edit_space()` | Verify user has CAN_EDIT/CAN_MANAGE |
 | Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the agent |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
-| Optimization job execution (6-task DAG) | SP (run_as) | `backend/job_launcher.py` `ensure_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
+| Optimization job execution (4-task DAG) | SP (run_as) | `backend/job_launcher.py` `ensure_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
 | GSO Delta table reads/writes | SP | `routers/auto_optimize.py` `_delta_query()` | Optimizer state tables owned by SP |
 | Lakebase persistence | SP | `services/lakebase.py` | App-level storage, not user-scoped |
 | IQ Scan | OBO (user) → SP for GSO data | `services/scanner.py` | Space fetch via OBO; GSO run data via SP |

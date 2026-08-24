@@ -1,5 +1,5 @@
 /**
- * SpaceList - Org-wide Genie Space listing with IQ scores.
+ * SpaceList - Org-wide Genie Agent listing with IQ scores.
  */
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, ExternalLink, Filter } from "lucide-react"
@@ -46,7 +46,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
       const data = await listSpaces({ search: search || undefined, starred_only: starredOnly })
       setSpaces(data)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load spaces")
+      setError(e instanceof Error ? e.message : "Failed to load agents")
     } finally {
       setLoading(false)
     }
@@ -101,7 +101,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search spaces..."
+            placeholder="Search agents..."
             className="w-full pl-9 pr-3 py-2 rounded-lg border border-default bg-surface text-primary text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50"
           />
         </div>
@@ -171,7 +171,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
       ) : filteredSpaces.length === 0 ? (
         <div className="text-center py-16 text-muted">
           <LayoutGrid className="w-12 h-12 mx-auto mb-4 opacity-30" />
-          <p className="text-lg">{maturityFilter.size > 0 && spaces.length > 0 ? "No spaces match filters" : "No spaces found"}</p>
+          <p className="text-lg">{maturityFilter.size > 0 && spaces.length > 0 ? "No agents match filters" : "No agents found"}</p>
           {search && <p className="text-sm mt-1">Try a different search term</p>}
           {maturityFilter.size > 0 && spaces.length > 0 && (
             <button
@@ -187,7 +187,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
               className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded-lg border-2 border-dashed border-default hover:border-accent/40 hover:text-accent text-muted transition-colors"
             >
               <Plus className="w-5 h-5" />
-              Create Space
+              Create Agent
             </button>
           )}
         </div>

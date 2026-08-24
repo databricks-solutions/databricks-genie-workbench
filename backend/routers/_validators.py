@@ -14,7 +14,7 @@ RunId = Annotated[
     ),
 ]
 
-# space_id is a Databricks Genie Space ID — alphanumeric + hyphens/underscores
+# space_id is a Databricks Genie Agent ID — alphanumeric + hyphens/underscores
 SpaceId = Annotated[
     str,
     Path(pattern=r"^[0-9a-zA-Z_-]{1,128}$"),

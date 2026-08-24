@@ -3,10 +3,22 @@ import { Badge } from "@/components/ui/badge"
 import { ChevronDown, Wrench, CheckCircle2, XCircle, GitBranch } from "lucide-react"
 import { ProactiveEnrichmentView } from "@/components/auto-optimize/ProactiveEnrichmentView"
 import { SmartPatchCard } from "@/components/auto-optimize/SmartPatchCard"
-import type { GSOLeverStatus, GSOPatchDetail, GSOLeverIteration } from "@/types"
+import { buildLeverIterationLabels } from "@/components/auto-optimize/pipelineDetail"
+import type { GSOLeverStatus, GSOPatchDetail, GSOLeverIteration, GSOIterationResult } from "@/types"
 
 interface OptimizationLeversProps {
   levers: GSOLeverStatus[]
+  // GSO v2 (Phase 14) — when provided, the per-iteration provenance sub-labels
+  // are re-keyed onto patch-attempt vocabulary (Patch N, with decision).
+  // Absent / no attempt metadata ⇒ "Iteration N".
+  iterations?: GSOIterationResult[]
+}
+
+// Attempt-centric label for a lever's per-iteration row (Phase 14). Falls back
+// to the classic "Iteration N" when there's no attempt label for that iteration
+// (legacy runs, or a lever iteration not present in the run's iteration rows).
+function iterationBadgeLabel(labels: Map<number, string>, iteration: number): string {
+  return labels.get(iteration) ?? `Iteration ${iteration}`
 }
 
 const STATUS_BADGE: Record<string, { variant: "success" | "danger" | "warning" | "secondary" | "info"; label: string }> = {
@@ -259,7 +271,7 @@ function renderClassifiedPatches(patches: GSOPatchDetail[]) {
   }
   if (exampleSql.length > 0) {
     sections.push(
-      <PatchGroup key="exsql" label="SQL Queries" count={exampleSql.length}>
+      <PatchGroup key="exsql" label="Example SQL" count={exampleSql.length}>
         <ExampleSqlTable patches={exampleSql} />
       </PatchGroup>
     )
@@ -268,7 +280,15 @@ function renderClassifiedPatches(patches: GSOPatchDetail[]) {
   return sections
 }
 
-function LeverPatchContent({ lever, allPatches }: { lever: GSOLeverStatus; allPatches: GSOPatchDetail[] }) {
+function LeverPatchContent({
+  lever,
+  allPatches,
+  iterationLabels,
+}: {
+  lever: GSOLeverStatus
+  allPatches: GSOPatchDetail[]
+  iterationLabels: Map<number, string>
+}) {
   if (allPatches.length === 0) return null
 
   if (lever.lever === 0) {
@@ -287,7 +307,7 @@ function LeverPatchContent({ lever, allPatches }: { lever: GSOLeverStatus; allPa
             <div key={it.iteration} className="space-y-2">
               <div className="flex items-center gap-2">
                 <span className="inline-flex items-center rounded-md border border-default bg-elevated px-2 py-0.5 text-xs font-medium text-primary">
-                  Iteration {it.iteration}
+                  {iterationBadgeLabel(iterationLabels, it.iteration)}
                 </span>
                 <Badge variant={badge.variant} className="text-[10px] py-0 px-1.5">
                   {badge.variant === "success" && <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />}
@@ -316,13 +336,18 @@ function LeverPatchContent({ lever, allPatches }: { lever: GSOLeverStatus; allPa
   )
 }
 
-function IterationRow({ iteration, lever }: { iteration: GSOLeverIteration; lever: number }) {
+function IterationRow({
+  iteration,
+  lever,
+  iterationLabels,
+}: {
+  iteration: GSOLeverIteration
+  lever: number
+  iterationLabels: Map<number, string>
+}) {
   const badge = STATUS_BADGE[iteration.status] ?? STATUS_BADGE.pending
-  // Exclude example SQL patches from displayed count
-  const filteredCount = iteration.patches.length > 0
-    ? iteration.patches.filter((p) => !isExampleSqlPatch(p)).length
-    : iteration.patchCount
-  // For lever 5 (Text Instructions), show instruction text preview
+  const displayedCount = iteration.patches.length > 0 ? iteration.patches.length : iteration.patchCount
+  // For lever 5 (Instructions & Examples), show instruction text preview
   const instructionPreview = lever === 5 ? (() => {
     const instrPatches = iteration.patches.filter((p) => p.patchType.includes("instruction"))
     if (instrPatches.length === 0) return null
@@ -334,14 +359,14 @@ function IterationRow({ iteration, lever }: { iteration: GSOLeverIteration; leve
     <div className="space-y-1">
       <div className="flex items-center gap-2 text-xs">
         <span className="inline-flex items-center rounded-md border border-default bg-elevated px-2 py-0.5 font-medium text-primary">
-          Iteration {iteration.iteration}
+          {iterationBadgeLabel(iterationLabels, iteration.iteration)}
         </span>
         <Badge variant={badge.variant} className="text-[10px] py-0 px-1.5">
           {badge.variant === "success" && <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />}
           {badge.label}
         </Badge>
-        {filteredCount > 0 && (
-          <span className="text-muted tabular-nums">{filteredCount} patches</span>
+        {displayedCount > 0 && (
+          <span className="text-muted tabular-nums">{displayedCount} patches</span>
         )}
       </div>
       {instructionPreview && (
@@ -353,7 +378,7 @@ function IterationRow({ iteration, lever }: { iteration: GSOLeverIteration; leve
   )
 }
 
-function LeverCard({ lever }: { lever: GSOLeverStatus }) {
+function LeverCard({ lever, iterationLabels }: { lever: GSOLeverStatus; iterationLabels: Map<number, string> }) {
   const [open, setOpen] = useState(lever.status === "accepted")
   const [showProvenance, setShowProvenance] = useState(false)
   const badge = STATUS_BADGE[lever.status] ?? STATUS_BADGE.pending
@@ -384,14 +409,14 @@ function LeverCard({ lever }: { lever: GSOLeverStatus }) {
 
       {open && (
         <div className="border-t border-dashed border-default px-4 py-3 space-y-3">
-          <LeverPatchContent lever={lever} allPatches={allPatches} />
+          <LeverPatchContent lever={lever} allPatches={allPatches} iterationLabels={iterationLabels} />
 
           {lever.iterations.length > 0 && lever.iterations.filter((it) => (it.patches?.length ?? 0) > 0).length <= 1 && (
             <div className="space-y-1.5">
               <p className="text-xs font-medium text-muted">Iteration history</p>
               <div className="space-y-1">
                 {lever.iterations.map((it) => (
-                  <IterationRow key={it.iteration} iteration={it} lever={lever.lever} />
+                  <IterationRow key={it.iteration} iteration={it} lever={lever.lever} iterationLabels={iterationLabels} />
                 ))}
               </div>
             </div>
@@ -426,7 +451,7 @@ function LeverCard({ lever }: { lever: GSOLeverStatus }) {
                     const uniqueTargets = [...new Set(targets)]
                     return (
                       <tr key={it.iteration} className="border-b border-default last:border-0">
-                        <td className="px-3 py-1.5 text-primary font-medium">Iteration {it.iteration}</td>
+                        <td className="px-3 py-1.5 text-primary font-medium">{iterationBadgeLabel(iterationLabels, it.iteration)}</td>
                         <td className="px-3 py-1.5">
                           <Badge variant={itBadge.variant} className="text-[10px] py-0 px-1.5">
                             {itBadge.label}
@@ -460,9 +485,9 @@ function LeverCard({ lever }: { lever: GSOLeverStatus }) {
 const ALL_LEVERS: { lever: number; name: string }[] = [
   { lever: 1, name: "Tables & Columns" },
   { lever: 2, name: "Metric Views" },
-  { lever: 3, name: "SQL Queries & Functions" },
+  { lever: 3, name: "Table-Valued Functions" },
   { lever: 4, name: "Join Specifications" },
-  { lever: 5, name: "Text Instructions" },
+  { lever: 5, name: "Instructions & Examples" },
   { lever: 6, name: "SQL Expressions" },
 ]
 
@@ -472,49 +497,6 @@ function regroupLevers(levers: GSOLeverStatus[]): GSOLeverStatus[] {
     patches: [...l.patches],
     iterations: l.iterations.map((it) => ({ ...it, patches: [...(it.patches ?? [])] })),
   }))
-
-  const exampleSqlPatches: GSOPatchDetail[] = []
-  for (const lever of result) {
-    if (lever.lever === 3 || lever.lever === 0) continue
-
-    const topLevel = lever.patches.filter(isExampleSqlPatch)
-    const iterLevel = lever.iterations.flatMap((it) => (it.patches ?? []).filter(isExampleSqlPatch))
-    const toMove = [...topLevel, ...iterLevel]
-    if (toMove.length === 0) continue
-
-    exampleSqlPatches.push(...toMove)
-    const moveSet = new Set(toMove)
-    lever.patches = lever.patches.filter((p) => !moveSet.has(p))
-    for (const it of lever.iterations) {
-      if (it.patches) {
-        const before = it.patches.length
-        it.patches = it.patches.filter((p) => !moveSet.has(p))
-        it.patchCount = Math.max(0, it.patchCount - (before - it.patches.length))
-      }
-    }
-    lever.patchCount = lever.patches.length + lever.iterations.reduce((s, it) => s + (it.patches?.length ?? 0), 0)
-  }
-
-  if (exampleSqlPatches.length > 0) {
-    let lever3 = result.find((l) => l.lever === 3)
-    if (!lever3) {
-      lever3 = {
-        lever: 3,
-        name: "SQL Queries & Functions",
-        status: "accepted",
-        patchCount: 0,
-        scoreBefore: null,
-        scoreAfter: null,
-        scoreDelta: null,
-        rollbackReason: null,
-        patches: [],
-        iterations: [],
-      }
-      result.push(lever3)
-    }
-    lever3.patches.push(...exampleSqlPatches)
-    lever3.patchCount = lever3.patches.length + lever3.iterations.reduce((s, it) => s + (it.patches?.length ?? 0), 0)
-  }
 
   const lever0 = result.find((l) => l.lever === 0)
   const hasAdaptiveLevers = result.some((l) => l.lever >= 1)
@@ -548,8 +530,11 @@ function regroupLevers(levers: GSOLeverStatus[]): GSOLeverStatus[] {
   return full
 }
 
-export function OptimizationLevers({ levers }: OptimizationLeversProps) {
+export function OptimizationLevers({ levers, iterations }: OptimizationLeversProps) {
   const regrouped = useMemo(() => regroupLevers(levers), [levers])
+  // Attempt-centric provenance labels (Patch N, with decision), re-keyed from
+  // the merged iteration rows. Empty map ⇒ "Iteration N" (legacy).
+  const iterationLabels = useMemo(() => buildLeverIterationLabels(iterations), [iterations])
 
   if (levers.length === 0) return null
 
@@ -569,7 +554,7 @@ export function OptimizationLevers({ levers }: OptimizationLeversProps) {
       </div>
       <div className="space-y-2">
         {regrouped.map((lever) => (
-          <LeverCard key={lever.lever} lever={lever} />
+          <LeverCard key={lever.lever} lever={lever} iterationLabels={iterationLabels} />
         ))}
       </div>
     </div>

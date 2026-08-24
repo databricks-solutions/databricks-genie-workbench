@@ -102,7 +102,7 @@ async def top_spenders(days: int = Query(7, ge=1, le=365), limit: int = Query(10
     days = validate_days(days, default=7)
     rows = await asyncio.to_thread(system_tables.top_spenders, days=days, limit=limit)
 
-    # Genie space titles aren't in the system tables; resolve them from the
+    # Genie Agent titles aren't in the system tables; resolve them from the
     # space cache (same source SpacesList uses). Best-effort: a missing cache
     # entry just leaves title=None and the UI falls back to the space id.
     titles: dict[str, str] = {}

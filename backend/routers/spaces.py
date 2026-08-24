@@ -1,12 +1,10 @@
-"""Spaces router - org-wide Genie Space listing with IQ scoring."""
+"""Spaces router - org-wide Genie Agent listing with IQ scoring."""
 
 import asyncio
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
-import json
 
 from backend.routers._validators import SpaceId
 
@@ -28,7 +26,6 @@ from backend.models import (
     SpaceScanRequest,
     StarToggleRequest,
     ScanResult,
-    FixRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,11 +36,11 @@ router = APIRouter(prefix="/api")
 @router.get("/spaces")
 async def list_spaces(
     search: Optional[str] = Query(None, description="Filter by display name"),
-    starred_only: bool = Query(False, description="Only show starred spaces"),
+    starred_only: bool = Query(False, description="Only show starred agents"),
     min_score: Optional[int] = Query(None, ge=0, le=100),
     max_score: Optional[int] = Query(None, ge=0, le=100),
 ) -> list[SpaceListItem]:
-    """List all Genie Spaces with their IQ scores.
+    """List all Genie Agents with their IQ scores.
 
     Fetches space list from Databricks API and enriches with stored IQ scores.
     """
@@ -51,8 +48,8 @@ async def list_spaces(
         try:
             raw_spaces = list_genie_spaces()
         except Exception as e:
-            logger.error(f"Failed to list Genie Spaces: {e}")
-            raise HTTPException(status_code=500, detail="Failed to fetch Genie Spaces from Databricks")
+            logger.error(f"Failed to list Genie Agents: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch Genie Agents from Databricks")
 
         client = get_workspace_client()
         host = (client.config.host or "").rstrip("/")
@@ -117,8 +114,8 @@ async def list_spaces(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Failed to list spaces: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list spaces")
+        logger.exception(f"Failed to list agents: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list agents")
 
 
 @router.get("/spaces/{space_id}")
@@ -158,13 +155,13 @@ async def get_space_detail(space_id: SpaceId) -> dict:
             "is_starred": starred,
         }
     except Exception as e:
-        logger.exception(f"Failed to get space detail: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get space detail")
+        logger.exception(f"Failed to get agent detail: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get agent detail")
 
 
 @router.post("/spaces/{space_id}/scan")
 async def trigger_scan(space_id: SpaceId) -> ScanResult:
-    """Trigger an IQ scan for a Genie Space and persist results."""
+    """Trigger an IQ scan for a Genie Agent and persist results."""
     try:
         scan_data = await scan_space(space_id)
 
@@ -193,7 +190,7 @@ async def get_history(
     space_id: SpaceId,
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
-    """Get unified score + optimization history for a Genie Space."""
+    """Get unified score + optimization history for a Genie Agent."""
     try:
         scans, opt_runs = await asyncio.gather(
             get_score_history(space_id, days=days),
@@ -218,52 +215,10 @@ async def get_history(
 
 @router.put("/spaces/{space_id}/star")
 async def toggle_star(space_id: SpaceId, request: StarToggleRequest) -> dict:
-    """Toggle star status for a Genie Space."""
+    """Toggle star status for a Genie Agent."""
     try:
         await star_space(space_id, request.starred)
         return {"space_id": space_id, "starred": request.starred}
     except Exception as e:
         logger.exception(f"Failed to toggle star for {space_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to toggle star")
-
-
-@router.post("/spaces/{space_id}/fix")
-async def run_fix_agent(space_id: SpaceId, request: FixRequest):
-    """Run the AI fix agent on a space. Returns SSE stream with keepalives."""
-    import asyncio
-    from backend.services.fix_agent import get_fix_agent
-
-    _KEEPALIVE_INTERVAL = 10  # seconds between SSE keepalive comments
-
-    async def generate():
-        agent = get_fix_agent()
-        agent_iter = agent.run(
-            space_id=space_id,
-            findings=request.findings,
-            space_config=request.space_config,
-        ).__aiter__()
-        next_coro = None
-        try:
-            while True:
-                if next_coro is None:
-                    next_coro = asyncio.ensure_future(agent_iter.__anext__())
-                try:
-                    event = await asyncio.wait_for(
-                        asyncio.shield(next_coro), timeout=_KEEPALIVE_INTERVAL
-                    )
-                    next_coro = None
-                    yield f"data: {json.dumps(event)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                except StopAsyncIteration:
-                    break
-        except Exception as e:
-            logger.exception(f"Fix agent stream error: {e}")
-            yield f'data: {json.dumps({"status": "error", "message": str(e)})}\n\n'
-
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-    }
-    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)

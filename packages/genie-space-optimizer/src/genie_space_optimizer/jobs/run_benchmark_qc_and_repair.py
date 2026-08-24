@@ -1,0 +1,1304 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Benchmark QC & Repair (GSO v2 — 4-task DAG)
+# MAGIC
+# MAGIC | Quick Reference | |
+# MAGIC |---|---|
+# MAGIC | **Task** | `benchmark_qc_and_repair` |
+# MAGIC | **Reads** | space metadata, run-row snapshot, benchmark set |
+# MAGIC | **Writes** | `genie_opt_artifacts` (`space_metadata`, `benchmark_qc`), `genie_opt_benchmark_mutations`, `genie_opt_stages` |
+# MAGIC | **Stop condition** | Fewer than 15 valid questions after review, repair, and run-local exclusions |
+# MAGIC | **Log label** | `[TASK BENCH_QC]` |
+# MAGIC
+# MAGIC ## 🎯 Purpose (arch §5 / §6 / progress §5 K=3)
+# MAGIC
+# MAGIC Review the benchmark set, then follow the run's policy. `review_only`
+# MAGIC excludes invalid native questions without generating, repairing, or
+# MAGIC changing the live benchmark block. `repair_allowed` runs bounded inline
+# MAGIC repair/exclusion (≤ `benchmark_repair_max_tries`, default 3), re-validates,
+# MAGIC and pushes the SQL-valid set into the live Agent (additive/merge-only).
+# MAGIC Both policies flow into `optimize` when at least 15 valid questions
+# MAGIC remain. A benchmark still invalid after K repair tries is preserved in
+# MAGIC the live Agent but excluded from this run. A smaller final corpus records
+# MAGIC `INSUFFICIENT_VALID_BENCHMARKS` and skips optimization.
+# MAGIC
+# MAGIC The bounded try-counting control loop lives in
+# MAGIC `optimization.benchmark_repair.run_bounded_benchmark_repair`; this task
+# MAGIC wires it to the canonical benchmark-quality reviewer + benchmark synthesis + the
+# MAGIC Phase-2 live-space push (`preflight_push_benchmarks_to_space`) and the
+# MAGIC `genie_opt_benchmark_mutations` ledger — no re-invention.
+
+# COMMAND ----------
+
+import copy
+import json
+import os
+import traceback
+from functools import partial
+from typing import Any, cast
+
+
+from genie_space_optimizer._workspace_client import make_workspace_client
+from genie_space_optimizer.common.config import (
+    CONNECTION_POOL_SIZE,
+    MAX_BENCHMARK_COUNT,
+    MIN_VALID_BENCHMARK_COUNT,
+    TARGET_BENCHMARK_COUNT,
+)
+from genie_space_optimizer.common.genie_client import (
+    configure_connection_pool,
+    configure_mlflow_connection_pool,
+)
+from genie_space_optimizer.common.warehouse import (
+    export_warehouse_id,
+    resolve_warehouse_id,
+)
+from genie_space_optimizer.jobs._helpers import _banner as _banner_base
+from genie_space_optimizer.jobs._helpers import _diagnostic as _diagnostic_base
+from genie_space_optimizer.jobs._helpers import _log as _log_base
+from genie_space_optimizer.iq_scan import collect_rls_audit
+from genie_space_optimizer.optimization.benchmark_repair import (
+    DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE,
+    DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS,
+    BenchmarkCorpusTooSmallError,
+    default_id_of,
+    require_minimum_valid_benchmarks,
+    run_bounded_benchmark_repair,
+    run_bounded_benchmark_top_up,
+)
+from genie_space_optimizer.optimization.benchmarks import (
+    deduplicate_benchmark_corpus,
+    duplicate_rejection_mutations,
+)
+from genie_space_optimizer.optimization.benchmark_quality import (
+    QUALITY_REVIEW_VERSION,
+    build_actionable_warning_repair,
+    review_benchmark_format_coverage,
+    review_benchmark_quality,
+    summarize_quality_counts,
+)
+from genie_space_optimizer.optimization.benchmarking import generate_benchmarks
+from genie_space_optimizer.optimization.benchmarking import (
+    extract_review_only_benchmarks,
+)
+from genie_space_optimizer.optimization.preflight import (
+    preflight_collect_uc_metadata,
+    preflight_fetch_config,
+    preflight_generate_benchmarks,
+    preflight_push_benchmarks_to_space,
+    preflight_persist_benchmark_corpus,
+)
+from genie_space_optimizer.optimization.space_quality_enrichment import (
+    build_prompt_matching_context,
+)
+from genie_space_optimizer.optimization.state import (
+    ensure_optimization_tables,
+    load_artifacts,
+    load_latest_artifact_payload,
+    load_latest_artifact_record,
+    update_run_status,
+    write_artifact,
+    write_benchmark_mutations,
+    write_failure_stage_safely,
+    write_required_artifact,
+    write_stage,
+)
+from genie_space_optimizer.optimization.wide_schema import (
+    active_column_keys,
+    build_local_evidence,
+    build_selection_plan,
+    project_active_inventory,
+    project_full_inventory,
+    revise_plan_for_column,
+    revise_plan_with_profile_outcomes,
+    sql_column_evidence,
+    validate_inventory,
+    validate_selection_plan,
+)
+from genie_space_optimizer.optimization.wide_schema_profile import (
+    build_profiling_budget,
+    merge_profiling_budgets,
+)
+
+dbutils = cast(Any, globals().get("dbutils"))
+
+_TASK_LABEL = "TASK BENCH_QC"
+_TASK_KEY = "benchmark_qc_and_repair"
+_banner = partial(_banner_base, _TASK_LABEL)
+_diagnostic = partial(_diagnostic_base, _TASK_LABEL)
+_log = partial(_log_base, _TASK_LABEL)
+
+# COMMAND ----------
+
+dbutils.widgets.text("run_id", "")
+dbutils.widgets.text("space_id", "")
+dbutils.widgets.text("domain", "")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "")
+dbutils.widgets.text("apply_mode", "genie_config")
+dbutils.widgets.text("benchmark_repair_max_tries", "3")
+dbutils.widgets.text("benchmark_policy", "repair_allowed")
+dbutils.widgets.text("warehouse_id", "")
+dbutils.widgets.text("llm_model", "")
+
+run_id = dbutils.widgets.get("run_id").strip()
+space_id = dbutils.widgets.get("space_id").strip()
+domain = dbutils.widgets.get("domain").strip() or "default"
+catalog = dbutils.widgets.get("catalog").strip()
+schema = dbutils.widgets.get("schema").strip()
+apply_mode = dbutils.widgets.get("apply_mode").strip() or "genie_config"
+benchmark_repair_max_tries = int(dbutils.widgets.get("benchmark_repair_max_tries") or "3")
+benchmark_policy = dbutils.widgets.get("benchmark_policy").strip() or "repair_allowed"
+if benchmark_policy not in {"review_only", "repair_allowed"}:
+    raise RuntimeError(f"Unsupported benchmark_policy: {benchmark_policy}")
+llm_model = dbutils.widgets.get("llm_model").strip()
+if llm_model:
+    os.environ["LLM_MODEL"] = llm_model
+
+if not run_id:
+    raise RuntimeError("benchmark_qc_and_repair: run_id parameter is required")
+os.environ["GSO_RUN_ID"] = run_id
+
+effective_target = TARGET_BENCHMARK_COUNT
+effective_max = MAX_BENCHMARK_COUNT
+
+# COMMAND ----------
+
+w = make_workspace_client()
+spark = cast(Any, globals().get("spark"))
+configure_connection_pool(w, CONNECTION_POOL_SIZE)
+configure_mlflow_connection_pool(CONNECTION_POOL_SIZE)
+
+warehouse_id = resolve_warehouse_id(dbutils.widgets.get("warehouse_id").strip())
+if warehouse_id:
+    export_warehouse_id(warehouse_id)
+
+# Idempotent — intake already created the tables; safe to re-assert on Repair Run.
+ensure_optimization_tables(spark, catalog, schema)
+if catalog:
+    spark.sql(f"USE CATALOG `{catalog}`")
+if schema:
+    spark.sql(f"USE SCHEMA `{schema}`")
+
+write_stage(
+    spark, run_id, "BENCHMARK_QC_AND_REPAIR", "STARTED",
+    task_key=_TASK_KEY, catalog=catalog, schema=schema,
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Config + UC metadata + initial benchmark generation
+
+# COMMAND ----------
+
+try:
+    _banner("Step 01a — Config + UC Metadata + Benchmark Generation")
+    ctx_config = preflight_fetch_config(
+        w, spark, run_id, space_id, catalog, schema, domain, apply_mode,
+    )
+    _config = ctx_config["config"]
+    _snapshot = ctx_config["snapshot"]
+    _genie_table_refs = ctx_config["genie_table_refs"]
+    _domain = ctx_config["domain"]
+
+    _inventory_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_inventory",
+    )
+    if _inventory_record is None:
+        raise RuntimeError("Required wide_schema_inventory artifact is missing")
+    _wide_schema_inventory = _inventory_record["payload"]
+    validate_inventory(_wide_schema_inventory)
+
+    _wide_schema_evidence = load_latest_artifact_payload(
+        spark, run_id, catalog, schema, "wide_schema_evidence",
+    )
+    if (
+        not isinstance(_wide_schema_evidence, dict)
+        or _wide_schema_evidence.get("inventory_hash")
+        != _wide_schema_inventory["inventory_hash"]
+    ):
+        # Evidence is optional. Reconstruct the always-available local subset
+        # and continue without query-history signal when its artifact is absent
+        # or belongs to a different inventory.
+        _wide_schema_evidence = build_local_evidence(
+            _config, _wide_schema_inventory,
+        )
+
+    _plan_record = load_latest_artifact_record(
+        spark, run_id, catalog, schema, "wide_schema_selection_plan",
+    )
+    if _plan_record is not None:
+        _wide_schema_plan = _plan_record["payload"]
+        validate_selection_plan(
+            _wide_schema_plan,
+            inventory_hash=_wide_schema_inventory["inventory_hash"],
+        )
+    else:
+        _wide_schema_plan = build_selection_plan(
+            _wide_schema_inventory,
+            _wide_schema_evidence,
+            run_id=run_id,
+        )
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_inventory_record.get("artifact_id"),
+        )
+
+    _existing_space_metadata = load_latest_artifact_payload(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        "space_metadata",
+    )
+    if (
+        isinstance(_existing_space_metadata, dict)
+        and _existing_space_metadata.get("inventory_hash")
+        == _wide_schema_inventory["inventory_hash"]
+        and _existing_space_metadata.get("plan_hash")
+        == _wide_schema_plan["plan_hash"]
+    ):
+        _config["_data_profile"] = copy.deepcopy(
+            _existing_space_metadata.get("data_profile") or {},
+        )
+
+    _profile_artifact_rows = load_artifacts(
+        spark,
+        run_id,
+        catalog,
+        schema,
+        artifact_kind="wide_schema_profile_telemetry",
+    )
+    _persisted_profile_telemetry: list[dict[str, Any]] = []
+    for _raw_profile_telemetry in _profile_artifact_rows.get(
+        "artifact_json", [],
+    ):
+        try:
+            _profile_payload = (
+                json.loads(_raw_profile_telemetry)
+                if isinstance(_raw_profile_telemetry, str)
+                else _raw_profile_telemetry
+            )
+        except (TypeError, ValueError):
+            continue
+        if isinstance(_profile_payload, dict):
+            _persisted_profile_telemetry.append(_profile_payload)
+    _wide_schema_profile_budget = merge_profiling_budgets(
+        _wide_schema_plan.get("profiling_budget") or {},
+        build_profiling_budget(_persisted_profile_telemetry),
+    )
+
+    ctx_uc = preflight_collect_uc_metadata(
+        w, spark, run_id, catalog, schema, _config, _snapshot,
+        _genie_table_refs, apply_mode=apply_mode,
+        configured_cols=ctx_config.get("configured_cols", 0),
+        warehouse_id=warehouse_id,
+        wide_schema_inventory=_wide_schema_inventory,
+        wide_schema_plan=_wide_schema_plan,
+        wide_schema_profile_budget=_wide_schema_profile_budget,
+    )
+    _uc_columns = ctx_uc["uc_columns"]
+    _uc_tags = ctx_uc["uc_tags"]
+    _config["_uc_tags"] = _uc_tags
+    _uc_routines = ctx_uc["uc_routines"]
+    _deterministic_uc_columns = project_full_inventory(_wide_schema_inventory)
+
+    _initial_profile_outcomes = ctx_uc.get("wide_schema_profile_outcomes") or {}
+    if ctx_uc.get("wide_schema_profile_telemetry"):
+        write_artifact(
+            spark,
+            run_id,
+            "wide_schema_profile_telemetry",
+            {
+                "stage": "initial",
+                **ctx_uc["wide_schema_profile_telemetry"],
+            },
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+        )
+    if _initial_profile_outcomes:
+        _wide_schema_plan = revise_plan_with_profile_outcomes(
+            _wide_schema_plan,
+            _wide_schema_inventory,
+            _initial_profile_outcomes,
+            profiling_budget=_wide_schema_profile_budget,
+        )
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_plan_record.get("artifact_id"),
+        )
+    validate_selection_plan(
+        _wide_schema_plan,
+        inventory_hash=_wide_schema_inventory["inventory_hash"],
+    )
+    os.environ["GSO_WIDE_SCHEMA_INVENTORY_HASH"] = _wide_schema_inventory[
+        "inventory_hash"
+    ]
+    os.environ["GSO_WIDE_SCHEMA_PLAN_HASH"] = _wide_schema_plan["plan_hash"]
+    _config["_wide_schema_inventory_hash"] = _wide_schema_inventory["inventory_hash"]
+    _config["_wide_schema_plan_hash"] = _wide_schema_plan["plan_hash"]
+    _config["_wide_schema_inventory_column_count"] = sum(
+        len(asset.get("columns") or [])
+        for asset in _wide_schema_inventory.get("assets") or []
+    )
+    _uc_columns = project_active_inventory(
+        _wide_schema_inventory,
+        _wide_schema_plan,
+    )
+    _config["_uc_columns"] = _uc_columns
+
+    _parsed = _config.get("_parsed_space", {})
+    _data_sources = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
+    _space_sources = (
+        list(_data_sources.get("tables") or [])
+        + list(_data_sources.get("metric_views") or [])
+    ) if isinstance(_data_sources, dict) else []
+    try:
+        _config["_rls_audit"] = collect_rls_audit(
+            _space_sources,
+            spark=spark,
+            w=w,
+            warehouse_id=warehouse_id,
+        )
+    except Exception as exc:
+        _log(
+            "RLS audit unavailable for prompt matching; continuing fail-open",
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+        _config["_rls_audit"] = {}
+    write_artifact(
+        spark,
+        run_id,
+        "space_metadata",
+        build_prompt_matching_context(_config),
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_benchmark_qc_and_repair.py",
+    )
+
+    if benchmark_policy == "review_only":
+        # The policy boundary is intentionally above every synthesis primitive:
+        # only native live benchmark questions from the immutable intake
+        # snapshot are eligible. Sample questions, prior UC handoff rows, and
+        # generated replacements are never imported into this working set.
+        _benchmarks = extract_review_only_benchmarks(
+            _config,
+            spark,
+            catalog=catalog,
+            schema=schema,
+            w=w,
+            warehouse_id=warehouse_id,
+        )
+        _benchmarks, _duplicate_rejections = deduplicate_benchmark_corpus(
+            _benchmarks,
+        )
+        _benchmarks_regenerated = False
+    else:
+        ctx_bench = preflight_generate_benchmarks(
+            w, spark, run_id, catalog, schema, _config,
+            _uc_columns, _uc_tags, _uc_routines, _domain,
+            space_id=space_id, experiment_name=None, warehouse_id=warehouse_id,
+            target_benchmark_count=effective_target, max_benchmark_count=effective_max,
+        )
+        _benchmarks = ctx_bench["benchmarks"]
+        _duplicate_rejections = list(ctx_bench.get("duplicate_rejections") or [])
+        _benchmarks_regenerated = bool(ctx_bench["regenerated"])
+        if _duplicate_rejections:
+            write_benchmark_mutations(
+                spark,
+                run_id,
+                duplicate_rejection_mutations(_duplicate_rejections),
+                catalog=catalog,
+                schema=schema,
+            )
+    _initial_benchmark_count = len(_benchmarks) + len(_duplicate_rejections)
+    _log(
+        "Initial benchmarks",
+        count=len(_benchmarks),
+        regenerated=_benchmarks_regenerated,
+        benchmark_policy=benchmark_policy,
+    )
+except Exception as exc:
+    _banner("Benchmark Generation FAILED")
+    _log("Failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
+    write_failure_stage_safely(
+        spark, run_id, "BENCHMARK_QC_AND_REPAIR",
+        task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
+    )
+    raise
+
+# COMMAND ----------
+
+
+_initial_benchmarks_by_id = {
+    default_id_of(benchmark): dict(benchmark)
+    for benchmark in _benchmarks
+    if default_id_of(benchmark)
+}
+# Count semantic repair rounds by stable benchmark identity.  A benchmark may
+# need more than one coherent repair: for example, rewriting an ambiguous
+# question can expose a second-pass expected-SQL correction.  Do not use this
+# bookkeeping to suppress re-review repairs; the bounded repair loop owns the
+# retry limit.
+_warning_repair_rounds_by_id: dict[str, int] = {}
+
+
+def _quality_result_for_benchmark(benchmark: dict) -> dict:
+    qid = default_id_of(benchmark)
+    if qid and qid in _quality_results_by_id:
+        return _quality_results_by_id[qid]
+    question = str(benchmark.get("question") or "").strip().lower()
+    return next(
+        (
+            result
+            for result in _quality_results_by_id.values()
+            if str(result.get("question") or "").strip().lower() == question
+        ),
+        {},
+    )
+
+
+def _native_benchmark_id(benchmark: dict) -> str:
+    if str(benchmark.get("source") or "").strip().lower() != "genie_benchmark":
+        return ""
+    return str(
+        benchmark.get("space_question_id")
+        or benchmark.get("id")
+        or benchmark.get("question_id")
+        or ""
+    ).strip()
+
+
+def _warning_repair_identity(benchmark: dict) -> str:
+    return default_id_of(benchmark) or str(benchmark.get("question") or "").strip()
+
+
+def _activate_benchmark_columns(benchmarks: list[dict[str, Any]]) -> None:
+    """Persist adaptive revisions for omitted columns used by this operation."""
+    global _wide_schema_plan, _plan_record, _uc_columns
+
+    referenced: set[tuple[str, str, str, str]] = set()
+    for benchmark in benchmarks:
+        sql = benchmark.get("expected_sql") or benchmark.get("sql") or ""
+        if isinstance(sql, list):
+            sql = " ".join(str(part) for part in sql)
+        for item in sql_column_evidence(str(sql), _wide_schema_inventory):
+            referenced.add(tuple(item["column_key"]))
+    omitted = sorted(referenced - active_column_keys(_wide_schema_plan))
+    if not omitted:
+        return
+
+    for column_key in omitted:
+        try:
+            _wide_schema_plan = revise_plan_for_column(
+                _wide_schema_plan,
+                _wide_schema_inventory,
+                column_key,
+                reason="REPAIR_FAILURE",
+                protected_column_keys=referenced,
+            )
+        except ValueError as exc:
+            _log(
+                "Adaptive column activation skipped",
+                column=".".join(column_key),
+                reason=str(exc),
+            )
+            continue
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_plan_record.get("artifact_id"),
+        )
+
+    pending = {
+        tuple(row["column_key"])
+        for asset in _wide_schema_plan.get("assets") or []
+        for row in asset.get("columns") or []
+        if row.get("active") and row.get("profile_status") == "pending"
+    }
+    if pending:
+        profile_result: dict[str, Any] = {}
+        if warehouse_id:
+            from genie_space_optimizer.optimization.wide_schema_profile import (
+                run_bounded_profile,
+            )
+
+            profile_result = run_bounded_profile(
+                w,
+                warehouse_id,
+                _wide_schema_inventory,
+                _wide_schema_plan,
+                run_id=run_id,
+                budget=_wide_schema_profile_budget,
+            )
+            outcomes = profile_result.get("outcomes") or {}
+            write_artifact(
+                spark,
+                run_id,
+                "wide_schema_profile_telemetry",
+                {
+                    "stage": "benchmark_adaptive",
+                    **(profile_result.get("telemetry") or {}),
+                    "asset_statement_counts": profile_result.get(
+                        "asset_statement_counts"
+                    ) or {},
+                },
+                catalog=catalog,
+                schema=schema,
+                stage_name=_TASK_KEY,
+                source_notebook="run_benchmark_qc_and_repair.py",
+                parent_artifact_id=_plan_record.get("artifact_id"),
+            )
+        else:
+            outcomes = {
+                key: {
+                    "profile_status": "metadata_only",
+                    "submitted": False,
+                    "available_metrics": [],
+                }
+                for key in pending
+            }
+        _wide_schema_plan = revise_plan_with_profile_outcomes(
+            _wide_schema_plan,
+            _wide_schema_inventory,
+            outcomes,
+            profiling_budget=_wide_schema_profile_budget,
+        )
+        _plan_record = write_required_artifact(
+            spark,
+            run_id,
+            "wide_schema_selection_plan",
+            _wide_schema_plan,
+            catalog=catalog,
+            schema=schema,
+            stage_name=_TASK_KEY,
+            source_notebook="run_benchmark_qc_and_repair.py",
+            iteration=_wide_schema_plan["revision"],
+            parent_artifact_id=_plan_record.get("artifact_id"),
+        )
+        for asset_id, asset_profile in (profile_result.get("data_profile") or {}).items():
+            current = _config.setdefault("_data_profile", {}).setdefault(
+                asset_id,
+                {"row_count": -1, "columns": {}, "kind": asset_profile.get("kind")},
+            )
+            if asset_profile.get("row_count", -1) >= 0:
+                current["row_count"] = asset_profile["row_count"]
+            current.setdefault("columns", {}).update(asset_profile.get("columns") or {})
+
+    _uc_columns = project_active_inventory(
+        _wide_schema_inventory,
+        _wide_schema_plan,
+    )
+    _config["_uc_columns"] = _uc_columns
+    _config["_wide_schema_plan_hash"] = _wide_schema_plan["plan_hash"]
+    write_artifact(
+        spark,
+        run_id,
+        "space_metadata",
+        build_prompt_matching_context(_config),
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_benchmark_qc_and_repair.py",
+        parent_artifact_id=_plan_record.get("artifact_id"),
+    )
+
+
+_activate_benchmark_columns(_benchmarks)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Bounded inline repair/exclusion (≤ benchmark_repair_max_tries)
+# MAGIC
+# MAGIC Quality-review the set, regenerate or repair the invalid subset, and
+# MAGIC re-review — bounded by `benchmark_repair_max_tries`. The quality review
+# MAGIC includes SQL/data validity, question clarity, and question↔SQL alignment.
+# MAGIC A try is consumed only when ≥1 question is still invalid after
+# MAGIC re-validation (progress §5). Rows that exhaust the budget are excluded
+# MAGIC from this run without being deleted from the live Agent.
+
+# COMMAND ----------
+
+
+_quality_findings_by_key: dict[str, dict] = {}
+_quality_results_by_id: dict[str, dict] = {}
+_rejected_benchmarks_by_id: dict[str, dict] = {}
+_quality_review_status = "complete"
+_semantic_review_coverage = 1.0
+
+
+def _validate_fn(bms: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Comprehensively review ``bms`` and partition into eligible/excluded."""
+    global _quality_review_status, _semantic_review_coverage
+
+    _activate_benchmark_columns(bms)
+    review = review_benchmark_quality(
+        bms,
+        spark,
+        catalog=catalog,
+        schema=schema,
+        w=w,
+        warehouse_id=warehouse_id,
+        config=_config,
+        uc_columns=_uc_columns,
+        deterministic_uc_columns=_deterministic_uc_columns,
+        uc_routines=_uc_routines,
+    )
+    if review.get("review_status") != "complete":
+        _quality_review_status = "degraded"
+    _semantic_review_coverage = min(
+        _semantic_review_coverage,
+        float(review.get("semantic_review_coverage", 0.0) or 0.0),
+    )
+
+    reviewed_question_ids: set[str] = set()
+    for result in review.get("benchmark_results", []):
+        qid = str(result.get("question_id") or result.get("question") or "")
+        if qid:
+            reviewed_question_ids.add(qid)
+            _quality_results_by_id[qid] = result
+    # Re-reviewing a repaired stable ID replaces its prior findings. Without
+    # this reset the final artifact keeps warnings that the repair already
+    # resolved, making the UI report stale proposed changes.
+    for key in list(_quality_findings_by_key):
+        if key.split("|", 1)[0] in reviewed_question_ids:
+            del _quality_findings_by_key[key]
+    for finding in review.get("findings", []):
+        key = "|".join(
+            [
+                str(finding.get("question_id") or ""),
+                str(finding.get("category") or ""),
+                str(finding.get("code") or ""),
+            ]
+        )
+        _quality_findings_by_key[key] = finding
+    valid: list[dict] = []
+    invalid: list[dict] = []
+    for benchmark, result in zip(bms, review.get("benchmark_results", [])):
+        benchmark_id = default_id_of(benchmark)
+        qid = str(
+            result.get("question_id")
+            or benchmark_id
+            or result.get("question")
+            or ""
+        )
+        if result.get("disposition") != "excluded":
+            repair_candidate, _change = build_actionable_warning_repair(
+                benchmark,
+                result,
+            )
+            if (
+                benchmark_policy == "repair_allowed"
+                and repair_candidate is not None
+            ):
+                invalid.append(benchmark)
+            else:
+                valid.append(benchmark)
+                if benchmark_id:
+                    _rejected_benchmarks_by_id.pop(benchmark_id, None)
+                if qid and qid != benchmark_id:
+                    _rejected_benchmarks_by_id.pop(qid, None)
+            continue
+
+        invalid.append(benchmark)
+        rejected = dict(benchmark)
+        errors = [
+            f for f in result.get("findings", []) if f.get("severity") == "error"
+        ]
+        if errors:
+            rejected["validation_reason_code"] = str(errors[0].get("code") or "quality_rejected").lower()
+            rejected["validation_error"] = str(errors[0].get("explanation") or "")[:200]
+        # Generated candidates are repair-loop telemetry, not live or initial
+        # corpus exclusions. Keep only rows that entered QC in the original
+        # working set; candidate churn remains visible in repair_sweeps.
+        if benchmark_id in _initial_benchmarks_by_id:
+            _rejected_benchmarks_by_id[benchmark_id] = rejected
+
+    return valid, invalid
+
+
+def _repair_fn(invalid: list[dict], valid: list[dict]) -> list[dict]:
+    """One repair sweep: apply warning proposals, then replace hard failures.
+
+    Returns only changed warning candidates plus newly synthesized replacements
+    (not the already-valid set), so the bounded loop accumulates rows correctly.
+    """
+    _activate_benchmark_columns(invalid)
+    warning_candidates: list[dict] = []
+    hard_invalid: list[dict] = []
+    for benchmark in invalid:
+        result = _quality_result_for_benchmark(benchmark)
+        candidate, _change = build_actionable_warning_repair(benchmark, result)
+        if candidate is None:
+            hard_invalid.append(benchmark)
+            continue
+        warning_candidates.append(candidate)
+        benchmark_id = _warning_repair_identity(benchmark)
+        if benchmark_id:
+            _warning_repair_rounds_by_id[benchmark_id] = (
+                _warning_repair_rounds_by_id.get(benchmark_id, 0) + 1
+            )
+
+    if not hard_invalid:
+        return warning_candidates
+
+    existing_context = list(valid) + warning_candidates
+    refilled = generate_benchmarks(
+        w, _config, _uc_columns, _uc_tags, _uc_routines, _domain,
+        catalog, schema, spark,
+        target_count=effective_target,
+        existing_benchmarks=existing_context,
+        warehouse_id=warehouse_id,
+        max_benchmark_count=effective_max,
+    )
+    existing_ids = {default_id_of(b) for b in existing_context}
+    generated = [b for b in refilled if default_id_of(b) not in existing_ids]
+    return warning_candidates + generated
+
+
+def _top_up_question_key(benchmark: dict) -> str:
+    question = benchmark.get("question")
+    if isinstance(question, list):
+        question = question[0] if question else ""
+    return " ".join(str(question or "").strip().lower().split())
+
+
+def _generate_top_up_candidates(
+    valid: list[dict],
+    requested_count: int,
+) -> list[dict]:
+    """Generate one synthetic-only batch and remove carried-forward rows."""
+    refilled = generate_benchmarks(
+        w, _config, _uc_columns, _uc_tags, _uc_routines, _domain,
+        catalog, schema, spark,
+        target_count=min(effective_target, len(valid) + requested_count),
+        existing_benchmarks=valid,
+        warehouse_id=warehouse_id,
+        max_benchmark_count=min(effective_max, len(valid) + requested_count),
+    )
+    existing_ids = {default_id_of(row) for row in valid if default_id_of(row)}
+    existing_questions = {
+        question for row in valid if (question := _top_up_question_key(row))
+    }
+    candidates = [
+        candidate
+        for candidate in refilled
+        if (
+            not default_id_of(candidate)
+            or default_id_of(candidate) not in existing_ids
+        )
+        and (
+            not _top_up_question_key(candidate)
+            or _top_up_question_key(candidate) not in existing_questions
+        )
+    ]
+    return candidates[:requested_count]
+
+
+_optimization_eligible = True
+_skip_reason: str | None = None
+_repair_exhausted_ids: list[str] = []
+_top_up_attempts: list[dict] = []
+_top_up_attempts_used = 0
+_top_up_stop_reason = "policy_disabled"
+_top_up_requested_count = 0
+_top_up_generated_count = 0
+_top_up_accepted_count = 0
+_top_up_rejected_count = 0
+_top_up_duplicate_count = 0
+if benchmark_policy == "review_only":
+    _banner("Step 01b — Benchmark Review (no live repair)")
+    _benchmarks, _excluded_benchmarks = _validate_fn(list(_benchmarks))
+    _benchmarks, _review_duplicates = deduplicate_benchmark_corpus(_benchmarks)
+    _duplicate_rejections.extend(_review_duplicates)
+    _repair_tries_used = 0
+    _repaired_ids: list[str] = []
+    _repair_sweeps: list[dict] = []
+    # Every row left in the accepted subset is valid. Corpus size is a
+    # separate optimization-eligibility gate and must not be reported as a SQL
+    # validity failure in the UI.
+    _final_validity = True
+    if len(_benchmarks) < MIN_VALID_BENCHMARK_COUNT:
+        _optimization_eligible = False
+        _skip_reason = "INSUFFICIENT_VALID_BENCHMARKS"
+    _log(
+        "Benchmark review complete",
+        valid_count=len(_benchmarks),
+        excluded_count=len(_excluded_benchmarks) + len(_duplicate_rejections),
+        optimization_eligible=_optimization_eligible,
+    )
+else:
+    try:
+        _banner("Step 01b — Bounded Benchmark Repair")
+        outcome = run_bounded_benchmark_repair(
+            _benchmarks,
+            validate_fn=_validate_fn,
+            repair_fn=_repair_fn,
+            max_tries=benchmark_repair_max_tries,
+        )
+        _benchmarks = outcome.benchmarks
+        _benchmarks, _post_repair_duplicates = deduplicate_benchmark_corpus(
+            _benchmarks,
+        )
+        _duplicate_rejections.extend(_post_repair_duplicates)
+        if _post_repair_duplicates:
+            write_benchmark_mutations(
+                spark,
+                run_id,
+                duplicate_rejection_mutations(_post_repair_duplicates),
+                catalog=catalog,
+                schema=schema,
+            )
+        _repair_tries_used = outcome.tries_used
+        _repair_exhausted_ids = list(outcome.still_invalid_ids)
+        _repair_exhausted_id_set = set(_repair_exhausted_ids)
+        for _excluded in outcome.excluded_benchmarks:
+            _excluded_id = default_id_of(_excluded)
+            if (
+                not _excluded_id
+                or _excluded_id not in _repair_exhausted_id_set
+                or _excluded_id not in _initial_benchmarks_by_id
+            ):
+                continue
+            # The exhausted candidate may contain several unpublished repair
+            # proposals. Ledger the intake state when available so the
+            # identical before/after exclusion record reflects what remains
+            # live, not the last failed proposal.
+            _rejected = dict(
+                _initial_benchmarks_by_id.get(_excluded_id) or _excluded
+            )
+            _rejected["validation_status"] = "excluded"
+            _rejected["validation_reason_code"] = "repair_exhausted"
+            _rejected["validation_error"] = (
+                "Benchmark remained invalid after "
+                f"{outcome.tries_used} repair tries and was excluded from this run"
+            )
+            _rejected_benchmarks_by_id[_excluded_id] = _rejected
+        # ``BenchmarkRepairOutcome`` defines repaired as invalid -> eligible.
+        # The QC artifact's public ``repaired_ids`` is stricter: only report
+        # repaired benchmarks whose final semantic disposition is trusted.
+        # Warning rows may remain evaluation-eligible when no coherent repair
+        # is available, but must not be presented as successfully repaired.
+        _eligible_repaired_ids = set(outcome.repaired_ids)
+        _repaired_ids = [
+            default_id_of(benchmark)
+            for benchmark in _benchmarks
+            if default_id_of(benchmark) in _eligible_repaired_ids
+            and _quality_result_for_benchmark(benchmark).get("disposition")
+            == "passed"
+        ]
+        _repair_sweeps = outcome.sweeps
+        _top_up = run_bounded_benchmark_top_up(
+            _benchmarks,
+            generate_fn=_generate_top_up_candidates,
+            validate_fn=_validate_fn,
+            target_count=effective_target,
+        )
+        _benchmarks = _top_up.benchmarks
+        _top_up_attempts = _top_up.attempts
+        _top_up_attempts_used = _top_up.attempts_used
+        _top_up_stop_reason = _top_up.stop_reason
+        _top_up_requested_count = _top_up.requested_count
+        _top_up_generated_count = _top_up.generated_count
+        _top_up_accepted_count = _top_up.accepted_count
+        _top_up_rejected_count = _top_up.rejected_count
+        _top_up_duplicate_count = _top_up.duplicate_count
+        _final_validity = True
+        require_minimum_valid_benchmarks(
+            _benchmarks,
+            minimum_count=MIN_VALID_BENCHMARK_COUNT,
+            target_count=effective_target,
+            context="bounded benchmark quality review and repair",
+        )
+        _log(
+            "Benchmark repair complete",
+            valid_count=len(_benchmarks),
+            tries_used=_repair_tries_used,
+            repaired=len(_repaired_ids),
+            repair_exhausted=len(_repair_exhausted_ids),
+            top_up_attempts=_top_up_attempts_used,
+            top_up_accepted=_top_up_accepted_count,
+            top_up_stop_reason=_top_up_stop_reason,
+        )
+    except BenchmarkCorpusTooSmallError as exc:
+        # An undersized but otherwise valid corpus is a business skip, not a job
+        # failure. Downstream tasks read optimization_eligible from benchmark_qc.
+        _optimization_eligible = False
+        _skip_reason = exc.terminal_reason
+        _final_validity = True
+        _log(
+            "Benchmark corpus below minimum",
+            valid_count=exc.valid_count,
+            minimum_count=exc.minimum_count,
+            target_count=exc.target_count,
+        )
+    except Exception as exc:
+        _banner("Benchmark Repair FAILED")
+        _log(
+            "Failure details",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        write_failure_stage_safely(
+            spark,
+            run_id,
+            "BENCHMARK_QC_AND_REPAIR",
+            task_key=_TASK_KEY,
+            catalog=catalog,
+            schema=schema,
+            error_message=str(exc),
+        )
+        _diagnostic(
+            "Repair failed",
+            run_id=run_id,
+            log_schema=f"{catalog}.{schema}",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            next_sources=["genie_opt_stages", "genie_opt_artifacts"],
+        )
+        raise
+
+# COMMAND ----------
+
+
+_warning_repairs_applied: list[dict] = []
+for _benchmark in _benchmarks:
+    _benchmark_id = default_id_of(_benchmark)
+    if not _benchmark_id or not _warning_repair_rounds_by_id.get(_benchmark_id):
+        continue
+    _before = _initial_benchmarks_by_id.get(_benchmark_id)
+    if not _before:
+        continue
+    _before_question = str(_before.get("question") or "").strip()
+    _after_question = str(_benchmark.get("question") or "").strip()
+    _before_sql = str(_before.get("expected_sql") or "").strip()
+    _after_sql = str(_benchmark.get("expected_sql") or "").strip()
+    if _before_question == _after_question and _before_sql == _after_sql:
+        continue
+    _warning_repairs_applied.append(
+        {
+            "id": _native_benchmark_id(_benchmark) or _benchmark_id,
+            "question_id": _native_benchmark_id(_benchmark) or _benchmark_id,
+            "question": _after_question,
+            "before_question": _before_question,
+            "after_question": _after_question,
+            "before_sql": _before_sql,
+            "after_sql": _after_sql,
+            "reason": "benchmark_quality_warning_repair",
+        }
+    )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Push validated set to the LIVE space (additive/merge-only)
+# MAGIC
+# MAGIC Reuses the Phase-2 publisher: additive push of the quality-reviewed set,
+# MAGIC 30–40 window recommendation, the §3.6 leakage firewall (in the applier),
+# MAGIC and the §3.5 `genie_opt_benchmark_mutations` ledger. Invalid rows are
+# MAGIC preserved in the live space and recorded as run-local exclusions.
+
+# COMMAND ----------
+
+_push = {}
+_window: dict[str, Any] = {}
+_benchmark_mutation_count = 0
+if benchmark_policy == "repair_allowed" and _benchmarks:
+    try:
+        _banner("Step 01c — Push Benchmarks to Live Space")
+        _push = preflight_push_benchmarks_to_space(
+            w, spark, run_id, space_id, catalog, schema, _benchmarks,
+            rejected_benchmarks=list(_rejected_benchmarks_by_id.values()),
+            changed_benchmarks=_warning_repairs_applied,
+        )
+        _window = _push.get("window", {})
+        _benchmark_mutation_count = int(
+            _push.get("benchmark_mutation_count") or 0
+        )
+        _log(
+            "Push complete",
+            published=_push.get("published_count"),
+            window_status=_window.get("status"),
+            ledger_rows=_push.get("ledger_rows"),
+        )
+    except Exception as exc:
+        _banner("Benchmark Push FAILED")
+        _log("Push failure", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
+        write_failure_stage_safely(
+            spark, run_id, "BENCHMARK_QC_AND_REPAIR",
+            task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
+        )
+        raise
+elif benchmark_policy == "review_only":
+    _count = len(_benchmarks)
+    _window = {
+        "count": _count,
+        "status": (
+            "under_window" if _count < 30
+            else "over_window" if _count > 40
+            else "in_window"
+        ),
+        "recommended_topup": max(30 - _count, 0),
+        "recommended_prune": [],
+    }
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Persist the Delta benchmark handoff + configure tracing
+
+# COMMAND ----------
+
+_persisted_count = len(_benchmarks)
+if _benchmarks:
+    try:
+        ctx_handoff = preflight_persist_benchmark_corpus(
+            w, spark, run_id, space_id, catalog, schema, _domain,
+            _config, _benchmarks, _genie_table_refs, None,
+            max_benchmark_count=effective_max,
+        )
+        _persisted_count = int(ctx_handoff.get("benchmark_count", len(_benchmarks)))
+    except Exception as exc:
+        _banner("Experiment / Dataset Setup FAILED")
+        _log("Failure", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
+        write_failure_stage_safely(
+            spark, run_id, "BENCHMARK_QC_AND_REPAIR",
+            task_key=_TASK_KEY, catalog=catalog, schema=schema, error_message=str(exc),
+        )
+        raise
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Write the benchmark_qc artifact + flow into optimize (or corpus skip)
+
+# COMMAND ----------
+
+
+def _final_quality_result(benchmark: dict) -> dict:
+    return _quality_result_for_benchmark(benchmark)
+
+
+_final_quality_results = [_final_quality_result(b) for b in _benchmarks]
+_quality_counts = summarize_quality_counts(
+    _final_quality_results,
+    additional_excluded=len(_rejected_benchmarks_by_id),
+    duplicate_normalized_question=len(_duplicate_rejections),
+    review_not_run=sum(
+        1
+        for finding in _quality_findings_by_key.values()
+        if finding.get("code") == "REVIEW_NOT_RUN"
+    ),
+)
+_format_coverage = review_benchmark_format_coverage(_benchmarks)
+for _finding_row in _format_coverage.get("findings", []):
+    _finding_key = "|".join(
+        [
+            str(_finding_row.get("question_id") or "__corpus__"),
+            str(_finding_row.get("category") or ""),
+            str(_finding_row.get("code") or ""),
+        ]
+    )
+    _quality_findings_by_key[_finding_key] = _finding_row
+
+_qc_payload: dict[str, Any] = {
+    "run_id": run_id,
+    "benchmark_policy": benchmark_policy,
+    "benchmark_mutation_count": _benchmark_mutation_count,
+    "initial_count": _initial_benchmark_count,
+    "valid_count": len(_benchmarks),
+    "minimum_valid_count": MIN_VALID_BENCHMARK_COUNT,
+    "target_count": effective_target,
+    "persisted_count": _persisted_count,
+    "repair_tries_used": _repair_tries_used,
+    "repaired_ids": _repaired_ids,
+    "repair_sweeps": _repair_sweeps,
+    "repair_exhausted_ids": _repair_exhausted_ids,
+    "repair_exhausted_count": len(_repair_exhausted_ids),
+    "top_up_attempts": _top_up_attempts,
+    "top_up_attempts_used": _top_up_attempts_used,
+    "top_up_max_attempts": DEFAULT_BENCHMARK_TOP_UP_MAX_ATTEMPTS,
+    "top_up_batch_size": DEFAULT_BENCHMARK_TOP_UP_BATCH_SIZE,
+    "top_up_stop_reason": _top_up_stop_reason,
+    "top_up_requested_count": _top_up_requested_count,
+    "top_up_generated_count": _top_up_generated_count,
+    "top_up_accepted_count": _top_up_accepted_count,
+    "top_up_rejected_count": _top_up_rejected_count,
+    "top_up_duplicate_count": _top_up_duplicate_count,
+    "warning_repair_rounds": dict(_warning_repair_rounds_by_id),
+    "warning_repair_count": len(_warning_repairs_applied),
+    "warning_repairs_applied": _warning_repairs_applied,
+    "benchmark_repair_max_tries": benchmark_repair_max_tries,
+    "final_validity": _final_validity,
+    "optimization_eligible": _optimization_eligible,
+    "window": _window,
+    "window_target_min": 30,
+    "window_target_max": 40,
+    "quality_review_version": QUALITY_REVIEW_VERSION,
+    "quality_review_status": _quality_review_status,
+    "semantic_review_coverage": _semantic_review_coverage,
+    "format_coverage": {
+        key: value
+        for key, value in _format_coverage.items()
+        if key != "findings"
+    },
+    "quality_findings": list(_quality_findings_by_key.values()),
+    "quality_counts": _quality_counts,
+    "proposed_changes": [
+        {
+            "question_id": f.get("question_id"),
+            "question": f.get("question"),
+            "proposed_question": f.get("proposed_question"),
+            "proposed_sql": f.get("proposed_sql"),
+            "reason": f.get("code"),
+        }
+        for f in _quality_findings_by_key.values()
+        if f.get("proposed_question") or f.get("proposed_sql")
+    ],
+    "duplicate_rejections": [
+        {
+            "question_id": duplicate.get("id", duplicate.get("question_id", "")),
+            "question": duplicate.get("question", ""),
+            "normalized_question": duplicate.get("duplicate_normalized_question", ""),
+            "retained_question_id": duplicate.get("duplicate_retained_question_id", ""),
+            "reason": "duplicate_normalized_question",
+        }
+        for duplicate in _duplicate_rejections
+    ],
+    # GT-correction candidates folded in here (retired
+    # genie_eval_gt_correction_candidates table — §7 reconciliation).
+    "gt_correction_candidates": [],
+}
+if _skip_reason:
+    _qc_payload["terminal_reason"] = _skip_reason
+
+_finding_code_counts: dict[str, int] = {}
+for _finding in _qc_payload["quality_findings"]:
+    _finding_code = str(_finding.get("code") or "UNKNOWN")
+    _finding_code_counts[_finding_code] = _finding_code_counts.get(_finding_code, 0) + 1
+
+_diagnostic(
+    "Benchmark quality review",
+    run_id=run_id,
+    valid_count=_qc_payload["valid_count"],
+    minimum_valid_count=_qc_payload["minimum_valid_count"],
+    target_count=_qc_payload["target_count"],
+    repair_tries_used=_qc_payload["repair_tries_used"],
+    top_up_attempts_used=_qc_payload["top_up_attempts_used"],
+    top_up_accepted_count=_qc_payload["top_up_accepted_count"],
+    top_up_stop_reason=_qc_payload["top_up_stop_reason"],
+    final_validity=_qc_payload["final_validity"],
+    semantic_review_coverage=_qc_payload["semantic_review_coverage"],
+    quality_counts=_qc_payload["quality_counts"],
+    finding_codes=dict(sorted(_finding_code_counts.items())),
+    window_status=(_qc_payload.get("window") or {}).get("status"),
+)
+
+write_required_artifact(
+    spark, run_id, "benchmark_qc", _qc_payload,
+    catalog=catalog, schema=schema,
+    stage_name=_TASK_KEY, source_notebook="run_benchmark_qc_and_repair.py",
+)
+
+update_run_status(
+    spark,
+    run_id,
+    catalog,
+    schema,
+    benchmark_policy=benchmark_policy,
+    benchmark_mutation_count=_benchmark_mutation_count,
+)
+
+from genie_space_optimizer.optimization.wide_schema_prompt import (
+    drain_prompt_telemetry,
+)
+
+_prompt_telemetry = drain_prompt_telemetry()
+if _prompt_telemetry:
+    write_artifact(
+        spark,
+        run_id,
+        "wide_schema_prompt_telemetry",
+        {"stage": _TASK_KEY, "requests": _prompt_telemetry},
+        catalog=catalog,
+        schema=schema,
+        stage_name=_TASK_KEY,
+        source_notebook="run_benchmark_qc_and_repair.py",
+        parent_artifact_id=_plan_record.get("artifact_id"),
+    )
+
+write_stage(
+    spark, run_id, "BENCHMARK_QC_AND_REPAIR", "COMPLETE",
+    task_key=_TASK_KEY, catalog=catalog, schema=schema,
+    detail={
+        "valid_count": len(_benchmarks),
+        "repair_tries_used": _repair_tries_used,
+        "repair_exhausted_count": len(_repair_exhausted_ids),
+        "top_up_attempts_used": _top_up_attempts_used,
+        "top_up_accepted_count": _top_up_accepted_count,
+        "top_up_stop_reason": _top_up_stop_reason,
+        "window_status": _window.get("status"),
+        "benchmark_policy": benchmark_policy,
+        "benchmark_mutation_count": _benchmark_mutation_count,
+        "optimization_eligible": _optimization_eligible,
+        "terminal_reason": _skip_reason,
+    },
+)
+
+_diagnostic(
+    "Task outcome",
+    run_id=run_id,
+    log_schema=f"{catalog}.{schema}",
+    valid_count=len(_benchmarks),
+    repair_tries_used=_repair_tries_used,
+    top_up_attempts_used=_top_up_attempts_used,
+    top_up_accepted_count=_top_up_accepted_count,
+    top_up_stop_reason=_top_up_stop_reason,
+    published_count=_push.get("published_count"),
+    window_status=_window.get("status"),
+    benchmark_policy=benchmark_policy,
+    benchmark_mutation_count=_benchmark_mutation_count,
+    optimization_eligible=_optimization_eligible,
+    primary_sources=["genie_opt_artifacts", "genie_opt_benchmark_mutations"],
+)
+_banner("Benchmark QC and repair completed")
+dbutils.notebook.exit(json.dumps({
+    "run_id": run_id,
+    "valid_count": len(_benchmarks),
+    "repair_tries_used": _repair_tries_used,
+    "repair_exhausted_count": len(_repair_exhausted_ids),
+    "top_up_attempts_used": _top_up_attempts_used,
+    "top_up_accepted_count": _top_up_accepted_count,
+    "top_up_stop_reason": _top_up_stop_reason,
+    "optimization_eligible": _optimization_eligible,
+    "terminal_reason": _skip_reason,
+}, default=str))

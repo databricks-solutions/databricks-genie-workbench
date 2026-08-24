@@ -1,4 +1,4 @@
-"""IQ scoring engine for Genie Space configurations.
+"""IQ scoring engine for Genie Agent configurations.
 
 Pure-function scoring logic extracted from ``backend/services/scanner.py`` so
 that both the backend scanner service and the GSO optimizer preflight can
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+
+from genie_space_optimizer.common.column_visibility import is_column_hidden
 
 
 # First 10 checks are config checks; the last 2 are optimization checks.
@@ -46,6 +48,120 @@ def _check(checks: list, label: str, passed: bool,
         "detail": detail,
         "severity": severity,
     })
+
+
+_PLACEHOLDER_TEXT = {
+    "",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "todo",
+    "tbd",
+    "unknown",
+    "placeholder",
+    "description",
+}
+
+_VAGUE_DESCRIPTION_TEXT = {
+    "id",
+    "identifier",
+    "key",
+    "date",
+    "string",
+    "number",
+    "integer",
+    "field",
+    "column",
+    "timestamp",
+    "a string",
+    "an id",
+    "id field",
+    "date field",
+    "string field",
+    "number field",
+}
+
+_NOISE_COLUMN_RE = re.compile(
+    r"^(?:"
+    r"id|uuid|guid|hash|.*_hash|.*_key|"
+    r"etl_.*|ingest_.*|load_.*|raw_.*|.*_raw|.*_json|"
+    r"debug_.*|audit_.*|col_\d+|field_\d+|fld_.*|attr_.*"
+    r")$|^(?:created|updated|deleted)_at$",
+    re.IGNORECASE,
+)
+
+
+def _join_text(value) -> str:
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value if v is not None)
+    return str(value or "")
+
+
+def _meaningful_text(value, *, min_chars: int = 8, min_words: int = 2) -> bool:
+    """Return True for non-placeholder, minimally descriptive text."""
+    text = _join_text(value).strip()
+    normalized = re.sub(r"\s+", " ", text).lower()
+    if normalized in _PLACEHOLDER_TEXT or normalized in _VAGUE_DESCRIPTION_TEXT:
+        return False
+    words = re.findall(r"[A-Za-z0-9]+", text)
+    return len(text) >= min_chars and len(words) >= min_words
+
+
+def _column_name(col: dict) -> str:
+    return str(col.get("column_name") or col.get("name") or "").strip()
+
+
+def _visible_columns_for_table(table: dict) -> list[dict]:
+    """Return visible columns/column_configs, de-duplicated by column name."""
+    by_name: dict[str, dict] = {}
+    unnamed: list[dict] = []
+    for col in table.get("columns", []) + table.get("column_configs", []):
+        if is_column_hidden(col):
+            continue
+        name = _column_name(col)
+        if not name:
+            unnamed.append(col)
+            continue
+        key = name.lower()
+        existing = by_name.get(key)
+        if existing is None:
+            by_name[key] = col
+            continue
+        # Preserve the richer duplicate entry when columns + column_configs
+        # both mention the same physical column.
+        if (not (existing.get("description") or existing.get("comment"))) and (
+            col.get("description") or col.get("comment")
+        ):
+            by_name[key] = col
+    return list(by_name.values()) + unnamed
+
+
+def _all_visible_columns(tables: list[dict]) -> list[tuple[dict, dict]]:
+    return [
+        (table, col)
+        for table in tables
+        for col in _visible_columns_for_table(table)
+    ]
+
+
+def _sql_guidance_counts(instructions: dict) -> dict[str, int]:
+    sql_snippets = instructions.get("sql_snippets", {}) or {}
+    return {
+        "examples": len(instructions.get("example_question_sqls", []) or []),
+        "functions": len(instructions.get("sql_functions", []) or []),
+        "expressions": len(sql_snippets.get("expressions", []) or []),
+        "measures": len(sql_snippets.get("measures", []) or []),
+        "filters": len(sql_snippets.get("filters", []) or []),
+    }
+
+
+def _has_sql_guidance_artifact(counts: dict[str, int]) -> bool:
+    return any(counts.get(key, 0) > 0 for key in counts)
+
+
+def _looks_like_noise_column(name: str) -> bool:
+    return bool(_NOISE_COLUMN_RE.search(name.strip()))
 
 
 _SQL_IN_TEXT_RE = re.compile(
@@ -192,7 +308,7 @@ def sql_in_text_findings(text: str) -> list[str]:
 
 
 def calculate_score(space_data: dict, optimization_run: dict | None = None) -> dict:
-    """Calculate IQ score for a Genie Space configuration.
+    """Calculate IQ score for a Genie Agent configuration.
 
     Returns a dict with:
         - score: int (0-12)
@@ -208,30 +324,43 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     warnings = []
     warning_next_steps = []
 
-    tables = space_data.get("data_sources", {}).get("tables", [])
-    metric_views = space_data.get("data_sources", {}).get("metric_views", [])
+    data_sources = space_data.get("data_sources", {})
+    instructions = space_data.get("instructions", {})
+    tables = data_sources.get("tables", [])
+    metric_views = data_sources.get("metric_views", [])
     total_sources = len(tables) + len(metric_views)
 
     # --- Config checks (1-10) ---
 
-    # 1. Data sources exist (tables or metric views)
-    has_data_sources = bool(tables) or bool(metric_views)
-    ds_parts = []
-    if tables:
-        ds_parts.append(f"{len(tables)} table(s)")
-    if metric_views:
-        ds_parts.append(f"{len(metric_views)} metric view(s)")
-    _check(checks, "Data sources exist", has_data_sources,
-           detail=", ".join(ds_parts) + " configured" if has_data_sources else "No tables or metric views configured")
-    if not has_data_sources:
-        findings.append("No tables or metric views configured")
-        next_steps.append("Add at least one table or metric view to your Genie Space")
+    # 1. Agent description
+    description = space_data.get("description")
+    has_description = _meaningful_text(description, min_chars=30, min_words=5)
+    desc_text = _join_text(description).strip()
+    detail = (
+        f"{len(desc_text)} chars"
+        if desc_text
+        else "No agent description configured"
+    )
+    severity = "fail"
+    if has_description:
+        severity = "warning" if len(desc_text) < 100 else "pass"
+        if severity == "warning":
+            detail += " — add domain, audience, and scope details"
+    _check(checks, "Agent description", has_description, detail=detail, severity=severity)
+    if not has_description:
+        findings.append("Missing or placeholder agent description")
+        next_steps.append("Add an agent description that defines the domain, audience, and scope")
+    elif severity == "warning":
+        warnings.append(detail)
+        warning_next_steps.append("Expand the agent description with domain, audience, and guardrails")
 
     # 2. Table descriptions — require ≥80% coverage (Gap 2)
     #    Auto-pass when no tables (metric-view-only spaces manage descriptions in UC).
     if tables:
         described_tables = sum(
-            1 for t in tables if t.get("description") or t.get("comment")
+            1
+            for t in tables
+            if _meaningful_text(t.get("description") or t.get("comment"))
         )
         total_tables = len(tables)
         pct = described_tables / total_tables
@@ -250,26 +379,27 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
             warnings.append(detail)
             warning_next_steps.append("Add descriptions to remaining tables for better Intent Agent routing")
     elif metric_views:
-        _check(checks, "Table descriptions", True, detail="Metric-view-only space — descriptions managed in Unity Catalog", severity="pass")
+        _check(checks, "Table descriptions", True, detail="Metric-view-only agent — descriptions managed in Unity Catalog", severity="pass")
     else:
         _check(checks, "Table descriptions", False, detail="No data sources configured", severity="fail")
 
     # 3. Column descriptions — require ≥50% coverage (Gap 1)
     #    Auto-pass when no tables (metric-view-only spaces manage columns in UC).
     if tables:
-        total_cols = 0
-        described_cols = 0
+        visible_columns = _all_visible_columns(tables)
+        total_cols = len(visible_columns)
+        described_cols = sum(
+            1
+            for _, col in visible_columns
+            if _meaningful_text(col.get("description") or col.get("comment"))
+        )
         has_synonyms = False
-        for t in tables:
-            for col in t.get("columns", []) + t.get("column_configs", []):
-                total_cols += 1
-                if col.get("description") or col.get("comment"):
-                    described_cols += 1
-                if col.get("synonyms"):
-                    has_synonyms = True
+        for _, col in visible_columns:
+            if col.get("synonyms"):
+                has_synonyms = True
         pct = described_cols / total_cols if total_cols > 0 else 0
         passed = pct >= 0.50
-        detail = f"{described_cols}/{total_cols} columns have descriptions ({pct:.0%})"
+        detail = f"{described_cols}/{total_cols} visible columns have descriptions ({pct:.0%})"
         if not passed:
             detail += " — 50%+ required"
         severity = "fail" if not passed else ("warning" if pct < 0.80 else "pass")
@@ -287,12 +417,12 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
             warnings.append("No column synonyms defined")
             warning_next_steps.append("Add synonyms for columns with abbreviated or technical names")
     elif metric_views:
-        _check(checks, "Column descriptions", True, detail="Metric-view-only space — columns managed in Unity Catalog", severity="pass")
+        _check(checks, "Column descriptions", True, detail="Metric-view-only agent — columns managed in Unity Catalog", severity="pass")
     else:
         _check(checks, "Column descriptions", False, detail="No data sources configured", severity="fail")
 
     # 4. Text instructions > 50 chars (Gap 6: length + SQL-in-text warnings)
-    text_instructions = space_data.get("instructions", {}).get("text_instructions", [])
+    text_instructions = instructions.get("text_instructions", [])
     total_chars = 0
     all_text = ""
     for t in text_instructions:
@@ -333,82 +463,92 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         warning_next_steps.append("Restructure text instructions for optimal LLM context usage")
 
     # 5. Join specifications
-    join_specs = space_data.get("instructions", {}).get("join_specs", [])
-    passed = bool(join_specs)
-    detail = f"{len(join_specs)} join spec(s) for {total_sources} data source(s)" if passed else None
-    _check(checks, "Join specifications", passed, detail=detail)
-    if not passed and total_sources > 1:
-        findings.append("No join specifications for multi-source space")
-        next_steps.append("Add join specifications to help Genie correctly join your data sources")
+    #
+    # Join specs describe relationships between ordinary tables. Metric views
+    # already encode their source relationships and cannot be joined directly
+    # at query time, so they must not increase the required join-spec count.
+    join_specs = instructions.get("join_specs", [])
+    join_count = len(join_specs)
+    table_count = len(tables)
+    passed = total_sources > 0 and (table_count <= 1 or join_count > 0)
+    detail = f"{join_count} join spec(s) for {table_count} table(s)"
+    severity = "pass" if passed else "fail"
+    if passed and table_count > 1 and join_count < table_count - 1:
+        severity = "warning"
+        detail += " — relationship coverage may be incomplete"
+    _check(checks, "Join specifications", passed, detail=detail, severity=severity)
+    if not passed and table_count > 1:
+        findings.append("No join specifications for multi-table agent")
+        next_steps.append("Add join specifications to help Genie correctly join your tables")
+    elif severity == "warning":
+        warnings.append(detail)
+        warning_next_steps.append("Add join specs for the remaining key relationships between tables")
 
     # 6. Data source count 1-12 (Gap 10: adjusted from 1-10)
     passed = 1 <= total_sources <= 12
     detail = f"{total_sources} data source(s)"
-    severity = "pass"
+    severity = "pass" if passed else "fail"
+    if passed and total_sources >= 9:
+        detail += " — consider focused agents for broad domains"
+        severity = "warning"
     if not passed and total_sources > 12:
         detail += " — consider multi-room architecture"
-        severity = "fail"
     _check(checks, "Data source count 1-12", passed, detail=detail, severity=severity)
-    if not passed and (tables or metric_views):
+    if not passed and total_sources == 0:
+        findings.append("No tables or metric views configured")
+        next_steps.append("Add at least one table or metric view to your Genie Agent")
+    elif not passed and (tables or metric_views):
         if total_sources > 12:
             findings.append(f"{total_sources} data sources — more than 12 reduces Genie accuracy")
             next_steps.append("Consider multi-room architecture or reducing to the most relevant 5-12 data sources")
-
-    # 7. 8+ example SQLs (Gap 4: tightened from 5; Gap 9: usage_guidance check)
-    example_sqls = space_data.get("instructions", {}).get("example_question_sqls", [])
-    n_examples = len(example_sqls)
-    passed = n_examples >= 8
-    detail = f"{n_examples} example SQLs"
-    severity = "pass" if passed else "fail"
-    if not passed:
-        detail += " — 8+ required"
-    elif n_examples < 10:
-        detail += " — 10-15 is the sweet spot for largest accuracy jump"
-        severity = "warning"
-    _check(checks, "8+ example SQLs", passed, detail=detail, severity=severity)
-    if not passed:
-        if example_sqls:
-            findings.append(f"Only {n_examples} SQL example(s) — add at least 8")
-        else:
-            findings.append("No example SQL questions configured")
-        next_steps.append("Add at least 8 example SQL questions covering diverse query patterns")
     elif severity == "warning":
         warnings.append(detail)
-        warning_next_steps.append("Adding 10-15 example SQLs provides the largest single accuracy improvement")
-    # Advisory: usage_guidance (Gap 9)
-    if example_sqls:
+        warning_next_steps.append("Consider splitting broad domains into smaller focused Genie Agents")
+
+    # 7. SQL guidance artifacts (SQL snippets/functions or example SQLs)
+    example_sqls = instructions.get("example_question_sqls", [])
+    guidance_counts = _sql_guidance_counts(instructions)
+    n_examples = guidance_counts["examples"]
+    passed = _has_sql_guidance_artifact(guidance_counts)
+    detail = (
+        f"{guidance_counts['functions']} functions, "
+        f"{guidance_counts['measures']} measures, "
+        f"{guidance_counts['filters']} filters, "
+        f"{guidance_counts['expressions']} expressions, "
+        f"{n_examples} example SQLs"
+    )
+    severity = "pass" if passed else "fail"
+    guidance_warnings: list[str] = []
+    if not passed:
+        detail += " — at least one required"
+    else:
+        if (
+            guidance_counts["functions"]
+            or guidance_counts["expressions"]
+            or guidance_counts["measures"]
+            or guidance_counts["filters"]
+        ) and (not guidance_counts["filters"] or not guidance_counts["measures"]):
+            missing = []
+            if not guidance_counts["filters"]:
+                missing.append("filters")
+            if not guidance_counts["measures"]:
+                missing.append("measures")
+            guidance_warnings.append(f"Add {' and '.join(missing)} for better SQL snippet coverage")
         missing_guidance = sum(1 for e in example_sqls if not e.get("usage_guidance"))
         if missing_guidance > len(example_sqls) / 2:
-            warnings.append(f"{missing_guidance}/{n_examples} example SQLs lack usage_guidance")
-            warning_next_steps.append("Add descriptions of when each example should be applied")
-
-    # 8. SQL snippets (Gap 8: type breakdown detail)
-    sql_functions = space_data.get("instructions", {}).get("sql_functions", [])
-    sql_snippets = space_data.get("instructions", {}).get("sql_snippets", {})
-    expressions = sql_snippets.get("expressions", [])
-    measures = sql_snippets.get("measures", [])
-    filters = sql_snippets.get("filters", [])
-    passed = bool(sql_functions or expressions or measures or filters)
-    detail = f"{len(sql_functions)} functions, {len(measures)} measures, {len(filters)} filters, {len(expressions)} expressions"
-    severity = "pass" if passed else "fail"
-    if passed and (not filters or not measures):
-        missing = []
-        if not filters:
-            missing.append("filters")
-        if not measures:
-            missing.append("measures")
-        detail += f" — add {' and '.join(missing)} for better coverage"
+            guidance_warnings.append(f"{missing_guidance}/{n_examples} example SQLs lack usage_guidance")
+    if guidance_warnings:
         severity = "warning"
-    _check(checks, "SQL snippets (functions/expressions/measures/filters)", passed,
-           detail=detail, severity=severity)
+        detail += f" — {len(guidance_warnings)} warning(s)"
+    _check(checks, "SQL guidance artifacts", passed, detail=detail, severity=severity)
     if not passed:
-        findings.append("No SQL functions, expressions, measures, or filters configured")
-        next_steps.append("Add SQL snippets for complex business logic, common filters, and calculated measures")
-    elif severity == "warning":
-        warnings.append(detail)
-        warning_next_steps.append("Add missing SQL snippet types for better query coverage")
+        findings.append("No SQL guidance artifacts configured")
+        next_steps.append("Add at least one SQL snippet, SQL function, or example SQL")
+    for w in guidance_warnings:
+        warnings.append(w)
+        warning_next_steps.append("Improve SQL guidance artifacts with reusable snippets and usage guidance")
 
-    # 9. Entity/format matching (Gap 5: count + RLS detection)
+    # 8. Entity/format matching (Gap 5: count + RLS detection)
     entity_count = 0
     format_count = 0
     rls_tables = []
@@ -429,10 +569,10 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     severity = "pass" if entity_or_format else "fail"
     if entity_or_format:
         if entity_count > 120:
-            detail += f" — exceeds 120/space limit, excess will be ignored"
+            detail += f" — exceeds 120/agent limit, excess will be ignored"
             severity = "warning"
         elif entity_count > 100:
-            detail += f" — approaching 120/space limit"
+            detail += f" — approaching 120/agent limit"
             severity = "warning"
     _check(checks, "Entity/format matching", entity_or_format, detail=detail, severity=severity)
     if not entity_or_format and (tables or metric_views):
@@ -440,25 +580,69 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         next_steps.append("Enable entity matching on categorical columns and format assistance on date/number columns")
     elif severity == "warning":
         warnings.append(detail)
-        warning_next_steps.append("Reduce entity matching columns to stay within the 120/space limit")
+        warning_next_steps.append("Reduce entity matching columns to stay within the 120/agent limit")
     # Advisory: RLS disables entity matching silently
     if rls_tables and entity_or_format:
         rls_msg = f"Tables with row-level security ({', '.join(rls_tables[:3])}) — entity matching is silently disabled for these"
         warnings.append(rls_msg)
         warning_next_steps.append("Entity matching won't work on tables with row filters or column masks")
 
-    # 10. 10+ benchmark questions
+    # 9. 10+ benchmark questions
     benchmarks = space_data.get("benchmarks", {}).get("questions", [])
     n_benchmarks = len(benchmarks)
     passed = n_benchmarks >= 10
     detail = f"{n_benchmarks} benchmark question(s)"
-    _check(checks, "10+ benchmark questions", passed, detail=detail)
+    severity = "pass" if passed else "fail"
+    if passed and n_benchmarks < 20:
+        detail += " — add more for broader coverage"
+        severity = "warning"
+    _check(checks, "10+ benchmark questions", passed, detail=detail, severity=severity)
     if not passed:
         if benchmarks:
             findings.append(f"Only {n_benchmarks} benchmark question(s) — add at least 10")
         else:
             findings.append("No benchmark questions configured")
         next_steps.append("Add at least 10 benchmark questions to measure and track Genie accuracy")
+    elif severity == "warning":
+        warnings.append(detail)
+        warning_next_steps.append("Add more benchmark questions across distinct query shapes")
+
+    # 10. Column visibility / noise control
+    visible_columns = _all_visible_columns(tables)
+    visible_col_count = len(visible_columns)
+    noisy_columns = [
+        _column_name(col)
+        for _, col in visible_columns
+        if _looks_like_noise_column(_column_name(col))
+    ]
+    noisy_count = len(noisy_columns)
+    noisy_ratio = noisy_count / visible_col_count if visible_col_count else 0
+    max_table_visible = max(
+        (len(_visible_columns_for_table(t)) for t in tables),
+        default=0,
+    )
+    passed = total_sources > 0 and not (visible_col_count >= 20 and noisy_ratio >= 0.30)
+    detail = f"{noisy_count}/{visible_col_count} visible columns look internal/noisy ({noisy_ratio:.0%})"
+    severity = "pass" if passed else "fail"
+    visibility_warnings: list[str] = []
+    if passed and visible_col_count >= 20 and noisy_ratio >= 0.15:
+        visibility_warnings.append("review noisy internal columns")
+    if passed and max_table_visible > 75:
+        visibility_warnings.append(f"a table exposes {max_table_visible} columns")
+    if visibility_warnings:
+        severity = "warning"
+        detail += " — " + "; ".join(visibility_warnings)
+    _check(checks, "Column visibility / noise control", passed, detail=detail, severity=severity)
+    if not passed:
+        sample = ", ".join(noisy_columns[:5])
+        findings.append(
+            f"{noisy_count}/{visible_col_count} visible columns look internal/noisy"
+            + (f" ({sample})" if sample else "")
+        )
+        next_steps.append("Hide noisy internal, audit, raw, ingestion, and opaque technical columns")
+    elif visibility_warnings:
+        warnings.append(detail)
+        warning_next_steps.append("Review visible columns and hide fields that do not help users ask questions")
 
     # --- Optimization checks (11-12) ---
 
@@ -466,7 +650,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     has_run = bool(optimization_run)
     _check(checks, "Optimization workflow completed", has_run)
     if not has_run:
-        findings.append("Space has not been through the optimization workflow")
+        findings.append("Agent has not been through the optimization workflow")
         next_steps.append("Benchmark and improve Genie's accuracy with Optimization")
 
     # 12. Accuracy ≥ 85%

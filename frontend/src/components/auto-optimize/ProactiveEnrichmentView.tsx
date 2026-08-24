@@ -32,7 +32,7 @@ const SECTIONS = [
   },
   {
     key: "space_metadata",
-    label: "Space Metadata",
+    label: "Agent Metadata",
     types: ["proactive_space_description", "proactive_sample_question"],
   },
 ] as const

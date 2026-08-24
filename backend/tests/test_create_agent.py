@@ -12,6 +12,7 @@ def _make_session(space_id=None, space_url=None):
         space_id=space_id,
         space_url=space_url,
         space_config={"data_sources": {"tables": []}},
+        llm_model=None,
     )
 
 
@@ -67,7 +68,7 @@ class TestCreateSpaceIdempotency:
     def test_repair_status_is_not_emitted_as_final_tool_result(self, monkeypatch):
         async def run():
             agent = CreateGenieAgent.__new__(CreateGenieAgent)
-            agent._repair_config = lambda config, err: {"data_sources": {"tables": [{"identifier": "c.s.t"}]}}
+            agent._repair_config = lambda config, err, model=None: {"data_sources": {"tables": [{"identifier": "c.s.t"}]}}
             session = _make_session(space_id=None)
 
             events = []
@@ -97,7 +98,7 @@ class TestCreateSpaceIdempotency:
     def test_repair_retry_failure_emits_error_event(self, monkeypatch):
         async def run():
             agent = CreateGenieAgent.__new__(CreateGenieAgent)
-            agent._repair_config = lambda config, err: {"data_sources": {"tables": [{"identifier": "c.s.t"}]}}
+            agent._repair_config = lambda config, err, model=None: {"data_sources": {"tables": [{"identifier": "c.s.t"}]}}
             session = _make_session(space_id=None)
 
             events = []

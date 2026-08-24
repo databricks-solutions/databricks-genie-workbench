@@ -2,7 +2,7 @@
 Optimization Applier — patch rendering, application, and rollback.
 
 Converts optimizer proposals into Patch DSL actions, applies them to the
-Genie Space config (and optionally UC artifacts), and supports full
+Genie Agent config (and optionally UC artifacts), and supports full
 snapshot-based rollback.
 """
 
@@ -13,9 +13,12 @@ import json
 import logging
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from databricks.sdk import WorkspaceClient
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
 
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
@@ -62,21 +65,23 @@ from genie_space_optimizer.common.genie_client import (
     patch_space_config,
     sort_genie_config,
     strip_non_exportable_fields,
+    update_space_description,
 )
-from genie_space_optimizer.optimization.optimizer import _resolve_scope
+from genie_space_optimizer.optimization.optimizer_utils import _resolve_scope
 from genie_space_optimizer.optimization.applier_audit import (
     ApplierDecision,
     build_applier_decision,
 )
+from genie_space_optimizer.common.column_visibility import is_column_hidden
 
 logger = logging.getLogger(__name__)
 
 
-_MAX_INSTRUCTION_CHARS = 24_500  # Genie Space API enforces 25 000; leave margin
+_MAX_INSTRUCTION_CHARS = 24_500  # Genie Agent API enforces 25 000; leave margin
 
 
 # ── Join Spec Helpers ─────────────────────────────────────────────────
-# The Genie Space API uses nested objects for join specs:
+# The Genie Agent API uses nested objects for join specs:
 #   {"left": {"identifier": "...", "alias": "..."}, "right": {...}, "sql": [...]}
 # These helpers extract identifiers for matching across add/update/remove ops.
 
@@ -250,7 +255,7 @@ def _canonicalize_and_dedup_instructions(config: dict) -> bool:
         return False
 
     # Lazy import to break a circular at module load.
-    from genie_space_optimizer.optimization.optimizer import (
+    from genie_space_optimizer.optimization.optimizer_utils import (
         _sanitize_plaintext_instructions,
     )
 
@@ -1102,7 +1107,7 @@ def rewrite_instructions_from_miner_output(
     """Span-based canonical rewrite of instruction prose.
 
     Called once per miner invocation, AFTER every target-specific applier
-    has committed its changes to the Genie Space config. Produces the new
+    has committed its changes to the Genie Agent config. Produces the new
     ``text_instructions`` content that reflects:
 
     - Removal of every promoted span (``applied_spans``).
@@ -1319,11 +1324,9 @@ def _semantic_measure_names(config: dict, identifier: str) -> set[str]:
 
 
 def _is_hidden(cc: dict) -> bool:
-    if cc.get("visible") is False:
-        return True
-    if cc.get("exclude") is True:
-        return True
-    return False
+    # Delegated to the shared visibility helper so the applier, IQ scan, and
+    # the SQL-generation / benchmark paths agree on what counts as hidden.
+    return is_column_hidden(cc)
 
 
 def _table_has_rls(tbl_dict: dict) -> bool:
@@ -1552,7 +1555,7 @@ def _ensure_column_configs_from_uc(
 ) -> int:
     """Populate column_configs from UC metadata for columns not yet present.
 
-    The Genie Space API only returns column_configs for explicitly configured
+    The Genie Agent API only returns column_configs for explicitly configured
     columns. For unconfigured spaces every table has column_configs: [].
     This bootstraps entries so that format assistance and entity matching
     loops have something to iterate over.
@@ -1595,7 +1598,7 @@ def auto_apply_prompt_matching(
     """Enable format assistance and entity matching as a best-practice step.
 
     Operates deterministically (no LLM calls).  Mutates ``config`` in-place
-    and PATCHes the Genie Space via the API.
+    and PATCHes the Genie Agent via the API.
 
     When ``ENABLE_SMARTER_SCORING=True`` (default) the scoring path uses
     the profile / benchmarks / RLS-audit-aware scorer and **filters**
@@ -1718,6 +1721,7 @@ def auto_apply_prompt_matching(
     # work both directions — enable new winners AND disable existing slots
     # that no longer score highly (PII previously slotted, RLS added, etc.).
     all_scored: list[tuple[str, str, str, float, str]] = []
+    protected_unknown_type: set[tuple[str, str]] = set()
     for tbl in tables + metric_views:
         identifier = tbl.get("identifier", "")
         short_name = _table_short_name(identifier)
@@ -1741,7 +1745,31 @@ def auto_apply_prompt_matching(
                     "table": identifier,
                     "column": col_name,
                 })
-            dtype = type_lookup.get((short_name.lower(), col_name.lower()), "")
+            dtype = type_lookup.get(
+                (short_name.lower(), col_name.lower()),
+                str(cc.get("data_type") or ""),
+            )
+            if not dtype:
+                # A partial UC metadata fetch must never disable an existing
+                # value dictionary merely because this run could not prove the
+                # column type. Preserve a still-eligible slot and reserve its
+                # capacity, while continuing to reclaim known-bad PII/RLS/etc.
+                if cc.get("enable_entity_matching"):
+                    score, reason = _score(
+                        col_name,
+                        _column_description(cc),
+                        dtype,
+                        identifier,
+                        table_rls,
+                        _column_has_rls(cc),
+                    )
+                    if score <= 0.0:
+                        all_scored.append(
+                            (identifier, col_name, dtype, score, reason)
+                        )
+                    else:
+                        protected_unknown_type.add((identifier, col_name))
+                continue
             # MV measure columns opt out of EM entirely (numeric aggregates
             # don't have meaningful value dictionaries).
             if is_mv and (
@@ -1772,7 +1800,11 @@ def auto_apply_prompt_matching(
     candidates.sort(key=lambda x: (-x[3], x[0].lower(), x[1].lower()))
 
     # ── 3. Target = top-120 ──────────────────────────────────────────
-    selected = candidates[:MAX_VALUE_DICTIONARY_COLUMNS]
+    available_slots = max(
+        0,
+        MAX_VALUE_DICTIONARY_COLUMNS - len(protected_unknown_type),
+    )
+    selected = candidates[:available_slots]
     target_set: set[tuple[str, str]] = {
         (ident, col) for ident, col, _, _, _ in selected
     }
@@ -1791,8 +1823,9 @@ def auto_apply_prompt_matching(
 
     # ── 5. Diff ──────────────────────────────────────────────────────
     to_enable = target_set - current_set
-    to_disable = current_set - target_set
-    kept = target_set & current_set
+    to_disable = (current_set - target_set) - protected_unknown_type
+    kept = (target_set & current_set) | (current_set & protected_unknown_type)
+    effective_target_set = target_set | (current_set & protected_unknown_type)
 
     # Build a deterministic dry-run view (sorted by score DESC).
     _enable_sorted = sorted(
@@ -1895,7 +1928,7 @@ def auto_apply_prompt_matching(
                     + ("  (displaced by higher-scoring candidates)"
                        if to_disable else ""))
     em_lines.append(
-        f"    Net slots: {len(target_set):3d} / {MAX_VALUE_DICTIONARY_COLUMNS} max"
+        f"    Net slots: {len(effective_target_set):3d} / {MAX_VALUE_DICTIONARY_COLUMNS} max"
         + ("  (no changes)" if not to_enable and not to_disable else "")
     )
     if _enable_sorted:
@@ -1944,7 +1977,7 @@ def auto_apply_prompt_matching(
     print(
         f"Prompt matching auto-config: format assistance on {fa_count} columns, "
         f"entity matching enabled on {em_count} + disabled on {em_disabled} "
-        f"({len(target_set)}/{MAX_VALUE_DICTIONARY_COLUMNS} slots in use)"
+        f"({len(effective_target_set)}/{MAX_VALUE_DICTIONARY_COLUMNS} slots in use)"
     )
 
     return {
@@ -3038,6 +3071,24 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
         )
 
     # ── Descriptions ──────────────────────────────────────────────
+    if patch_type == "update_space_description":
+        target = "space.description"
+        return action(
+            json.dumps({
+                "op": "update",
+                "section": "space_metadata",
+                "field": "description",
+                "old_text": old_text,
+                "new_text": new_text,
+            }),
+            json.dumps({
+                "op": "update",
+                "section": "space_metadata",
+                "field": "description",
+                "old_text": new_text,
+                "new_text": old_text,
+            }),
+        )
     if patch_type == "add_description":
         return action(
             json.dumps({"op": "add", "section": "descriptions", "target": target, "value": new_text}),
@@ -3356,7 +3407,7 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
 
 
 def _apply_action_to_config(config: dict, action: dict) -> bool:
-    """Apply a single rendered action to a Genie Space config dict in-place.
+    """Apply a single rendered action to a Genie Agent config dict in-place.
 
     Returns True if applied, False if skipped (e.g. old_text guard failed).
     """
@@ -3370,7 +3421,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
 
     # ── Instructions ──────────────────────────────────────────────
     if section == "instructions":
-        from genie_space_optimizer.optimization.optimizer import normalize_instructions
+        from genie_space_optimizer.optimization.optimizer_utils import normalize_instructions
 
         if op == "add":
             text = cmd.get("new_text", "")
@@ -3406,7 +3457,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 return False
             current = _get_general_instructions(config)
             try:
-                from genie_space_optimizer.optimization.optimizer import (
+                from genie_space_optimizer.optimization.optimizer_utils import (
                     _ensure_structured,
                 )
                 structured = _ensure_structured(current, config)
@@ -3462,7 +3513,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             _orig_sections = config.get("_original_instruction_sections")
             if _orig_sections and isinstance(_orig_sections, dict) and text:
                 try:
-                    from genie_space_optimizer.optimization.optimizer import (
+                    from genie_space_optimizer.optimization.optimizer_utils import (
                         _detect_instruction_contradictions,
                         _ensure_structured,
                     )
@@ -3905,6 +3956,9 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
         return False
 
     try:
+        from genie_space_optimizer.common.query_tags import gso_query_tags
+
+        _query_tags = gso_query_tags(purpose="optimization")
         if patch_type == "update_column_description":
             table = cmd.get("table", "")
             column = cmd.get("column", "")
@@ -3919,6 +3973,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=f"ALTER TABLE {table} ALTER COLUMN {column} COMMENT '{escaped}'",
                     warehouse_id=warehouse_id,
                     wait_timeout="30s",
+                    query_tags=_query_tags,
                 )
                 return True
             if table and column and new_text:
@@ -3927,6 +3982,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=f"ALTER TABLE {table} ALTER COLUMN {column} COMMENT '{escaped}'",
                     warehouse_id=warehouse_id,
                     wait_timeout="30s",
+                    query_tags=_query_tags,
                 )
                 return True
         if patch_type == "update_description":
@@ -3938,6 +3994,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=f"COMMENT ON TABLE {table} IS '{escaped}'",
                     warehouse_id=warehouse_id,
                     wait_timeout="30s",
+                    query_tags=_query_tags,
                 )
                 return True
         if patch_type == "update_tvf_sql":
@@ -3947,6 +4004,7 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
                     statement=new_sql,
                     warehouse_id=warehouse_id,
                     wait_timeout="60s",
+                    query_tags=_query_tags,
                 )
                 return True
     except Exception:
@@ -3973,13 +4031,23 @@ def apply_patch_set(
     apply_mode: str = APPLY_MODE,
     deploy_target: str | None = None,
     force_apply: bool = False,
+    benchmark_corpus: "BenchmarkCorpus | None" = None,
 ) -> dict:
-    """Apply a patch set to a Genie Space (and optionally UC artifacts).
+    """Apply a patch set to a Genie Agent (and optionally UC artifacts).
 
     Applies in risk order: LOW -> MEDIUM -> HIGH.
     High-risk patches are queued for manual review unless *force_apply*
     is ``True``, in which case all patches are applied regardless of risk
     (used by the escalation pipeline after confidence-model approval).
+
+    When *benchmark_corpus* is supplied, a last-mile deterministic
+    scored-benchmark Q/A hard-block runs over every ``add_example_sql`` /
+    ``update_example_sql`` patch before anything is applied (v2 §3.6 / D8).
+    This is the final chokepoint on the normal apply path: a patch carrying
+    a verbatim scored-benchmark question/answer is dropped here regardless
+    of which upstream path produced it, so no answer-key Q/A can be
+    persisted as an example SQL even if a caller skipped the proposal-time
+    firewall. No-op when no corpus is supplied (backward compatible).
 
     Returns an ``apply_log`` dict with pre/post snapshots and rollback info.
     """
@@ -3991,6 +4059,37 @@ def apply_patch_set(
     # no longer collapses ASSET ROUTING / AGGREGATION RULES etc. into
     # CONSTRAINTS. Behind ENABLE_REWRITE_SECTION_SPLIT (default True).
     patches = _expand_rewrite_splits(patches)
+
+    # Last-mile deterministic scored-benchmark Q/A hard-block (v2 §3.6 / D8).
+    # Every example-SQL write that reaches the applier is checked against the
+    # scored benchmark corpus, independent of which upstream path produced the
+    # patch. This guarantees the deterministic guard covers the normal apply
+    # path — not only proposal-time validation.
+    leak_dropped_patches: list[dict] = []
+    if benchmark_corpus is not None and len(benchmark_corpus) > 0:
+        from genie_space_optimizer.optimization.leakage import (
+            _EXAMPLE_SQL_PATCH_TYPES,
+            deterministic_scored_benchmark_qa_leak,
+        )
+
+        _kept_patches: list[dict] = []
+        for _p in patches:
+            _pt = str(_p.get("type") or _p.get("patch_type") or "")
+            if _pt in _EXAMPLE_SQL_PATCH_TYPES:
+                _blk, _why = deterministic_scored_benchmark_qa_leak(_p, benchmark_corpus)
+                if _blk:
+                    _dropped = dict(_p)
+                    _dropped["drop_reason"] = f"benchmark_leak:{_why}"
+                    leak_dropped_patches.append(_dropped)
+                    logger.warning(
+                        "Bug #4 last-mile applier firewall: dropped %s example-SQL "
+                        "patch (%s) — a scored benchmark Q/A may not be seeded as "
+                        "an example SQL",
+                        _pt, _why,
+                    )
+                    continue
+            _kept_patches.append(_p)
+        patches = _kept_patches
 
     # T3.2: infer read/write asset sets per patch and log them so
     # operators can audit ordering. The risk-order sort below is kept
@@ -4073,15 +4172,20 @@ def apply_patch_set(
     early_dropped_patches: list[dict] = []
     patched_objects: set[str] = set()
     # Task 3 — per-patch decision audit, surfaced via apply_log so the
-    # harness can reconcile what the cap selected against what the
+    # unified loop can reconcile what the cap selected against what the
     # applier actually applied (Task 4).
     applier_decisions: list[ApplierDecision] = []
 
     for idx in sorted_indices:
         patch = patches[idx]
+        patch_type = str(patch.get("type", ""))
         risk = classify_risk(patch.get("type", ""))
         lever = patch.get("lever", 5)
-        scope = _resolve_scope(lever, apply_mode)
+        scope = (
+            "genie_space"
+            if patch_type == "update_space_description"
+            else _resolve_scope(lever, apply_mode)
+        )
 
         try:
             rendered = render_patch(patch, space_id, config)
@@ -4118,15 +4222,27 @@ def apply_patch_set(
             continue
 
         ok = False
-        if scope in ("genie_config", "both"):
-            ok = _apply_action_to_config(config, rendered)
-        if scope in ("uc_artifact", "both") and w is not None:
-            uc_ok = _apply_action_to_uc(w, rendered)
-            ok = ok or uc_ok
+        if scope == "genie_space":
+            try:
+                cmd = json.loads(rendered.get("command") or "{}")
+                if w is not None:
+                    update_space_description(
+                        w, space_id, str(cmd.get("new_text") or ""),
+                    )
+                ok = True
+            except Exception:
+                logger.exception("Genie Agent metadata action failed for %s", patch_type)
+                ok = False
+        else:
+            if scope in ("genie_config", "both"):
+                ok = _apply_action_to_config(config, rendered)
+            if scope in ("uc_artifact", "both") and w is not None:
+                uc_ok = _apply_action_to_uc(w, rendered)
+                ok = ok or uc_ok
 
         if ok:
             # T2.13: stamp applied provenance on the applied entry so the
-            # harness can persist ``applied_patch_type`` /
+            # unified loop can persist ``applied_patch_type`` /
             # ``applied_patch_detail`` on genie_opt_patches and the
             # pretty-printer can enumerate records accurately. The
             # proposal-side patch_type (pre-downgrade) is preserved as
@@ -4178,6 +4294,27 @@ def apply_patch_set(
                 )
             )
 
+    config_applied = [
+        entry for entry in applied
+        if entry.get("patch", {}).get("type") != "update_space_description"
+    ]
+    if applied and not config_applied:
+        return {
+            "space_id": space_id,
+            "pre_snapshot": pre_snapshot,
+            "post_snapshot": copy.deepcopy(config),
+            "applied": applied,
+            "queued_high": queued_high,
+            "rollback_commands": rollback_commands,
+            "deploy_target": deploy_target,
+            "patched_objects": list(patched_objects),
+            "validation_errors": [],
+            "patch_deployed": True,
+            "patch_error": "",
+            "dropped_patches": early_dropped_patches + leak_dropped_patches,
+            "applier_decisions": [d.__dict__ for d in applier_decisions],
+        }
+
     sort_genie_config(config)
     # D1–D3: write sentinel-wrapped quality instruction blocks. The call is
     # idempotent and always runs — the GSO_APPLY_QUALITY_INSTRUCTIONS=off path
@@ -4190,6 +4327,7 @@ def apply_patch_set(
         count_sql_snippets,
         MAX_INSTRUCTION_SLOTS,
         MAX_SQL_SNIPPETS,
+        normalize_array_fields,
         validate_serialized_space,
     )
 
@@ -4257,6 +4395,12 @@ def apply_patch_set(
     # it guarantees we cannot regress by adding a future runtime key
     # that `is_runtime_key` misses.
     validation_target = strip_non_exportable_fields(copy.deepcopy(config))
+    # Validate the payload we ACTUALLY send: patch_space_config coerces
+    # array-typed fields (description / synonyms / content …) to list[str]
+    # before serializing, so normalize here too. Otherwise a legacy bare
+    # string on the fetched snapshot would trip strict validation here and
+    # block a PATCH that patch_space_config would have sent successfully.
+    normalize_array_fields(validation_target)
     config_ok, validation_errors = validate_serialized_space(
         validation_target, strict=True,
     )
@@ -4278,20 +4422,23 @@ def apply_patch_set(
             "validation_errors": validation_errors,
             "patch_deployed": False,
             "patch_error": f"Validation failed: {validation_errors}",
+            # Surface the last-mile Bug #4 drops even on the validation-fail
+            # path so the dropped set is never silently lost.
+            "dropped_patches": early_dropped_patches + leak_dropped_patches,
         }
 
     patch_deployed = False
     patch_error: str = ""
     dropped_patches: list[dict] = []
 
-    if w is not None and applied:
+    if w is not None and config_applied:
         try:
             patch_space_config(w, space_id, config)
             patch_deployed = True
         except Exception as exc:
             patch_error = str(exc)
             logger.exception(
-                "Failed to PATCH Genie Space config after retries — "
+                "Failed to PATCH Genie Agent config after retries — "
                 "patches were NOT deployed remotely",
             )
 
@@ -4338,6 +4485,8 @@ def apply_patch_set(
                     except Exception as exc2:
                         patch_error = str(exc2)
                         logger.exception("Retry without join specs also failed")
+    elif applied:
+        patch_deployed = True
 
     # Phase 3.4: end-of-pipeline canonicalization + dedup of the
     # instruction text. Single safety net that catches every write path
@@ -4384,8 +4533,8 @@ def apply_patch_set(
         "validation_errors": [],
         "patch_deployed": patch_deployed,
         "patch_error": patch_error,
-        "dropped_patches": dropped_patches + early_dropped_patches,
-        # Task 3 — per-patch applier decision audit so the harness can
+        "dropped_patches": dropped_patches + early_dropped_patches + leak_dropped_patches,
+        # Task 3 — per-patch applier decision audit so the unified loop can
         # reconcile cap-selected vs applier-applied identity sets and
         # operators can see why a patch was dropped without grepping
         # multiple log lines.
@@ -4404,7 +4553,7 @@ def rollback(
     space_id: str,
     metadata_snapshot: dict | None = None,
 ) -> dict:
-    """Restore the Genie Space config to its pre-patch state.
+    """Restore the Genie Agent config to its pre-patch state.
 
     Primary mechanism: replace current config with ``apply_log["pre_snapshot"]``.
     Fallback: execute rollback_commands in reverse order (HIGH -> MEDIUM -> LOW).
@@ -4419,11 +4568,21 @@ def rollback(
 
     restored = copy.deepcopy(pre_snapshot)
 
-    if metadata_snapshot is not None:
-        metadata_snapshot.clear()
-        metadata_snapshot.update(restored)
-
     if w is not None:
+        has_description = isinstance(restored, dict) and "description" in restored
+        live_snapshot: dict | None = None
+        if has_description:
+            try:
+                live_snapshot = fetch_space_config(w, space_id)
+            except Exception:
+                logger.exception("Failed to capture live state before rollback")
+                return {
+                    "status": "error",
+                    "executed_count": 0,
+                    "errors": ["Failed to capture live state before rollback"],
+                    "restored_config": restored,
+                }
+
         try:
             patch_space_config(w, space_id, restored)
         except Exception:
@@ -4434,6 +4593,56 @@ def rollback(
                 "errors": ["Failed to apply rollback via API"],
                 "restored_config": restored,
             }
+
+        if has_description:
+            target_description = restored.get("description")
+            if isinstance(target_description, list):
+                target_description = " ".join(
+                    str(item) for item in target_description if item is not None
+                )
+            else:
+                target_description = "" if target_description is None else str(target_description)
+            try:
+                update_space_description(w, space_id, target_description)
+            except Exception:
+                logger.exception(
+                    "Failed to PATCH rollback description; compensating live state"
+                )
+                compensation_errors: list[str] = []
+                if live_snapshot is not None:
+                    try:
+                        patch_space_config(w, space_id, live_snapshot)
+                    except Exception as exc:
+                        compensation_errors.append(
+                            f"serialized_space compensation failed: {exc}"
+                        )
+                    try:
+                        live_description = live_snapshot.get("description")
+                        if isinstance(live_description, list):
+                            live_description = " ".join(
+                                str(item) for item in live_description if item is not None
+                            )
+                        else:
+                            live_description = (
+                                "" if live_description is None else str(live_description)
+                            )
+                        update_space_description(w, space_id, live_description)
+                    except Exception as exc:
+                        compensation_errors.append(
+                            f"description compensation failed: {exc}"
+                        )
+                errors = ["Failed to apply rollback description via API"]
+                errors.extend(compensation_errors)
+                return {
+                    "status": "error",
+                    "executed_count": 0,
+                    "errors": errors,
+                    "restored_config": restored,
+                }
+
+    if metadata_snapshot is not None:
+        metadata_snapshot.clear()
+        metadata_snapshot.update(restored)
 
     commands = apply_log.get("rollback_commands", [])
     return {
@@ -4447,16 +4656,6 @@ def rollback(
 # ═══════════════════════════════════════════════════════════════════════
 # 9. Validation & Verification
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def validate_patch_set(patches: list[dict], metadata_snapshot: dict) -> tuple[bool, list[str]]:
-    """Validate a patch set before application.
-
-    Delegates to ``optimizer.validate_patch_set`` but adds metadata checks.
-    """
-    from genie_space_optimizer.optimization.optimizer import validate_patch_set as _validate
-
-    return _validate(patches, metadata_snapshot)
 
 
 def _canonical_for_rollback_compare(value: Any) -> Any:

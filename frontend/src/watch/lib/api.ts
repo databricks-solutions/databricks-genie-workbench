@@ -15,6 +15,7 @@ import type {
   SpaceListItem,
   SpaceSummary,
   TopQuery,
+  TrafficGapAnalysis,
   UsageRollup,
   WorkspaceOverview,
 } from '@/watch/types/api'
@@ -106,6 +107,9 @@ export const getSpaceFeedback = (spaceId: string, days = 30, limit = 200) =>
   fetchJson<FeedbackEvent[]>(
     `/spaces/${spaceId}/feedback?days=${days}&limit=${limit}`,
   )
+
+export const getTrafficGaps = (spaceId: string) =>
+  fetchJson<TrafficGapAnalysis>(`/spaces/${spaceId}/traffic-gaps`)
 
 export const getFeedback = (days = 7, limit = 500) =>
   fetchJson<FeedbackTabResponse>(`/feedback?days=${days}&limit=${limit}`)

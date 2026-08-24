@@ -127,6 +127,19 @@ def get_workspace_client() -> WorkspaceClient:
     return _get_default_client()
 
 
+def require_obo_workspace_client() -> WorkspaceClient:
+    """Return only the request's user-authorized client.
+
+    Unlike :func:`get_workspace_client`, this function never falls back to the
+    app service principal. Use it for reads whose visibility is explicitly
+    scoped to the current user's permissions.
+    """
+    obo = _obo_client.get()
+    if obo is None:
+        raise RuntimeError("This operation requires user authorization")
+    return obo
+
+
 def get_service_principal_client() -> WorkspaceClient:
     """Get the service principal client (bypasses OBO).
 

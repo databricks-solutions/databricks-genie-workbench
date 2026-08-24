@@ -9,38 +9,45 @@ The Create Agent is a multi-turn, tool-calling LLM agent that walks users from b
 
 ## How It Works
 
-The agent follows a structured progression through six steps. Each step focuses on gathering specific information before moving to the next:
+The agent follows a structured progression through eight steps. Each step focuses on gathering specific information before moving to the next:
 
 ```mermaid
 flowchart LR
-    req["Requirements<br/>what does the agent<br/>need to do?"] --> ds["Data Sources<br/>which tables and<br/>schemas?"]
-    ds --> insp["Inspection<br/>profile columns ·<br/>assess quality"]
-    insp --> plan["Plan<br/>generate and present<br/>the plan"]
-    plan --> cfg["Config Create<br/>build · validate ·<br/>deploy"]
-    cfg --> post["Post-Creation<br/>summary and next<br/>steps"]
+    req["Requirements"] --> disc["Discovery"]
+    disc --> feas["Feasibility"]
+    feas --> insp["Inspection"]
+    insp --> prof["Profiling"]
+    prof --> plan["Plan"]
+    plan --> cfg["Config Create"]
+    cfg --> post["Post-Creation"]
 ```
 
 ### Step Descriptions
 
 | Step | Label | What Happens |
 |------|-------|-------------|
-| `requirements` | Understanding Requirements | Agent gathers business context, use case, terminology, and target audience |
-| `data_sources` | Discovering Data | Agent browses Unity Catalog (catalogs → schemas → tables) to find relevant tables |
-| `inspection` | Inspecting Tables | Agent profiles columns, assesses data quality, and checks table usage patterns |
-| `plan` | Building Plan | Agent generates a structured plan with tables, questions, example SQLs, benchmarks |
-| `config_create` | Creating Agent | Agent builds the `serialized_space` config, validates it, and creates the Genie Agent |
-| `post_creation` | Done | Agent provides a summary, the agent URL, and suggests next steps (e.g., run IQ Scan) |
+| `requirements` | Understanding requirements | Agent gathers business context, use case, terminology, and target audience |
+| `discovery` | Discovering data sources | Agent searches for tables by keywords from the requirements, or browses Unity Catalog directly when the user knows the path |
+| `feasibility` | Assessing feasibility | LLM-only assessment of whether the discovered data can answer the stated requirements |
+| `inspection` | Inspecting tables | Agent examines table structure and data quality |
+| `profiling` | Profiling the data | Agent profiles columns against the business questions from the requirements step |
+| `plan` | Building plan | Agent generates a structured plan with tables, questions, example SQLs, benchmarks |
+| `config_create` | Generating configuration | Agent builds the `serialized_space` config, validates it, and creates the Genie Agent |
+| `post_creation` | Finalizing agent | Agent provides a summary, the agent URL, and suggests next steps (e.g., run IQ Scan) |
+
+The canonical order is `STEP_ORDER` in `backend/prompts_create/__init__.py`; the display labels are `STEP_LABELS` in `backend/services/create_agent.py`.
 
 Step detection is automatic — the agent infers the current step from conversation history using `detect_step()` in `backend/prompts_create/`.
 
 ## Tool Inventory
 
-The agent has access to 17 tools organized into six categories:
+The agent has access to 19 tools organized into six categories:
 
 ### UC Discovery
 
 | Tool | Purpose |
 |------|---------|
+| `search_tables` | Keyword search across Unity Catalog to find candidate tables from the stated requirements |
 | `discover_catalogs` | List Unity Catalog catalogs accessible to the user |
 | `discover_schemas` | List schemas within a catalog |
 | `discover_tables` | List tables within a catalog.schema |
@@ -53,6 +60,7 @@ The agent has access to 17 tools organized into six categories:
 | `profile_columns` | Statistical profiling: distinct counts, nulls, min/max, sample values |
 | `assess_data_quality` | Data quality assessment: completeness, consistency, anomalies |
 | `profile_table_usage` | Usage patterns: query frequency, access patterns |
+| `assess_readiness` | Judge whether the selected data can answer the requirements (feasibility step) |
 
 ### SQL
 
@@ -65,7 +73,7 @@ The agent has access to 17 tools organized into six categories:
 
 | Tool | Purpose |
 |------|---------|
-| `get_config_schema` | Return the Genie Space JSON schema reference |
+| `get_config_schema` | Return the Genie Agent JSON schema reference |
 | `generate_config` | Build a `serialized_space` config from the plan |
 | `validate_config` | Validate a config against the Genie API schema (errors + warnings) |
 | `update_config` | Modify an existing agent's config |
@@ -81,8 +89,8 @@ The agent has access to 17 tools organized into six categories:
 
 | Tool | Purpose |
 |------|---------|
-| `create_space` | Create a new Genie Space via the Databricks API |
-| `update_space` | Update an existing Genie Space |
+| `create_space` | Create a new Genie Agent via the Databricks API |
+| `update_space` | Update an existing Genie Agent |
 
 ## Parallel Plan Generation
 
@@ -154,7 +162,7 @@ Agent sessions are persisted across page refreshes:
 ## Source Files
 
 - `backend/services/create_agent.py` — agent orchestration and streaming
-- `backend/services/create_agent_tools.py` — all 17 tool definitions
+- `backend/services/create_agent_tools.py` — all 19 tool definitions
 - `backend/services/plan_builder.py` — parallel plan generation
 - `backend/services/create_agent_session.py` — session persistence
 - `backend/routers/create.py` — HTTP endpoints

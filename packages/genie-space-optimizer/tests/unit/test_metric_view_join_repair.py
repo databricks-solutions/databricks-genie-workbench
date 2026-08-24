@@ -17,7 +17,7 @@ import re
 
 import sqlglot
 
-from genie_space_optimizer.optimization.evaluation import (
+from genie_space_optimizer.optimization.benchmarking import (
     _build_schema_contexts,
     _check_metric_view_join_pre,
     _repair_metric_view_join,

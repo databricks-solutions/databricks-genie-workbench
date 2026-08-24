@@ -2,10 +2,10 @@
 # See: https://docs.databricks.com/dev-tools/databricks-apps/
 #
 # Genie Workbench combines:
-#   - GenieRx: LLM-powered analysis and optimization of Genie Spaces
+#   - GenieRx: LLM-powered analysis and optimization of Genie Agents
 #   - GenieIQ: Org-wide scoring with PostgreSQL (Lakebase) persistence
 #
-# Authentication: User-based (OBO) — users can only access Genie Spaces
+# Authentication: User-based (OBO) — users can only access Genie Agents
 # they have permission to manage.
 #
 # The FastAPI server serves both:
@@ -35,8 +35,6 @@ env:
   # ---------------------------------------------------------------------------
   - name: MLFLOW_TRACKING_URI
     value: "databricks"
-  - name: MLFLOW_REGISTRY_URI
-    value: "databricks-uc"
   - name: MLFLOW_EXPERIMENT_ID
     value: "__MLFLOW_EXPERIMENT_ID__"
 
@@ -55,7 +53,7 @@ env:
     valueFrom: sql-warehouse
 
   # ---------------------------------------------------------------------------
-  # Genie Space target directory (where new spaces are created)
+  # Genie Agent target directory (where new spaces are created)
   # Defaults to /Shared/ which is writable by most service principals.
   # Override to a specific folder if needed (e.g. /Workspace/Shared/Analytics/).
   # ---------------------------------------------------------------------------

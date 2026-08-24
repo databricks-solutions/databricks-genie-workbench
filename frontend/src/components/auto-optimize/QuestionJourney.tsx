@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
-import { CheckCircle, XCircle, Filter } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Filter } from "lucide-react"
 import { getAutoOptimizeQuestionResults } from "@/lib/api"
+import { questionState, type QuestionState } from "@/lib/assessment"
+import { attemptColumnLabel } from "@/components/auto-optimize/runDetail"
 import type { GSOIterationResult, GSOQuestionDetail } from "@/types"
 
 interface QuestionJourneyProps {
@@ -13,13 +15,12 @@ type FilterType = "all" | "failing" | "fixed" | "regressed" | "persistent"
 interface QuestionRow {
   question_id: string
   question: string
-  results: Map<number, boolean> // iteration → passed
+  results: Map<number, QuestionState> // iteration → per-question state
   status: "passing" | "failing" | "fixed" | "regressed" | "persistent"
 }
 
 export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
   const [questionData, setQuestionData] = useState<Map<number, GSOQuestionDetail[]>>(new Map())
-  const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<FilterType>("all")
 
   const fullIterations = useMemo(
@@ -27,13 +28,23 @@ export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
     [iterations]
   )
 
-  useEffect(() => {
-    if (fullIterations.length === 0) {
-      setLoading(false)
-      return
-    }
+  // `loading` is true while a fetch is in flight. Seed it from whether there
+  // is anything to fetch, and re-flip it during render when the fetch key
+  // (runId / fullIterations) changes — not in an effect, to avoid cascading
+  // renders. The effect below only fetches and clears loading on completion.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [loading, setLoading] = useState(fullIterations.length > 0)
+  const [prevRunId, setPrevRunId] = useState(runId)
+  const [prevFullIterations, setPrevFullIterations] = useState(fullIterations)
+  if (runId !== prevRunId || fullIterations !== prevFullIterations) {
+    setPrevRunId(runId)
+    setPrevFullIterations(fullIterations)
+    setLoading(fullIterations.length > 0)
+  }
 
-    setLoading(true)
+  useEffect(() => {
+    if (fullIterations.length === 0) return
+
     Promise.all(
       fullIterations.map((it) =>
         getAutoOptimizeQuestionResults(runId, it.iteration).then(
@@ -62,18 +73,19 @@ export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
             status: "passing",
           })
         }
-        questionMap.get(q.question_id)!.results.set(iter, q.passed ?? false)
+        questionMap.get(q.question_id)!.results.set(iter, questionState(q))
       }
     }
 
-    // Determine status based on baseline → final trajectory
+    // Determine status based on baseline → final trajectory. "Passing" means
+    // the official assessment is GOOD; NEEDS_REVIEW and BAD are both not-passing.
     const iterNums = fullIterations.map((it) => it.iteration)
     const baselineIter = iterNums[0]
     const finalIter = iterNums[iterNums.length - 1]
 
     for (const row of questionMap.values()) {
-      const baselinePassed = row.results.get(baselineIter)
-      const finalPassed = row.results.get(finalIter)
+      const baselinePassed = row.results.get(baselineIter) === "passing"
+      const finalPassed = row.results.get(finalIter) === "passing"
 
       if (baselinePassed && finalPassed) {
         row.status = "passing"
@@ -148,9 +160,9 @@ export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-default">
                 <th className="text-left px-3 py-2 text-xs font-medium text-muted">Question</th>
-                {iterNums.map((iter) => (
-                  <th key={iter} className="text-center px-3 py-2 text-xs font-medium text-muted whitespace-nowrap">
-                    {iter === 0 ? "Baseline" : `Iter ${iter}`}
+                {fullIterations.map((it) => (
+                  <th key={it.iteration} className="text-center px-3 py-2 text-xs font-medium text-muted whitespace-nowrap">
+                    {attemptColumnLabel(it)}
                   </th>
                 ))}
                 <th className="text-center px-3 py-2 text-xs font-medium text-muted">Status</th>
@@ -163,13 +175,15 @@ export function QuestionJourney({ runId, iterations }: QuestionJourneyProps) {
                     {row.question || row.question_id}
                   </td>
                   {iterNums.map((iter) => {
-                    const passed = row.results.get(iter)
+                    const st = row.results.get(iter)
                     return (
                       <td key={iter} className="text-center px-3 py-2">
-                        {passed == null ? (
+                        {st == null ? (
                           <span className="text-muted">\u2014</span>
-                        ) : passed ? (
+                        ) : st === "passing" ? (
                           <CheckCircle className="h-4 w-4 text-emerald-500 inline" />
+                        ) : st === "needs_review" ? (
+                          <AlertCircle className="h-4 w-4 text-amber-500 inline" />
                         ) : (
                           <XCircle className="h-4 w-4 text-red-500 inline" />
                         )}

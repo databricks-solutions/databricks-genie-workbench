@@ -12,10 +12,23 @@ from scripts.deploy_lib.apps import (
 )
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
-from scripts.deploy_lib.gso_job import build_job_settings, find_existing_job, upsert_job
+from scripts.deploy_lib.gso_job import (
+    TASKS,
+    build_job_settings,
+    find_existing_job,
+    upload_job_notebooks,
+    upsert_job,
+)
 from scripts.deploy_lib.lakebase import ensure_lakebase, get_database_resource
 from scripts.deploy_lib.uc import update_grants
-from scripts.deploy_lib.workspace_source import mkdirs, should_copy, upload_source_notebook, workspace_api_path
+from scripts.deploy_lib.workspace_source import (
+    mkdirs,
+    prepare_workspace_source,
+    should_copy,
+    upload_source_notebook,
+    validate_python_dependency_sources,
+    workspace_api_path,
+)
 
 
 class FakeApiClient:
@@ -67,22 +80,52 @@ class FakeOp:
         return None
 
 
+class FakeProject:
+    def __init__(self, name, *, delete_time=None):
+        self.name = name
+        self.delete_time = delete_time
+
+
 class FakePostgres:
-    def __init__(self, *, project_exists=True):
+    def __init__(self, *, project_exists=True, soft_deleted=False, reserved_soft_deleted=None):
         self.project_exists = project_exists
+        # When True, get_project returns a project whose delete_time is set —
+        # Lakebase reports soft-deleted projects as if live.
+        self.soft_deleted = soft_deleted
+        # Project names that only surface as soft-deleted via list_projects:
+        # the reservation that makes a same-name create fail after get 404s.
+        self.reserved_soft_deleted = list(reserved_soft_deleted or [])
         self.created_projects = []
         self.created_roles = []
+        self.purged_projects = []
 
     def get_project(self, *, name):
         if not self.project_exists:
             from databricks.sdk.errors import NotFound
 
             raise NotFound(f"{name} not found")
-        return {"name": name}
+        return FakeProject(name, delete_time="2026-06-20T00:00:00Z" if self.soft_deleted else None)
+
+    def list_projects(self, *, show_deleted=False):
+        if not show_deleted:
+            return []
+        return [
+            FakeProject(f"projects/{name}", delete_time="2026-06-20T00:00:00Z")
+            for name in self.reserved_soft_deleted
+        ]
+
+    def delete_project(self, *, name, purge=False):
+        self.purged_projects.append((name, purge))
+        # Purging frees the reserved name so the subsequent create succeeds.
+        self.soft_deleted = False
+        self.project_exists = False
+        self.reserved_soft_deleted = [n for n in self.reserved_soft_deleted if f"projects/{n}" != name]
+        return FakeOp()
 
     def create_project(self, *, project, project_id):
         self.created_projects.append(project_id)
         self.project_exists = True
+        self.soft_deleted = False
         return FakeOp()
 
     def create_role(self, **kwargs):
@@ -189,7 +232,7 @@ def test_workspace_source_inclusion_rules(tmp_path):
         "notebooks/install.py",
         "frontend/package.json",
         "frontend/node_modules/pkg/index.js",
-        "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight.py",
+        "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_intake_and_snapshot.py",
         "packages/genie-space-optimizer/tests/test_x.py",
     ]
     for rel in files:
@@ -201,7 +244,7 @@ def test_workspace_source_inclusion_rules(tmp_path):
     assert should_copy(repo / "backend/references/schema.md", repo)
     assert should_copy(repo / "frontend/package.json", repo)
     assert should_copy(
-        repo / "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight.py",
+        repo / "packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_intake_and_snapshot.py",
         repo,
     )
     assert not should_copy(repo / "README.md", repo)
@@ -216,24 +259,60 @@ def test_workspace_source_inclusion_rules(tmp_path):
     assert not should_copy(repo / "packages/genie-space-optimizer/tests/test_x.py", repo)
 
 
+def test_workspace_source_rejects_private_python_registry_before_upload(tmp_path):
+    repo = tmp_path / "repo"
+    package = repo / "packages" / "genie-space-optimizer"
+    package.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+    (repo / "uv.lock").write_text(
+        'source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }\n'
+    )
+    (package / "pyproject.toml").write_text("[project]\nname = 'package'\n")
+
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="warehouse-1",
+        repo_root=str(repo),
+    )
+    w = FakeWorkspaceClient()
+
+    with pytest.raises(ValueError, match=r"uv\.lock.*https://pypi\.org/simple"):
+        prepare_workspace_source(w, cfg, "me@example.com")
+
+    assert w.api_client.calls == []
+
+
+def test_workspace_source_accepts_public_pypi_dependency_metadata(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+    (repo / "uv.lock").write_text(
+        'source = { registry = "https://pypi.org/simple" }\n'
+        'url = "https://files.pythonhosted.org/packages/example.whl"\n'
+    )
+
+    validate_python_dependency_sources(repo)
+
+
 def test_workspace_api_path_normalizes_workspace_prefix():
     assert workspace_api_path("/Workspace/Users/me/app") == "/Users/me/app"
     assert workspace_api_path("/Users/me/app") == "/Users/me/app"
 
 
 def test_workspace_import_uses_object_path_for_workspace_prefixed_paths(tmp_path):
-    src = tmp_path / "run_preflight.py"
+    src = tmp_path / "run_intake_and_snapshot.py"
     src.write_text("print('ok')")
     w = FakeWorkspaceClient()
 
-    upload_source_notebook(w, src, "/Workspace/Users/me/app/gso/jobs/run_preflight")
+    upload_source_notebook(w, src, "/Workspace/Users/me/app/gso/jobs/run_intake_and_snapshot")
 
     assert w.api_client.calls[0] == (
         "POST",
         "/api/2.0/workspace/mkdirs",
         {"path": "/Users/me/app/gso/jobs"},
     )
-    assert w.api_client.calls[1][2]["path"] == "/Users/me/app/gso/jobs/run_preflight"
+    assert w.api_client.calls[1][2]["path"] == "/Users/me/app/gso/jobs/run_intake_and_snapshot"
 
 
 def test_mkdirs_uses_object_path_for_workspace_prefixed_paths():
@@ -333,7 +412,24 @@ def test_get_app_service_principal_waits_for_async_app_create(monkeypatch):
     assert len(get_calls) == 2
 
 
-def test_gso_job_settings_match_persistent_dag_shape():
+# GSO v2 linear 4-task DAG (mirrors packages/genie-space-optimizer/databricks.yml,
+# validated by tests/unit/test_phase7_job_dag.py).
+_EXPECTED_4TASK_KEYS = [
+    "intake_and_snapshot",
+    "benchmark_qc_and_repair",
+    "optimize",
+    "publish_and_audit",
+]
+
+_EXPECTED_4TASK_NOTEBOOKS = {
+    "intake_and_snapshot": "run_intake_and_snapshot",
+    "benchmark_qc_and_repair": "run_benchmark_qc_and_repair",
+    "optimize": "run_optimize",
+    "publish_and_audit": "run_publish_and_audit",
+}
+
+
+def test_gso_job_settings_match_4task_dag_shape():
     cfg = InstallConfig(
         app_name="genie-workbench",
         catalog="main",
@@ -347,19 +443,122 @@ def test_gso_job_settings_match_persistent_dag_shape():
         "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-0.0.0-py3-none-any.whl",
     )
 
+    # Unchanged job identity: name + tags stay stable so find_existing_job can
+    # re-discover and upsert prior notebook installs across the cutover.
     assert settings["name"] == "genie-workbench-gso-optimization-job"
     assert settings["queue"]["enabled"] is True
     assert settings["tags"]["app"] == "genie-workbench"
     assert settings["tags"]["managed-by"] == "notebook-installer"
+    assert settings["tags"]["pattern"] == "persistent-dag"
     assert settings["environments"][0]["spec"]["environment_version"] == "4"
+
+    # 4-task linear DAG — no condition task, no deploy task, correct entrypoints.
+    tasks = settings["tasks"]
+    assert [t["task_key"] for t in tasks] == _EXPECTED_4TASK_KEYS
+    assert all("condition_task" not in t for t in tasks)
+    for t in tasks:
+        stem = t["notebook_task"]["notebook_path"].rsplit("/", 1)[-1]
+        assert stem == _EXPECTED_4TASK_NOTEBOOKS[t["task_key"]]
+    by_key = {t["task_key"]: t for t in tasks}
+    assert "depends_on" not in by_key["intake_and_snapshot"]
+    for prev, cur in zip(_EXPECTED_4TASK_KEYS, _EXPECTED_4TASK_KEYS[1:]):
+        assert by_key[cur]["depends_on"] == [{"task_key": prev}]
+
+    # New v2 loop params present with defaults; retired params gone.
     params = {p["name"]: p["default"] for p in settings["parameters"]}
+    assert params["max_attempts"] == "3"
+    assert params["target_accuracy"] == "0.90"
+    assert params["benchmark_repair_max_tries"] == "3"
+    assert params["benchmark_policy"] == "repair_allowed"
+    assert "experiment_name" not in params
+    assert "deploy_target" not in params
+    # llm_model stays a Workbench-specific param defaulted to cfg.llm_model.
     assert params["llm_model"] == "custom-gso-model"
-    task_keys = [task["task_key"] for task in settings["tasks"]]
-    assert task_keys == ["preflight", "baseline_eval", "enrichment", "lever_loop", "finalize", "deploy"]
-    assert settings["tasks"][0]["notebook_task"]["base_parameters"]["llm_model"] == "{{job.parameters.llm_model}}"
-    assert settings["tasks"][1]["notebook_task"]["base_parameters"]["llm_model"] == "{{job.parameters.llm_model}}"
-    assert settings["tasks"][1]["depends_on"] == [{"task_key": "preflight"}]
-    assert settings["tasks"][-1]["condition_task"]["right"] == "disabled"
+
+    # Every task carries run_id/catalog/schema (D9 — bootstrap from job params,
+    # no task-value plumbing) and the operator llm_model.
+    for t in tasks:
+        bp = t["notebook_task"]["base_parameters"]
+        assert bp["llm_model"] == "{{job.parameters.llm_model}}"
+        assert bp["benchmark_policy"] == "{{job.parameters.benchmark_policy}}"
+        for required in ("run_id", "catalog", "schema"):
+            assert bp[required] == f"{{{{job.parameters.{required}}}}}"
+
+
+def test_gso_job_settings_mirror_package_bundle_4task():
+    """The notebook-installer job (gso_job.py) and the package bundle
+    (packages/genie-space-optimizer/databricks.yml, validated by
+    test_phase7_job_dag.py) must not silently drift: identical task keys/order,
+    entrypoints, per-task base_parameters and declared params, EXCEPT for the
+    Workbench-specific ``llm_model`` extra."""
+    yaml = pytest.importorskip("yaml")
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle_path = repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
+    bundle = yaml.safe_load(bundle_path.read_text())
+    (pkg_job,) = bundle["resources"]["jobs"].values()
+
+    cfg = InstallConfig(app_name="genie-workbench", catalog="main", warehouse_id="wh", repo_root="/tmp")
+    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+
+    def _stem(path: str) -> str:
+        return path.rsplit("/", 1)[-1].removesuffix(".py")
+
+    # Same task keys + order.
+    assert [t["task_key"] for t in settings["tasks"]] == [t["task_key"] for t in pkg_job["tasks"]]
+    # Same entrypoint stems.
+    assert [_stem(t["notebook_task"]["notebook_path"]) for t in settings["tasks"]] == [
+        _stem(t["notebook_task"]["notebook_path"]) for t in pkg_job["tasks"]
+    ]
+
+    # Declared params identical except llm_model.
+    gso_params = {p["name"] for p in settings["parameters"]}
+    pkg_params = {p["name"] for p in pkg_job["parameters"]}
+    assert gso_params - pkg_params == {"llm_model"}
+    assert pkg_params - gso_params == set()
+
+    # Per-task base_parameters identical except llm_model.
+    gso_bp = {t["task_key"]: set(t["notebook_task"]["base_parameters"]) for t in settings["tasks"]}
+    pkg_bp = {t["task_key"]: set(t["notebook_task"].get("base_parameters", {})) for t in pkg_job["tasks"]}
+    for key in gso_bp:
+        assert gso_bp[key] - pkg_bp[key] == {"llm_model"}, key
+        assert pkg_bp[key] - gso_bp[key] == set(), key
+
+
+def test_upload_job_notebooks_uploads_all_four_task_notebooks(tmp_path):
+    """Exercise the TASKS upload loop end-to-end. Guards against the 4-tuple
+    arity regression: upload_job_notebooks must iterate every TASKS entry and
+    import exactly the 4 v2 entrypoints (this loop is what the install.py path
+    runs before creating the job)."""
+    jobs_dir = tmp_path / "packages" / "genie-space-optimizer" / "src" / "genie_space_optimizer" / "jobs"
+    jobs_dir.mkdir(parents=True)
+    expected_stems = [notebook_stem for _key, notebook_stem, _dep, _bp in TASKS]
+    for stem in expected_stems:
+        (jobs_dir / f"{stem}.py").write_text(f"# {stem}\n")
+
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root=str(tmp_path),
+    )
+    w = FakeWorkspaceClient()
+
+    notebooks_path = upload_job_notebooks(w, cfg, "me@example.com")
+
+    assert notebooks_path.endswith("/genie-workbench/gso/jobs")
+    import_paths = [
+        body["path"]
+        for method, path, body in w.api_client.calls
+        if method == "POST" and path == "/api/2.0/workspace/import"
+    ]
+    # Every task notebook imported, in DAG order, with no arity error.
+    assert [p.rsplit("/", 1)[-1] for p in import_paths] == expected_stems
+    assert expected_stems == [
+        "run_intake_and_snapshot",
+        "run_benchmark_qc_and_repair",
+        "run_optimize",
+        "run_publish_and_audit",
+    ]
 
 
 def test_gso_job_settings_tag_with_actual_app_name():
@@ -401,7 +600,7 @@ def test_genie_space_grant_patches_can_manage_without_replacing_acl():
     grant_call = w.api_client.calls[1]
     assert grant_call == (
         "PATCH",
-        "/api/2.0/permissions/dashboards.genie/space-1",
+        "/api/2.0/permissions/genie/space-1",
         {
             "access_control_list": [
                 {
@@ -427,7 +626,7 @@ def test_genie_space_grants_count_successes_and_skip_failures():
             ("GET", "/api/2.0/genie/spaces"): {
                 "spaces": [{"space_id": "space-ok"}, {"space_id": "space-fail"}]
             },
-            ("PATCH", "/api/2.0/permissions/dashboards.genie/space-fail"): RuntimeError("denied"),
+            ("PATCH", "/api/2.0/permissions/genie/space-fail"): RuntimeError("denied"),
         }
     )
 
@@ -869,4 +1068,81 @@ def test_lakebase_create_mode_creates_missing_project():
     lakebase = ensure_lakebase(w, cfg, "sp-client-id")
 
     assert w.postgres.created_projects == ["new-lakebase"]
+    assert w.postgres.purged_projects == []
     assert lakebase.database_resource == "projects/new-lakebase/branches/production/databases/databricks_postgres"
+
+
+def _databases_response():
+    return {
+        (
+            "GET",
+            "/api/2.0/postgres/projects/new-lakebase/branches/production/databases",
+        ): {
+            "databases": [
+                {"name": "projects/new-lakebase/branches/production/databases/databricks_postgres"}
+            ]
+        }
+    }
+
+
+def test_lakebase_create_mode_purges_soft_deleted_name_reservation():
+    # Reported failure: get_project 404s, but the name is still reserved by a
+    # soft-deleted project that surfaces via list_projects(show_deleted=True).
+    w = FakeWorkspaceClient(_databases_response())
+    w.config = type("Config", (), {"client_id": None})()
+    w.postgres = FakePostgres(project_exists=False, reserved_soft_deleted=["new-lakebase"])
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        lakebase_mode="create",
+        lakebase_instance="new-lakebase",
+    )
+
+    lakebase = ensure_lakebase(w, cfg, "sp-client-id")
+
+    assert w.postgres.purged_projects == [("projects/new-lakebase", True)]
+    assert w.postgres.created_projects == ["new-lakebase"]
+    assert lakebase.database_resource == "projects/new-lakebase/branches/production/databases/databricks_postgres"
+
+
+def test_lakebase_create_mode_purges_project_reported_soft_deleted_by_get():
+    # get_project returns a soft-deleted project as if live (delete_time set);
+    # create mode must purge and recreate it rather than treat it as usable.
+    w = FakeWorkspaceClient(_databases_response())
+    w.config = type("Config", (), {"client_id": None})()
+    w.postgres = FakePostgres(project_exists=True, soft_deleted=True)
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        lakebase_mode="create",
+        lakebase_instance="new-lakebase",
+    )
+
+    lakebase = ensure_lakebase(w, cfg, "sp-client-id")
+
+    assert w.postgres.purged_projects == [("projects/new-lakebase", True)]
+    assert w.postgres.created_projects == ["new-lakebase"]
+    assert lakebase.database_resource == "projects/new-lakebase/branches/production/databases/databricks_postgres"
+
+
+def test_lakebase_existing_mode_rejects_soft_deleted_project():
+    w = FakeWorkspaceClient()
+    w.postgres = FakePostgres(project_exists=True, soft_deleted=True)
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        lakebase_mode="existing",
+        lakebase_instance="stale-lakebase",
+    )
+
+    with pytest.raises(RuntimeError, match="stale-lakebase.*soft-deleted"):
+        ensure_lakebase(w, cfg, "sp-client-id")
+
+    assert w.postgres.created_projects == []
+    assert w.postgres.purged_projects == []

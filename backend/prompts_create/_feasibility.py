@@ -10,7 +10,7 @@ STEP = """\
 If the user asks to find more data or add tables, use discovery tools (`search_tables`, `discover_tables`).
 Otherwise, focus on your assessment — no need to call tools proactively.
 
-Assess whether the selected data can support the intended Genie Space. Think through each \
+Assess whether the selected data can support the intended Genie Agent. Think through each \
 business question the user wants to answer and check if the metadata suggests the right columns exist.
 
 **Present your assessment conversationally.** Don't use a scoring rubric or formal matrix. Instead, \

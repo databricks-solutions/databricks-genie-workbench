@@ -132,13 +132,48 @@ _preflight_check_venv() {
     fi
 }
 
+_preflight_check_python_dependency_sources() {
+    echo "  Checking Python dependency files for private registry URLs..."
+    local private_host="pypi-proxy.dev.databricks.com"
+    local candidates=(
+        "$PROJECT_DIR/pyproject.toml"
+        "$PROJECT_DIR/uv.lock"
+        "$PROJECT_DIR/uv.toml"
+    )
+    local package_manifest
+    while IFS= read -r -d '' package_manifest; do
+        candidates+=("$package_manifest")
+    done < <(find "$PROJECT_DIR/packages" -type f \( -name "pyproject.toml" -o -name "uv.toml" \) -print0 2>/dev/null)
+
+    local offenders=()
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [ -f "$candidate" ] && grep -q "$private_host" "$candidate"; then
+            offenders+=("${candidate#$PROJECT_DIR/}")
+        fi
+    done
+
+    if [ ${#offenders[@]} -gt 0 ]; then
+        echo ""
+        echo "  ✗ Deployable Python dependency files contain private Databricks registry URLs:"
+        local offender
+        for offender in "${offenders[@]}"; do
+            echo "    - $offender"
+        done
+        echo ""
+        echo "  Remove the private index configuration and regenerate the lockfile:"
+        echo "    uv lock --default-index https://pypi.org/simple"
+        exit 1
+    fi
+    echo "  ✓ Python dependency files use public registries"
+}
+
 _preflight_check_npm_lockfiles() {
     echo "  Checking npm lockfiles for private registry URLs..."
     local private_host="npm-proxy.dev.databricks.com"
     local lockfiles=(
         "$PROJECT_DIR/package-lock.json"
         "$PROJECT_DIR/frontend/package-lock.json"
-        "$PROJECT_DIR/packages/genie-space-optimizer/package-lock.json"
     )
     local offenders=()
     local lockfile

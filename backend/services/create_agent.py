@@ -1,4 +1,4 @@
-"""Create Genie agent — LLM-driven conversational workflow for building Genie spaces.
+"""Create Genie Agent — LLM-driven conversational workflow for building Genie Agents.
 
 Uses a tool-calling loop: the LLM decides which tools to call and when,
 guided by the system prompt (SKILL.md workflow + schema reference).
@@ -37,7 +37,7 @@ STEP_LABELS: dict[str, str] = {
     "profiling": "Profiling the data",
     "plan": "Building plan",
     "config_create": "Generating configuration",
-    "post_creation": "Finalizing space",
+    "post_creation": "Finalizing agent",
 }
 
 STEP_THINKING: dict[str, str] = {
@@ -46,9 +46,9 @@ STEP_THINKING: dict[str, str] = {
     "feasibility": "Assessing data feasibility…",
     "inspection": "Analyzing table structure and data quality…",
     "profiling": "Profiling the data…",
-    "plan": "Designing your Genie Space plan…",
+    "plan": "Designing your Genie Agent plan…",
     "config_create": "Generating the configuration…",
-    "post_creation": "Finalizing your Genie Space…",
+    "post_creation": "Finalizing your Genie Agent…",
 }
 
 # Tools allowed per step — each step is a cumulative superset of all preceding
@@ -85,7 +85,7 @@ STEP_ORDER = [
 
 
 class CreateGenieAgent:
-    """Conversational agent that guides users through Genie space creation."""
+    """Conversational agent that guides users through Genie Agent creation."""
 
     def __init__(self):
         self._schema_content: str | None = None
@@ -371,7 +371,7 @@ class CreateGenieAgent:
                             # Space already exists → update it (include display_name if provided)
                             update_args: dict = {"space_id": session.space_id}
                             dn = self._derive_display_name(None, tool_args, session)
-                            if dn and dn != "New Genie Space":
+                            if dn and dn != "New Genie Agent":
                                 update_args["display_name"] = dn
                             yield {"event": "tool_call", "data": {"tool": "update_space", "args": update_args}}
                             u_result = await loop.run_in_executor(
@@ -678,7 +678,7 @@ class CreateGenieAgent:
             if len(config_json) > 24000:
                 config_json = config_json[:24000] + "\n... (truncated)"
             prompt = (
-                "The following Genie Space config failed with this API error:\n\n"
+                "The following Genie Agent config failed with this API error:\n\n"
                 f"**Error:** {error_msg}\n\n"
                 f"**Config (relevant sections):**\n```json\n{config_json}\n```\n\n"
                 "Fix ONLY the specific issue described in the error. Return the FULL corrected config "
@@ -780,8 +780,8 @@ class CreateGenieAgent:
                     continue
         if tables:
             short = [t.get("identifier", "").split(".")[-1] for t in tables[:3]]
-            return " + ".join(n for n in short if n) + " Space"
-        return "New Genie Space"
+            return " + ".join(n for n in short if n) + " Agent"
+        return "New Genie Agent"
 
     async def _create_space_with_repair(
         self,
@@ -838,7 +838,7 @@ class CreateGenieAgent:
                 if fixed:
                     config = fixed
                     session.space_config = config
-                    yield {"event": "thinking", "data": {"message": "Retrying space creation with repaired config...", "step": "create", "round": 0}}
+                    yield {"event": "thinking", "data": {"message": "Retrying agent creation with repaired config...", "step": "create", "round": 0}}
                     result = await loop.run_in_executor(
                         None, run_in_context(handle_tool_call, "create_space", {"display_name": display_name}, config)
                     )
@@ -874,7 +874,7 @@ class CreateGenieAgent:
 
         yield {"event": "step", "data": {
             "step": "create",
-            "label": "Creating Space",
+            "label": "Creating Agent",
             "index": STEP_ORDER.index("config_create") if "config_create" in STEP_ORDER else len(STEP_ORDER) - 1,
             "total": len(STEP_ORDER),
         }}
@@ -914,7 +914,7 @@ class CreateGenieAgent:
             if session.space_id:
                 # Space already exists → update it (include display_name for rename support)
                 update_args: dict = {"space_id": session.space_id}
-                if display_name and display_name != "New Genie Space":
+                if display_name and display_name != "New Genie Agent":
                     update_args["display_name"] = display_name
                 yield {"event": "tool_call", "data": {"tool": "update_space", "args": update_args}}
                 u_result = await loop.run_in_executor(
@@ -923,9 +923,9 @@ class CreateGenieAgent:
                 yield {"event": "tool_result", "data": {"tool": "update_space", "result": u_result}}
                 if u_result.get("success"):
                     yield {"event": "updated", "data": {"space_id": u_result["space_id"], "url": u_result["url"]}}
-                    yield {"event": "message", "data": {"content": f"Space **{display_name}** updated successfully!", "ui_elements": None}}
+                    yield {"event": "message", "data": {"content": f"Agent **{display_name}** updated successfully!", "ui_elements": None}}
                 else:
-                    yield {"event": "error", "data": {"message": f"Space update failed: {u_result.get('error', 'unknown')}"}}
+                    yield {"event": "error", "data": {"message": f"Agent update failed: {u_result.get('error', 'unknown')}"}}
             else:
                 # Step 2: validate_config
                 yield {"event": "tool_call", "data": {"tool": "validate_config", "args": {}}}
@@ -945,7 +945,7 @@ class CreateGenieAgent:
 
                 if session.space_id:
                     yield {"event": "message", "data": {
-                        "content": f"Space **{display_name}** created successfully!",
+                        "content": f"Agent **{display_name}** created successfully!",
                         "ui_elements": None,
                     }}
 

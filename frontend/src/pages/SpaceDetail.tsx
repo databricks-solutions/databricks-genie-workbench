@@ -1,8 +1,8 @@
 /**
- * SpaceDetail - 3-tab detail view for a Genie Space.
+ * SpaceDetail - 3-tab detail view for a Genie Agent.
  * Tabs: Score (default) | Optimize | History
  */
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
@@ -12,43 +12,49 @@ import { HistoryTab } from "./HistoryTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
-
-type Tab = "score" | "optimize" | "history"
-const VALID_TABS: readonly string[] = ["score", "optimize", "history"]
+import type { SpaceTab } from "@/lib/navigation"
+import { createScanCoordinator } from "@/lib/scan-coordinator"
 
 interface SpaceDetailProps {
   spaceId: string
   displayName: string
   spaceUrl?: string
-  initialTab?: string
+  activeTab: SpaceTab
+  runId?: string
   autoScan?: boolean
   onBack: () => void
+  onNavigate: (tab: SpaceTab, runId?: string) => void
 }
 
-export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoScan, onBack }: SpaceDetailProps) {
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab && VALID_TABS.includes(initialTab) ? initialTab as Tab : "score")
+export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, autoScan, onBack, onNavigate }: SpaceDetailProps) {
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [isStarred, setIsStarred] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([])
   const [optimizationEvents, setOptimizationEvents] = useState<OptimizationEvent[]>([])
-  const [hasActiveOptRun, setHasActiveOptRun] = useState(false)
+  const [activeOptRunId, setActiveOptRunId] = useState<string | null>(null)
   const [isLoadingScan, setIsLoadingScan] = useState(true)
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
   const [configExpanded, setConfigExpanded] = useState(false)
 
   const { state, actions } = useAnalysis()
+  // Pull the stable callback out of `actions` so the load effect can depend on
+  // it directly. `actions` is a fresh object every render, so depending on it
+  // would re-run the effect every render; `handleFetchSpace` is a useCallback
+  // with an empty dep array (see useAnalysis), so its identity is stable.
+  const { handleFetchSpace } = actions
 
   // Guard against getSpaceDetail overwriting a fresh scan result
   const freshScanDoneRef = useRef(false)
+  const postOptimizationScansRef = useRef(new Map<string, Promise<boolean>>())
 
   // Load space data + persisted score on mount
   useEffect(() => {
     freshScanDoneRef.current = false
     setIsLoadingScan(true)
     if (spaceId) {
-      actions.handleFetchSpace(spaceId)
+      handleFetchSpace(spaceId)
       // Load latest persisted scan result (skip if a fresh scan already completed)
       getSpaceDetail(spaceId)
         .then((detail) => {
@@ -72,31 +78,47 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
         .catch((e) => console.error("Failed to load space detail:", e))
         .finally(() => setIsLoadingScan(false))
     }
-  }, [spaceId])
+  }, [spaceId, handleFetchSpace])
 
   useEffect(() => {
     getActiveRunForSpace(spaceId)
-      .then((res) => setHasActiveOptRun(res.hasActiveRun))
+      .then((res) => setActiveOptRunId(res.hasActiveRun ? res.activeRunId : null))
       .catch(() => {})
   }, [spaceId])
 
-  const handleScan = async () => {
-    setIsScanning(true)
-    try {
-      const result = await scanSpace(spaceId)
-      freshScanDoneRef.current = true
-      setScanResult(result)
-    } catch (e) {
-      console.error("Scan failed:", e)
-    } finally {
-      setIsScanning(false)
-    }
-  }
+  const scanCoordinator = useMemo(
+    () => createScanCoordinator(async () => {
+      setIsScanning(true)
+      try {
+        const result = await scanSpace(spaceId)
+        freshScanDoneRef.current = true
+        setScanResult(result)
+        return true
+      } catch (e) {
+        console.error("Scan failed:", e)
+        return false
+      } finally {
+        setIsScanning(false)
+      }
+    }),
+    [spaceId],
+  )
 
-  const handleRescanFromOptimize = () => {
-    setActiveTab("score")
-    handleScan()
-  }
+  const handleScan = () => scanCoordinator.request()
+
+  const handlePostOptimizationScan = useCallback(async (completedRunId: string, force = false) => {
+    const scanKey = `${spaceId}:${completedRunId}`
+    const priorScan = postOptimizationScansRef.current.get(scanKey)
+    if (!force && priorScan) return priorScan
+
+    const request = scanCoordinator.request(force)
+    postOptimizationScansRef.current.set(scanKey, request)
+    const refreshed = await request
+    if (!refreshed && postOptimizationScansRef.current.get(scanKey) === request) {
+      postOptimizationScansRef.current.delete(scanKey)
+    }
+    return refreshed
+  }, [spaceId, scanCoordinator])
 
   const handleToggleStar = async () => {
     const newStarred = !isStarred
@@ -128,7 +150,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
     }
   }, [activeTab, spaceId])
 
-  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+  const tabs: { id: SpaceTab; label: string; icon: React.ReactNode }[] = [
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
@@ -143,12 +165,12 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
   if (maturity === "Ready to Optimize") {
     // No failing config checks left — show optimization CTA.
     actionProps = {
-      onAction: () => setActiveTab("optimize"),
+      onAction: () => onNavigate("optimize"),
       actionLabel: "Run Optimization",
       actionIcon: <Rocket className="w-4 h-4" />,
       actionDescription: (
         <>
-          This space passed the configuration checks. Auto-Optimize will benchmark real
+          This agent passed the configuration checks. Auto-Optimize will benchmark real
           questions, tune the selected levers, and apply only changes that improve the
           measured result.
         </>
@@ -156,12 +178,12 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
     }
   } else if (hasRemediationItems) {
     actionProps = {
-      onAction: () => setActiveTab("optimize"),
+      onAction: () => onNavigate("optimize"),
       actionLabel: "Open Optimize",
       actionIcon: <Rocket className="w-4 h-4" />,
       actionDescription: (
         <>
-          Auto-Optimize is the recommended path for improving spaces that fail IQ checks.
+          Auto-Optimize is the recommended path for improving agents that fail IQ checks.
           It runs benchmarks and applies validated configuration changes. Some issues, such
           as missing data sources, permissions, or bulk Unity Catalog metadata gaps, may
           still require manual setup.
@@ -222,7 +244,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
         {tabs.map(tab => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => onNavigate(tab.id)}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab.id
                 ? "border-accent text-accent"
@@ -239,14 +261,14 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
       <div>
         {activeTab === "score" && (
           <>
-            {hasActiveOptRun && (
+            {activeOptRunId && (
               <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 mb-4">
                 <div>
                   <h3 className="text-sm font-semibold text-primary">Optimization in progress</h3>
-                  <p className="text-xs text-muted mt-0.5">An optimization run is currently running for this space.</p>
+                  <p className="text-xs text-muted mt-0.5">An optimization run is currently running for this agent.</p>
                 </div>
                 <button
-                  onClick={() => setActiveTab("optimize")}
+                  onClick={() => onNavigate("optimize", activeOptRunId)}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
                 >
                   <Play className="w-3.5 h-3.5" />
@@ -261,7 +283,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
               isScanning={isScanning}
               spaceId={spaceId}
               {...actionProps}
-              onNavigateToOptimize={() => setActiveTab("optimize")}
+              onNavigateToOptimize={() => onNavigate("optimize")}
             />
 
             {/* Collapsible space configuration */}
@@ -277,14 +299,14 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
                   }
                   <Settings className="w-4 h-4 text-muted" />
                   <span className="text-sm font-semibold text-secondary uppercase tracking-wide">
-                    Space Configuration
+                    Agent Configuration
                   </span>
                 </button>
                 <button
-                  onClick={() => actions.handleFetchSpace(spaceId)}
+                  onClick={() => handleFetchSpace(spaceId)}
                   disabled={state.isLoading}
                   className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
-                  title="Reload space configuration"
+                  title="Reload agent configuration"
                 >
                   <RefreshCw className={`w-3 h-3 ${state.isLoading ? "animate-spin" : ""}`} />
                   Reload
@@ -300,7 +322,14 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
         )}
 
         {activeTab === "optimize" && (
-          <AutoOptimizeTab spaceId={spaceId} onRescan={handleRescanFromOptimize} />
+          <AutoOptimizeTab
+            key={runId ?? "configure"}
+            spaceId={spaceId}
+            requestedRunId={runId}
+            onRunChange={(nextRunId) => onNavigate("optimize", nextRunId)}
+            onRefreshIqScore={handlePostOptimizationScan}
+            onViewIqScore={() => onNavigate("score")}
+          />
         )}
 
         {activeTab === "history" && (

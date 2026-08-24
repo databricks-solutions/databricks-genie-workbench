@@ -1,5 +1,5 @@
 """
-Pydantic v2 models for the Genie Space ``serialized_space`` structure.
+Pydantic v2 models for the Genie Agent ``serialized_space`` structure.
 
 Used to validate config payloads **before** PATCH requests so that
 malformed data never reaches the Databricks API.  All models use
@@ -44,7 +44,7 @@ MAX_SQL_SNIPPETS = 200
 def generate_genie_id() -> str:
     """Generate a valid 32-char lowercase hex ID (time-ordered UUID).
 
-    Follows the Databricks recommendation for Genie space IDs:
+    Follows the Databricks recommendation for Genie Agent IDs:
     time-ordered so that IDs generated in sequence sort alphabetically.
     """
     epoch = datetime.datetime(1582, 10, 15)
@@ -278,7 +278,10 @@ class JoinSpecSide(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     identifier: str
-    alias: str
+    # ``alias`` appears in some programmatic payloads but is not emitted
+    # by the current Genie UI and is not required by the serialized_space
+    # validation contract. Preserve it when present without requiring it.
+    alias: str | None = None
 
 
 class JoinSpec(BaseModel):
@@ -402,66 +405,43 @@ class SqlFunction(BaseModel):
 # ── SQL Snippet sub-models ───────────────────────────────────────────
 
 
-class SqlSnippetFilter(BaseModel):
+class SqlSnippetBase(BaseModel):
+    """Fields shared by all reusable SQL snippet types."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    sql: list[str]
+    display_name: str | None = None
+    synonyms: list[str] | None = None
+    comment: list[str] | None = None
+    instruction: list[str] | None = None
+
+    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
+    @classmethod
+    def _coerce_str_to_list(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return [v]
+        return v
+
+
+class SqlSnippetFilter(SqlSnippetBase):
     """A reusable SQL filter snippet."""
 
-    model_config = ConfigDict(extra="allow")
 
-    id: str
-    sql: list[str]
-    display_name: str | None = None
-    synonyms: list[str] | None = None
-    comment: list[str] | None = None
-    instruction: list[str] | None = None
-
-    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
-    @classmethod
-    def _coerce_str_to_list(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            return [v]
-        return v
-
-
-class SqlSnippetExpression(BaseModel):
+class SqlSnippetExpression(SqlSnippetBase):
     """A reusable SQL expression snippet."""
 
-    model_config = ConfigDict(extra="allow")
-
-    id: str
-    alias: str
-    sql: list[str]
-    display_name: str | None = None
-    synonyms: list[str] | None = None
-    comment: list[str] | None = None
-    instruction: list[str] | None = None
-
-    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
-    @classmethod
-    def _coerce_str_to_list(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            return [v]
-        return v
+    # ``alias`` appears in some legacy/programmatic payloads but is not emitted
+    # by the current Genie UI and is not required by the serialized_space
+    # validation contract. Preserve it when present without requiring it.
+    alias: str | None = None
 
 
-class SqlSnippetMeasure(BaseModel):
+class SqlSnippetMeasure(SqlSnippetBase):
     """A reusable SQL measure snippet."""
 
-    model_config = ConfigDict(extra="allow")
-
-    id: str
-    alias: str
-    sql: list[str]
-    display_name: str | None = None
-    synonyms: list[str] | None = None
-    comment: list[str] | None = None
-    instruction: list[str] | None = None
-
-    @field_validator("sql", "synonyms", "comment", "instruction", mode="before")
-    @classmethod
-    def _coerce_str_to_list(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            return [v]
-        return v
+    alias: str | None = None
 
 
 class SqlSnippets(BaseModel):
@@ -494,7 +474,7 @@ class BenchmarkAnswer(BaseModel):
 
 
 class BenchmarkQuestion(BaseModel):
-    """A single benchmark question entry in the Genie Space config."""
+    """A single benchmark question entry in the Genie Agent config."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -562,6 +542,138 @@ class SerializedSpace(BaseModel):
         if self.data_sources is None:
             raise ValueError("serialized_space must contain 'data_sources'")
         return self
+
+
+# ── Array-typed field normalization ──────────────────────────────────
+#
+# The Genie API contract requires a fixed set of leaf fields to be
+# ``list[str]`` (see the "Array/List[str] Fields" section of the
+# validation-rules reference at the top of this module). A bare string in
+# any of them makes the API reject the whole PATCH with
+# ``Invalid serialized_space: Expected an array for <field>``.
+#
+# The Pydantic models above carry ``_coerce_str_to_list`` ``before``
+# validators that wrap bare strings, but ``validate_serialized_space``
+# throws the coerced model away — it returns only ``(ok, errors)``. So the
+# coercion never reaches the dict that ``patch_space_config`` serializes.
+# ``_iter_array_field_slots`` is the single source of truth for *which*
+# leaf fields are array-typed; both ``normalize_array_fields`` (writes the
+# coercion back into the outgoing dict) and the strict-mode shape check
+# (flags a divergence so it can't silently recur) walk it.
+
+
+def _iter_array_field_slots(config: dict):
+    """Yield ``(container_dict, key, dotted_path)`` for every known
+    array-typed leaf field slot in *config*.
+
+    Mirrors the ``list[str]`` fields declared on the models above and the
+    Databricks validation rules. Slots are yielded whether or not the key
+    is present so callers can decide what to do; callers must check the
+    current value themselves.
+    """
+    if not isinstance(config, dict):
+        return
+
+    def _rows(items: Any):
+        return enumerate(items) if isinstance(items, list) else ()
+
+    # config.sample_questions[].question
+    cfg = config.get("config")
+    if isinstance(cfg, dict):
+        for i, sq in _rows(cfg.get("sample_questions")):
+            if isinstance(sq, dict):
+                yield sq, "question", f"config.sample_questions[{i}].question"
+
+    # data_sources.{tables,metric_views}[].description (+ column_configs)
+    ds = config.get("data_sources")
+    if isinstance(ds, dict):
+        for source_key in ("tables", "metric_views"):
+            for i, tbl in _rows(ds.get(source_key)):
+                if not isinstance(tbl, dict):
+                    continue
+                base = f"data_sources.{source_key}[{i}]"
+                yield tbl, "description", f"{base}.description"
+                for j, cc in _rows(tbl.get("column_configs")):
+                    if isinstance(cc, dict):
+                        cbase = f"{base}.column_configs[{j}]"
+                        yield cc, "description", f"{cbase}.description"
+                        yield cc, "synonyms", f"{cbase}.synonyms"
+
+    # instructions.*
+    inst = config.get("instructions")
+    if isinstance(inst, dict):
+        for i, ti in _rows(inst.get("text_instructions")):
+            if isinstance(ti, dict):
+                yield ti, "content", f"instructions.text_instructions[{i}].content"
+        for i, eq in _rows(inst.get("example_question_sqls")):
+            if not isinstance(eq, dict):
+                continue
+            ebase = f"instructions.example_question_sqls[{i}]"
+            yield eq, "question", f"{ebase}.question"
+            yield eq, "sql", f"{ebase}.sql"
+            yield eq, "usage_guidance", f"{ebase}.usage_guidance"
+            for j, p in _rows(eq.get("parameters")):
+                if not isinstance(p, dict):
+                    continue
+                pbase = f"{ebase}.parameters[{j}]"
+                yield p, "description", f"{pbase}.description"
+                dv = p.get("default_value")
+                if isinstance(dv, dict):
+                    yield dv, "values", f"{pbase}.default_value.values"
+        for i, js in _rows(inst.get("join_specs")):
+            if isinstance(js, dict):
+                jbase = f"instructions.join_specs[{i}]"
+                yield js, "sql", f"{jbase}.sql"
+                yield js, "comment", f"{jbase}.comment"
+                yield js, "instruction", f"{jbase}.instruction"
+        snippets = inst.get("sql_snippets")
+        if isinstance(snippets, dict):
+            for snippet_key in ("filters", "expressions", "measures"):
+                for i, snip in _rows(snippets.get(snippet_key)):
+                    if isinstance(snip, dict):
+                        sbase = f"instructions.sql_snippets.{snippet_key}[{i}]"
+                        yield snip, "sql", f"{sbase}.sql"
+                        yield snip, "synonyms", f"{sbase}.synonyms"
+                        yield snip, "comment", f"{sbase}.comment"
+                        yield snip, "instruction", f"{sbase}.instruction"
+
+    # benchmarks.questions[].question (+ answer[].content)
+    bm = config.get("benchmarks")
+    if isinstance(bm, dict):
+        for i, bq in _rows(bm.get("questions")):
+            if not isinstance(bq, dict):
+                continue
+            bbase = f"benchmarks.questions[{i}]"
+            yield bq, "question", f"{bbase}.question"
+            for j, ans in _rows(bq.get("answer")):
+                if isinstance(ans, dict):
+                    yield ans, "content", f"{bbase}.answer[{j}].content"
+
+
+def normalize_array_fields(config: dict) -> dict:
+    """Coerce every bare-string value in an array-typed field to a
+    single-element ``list[str]``, IN PLACE, and return *config*.
+
+    This is the systemic choke-point fix: ``patch_space_config`` calls it
+    on the exact dict it is about to ``json.dumps`` so a bare string in
+    ``description`` / ``synonyms`` / ``content`` (etc.) — including a
+    legacy one already present in a fetched ``serialized_space`` — is
+    normalized before the PATCH is sent.
+
+    It is deliberately NOT implemented as
+    ``SerializedSpace(**config).model_dump()``: a wholesale model round-trip
+    would inject unset field defaults and can drop keys the model does not
+    declare. ``serialized_space`` is a FULL-REPLACEMENT PATCH, so no field
+    may be lost or added. This walker only rewrites known array-typed leaf
+    slots and leaves every other key exactly as-is.
+    """
+    if not isinstance(config, dict):
+        return config
+    for container, key, _path in _iter_array_field_slots(config):
+        value = container.get(key)
+        if isinstance(value, str):
+            container[key] = [value]
+    return config
 
 
 # ── Strict validation helpers ────────────────────────────────────────
@@ -898,6 +1010,21 @@ def _strict_validate(config: dict) -> list[str]:
                 f"answer format must be 'SQL', got '{answers[0].get('format')}'"
             )
 
+    # ── Array-typed field shapes ─────────────────────────────────
+    # The API rejects a bare string in any array-typed leaf field with
+    # ``Expected an array for <field>``. The lenient model layer above
+    # silently coerces these (and then discards the coerced model), so
+    # this is the ONLY place the divergence surfaces as a local error.
+    # ``patch_space_config`` normalizes the payload with
+    # ``normalize_array_fields`` BEFORE calling this, so a correctly-built
+    # PATCH never trips it; a caller that skips normalization gets a clear
+    # error instead of an opaque server rejection.
+    for container, key, path in _iter_array_field_slots(config):
+        if isinstance(container.get(key), str):
+            errors.append(
+                f"{path}: must be an array of strings, got a bare string"
+            )
+
     # ── Size / length limits ─────────────────────────────────────
     _check_string_lengths(config, "root", errors)
 
@@ -905,6 +1032,14 @@ def _strict_validate(config: dict) -> list[str]:
 
 
 # ── Public validation entry point ────────────────────────────────────
+
+
+class SerializedSpaceValidationError(ValueError):
+    """A fetched Genie configuration failed structural validation."""
+
+    def __init__(self, errors: list[str]):
+        self.errors = list(errors)
+        super().__init__("CONFIG_VALIDATION_FAILED: " + "; ".join(self.errors))
 
 
 def validate_serialized_space(

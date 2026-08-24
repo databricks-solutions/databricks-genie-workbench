@@ -98,9 +98,9 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
     deployed_app = {"pending_deployment": submitted_deployment}
     deployment = require_successful_deployment(cfg.app_name, deployed_app)
 
-    status("Processing optional Genie Space grants...")
+    status("Processing optional Genie Agent grants...")
     genie_spaces_granted = optionally_grant_genie_spaces(w, cfg, app_sp_client_id)
-    status(f"Genie Space grants applied: {genie_spaces_granted}")
+    status(f"Genie Agent grants applied: {genie_spaces_granted}")
 
     status("Verifying deployment...")
     verification = verify_app_deployment(w, cfg.app_name, source_path)

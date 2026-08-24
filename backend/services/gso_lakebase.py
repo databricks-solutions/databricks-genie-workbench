@@ -67,7 +67,8 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
             rows = await conn.fetch(
                 f"""SELECT run_id, space_id, status, started_at, completed_at,
                           best_accuracy, best_iteration, convergence_reason, triggered_by,
-                          llm_model
+                          llm_model, benchmark_policy, benchmark_mutation_count,
+                          (config_snapshot IS NOT NULL AND length(config_snapshot) > 2) AS has_config_snapshot
                    FROM {_tbl('genie_opt_runs')}
                    WHERE space_id = $1
                    ORDER BY started_at DESC""",
@@ -109,24 +110,30 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
     if pool is None:
         return []
 
-    # Bug #2: evaluated_count / excluded_count / quarantined_benchmarks_json are
-    # the denominator contract columns. If they're missing from the SELECT list
+    # Bug #2: evaluated_count / excluded_count are the denominator contract
+    # columns. If they're missing from the SELECT list
     # the frontend silently falls back to dividing by total_questions, which is
     # exactly the KPI-vs-tab-label mismatch that the bug exists to prevent.
     cols = "*" if include_rows_json else (
-        "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
+        # GSO v2 Phase 5: genie_opt_iterations.mlflow_run_id / model_id columns
+        # were scrubbed — selecting them would break on fresh post-Phase-5
+        # tables. Downstream readers fall back to None (intended Phase-6 no-op).
+        "run_id, iteration, lever, eval_scope, timestamp, "
         "overall_accuracy, total_questions, correct_count, "
-        "evaluated_count, excluded_count, quarantined_benchmarks_json, "
+        "evaluated_count, excluded_count, "
         "scores_json, failures_json, "
-        "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
-        "thresholds_met, reflection_json, rolled_back"
+        "remaining_failures, "
+        "thresholds_met, reflection_json, rolled_back, "
+        # GSO v2 Phase 6: native official eval-run metadata surfaced by
+        # /iterations (num_needs_review + eval_run_id/status).
+        "num_needs_review, eval_run_id, eval_run_status"
     )
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""SELECT {cols} FROM {_tbl('genie_opt_iterations')}
                    WHERE run_id = $1
-                   ORDER BY iteration ASC""",
+                   ORDER BY iteration ASC, timestamp ASC""",
                 run_id,
             )
             return [dict(r) for r in rows]
@@ -155,26 +162,6 @@ async def load_gso_patches(run_id: str) -> list[dict]:
         return []
 
 
-async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
-    """Load ASI (per-judge) evaluation results for a specific iteration."""
-    pool = _get_pool()
-    if pool is None:
-        return []
-
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"""SELECT * FROM {_tbl('genie_eval_asi_results')}
-                   WHERE run_id = $1 AND iteration = $2""",
-                run_id,
-                iteration,
-            )
-            return [dict(r) for r in rows]
-    except Exception:
-        logger.warning("Lakebase query failed for genie_eval_asi_results", exc_info=True)
-        return []
-
-
 async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str | None = "full") -> str | None:
     """Load the rows_json column for a specific iteration and eval scope.
 
@@ -191,7 +178,8 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
             if eval_scope is not None:
                 row = await conn.fetchrow(
                     f"SELECT rows_json FROM {tbl} "
-                    "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3",
+                    "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3 "
+                    "ORDER BY timestamp ASC LIMIT 1",
                     run_id,
                     iteration,
                     eval_scope,
@@ -199,7 +187,8 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
             else:
                 row = await conn.fetchrow(
                     f"SELECT rows_json FROM {tbl} "
-                    "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL",
+                    "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL "
+                    "ORDER BY timestamp ASC LIMIT 1",
                     run_id,
                     iteration,
                 )
@@ -209,8 +198,14 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
         return None
 
 
-async def load_gso_suggestions(run_id: str) -> list[dict]:
-    """Load optimization suggestions for a run."""
+async def load_gso_benchmark_mutations(run_id: str) -> list[dict]:
+    """Load the benchmark provenance ledger for a run (GSO v2 Phase 6, §3.5).
+
+    Rows record every benchmark question GSO added / removed / changed (or
+    recommended for prune) in the live Genie Agent. Synced reads are disabled
+    today, so this falls through to the Delta SQL-warehouse fallback in the
+    router.
+    """
     pool = _get_pool()
     if pool is None:
         return []
@@ -218,12 +213,13 @@ async def load_gso_suggestions(run_id: str) -> list[dict]:
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""SELECT * FROM {_tbl('genie_opt_suggestions')}
+                f"""SELECT run_id, question_id, op, before, after, reason, logged_at
+                   FROM {_tbl('genie_opt_benchmark_mutations')}
                    WHERE run_id = $1
-                   ORDER BY created_at ASC""",
+                   ORDER BY logged_at ASC""",
                 run_id,
             )
             return [dict(r) for r in rows]
     except Exception:
-        logger.warning("Lakebase query failed for genie_opt_suggestions", exc_info=True)
+        logger.warning("Lakebase query failed for genie_opt_benchmark_mutations", exc_info=True)
         return []

@@ -1,4 +1,4 @@
-"""Tests for Genie Space config normalization (backend/genie_creator.py).
+"""Tests for Genie Agent config normalization (backend/genie_creator.py).
 
 Tests _enforce_constraints(), _clean_config(), _sort_array(), and
 _normalize_join_relationships() — pure dict transformation functions.

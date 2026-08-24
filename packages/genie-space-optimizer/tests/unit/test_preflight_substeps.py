@@ -96,6 +96,87 @@ class TestPreflightFetchConfig:
         result = preflight_fetch_config(mock_ws, mock_spark, "run-1", "space-1", "cat", "gold", "My Domain!!")
         assert result["domain"] == "my_domain"
 
+    @patch("genie_space_optimizer.optimization.preflight.extract_genie_space_table_refs", return_value=[])
+    @patch("genie_space_optimizer.optimization.preflight.load_run")
+    @patch("genie_space_optimizer.optimization.preflight.write_stage")
+    def test_normalizes_id_only_instruction_in_stored_snapshot(
+        self,
+        mock_write_stage,
+        mock_load,
+        mock_refs,
+        mock_spark,
+        mock_ws,
+        caplog,
+    ):
+        from genie_space_optimizer.optimization.preflight import preflight_fetch_config
+
+        snapshot = {
+            "_parsed_space": {
+                "version": 2,
+                "data_sources": {
+                    "tables": [{"identifier": "cat.gold.orders"}],
+                    "metric_views": [],
+                },
+                "instructions": {
+                    "text_instructions": [{"id": "a" * 32}],
+                },
+            }
+        }
+        mock_load.return_value = {"config_snapshot": snapshot}
+
+        with caplog.at_level("WARNING"):
+            result = preflight_fetch_config(
+                mock_ws,
+                mock_spark,
+                "run-1",
+                "space-1",
+                "cat",
+                "gold",
+                "revenue",
+            )
+
+        assert result["config"]["_parsed_space"]["instructions"][
+            "text_instructions"
+        ] == []
+        assert "empty text-instruction placeholder" in caplog.text
+
+    @patch("genie_space_optimizer.optimization.preflight.validate_serialized_space")
+    @patch("genie_space_optimizer.optimization.preflight.load_run")
+    @patch("genie_space_optimizer.optimization.preflight.write_failure_stage_safely")
+    @patch("genie_space_optimizer.optimization.preflight.write_stage")
+    def test_structural_validation_failure_is_persisted_and_raised(
+        self,
+        mock_write_stage,
+        mock_write_failure,
+        mock_load,
+        mock_validate,
+        mock_spark,
+        mock_ws,
+    ):
+        from genie_space_optimizer.common.genie_schema import SerializedSpaceValidationError
+        from genie_space_optimizer.optimization.preflight import preflight_fetch_config
+
+        mock_load.return_value = {
+            "config_snapshot": {"_parsed_space": {"instructions": {"sql_snippets": {}}}}
+        }
+        mock_validate.return_value = (
+            False,
+            ["instructions.sql_snippets.measures.0.id: Field required"],
+        )
+
+        with pytest.raises(SerializedSpaceValidationError, match="CONFIG_VALIDATION_FAILED"):
+            preflight_fetch_config(
+                mock_ws, mock_spark, "run-1", "space-1", "cat", "gold", "revenue"
+            )
+
+        mock_write_stage.assert_called_once()
+        failure_call = mock_write_failure.call_args
+        assert failure_call.args[2] == "PREFLIGHT_CONFIG_VALIDATION"
+        assert failure_call.kwargs["error_message"] == "CONFIG_VALIDATION_FAILED"
+        assert failure_call.kwargs["detail"]["errors"] == [
+            "instructions.sql_snippets.measures.0.id: Field required"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Step 2: preflight_collect_uc_metadata
@@ -108,11 +189,13 @@ class TestPreflightCollectUcMetadata:
     def test_returns_expected_keys_no_refs(self, mock_ws, mock_val, mock_join, mock_spark):
         from genie_space_optimizer.optimization.preflight import preflight_collect_uc_metadata
 
+        config = {}
         result = preflight_collect_uc_metadata(
             MagicMock(), mock_spark, "run-1", "cat", "gold",
-            config={}, snapshot={}, genie_table_refs=[],
+            config=config, snapshot={}, genie_table_refs=[],
         )
         assert set(result.keys()) == {"uc_columns", "uc_tags", "uc_routines", "uc_fk"}
+        assert config["_uc_tags"] == result["uc_tags"]
 
     @patch("genie_space_optimizer.optimization.preflight._compute_join_overlaps", return_value=[])
     @patch("genie_space_optimizer.optimization.preflight._validate_core_access")
@@ -207,6 +290,85 @@ class TestPreflightGenerateBenchmarks:
         assert kwargs.get("warehouse_id") == "wh-456"
 
 
+class TestLoadOrGenerateBenchmarks:
+    def test_reuse_topup_does_not_double_count_curated_questions(self):
+        from genie_space_optimizer.optimization.preflight import (
+            _load_or_generate_benchmarks,
+        )
+
+        existing = [
+            {
+                "id": f"native-{index}",
+                "question": f"question {index}",
+                "expected_sql": "SELECT 1",
+                "source": "genie_benchmark",
+                "space_question_id": f"native-{index}",
+            }
+            for index in range(15)
+        ]
+        generated = existing + [
+            {
+                "id": f"synthetic-{index}",
+                "question": f"synthetic question {index}",
+                "expected_sql": "SELECT 1",
+            }
+            for index in range(15)
+        ]
+
+        with (
+            patch(
+                "genie_space_optimizer.optimization.preflight.extract_genie_space_benchmarks",
+                return_value=[dict(row) for row in existing],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.load_benchmark_corpus",
+                return_value=[dict(row) for row in existing],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.validate_benchmarks",
+                return_value=[{"valid": True}] * len(existing),
+            ),
+            patch(
+                "genie_space_optimizer.optimization.benchmarking._filter_example_sql_mirrored_benchmarks",
+                side_effect=lambda rows, _config: rows,
+            ),
+            patch(
+                "genie_space_optimizer.optimization.benchmarks.validate_question_sql_alignment",
+                side_effect=lambda rows: [
+                    {"question": row["question"], "aligned": True, "issues": []}
+                    for row in rows
+                ],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.generate_benchmarks",
+                return_value=generated,
+            ) as mock_generate,
+            patch("genie_space_optimizer.optimization.preflight.write_stage"),
+        ):
+            result, regenerated = _load_or_generate_benchmarks(
+                MagicMock(),
+                MagicMock(),
+                {},
+                [],
+                [],
+                [],
+                "default",
+                "cat",
+                "gold",
+                "cat.gold",
+                "run-1",
+            )
+
+        assert regenerated is False
+        assert len(result) == 30
+        assert mock_generate.call_args.kwargs["genie_space_benchmarks"] == []
+        passed_existing = mock_generate.call_args.kwargs["existing_benchmarks"]
+        assert [row["id"] for row in passed_existing] == [row["id"] for row in existing]
+        assert [row["question"] for row in passed_existing] == [
+            row["question"] for row in existing
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Step 4: preflight_validate_benchmarks
 # ---------------------------------------------------------------------------
@@ -260,6 +422,68 @@ class TestPreflightValidateBenchmarks:
         _, kwargs = mock_validate.call_args
         assert kwargs.get("warehouse_id") == "wh-789"
 
+    def test_fourteen_rows_still_fail_after_regeneration_attempt(self):
+        from genie_space_optimizer.optimization.benchmark_repair import (
+            BenchmarkCorpusTooSmallError,
+        )
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_validate_benchmarks,
+        )
+
+        benchmarks = self._enough_benchmarks(14)
+        with (
+            patch(
+                "genie_space_optimizer.optimization.preflight.validate_benchmarks",
+                return_value=[{"valid": True}] * 14,
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.extract_genie_space_benchmarks",
+                return_value=[],
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.generate_benchmarks",
+                return_value=benchmarks,
+            ) as mock_generate,
+            patch("genie_space_optimizer.optimization.preflight.write_stage"),
+        ):
+            with pytest.raises(BenchmarkCorpusTooSmallError):
+                preflight_validate_benchmarks(
+                    MagicMock(), MagicMock(), "run-1", "cat", "gold", {},
+                    benchmarks, [], [], [], "default",
+                )
+
+        mock_generate.assert_called_once()
+
+    @pytest.mark.parametrize("count", [15, 17])
+    def test_fifteen_or_seventeen_rows_pass_if_topup_cannot_reach_30(self, count):
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_validate_benchmarks,
+        )
+
+        benchmarks = self._enough_benchmarks(count)
+
+        def all_valid(rows, *args, **kwargs):
+            return [{"valid": True}] * len(rows)
+
+        with (
+            patch(
+                "genie_space_optimizer.optimization.preflight.validate_benchmarks",
+                side_effect=all_valid,
+            ),
+            patch(
+                "genie_space_optimizer.optimization.preflight.generate_benchmarks",
+                return_value=benchmarks,
+            ) as mock_generate,
+            patch("genie_space_optimizer.optimization.preflight.write_stage"),
+        ):
+            result = preflight_validate_benchmarks(
+                MagicMock(), MagicMock(), "run-1", "cat", "gold", {},
+                benchmarks, [], [], [], "default",
+            )
+
+        assert len(result["benchmarks"]) == count
+        assert mock_generate.call_args.kwargs["target_count"] == 30
+
     @patch("genie_space_optimizer.optimization.preflight.write_stage")
     @patch("genie_space_optimizer.optimization.preflight.validate_benchmarks")
     @patch("genie_space_optimizer.optimization.preflight.generate_benchmarks")
@@ -302,21 +526,25 @@ class TestPreflightValidateBenchmarks:
         ]
         mock_generate.return_value = topped_up
 
-        result = preflight_validate_benchmarks(
-            MagicMock(),
-            MagicMock(),
-            "run-1",
-            "cat",
-            "gold",
-            {"_parsed_space": {}},
-            initial,
-            [],
-            [],
-            [],
-            "sales",
-            target_benchmark_count=30,
-            max_benchmark_count=30,
-        )
+        with patch(
+            "genie_space_optimizer.optimization.benchmarks.validate_question_sql_alignment",
+            side_effect=lambda rows: [{"aligned": True} for _ in rows],
+        ):
+            result = preflight_validate_benchmarks(
+                MagicMock(),
+                MagicMock(),
+                "run-1",
+                "cat",
+                "gold",
+                {"_parsed_space": {}},
+                initial,
+                [],
+                [],
+                [],
+                "sales",
+                target_benchmark_count=30,
+                max_benchmark_count=30,
+            )
 
         assert len(result["benchmarks"]) == 30
         assert result["benchmarks"] == topped_up
@@ -327,38 +555,14 @@ class TestPreflightValidateBenchmarks:
 
 
 # ---------------------------------------------------------------------------
-# Step 5: preflight_load_human_feedback
+# preflight_persist_benchmark_corpus
 # ---------------------------------------------------------------------------
 
-class TestPreflightLoadHumanFeedback:
-    def test_returns_empty_corrections_on_failure(self):
-        from genie_space_optimizer.optimization.preflight import preflight_load_human_feedback
-
-        result = preflight_load_human_feedback(
-            MagicMock(), "run-1", "space-1", "cat", "gold", "default",
-        )
-        assert "human_corrections" in result
-        assert isinstance(result["human_corrections"], list)
-
-    def test_prints_feedback_block(self, capsys):
-        from genie_space_optimizer.optimization.preflight import preflight_load_human_feedback
-
-        preflight_load_human_feedback(
-            MagicMock(), "run-1", "space-1", "cat", "gold", "default",
-        )
-        captured = capsys.readouterr()
-        assert "HUMAN FEEDBACK" in captured.out
-
-
-# ---------------------------------------------------------------------------
-# Step 6: preflight_setup_experiment
-# ---------------------------------------------------------------------------
-
-class TestPreflightSetupExperiment:
-    """Tests for preflight_setup_experiment (step 6).
+class TestPreflightPersistBenchmarkCorpus:
+    """Tests for preflight_persist_benchmark_corpus (step 6).
 
     All tests share the same decorator stack to mock out external
-    dependencies (MLflow, state writes, benchmark operations).
+    dependencies (MLflow tracing, state writes, benchmark operations).
     """
 
     _COMMON_PATCHES = [
@@ -366,17 +570,16 @@ class TestPreflightSetupExperiment:
         "genie_space_optimizer.optimization.preflight._resolve_experiment_path",
         "genie_space_optimizer.optimization.preflight._ensure_experiment_parent_dir",
         "genie_space_optimizer.optimization.preflight.mlflow",
-        "genie_space_optimizer.optimization.preflight._get_general_instructions",
-        "genie_space_optimizer.optimization.preflight.register_instruction_version",
         "genie_space_optimizer.optimization.preflight._flag_stale_temporal_benchmarks",
         "genie_space_optimizer.optimization.preflight.compute_asset_fingerprint",
-        "genie_space_optimizer.optimization.preflight._drop_benchmark_table",
-        "genie_space_optimizer.optimization.preflight.create_evaluation_dataset",
+        "genie_space_optimizer.optimization.preflight.persist_benchmark_corpus",
     ]
 
     def _call_setup(self, mock_spark=None, catalog="cat", schema="gold", **extra_mocks):
-        """Helper: invoke preflight_setup_experiment with all deps mocked."""
-        from genie_space_optimizer.optimization.preflight import preflight_setup_experiment
+        """Invoke preflight_persist_benchmark_corpus with external deps mocked."""
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_persist_benchmark_corpus,
+        )
 
         if mock_spark is None:
             mock_spark = MagicMock(name="spark")
@@ -386,65 +589,49 @@ class TestPreflightSetupExperiment:
             patch(self._COMMON_PATCHES[1], return_value="/exp/path"),
             patch(self._COMMON_PATCHES[2]),
             patch(self._COMMON_PATCHES[3]) as mock_mlflow,
-            patch(self._COMMON_PATCHES[4], return_value="instructions"),
-            patch(self._COMMON_PATCHES[5]),
-            patch(self._COMMON_PATCHES[6]),
-            patch(self._COMMON_PATCHES[7], return_value="fp123"),
-            patch(self._COMMON_PATCHES[8]) as mock_drop,
-            patch(self._COMMON_PATCHES[9]) as mock_create_ds,
+            patch(self._COMMON_PATCHES[4]),
+            patch(self._COMMON_PATCHES[5], return_value="fp123"),
+            patch(self._COMMON_PATCHES[6]) as mock_persist,
         ):
-            mock_exp = MagicMock()
-            mock_exp.experiment_id = "exp-123"
-            mock_mlflow.get_experiment_by_name.return_value = mock_exp
-
             for k, v in extra_mocks.items():
-                if k == "drop_side_effect":
-                    mock_drop.side_effect = v
-                elif k == "create_ds_side_effect":
-                    mock_create_ds.side_effect = v
+                if k == "persist_side_effect":
+                    mock_persist.side_effect = v
+                elif k == "trace_side_effect":
+                    mock_mlflow.set_experiment.side_effect = v
 
-            result = preflight_setup_experiment(
+            result = preflight_persist_benchmark_corpus(
                 MagicMock(), mock_spark, "run-1", "space-1", catalog, schema, "default",
                 {"_parsed_space": {}}, [{"question": "q1"}],
-                [], [], [], [],
+                [],
             )
         return result
 
-    @patch("genie_space_optimizer.optimization.preflight.create_evaluation_dataset")
-    @patch("genie_space_optimizer.optimization.preflight._drop_benchmark_table")
+    @patch("genie_space_optimizer.optimization.preflight.persist_benchmark_corpus")
     @patch("genie_space_optimizer.optimization.preflight.compute_asset_fingerprint", return_value="fp123")
     @patch("genie_space_optimizer.optimization.preflight._flag_stale_temporal_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.register_instruction_version")
-    @patch("genie_space_optimizer.optimization.preflight._get_general_instructions", return_value="instructions")
     @patch("genie_space_optimizer.optimization.preflight.mlflow")
     @patch("genie_space_optimizer.optimization.preflight._ensure_experiment_parent_dir")
     @patch("genie_space_optimizer.optimization.preflight._resolve_experiment_path", return_value="/exp/path")
     @patch("genie_space_optimizer.optimization.preflight.write_stage")
     def test_returns_expected_keys(self, mock_ws, mock_resolve, mock_dir, mock_mlflow,
-                                    mock_instr_fn, mock_reg_instr, mock_flag, mock_fp,
-                                    mock_drop, mock_create_ds):
-        from genie_space_optimizer.optimization.preflight import preflight_setup_experiment
+                                    mock_flag, mock_fp, mock_persist):
+        from genie_space_optimizer.optimization.preflight import (
+            preflight_persist_benchmark_corpus,
+        )
 
-        mock_exp = MagicMock()
-        mock_exp.experiment_id = "exp-123"
-        mock_mlflow.get_experiment_by_name.return_value = mock_exp
-
-        result = preflight_setup_experiment(
+        result = preflight_persist_benchmark_corpus(
             MagicMock(), MagicMock(), "run-1", "space-1", "cat", "gold", "default",
             {"_parsed_space": {}}, [{"question": "q1"}],
-            [], [], [], [],
+            [],
         )
         assert set(result.keys()) == {
-            "model_id", "experiment_name", "experiment_id",
-            "benchmark_count", "evaluation_dataset",
+            "experiment_name", "benchmark_count", "benchmark_corpus",
         }
-        assert result["model_id"] is None
         assert result["experiment_name"] == "/exp/path"
 
-    def test_returns_writer_benchmark_count_from_create_dataset(self):
-        """preflight_setup_experiment exposes writer count for downstream task values."""
+    def test_returns_writer_benchmark_count_from_delta_persist(self):
+        """The handoff step exposes the writer count to downstream tasks."""
         writer_result = {
-            "dataset": object(),
             "table_name": "cat.gold.genie_benchmarks_default",
             "input_count": 30,
             "record_count": 24,
@@ -452,11 +639,25 @@ class TestPreflightSetupExperiment:
         }
 
         result = self._call_setup(
-            create_ds_side_effect=lambda *a, **kw: writer_result,
+            persist_side_effect=lambda *a, **kw: writer_result,
         )
 
         assert result["benchmark_count"] == 24
-        assert result["evaluation_dataset"] == writer_result
+        assert result["benchmark_corpus"] == writer_result
+
+    def test_trace_setup_failure_does_not_block_delta_handoff(self):
+        writer_result = {
+            "table_name": "cat.gold.genie_benchmarks_default",
+            "record_count": 1,
+        }
+
+        result = self._call_setup(
+            trace_side_effect=RuntimeError("experiment unavailable"),
+            persist_side_effect=lambda *a, **kw: writer_result,
+        )
+
+        assert result["benchmark_count"] == 1
+        assert result["benchmark_corpus"] == writer_result
 
     def test_sets_sql_context_with_use_catalog_and_schema(self):
         """USE CATALOG / USE SCHEMA must be issued with the correct values."""
@@ -471,8 +672,8 @@ class TestPreflightSetupExperiment:
         assert "psk" in use_catalog[0]
         assert "genie_space_optimizer" in use_schema[0]
 
-    def test_sql_context_set_before_drop_and_create(self):
-        """_set_sql_context must run before _drop_benchmark_table and create_evaluation_dataset."""
+    def test_sql_context_set_before_delta_persist(self):
+        """_set_sql_context must run before the direct Delta overwrite."""
         call_order = []
 
         with patch(
@@ -480,16 +681,13 @@ class TestPreflightSetupExperiment:
             side_effect=lambda *a, **kw: call_order.append("set_sql_context"),
         ):
             self._call_setup(
-                drop_side_effect=lambda *a, **kw: call_order.append("drop_benchmark_table"),
-                create_ds_side_effect=lambda *a, **kw: call_order.append("create_evaluation_dataset"),
+                persist_side_effect=lambda *a, **kw: call_order.append("persist_benchmark_corpus"),
             )
 
         assert "set_sql_context" in call_order, \
             f"_set_sql_context was not called; order={call_order}"
-        assert call_order.index("set_sql_context") < call_order.index("drop_benchmark_table"), \
-            f"_set_sql_context must precede _drop_benchmark_table; order={call_order}"
-        assert call_order.index("set_sql_context") < call_order.index("create_evaluation_dataset"), \
-            f"_set_sql_context must precede create_evaluation_dataset; order={call_order}"
+        assert call_order.index("set_sql_context") < call_order.index("persist_benchmark_corpus"), \
+            f"_set_sql_context must precede persist_benchmark_corpus; order={call_order}"
 
     def test_sql_context_receives_correct_catalog_and_schema(self):
         """_set_sql_context must receive the catalog and schema arguments unchanged."""
@@ -512,7 +710,7 @@ class TestSetSqlContext:
     """Direct unit tests for the _set_sql_context helper."""
 
     def test_sets_catalog_and_schema(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "my_catalog", "my_schema")
@@ -522,7 +720,7 @@ class TestSetSqlContext:
         assert "USE SCHEMA" in calls[1] and "my_schema" in calls[1]
 
     def test_skips_when_catalog_empty(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "", "my_schema")
@@ -530,7 +728,7 @@ class TestSetSqlContext:
         assert "USE SCHEMA" in str(spark.sql.call_args)
 
     def test_skips_when_schema_empty(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "my_catalog", "")
@@ -538,129 +736,20 @@ class TestSetSqlContext:
         assert "USE CATALOG" in str(spark.sql.call_args)
 
     def test_skips_when_both_empty(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "", "")
         spark.sql.assert_not_called()
 
     def test_escapes_backticks_in_identifiers(self):
-        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+        from genie_space_optimizer.optimization.benchmarking import _set_sql_context
 
         spark = MagicMock()
         _set_sql_context(spark, "cat`alog", "sch`ema")
         calls = [str(c) for c in spark.sql.call_args_list]
         assert "cat``alog" in calls[0]
         assert "sch``ema" in calls[1]
-
-
-# ---------------------------------------------------------------------------
-# Wrapper equivalence
-# ---------------------------------------------------------------------------
-
-class TestPreflightWrapperEquivalence:
-    @patch("genie_space_optimizer.optimization.preflight.preflight_setup_experiment")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_load_human_feedback")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_validate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_generate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_collect_uc_metadata")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_fetch_config")
-    def test_wrapper_calls_all_6_substeps(self, mock_cfg, mock_uc, mock_gen, mock_val, mock_fb, mock_exp):
-        from genie_space_optimizer.optimization.preflight import run_preflight
-
-        mock_cfg.return_value = {
-            "config": {}, "snapshot": {}, "genie_table_refs": [],
-            "domain": "default", "apply_mode": "genie_config", "configured_cols": 0,
-        }
-        mock_uc.return_value = {"uc_columns": [], "uc_tags": [], "uc_routines": [], "uc_fk": []}
-        mock_gen.return_value = {"benchmarks": [{"q": "test"}], "regenerated": False}
-        mock_val.return_value = {"benchmarks": [{"q": "test"}], "pre_count": 1, "invalid_errors": []}
-        mock_fb.return_value = {"human_corrections": []}
-        mock_exp.return_value = {
-            "model_id": "mv-1", "experiment_name": "/exp",
-            "experiment_id": "exp-1", "prompt_registrations": [],
-        }
-
-        config, benchmarks, model_id, exp_name, corrections = run_preflight(
-            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "gold", "revenue",
-        )
-
-        mock_cfg.assert_called_once()
-        mock_uc.assert_called_once()
-        mock_gen.assert_called_once()
-        mock_val.assert_called_once()
-        mock_fb.assert_called_once()
-        mock_exp.assert_called_once()
-
-        assert model_id == "mv-1"
-        assert exp_name == "/exp"
-        assert isinstance(config, dict)
-        assert isinstance(benchmarks, list)
-        assert isinstance(corrections, list)
-
-    @patch("genie_space_optimizer.optimization.preflight.preflight_setup_experiment")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_load_human_feedback")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_validate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_generate_benchmarks")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_collect_uc_metadata")
-    @patch("genie_space_optimizer.optimization.preflight.preflight_fetch_config")
-    def test_wrapper_forwards_warehouse_id_to_warehouse_aware_substeps(
-        self, mock_cfg, mock_uc, mock_gen, mock_val, mock_fb, mock_exp
-    ):
-        from genie_space_optimizer.optimization.preflight import run_preflight
-
-        mock_cfg.return_value = {
-            "config": {}, "snapshot": {}, "genie_table_refs": [],
-            "domain": "default", "apply_mode": "genie_config", "configured_cols": 0,
-        }
-        mock_uc.return_value = {"uc_columns": [], "uc_tags": [], "uc_routines": [], "uc_fk": []}
-        mock_gen.return_value = {"benchmarks": [{"q": "test"}], "regenerated": False}
-        mock_val.return_value = {"benchmarks": [{"q": "test"}], "pre_count": 1, "invalid_errors": []}
-        mock_fb.return_value = {"human_corrections": []}
-        mock_exp.return_value = {
-            "model_id": "mv-1", "experiment_name": "/exp",
-            "experiment_id": "exp-1", "prompt_registrations": [],
-        }
-
-        run_preflight(
-            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "gold", "revenue",
-            warehouse_id="wh-test",
-        )
-
-        assert mock_uc.call_args.kwargs["warehouse_id"] == "wh-test"
-        assert mock_gen.call_args.kwargs["warehouse_id"] == "wh-test"
-        assert mock_val.call_args.kwargs["warehouse_id"] == "wh-test"
-
-
-class TestHarnessPreflightWarehouseID:
-    @patch("genie_space_optimizer.optimization.harness.update_run_status")
-    @patch("genie_space_optimizer.optimization.harness.resolve_warehouse_id", return_value="wh-env")
-    @patch("genie_space_optimizer.optimization.harness._safe_stage")
-    def test_run_preflight_resolves_and_forwards_warehouse_id(
-        self, mock_safe_stage, mock_resolve, mock_update, mock_spark
-    ):
-        from genie_space_optimizer.optimization import harness
-
-        mock_safe_stage.return_value = (
-            {"_gso_iq_scan_recommended_levers": [], "_gso_iq_scan_summary": None},
-            [],
-            "model-1",
-            "/exp",
-            [],
-        )
-
-        with patch.object(harness, "mlflow", create=True) as mock_mlflow:
-            mock_mlflow.get_experiment_by_name.return_value = MagicMock(
-                experiment_id="exp-1",
-            )
-            out = harness._run_preflight(
-                MagicMock(), mock_spark, "run-1", "space-1",
-                "cat", "gold", "revenue",
-            )
-
-        mock_resolve.assert_called_once_with("")
-        assert mock_safe_stage.call_args.args[-1] == "wh-env"
-        assert out["model_id"] == "model-1"
 
 
 def test_update_run_status_retries_delta_concurrent_append(monkeypatch) -> None:
@@ -671,7 +760,7 @@ def test_update_run_status_retries_delta_concurrent_append(monkeypatch) -> None:
     class ConcurrentAppendLike(Exception):
         pass
 
-    def fake_update_row(_spark, _catalog, _schema, _table, _keys, updates):
+    def fake_update_row(_spark, _catalog, _schema, _table, _keys, updates, **_kwargs):
         calls.append(updates)
         if len(calls) == 1:
             raise ConcurrentAppendLike(

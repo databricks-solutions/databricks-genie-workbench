@@ -18,9 +18,9 @@ interface IterationChartProps {
 const LEVER_NAMES: Record<number, string> = {
   1: "Tables & Columns",
   2: "Metric Views",
-  3: "SQL Queries",
-  4: "Joins",
-  5: "Text Instructions",
+  3: "Table-Valued Functions",
+  4: "Join Specifications",
+  5: "Instructions & Examples",
   6: "SQL Expressions",
 }
 
@@ -30,6 +30,10 @@ interface ChartPoint {
   leverLabel: string
   accuracy: number
   totalQuestions: number
+  // GSO v2 Phase 6 — official counts (num_correct / num_questions drive
+  // overall_accuracy; num_needs_review is surfaced distinctly).
+  numCorrect: number | null
+  numNeedsReview: number | null
 }
 
 function buildChartData(iterations: GSOIterationResult[]): ChartPoint[] {
@@ -47,7 +51,9 @@ function buildChartData(iterations: GSOIterationResult[]): ChartPoint[] {
             ? (LEVER_NAMES[it.lever] ?? `Lever ${it.lever}`)
             : `Iter ${it.iteration}`,
       accuracy: Number(it.overall_accuracy) <= 1 ? Number(it.overall_accuracy) * 100 : Number(it.overall_accuracy),
-      totalQuestions: it.total_questions,
+      totalQuestions: it.num_questions ?? it.total_questions,
+      numCorrect: it.num_correct ?? it.correct_count ?? null,
+      numNeedsReview: it.num_needs_review ?? null,
     }))
 }
 
@@ -58,8 +64,13 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<
     <div className="rounded-lg border border-default bg-surface p-3 shadow-md text-xs space-y-1">
       <div><span className="text-muted">Iteration:</span> {pt.iteration}</div>
       <div><span className="text-muted">Accuracy:</span> {pt.accuracy.toFixed(1)}%</div>
+      {pt.numCorrect != null && (
+        <div><span className="text-muted">Correct:</span> {pt.numCorrect}/{pt.totalQuestions}</div>
+      )}
+      {pt.numNeedsReview != null && pt.numNeedsReview > 0 && (
+        <div><span className="text-muted">Needs review:</span> {pt.numNeedsReview}</div>
+      )}
       <div><span className="text-muted">Lever:</span> {pt.leverLabel}</div>
-      <div><span className="text-muted">Questions:</span> {pt.totalQuestions}</div>
     </div>
   )
 }

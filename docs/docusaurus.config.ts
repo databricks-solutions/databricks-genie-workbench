@@ -1,6 +1,19 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+
+// The GSO Run Debugger prompt is embedded verbatim into
+// docs/reference/gso-run-debugger.mdx so users can copy it without leaving the
+// site. It is read here (not imported) because Docusaurus's MDX loader claims
+// every .md import and would compile the file to JS instead of returning text.
+// docs/debug-prompt.md stays the single source of truth — it is guarded by
+// packages/genie-space-optimizer/tests/unit/test_debug_prompt_contract.py.
+const DEBUG_PROMPT = fs.readFileSync(
+  path.join(__dirname, 'debug-prompt.md'),
+  'utf8',
+);
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -76,6 +89,11 @@ const config: Config = {
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
+  },
+
+  // Exposed to pages via useDocusaurusContext().siteConfig.customFields.
+  customFields: {
+    debugPrompt: DEBUG_PROMPT,
   },
 
   presets: [

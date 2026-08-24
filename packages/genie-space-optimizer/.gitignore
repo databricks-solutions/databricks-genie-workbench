@@ -12,10 +12,6 @@ wheels/
 # version file
 src/genie_space_optimizer/_version.py
 
-# metadata file — stub is checked in; do NOT re-add to gitignore.
-# See commit 9da7e63 for context.
-# src/genie_space_optimizer/_metadata.py
-
 # build files
 dist
 
@@ -34,17 +30,11 @@ node_modules/
 # DABs 
 .databricks
 
-# apx
-.apx/
-
 # pytest cache
 .pytest_cache/
 
 # Build artifacts
 .build/
-
-# UI dist folder
-src/genie_space_optimizer/__dist__/
 
 # MLflow
 mlflow.db
@@ -53,7 +43,6 @@ mlflow.db
 .cursor/
 .claude/
 /genie_space_optimizer/
-browser-test-output/
 genie_space_optimizer_docs/
 
 # docs — exclude all planning artifacts; keep only the process design reference

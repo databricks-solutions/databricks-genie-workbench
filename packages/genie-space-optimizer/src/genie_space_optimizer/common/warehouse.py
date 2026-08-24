@@ -7,6 +7,7 @@ integration module (``integration/``).
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -25,6 +26,8 @@ _DEFAULT_RE = re.compile(
 _REQUIRED_RUN_COLUMNS = (
     "job_id",
     "llm_model",
+    "benchmark_policy",
+    "benchmark_mutation_count",
 )
 
 
@@ -36,6 +39,7 @@ def sql_warehouse_query(
     """Execute SQL via the Statement Execution API and return a pandas DataFrame."""
     import pandas as pd
     from databricks.sdk.service.sql import Disposition, Format, StatementState
+    from genie_space_optimizer.common.query_tags import gso_query_tags
 
     resp = ws.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
@@ -43,6 +47,7 @@ def sql_warehouse_query(
         wait_timeout="50s",
         disposition=Disposition.INLINE,
         format=Format.JSON_ARRAY,
+        query_tags=gso_query_tags(purpose="optimization"),
     )
     if resp.status and resp.status.state == StatementState.SUCCEEDED:
         manifest_schema = resp.manifest.schema if resp.manifest else None
@@ -66,11 +71,13 @@ def sql_warehouse_execute(
 ) -> None:
     """Execute a DML/DDL statement via the SQL warehouse (no result expected)."""
     from databricks.sdk.service.sql import StatementState
+    from genie_space_optimizer.common.query_tags import gso_query_tags
 
     resp = ws.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
         statement=sql,
         wait_timeout="50s",
+        query_tags=gso_query_tags(purpose="optimization"),
     )
     if resp.status and resp.status.state != StatementState.SUCCEEDED:
         error_msg = ""
@@ -268,29 +275,37 @@ def wh_create_run(
     apply_mode: str = "genie_config",
     levers: list[int] | None = None,
     triggered_by: str | None = None,
-    experiment_name: str | None = None,
     config_snapshot: dict | None = None,
     llm_model: str | None = None,
+    benchmark_policy: str = "repair_allowed",
 ) -> None:
     """Insert a QUEUED run row via SQL warehouse."""
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER, MAX_ITERATIONS
 
-    snap_json = json.dumps(config_snapshot).replace("'", "''") if config_snapshot else ""
+    snap_json = json.dumps(config_snapshot) if config_snapshot else ""
+    snap_sql = "''"
+    if snap_json:
+        snap_b64 = base64.b64encode(snap_json.encode("utf-8")).decode("ascii")
+        snap_sql = f"CAST(unbase64('{snap_b64}') AS STRING)"
     levers_json = json.dumps(levers if levers is not None else DEFAULT_LEVER_ORDER)
-    exp = (experiment_name or "").replace("'", "''")
     user = (triggered_by or "").replace("'", "''")
     model_escaped = llm_model.replace("'", "''") if llm_model else ""
     model_sql = f"'{model_escaped}'" if model_escaped else "NULL"
+    policy_escaped = benchmark_policy.replace("'", "''")
 
+    # GSO v2 Phase 5 (D3): the ``experiment_name`` column was scrubbed; the
+    # surviving MLflow tracing self-resolves a deterministic experiment path in
+    # ``preflight_persist_benchmark_corpus`` (no pointer column needed).
     sql = (
         f"INSERT INTO {catalog}.{schema}.genie_opt_runs "
         f"(run_id, space_id, domain, catalog, uc_schema, status, started_at, "
         f"max_iterations, levers, apply_mode, updated_at, "
-        f"experiment_name, triggered_by, config_snapshot, llm_model) VALUES ("
+        f"triggered_by, config_snapshot, llm_model, benchmark_policy, "
+        f"benchmark_mutation_count) VALUES ("
         f"'{run_id}', '{space_id}', '{domain}', '{catalog}', "
         f"'{catalog}.{schema}', 'QUEUED', current_timestamp(), "
         f"{MAX_ITERATIONS}, '{levers_json}', '{apply_mode}', current_timestamp(), "
-        f"'{exp}', '{user}', '{snap_json}', {model_sql})"
+        f"'{user}', {snap_sql}, {model_sql}, '{policy_escaped}', 0)"
     )
     sql_warehouse_execute(ws, warehouse_id, sql)
     logger.info("Created run %s via SQL warehouse", run_id)

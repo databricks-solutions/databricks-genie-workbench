@@ -26,13 +26,18 @@ const CAPABILITIES = [
     body: 'Every scan, optimization run, and config change is persisted to Lakebase so you can see progress.',
     to: '/docs/platform/operations',
   },
+  {
+    title: 'Watch',
+    body: 'GenieWatch reports per-Agent cost, usage, feedback, and executed-resource lineage from system tables.',
+    to: '/docs/getting-started/architecture-overview',
+  },
 ];
 
 const STATS = [
   {value: '12', label: 'IQ quality checks'},
   {value: '3', label: 'maturity tiers'},
-  {value: '6', label: 'optimization pipeline tasks'},
-  {value: '9', label: 'evaluation judges'},
+  {value: '4', label: 'optimization pipeline tasks'},
+  {value: '6', label: 'optimization levers'},
 ];
 
 const PERSONAS = [
@@ -125,17 +130,17 @@ function Capabilities() {
         Enter the loop at any point and repeat as the Genie Agent evolves — after
         optimizing, re-scan to see the updated score.
       </p>
-      <div className="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5 lg:gap-4">
         {CAPABILITIES.map((item, i) => (
           <Link
             key={item.title}
             to={item.to}
-            className="group rounded-xl border border-slate-200 bg-white p-6 no-underline transition hover:border-[#2272b4] hover:shadow-md hover:no-underline dark:border-slate-700 dark:bg-[#1f3239] dark:hover:border-[#4299e0]">
-            <div className="flex items-center gap-3">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#2272b4]/10 text-sm font-semibold text-[#2272b4] dark:bg-[#4299e0]/15 dark:text-[#4299e0]">
+            className="group rounded-xl border border-slate-200 bg-white p-6 no-underline transition hover:border-[#2272b4] hover:shadow-md hover:no-underline dark:border-slate-700 dark:bg-[#1f3239] dark:hover:border-[#4299e0] lg:p-5">
+            <div className="flex items-center gap-3 lg:gap-2">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#2272b4]/10 text-sm font-semibold text-[#2272b4] dark:bg-[#4299e0]/15 dark:text-[#4299e0] lg:h-7 lg:w-7 lg:text-xs">
                 {i + 1}
               </span>
-              <h3 className="m-0 text-xl font-medium text-[#1b3139] group-hover:text-[#2272b4] dark:text-white dark:group-hover:text-[#4299e0]">
+              <h3 className="m-0 text-xl font-medium text-[#1b3139] group-hover:text-[#2272b4] dark:text-white dark:group-hover:text-[#4299e0] lg:text-base">
                 {item.title}
               </h3>
               <span
@@ -144,7 +149,9 @@ function Capabilities() {
                 →
               </span>
             </div>
-            <p className="mt-3 text-slate-600 dark:text-slate-300">{item.body}</p>
+            <p className="mt-3 text-slate-600 dark:text-slate-300 lg:mt-2 lg:text-sm">
+              {item.body}
+            </p>
           </Link>
         ))}
       </div>
@@ -158,11 +165,12 @@ function QuickStart() {
       <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-16 md:grid-cols-2 md:px-10">
         <div>
           <Eyebrow>Quick start</Eyebrow>
-          <h2 className="mt-1 text-3xl font-normal">Deploy in one command</h2>
+          <h2 className="mt-1 text-3xl font-normal">Install from a notebook</h2>
           <p className="mt-3 text-slate-600 dark:text-slate-300">
             Genie Workbench runs entirely on the Databricks Apps platform. The
-            guided installer provisions resources, writes your config, builds the
-            frontend, and deploys — no local server required.
+            recommended path is the notebook installer — clone the repo into a
+            Databricks Git folder, set five widgets, and Run All. No local
+            terminal, CLI profile, Node, or uv setup required.
           </p>
           <div className="mt-6">
             <Button to="/docs/getting-started/deployment-guide" variant="navy">
@@ -175,16 +183,24 @@ function QuickStart() {
             <span className="h-3 w-3 rounded-full bg-[#eb1600]/80" />
             <span className="h-3 w-3 rounded-full bg-amber-400/80" />
             <span className="h-3 w-3 rounded-full bg-emerald-400/80" />
-            <span className="ml-2 font-mono text-xs text-slate-400">bash</span>
+            <span className="ml-2 font-mono text-xs text-slate-400">
+              notebooks/install.py
+            </span>
           </div>
           <pre className="m-0 overflow-x-auto bg-transparent p-5 font-mono leading-relaxed text-slate-200">
             <code>
-              <span className="text-slate-400"># First-time setup (interactive)</span>
-              {'\n'}./scripts/install.sh{'\n\n'}
-              <span className="text-slate-400"># Subsequent deploys</span>
-              {'\n'}./scripts/deploy.sh{'\n\n'}
-              <span className="text-slate-400"># Code-only update (faster)</span>
-              {'\n'}./scripts/deploy.sh --update
+              <span className="text-slate-400">
+                # 1 · Clone into a Databricks Git folder
+              </span>
+              {'\n'}Workspace → Create → Git folder{'\n\n'}
+              <span className="text-slate-400">
+                # 2 · Open notebooks/install.py, set widgets
+              </span>
+              {'\n'}app_name · catalog · warehouse_id{'\n'}
+              lakebase_mode · lakebase_project_name{'\n\n'}
+              <span className="text-slate-400">
+                # 3 · Attach Serverless (env v5) → Run All
+              </span>
             </code>
           </pre>
         </div>

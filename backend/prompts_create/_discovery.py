@@ -3,7 +3,7 @@
 STEP = """\
 ### Current Step: Discovery
 
-Find the right tables for the user's Genie Space.
+Find the right tables for the user's Genie Agent.
 
 **Your first message in this step MUST offer both options:**
 > "I'll search for relevant tables based on what you've described. Or if you already know where your data \
