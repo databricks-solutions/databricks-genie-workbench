@@ -518,6 +518,20 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   // scheduled calls pointing at the latest callback.
   const sendMessageRef = useRef<(text: string, selections?: Record<string, unknown>) => void>(() => {})
 
+  // If a create_space attempt is in flight when a turn terminates for ANY
+  // reason (clean error/done, reconnect cap exhausted, or the user hitting
+  // Stop) and no `created` event confirmed success, the space MAY exist
+  // server-side. Mark the outcome unknown so Approve & Create requires an
+  // explicit confirm before it can spawn a duplicate.
+  // Declared BEFORE `sendMessage` so the lint rule (react-hooks/immutability)
+  // can statically verify the closure reference is always live.
+  const resolveInFlightCreateAsUnknown = () => {
+    if (createInFlightRef.current) {
+      createInFlightRef.current = false
+      if (!createdSpaceIdRef.current) setCreateOutcomeUnknown(true)
+    }
+  }
+
   const sendMessage = useCallback(
     (text: string, selections?: Record<string, unknown>) => {
       const isContinuation = text === ""
@@ -942,18 +956,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       sendMessage(input)
-    }
-  }
-
-  // If a create_space attempt is in flight when a turn terminates for ANY
-  // reason (clean error/done, reconnect cap exhausted, or the user hitting
-  // Stop) and no `created` event confirmed success, the space MAY exist
-  // server-side. Mark the outcome unknown so Approve & Create requires an
-  // explicit confirm before it can spawn a duplicate.
-  const resolveInFlightCreateAsUnknown = () => {
-    if (createInFlightRef.current) {
-      createInFlightRef.current = false
-      if (!createdSpaceIdRef.current) setCreateOutcomeUnknown(true)
     }
   }
 
