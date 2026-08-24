@@ -1517,31 +1517,66 @@ client that never learns about the lenses must keep working unchanged.
 
 ### Prompt 13 — Output screen panels
 
+*Amended at the Prompt 13 PLAN review (live claim). The PLAN's explore phase found
+"wire to the Prompt 9 endpoints" assumed a create-and-attach results read that
+Prompt 9 never shipped — its four routes are proposals/ddl/decision/drop, with no
+GET exposing the created-objects ledger. The DATA all exists: `lift_report_json`
+on `genie_opt_mv_created_objects` is `LiftReport.to_dict()` verbatim (frozen
+14-key shape, `eval_runner.py:177-193` — delta, pre/post accuracy, needs-review,
+both eval_run_ids), and `downgrade_reason` persists on the consent row
+(`ddl.py:245`). So the fix is plumbing, folded in as step 0 below — the Prompt 11
+precedent, not a separate prompt. Two more PLAN findings resolved here:
+`tables_freed` has NO producer anywhere (gap report confirms) and is CUT from the
+panel — render nothing rather than fabricate; and the suggest-only space-config
+diff synthesizes its proposed side client-side (current data_sources with
+proposed_object appended), the exact precedent Prompt 12's Model-tab diff shipped.
+Frame labels corrected: the output panels are mockup frames 4-5, not 3-4.*
+
 ```
-Implement mockups 3–4 in the run output/results screen:
+Step 0 — backend results read (small, the Prompt 11 precedent):
+- wh_load_mv_created_objects (plural, by run_id) in common/warehouse.py,
+  mirroring the singular at :848 including the lift_report decode; extend the
+  MV-D21 column-contract pin to cover it.
+- MvLiftReport Pydantic mirror of the frozen 14-key LiftReport shape
+  (eval_runner.py:177-193 — mirror it, do not reshape it); extend
+  MvCreatedObject with lift_report: MvLiftReport | None.
+- GET /api/auto-optimize/runs/{run_id}/mv-created returning the extended
+  MvCreatedObject list, plus the run's downgrade_reason read from the consent
+  row (wh_load_mv_consent). Read-only: SP-tolerant client per MV-D20.
+- Route tests per the repo's idiom; TS mirrors in types/index.ts (the deferred
+  block at :939 names exactly these shapes).
+
+Implement mockup frames 4-5 in the run output/results screen:
 
 - Suggest-only panel per POV 7.5: DDL with copy (from GET /runs/{run_id}/mv-ddl),
   GRANT with copy, space-config diff (react-diff-viewer-continued) against
-  current data_sources.metric_views[], evidence block, the verbatim "Lift not
+  current data_sources.metric_views[] — the proposed side SYNTHESIZED
+  client-side per the Prompt 12 Model-tab precedent, no new endpoint —
+  evidence block, the verbatim "Lift not
   measured — this metric view was not created or attached during this run."
   label, [Approve for re-run] (POST /mv/proposals/{id}/decision), and
   [Re-run with this metric view] which opens the run config pre-filled in
   create_and_attach mode with that proposal checked (MV-D1 flow).
-- Create-and-attach panel: created object name linking to Catalog Explorer,
+- Create-and-attach panel (wired to the step-0 route): created object name
+  linking to Catalog Explorer,
   baseline vs post-attach accuracy with both eval_run_ids as links, needs-review
-  count shown separately (never folded into accuracy), tables_freed,
+  count shown separately (never folded into accuracy),
   regression -> DETACHED badge + [Drop view] flow (confirm dialog quoting the
   "other consumers may depend on it" warning), downgrade_reason banner when the
-  run degraded, a join-strategy badge (denormalized / nested / subquery-source)
+  run degraded, a join-strategy badge (denormalized / subquery-source — the
+  reachable states only, nested is not one today, MV-D14/D15)
   with its cardinality evidence, and a "Grant access" panel rendering the
   copy-ready GRANT SELECT checklist with the note that other users' Genie
-  answers silently degrade without it.
-- Wire to the Prompt 9 endpoints; component tests for every state incl.
-  downgraded-run and detached-with-drop.
-- Per MV-D23: run_id is presentational in every component added here. Do not
-  key component state, cache identity, or a fetch on it — 13.5 renders these
-  same cards from a space-scoped source, and a structural dependency on run_id
-  means rebuilding them.
+  answers silently degrade without it. tables_freed is CUT (no producer —
+  gap-report row stays DOES-NOT-EXIST-YET); annotate the mockup's hardcoded
+  "2" as not shipped, the mv_materialize precedent.
+- Component tests for every state incl. downgraded-run and detached-with-drop.
+- Per MV-D23 (OPEN until 13.5 — this bullet is the obligation it already
+  placed on this prompt, not its decision): the run-detail CONTAINER may fetch
+  by run_id — it lives on a run screen — but every presentational component
+  (cards, panels, stat blocks) takes its data as props and keys nothing on
+  run_id, so 13.5 feeds the same components from a space-scoped source
+  unchanged.
 ```
 
 ### Prompt 13.5 — Suggest metric views without a run (decides MV-D23)
@@ -1662,6 +1697,23 @@ Audit test coverage across everything added on this branch and close gaps:
   case; the run-produced-no-SQL case still SKIPping with its own reason; EMPTY
   vs UNAVAILABLE reported distinctly; the space-scoped proposals route; and
   that the in-job advisor behaviour is unchanged by the corpus restructure.
+- WRITE-TO-READ EXPOSURE SWEEP (one-time, then pinned). Twice on this branch a
+  "wire to existing endpoints" instruction assumed a read that the writing
+  side never exposed — the space-scoped proposals read (caught at Prompt 11)
+  and the created-objects/lift read (caught at the Prompt 13 PLAN). Both were
+  found by a PLAN phase, which is one prompt too late. Build the matrix once:
+  for every column on the three genie_opt_mv_* tables (candidates, consents,
+  created_objects — DDL in optimization/ddl.py, decode contracts in the wh_*
+  helpers), record which route serves it and which UI surface renders it.
+  Every cell is one of: SERVED (name the route), DELIBERATELY INTERNAL (name
+  the reason — e.g. dedup_fingerprint internals, consent verification
+  plumbing), or GAP. A GAP is a finding to raise, not to quietly fix in this
+  prompt. Then PIN the sweep so it cannot rot: a test that walks the three
+  CREATE TABLE column lists in ddl.py and asserts every column name appears
+  in the matrix file with a non-empty classification — a new column added
+  without classifying its exposure fails the test, which is the moment the
+  Prompt 11/13 class of defect is actually caught. Park the matrix next to
+  the gap report (docs/design/), one table, no prose beyond the legend.
 Additionally: the recon found the ONLY GitHub Actions workflow is docs deploy —
 there is no test CI. Add a test workflow running the backend pytest suite,
 the GSO package pytest suite (pythonpath=["src"]), and frontend vitest on PRs,
