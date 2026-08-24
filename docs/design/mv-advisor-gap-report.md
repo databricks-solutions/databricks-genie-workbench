@@ -15,7 +15,7 @@ written — see [§3 Decisions needed](#3-decisions-needed).
 | Date of survey | 2026-08-23 |
 | Method | Direct file reads. Every quote below was read from the working tree on the date above. Line numbers are from that state. |
 | Scope | Read-only. No feature code was written or modified in producing this report. |
-| Last MV-D9 refresh | 2026-08-23 @ `7b55df61`, before Prompt 5.5. Re-read live: the `config.py` and `mv_scoring.py` line counts in §1.4; the two `WITH METRICS` claims in §2.5 and the patch-path table; the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`) and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
+| Last MV-D9 refresh | 2026-08-23, in the Prompt 5.5 commit. Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
 
 ## Headline
 
@@ -488,7 +488,7 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2545 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2632 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
@@ -498,7 +498,7 @@ src/genie_space_optimizer/
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
                   mv_fingerprint.py (1333 L), mv_scoring.py (1125 L),
-                  mv_state.py (639 L), ...
+                  mv_state.py (639 L), mv_yaml.py (1643 L), ...
 ```
 
 **Existing metric-view surface** (relevant — the advisor is not starting from zero):
@@ -510,6 +510,7 @@ src/genie_space_optimizer/
 | `optimization/preflight.py` | `_profile_metric_view`, reclassification into `_metric_view_yaml` |
 | `optimization/benchmarking.py` | MV join precheck/repair, `MEASURE()` wrapping, `build_metric_view_measures` |
 | `optimization/wide_schema_history.py` | `system.query.history` mining (`:248`), warehouse-history fallback (`:357`) |
+| `optimization/mv_yaml.py` (1643 L) | `generate` / `validate` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment and capability checks) |
 
 Note the last row: **query-history demand signal (the POV's **D** component) already
 exists**, including the CMK/unavailable fallback path.
@@ -730,8 +731,13 @@ table added by Commit 1:
     created_by          STRING        NOT NULL COMMENT 'Identity that executed CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never the service principal',
 ```
 
-No code renders or executes metric-view DDL. `yaml.dump` and `yaml.safe_dump` appear nowhere in
-the repository either, so the Prompt 5.5 renderer starts from nothing to displace.
+The apply path still executes no metric-view DDL, and that is unchanged. What did change with
+Prompt 5.5 is where the statement is *built*: `optimization/mv_yaml.py` renders both the YAML
+body and the wrapping `CREATE VIEW … WITH METRICS LANGUAGE YAML` (`mv_yaml.create_ddl`), and is
+the only module in the package that renders either — pinned by
+`test_mv_yaml_is_the_only_module_that_renders_yaml`, which fails on a `yaml.dump` anywhere else.
+Execution remains the backend's under OBO (MV-D1); the job, which runs as the service principal,
+still never issues the statement.
 
 Existing patches *can* modify an **already-attached** MV's column metadata, because lookup
 searches both shelves:
@@ -1255,8 +1261,8 @@ provides `mock_ws`, `mock_spark`, `patch_llm_client`, `sample_run`, `sample_meta
 
 | Test | Guards |
 |---|---|
-| `test_phase7_job_dag.py` (406 L) | The DABs job shape: four linear tasks, no condition tasks, no task values, parameter defaults, launcher parameter threading |
-| `test_four_notebook_architecture.py` (86 L) | AST-walks the import closure of all four notebooks and fails on any import of 17 retired modules |
+| `test_phase7_job_dag.py` (405 L) | The DABs job shape: four linear tasks, no condition tasks, no task values, parameter defaults, launcher parameter threading |
+| `test_four_notebook_architecture.py` (85 L) | AST-walks the import closure of all four notebooks and fails on any import of 17 retired modules |
 | `test_debug_prompt_contract.py` | `docs/debug-prompt.md` SQL stays read-only and current |
 | `backend/tests/test_deploy_lib.py` | The installer mirrors the bundle |
 
@@ -1397,7 +1403,7 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 | `field_path: "data_sources.metric_views"`, `operation: "append"` | **CONFLICTS** | No path-addressed patches; `op` ∈ `add`/`update`/`remove`/`update_section`/`rewrite` on the *rendered command* |
 | Attach MV by patching `data_sources.metric_views[]` | **DOES-NOT-EXIST-YET** | `_apply_action_to_config` handles `tables` only (`:3871-3886`); MV sections are no-ops (`:3914-3932`) |
 | Companion patch removing covered raw tables | **PARTIALLY MATCHES** | `remove_table` exists (`applier.py:3880-3886`) but is not in `_ALLOWED_PATCH_TYPES` |
-| `CREATE VIEW … WITH METRICS LANGUAGE YAML` | **DOES-NOT-EXIST-YET** | The sole repo-wide `WITH METRICS` hit is a column comment (`ddl.py:262`); no code renders or executes the DDL, and there is no `yaml.dump` call anywhere |
+| `CREATE VIEW … WITH METRICS LANGUAGE YAML` | **PARTIALLY MATCHES** | `mv_yaml.create_ddl` builds the statement and `mv_yaml.generate` the YAML body it wraps; nothing executes it yet. Execution is the backend's under OBO at Prompt 9 — the job runs as the SP and never issues it |
 | `EXPLAIN CREATE MATERIALIZED VIEW` precheck | **DOES-NOT-EXIST-YET** | — |
 | "Inherits existing versioning, diff, rollback" | **PARTIALLY MATCHES** | `genie_opt_patches` would carry it; but rollback is whole-snapshot (`applier.py:4550-4560`), so per-patch detach has no analogue |
 | `on_regression: DETACH_ONLY_NEVER_DROP` | **DOES-NOT-EXIST-YET** | And incompatible with snapshot rollback as written |

@@ -2543,3 +2543,90 @@ MV_OPTIONAL_CAPABILITIES: frozenset[str] = frozenset({
     MV_CAPABILITY_FIELDS_AGG_WINDOW_OFFSET,
 })
 """Capabilities whose absence downgrades generated YAML rather than the run."""
+
+
+# ── 25. Metric View Advisor YAML vocabulary (MV-D8) ─────────────────────
+
+MV_YAML_VERSION = "1.1"
+"""Emitted quoted. The one schema version this engine writes and validates."""
+
+MV_FORMAT_TYPES: frozenset[str] = frozenset({
+    "byte", "currency", "date", "date_time", "number", "percentage",
+})
+"""The closed set of ``format.type`` values a metric view accepts.
+
+Closed on purpose: an out-of-set type is a create-time error, so accepting one
+at generation time only moves the failure to the slowest possible place."""
+
+MV_FORMAT_TYPE_CORRECTIONS: dict[str, str] = {
+    "percent": "percentage",
+    "pct": "percentage",
+    "decimal": "number",
+    "integer": "number",
+    "int": "number",
+    "float": "number",
+    "double": "number",
+    "money": "currency",
+    "timestamp": "date_time",
+    "datetime": "date_time",
+}
+"""Near-miss spellings mapped to the legal type they were reaching for.
+
+Used only to make the rejection message actionable. The generator never
+silently substitutes — a wrong type is rejected and named, because a format
+quietly rewritten from ``percent`` to ``percentage`` is a number displayed as
+something the author did not ask for."""
+
+MV_UNSUPPORTED_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({
+    "name", "time_dimension", "window_measures",
+})
+"""Top-level keys that make a metric view fail to create.
+
+``name`` belongs to the ``CREATE VIEW`` statement, ``time_dimension`` was never
+a v1.1 field, and top-level ``window_measures`` is the unsupported *array* form
+— the per-measure ``window:`` property is supported and is not listed here."""
+
+MV_UNSUPPORTED_JOIN_FIELDS: frozenset[str] = frozenset({"join_type", "table"})
+"""Join-level keys that fail. ``join_type`` is unsupported (joins are always
+LEFT OUTER) and the relation key is ``source``, not ``table``."""
+
+MV_JOIN_STRATEGY_DIRECT = "direct"
+MV_JOIN_STRATEGY_DENORMALIZED = "denormalized"
+MV_JOIN_STRATEGY_NESTED = "nested"
+MV_JOIN_STRATEGY_SUBQUERY = "subquery_source"
+
+MV_JOIN_STRATEGIES: tuple[str, ...] = (
+    MV_JOIN_STRATEGY_DIRECT,
+    MV_JOIN_STRATEGY_DENORMALIZED,
+    MV_JOIN_STRATEGY_NESTED,
+    MV_JOIN_STRATEGY_SUBQUERY,
+)
+"""The multi-hop ladder's rungs, in preference order after ``direct``.
+
+``direct`` is not a rung — it is the single-hop case where no ladder applies.
+The rung chosen and the reason are recorded on the proposal (``join_strategy``
+plus evidence) so a reviewer can see why a shape was reachable or was not."""
+
+MV_COMMENT_SECTIONS: tuple[str, ...] = (
+    "PURPOSE", "BEST FOR", "NOT FOR", "DIMENSIONS",
+    "MEASURES", "SOURCE", "JOINS", "NOTE",
+)
+"""Required structured-comment sections, in emission order. All eight are
+required: the comment is the only description Genie reads at selection time, so
+a missing section is missing retrieval signal rather than missing prose."""
+
+MV_SYNONYMS_MIN = 3
+MV_SYNONYMS_MAX = 10
+MV_SYNONYM_MAX_CHARS = 255
+"""Per-field synonym bounds. Too few starves matching; too many dilute it."""
+
+MV_COMMENT_ECHO_THRESHOLD = _float_env("GSO_MV_COMMENT_ECHO_THRESHOLD", 0.90)
+"""Normalized-similarity ceiling for one shipped comment line against one
+benchmark question, checked through ``leakage.LeakageOracle.contains_question``.
+
+Higher than the example-SQL threshold (0.85) and deliberately so: a comment's
+BEST FOR line is a *paraphrase of an intent*, so it is supposed to share topic
+vocabulary with questions about that intent. Only near-verbatim echo is
+leakage. This is defense in depth rather than the primary guarantee —
+``MetricViewCandidate`` carries ``benchmark_question_ids`` and no benchmark
+text, so verbatim text has no route into a comment to begin with."""

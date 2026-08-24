@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D13 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D14 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -268,7 +268,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D13)
+## Decisions register (MV-D1–MV-D14)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, and MV-D13 during Prompt 5 execution; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -348,6 +348,17 @@ Preference is keyed on candidate type rather than availability because the quest
 *Revisit triggers* — either would make rung 2 reachable again, and neither has happened: Databricks publishes a DBSQL↔DBR mapping, or the create path moves to a DBR cluster (which MV-D1 does not currently allow). **An operator override forcing rung 2 is explicitly rejected.** A flag that says "assume ≥17.1" reintroduces exactly the unvalidated claim `UNKNOWN` exists to prevent, and it fails in the direction that produces confidently wrong numbers rather than verbose ones.
 
 *Binding on Prompt 5.5:* `mv_yaml.validate` MUST read the flat `results` map from the probe and **step down on `UNKNOWN`**. An absent row is never permissive — a missing capability key means the probe could not speak to it, which is the same instruction to step down. Capability rows also carry `observed_warehouse_id`, because a capability is a property of the compute and not of the user: `verify()` downgrades when trigger-time re-verification names a different warehouse, since a capability observed on warehouse A says nothing about a create executed on warehouse B.
+
+**MV-D14 — Uniqueness is a claim with provenance, and only an exact count is proof.** Taken during Prompt 5.5 execution. MV-D8 gates two constructs on a key being "proven 1:1": `rely.at_most_one_match: true` and the nested-join rung. The gate had no defined evidence standard, and the profiling GSO already computes cannot meet the obvious reading of it — `_data_profile` and `_join_overlaps` sample, so a sampled `COUNT(DISTINCT k) = COUNT(*)` says the duplicate rows were not in the sample and nothing more. Both constructs fail in the expensive direction when the claim is wrong: `at_most_one_match` is **unvalidated at runtime**, so a false claim silently inflates every `SUM` and `COUNT` through fan-out rather than erroring. So `MvProfiling` carries uniqueness as a `KeyUniqueness` with an explicit `kind`, and `generate` treats exactly one kind as proof:
+
+- **`EXACT`** — a full-relation count, not a sample. The only kind that is proof, and only when it actually shows no duplicates; an `EXACT` row reporting duplicates is decisive evidence *against*.
+- **`SAMPLED`** — recorded as evidence on the proposal, never used as proof.
+- **`UC_CONSTRAINT`** — a declared primary key is **not** proof either. Unity Catalog primary keys are informational and unenforced, so the declaration restates the same unvalidated claim one layer down.
+- **`UNKNOWN`** — absent evidence, which is the default and steps down.
+
+**The consequence, stated plainly: nothing in the repository produces `EXACT` evidence today, so `rely` is never emitted and the nested rung is unreachable on every compute — independently of MV-D13's capability floor, which already blocks it on warehouses.** Multi-hop candidates land on rung 3 (subquery-`source`), where uniqueness is *enforced* by construction rather than asserted. That output is correct on all runtimes; the two blocked constructs are optimizations, and neither changes an answer. Prompt 6 may add an exact-count probe against the candidate's join keys, which would make `rely` reachable through the same gate with no change here.
+
+*Two smaller calls from the same prompt, recorded because both deviate from the prompt text.* First, MV-D8's transitive-join detector was written as "port the left-head-of-`on` check," which presumes an implementation to port; there is none — the rule exists only in the external patterns skill, which under Prompt 5.5's own terms is a source and not an authority. It is therefore **restated in-repo** in `mv_yaml`'s module docstring and implemented from the restatement, and the check **splits by severity**: a first-level `on` whose columns reach a sibling join is an error (that is the transitivity the rule exists to catch), while one written `dim.k = source.k` instead of `source.k = dim.k` is a **warning**, because operand order is a style convention and rejecting it would fail valid YAML. Second, the >0.9 comment-echo check reuses `LeakageOracle.contains_question` at `MV_COMMENT_ECHO_THRESHOLD` rather than adding a second matcher, per the standing instruction to extend `leakage.py` instead of writing a parallel scanner.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
