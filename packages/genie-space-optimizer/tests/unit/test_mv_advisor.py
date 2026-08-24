@@ -25,7 +25,12 @@ from genie_space_optimizer.optimization.mv_advisor import (
 )
 from genie_space_optimizer.optimization import mv_scoring
 from genie_space_optimizer.optimization.mv_fingerprint import FingerprintRecurrence
-from genie_space_optimizer.optimization.mv_scoring import coverage_ceiling
+from genie_space_optimizer.optimization.mv_scoring import (
+    DemandSignal,
+    LineageOverlap,
+    coverage_ceiling,
+)
+from genie_space_optimizer.optimization.mv_signals import SignalResult
 
 SPACE_ID = "01f04ac8c1f11c9a9e5b3b2b0e5d5c11"
 LINEITEM = "samples.tpch.lineitem"
@@ -246,12 +251,15 @@ def test_the_nested_response_shape_is_read_when_flat_aliases_are_absent(monkeypa
 
 
 def test_l_and_d_are_unavailable_rather_than_scored_zero(monkeypatch) -> None:
-    """MV-D15's present-day state, asserted rather than described.
+    """MV-D15's degraded-workspace state, asserted rather than described.
 
-    No lineage producer and no defensible demand mapping, so both leave the blend
-    instead of contributing zeros nobody measured. With no embedding client either,
-    Y is the only computed signal and coverage is 0.30 — below the MEDIUM floor, so
-    the tier is LOW-capped however well the measure scores.
+    ``advise`` injects no ``signal_reader``, so the L and D producers cannot run
+    and both report ``UNAVAILABLE`` — the exact landing of a workspace missing the
+    warehouse or the ``column_lineage`` grant. They leave the blend instead of
+    contributing zeros nobody measured. With no embedding client either, Y is the
+    only computed signal and coverage is 0.30 — below the MEDIUM floor, so the tier
+    is LOW-capped however well the measure scores. This is the degraded-mode pin:
+    producers-all-UNAVAILABLE must reproduce the pre-6b evidence exactly.
     """
     _stages, _artifacts, _upserts = patch_writes(monkeypatch)
     outcome = advise(monkeypatch, [iteration(recurring())])
@@ -346,24 +354,42 @@ def test_a_candidate_whose_columns_are_in_the_inventory_has_a_non_empty_referenc
     assert match["status"] != config.MV_SIGNAL_EMPTY
 
 
-def test_advisor_statuses_leaves_s_to_the_embedding_attempt() -> None:
-    """Naming S here would overwrite the endpoint's own report (recon Q4)."""
-    assert set(mv_advisor.advisor_statuses()) == {"L", "D"}
-    assert "S" not in mv_advisor.advisor_statuses()
+def test_advisor_statuses_reports_each_producers_actual_status() -> None:
+    """Post-6b: it carries the producers' real statuses, not a hardcoded pair.
+
+    S stays absent on purpose (recon Q4) — ``score_candidate`` derives it from the
+    embedding attempt, so naming it here would overwrite the endpoint's own report.
+    """
+    lineage = SignalResult(LineageOverlap(), config.MV_SIGNAL_COMPUTED)
+    demand = SignalResult(
+        DemandSignal(), config.MV_SIGNAL_EMPTY, "no matching measure in history"
+    )
+    statuses = mv_advisor.advisor_statuses(lineage, demand)
+
+    assert set(statuses) == {"L", "D"}
+    assert "S" not in statuses
+    assert statuses["L"] == config.MV_SIGNAL_COMPUTED
+    assert statuses["D"] == config.MV_SIGNAL_EMPTY
 
 
 def test_advisor_statuses_cannot_be_mutated_by_a_caller() -> None:
-    mv_advisor.advisor_statuses()["L"] = "COMPUTED"
-    assert mv_advisor.advisor_statuses()["L"] == config.MV_SIGNAL_UNAVAILABLE
+    unavailable = SignalResult(LineageOverlap(), config.MV_SIGNAL_UNAVAILABLE, "no reader")
+    mv_advisor.advisor_statuses(unavailable, unavailable)["L"] = "COMPUTED"
+    assert (
+        mv_advisor.advisor_statuses(unavailable, unavailable)["L"]
+        == config.MV_SIGNAL_UNAVAILABLE
+    )
 
 
 def test_a_reachable_endpoint_raises_coverage_to_one_half(monkeypatch) -> None:
-    """With S computed, coverage is Y + S = 0.50 — MV-D15's "today" figure.
+    """With S computed but no signal reader, coverage is Y + S = 0.50.
 
-    The second assertion is the one that matters: 0.50 clears the MEDIUM floor
-    and stays under the HIGH one, so this phase cannot present a HIGH candidate
-    no matter how strong the two available signals are. That is the ceiling 6a
-    lifts by adding a lineage producer, and it should fail here if it moves.
+    The second assertion is the one that matters: with L and D still UNAVAILABLE
+    (no ``signal_reader`` injected), 0.50 clears the MEDIUM floor and stays under
+    the HIGH one, so this degraded configuration cannot present a HIGH candidate
+    no matter how strong the two available signals are. It is the ceiling a
+    computed L lifts — see ``test_the_signal_reader_lifts_coverage_and_unlocks_high``
+    for the wired case — and it should fail here if this degraded path moves.
     """
     _stages, _artifacts, _upserts = patch_writes(monkeypatch)
 
@@ -384,6 +410,148 @@ def test_a_reachable_endpoint_raises_coverage_to_one_half(monkeypatch) -> None:
     assert proposal.components.evidence_coverage == 0.50
     assert proposal.tier != "HIGH"
     assert coverage_ceiling(0.50) == "MEDIUM"
+
+
+# ── Wired producers (Prompt 6b) ──────────────────────────────────────────
+
+
+def _footprint_rows(columns):
+    """``column_lineage`` rows in the shape the L producer reads."""
+    return [
+        {"source_table_full_name": LINEITEM, "source_column_name": column}
+        for column in columns
+    ]
+
+
+def _history_rows(statements, *, users=None, duration_ms=2000, start_time="2026-08-20T00:00:00Z"):
+    """``query.history`` rows in the shape the D producer reads."""
+    users = users or []
+    return [
+        {
+            "statement_id": f"h{i}",
+            "executed_by": users[i] if i < len(users) else f"u{i}",
+            "start_time": start_time,
+            "total_duration_ms": duration_ms,
+            "statement_text": sql,
+        }
+        for i, sql in enumerate(statements)
+    ]
+
+
+def dispatching_reader(*, footprint, history):
+    """A fake :data:`RunQuery` that answers by which system table the SQL names.
+
+    The producers are injected with a reader, not mocked, so this drives *real*
+    ``lineage_signal`` / ``demand_signal`` over fixture rows — proving the
+    producer-to-consumer shape the recon says fixtures alone cannot.
+    """
+    def _run(sql):
+        if "column_lineage" in sql:
+            return list(footprint)
+        if "query.history" in sql:
+            return list(history)
+        return []
+
+    return _run
+
+
+def test_the_signal_reader_lifts_coverage_and_unlocks_high(monkeypatch) -> None:
+    """The integration assertion 6a owes: a real producer reaches the scorer.
+
+    A dispatching reader feeds the L footprint and the D history through the
+    genuine producers. With all four signals COMPUTED, ``evidence_coverage`` is
+    1.0, the coverage cap no longer binds, and HIGH — unreachable in every
+    degraded pin above — is the tier a strong candidate earns.
+    """
+    _stages, _artifacts, _upserts = patch_writes(monkeypatch)
+
+    class Client:
+        def embed(self, texts):
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+    reader = dispatching_reader(
+        footprint=_footprint_rows(["l_extendedprice", "l_discount"]),
+        history=_history_rows([REVENUE_SQL] * 12, users=[f"u{i}" for i in range(12)]),
+    )
+
+    outcome = advise(
+        monkeypatch,
+        [iteration(recurring(times=60))],
+        embedding_client=Client(),
+        intent_texts=("revenue",),
+        wide_schema_inventory=INVENTORY,
+        signal_reader=reader,
+    )
+
+    proposal = outcome.proposals[0]
+    components = proposal.components
+    # Real L and D reached the scorer in the shapes mv_scoring declares.
+    assert components.status_of("L") == config.MV_SIGNAL_COMPUTED
+    assert components.status_of("D") == config.MV_SIGNAL_COMPUTED
+    assert components.status_of("S") == config.MV_SIGNAL_COMPUTED
+    assert components.status_of("Y") == config.MV_SIGNAL_COMPUTED
+    assert components.L == pytest.approx(1.0)
+    assert components.D > 0.0
+    # Coverage flip: every signal counted, nothing capped by coverage, HIGH earned.
+    assert components.evidence_coverage == pytest.approx(1.0)
+    assert coverage_ceiling(1.0) == "HIGH"
+    assert proposal.tier_capped_by_coverage is False
+    assert proposal.tier == proposal.uncapped_tier
+    assert proposal.tier == "HIGH"
+    # Statuses (and their reasons) ride in the evidence payload per producer.
+    assert proposal.evidence["signal_status"]["L"]["status"] == config.MV_SIGNAL_COMPUTED
+    assert proposal.evidence["signal_status"]["D"]["status"] == config.MV_SIGNAL_COMPUTED
+
+
+def test_a_reader_that_always_raises_reproduces_the_no_reader_baseline(monkeypatch) -> None:
+    """Producers-all-UNAVAILABLE must land identical to no reader at all (MV-D15).
+
+    A workspace missing the grant raises on the read; one with no warehouse
+    injects no reader. Both must degrade to the same coverage and statuses — the
+    upgrade is additive or it is a regression. The one legible difference is the
+    named reason: ``missing_grant`` rather than ``no_scope``.
+    """
+    patch_writes(monkeypatch)
+
+    def boom(sql):
+        raise RuntimeError("PERMISSION_DENIED: SELECT on system.access.column_lineage")
+
+    with_raiser = advise(monkeypatch, [iteration(recurring())], signal_reader=boom)
+    no_reader = advise(monkeypatch, [iteration(recurring())])
+
+    raised = with_raiser.proposals[0].components
+    absent = no_reader.proposals[0].components
+    assert raised.evidence_coverage == absent.evidence_coverage == 0.30
+    for key in ("L", "Y", "S", "D"):
+        assert raised.status_of(key) == absent.status_of(key)
+    assert raised.status_of("L") == config.MV_SIGNAL_UNAVAILABLE
+    assert raised.status_of("D") == config.MV_SIGNAL_UNAVAILABLE
+    # The difference the reason carries: a named cause, not a silent gap.
+    assert "missing_grant" in with_raiser.proposals[0].evidence["signal_status"]["L"]["reason"]
+    assert "no_scope" in no_reader.proposals[0].evidence["signal_status"]["L"]["reason"]
+
+
+def test_demand_history_text_never_reaches_the_evidence(monkeypatch) -> None:
+    """The D producer reads raw query history; no literal may reach a surface.
+
+    ``statement_text`` enters only as fingerprint input, where canonicalization
+    erases every literal (MV-D10(b)). A PII literal in the history a candidate
+    matches must not surface in the proposal evidence or the recorded stage row.
+    """
+    stages, _artifacts, _upserts = patch_writes(monkeypatch)
+    pii = "top-secret-user@example.com"
+    history_sql = REVENUE_SQL + f" HAVING l_returnflag = '{pii}'"
+    reader = dispatching_reader(
+        footprint=_footprint_rows(["l_extendedprice", "l_discount"]),
+        history=_history_rows([history_sql] * 3),
+    )
+
+    outcome = advise(monkeypatch, [iteration(recurring())], signal_reader=reader)
+
+    proposal = outcome.proposals[0]
+    assert proposal.components.status_of("D") == config.MV_SIGNAL_COMPUTED
+    blob = json.dumps(proposal.evidence) + json.dumps(stages, default=str)
+    assert pii not in blob
 
 
 # ── The oracle (recon Q5) ────────────────────────────────────────────────

@@ -786,8 +786,8 @@ MV-D15 exists to prevent (full reasoning in the playbook's MV-D19 record). The `
 it into existing deployments — additive, the table-grain row stays. The producers live in
 `optimization/mv_signals.py` (`lineage_signal`, `demand_signal`) behind an injected `run_query`
 seam, read as the SP, and honor MV-D15: a permission/absence failure is `UNAVAILABLE` with the
-missing grant named, a resolved-but-disjoint read is `EMPTY`. They are **not yet wired** into the
-advisor — that is Prompt 6b (swapping the `mv_advisor.py` empty defaults for these producers).
+missing grant named, a resolved-but-disjoint read is `EMPTY`. They were **wired into the advisor
+in Prompt 6b** (see the next note).
 *The empirical item is now probed (favorable); only the SP grant application remains.* The Prompt 6a
 probe ran against workspace `fevm-serverless-stable-6t92c3`: `system.access.column_lineage`
 **carries `entity_metadata.genie_space_id`** (in its `entity_metadata` struct, like `table_lineage`),
@@ -799,6 +799,36 @@ rather than sit `UNAVAILABLE`. The probe ran as an interactive user with grants;
 step is applying the new `WATCH_SYSTEM_GRANTS` row to the **app service principal** via
 `grant_permissions.py`. Until that runs in a given workspace, L reports `UNAVAILABLE` with the grant
 named (MV-D15) — never a silent zero.
+
+**Wired in Prompt 6b — the advisor scores on all four signals.** `run_optimize.py` constructs
+`warehouse_reader(w, warehouse_id)` beside the embedding client and injects it as `signal_reader`
+into `run_mv_advisor_phase`; `_advise` runs `lineage_signal` and `demand_signal` per candidate
+(`_candidate_signals` in `mv_advisor.py`), passes their payloads into `candidate_from_measure` (the
+`LineageOverlap()` / `DemandSignal()` empty defaults are now optional fallbacks, not the only
+value), reports each producer's real status through `advisor_statuses(lineage, demand)`, and folds
+the status + UNAVAILABLE reason into the proposal evidence (`_with_signal_evidence`, under
+`evidence["signal_status"]`). Coverage is now a per-workspace fact: where the grant and data are
+present L and D lift `evidence_coverage` toward 1.0 and HIGH (`>= 0.80`) is reachable; where they
+are absent the producers report `UNAVAILABLE`-with-reason and the advisor is byte-identical to its
+pre-6b behaviour (pinned by `test_a_reader_that_always_raises_reproduces_the_no_reader_baseline`).
+The integration shape — a real producer over fixture rows reaching the scorer — is pinned by
+`test_the_signal_reader_lifts_coverage_and_unlocks_high`, and the firewall (no history literal on a
+shipped surface) by `test_demand_history_text_never_reaches_the_evidence`.
+
+**Deferred, bounded cost — D re-reads and re-scans the space history per candidate.**
+`demand_signal` reads the whole space `system.query.history` and re-fingerprints it (`corpus_scan`,
+one sqlglot parse per statement) on every call, applying the per-candidate fingerprint filter only
+at the end; called once per candidate it repeats that identical read and scan up to
+`MV_ADVISOR_MAX_CANDIDATES` (10) times. Magnitude from the 6a probe: ~190 Genie rows/space over 90d,
+so a few hundred statements parsed ~10× plus 10 warehouse round-trips — a second or two of CPU
+inside a phase that already runs a full optimization loop. Shipped as-is deliberately, **not**
+worked around by duplicating the scan into the advisor (which would fork the canonicalizer) nor by
+touching the committed 6a producer. The named fix, additive to `mv_signals.py` if that read ever
+shows up hot, is a batch `demand_signals` that reads-and-scans once and returns a per-fingerprint
+`dict[str, SignalResult]`. **The 10-candidate cap is load-bearing for this deferral**: raising
+`MV_ADVISOR_MAX_CANDIDATES` scales this cost linearly, so that change should land the batch variant
+with it. (L is genuinely per-candidate — its footprint read is scoped by each candidate's
+`source_tables` — so it is not the same waste and stays per-candidate.)
 
 **Closed in Prompt 7 — `update_mv_yaml` is validated**
 ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)).

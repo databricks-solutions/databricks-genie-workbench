@@ -20,27 +20,33 @@ the job runs as the service principal.
 
 Signal availability (MV-D15)
 ----------------------------
-Two of the four blend signals have no producer, and this module is where that
-fact is recorded rather than hidden:
+All four blend signals now have a producer, and this module is where each one's
+actual status is recorded per candidate rather than hidden:
 
-- **L** is ``UNAVAILABLE``. Nothing in the repository computes column-set
-  overlap, and column-level lineage additionally needs a system-tables grant the
-  service principal does not hold. No producer is synthesized here.
-- **D** is ``UNAVAILABLE``. Approximating it was considered and refused: the
-  corpus scored here is *generated SQL from benchmark questions*, while
-  ``wide_schema_history``'s counts are *real query-history traffic*, so
-  attributing the latter to the former is conflation rather than measurement —
-  and the only per-measure recurrence that does exist is already **Y**, so
-  routing it into D would spend one piece of evidence twice.
+- **L** is produced by :func:`mv_signals.lineage_signal` (column grain, MV-D19)
+  from ``system.access.column_lineage``, scoped to the candidate's source
+  tables. It reports ``COMPUTED`` when the space's column footprint resolves,
+  ``EMPTY`` when the read ran but resolved nothing, and ``UNAVAILABLE`` (with a
+  named reason) when the SP lacks the grant, the table is absent, or no reader
+  is injected — the last being the degraded workspace where 6b's producers land
+  exactly as the pre-6b advisor did.
+- **D** is produced by :func:`mv_signals.demand_signal` from
+  ``system.query.history`` — a *distinct population* from **Y** (Y counts the
+  benchmark-derived corpus, D counts real query-history traffic), so the two are
+  measured separately rather than one attributed to the other. Same
+  ``COMPUTED`` / ``EMPTY`` / ``UNAVAILABLE`` semantics.
 - **Y** is ``COMPUTED`` from the corpus scan.
 - **S** reports its own status: ``COMPUTED`` when it reached an endpoint,
   ``EMPTY`` when it ran with nothing to compare, ``UNAVAILABLE`` when the
   endpoint is absent or failed.
 
-So coverage is 0.50 today and nothing can present above MEDIUM. That is the
-intended state, and it is legible because the coverage figure rides on every
-candidate rather than being inferable only by someone who knows which producers
-exist.
+Coverage is therefore a per-workspace fact, not a fixed ceiling: where the grant
+and data are present, L and D lift ``evidence_coverage`` toward 1.0 and HIGH
+becomes reachable (``>= 0.80``); where they are absent every signal degrades to
+``UNAVAILABLE`` with its reason named and the advisor behaves exactly as it did
+before 6b — same scores, same MEDIUM cap. It is legible either way because the
+coverage figure rides on every candidate rather than being inferable only by
+someone who knows which producers ran.
 
 The empty-corpus trap
 ---------------------
@@ -85,6 +91,13 @@ from .mv_scoring import (
     persist_proposal,
     score_candidate,
     trusted_asset_definitions,
+)
+from .mv_signals import (
+    REASON_NO_SCOPE,
+    RunQuery,
+    SignalResult,
+    demand_signal,
+    lineage_signal,
 )
 from .mv_yaml import ColumnFacts, MeasureRequest, MvProfiling, create_ddl, generate, validate
 from .state import load_all_full_iterations, load_patches, write_artifact, write_stage
@@ -635,14 +648,19 @@ def candidate_from_measure(
     *,
     space_id: str,
     table_columns: Mapping[str, tuple[ColumnFacts, ...]] | None = None,
+    lineage: LineageOverlap | None = None,
+    demand: DemandSignal | None = None,
 ) -> MetricViewCandidate:
     """One scored candidate per recurring measure.
 
-    ``lineage`` and ``demand`` are left at their empty defaults and reported
-    ``UNAVAILABLE`` by :func:`advisor_statuses`. They are constructed rather than
-    omitted because the dataclass requires them; the status is what carries the
-    fact that nothing measured them, which is precisely the confusion MV-D15
-    exists to end.
+    ``lineage`` and ``demand`` carry the L and D producer payloads the advisor
+    ran for this candidate (:func:`mv_signals.lineage_signal` /
+    :func:`mv_signals.demand_signal`); their *status* travels separately through
+    :func:`advisor_statuses`. When a caller omits them they fall back to the
+    empty defaults the dataclass requires — the shape a degraded workspace scores
+    with UNAVAILABLE — so this assembler stays callable without a reader and the
+    fact that nothing measured them is carried by the status, which is precisely
+    the confusion MV-D15 exists to end.
 
     ``source_column_metadata`` **must** be populated for S to have anything to
     compare. A `NEW_METRIC_VIEW` candidate prefers `SOURCE_COLUMN_METADATA` under
@@ -661,7 +679,7 @@ def candidate_from_measure(
         proposed_object=_proposed_object(measure, concept),
         measure_columns=frozenset(c.split(".")[-1].lower() for c in measure.source_columns),
         source_column_metadata=_source_column_metadata(measure, table_columns or {}),
-        lineage=LineageOverlap(),
+        lineage=lineage if lineage is not None else LineageOverlap(),
         recurrence=RecurrenceSignal(
             canonical_expr=measure.canonical_expr,
             recurrence=measure.recurrence,
@@ -669,7 +687,7 @@ def candidate_from_measure(
             curated_provenance_count=measure.curated_provenance_count,
             ast_equivalent=True,
         ),
-        demand=DemandSignal(),
+        demand=demand if demand is not None else DemandSignal(),
         benchmark_question_ids=tuple(measure.provenance_ids),
     )
 
@@ -714,15 +732,59 @@ def _proposed_object(measure: FingerprintRecurrence, concept: str) -> str | None
     return f"{catalog}.{schema}.{concept}_metrics"
 
 
-def advisor_statuses() -> dict[str, str]:
-    """The signals this phase cannot measure (MV-D15).
+def advisor_statuses(lineage: SignalResult, demand: SignalResult) -> dict[str, str]:
+    """The L and D statuses this phase measured for one candidate (MV-D15).
 
-    A function rather than a constant so a caller cannot mutate the shared map,
-    and so 6a has one obvious place to delete an entry from when it lands a
-    producer. **S is absent on purpose** — ``score_candidate`` derives it from the
-    embedding attempt, and naming it here would overwrite the endpoint's own report.
+    Reports each producer's *actual* status — ``COMPUTED`` / ``EMPTY`` /
+    ``UNAVAILABLE`` — rather than the hardcoded pair 6a's producers replaced, so a
+    reader sees which signal ran and which degraded. A fresh dict per call so a
+    caller cannot mutate a shared map. **S is absent on purpose** —
+    ``score_candidate`` derives it from the embedding attempt, and naming it here
+    would overwrite the endpoint's own report.
     """
-    return {"L": MV_SIGNAL_UNAVAILABLE, "D": MV_SIGNAL_UNAVAILABLE}
+    return {"L": lineage.status, "D": demand.status}
+
+
+def _candidate_signals(
+    measure: FingerprintRecurrence,
+    *,
+    space_id: str,
+    signal_reader: RunQuery | None,
+) -> tuple[SignalResult, SignalResult]:
+    """Run the L and D producers for one candidate over the injected reader.
+
+    L is genuinely per-candidate: the footprint read is scoped by this measure's
+    own ``source_tables``, so it varies candidate to candidate. D re-reads the
+    whole space history and re-fingerprints it per candidate (the read and scan
+    are identical across candidates; only the final fingerprint filter differs) —
+    a known, bounded cost the ``MV_ADVISOR_MAX_CANDIDATES`` cap keeps small; the
+    named fix, a batch ``demand_signals`` that reads once and returns a
+    per-fingerprint map, is recorded in the gap report and is the right move only
+    if that read ever shows up hot.
+
+    A missing reader is not an error: L self-reports ``UNAVAILABLE`` and D is
+    given the symmetric ``no_scope`` result here, so a workspace with no warehouse
+    (or no grant) degrades exactly as the pre-6b advisor did.
+    """
+    lineage = lineage_signal(
+        candidate_columns=measure.source_columns,
+        source_tables=measure.source_tables,
+        space_id=space_id,
+        run_query=signal_reader,
+    )
+    if signal_reader is None:
+        demand = SignalResult(
+            DemandSignal(),
+            MV_SIGNAL_UNAVAILABLE,
+            f"{REASON_NO_SCOPE}: demand read needs a reader",
+        )
+    else:
+        demand = demand_signal(
+            space_id=space_id,
+            candidate_fingerprints=(measure.fingerprint,),
+            run_query=signal_reader,
+        )
+    return lineage, demand
 
 
 def profiling_for(
@@ -771,6 +833,7 @@ def run_mv_advisor_phase(
     w: Any = None,
     warehouse_id: str = "",
     embedding_client: Any = None,
+    signal_reader: RunQuery | None = None,
     intent_texts: Sequence[str] = (),
     domain: str = "",
     max_candidates: int | None = None,
@@ -800,6 +863,7 @@ def run_mv_advisor_phase(
             w=w,
             warehouse_id=warehouse_id,
             embedding_client=embedding_client,
+            signal_reader=signal_reader,
             intent_texts=intent_texts,
             domain=domain,
             max_candidates=max_candidates,
@@ -850,6 +914,7 @@ def _advise(
     w: Any,
     warehouse_id: str,
     embedding_client: Any,
+    signal_reader: RunQuery | None,
     intent_texts: Sequence[str],
     domain: str,
     max_candidates: int | None,
@@ -933,8 +998,15 @@ def _advise(
     proposals: list[ScoredProposal] = []
 
     for measure in measures:
+        lineage_result, demand_result = _candidate_signals(
+            measure, space_id=space_id, signal_reader=signal_reader
+        )
         candidate = candidate_from_measure(
-            measure, space_id=space_id, table_columns=table_columns
+            measure,
+            space_id=space_id,
+            table_columns=table_columns,
+            lineage=lineage_result.payload,
+            demand=demand_result.payload,
         )
         proposal = score_candidate(
             candidate,
@@ -943,9 +1015,10 @@ def _advise(
             instructions=trusted_assets,
             intent_texts=intent_texts,
             embedding_client=embedding_client,
-            statuses=advisor_statuses(),
+            statuses=advisor_statuses(lineage_result, demand_result),
             auth_identity="SP",
         )
+        proposal = _with_signal_evidence(proposal, lineage_result, demand_result)
         if not proposal.is_persistable:
             continue
 
@@ -1011,6 +1084,29 @@ def _with_generation_evidence(proposal: ScoredProposal, rendered: Any) -> Scored
     evidence["comment_echo_check"] = rendered.echo_check
     if rendered.rejections:
         evidence["generation_rejections"] = list(rendered.rejections)
+    return replace(proposal, evidence=evidence)
+
+
+def _with_signal_evidence(
+    proposal: ScoredProposal,
+    lineage: SignalResult,
+    demand: SignalResult,
+) -> ScoredProposal:
+    """Fold each producer's status and UNAVAILABLE reason onto the proposal.
+
+    ``ScoreComponents`` already carries the L and D *values* and their statuses;
+    what it has no column for is *why* a signal is UNAVAILABLE. That reason —
+    missing grant, missing table, retention, CMK-blank text, no reader — is what
+    turns a silent gap into a legible one (MV-D15), so it rides in ``evidence``,
+    the JSON column that exists for facts the schema does not name. The reason
+    strings are stable codes plus SQL-API error text; ``statement_text`` never
+    reaches them (firewall, MV-D10(b)) — the producers only ever fingerprint it.
+    """
+    evidence = dict(proposal.evidence)
+    evidence["signal_status"] = {
+        "L": {"status": lineage.status, "reason": lineage.reason},
+        "D": {"status": demand.status, "reason": demand.reason},
+    }
     return replace(proposal, evidence=evidence)
 
 

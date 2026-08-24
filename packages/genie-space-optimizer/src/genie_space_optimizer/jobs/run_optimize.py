@@ -48,6 +48,7 @@ from genie_space_optimizer.optimization.benchmarks import (
 )
 from genie_space_optimizer.optimization.mv_advisor import run_mv_advisor_phase
 from genie_space_optimizer.optimization.mv_scoring import FoundationModelEmbeddingClient
+from genie_space_optimizer.optimization.mv_signals import warehouse_reader
 from genie_space_optimizer.optimization.preflight import _resolve_experiment_path
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
@@ -464,6 +465,11 @@ _mv_outcome = run_mv_advisor_phase(
     w=w,
     warehouse_id=warehouse_id,
     embedding_client=FoundationModelEmbeddingClient(w),
+    # L and D read the system tables as the SP through the same warehouse seam
+    # every other in-job system read uses (MV-D1). Constructed here beside the
+    # embedding client so the advisor takes both as injected inputs and its tests
+    # can drive fixture rows through the same seam.
+    signal_reader=warehouse_reader(w, warehouse_id) if (w is not None and warehouse_id) else None,
     # Benchmark question text is S's intent side. Passing it here is the one
     # sanctioned route for that text: it is consumed as vectors and never stored,
     # while the proposal's evidence carries question *ids* only.
