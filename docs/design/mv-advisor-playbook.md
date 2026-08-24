@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D24 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D25 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -301,9 +301,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D24)
+## Decisions register (MV-D1–MV-D25)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -540,6 +540,8 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 *Resolution shape, for 13.5 to accept or overturn with reasons.* A registration path: the user reports the identifier (a [I created this myself] affordance on the proposal card, or a free-standing input on the IQ Scan panel); the backend **verifies under OBO** — `DESCRIBE EXTENDED` asserts `Type: METRIC_VIEW`, the YAML is recovered via `DESCRIBE … AS JSON` `view_text`, `mv_yaml.validate` lints it, and when the user claims it implements a specific proposal the dedup fingerprint is compared so the claim is checked rather than trusted; on success a ledger row is written with a `provenance` discriminator (`OBO_CREATED` | `USER_CREATED`, an additive column — `ADDITIVE_COLUMN_MIGRATIONS` suffices here) and `created_by` recording the verifying user; the normal attach-and-lift path then runs on the next run, which requires a **sanctioned, narrow relaxation** of the `mv_attach.py:484` identity guard for `USER_CREATED` rows — the guard's purpose is to stop the job attaching an object the consent chain never covered, and a verified registration IS that coverage.
 
 *Two invariants stated now so 13.5 does not relitigate them.* **The app never drops a `USER_CREATED` view** — stronger than detach-never-drop: we did not create it, we do not own its lifecycle, and the drop route must refuse on provenance, not merely on status. And **registration is verification, not trust**: an identifier that cannot be verified (not a metric view, not visible to the caller, YAML fails validation) is refused with the reason, never recorded provisionally. Permission guidance is already solved and must be reused, not rebuilt: `mv_entitlement.probe` + `_remediation_sql` render the exact GRANTs for the self-create path, and the frame-4 GRANT panel covers the audience grant.
+
+**MV-D25 — Schema-only (cold-start) metric view suggestion (OPEN — owner: the create-agent branch, after Prompt 16; NOT decided on this branch).** Recorded before Prompt 12, from a direct capability question. The engine cannot suggest a metric view from tables, column metadata, and data sampling alone, and this is by construction, not omission: the sole candidate producer is `candidate_from_measure` over a `FingerprintRecurrence` (`mv_advisor.py:646`) — every candidate is a measure that RECURRED in SQL somebody or something wrote. No SQL corpus, no candidates, and Delta 9's honest limit says that state presents as `EMPTY`. The blend enforces the same epistemology: Y is recurrence, S needs a candidate to compare, L and D score evidence about usage — none of the four can conjure a proposal from a schema. The reason this is a feature and not a gap on THIS branch: proposals arrive pre-trusted (MV-D8's premise), and a recurrence-backed proposal asserts "people already compute this"; a schema-derived one asserts "this looks computable" — a categorically weaker claim that must never share a confidence scale with the first. Where the capability actually lives: the create-agent branch, whose evidence route is profiling by design — `plan_builder`'s analytics section already generates measures and join_specs from table context via LLM, `assess_readiness` already grades modelability, and the EXACT-uniqueness probe planned there supplies MV-D14's missing evidence. If a cold-start mode is ever wanted on the IQ Scan surface too, the shape is: a separate producer emitting a new candidate provenance (`SCHEMA_DERIVED`), hard-capped below the recurrence tiers, suggest-only forever, never blended into the LYDS score — but that is that branch's decision to take, with its own MV-D entry.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -1294,29 +1296,167 @@ builder frontend/src/components/auto-optimize/optimizationRequest.ts:
   MvProposal in both, so Prompt 13 and 13.5 render one card from one shape.
 ```
 
-### Prompt 12 — Semantic model visualization
+### Prompt 12.0 — Model tab mockups (review checkpoint)
+
+*Inserted before Prompt 12 at review. Prompt 10 was the branch's mockup checkpoint,
+but its frame 6 predates the Prompt 12 amendment: it reviewed one proposal-overlay
+frame, while the amended Prompt 12 ships a whole new surface — a fourth SpaceDetail
+tab, a layered-column layout, a governance-ladder color language, and empty states
+none of which any reviewed mockup shows. A new tab and a new visual vocabulary
+warrant the same cheap gate the other panels got; the scaffold and emitter already
+exist, so this is hours, not days.*
 
 ```
-Implement the semantic model view used in both the proposal review and the
-output screen. Use react-force-graph-2d (already in package.json at 1.29.1) for
-the graph, react-diff-viewer-continued for the space-config diff mode, and
-prism-react-renderer for any inline SQL. Do not add a new graph dependency.
+Using the existing mockup scaffold (frontend/src/components/auto-optimize/
+mockups/ + the emitter registry — same fixtures, same test idiom, both themes),
+add the Model tab frames and STOP for review before Prompt 12 implements:
 
-Graph spec:
-- Nodes: proposed metric view (distinct styling), its source table, join tables,
-  measures, dimensions, and the Genie Space's current raw tables.
-- Edges: source->MV, join tables->MV labeled with the ON predicate, measure/
-  dimension->MV membership, and dashed "replaces" edges from raw space tables
-  the MV would cover (drives the tables_freed story).
+9a. Model tab, populated: layered columns (source/fact -> dims -> MVs ->
+    field chips), join edges labeled with ON predicate + relationship type +
+    SCD2 flag, governance-ladder coloring on measure concepts (governed /
+    curated / ungoverned — reuse the Prompt 10 card tier tokens). Include the
+    tab strip showing Score | Model | Optimize | History so placement is
+    reviewed too.
+9b. Model tab, never-optimized/empty: tables unconnected, "no joins are
+    defined" line, ladder with nothing green — the frame-7b honesty rule.
+    This is the frame to review hardest; it is most users' first sight of
+    the tab.
+9c. Proposal overlay ON: ghosted proposed MV, dashed replaces edges, the
+    default-off toggle visible.
+9d. Node detail panel: one measure (expr, synonyms, format, evidence) and one
+    join (cardinality, reachable join_strategy only).
+Upgrade MvSemanticModelFrame (frame 6) into these rather than duplicating it —
+frame 6 is 9c's ancestor. No backend wiring; fixture data only.
+```
+
+**Your job after Prompt 12.0:** review the four frames — especially 9b, and
+whether the governance ladder reads at a glance without a legend — and paste
+corrections before Prompt 12 runs, exactly as after Prompt 10.
+
+### Prompt 12 — Semantic model visualization
+
+*Amended after Prompt 11, before execution (a live claim, not a frozen transcript).
+Two of the original body's choices were overturned at review, with reasons recorded
+so they are not silently re-derived. **Scope:** the original body was proposal-scoped
+— a graph of one MV proposal per run. That builds the component for one of its four
+consumers and rebuilds it for the rest. The view is now SPACE-scoped with the
+proposal as an overlay, the same build-once-two-callers shape as MV-D23: SpaceDetail
+gets a lens on what exists — SHIPPED BY THIS PROMPT as a fourth "Model" tab, not
+deferred to a later consumer — Prompt 13's output screen and 13.5's IQ Scan panel get
+the same view with a proposal overlaid, and the create-agent branch inherits it
+later. **Rendering:** the original body said react-force-graph-2d. Overturned for
+this view on four grounds: (1) a semantic model is a layered DAG — fact → dims → MV
+→ fields — the same left-to-right visual language as Catalog Explorer's ERD and
+lineage graph, and force layouts are non-deterministic: two renders of one space
+produce two pictures, which is poison under a diff overlay; (2) the repo's test
+idiom is renderToStaticMarkup in a node environment — a canvas graph asserts
+nothing, an SVG graph tests like every other component; (3) rich nodes (measure
+chips, badges, governance colors) need DOM, which canvas cannot give; (4) mockup
+frame 6 is already a positioned SVG — the real component is that plus data and
+pan/zoom, not a different technology. ForceGraph2D stays where it already earns its
+keep: the exploratory, unbounded Watch resource graph
+(frontend/src/watch/pages/ResourceGraphView.tsx). At this scale (≤30 tables, one
+MV, ≤20 fields) no layout library is needed either — a hand-rolled 3-4 column
+layered layout is ~100 lines and deterministic, so the "no new graph dependency"
+rule survives the change.*
+
+```
+Implement the SPACE-scoped semantic model view, with proposals as an overlay,
+per the mockups approved at Prompt 12.0 — do not run this prompt before that
+review has happened.
+Rendering is a deterministic layered SVG component (see the amendment note
+above — do NOT use react-force-graph-2d for this view, and do NOT add a graph
+or layout dependency). Keep react-diff-viewer-continued for the space-config
+diff mode and prism-react-renderer for any inline SQL.
+
+Base graph (no proposal needed — this must render for a space that has never
+been optimized):
+- Columns, left to right: source/fact tables -> joined dimension tables ->
+  metric views -> their dimension/measure chips. Tables the space uses that
+  join nothing render in the first column.
+- Join edges from instructions.join_specs, labeled with the ON predicate and
+  relationship type, with an SCD2 flag when the predicate carries an
+  is_current guard.
+- Governance ladder coloring on every MEASURE CONCEPT the space knows about —
+  the advisor's story made visible: governed (defined in an attached metric
+  view) / curated (defined in sql_snippets.measures or example SQL) /
+  ungoverned (recurs only in proposal evidence). One glance answers "how
+  governed is this space?". Reuse the tier/status token colors from the
+  Prompt 10 cards; do not invent a new palette.
+
+Proposal overlay (frame 6's content, on top of the base graph):
+- The proposed MV as a ghosted node with distinct styling; dashed "replaces"
+  edges from the raw space tables it would cover (the tables_freed story).
 - Node detail panel on click: for a measure, the expr, synonyms, format, and
   the evidence (recurrence count, contributing benchmark question ids); for a
-  join, cardinality if known.
+  join, cardinality if known. join_strategy chips show only reachable states
+  (the mockup fixture type already enforces this — MV-D14/D15).
 - Diff mode toggle: current space data sources vs post-attach state.
-- Data comes from the proposal payload + serialized_space via existing
-  endpoints; add a thin GET .../mv-proposals/{id}/graph endpoint if needed that
-  returns nodes/edges JSON (schema in the OpenAPI spec).
-- Render-level tests with a fixture proposal; a Storybook story per state
-  (single MV, multi-join MV, conflict state).
+
+Data:
+- Add GET /api/auto-optimize/spaces/{space_id}/semantic-graph returning
+  nodes/edges JSON (schema in the OpenAPI spec), assembled from
+  serialized_space (data_sources, join_specs, sql_snippets) plus the
+  space-scoped proposals read Prompt 11 added. Space-scoped, not run-scoped
+  (MV-D23: run_id presentational only). Any SQL parsing happens SERVER-side
+  with the sqlglot machinery that already exists (mv_fingerprint's
+  extractors) — never a second parser in the browser. For THIS prompt the
+  endpoint does not parse SQL at all: config fields and proposal evidence
+  suffice for the base graph and overlay; SQL-derived edges are Prompt 12b.
+- The overlay consumes the same MvProposal shape as the cards. No new
+  proposal payload.
+
+Surface — this prompt SHIPS a user-facing view, not just a component for
+later prompts to mount:
+- Add a fourth SpaceDetail tab, "Model": extend the SpaceTab union and the
+  isSpaceTab guard (frontend/src/lib/navigation.ts:2), the tabs array
+  (frontend/src/pages/SpaceDetail.tsx:153), and the App routing that consumes
+  them (frontend/src/App.tsx:122, :148), matching the existing three tabs'
+  icon/label/onNavigate pattern. The tab renders the base graph for the CURRENT
+  state of the Genie Agent: config fetched live on tab entry via the existing
+  fetchSpace path (lib/api.ts:156 -> /space/fetch), never from a run artifact
+  or cache — the tab must reflect what the space is NOW, including edits made
+  outside the workbench since the last scan or run.
+- When the space-scoped proposals read (Prompt 11) returns candidates, offer
+  the proposal overlay on this tab too — ghosted, clearly labeled proposed,
+  default off. The base graph never requires it.
+- Empty states are first-class, same honesty rule as frame 7b: a space with
+  no join_specs renders its tables unconnected with a line saying no joins
+  are defined (not an error); no snippets/no MVs means no measure chips and
+  the governance ladder simply has nothing green — never a blank panel, never
+  a spinner that resolves to nothing.
+- A refresh affordance on the tab (the config can change under it); loading
+  and fetch-failure states per the repo's existing tab patterns.
+
+Tests: render-level with fixture spaces (never-optimized space, space with
+joins + snippets, space with an attached MV, proposal overlay on each; single
+MV, multi-join MV, conflict state; each empty state above), per the repo's
+renderToStaticMarkup idiom
+— there is no Storybook in this repo (Prompt 10 finding); add the frames to
+the existing mockup emitter's registry instead so the HTML export covers them.
+
+Deliberately OUT of this prompt: column-level ERD (Catalog Explorer already
+draws it — deep-link table nodes there instead, the frame-5 idiom), and any
+query-history heat (no corpus producer exists; same honesty rule as frame 7b's
+copy). Both stay out until a decision entry says otherwise.
+```
+
+### Prompt 12b — Coverage lenses on the semantic model (after Prompt 13.5)
+
+*Stub, sequenced after 13.5 because both lenses read curated SQL through the
+space-scoped machinery 13.5 builds. Do not run before it.*
+
+```
+Extend the Prompt 12 semantic-graph endpoint and view with two lenses:
+- SQL coverage: which example SQLs and benchmark questions touch which tables
+  and measure concepts, computed server-side by reusing corpus_scan /
+  shapes_in_statement from mv_fingerprint (sqlglot==30.0.3) — one parser, the
+  one the advisor already trusts. Renders as edge weight / a per-node coverage
+  badge.
+- Benchmark evidence overlay on proposals: evidence.benchmark_questions ids as
+  weighted edges from questions to the proposed measure.
+Same component, same endpoint, additive response fields only — a Prompt 12
+client that never learns about the lenses must keep working unchanged.
 ```
 
 ### Prompt 13 — Output screen panels
