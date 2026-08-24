@@ -122,6 +122,36 @@ PII_QUERY = (
     "AND c_phone = '123-45-6789' AND c_name LIKE '%Smith%'"
 )
 
+# ── History-derived corpus (firewall, MV-D10(b)) ─────────────────────────
+#
+# The D producer (``optimization/mv_signals.demand_signal``) feeds raw
+# ``system.query.history`` ``statement_text`` through ``corpus_scan`` to derive
+# demand. That text is real user SQL carrying literals a user would actually
+# type — emails, ids, phone numbers, LIKE patterns, dates. The firewall contract
+# is that canonicalization erases every one before a fingerprint is formed, so
+# nothing history-derived can reach a comment, display_name, synonym or any
+# shipped surface. These are realistic history shapes (joins, IN-lists, a CTE)
+# whose literals must not survive.
+HISTORY_DERIVED: dict[str, str] = {
+    "email_filter": (
+        f"SELECT {DISCOUNTED_REVENUE} AS revenue FROM {LINEITEM} l "
+        f"JOIN {ORDERS} o ON l.l_orderkey = o.o_orderkey "
+        "WHERE o.o_comment = 'urgent: jdoe@example.com' AND l.l_shipdate >= '1995-06-01'"
+    ),
+    "in_list_of_ids": (
+        f"SELECT COUNT(*) FROM {ORDERS} WHERE o_orderkey IN (12345, 67890, 111213)"
+    ),
+    "cte_with_phone": (
+        "WITH flagged AS (SELECT * FROM samples.tpch.customer "
+        "WHERE c_phone = '123-45-6789') "
+        "SELECT COUNT(1) FROM flagged WHERE c_acctbal > 1000.50"
+    ),
+    "like_pattern": (
+        f"SELECT l_returnflag, {DISCOUNTED_REVENUE} FROM {LINEITEM} "
+        "WHERE l_comment LIKE '%Smith, John%' GROUP BY 1"
+    ),
+}
+
 CORPUS: tuple[str, ...] = (
     *DISCOUNTED_REVENUE_VARIANTS.values(),
     JOIN_QUERY,
@@ -131,6 +161,7 @@ CORPUS: tuple[str, ...] = (
     CONDITIONAL_COUNT_NO_ELSE,
     PCT_OF_TOTAL_QUERY,
     PII_QUERY,
+    *HISTORY_DERIVED.values(),
     f"SELECT MIN(l_shipdate), MAX(l_shipdate) FROM {LINEITEM}",
 )
 
@@ -475,6 +506,30 @@ def test_email_shaped_literal_produces_a_placeholder_only_fingerprint() -> None:
 @pytest.mark.parametrize("sql", CORPUS)
 def test_no_corpus_statement_leaks_a_quoted_literal(sql: str) -> None:
     assert "'" not in canonicalize_sql_ast(sql)
+
+
+@pytest.mark.parametrize(
+    "sql", list(HISTORY_DERIVED.values()), ids=list(HISTORY_DERIVED)
+)
+def test_history_derived_statement_leaks_no_literal(sql: str) -> None:
+    """MV-D10(b): the D producer's raw ``system.query.history`` input is
+    literal-free once canonicalized, so nothing history-derived can reach a
+    comment, display_name, synonym or any shipped surface. Asserts the specific
+    values, not just the absence of a quote, so a canonicalizer that dropped the
+    quotes but kept the payload would still fail."""
+    canonical = canonicalize_sql_ast(sql)
+    assert "'" not in canonical and '"' not in canonical
+    assert "@" not in canonical
+    for literal in (
+        "jdoe@example.com",
+        "123-45-6789",
+        "Smith, John",
+        "1995-06-01",
+        "12345",
+        "67890",
+        "1000.50",
+    ):
+        assert literal not in canonical, f"{literal!r} survived in {canonical!r}"
 
 
 # ── Corpus scan ──────────────────────────────────────────────────────────

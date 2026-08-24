@@ -489,7 +489,7 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2807 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2822 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
@@ -773,6 +773,32 @@ not-yet-regranted workspace would score as having *disjoint* lineage. And these 
 service-principal reads by design (system tables are not OBO-readable), which is why POV Part 5's
 "already scoped" sentence needed the correction recorded in this same change: SP-computed
 lineage evidence is filtered at presentation, not at read.
+
+**Resolved in Prompt 6a — column-grain L (MV-D19 = (b)) with the grant landed, one deploy-time
+probe still open.** MV-D19 settled on **column grain** as a *correctness* finding, not a cost
+preference: at table grain the dominant footprint case (`NEW_METRIC_VIEW`) degenerates to
+`|candidate_tables| / |footprint_tables|` and inverts the signal — penalizing the clean
+single-table measure and rewarding sprawl — so a table-grain L would report `COMPUTED` on a
+number that is noise-or-inverted at 0.35 weight, the exact `COMPUTED`-vs-`UNAVAILABLE` confusion
+MV-D15 exists to prevent (full reasoning in the playbook's MV-D19 record). The `SELECT` on
+`system.access.column_lineage` is now the eighth row of `WATCH_SYSTEM_GRANTS`
+(`scripts/deploy_lib/uc.py`), so both install paths grant it and `grant_permissions.py` re-runs
+it into existing deployments — additive, the table-grain row stays. The producers live in
+`optimization/mv_signals.py` (`lineage_signal`, `demand_signal`) behind an injected `run_query`
+seam, read as the SP, and honor MV-D15: a permission/absence failure is `UNAVAILABLE` with the
+missing grant named, a resolved-but-disjoint read is `EMPTY`. They are **not yet wired** into the
+advisor — that is Prompt 6b (swapping the `mv_advisor.py` empty defaults for these producers).
+*The empirical item is now probed (favorable); only the SP grant application remains.* The Prompt 6a
+probe ran against workspace `fevm-serverless-stable-6t92c3`: `system.access.column_lineage`
+**carries `entity_metadata.genie_space_id`** (in its `entity_metadata` struct, like `table_lineage`),
+is **heavily populated** (~117M rows/90d; ~458K Genie-attributed across 2,393 spaces), and the exact
+`_footprint_sql` shape executes and returns real `(source_table_full_name, source_column_name)` rows
+for a live space (column names arrive upper-case — the producer lower-cases both sides). So the
+`genie_space_id` fallback contemplated here is **not needed** on this schema, and L will contribute
+rather than sit `UNAVAILABLE`. The probe ran as an interactive user with grants; the remaining deploy
+step is applying the new `WATCH_SYSTEM_GRANTS` row to the **app service principal** via
+`grant_permissions.py`. Until that runs in a given workspace, L reports `UNAVAILABLE` with the grant
+named (MV-D15) — never a silent zero.
 
 **Closed in Prompt 7 — `update_mv_yaml` is validated**
 ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)).

@@ -2615,6 +2615,21 @@ what separates a measure the organization depends on from one analyst's habit.""
 MV_DEMAND_HALF_LIFE_DAYS = _float_env("GSO_MV_DEMAND_HALF_LIFE_DAYS", 30.0)
 """Half-life `H` in `D_eff = D * 0.5^(age_days / H)`. POV Part 3: `H ~ 30 days`."""
 
+MV_DEMAND_HISTORY_LOOKBACK_DAYS = _int_env("GSO_MV_DEMAND_HISTORY_LOOKBACK_DAYS", 90)
+"""Bounded window (days) the **D** producer reads from ``system.query.history``.
+
+The demand producer (``optimization/mv_signals.demand_signal``) fingerprints the
+space's real query-history traffic and joins candidate fingerprints against it,
+so the read must be windowed — an unbounded scan of ``system.query.history``
+is both expensive and pointless, since the ``age_days`` decay
+(:data:`MV_DEMAND_HALF_LIFE_DAYS`) has already reduced anything older than a few
+half-lives to noise. Ninety days is three 30-day half-lives (a matched measure
+last seen at the window edge contributes ``0.5**3 ≈ 0.125`` of its undecayed
+demand), wide enough that a quarterly-cadence measure still registers and narrow
+enough to keep the per-run read cheap. A window that finds no matching traffic
+is a real measurement of zero — the producer reports ``EMPTY``, not
+``UNAVAILABLE`` (MV-D15)."""
+
 MV_EMBEDDING_ENDPOINT = os.environ.get(
     "GSO_MV_EMBEDDING_ENDPOINT",
     "databricks-gte-large-en",
