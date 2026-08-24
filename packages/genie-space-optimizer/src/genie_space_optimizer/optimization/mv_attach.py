@@ -828,6 +828,18 @@ def reconcile_attached_objects(
     about it. Verified rows are left completely alone so this is idempotent across
     the loop's several exits.
 
+    **Demote-only, and never promote** (MV-D18). The one status this writes is
+    ``DETACHED``, and only ``ATTACHED`` rows are considered — a ``CREATED`` or
+    ``DETACHED`` row is skipped even when its identifier IS on the final config.
+    That asymmetry is the point: the presence of an identifier proves only that
+    something put it there, not that it came through the consent gate, so
+    promoting on that evidence would let an attach that bypassed MV-D1 acquire a
+    legitimate-looking ``ATTACHED`` status. ``ATTACHED`` is written in exactly one
+    place — the attach phase, after it has checked the consent row and the created
+    object — and reconciliation is a truth check on that claim, not a second way
+    to make it. The status filter is applied twice, on the read and again per row,
+    so the property survives an edit to either.
+
     Never raises. Returns the counts for the caller's diagnostic.
     """
     result: dict[str, Any] = {"checked": 0, "verified": 0, "demoted": 0, "identifiers": []}
@@ -845,6 +857,11 @@ def reconcile_attached_objects(
     live = attached_identifiers(config)
     demoted: list[str] = []
     for row in rows:
+        # Second half of the demote-only property. The read above already filters
+        # to ATTACHED; re-checking here means a future edit that widens or drops
+        # that filter cannot turn this into a promotion path.
+        if str(row.get("status") or "").strip().upper() != VERDICT_ATTACHED:
+            continue
         result["checked"] += 1
         full_name = str(row.get("full_name") or "").strip()
         if full_name.lower() in live:

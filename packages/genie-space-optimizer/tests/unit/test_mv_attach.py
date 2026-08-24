@@ -24,7 +24,7 @@ import json
 import re
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1210,6 +1210,95 @@ def test_reconciliation_is_idempotent() -> None:
     assert first["demoted"] == 1
     # Already DETACHED, so the second pass has nothing to check or correct.
     assert second == {"checked": 0, "verified": 0, "demoted": 0, "identifiers": []}
+
+
+@pytest.mark.parametrize("seeded", ["CREATED", "DETACHED"])
+def test_reconciliation_never_promotes_a_row_the_config_happens_to_carry(
+    seeded: str,
+) -> None:
+    """Demote-only: presence in the config is not evidence of a consented attach.
+
+    The identifier IS on the final config here, which is the shape that would
+    tempt a promotion. It must not happen: an identifier can reach
+    ``data_sources.metric_views`` by any route, and only the attach phase has
+    checked the consent row and the created object. Promoting on config presence
+    alone would let an attach that bypassed MV-D1's gate acquire a
+    legitimate-looking ATTACHED status, which Prompt 9 and Prompt 13 would then
+    read as consented truth.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, status=seeded)
+    before = len(spark.statements)
+
+    result = mv_attach.reconcile_attached_objects(
+        spark,
+        run_id=RUN_ID,
+        catalog=CATALOG,
+        schema=SCHEMA,
+        config=_config([{"identifier": MV_NAME}]),
+    )
+
+    assert result == {"checked": 0, "verified": 0, "demoted": 0, "identifiers": []}
+    assert _created_row(spark)["status"] == seeded
+    assert not [s for s in spark.statements[before:] if s.startswith("MERGE INTO")]
+
+
+def test_reconciliation_writes_no_status_other_than_detached() -> None:
+    """The property stated as a property: DETACHED is the only status it writes.
+
+    Pins it against the whole status vocabulary rather than the two cases above,
+    so a status added to MV_CREATED_OBJECT_STATUSES later cannot quietly become
+    something reconciliation is willing to write.
+    """
+    for seeded in mv_state.MV_CREATED_OBJECT_STATUSES:
+        spark = FakeDeltaSpark()
+        _seed(spark, status=seeded)
+        before = len(spark.statements)
+
+        mv_attach.reconcile_attached_objects(
+            spark,
+            run_id=RUN_ID,
+            catalog=CATALOG,
+            schema=SCHEMA,
+            config=_config([{"identifier": MV_NAME}]),
+        )
+
+        written = {
+            m.group(1).upper()
+            for s in spark.statements[before:]
+            if s.startswith("MERGE INTO")
+            for m in re.finditer(r"status\s*=\s*'([^']*)'", s)
+        }
+        assert written <= {"DETACHED"}, f"seeded={seeded} wrote {written}"
+
+
+def test_reconciliation_ignores_a_non_attached_row_the_read_lets_through() -> None:
+    """The per-row check, exercised independently of the read's status filter.
+
+    If a future edit widens or drops ``status=ATTACHED`` on the load, the loop
+    itself still refuses every row that does not already claim ATTACHED — so the
+    demote-only property does not rest on one argument at one call site.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, status="CREATED")
+
+    with patch.object(
+        mv_attach,
+        "load_mv_created_objects",
+        return_value=[
+            {"full_name": MV_NAME, "suggestion_id": SUGGESTION_ID, "status": "CREATED"},
+        ],
+    ):
+        result = mv_attach.reconcile_attached_objects(
+            spark,
+            run_id=RUN_ID,
+            catalog=CATALOG,
+            schema=SCHEMA,
+            config=_config([{"identifier": MV_NAME}]),
+        )
+
+    assert result == {"checked": 0, "verified": 0, "demoted": 0, "identifiers": []}
+    assert _created_row(spark)["status"] == "CREATED"
 
 
 def test_reconciliation_survives_an_unreadable_table() -> None:

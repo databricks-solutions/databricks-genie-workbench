@@ -151,9 +151,17 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   The repo has NO test CI — run the suites locally and report results in
   every VERIFY section.
 
+- RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
+  `uv run --frozen --extra dev`. Expected baseline: 571 backend + 1315 GSO.
+  `--extra dev` is mandatory, not stylistic: `asyncio_mode = "auto"` needs
+  pytest-asyncio, which lives in the dev extra, and without it exactly 12
+  async backend tests fail on uncollectable coroutines. Those 12 are an
+  INVOCATION defect. Do NOT report them as pre-existing and do NOT debug the
+  code — fix the command. If you call pytest directly, it is
+  `uv run --frozen --extra dev pytest`.
 - IMPORT RESOLUTION IS PART OF EVERY VERIFY THAT RUNS BACKEND TESTS: before
   trusting any backend pytest result, print
-  `python -c "import genie_space_optimizer; print(genie_space_optimizer.__file__)"`
+  `uv run --frozen --extra dev python -c "import genie_space_optimizer as g; print(g.__file__)"`
   and confirm the path resolves inside THIS repository checkout. A test run
   against a foreign checkout is void — report it, do not interpret it.
 - PINNED-DEPENDENCY RESOLUTION: for any behavior that depends on a pinned
@@ -162,3 +170,8 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   the pyenv global carries sqlglot 30.0.1 against the pinned 30.0.3, and
   canonicalization output can differ across parser patch releases. Report
   the resolved version in VERIFY alongside the import path.
+- `uv lock --check` FAILS STRUCTURALLY on this repo and is NOT drift: the GSO
+  package version is dynamic (git-describe), so re-resolution differs from the
+  lockfile at every commit, on a clean tree. Verify with
+  `git status -- uv.lock` instead. Never run `uv lock` to silence it, and do
+  not wire `uv lock --check` into CI.
