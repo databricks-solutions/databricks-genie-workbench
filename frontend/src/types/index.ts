@@ -859,3 +859,53 @@ export interface GSOQueryUsageSignal {
   inaccessible_warehouses: string[]
   system_grant_sql: string | null
 }
+
+// Metric view entitlement probe — POST /api/auto-optimize/mv/probe.
+// Mirrors MvProbeResult and friends in backend/models.py; update together.
+// Distinct from GSOPermissionCheck above, which probes the service principal:
+// this one runs under the signed-in user's OBO token.
+export type MvCheckStatus = "GRANTED" | "DENIED" | "UNKNOWN"
+
+export interface MvPrivilegeRow {
+  label: string
+  privilege: string
+  securable: string
+  status: MvCheckStatus
+  detail: string | null
+}
+
+// UNKNOWN is the honest answer on a SQL warehouse, which reports only a DBSQL
+// version against a floor stated in DBR. For an optional capability the
+// generator withholds the feature; for mv_create_edit it does not block (MV-D13).
+// observed_warehouse_id is the compute the row was read on — a row observed
+// elsewhere does not carry over.
+export interface MvCapabilityRow {
+  capability: string
+  label: string
+  required_dbr: string
+  observed_version: string | null
+  runtime_kind: "DBR" | "DBSQL" | "UNAVAILABLE"
+  observed_warehouse_id: string | null
+  status: MvCheckStatus
+  optional: boolean
+  detail: string | null
+}
+
+export interface MvProbeResult {
+  probe_id: string
+  checked_as: string
+  auth_identity: "OBO"
+  target: string
+  checked_at: string
+  results: Record<string, MvCheckStatus>
+  privileges: MvPrivilegeRow[]
+  capabilities: MvCapabilityRow[]
+  verdict: "SUFFICIENT" | "INSUFFICIENT" | "UNKNOWN"
+  missing: string[]
+  // Copy-ready GRANT text. The app never executes it.
+  remediation_sql: string | null
+  fallback_mode: "suggest_only"
+  materialize_consented: boolean
+  consent_recorded: boolean
+  errors: string[]
+}

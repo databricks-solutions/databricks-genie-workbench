@@ -431,6 +431,153 @@ def wh_reconcile_active_runs(
     return changed
 
 
+# ── Metric view consents (MV-D7) ─────────────────────────────────────
+#
+# The probe and consent record are written by the FastAPI backend under OBO,
+# and the backend has no SparkSession — so ``mv_state.upsert_mv_consent`` and
+# ``mv_state.load_mv_consent`` cannot serve that path. These two are their
+# Statement-Execution twins against the same ``genie_opt_mv_consents`` table,
+# following ``wh_create_run`` rather than introducing a second write idiom.
+# Keep the column set in lockstep with ``_GENIE_OPT_MV_CONSENTS_DDL``.
+
+
+def _wh_literal(value: Any, *, encode: bool = False) -> str:
+    """Render ``value`` as a SQL literal for the metric view consent writers.
+
+    Mirrors ``delta_helpers._sql_literal``: ``None`` becomes ``NULL``, strings
+    are quoted and escaped, and ``encode`` routes a string through
+    ``unbase64`` so its UTF-8 bytes survive independently of the warehouse's
+    string-literal escape mode — required for the nested-JSON column.
+    """
+    if isinstance(value, str):
+        if encode:
+            encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+            return f"CAST(unbase64('{encoded}') AS STRING)"
+        escaped = value.replace("\\", "\\\\").replace("'", "''")
+        return f"'{escaped}'"
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _wh_timestamp_literal(value: str | None) -> str:
+    """Render an ISO-8601 string as a TIMESTAMP literal, or ``current_timestamp()``."""
+    if not value:
+        return "current_timestamp()"
+    escaped = str(value).replace("\\", "\\\\").replace("'", "''")
+    return f"CAST('{escaped}' AS TIMESTAMP)"
+
+
+def wh_upsert_mv_consent(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    probe_id: str,
+    granted_by: str,
+    target_catalog: str,
+    target_schema: str,
+    verdict: str,
+    run_id: str | None = None,
+    materialize_consented: bool = False,
+    probe_results: dict | None = None,
+    granted_at: str | None = None,
+    downgrade_reason: str | None = None,
+) -> str:
+    """Upsert one metric view consent row via SQL warehouse; return ``probe_id``.
+
+    Single ``MERGE INTO`` keyed on ``probe_id``, so a retried probe refreshes
+    its row instead of duplicating it. ``reverified_at_trigger`` is never
+    written here — it is stamped immediately before an OBO write, so a stale
+    authorization cannot be mistaken for a fresh one.
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CONSENTS
+    from genie_space_optimizer.optimization.mv_state import MV_CONSENT_VERDICTS
+
+    if verdict not in MV_CONSENT_VERDICTS:
+        raise ValueError(
+            f"verdict must be one of {MV_CONSENT_VERDICTS}, got {verdict!r}"
+        )
+    if not probe_id:
+        raise ValueError("probe_id is required")
+
+    results_json = json.dumps(probe_results, default=str, sort_keys=True) if probe_results else None
+    value_cols: dict[str, str] = {
+        "run_id": _wh_literal(run_id),
+        "granted_by": _wh_literal(granted_by),
+        "granted_at": _wh_timestamp_literal(granted_at),
+        "target_catalog": _wh_literal(target_catalog),
+        "target_schema": _wh_literal(target_schema),
+        "materialize_consented": _wh_literal(bool(materialize_consented)),
+        "probe_results_json": _wh_literal(results_json, encode=results_json is not None),
+        "verdict": _wh_literal(verdict),
+        "downgrade_reason": _wh_literal(downgrade_reason),
+        "updated_at": "current_timestamp()",
+    }
+
+    fqn = f"{catalog}.{schema}.{TABLE_MV_CONSENTS}"
+    set_clause = ", ".join(f"t.{col} = {val}" for col, val in value_cols.items())
+    insert_cols = ", ".join(["probe_id", *value_cols])
+    insert_vals = ", ".join(["s.probe_id", *value_cols.values()])
+    sql = (
+        f"MERGE INTO {fqn} AS t "
+        f"USING (SELECT {_wh_literal(probe_id)} AS probe_id) AS s "
+        f"ON t.probe_id = s.probe_id "
+        f"WHEN MATCHED THEN UPDATE SET {set_clause} "
+        f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+    )
+    sql_warehouse_execute(ws, warehouse_id, sql)
+    logger.info(
+        "Upserted metric view consent %s for %s on %s.%s (verdict=%s) via SQL warehouse",
+        probe_id, granted_by, target_catalog, target_schema, verdict,
+    )
+    return probe_id
+
+
+def wh_load_mv_consent(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    probe_id: str,
+    catalog: str,
+    schema: str,
+) -> dict | None:
+    """Read one metric view consent row via SQL warehouse, or ``None``.
+
+    Decodes ``probe_results_json`` to ``probe_results`` so callers see the same
+    field name ``mv_state.load_mv_consent`` exposes.
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CONSENTS
+
+    escaped = str(probe_id).replace("\\", "\\\\").replace("'", "''")
+    try:
+        df = sql_warehouse_query(
+            ws,
+            warehouse_id,
+            f"SELECT * FROM {catalog}.{schema}.{TABLE_MV_CONSENTS} "
+            f"WHERE probe_id = '{escaped}'",
+        )
+    except Exception:
+        logger.debug("wh_load_mv_consent: could not read %s", probe_id, exc_info=True)
+        return None
+    if getattr(df, "empty", True):
+        return None
+
+    row = dict(df.iloc[0].to_dict())
+    raw = row.pop("probe_results_json", None)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            row["probe_results"] = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid JSON in probe_results_json; surfacing raw text")
+            row["probe_results"] = raw
+    else:
+        row["probe_results"] = raw
+    return row
+
+
 # ── Warehouse ID resolution ──────────────────────────────────────────
 #
 # The optimization pipeline historically read only

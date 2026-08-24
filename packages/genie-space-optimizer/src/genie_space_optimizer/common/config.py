@@ -2504,3 +2504,42 @@ does, so the advisor L2-normalizes in our code rather than trusting either."""
 
 MV_ADVISOR_GENERATED_BY = "gwb-mv-advisor@1.0"
 """``provenance.generated_by`` stamped on every proposal (POV Part 4)."""
+
+
+# ── 24. Metric View Advisor runtime capability floors (MV-D8) ───────────
+
+MV_CAPABILITY_CREATE_EDIT = "mv_create_edit"
+MV_CAPABILITY_NESTED_JOINS = "mv_nested_joins"
+MV_CAPABILITY_FIELDS_AGG_WINDOW_OFFSET = "mv_fields_agg_window_offset"
+
+MV_CAPABILITY_FLOORS: tuple[tuple[str, str, str], ...] = (
+    (MV_CAPABILITY_CREATE_EDIT, "17.3", "Create or edit a metric view"),
+    (MV_CAPABILITY_NESTED_JOINS, "17.1", "Nested (snowflake) joins — the ladder's middle rung"),
+    (MV_CAPABILITY_FIELDS_AGG_WINDOW_OFFSET, "18.1", "fields:, agg(), and window offset"),
+)
+"""``(capability, minimum DBR version, label)`` per MV-D8 and POV §7.3.1.
+
+The floors are Databricks Runtime versions because that is how the metric view
+documentation states them, and they are only *decidable* when the probed compute
+reports one. On a SQL warehouse ``current_version().dbr_version`` is NULL —
+only ``dbsql_version`` is populated, and there is no published DBSQL-to-DBR
+mapping — so those rows come back ``UNKNOWN`` rather than guessing a mapping the
+platform does not document.
+
+``UNKNOWN`` resolves in two different directions on purpose:
+
+- For the **optional** capabilities below, unknown means unavailable. The
+  generator drops to the next ladder rung (nested joins → subquery-source)
+  instead of emitting YAML the runtime may not be able to plan, which is the
+  silent-wrong-answer failure MV-D8 exists to prevent.
+- For ``mv_create_edit`` it means *undetermined*, and it never blocks
+  authorization. Blocking on it would deny every SQL-warehouse user, since the
+  row can never be GRANTED there. Only the write itself can prove that floor,
+  and a failed create is already handled as a downgrade.
+"""
+
+MV_OPTIONAL_CAPABILITIES: frozenset[str] = frozenset({
+    MV_CAPABILITY_NESTED_JOINS,
+    MV_CAPABILITY_FIELDS_AGG_WINDOW_OFFSET,
+})
+"""Capabilities whose absence downgrades generated YAML rather than the run."""

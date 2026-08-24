@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from backend.models import (
     CurrentVersionResponse,
+    MvProbeResult,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
     QueryUsageSignal,
@@ -30,6 +31,8 @@ from backend.services import lakebase as workbench_lakebase
 from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
 from backend.services.genie_client import get_genie_space
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
+from backend.services import mv_entitlement
+from backend.services.mv_entitlement import MvProbeError
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
     compute_run_scores,
@@ -185,6 +188,27 @@ class TriggerRequest(BaseModel):
     workload_warehouse_ids: list[
         Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
     ] = Field(default_factory=list, max_length=20)
+
+
+class MvProbeRequest(BaseModel):
+    """Body for ``POST /mv/probe`` — where a metric view would be created.
+
+    ``space_id`` is the Genie Agent whose ``data_sources.metric_views`` would be
+    patched, so the probe can ask for CAN MANAGE on it. ``source_tables`` are the
+    three-part names the view would read; the user needs SELECT on each.
+    """
+
+    catalog: str = Field(..., pattern=r"^[A-Za-z0-9_]{1,255}$")
+    schema_name: str = Field(..., alias="schema", pattern=r"^[A-Za-z0-9_]{1,255}$")
+    space_id: str = Field(..., pattern=r"^[0-9a-zA-Z_-]{1,128}$")
+    source_tables: list[
+        Annotated[str, Field(pattern=r"^[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")]
+    ] = Field(default_factory=list, max_length=50)
+    # Consent to materialize is a separate decision from create-and-attach and is
+    # never implied by it (MV-D7).
+    materialize_consented: bool = False
+
+    model_config = {"populate_by_name": True}
 
 
 # PermissionCheckResponse + SchemaAccessStatus now live in `backend.models`
@@ -1396,6 +1420,47 @@ async def check_permissions(space_id: SpaceId):
         errors=errors,
         query_usage_signal=query_signal,
     )
+
+
+@router.post("/mv/probe", response_model=MvProbeResult)
+async def probe_mv_entitlement(body: MvProbeRequest):
+    """Probe the signed-in user's entitlement to create a metric view.
+
+    OBO only — the SP probe at ``GET /permissions/{space_id}`` answers a
+    different question (can the *job* read these schemas) and cannot authorize a
+    user's write. Read-only: no DDL and no trial CREATE on any path. The consent
+    record is best-effort, so a Delta write hiccup returns the probe with
+    ``consent_recorded=false`` rather than losing it behind a 500.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+
+    try:
+        # `asyncio.to_thread` copies the current context, so the OBO ContextVar
+        # the middleware set is still visible on the worker thread.
+        result = await _offload(
+            mv_entitlement.probe,
+            catalog=body.catalog,
+            schema=body.schema_name,
+            space_id=body.space_id,
+            source_tables=body.source_tables,
+        )
+    except MvProbeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RuntimeError as exc:
+        # `require_obo_workspace_client` raises this when no user token reached us.
+        raise HTTPException(status_code=401, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Metric view entitlement probe failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Entitlement probe failed.")
+
+    result.materialize_consented = body.materialize_consented
+    result.consent_recorded = await _offload(
+        mv_entitlement.record_consent,
+        result,
+        materialize_consented=body.materialize_consented,
+    )
+    return result
 
 
 @router.post("/trigger")

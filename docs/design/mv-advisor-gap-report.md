@@ -952,7 +952,7 @@ app.include_router(watch_admin_router)
 
 Prefixes are declared on the router objects, not at inclusion: `/api` (analysis, spaces),
 `/api/admin`, `/api/auth`, `/api/create`, `/api/auto-optimize`
-(`backend/routers/auto_optimize.py:51`), `/api/watch/*`.
+(`backend/routers/auto_optimize.py:54`), `/api/watch/*`.
 
 #### OBO token extraction
 
@@ -1018,7 +1018,7 @@ def require_obo_workspace_client() -> WorkspaceClient:
 `POST /api/auto-optimize/trigger` — **not** `POST /api/auto-optimize/runs` as POV §7.6
 states.
 
-```1401:1432:backend/routers/auto_optimize.py
+```1466:1497:backend/routers/auto_optimize.py
 @router.post("/trigger")
 async def trigger(body: TriggerRequest, request: Request):
     """Trigger an optimization run for a Genie Agent."""
@@ -1055,7 +1055,7 @@ async def trigger(body: TriggerRequest, request: Request):
 
 **Request model — 8 fields, defined inline in the router, not in `backend/models.py`:**
 
-```171:187:backend/routers/auto_optimize.py
+```174:190:backend/routers/auto_optimize.py
 class TriggerRequest(BaseModel):
     space_id: str = Field(..., pattern=r"^[0-9a-zA-Z_-]{1,128}$")
     apply_mode: str = "genie_config"
@@ -1077,8 +1077,9 @@ class TriggerRequest(BaseModel):
 
 None of the POV's seven `mv_*` fields exist.
 
-**Full route inventory** (22 routes, all under `/api/auto-optimize`): `GET /health`,
-`GET /permissions/{space_id}`, `POST /trigger`, `GET /runs/{run_id}`,
+**Full route inventory** (23 routes, all under `/api/auto-optimize`): `GET /health`,
+`GET /permissions/{space_id}`, `POST /mv/probe` (added by Prompt 5 — the OBO
+entitlement probe, `auto_optimize.py:1425`), `POST /trigger`, `GET /runs/{run_id}`,
 `GET /runs/{run_id}/status`, `GET /levers`, `POST /runs/{run_id}/apply`,
 `POST /runs/{run_id}/discard`, `POST /runs/{run_id}/revert`,
 `GET /runs/{run_id}/revert-options`, `GET /spaces/{space_id}/current-version`,
@@ -1110,18 +1111,24 @@ None of the POV's seven `mv_*` fields exist.
 > executes in the job as the SP and the POV's security model is violated. See
 > [§3 decision 4](#3-decisions-needed).
 
-#### No user-level UC entitlement probe exists
+#### The user-level UC entitlement probe — built by Prompt 5
 
-`GET /api/auto-optimize/permissions/{space_id}` (`auto_optimize.py:1225-1398`) probes the
+`GET /api/auto-optimize/permissions/{space_id}` (`auto_optimize.py:1249-1422`) probes the
 **service principal** — Genie `CAN_MANAGE` plus SP schema read via
 `probe_sp_required_access(sp_ws, ...)` — and returns grant SQL naming the SP. It answers
-"can the SP run this job", not "may this user create an object here."
+"can the SP run this job", not "may this user create an object here." It remains
+untouched and is not a fallback for the user-level question.
 
-`backend/services/uc_client.py` has no permission/privilege/grant surface at all —
+`backend/services/uc_client.py` still has no permission/privilege/grant surface —
 `search_tables`, `list_catalogs`, `list_schemas`, `list_tables`, `get_table_columns` only.
 `scripts/grant_permissions.py` is a deploy-time CLI that grants to the SP.
 
-POV §7.3.1's entitlement probe is entirely new construction.
+POV §7.3.1's probe was built greenfield in `backend/services/mv_entitlement.py`
+(`probe`, `record_consent`, `verify`), exposed as `POST /mv/probe`. It reads
+`grants.get_effective(..., principal=<user>)` under `require_obo_workspace_client`
+so group-inherited privileges count, adds `CAN MANAGE` on the Genie Agent through
+the new `user_can_manage_space` (`common/genie_client.py`), and carries the MV-D8
+capability rows derived from `current_version()`. It issues no DDL on any path.
 
 ---
 
@@ -1360,15 +1367,15 @@ strings, including the numeric ones (`"3"`, `"0.90"`).
 
 | POV assumption | Status | Evidence |
 |---|---|---|
-| `POST /api/auto-optimize/runs` starts a run | **CONFLICTS (path)** | The route is `POST /api/auto-optimize/trigger` (`auto_optimize.py:1401`) |
-| Request body carries `enable_metric_view_suggestions` etc. | **DOES-NOT-EXIST-YET** | `TriggerRequest` has 8 fields (`auto_optimize.py:171-187`) |
+| `POST /api/auto-optimize/runs` starts a run | **CONFLICTS (path)** | The route is `POST /api/auto-optimize/trigger` (`auto_optimize.py:1466`) |
+| Request body carries `enable_metric_view_suggestions` etc. | **DOES-NOT-EXIST-YET** | `TriggerRequest` has 8 fields (`auto_optimize.py:174-190`) |
 | `jobs.run_now(job_parameters={...})` | **MATCHES** | `job_launcher.py:91-126` |
-| Pre-run entitlement probe under OBO | **DOES-NOT-EXIST-YET** | No user-level UC privilege probe exists anywhere; `/permissions/{space_id}` probes the **SP** |
-| Probe result JSON (`probe_id`, `checked_as`, `verdict`, `missing`, `remediation_sql`, `fallback_mode`) | **DOES-NOT-EXIST-YET** | — |
-| Consent recorded with the run | **DOES-NOT-EXIST-YET** | `genie_opt_runs` has no consent column; would need `ADDITIVE_COLUMN_MIGRATIONS` |
+| Pre-run entitlement probe under OBO | **MATCHES** | `mv_entitlement.probe` reads `grants.get_effective(principal=<user>)` under `require_obo_workspace_client`, exposed as `POST /mv/probe` (`auto_optimize.py:1425`). `/permissions/{space_id}` still probes the **SP** and is unchanged |
+| Probe result JSON (`probe_id`, `checked_as`, `verdict`, `missing`, `remediation_sql`, `fallback_mode`) | **MATCHES** | `MvProbeResult` in `backend/models.py`, plus the typed `privileges` / `capabilities` rows MV-D8 requires and POV §7.3.1's sample now shows |
+| Consent recorded with the run | **MATCHES** | Recorded in `genie_opt_mv_consents` keyed on `probe_id`, not as a `genie_opt_runs` column — so no `ADDITIVE_COLUMN_MIGRATIONS` entry is needed. Written from the backend by `wh_upsert_mv_consent` (`common/warehouse.py:473`), the Statement-Execution twin of `mv_state.upsert_mv_consent`, because the app has no SparkSession. `run_id` stays NULL until trigger time |
 | "Writes execute under OBO" | **CONFLICTS** | The job runs as the SP (`databricks.yml:58-59`; `main.py:162-181` self-heals `run_as` to SP). No OBO token exists inside the job. |
 | "The SP is never a write path for metric views" | **CONFLICTS** | Directly contradicted by the above |
-| Preflight re-verification / downgrade-never-upgrade | **DOES-NOT-EXIST-YET** | No preflight task to host it; the closest hook is `intake_and_snapshot` |
+| Preflight re-verification / downgrade-never-upgrade | **PARTIALLY MATCHES** | `mv_entitlement.verify(consent, fresh_probe)` implements the comparison and only ever returns `create_and_attach` or `suggest_only` with a `downgrade_reason`. Downgrades on a worse fresh verdict, an identity or target change, a **missing consent row** (reachable because persistence is best-effort), and a **different `observed_warehouse_id`** than the capabilities were read on (MV-D13). It is not yet called: the trigger flow wires it in at Prompt 9. Re-verification belongs in the backend at trigger time, not in a job task — the job has no OBO token |
 | UI toggle + target picker + mode radio | **DOES-NOT-EXIST-YET** | `OptimizationConfig.tsx` has no catalog/schema picker; the benchmark-repair checkbox at `:141-164` is the pattern to copy |
 | Copyable `GRANT` remediation | **PARTIALLY MATCHES** | Same idiom already exists for warehouse grants — read-only `<textarea>` at `OptimizationConfig.tsx:284-292` and `:300-310` |
 
@@ -1667,7 +1674,7 @@ split per D8"* — the whole scored set is protected.
 
 *Window.* A 30–40 question working set, recommended (not enforced) over the post-merge
 live set: `config.py:317`, `:322`; `preflight.py:2656`, `:2668`, `:2872`;
-`genie_client.py:1384`; surfaced in the UI at
+`genie_client.py:1425`; surfaced in the UI at
 `frontend/src/components/auto-optimize/BenchmarkChangesPanel.tsx:32`.
 
 **Impact.** POV §8.4's Page-drafting `examples` field draws on *benchmark questions*. D8
@@ -1699,7 +1706,7 @@ Three rules, each enforced by a passing test:
 | No `dbutils.notebook.run`, no `taskValues.set` / `.get` | `test_phase7_job_dag.py:397-406` |
 | Strictly linear dependency chain | `test_phase7_job_dag.py:79-89` |
 
-Plus the round-trip contract at `auto_optimize.py:129`, `:176` ("arch §13 / D9") and the
+Plus the round-trip contract at `auto_optimize.py:132`, `:179` ("arch §13 / D9") and the
 installer mirror at `gso_job.py:30`.
 
 **Impact.** D9 is what invalidates POV §7.2 and §7.7 wholesale — `mv_gate`,

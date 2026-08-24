@@ -407,7 +407,7 @@ Creating a metric view is a UC write. Verify, under the signed-in user's OBO tok
 | `SELECT` | every source and join table in the proposal | The view resolves against them at query time |
 | `CAN MANAGE` | the Genie Agent | Required to patch `data_sources.metric_views[]` |
 
-The probe also carries **capability rows**, not just privilege rows: the target warehouse/runtime must support what generated YAML will use — DBR 17.3+ to create or edit metric views, 17.1+ for nested (snowflake) joins, 18.1+ for `fields:`, `agg()`, and window `offset`. A user with every grant but the wrong runtime gets a capability denial with the same clarity as a permission denial, and the generator downgrades its join strategy (nested → subquery-source) rather than emitting YAML the runtime cannot plan.
+The probe also carries **capability rows**, not just privilege rows: the target warehouse/runtime must support what generated YAML will use — DBR 17.3+ to create or edit metric views, 17.1+ for nested (snowflake) joins, 18.1+ for `fields:`, `agg()`, and window `offset`. A user with every grant but the wrong runtime gets a capability denial with the same clarity as a permission denial, and the generator downgrades its join strategy (nested → subquery-source) rather than emitting YAML the runtime cannot plan. Each row records the compute it was observed on (`observed_warehouse_id`), because a capability belongs to the compute and not to the user — see `MV-D13` for how an undecidable floor resolves, which on a SQL warehouse is the normal case.
 
 Probe with a `dry_run`-style check rather than a trial write: read effective privileges from the UC permissions surface, and confirm the schema exists. Do **not** attempt a speculative `CREATE VIEW` and catch the exception — a partial create leaves debris and an audit entry the user did not authorize.
 
@@ -424,14 +424,60 @@ The probe emits a structured result the UI renders and the run records:
     "USE CATALOG on finance": "GRANTED",
     "USE SCHEMA on finance.sales": "GRANTED",
     "CREATE TABLE on finance.sales": "DENIED",
-    "CAN MANAGE on space 01ef_genie": "GRANTED"
+    "SELECT on finance.sales.orders": "GRANTED",
+    "CAN MANAGE on Genie Agent 01ef_genie": "GRANTED",
+    "mv_create_edit": "UNKNOWN",
+    "mv_nested_joins": "UNKNOWN",
+    "mv_fields_agg_window_offset": "UNKNOWN"
   },
+  "capabilities": [
+    {
+      "capability": "mv_create_edit",
+      "required_dbr": "17.3",
+      "observed_version": "2026.15",
+      "runtime_kind": "DBSQL",
+      "observed_warehouse_id": "abc123def456",
+      "status": "UNKNOWN",
+      "optional": false
+    },
+    {
+      "capability": "mv_nested_joins",
+      "required_dbr": "17.1",
+      "observed_version": "2026.15",
+      "runtime_kind": "DBSQL",
+      "observed_warehouse_id": "abc123def456",
+      "status": "UNKNOWN",
+      "optional": true
+    },
+    {
+      "capability": "mv_fields_agg_window_offset",
+      "required_dbr": "18.1",
+      "observed_version": "2026.15",
+      "runtime_kind": "DBSQL",
+      "observed_warehouse_id": "abc123def456",
+      "status": "UNKNOWN",
+      "optional": true
+    }
+  ],
   "verdict": "INSUFFICIENT",
   "missing": ["CREATE TABLE on finance.sales"],
-  "remediation_sql": "GRANT CREATE TABLE ON SCHEMA finance.sales TO `prashanth@example.com`;",
+  "remediation_sql": "GRANT CREATE TABLE ON SCHEMA `finance`.`sales` TO `prashanth@example.com`;",
   "fallback_mode": "suggest_only"
 }
 ```
+
+The capability rows above are `UNKNOWN` because this probe ran against a SQL
+warehouse: `current_version()` populates `dbr_version` only on a cluster, and
+there is no published DBSQL-to-DBR mapping to convert `dbsql_version` with.
+`UNKNOWN` therefore means two different things by design. For the two optional
+capabilities it means unavailable, and `mv_yaml` steps down the ladder (nested
+joins → subquery-`source`) rather than emitting YAML the runtime may not plan.
+For `mv_create_edit` it means undetermined, and it never blocks authorization —
+no `GRANT` can satisfy a runtime floor, so blocking on it would deny every
+warehouse-only user; only the write itself can prove that floor, and a failed
+create is already handled as a downgrade. A *decided* `DENIED` on
+`mv_create_edit` — a cluster below 17.3 — is a real block and makes the verdict
+`INSUFFICIENT` with no remediation SQL, because the fix is a runtime upgrade.
 
 #### 7.4 Modes, and what each one does
 
@@ -953,7 +999,7 @@ cause real errors:
 
 | Namespace | Where it is recorded | Example |
 |---|---|---|
-| **MV advisor playbook** `MV-D1`–`MV-D10` | `docs/design/mv-advisor-playbook.md`, "Decisions register" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks; `MV-D7` = three metric-view Delta tables; `MV-D8` = the generation quality standard; `MV-D10` = two permanently distinct fingerprint levels |
+| **MV advisor playbook** `MV-D1`–`MV-D13` | `docs/design/mv-advisor-playbook.md`, "Decisions register" — **the defining source**, which this appendix cites | `MV-D1` = two-run consent model; `MV-D3` = phases inside `optimize`, not new tasks; `MV-D7` = three metric-view Delta tables; `MV-D8` = the generation quality standard; `MV-D10` = two permanently distinct fingerprint levels |
 | **GSO v2 playbook** `GSO v2 D1`–`GSO v2 D9` | Cited throughout the optimizer code; reconstructed in gap report §4. The defining file `GSO_OPTIMIZER_V2_TODO.md` is **not checked in** | `GSO v2 D1` = the native Benchmark Eval API is the sole eval runner; `GSO v2 D9` = linear DAG, no condition tasks, no task values |
 | **Baseline-eval-fix plan** `applier.py D1`–`applier.py D3` | `optimization/applier.py:358` | Quality-instruction policies (`mv_preference`, `column_ordering`, …) |
 

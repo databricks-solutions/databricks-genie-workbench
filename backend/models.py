@@ -163,6 +163,89 @@ class PermissionCheckResponse(BaseModel):
     query_usage_signal: QueryUsageSignal | None = None
 
 
+# ── Metric view entitlement probe (POV §7.3.1 / MV-D8) ───────────────────
+# Mirrored on the frontend as `MvProbeResult` in `frontend/src/types/index.ts`.
+# Both halves must stay in sync — update together (see AGENTS.md §Models).
+
+
+MvCheckStatus = Literal["GRANTED", "DENIED", "UNKNOWN"]
+
+
+class MvPrivilegeRow(BaseModel):
+    """One Unity Catalog privilege the signed-in user must hold to create a view.
+
+    ``label`` is the POV §7.3.1 wording (``"CREATE TABLE on finance.sales"``) and
+    is the key used in ``MvProbeResult.results``."""
+
+    label: str
+    privilege: str
+    securable: str
+    status: MvCheckStatus
+    detail: str | None = None
+
+
+class MvCapabilityRow(BaseModel):
+    """One runtime capability the generated YAML depends on (MV-D8).
+
+    ``required_dbr`` is a Databricks Runtime floor. ``UNKNOWN`` is the honest
+    answer on a SQL warehouse, which reports only a DBSQL version — the
+    generator then withholds the optional feature, and the create floor is left
+    to fail closed at write time rather than blocking an entitled user (MV-D13).
+
+    ``observed_warehouse_id`` records which compute the row was read on, because
+    a capability belongs to the compute rather than to the user: re-verifying on
+    a different warehouse invalidates the row instead of inheriting it."""
+
+    capability: str
+    label: str
+    required_dbr: str
+    observed_version: str | None = None
+    runtime_kind: Literal["DBR", "DBSQL", "UNAVAILABLE"] = "UNAVAILABLE"
+    observed_warehouse_id: str | None = None
+    status: MvCheckStatus
+    optional: bool = False
+    detail: str | None = None
+
+
+class MvProbeResult(BaseModel):
+    """Payload for ``POST /auto-optimize/mv/probe``.
+
+    Shape follows POV §7.3.1 verbatim (``results`` is the flat
+    check-label-to-status map that section prints) and adds the typed
+    ``privileges`` / ``capabilities`` rows the UI and ``mv_yaml.validate``
+    consume. Never carries a token or an SP identity: every check runs under the
+    signed-in user's OBO client."""
+
+    probe_id: str
+    checked_as: str
+    auth_identity: Literal["OBO"] = "OBO"
+    target: str
+    checked_at: str
+    results: dict[str, MvCheckStatus] = Field(default_factory=dict)
+    privileges: list[MvPrivilegeRow] = Field(default_factory=list)
+    capabilities: list[MvCapabilityRow] = Field(default_factory=list)
+    verdict: Literal["SUFFICIENT", "INSUFFICIENT", "UNKNOWN"]
+    missing: list[str] = Field(default_factory=list)
+    remediation_sql: str | None = None
+    fallback_mode: Literal["suggest_only"] = "suggest_only"
+    materialize_consented: bool = False
+    consent_recorded: bool = False
+    errors: list[str] = Field(default_factory=list)
+
+
+class MvConsentVerification(BaseModel):
+    """Result of re-verifying a recorded consent against a fresh probe.
+
+    Downgrades only: ``create_and_attach`` survives exactly when the fresh probe
+    still says SUFFICIENT for the same identity and the same target."""
+
+    probe_id: str
+    effective_mode: Literal["create_and_attach", "suggest_only"]
+    verdict: Literal["SUFFICIENT", "INSUFFICIENT", "UNKNOWN"]
+    downgrade_reason: str | None = None
+    fresh_probe: MvProbeResult
+
+
 # ── Auto-Optimize current version ────────────────────────────────────────
 # Mirrored on the frontend as `CurrentVersionResponse` in
 # `frontend/src/types/index.ts`. Both halves must stay in sync — update

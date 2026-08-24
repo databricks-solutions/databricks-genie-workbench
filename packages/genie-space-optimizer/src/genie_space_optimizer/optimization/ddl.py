@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_consents (
     target_catalog      STRING        NOT NULL COMMENT 'Consented Unity Catalog catalog. Writes go here and nowhere else',
     target_schema       STRING        NOT NULL COMMENT 'Consented UC schema. A failed write is a downgrade, never a retry somewhere more permissive',
     materialize_consented BOOLEAN     DEFAULT false COMMENT 'Separate consent for materialization (mv_materialize) — never bundled with create or attach',
-    probe_results_json  STRING                 COMMENT 'JSON: probe verdict detail — checked_as, effective privileges, missing privileges, remediation GRANT',
+    probe_results_json  STRING                 COMMENT 'JSON: probe verdict detail — checked_as, effective privileges, runtime capability rows (MV-D8 DBR floors), missing privileges, remediation GRANT',
     verdict             STRING                 COMMENT 'SUFFICIENT|INSUFFICIENT|UNKNOWN',
     reverified_at_trigger TIMESTAMP            COMMENT 'When the probe was last re-verified immediately before an OBO write. NULL means never re-verified; the job refuses to attach without it',
     downgrade_reason    STRING                 COMMENT 'Why the run was downgraded to suggest_only, if it was. Downgrade never upgrades',
