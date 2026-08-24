@@ -5,8 +5,15 @@
  * panel. Extends the consent-checkbox-with-amber-warning idiom already in
  * OptimizationConfig.tsx:141-164. Copy is verbatim POV §7.3
  * (metric-view-suggestion-engine-pov.md:376-398); the first-run disabled
- * rationale is MV-D1 (mv-advisor-playbook.md:307). Prompt 11 implements these
- * for real and deletes this file.
+ * rationale is MV-D1 (mv-advisor-playbook.md:307).
+ *
+ * DISPOSAL: Prompt 11 implemented frames 1–3 for real (OptimizationConfig.tsx +
+ * MvSuggestSection.tsx), but this scaffold STAYS until Prompt 13.5 wires the
+ * last frame. DenialBanner below is reused by frames 7c and 8 (Prompt 13.5), and
+ * frames.tsx / mockups.test.tsx pin frames 1–3 — deleting the file now would
+ * break the suite and remove a dependency of two unbuilt frames. An earlier
+ * header here claimed "Prompt 11 deletes this file"; that was a defect, fixed in
+ * the Prompt 11 commit.
  */
 import { AlertTriangle, Check, Copy, Sparkles } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -133,6 +140,15 @@ export function RerunConfigFrame() {
         </label>
       </fieldset>
 
+      {/* NOT SHIPPED BY PROMPT 11. This "Also materialize" control is the design
+          for the future materialization prompt, kept here so that prompt has a
+          reference. The Prompt 11 run-config panel deliberately renders NO
+          materialize control: the materialization path is unbuilt
+          (mv-advisor-gap-report.md:1526 — the backend installs a non-materialized
+          view and the MV-D1 EXPLAIN CREATE MATERIALIZED VIEW precheck does not
+          exist), so a live or even disabled control would advertise a feature
+          that does nothing. mv_materialize stays plumbed through
+          buildOptimizationTriggerRequest; that prompt adds the control. */}
       <label className="flex items-start gap-2 border-t border-default pt-3">
         <Checkbox className="mt-0.5" />
         <span>

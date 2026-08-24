@@ -190,8 +190,9 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 594 backend + 1420 GSO,
-     measured at c4e72077. A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 596 backend + 1420 GSO,
+     measured at c4e72077 as 594 + 1420, +2 backend at Prompt 11 (the space-scoped
+     mv-proposals route). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -1255,10 +1256,42 @@ builder frontend/src/components/auto-optimize/optimizationRequest.ts:
   [Copy grant request] copies remediation_sql.
 - Start records the mv_* fields + consent object into the TriggerRequest via
   optimizationRequest.ts. "Suggest only" sends mode=suggest_only, no consent.
-- Materialize checkbox independent, default off, with the cost note.
+- Materialize: DO NOT SURFACE A CONTROL. Amended at the Prompt 11 PLAN review;
+  this prompt body is not yet a frozen transcript, so it is corrected in place
+  rather than worked around. The gap report outranks the POV and playbook
+  (MV-D9) and says plainly at mv-advisor-gap-report.md:1526 that Prompt 11
+  must not surface a live materialize toggle "or it will offer a control that
+  does nothing". Verified against the code: mv_create.py:230-235 logs the
+  request and installs a NON-materialized view, and the EXPLAIN CREATE
+  MATERIALIZED VIEW precheck MV-D1 requires exists nowhere in the repo — the
+  path is unbuilt, not merely unwired.
+  Do NOT render it disabled-with-rationale either. That idiom is right for the
+  first-run "Create and attach" state, because there the control becomes
+  enabled through something the user can do; a disabled control for an unbuilt
+  feature advertises vapor instead.
+  DO still plumb the field: mv_materialize stays in GSOTriggerRequest and
+  buildOptimizationTriggerRequest keeps clearing it with every other mv_* field
+  when the toggle is off, so the later materialization prompt adds a control
+  and nothing else. Leave the mockup's "Also materialize" checkbox in place as
+  that prompt's design, but annotate it in MvRunConfigMockups.tsx as not
+  shipped by Prompt 11, citing the gap-report line — an un-annotated mockup and
+  a shipped panel that disagree is how the next reader concludes one of them is
+  a bug.
 - Component tests (vitest, matching existing frontend tests): probe
   loading/granted/denied, first-run vs re-run gating, consent payload shape,
-  and that toggling off clears every mv_* field from the request.
+  and that toggling off clears every mv_* field from the request (mv_materialize
+  included, even though no control sets it).
+- Mockup disposal, corrected here: MvRunConfigMockups.tsx's header claims
+  "Prompt 11 deletes this file". That is wrong and must be fixed, not obeyed.
+  Its DenialBanner is reused by frames 7c and 8, which Prompt 13.5 implements,
+  and frames.tsx plus mockups.test.tsx pin frames 1-3. Deleting it here breaks
+  the suite and removes a component two later frames depend on. Correct the
+  header to the real disposal point — after Prompt 13.5 wires the last frame —
+  and leave the scaffold standing this commit.
+- Add the space-scoped route this panel needs as a SIBLING response model
+  (MvSpaceProposalsResponse{space_id, proposals}), not by making run_id
+  nullable on MvProposalsResponse. The element type must stay the SAME
+  MvProposal in both, so Prompt 13 and 13.5 render one card from one shape.
 ```
 
 ### Prompt 12 — Semantic model visualization

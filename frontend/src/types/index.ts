@@ -289,6 +289,19 @@ export interface GSOTriggerRequest {
   max_attempts?: number | null
   workload_warehouse_ids?: string[]
   benchmark_policy: "review_only" | "repair_allowed"
+  // Metric view advisor knobs (Prompt 11, MV-D1). Mirror of the `mv_*` fields on
+  // `TriggerRequest` in backend/routers/auto_optimize.py. All optional; the run
+  // config only sends them when the "Suggest metric views" toggle is on, and
+  // `buildOptimizationTriggerRequest` clears every one when it is off.
+  // `mv_materialize` is plumbed but has no UI control yet — the materialization
+  // path is unbuilt (mv-advisor-gap-report.md:1526); a later prompt adds the
+  // control and nothing else here changes.
+  enable_metric_view_suggestions?: boolean
+  mv_action_mode?: "suggest_only" | "create_and_attach"
+  mv_min_confidence?: number | null
+  mv_approved_suggestion_ids?: string[]
+  mv_consent?: MvConsentPayload | null
+  mv_materialize?: boolean
 }
 
 export interface GSOTriggerResponse {
@@ -908,4 +921,71 @@ export interface MvProbeResult {
   materialize_consented: boolean
   consent_recorded: boolean
   errors: string[]
+}
+
+// Body for POST /api/auto-optimize/mv/probe. Mirrors MvProbeRequest in
+// backend/routers/auto_optimize.py; the backend accepts the wire key `schema`
+// (a Pydantic alias for `schema_name`). source_tables are three-part names.
+export interface MvProbeRequest {
+  catalog: string
+  schema: string
+  space_id: string
+  source_tables: string[]
+  materialize_consented?: boolean
+}
+
+// ── Metric view proposals / consent (Prompt 11, MV-D1/D23) ──────────────────
+// Mirrors MvConsentPayload / MvProposal / MvProposalsResponse /
+// MvSpaceProposalsResponse in backend/models.py; update together. The output-
+// screen shapes (MvDdlArtifact, decision/drop, MvCreatedObject) are mirrored by
+// Prompt 13 when they gain a consumer, not here.
+
+// The scoped, recorded authorization carried on a create_and_attach run. Built
+// from a SUFFICIENT probe: probe_id keys the consent, checked_as/checked_at are
+// the audit pair. Re-verified under OBO at trigger time before any write.
+export interface MvConsentPayload {
+  granted_by: string
+  granted_at: string
+  probe_id: string
+}
+
+// One advisor proposal (a genie_opt_mv_candidates row). JSON columns arrive
+// decoded; confidence_score is 0–100; approved_for_rerun gates create_and_attach
+// (MV-D1). run_id is presentational only — never a state/fetch key (MV-D23).
+export interface MvProposal {
+  suggestion_id: string
+  dedup_fingerprint: string
+  target_space_id: string
+  run_id: string | null
+  candidate_type: string
+  confidence_score: number | null
+  tier: string | null
+  proposed_object: string | null
+  score_components: Record<string, unknown> | null
+  evidence: Record<string, unknown> | null
+  provenance: Record<string, unknown> | null
+  alternatives: unknown[] | null
+  conflicts: unknown[] | null
+  requested_mode: string | null
+  effective_mode: string | null
+  decision: string | null
+  decided_by: string | null
+  decided_at: string | null
+  suppressed_until: string | null
+  approved_for_rerun: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+// GET /runs/{run_id}/mv-proposals — the run's proposals, newest first.
+export interface MvProposalsResponse {
+  run_id: string
+  proposals: MvProposal[]
+}
+
+// GET /spaces/{space_id}/mv-proposals — a space's proposals (MV-D23). Same
+// MvProposal element type as the run-keyed response so one card renders both.
+export interface MvSpaceProposalsResponse {
+  space_id: string
+  proposals: MvProposal[]
 }

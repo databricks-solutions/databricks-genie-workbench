@@ -225,6 +225,43 @@ def test_list_mv_proposals_returns_the_rows(client, monkeypatch):
     assert data["proposals"][0]["approved_for_rerun"] is True
 
 
+def test_list_space_mv_proposals_filters_by_space_and_approved(client, monkeypatch):
+    captured: dict = {}
+
+    def fake_load(*args, **kwargs):
+        captured.update(kwargs)
+        return [{
+            "suggestion_id": "sug_space", "dedup_fingerprint": "fp1",
+            "target_space_id": "space-1", "candidate_type": "NEW_METRIC_VIEW",
+            "confidence_score": 91.0, "approved_for_rerun": True,
+        }]
+
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", fake_load)
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals?approved_for_rerun=true")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["space_id"] == "space-1"
+    assert data["proposals"][0]["suggestion_id"] == "sug_space"
+    # The gate is space-scoped; run_id must NOT stand in for it (MV-D23).
+    assert captured.get("target_space_id") == "space-1"
+    assert captured.get("approved_for_rerun") is True
+    assert captured.get("run_id") is None
+
+
+def test_list_space_mv_proposals_defaults_approved_to_none(client, monkeypatch):
+    captured: dict = {}
+
+    def fake_load(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", fake_load)
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+    assert resp.status_code == 200
+    assert resp.json() == {"space_id": "space-1", "proposals": []}
+    assert captured.get("approved_for_rerun") is None
+
+
 def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
     monkeypatch.setattr(
         auto_optimize, "_load_latest_artifact",

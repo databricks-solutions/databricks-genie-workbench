@@ -35,6 +35,9 @@ import type {
   GSOPublishRecordResponse,
   CurrentVersionResponse,
   GSORevertOptions,
+  MvProbeRequest,
+  MvProbeResult,
+  MvSpaceProposalsResponse,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -438,6 +441,34 @@ export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<G
       body: JSON.stringify(request),
     },
     LONG_TIMEOUT
+  )
+}
+
+// Probe the signed-in user's entitlement to create a metric view in a schema
+// (OBO). Fired when the run-config MV section expands in the re-run state.
+export async function probeMvEntitlement(request: MvProbeRequest): Promise<MvProbeResult> {
+  return fetchWithTimeout<MvProbeResult>(
+    `${API_BASE}/auto-optimize/mv/probe`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
+  )
+}
+
+// Space-scoped proposals for the run-config re-run gate (MV-D23). Passing
+// approvedForRerun=true returns only proposals cleared for a create-and-attach
+// re-run; it never borrows a prior run_id to answer this per-space question.
+export async function fetchSpaceMvProposals(
+  spaceId: string,
+  approvedForRerun?: boolean,
+): Promise<MvSpaceProposalsResponse> {
+  const query =
+    approvedForRerun === undefined ? "" : `?approved_for_rerun=${approvedForRerun}`
+  return fetchWithTimeout<MvSpaceProposalsResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv-proposals${query}`,
   )
 }
 

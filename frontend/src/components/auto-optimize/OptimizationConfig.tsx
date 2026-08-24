@@ -1,17 +1,20 @@
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { LucideIcon } from "lucide-react"
 import { AlertTriangle, Database, ListChecks, Rocket, Settings2, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
-import { triggerAutoOptimize } from "@/lib/api"
+import { fetchSpaceMvProposals, probeMvEntitlement, triggerAutoOptimize } from "@/lib/api"
 import { PermissionAlert } from "@/components/auto-optimize/PermissionAlert"
+import { MvSuggestSection } from "@/components/auto-optimize/MvSuggestSection"
 import { ModelPicker } from "@/components/ModelPicker"
 import {
   buildOptimizationTriggerRequest,
+  collectMvSourceTables,
+  deriveMvTarget,
   parseMaxAttempts,
   parseTargetAccuracy,
 } from "@/components/auto-optimize/optimizationRequest"
-import type { GSOPermissionCheck } from "@/types"
+import type { GSOPermissionCheck, MvProbeResult, MvProposal } from "@/types"
 
 interface OptimizationConfigProps {
   spaceId: string
@@ -62,11 +65,80 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Metric view advisor state (Prompt 11, MV-D1/D23). All local, no store — the
+  // section fetches its own space-scoped proposals and OBO probe lazily when the
+  // toggle first expands. Empty approved set ⇒ first-run; a non-empty set ⇒
+  // re-run, where the probe gates "Create and attach".
+  const [mvEnabled, setMvEnabled] = useState(false)
+  const [mvProposals, setMvProposals] = useState<MvProposal[]>([])
+  const [mvProposalsLoaded, setMvProposalsLoaded] = useState(false)
+  const [mvProposalsLoading, setMvProposalsLoading] = useState(false)
+  const [mvSelectedIds, setMvSelectedIds] = useState<Set<string>>(new Set())
+  const [mvMode, setMvMode] = useState<"suggest_only" | "create_and_attach">("suggest_only")
+  const [mvProbe, setMvProbe] = useState<MvProbeResult | null>(null)
+  const [mvProbeLoading, setMvProbeLoading] = useState(false)
+  const [mvProbeError, setMvProbeError] = useState<string | null>(null)
+
   const hasHealthIssues = (healthIssues?.length ?? 0) > 0
   const targetAccuracy = parseTargetAccuracy(targetPercent)
   const maxAttempts = parseMaxAttempts(maxAttemptsInput)
   const knobsValid = targetAccuracy !== null && maxAttempts !== null
   const canStart = permissions?.can_start === true && !hasHealthIssues
+
+  const mvTarget = useMemo(() => deriveMvTarget(mvProposals), [mvProposals])
+  const mvGranted = mvProbe?.verdict === "SUFFICIENT"
+
+  // Load the space's approved-for-rerun proposals the first time the section
+  // expands (MV-D23 — space-scoped, never keyed on a prior run).
+  useEffect(() => {
+    if (!mvEnabled || mvProposalsLoaded || mvProposalsLoading) return
+    let cancelled = false
+    setMvProposalsLoading(true)
+    fetchSpaceMvProposals(spaceId, true)
+      .then((res) => {
+        if (cancelled) return
+        setMvProposals(res.proposals)
+        setMvSelectedIds(new Set(res.proposals.map((p) => p.suggestion_id)))
+      })
+      .catch(() => {
+        if (!cancelled) setMvProposals([])
+      })
+      .finally(() => {
+        if (cancelled) return
+        setMvProposalsLoading(false)
+        setMvProposalsLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mvEnabled, mvProposalsLoaded, mvProposalsLoading, spaceId])
+
+  // Probe entitlement once approved proposals with a target are known (re-run).
+  // Fires once per target; a failure records an error rather than re-looping.
+  useEffect(() => {
+    if (!mvEnabled || !mvProposalsLoaded || !mvTarget) return
+    if (mvProbe || mvProbeLoading || mvProbeError) return
+    let cancelled = false
+    setMvProbeLoading(true)
+    probeMvEntitlement({
+      catalog: mvTarget.catalog,
+      schema: mvTarget.schema,
+      space_id: spaceId,
+      source_tables: collectMvSourceTables(mvProposals),
+    })
+      .then((res) => {
+        if (!cancelled) setMvProbe(res)
+      })
+      .catch((e) => {
+        if (!cancelled) setMvProbeError(e instanceof Error ? e.message : "Entitlement probe failed.")
+      })
+      .finally(() => {
+        if (!cancelled) setMvProbeLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mvEnabled, mvProposalsLoaded, mvTarget, mvProbe, mvProbeLoading, mvProbeError, mvProposals, spaceId])
 
   function toggleLever(id: number) {
     setSelectedLevers((prev) => {
@@ -77,6 +149,20 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     })
   }
 
+  function toggleMvProposal(suggestionId: string) {
+    setMvSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(suggestionId)) next.delete(suggestionId)
+      else next.add(suggestionId)
+      return next
+    })
+  }
+
+  function handleCopyGrant() {
+    const sql = mvProbe?.remediation_sql
+    if (sql) void navigator.clipboard?.writeText(sql).catch(() => {})
+  }
+
   async function handleStart() {
     if (targetAccuracy === null || maxAttempts === null) {
       setError("Enter a target accuracy between 80–100% and a max attempts of 1 or more.")
@@ -85,6 +171,10 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     setLoading(true)
     setError(null)
     onTriggerStart?.()
+    // create_and_attach only survives when the probe still says SUFFICIENT;
+    // anything else sends suggest_only with no consent (downgrade-never-upgrade).
+    const effectiveMvMode =
+      mvEnabled && mvMode === "create_and_attach" && mvGranted ? "create_and_attach" : "suggest_only"
     try {
       const result = await triggerAutoOptimize(
         buildOptimizationTriggerRequest({
@@ -96,6 +186,23 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           maxAttempts,
           workloadWarehouseIds: Array.from(workloadWarehouseIds).sort(),
           benchmarkPolicy: allowBenchmarkRepair ? "repair_allowed" : "review_only",
+          mv: mvEnabled
+            ? {
+                enabled: true,
+                mode: effectiveMvMode,
+                minConfidence: null,
+                approvedSuggestionIds: Array.from(mvSelectedIds).sort(),
+                consent:
+                  effectiveMvMode === "create_and_attach" && mvProbe
+                    ? {
+                        granted_by: mvProbe.checked_as,
+                        granted_at: mvProbe.checked_at,
+                        probe_id: mvProbe.probe_id,
+                      }
+                    : null,
+                materialize: false,
+              }
+            : undefined,
         }),
       )
       onStarted(result.runId)
@@ -310,6 +417,23 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
             )}
           </div>
         )}
+
+        <MvSuggestSection
+          enabled={mvEnabled}
+          onToggle={setMvEnabled}
+          disabled={loading || hasActiveRun}
+          proposalsLoading={mvProposalsLoading}
+          proposals={mvProposals}
+          selectedProposalIds={mvSelectedIds}
+          onToggleProposal={toggleMvProposal}
+          mode={mvMode}
+          onModeChange={setMvMode}
+          target={mvTarget}
+          probe={mvProbe}
+          probeLoading={mvProbeLoading}
+          probeError={mvProbeError}
+          onCopyGrant={handleCopyGrant}
+        />
 
         {/* Alerts + launch — a full-width footer separated by a hairline so the
             CTA reads as the form's conclusion. */}

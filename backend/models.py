@@ -249,13 +249,12 @@ class MvConsentVerification(BaseModel):
 
 
 # ── Metric view proposals / create-and-attach (Prompt 9, MV-D1/D21/D22) ──
-# TS MIRROR OWED BY PROMPT 11: the models below (MvConsentPayload, MvProposal,
-# MvProposalsResponse, MvDdlArtifact, MvProposalDecisionRequest/Response,
-# MvDropRequest/Response, MvCreatedObject) have no frontend consumer until the
-# Prompt 11 run-config panel lands. Per AGENTS.md §Models they must be mirrored
-# in `frontend/src/types/index.ts` as Prompt 11's first step; adding dead TS
-# surface now would only invite drift before there is a caller (the same
-# dangling-parameter anti-pattern as mv_action_mode).
+# TS mirror (Prompt 11): the run-config panel consumes MvConsentPayload,
+# MvProposal, MvProposalsResponse, and MvSpaceProposalsResponse, all mirrored in
+# `frontend/src/types/index.ts` per AGENTS.md §Models. MvDdlArtifact,
+# MvProposalDecisionRequest/Response, MvDropRequest/Response, and MvCreatedObject
+# still have no frontend consumer — they belong to the Prompt 13 output screen;
+# mirror them there rather than adding dead TS surface before there is a caller.
 
 
 class MvConsentPayload(BaseModel):
@@ -304,6 +303,20 @@ class MvProposalsResponse(BaseModel):
     """``GET /runs/{run_id}/mv-proposals`` — the run's proposals, newest first."""
 
     run_id: str
+    proposals: list[MvProposal] = Field(default_factory=list)
+
+
+class MvSpaceProposalsResponse(BaseModel):
+    """``GET /spaces/{space_id}/mv-proposals`` — a space's proposals (MV-D23).
+
+    Space-scoped twin of ``MvProposalsResponse`` for the run-config panel's
+    re-run gate, which asks a space-scoped question ("what has this Agent had
+    approved?") and must not borrow a prior ``run_id`` to stand in for it. The
+    element type is the SAME ``MvProposal`` as the run-keyed response, so the
+    proposal card renders from one shape in both the output screen (per-run) and
+    this panel (per-space)."""
+
+    space_id: str
     proposals: list[MvProposal] = Field(default_factory=list)
 
 

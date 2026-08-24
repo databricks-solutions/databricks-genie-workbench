@@ -25,6 +25,7 @@ from backend.models import (
     MvProposalDecisionRequest,
     MvProposalDecisionResponse,
     MvProposalsResponse,
+    MvSpaceProposalsResponse,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
     QueryUsageSignal,
@@ -1651,6 +1652,53 @@ async def list_mv_proposals(run_id: RunId):
         rows = []
     return MvProposalsResponse(
         run_id=run_id, proposals=[_mv_proposal_from_row(r) for r in rows]
+    )
+
+
+@router.get("/spaces/{space_id}/mv-proposals", response_model=MvSpaceProposalsResponse)
+async def list_space_mv_proposals(
+    space_id: SpaceId,
+    approved_for_rerun: bool | None = Query(
+        None,
+        description=(
+            "When true, return only proposals approved for a create-and-attach "
+            "re-run — the space-scoped gate the run-config panel reads (MV-D23)."
+        ),
+    ),
+):
+    """List a space's metric view proposals, independent of any run (MV-D23).
+
+    Space-scoped twin of ``/runs/{run_id}/mv-proposals``: the run-config panel's
+    re-run gate is a per-space question ("what has this Agent had approved?"), so
+    it keys on ``target_space_id`` and never borrows a prior ``run_id`` to answer
+    it. ``genie_opt_mv_candidates`` is partitioned by ``target_space_id`` because
+    a candidate outlives the run that proposed it (MV-D7), and
+    ``wh_load_mv_candidates`` already reads by space, so this is a read of
+    existing state — not a new key on the MV tables.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return MvSpaceProposalsResponse(space_id=space_id, proposals=[])
+
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+
+    try:
+        rows = await _offload(
+            wh_load_mv_candidates,
+            get_service_principal_client(),
+            config.warehouse_id,
+            config.catalog,
+            config.schema_name,
+            target_space_id=space_id,
+            approved_for_rerun=approved_for_rerun,
+        )
+    except Exception as exc:
+        logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
+        rows = []
+    return MvSpaceProposalsResponse(
+        space_id=space_id, proposals=[_mv_proposal_from_row(r) for r in rows]
     )
 
 

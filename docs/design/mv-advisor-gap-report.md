@@ -1278,14 +1278,16 @@ capability rows derived from `current_version()`. It issues no DDL on any path.
 
 #### The run-config panel
 
-`frontend/src/components/auto-optimize/OptimizationConfig.tsx` (358 L). Two-column
+`frontend/src/components/auto-optimize/OptimizationConfig.tsx` (482 L). Two-column
 layout: left = Optimization Scope (six lever checkboxes + benchmark-repair consent
 checkbox); right = model picker + stopping criteria; below = query-usage warehouse
-selection; footer = health issues, `PermissionAlert`, Start button.
+selection; then the full-width "Suggest metric views" section (`MvSuggestSection`,
+Prompt 11); footer = health issues, `PermissionAlert`, Start button.
 
-State is eight local `useState` hooks (`:55-63`). The Start button gate:
+State is local `useState` hooks — nine run-config (`:58-66`) plus nine MV-advisor
+(`:72-80`, added by Prompt 11). The Start button gate:
 
-```346:346:frontend/src/components/auto-optimize/OptimizationConfig.tsx
+```470:470:frontend/src/components/auto-optimize/OptimizationConfig.tsx
               disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid}
 ```
 
@@ -1296,7 +1298,7 @@ POV's "Suggest metric views" toggle should follow this pattern.
 Payload assembly is factored into a pure helper (deliberately, for the
 `react-refresh/only-export-components` lint rule):
 
-```28:50:frontend/src/components/auto-optimize/optimizationRequest.ts
+```42:64:frontend/src/components/auto-optimize/optimizationRequest.ts
 export function buildOptimizationTriggerRequest(args: {
   spaceId: string
   applyMode: "genie_config" | "both"
@@ -1306,23 +1308,19 @@ export function buildOptimizationTriggerRequest(args: {
   maxAttempts: number
   workloadWarehouseIds?: string[]
   benchmarkPolicy: "review_only" | "repair_allowed"
+  mv?: MvTriggerOptions
 }): GSOTriggerRequest {
-  return {
-    space_id: args.spaceId,
-    apply_mode: args.applyMode,
-    levers: Array.from(args.selectedLevers)
-      .filter((id) => id >= 1 && id <= 6)
-      .sort((a, b) => a - b),
-    llm_model: args.selectedModel,
-    target_accuracy: args.targetAccuracy,
-    max_attempts: args.maxAttempts,
-    workload_warehouse_ids: args.workloadWarehouseIds ?? [],
-    benchmark_policy: args.benchmarkPolicy,
-  }
-}
 ```
 
-Covered by `OptimizationConfig.test.tsx` (189 L) and `contract.test.ts` (126 L).
+Prompt 11 added the optional `mv` arm (`MvTriggerOptions`): when `mv.enabled` is
+true the builder emits `enable_metric_view_suggestions` + the `mv_*` fields;
+otherwise it emits none of them, so toggling the section off clears every `mv_*`
+field (`mv_materialize` included, though no control sets it — the materialization
+path is unbuilt, see the `mv_materialize` row below). The sibling helpers `deriveMvTarget` and
+`collectMvSourceTables` compute the probe target and SELECT set from the approved
+proposals.
+
+Covered by `OptimizationConfig.test.tsx` (457 L) and `contract.test.ts` (126 L).
 
 #### The run output / results screen
 
@@ -1523,7 +1521,7 @@ base_parameters wiring above; before Prompt 8 every one resolved to its widget d
 | `mv_min_confidence` | `"75"` | **MATCHES (Prompt 9 threads it)** — declared `databricks.yml:123`, pkg `:89`, `gso_job.py:115`, launcher `:141`/`:89`; passed to optimize `:198`; read at `run_optimize.py:135`. The trigger flow now forwards the request's `mv_min_confidence` (or the `"75"` default) instead of always sending the default. Job-side consumption as the advisor confidence cutoff remains a `mv_advisor`/`mv_scoring` follow-on |
 | `mv_target_catalog` | `""` | **DOES-NOT-EXIST-YET (out of job scope)** — the target lives on the consent row, not a job parameter (playbook Prompt 8) |
 | `mv_target_schema` | `""` | **DOES-NOT-EXIST-YET (out of job scope)** — same; note `schema` already means the GSO state schema, so the `mv_` prefix would be load-bearing if it were ever added |
-| `mv_materialize` | `"false"` | **DOES-NOT-EXIST-YET (out of job scope)** — materialization is a separate backend/OBO consent (MV-D1), never a job parameter. **Accepted-but-inert (Prompt 9):** `TriggerRequest.mv_materialize` now exists and `mv_create.create_and_attach_for_run` accepts it, but the create path logs it and installs a **non-materialized** metric view — materialization is a separate DDL path (`CREATE MATERIALIZED VIEW` + its own `materialize_consented` consent, MV-D7). **Owner:** the materialization path, a post-Phase-3 prompt; Prompt 11 must not surface a live materialize toggle before that lands, or it will offer a control that does nothing (same tracked-debt treatment as `mv_action_mode`'s job-side consumption) |
+| `mv_materialize` | `"false"` | **DOES-NOT-EXIST-YET (out of job scope)** — materialization is a separate backend/OBO consent (MV-D1), never a job parameter. **Accepted-but-inert (Prompt 9):** `TriggerRequest.mv_materialize` now exists and `mv_create.create_and_attach_for_run` accepts it, but the create path logs it and installs a **non-materialized** metric view — materialization is a separate DDL path (`CREATE MATERIALIZED VIEW` + its own `materialize_consented` consent, MV-D7). **Resolved (Prompt 11):** the run-config panel surfaces NO materialize control — not live, and deliberately not disabled-with-rationale either (a disabled control for an *unbuilt* feature advertises vapor, unlike first-run "Create and attach" which is disabled because the user can still unlock it). `mv_materialize` stays plumbed through `buildOptimizationTriggerRequest` and is cleared with every other `mv_*` field when the toggle is off (tested); the materialization prompt adds the control and nothing else. **Owner:** the materialization path, a post-Phase-3 prompt — note MV-D1 also requires an `EXPLAIN CREATE MATERIALIZED VIEW` precheck that exists nowhere yet |
 | `enable_discover_curation` (§8.6) | — | **DOES-NOT-EXIST-YET** |
 
 String-typed parameters are **MATCHES** as a convention: all 20 declared parameters in the
@@ -1555,10 +1553,10 @@ root bundle are strings (19 in the package bundle, which omits the Workbench-onl
 | "Writes execute under OBO" | **CONFLICTS** | The job runs as the SP (`databricks.yml:58-59`; `main.py:162-181` self-heals `run_as` to SP). No OBO token exists inside the job. |
 | "The SP is never a write path for metric views" | **CONFLICTS** | Directly contradicted by the above |
 | Preflight re-verification / downgrade-never-upgrade | **PARTIALLY MATCHES** | `mv_entitlement.verify(consent, fresh_probe)` implements the comparison and only ever returns `create_and_attach` or `suggest_only` with a `downgrade_reason`. Downgrades on a worse fresh verdict, an identity or target change, a **missing consent row** (reachable because persistence is best-effort), and a **different `observed_warehouse_id`** than the capabilities were read on (MV-D13). **Now called (Prompt 9):** `mv_create.verify_consent` loads the consent, runs a fresh OBO probe against the consented target, and calls `verify` before any create; a downgrade abandons the create and the run proceeds as `suggest_only`. Re-verification belongs in the backend at trigger time, not in a job task — the job has no OBO token |
-| UI toggle + target picker + mode radio | **DOES-NOT-EXIST-YET** | `OptimizationConfig.tsx` has no catalog/schema picker; the benchmark-repair checkbox at `:141-164` is the pattern to copy |
+| UI toggle + target picker + mode radio | **MATCHES (Prompt 11)** | `MvSuggestSection` (wired into `OptimizationConfig.tsx`) renders the "Suggest metric views" toggle, the suggest-only / create-and-attach mode radios, and — on the re-run gate — the approved-proposal checkboxes. The target is READ from each approved proposal's `proposed_object` (`deriveMvTarget`), not chosen in a free-form catalog/schema picker (MV-D23); first-run disables create-and-attach with the MV-D1 rationale, and the OBO probe gates it on the re-run. Follows the benchmark-repair consent idiom at `:141-164` |
 | Copyable `GRANT` remediation | **PARTIALLY MATCHES** | Same idiom already exists for warehouse grants — read-only `<textarea>` at `OptimizationConfig.tsx:284-292` and `:300-310`. The `GET /runs/{run_id}/mv-ddl` route now returns a `grant_sql` template alongside the DDL |
 
-*Prompt 9 backend surface (landed).* Four routes on `auto_optimize.py`: `GET /runs/{run_id}/mv-proposals`, `GET /runs/{run_id}/mv-ddl`, `POST /mv/proposals/{id}/decision`, `POST /mv/created/{id}/drop` (OBO, confirm-gated, DETACHED-only, non-owner 403). **Five** `wh_*` helpers in `common/warehouse.py` (not four — the drop route needs `wh_load_mv_created_object` to authorize the read): `wh_load_mv_candidates`, `wh_record_mv_candidate_decision`, `wh_upsert_mv_created_object`, `wh_update_mv_created_object_status`, `wh_load_mv_created_object`, pinned to the `mv_state` column contract by `test_wh_mv_state.py`. The OBO create-and-attach orchestration is `backend/services/mv_create.py`, reached from the engine through `trigger_optimization`'s `mv_attach_hook` (MV-D20/D22). **Debt owed:** the new Pydantic models (`MvProposal`, `MvDdlArtifact`, `MvProposalsResponse`, `MvProposalDecisionRequest`/`Response`, `MvDropRequest`/`Response`, `MvConsentPayload`, `MvCreatedObject`) have **no TS mirror yet** — Prompt 11 owes `frontend/src/types/index.ts` as its first step, tracked here and by a marker comment in `backend/models.py` so the AGENTS.md parity rule is satisfied by intent rather than by dead surface added early.
+*Prompt 9 backend surface (landed).* Four routes on `auto_optimize.py`: `GET /runs/{run_id}/mv-proposals`, `GET /runs/{run_id}/mv-ddl`, `POST /mv/proposals/{id}/decision`, `POST /mv/created/{id}/drop` (OBO, confirm-gated, DETACHED-only, non-owner 403). **Five** `wh_*` helpers in `common/warehouse.py` (not four — the drop route needs `wh_load_mv_created_object` to authorize the read): `wh_load_mv_candidates`, `wh_record_mv_candidate_decision`, `wh_upsert_mv_created_object`, `wh_update_mv_created_object_status`, `wh_load_mv_created_object`, pinned to the `mv_state` column contract by `test_wh_mv_state.py`. The OBO create-and-attach orchestration is `backend/services/mv_create.py`, reached from the engine through `trigger_optimization`'s `mv_attach_hook` (MV-D20/D22). *Prompt 11 adds a fifth route:* `GET /spaces/{space_id}/mv-proposals?approved_for_rerun=` — the space-scoped twin of the run-keyed proposals route (MV-D23), reusing `wh_load_mv_candidates`'s `target_space_id` / `approved_for_rerun` filters and returning the SAME `MvProposal` element type via a sibling `MvSpaceProposalsResponse`. **TS mirror (Prompt 11 landed the run-config consumers):** `MvConsentPayload`, `MvProposal`, `MvProposalsResponse`, `MvSpaceProposalsResponse`, and `MvProbeRequest` are now mirrored in `frontend/src/types/index.ts` and consumed by `MvSuggestSection`. The output-screen shapes (`MvDdlArtifact`, `MvProposalDecisionRequest`/`Response`, `MvDropRequest`/`Response`, `MvCreatedObject`) still have no consumer and are mirrored by Prompt 13 — not added early — as the updated `backend/models.py` marker comment now states.
 
 ### 2.5 The patch and apply path (POV §7.8)
 
