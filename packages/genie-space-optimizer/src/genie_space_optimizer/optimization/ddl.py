@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
     stage_name          STRING                 COMMENT 'Notebook or stage that wrote the artifact (intake_and_snapshot, benchmark_qc_and_repair, ...)',
     iteration           INT                    COMMENT 'Iteration number, when applicable (NULL for run-level artifacts)',
-    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record',
+    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record | mv_candidate_ddl',
     artifact_json       STRING                 COMMENT 'JSON payload for the artifact (enough to reconstruct the pass without notebook-local state)',
     content_hash        STRING                 COMMENT 'Hash of artifact_json for dedupe / idempotency / replay safety',
     parent_artifact_id  STRING                 COMMENT 'Lineage pointer to the artifact this one derives from',

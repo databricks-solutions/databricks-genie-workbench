@@ -46,6 +46,8 @@ from genie_space_optimizer.optimization.benchmarks import (
     benchmark_corpus_for_optimization,
     load_benchmark_corpus,
 )
+from genie_space_optimizer.optimization.mv_advisor import run_mv_advisor_phase
+from genie_space_optimizer.optimization.mv_scoring import FoundationModelEmbeddingClient
 from genie_space_optimizer.optimization.preflight import _resolve_experiment_path
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
@@ -91,6 +93,7 @@ dbutils.widgets.text("target_accuracy", "0.90")
 dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
+dbutils.widgets.text("enable_metric_view_suggestions", "false")
 
 run_id = dbutils.widgets.get("run_id").strip()
 space_id = dbutils.widgets.get("space_id").strip()
@@ -105,6 +108,11 @@ target_accuracy = target_accuracy_percent(
 )
 llm_model = dbutils.widgets.get("llm_model").strip()
 benchmark_policy = dbutils.widgets.get("benchmark_policy").strip() or "repair_allowed"
+# STRING compare, matching the other boolean-ish job parameters: the widget value
+# arrives as text and anything other than "true" leaves the advisor phase off.
+enable_metric_view_suggestions = (
+    dbutils.widgets.get("enable_metric_view_suggestions").strip().lower() == "true"
+)
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
@@ -406,6 +414,43 @@ if _prompt_telemetry:
         stage_name=_TASK_KEY,
         source_notebook="run_optimize.py",
     )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Metric View Advisor Phase (gated, proposal-only)
+
+# COMMAND ----------
+
+# A phase, not a task (MV-D3). It runs after the loop because it consumes
+# iteration-0 generated SQL from Delta and has no reason to block optimization,
+# and it only ever proposes — object creation is a backend/OBO surface under
+# MV-D1, and this notebook runs as the service principal.
+#
+# run_mv_advisor_phase never raises: it writes its own stage row and returns an
+# outcome either way, so nothing below this point can be reached differently
+# because the advisor failed.
+_mv_outcome = run_mv_advisor_phase(
+    spark,
+    run_id=run_id,
+    space_id=space_id,
+    catalog=catalog,
+    schema=schema,
+    enabled=enable_metric_view_suggestions,
+    benchmarks=benchmarks,
+    wide_schema_inventory=wide_schema_inventory,
+    w=w,
+    warehouse_id=warehouse_id,
+    embedding_client=FoundationModelEmbeddingClient(w),
+    # Benchmark question text is S's intent side. Passing it here is the one
+    # sanctioned route for that text: it is consumed as vectors and never stored,
+    # while the proposal's evidence carries question *ids* only.
+    intent_texts=[
+        str(b.get("question") or "") for b in (benchmarks or ()) if isinstance(b, dict)
+    ],
+    domain=domain,
+)
+_log("Metric view advisor", **_mv_outcome.detail())
 
 write_stage(
     spark,

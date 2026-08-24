@@ -1306,6 +1306,7 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     "benchmark_qc",
     "space_quality_enrichment",
     "publish_record",
+    "mv_candidate_ddl",
 )
 
 
@@ -1321,13 +1322,25 @@ def write_artifact(
     iteration: int | None = None,
     source_notebook: str | None = None,
     parent_artifact_id: str | None = None,
+    content_hash: str | None = None,
 ) -> str | None:
     """Append one stage-level handoff blob to ``genie_opt_artifacts`` (arch §7.1).
 
     ``artifact_kind`` must be one of :data:`ARTIFACT_KINDS`. ``payload`` is
-    JSON-serialized into ``artifact_json``; a ``content_hash`` is computed for
-    dedupe / replay safety. Returns the generated ``artifact_id`` (or ``None``
-    on a swallowed write failure — best-effort, never aborts the notebook).
+    JSON-serialized into ``artifact_json``. Returns the generated ``artifact_id``
+    (or ``None`` on a swallowed write failure — best-effort, never aborts the
+    notebook).
+
+    ``content_hash`` defaults to the SHA-256 of the serialized payload, which is
+    what every existing caller wants: dedupe and replay safety for a blob whose
+    identity *is* its bytes. Passing it overrides that, and MV-D7 is why the
+    override exists — a rendered metric view's row carries the candidate's dedup
+    fingerprint so `genie_opt_artifacts` and `genie_opt_mv_candidates`
+    cross-reference on the same key. A content hash could not do that: the same
+    candidate re-rendered under different capabilities hashes differently, so the
+    two stores would silently stop joining. Keyword-with-default rather than a
+    separate function because the column and its meaning are unchanged — only who
+    decides the value.
     """
     import hashlib
     import uuid
@@ -1352,11 +1365,12 @@ def write_artifact(
             )
             artifact_json = None
 
-    content_hash = (
-        hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
-        if artifact_json is not None
-        else None
-    )
+    if content_hash is None:
+        content_hash = (
+            hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
+            if artifact_json is not None
+            else None
+        )
     artifact_id = str(uuid.uuid4())
     payload_row: dict[str, Any] = {
         "artifact_id": artifact_id,

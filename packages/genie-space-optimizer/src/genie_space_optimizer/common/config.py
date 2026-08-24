@@ -2470,6 +2470,64 @@ MV_TIER_LOW_MIN = _float_env("GSO_MV_TIER_LOW_MIN", 25.0)
 """Lower bound of LOW (25-49). Below this a candidate is suppressed: it is
 reported for diagnostics and never persisted as a proposal."""
 
+MV_ADVISOR_PHASE_NAME = "mv_advisor"
+"""Stage name for the advisor phase's ``genie_opt_stages`` rows.
+
+The phase runs inside the ``optimize`` task (MV-D3 forbids new job tasks), so
+the stage name is what separates its rows from the loop's.
+"""
+
+MV_ADVISOR_MAX_CANDIDATES = _int_env("GSO_MV_ADVISOR_MAX_CANDIDATES", 10)
+"""How many recurrence-ranked measures the advisor considers per run.
+
+Bounded because generation runs per candidate and the corpus scan's tail is
+long: the hundredth-ranked measure recurred once and will not clear the
+suppression floor, so scoring it spends embedding calls to produce a row nobody
+reads. ``corpus_scan`` already ranks by recurrence, so the cut takes the top.
+"""
+
+MV_SIGNAL_COMPUTED = "COMPUTED"
+"""A producer ran and returned a value. The signal scores what it measured."""
+
+MV_SIGNAL_EMPTY = "EMPTY"
+"""A producer ran and found nothing to compare — a real measurement of zero.
+
+Scores 0.0 and **keeps its weight** (MV-D15). Two disjoint column sets and a
+reference set with no positive cosine are findings, not gaps, and a blend that
+excused them would reward a candidate for having no evidence against it.
+"""
+
+MV_SIGNAL_UNAVAILABLE = "UNAVAILABLE"
+"""No producer exists — nothing looked.
+
+Leaves the blend entirely rather than scoring 0.0 (MV-D15): its weight is
+removed from the divisor, so the remaining signals are renormalized over what
+was actually measured. Distinct from :data:`MV_SIGNAL_EMPTY` because "nobody
+checked" and "checked, found none" are different facts that a bare 0.0 conflates.
+"""
+
+MV_SIGNAL_STATUSES: tuple[str, ...] = (
+    MV_SIGNAL_COMPUTED,
+    MV_SIGNAL_EMPTY,
+    MV_SIGNAL_UNAVAILABLE,
+)
+"""The closed set of per-signal availability statuses."""
+
+MV_COVERAGE_HIGH_MIN = _float_env("GSO_MV_COVERAGE_HIGH_MIN", 0.80)
+"""Minimum ``evidence_coverage`` for a candidate to be HIGH-eligible (MV-D15).
+
+Set at 0.80 rather than 1.0 so one missing signal does not veto the top tier,
+and above 0.65 so a candidate missing **L** — the heaviest single weight, and
+the signal with no producer today — cannot reach HIGH on the strength of the
+other three. Renormalization keeps such a score on a 0-100 scale; this keeps the
+scale from implying corroboration it does not have.
+"""
+
+MV_COVERAGE_MEDIUM_MIN = _float_env("GSO_MV_COVERAGE_MEDIUM_MIN", 0.50)
+"""Minimum ``evidence_coverage`` for a MEDIUM ceiling; below it the ceiling is
+LOW (MV-D15). At 0.50 a majority of the weight was measured, which is the least
+that can support a mid-tier claim."""
+
 MV_RECURRENCE_SATURATION = _int_env("GSO_MV_RECURRENCE_SATURATION", 75)
 """Occurrence count at which the **Y** recurrence curve reaches 1.0.
 
@@ -2659,6 +2717,22 @@ text, so verbatim text has no route into a comment to begin with."""
 
 MV_ECHO_CHECK_COMPARED = "COMPARED"
 MV_ECHO_CHECK_NOT_COMPARED = "NOT_COMPARED"
+
+MV_SEMANTIC_STATUS_COMPARED = MV_SIGNAL_COMPUTED
+"""**S** ran against a real reference set. Alias of :data:`MV_SIGNAL_COMPUTED` so
+the signal-status vocabulary is one namespace rather than two that drift."""
+
+MV_SEMANTIC_STATUS_NOTHING_TO_COMPARE = MV_SIGNAL_EMPTY
+"""**S** ran but had no intent text or no reference text — a measured zero."""
+
+MV_SEMANTIC_STATUS_NO_CLIENT = MV_SIGNAL_UNAVAILABLE
+"""**S** could not run: no embedding client, or the endpoint failed.
+
+Mirrors the :data:`MV_ECHO_CHECK_NOT_COMPARED` marker B4 established for the
+comment-echo check, for the same reason — the recon found that a dead endpoint
+and an absent reference set produced byte-identical payloads, so an operator
+could not tell a missing dependency from a negative finding.
+"""
 """Whether the BEST FOR echo check actually compared anything.
 
 The leakage oracle is an optional input, so "no echo found" and "no corpus was

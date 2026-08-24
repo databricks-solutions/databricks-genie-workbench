@@ -76,9 +76,17 @@ from genie_space_optimizer.common.config import (
     MV_DEMAND_COST_SATURATION_MS,
     MV_DEMAND_FREQUENCY_SATURATION,
     MV_DEMAND_HALF_LIFE_DAYS,
+    MV_COVERAGE_HIGH_MIN,
+    MV_COVERAGE_MEDIUM_MIN,
     MV_EMBEDDING_ENDPOINT,
     MV_RECURRENCE_SATURATION,
     MV_SCORE_WEIGHTS,
+    MV_SEMANTIC_STATUS_COMPARED,
+    MV_SEMANTIC_STATUS_NO_CLIENT,
+    MV_SEMANTIC_STATUS_NOTHING_TO_COMPARE,
+    MV_SIGNAL_COMPUTED,
+    MV_SIGNAL_EMPTY,
+    MV_SIGNAL_UNAVAILABLE,
     MV_TIER_HIGH_MIN,
     MV_TIER_LOW_MIN,
     MV_TIER_MEDIUM_MIN,
@@ -192,10 +200,19 @@ class RecurrenceSignal:
 class DemandSignal:
     """Precomputed query-history demand for the **D** signal.
 
-    ``cost_ms`` is cumulative execution time attributable to the measure — the
-    repo's available cost proxy (``wide_schema_history`` reads duration, not
-    DBUs). ``age_days`` is measured from the most recent occurrence, so the
-    half-life decays staleness rather than the measure's whole history.
+    ``cost_ms`` is cumulative execution time attributable to the measure.
+    ``age_days`` is measured from the most recent occurrence, so the half-life
+    decays staleness rather than the measure's whole history.
+
+    **No producer populates this today, and D is reported ``UNAVAILABLE``**
+    (MV-D15). An earlier version of this docstring said ``wide_schema_history``
+    supplied the cost proxy; it does not — its ``SELECT`` reads
+    ``statement_text`` and ``start_time`` and no duration or billing column at
+    all, so it can supply neither ``cost_ms`` nor ``distinct_users``. Corrected
+    here rather than left standing, because the false claim would tell whoever
+    builds D that half of it already exists. Its ``query_occurrence_count`` is
+    also grained per column x normalized query shape, not per measure, so even
+    ``frequency`` needs a mapping that does not exist yet. See recon Q3.
     """
 
     frequency: int = 0
@@ -334,17 +351,24 @@ class SemanticMatch:
     against a governed metric-view field and a 0.40 against a column comment are
     different strengths of evidence, and a payload that reports only the number
     leaves a reviewer unable to tell which they are looking at.
+
+    ``status`` separates the two ways a cosine of 0.0 arises (MV-D15). Before it
+    existed, a dead embedding endpoint and a candidate with no reference text
+    produced byte-identical payloads, so an operator reading a zero afterwards
+    could not tell a missing dependency from a negative finding.
     """
 
     field: str | None = None
     cosine: float = 0.0
     reference_kind: str = SEMANTIC_REF_NONE
+    status: str = MV_SEMANTIC_STATUS_NO_CLIENT
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "field": self.field,
             "cosine": self.cosine,
             "reference_kind": self.reference_kind,
+            "status": self.status,
         }
 
 
@@ -474,21 +498,27 @@ def semantic_score(
     """
     intents = [text for text in intent_texts if text and text.strip()]
     targets = [ref for ref in references if ref.text and ref.text.strip()]
-    if not intents or not targets or client is None:
-        return SemanticMatch()
+    if client is None:
+        return SemanticMatch(status=MV_SEMANTIC_STATUS_NO_CLIENT)
+    if not intents or not targets:
+        return SemanticMatch(status=MV_SEMANTIC_STATUS_NOTHING_TO_COMPARE)
 
     try:
         vectors = client.embed([*intents, *[ref.text for ref in targets]])
     except Exception:
-        logger.warning("mv_scoring: embedding call failed; S degrades to 0.0", exc_info=True)
-        return SemanticMatch()
+        logger.warning(
+            "mv_scoring: embedding call failed; S is UNAVAILABLE and leaves the blend",
+            exc_info=True,
+        )
+        return SemanticMatch(status=MV_SEMANTIC_STATUS_NO_CLIENT)
 
     if len(vectors) != len(intents) + len(targets):
         logger.warning(
-            "mv_scoring: embedding client returned %d vectors for %d texts; S degrades to 0.0",
+            "mv_scoring: embedding client returned %d vectors for %d texts; "
+            "S is UNAVAILABLE and leaves the blend",
             len(vectors), len(intents) + len(targets),
         )
-        return SemanticMatch()
+        return SemanticMatch(status=MV_SEMANTIC_STATUS_NO_CLIENT)
 
     intent_vectors = vectors[: len(intents)]
     target_vectors = vectors[len(intents):]
@@ -502,8 +532,16 @@ def semantic_score(
                 best_cosine = cosine
                 best_field = reference.pointer
     if best_field is None:
-        return SemanticMatch(reference_kind=reference_kind)
-    return SemanticMatch(field=best_field, cosine=best_cosine, reference_kind=reference_kind)
+        return SemanticMatch(
+            reference_kind=reference_kind,
+            status=MV_SEMANTIC_STATUS_NOTHING_TO_COMPARE,
+        )
+    return SemanticMatch(
+        field=best_field,
+        cosine=best_cosine,
+        reference_kind=reference_kind,
+        status=MV_SEMANTIC_STATUS_COMPARED,
+    )
 
 
 def semantic_reference_for(
@@ -580,16 +618,74 @@ def _saturate(value: float, ceiling: float) -> float:
 # ── Blend and tiers ──────────────────────────────────────────────────────
 
 
+_SIGNAL_KEYS: tuple[str, ...] = ("L", "Y", "S", "D")
+
+
 @dataclass(frozen=True)
 class ScoreComponents:
-    """The four signals and the weights they were blended with (POV Part 4
-    ``score_components``)."""
+    """The four signals, the weights they were blended with, and whether each was
+    actually measured (POV Part 4 ``score_components``, extended by MV-D15).
+
+    ``statuses`` defaults to all-``COMPUTED`` so a caller that supplies four
+    values keeps the pre-MV-D15 behaviour exactly — which is what preserves the
+    two pinned POV worked examples at coverage 1.0 with a divisor of 1.0.
+    """
 
     L: float = 0.0
     Y: float = 0.0
     S: float = 0.0
     D: float = 0.0
     weights: Mapping[str, float] = field(default_factory=lambda: dict(MV_SCORE_WEIGHTS))
+    statuses: Mapping[str, str] = field(
+        default_factory=lambda: {key: MV_SIGNAL_COMPUTED for key in _SIGNAL_KEYS}
+    )
+
+    def status_of(self, key: str) -> str:
+        """Status for one signal; an unnamed signal is treated as ``COMPUTED``.
+
+        Defaulting to ``COMPUTED`` rather than ``UNAVAILABLE`` keeps a partial
+        ``statuses`` map from silently deleting signals from the blend — a caller
+        that names only the absent ones gets what it meant.
+        """
+        return self.statuses.get(key, MV_SIGNAL_COMPUTED)
+
+    def is_counted(self, key: str) -> bool:
+        """Whether this signal contributes weight to the divisor (MV-D15).
+
+        ``EMPTY`` counts — it measured zero. ``UNAVAILABLE`` does not.
+        """
+        return self.status_of(key) != MV_SIGNAL_UNAVAILABLE
+
+    def value_of(self, key: str) -> float:
+        """The signal's contribution numerator. ``UNAVAILABLE`` contributes
+        nothing regardless of any value that happens to be carried alongside it,
+        so a stale number can never leak into a score as though measured."""
+        return float(getattr(self, key)) if self.is_counted(key) else 0.0
+
+    @property
+    def evidence_coverage(self) -> float:
+        """Summed weight of the ``COMPUTED`` and ``EMPTY`` signals (MV-D15).
+
+        This is the blend's divisor and it travels on every proposal, because a
+        renormalized score without its divisor cannot be audited: 90 over four
+        signals and 90 over one are the same number and different claims.
+
+        **Rounded to six places, and the rounding is load-bearing rather than
+        cosmetic.** The default weights make the S-unavailable case — the most
+        common one, since a workspace with no embedding endpoint hits it on every
+        candidate — sum to ``0.7999999999999999``, one ULP below
+        :data:`MV_COVERAGE_HIGH_MIN`. Unrounded, HIGH would be unreachable for
+        that entire class by floating-point accident rather than by decision, and
+        the cause would be invisible in a payload that prints ``0.8``. Rounding
+        is safe here because this sums a handful of authored decimal constants
+        rather than measurements, and it makes the all-``COMPUTED`` divisor
+        exactly 1.0, which is what keeps the two pinned worked examples on their
+        exact IEEE doubles instead of merely near them.
+        """
+        return round(
+            sum(self.weights.get(key, 0.0) for key in _SIGNAL_KEYS if self.is_counted(key)),
+            6,
+        )
 
     def weighted_terms(self) -> dict[str, float]:
         """Per-signal contributions before the ``* 100``.
@@ -599,8 +695,8 @@ class ScoreComponents:
         reviewer reconciling a score against the POV worksheet has to squint.
         """
         return {
-            key: round(self.weights.get(key, 0.0) * getattr(self, key), 6)
-            for key in ("L", "Y", "S", "D")
+            key: round(self.weights.get(key, 0.0) * self.value_of(key), 6)
+            for key in _SIGNAL_KEYS
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -610,25 +706,45 @@ class ScoreComponents:
             "S": self.S,
             "D": self.D,
             "weights": dict(self.weights),
+            "statuses": {key: self.status_of(key) for key in _SIGNAL_KEYS},
+            "evidence_coverage": self.evidence_coverage,
         }
 
 
 def blended_score(components: ScoreComponents) -> float:
-    """``100 * (0.35L + 0.30Y + 0.20S + 0.15D)``, unrounded.
+    """``100 * (0.35L + 0.30Y + 0.20S + 0.15D)``, renormalized over measured
+    signals and unrounded.
 
-    Left unrounded on purpose. Both POV Part 3 worked examples land on exact
-    IEEE doubles (80.0 and 58.75), and rounding to two places would drag a
-    24.999 across the suppression floor into LOW — a rounding rule that changes
-    which candidates reach a human is not a presentation detail.
+    Divides by :attr:`ScoreComponents.evidence_coverage` so the scale stays
+    0-100 whatever the availability mix (MV-D15). With all four signals
+    ``COMPUTED`` the divisor is exactly 1.0, so this is the pre-MV-D15 arithmetic
+    and both POV Part 3 worked examples land on the same IEEE doubles they
+    always did.
+
+    Left unrounded on purpose. Rounding to two places would drag a 24.999 across
+    the suppression floor into LOW — a rounding rule that changes which
+    candidates reach a human is not a presentation detail.
+
+    Returns 0.0 when nothing was measured. A candidate with no coverage at all
+    has no score rather than an undefined one, and the coverage cap will hold it
+    at or below LOW anyway.
     """
+    coverage = components.evidence_coverage
+    if coverage <= 0:
+        return 0.0
     weights = components.weights
-    return 100.0 * sum(
-        weights.get(key, 0.0) * getattr(components, key) for key in ("L", "Y", "S", "D")
+    weighted = sum(
+        weights.get(key, 0.0) * components.value_of(key) for key in _SIGNAL_KEYS
     )
+    return 100.0 * (weighted / coverage)
 
 
 def tier_for(score: float) -> str | None:
-    """POV Part 3 thresholds. ``None`` means suppress (below 25)."""
+    """POV Part 3 thresholds. ``None`` means suppress (below 25).
+
+    Score-only: this is the tier the evidence earned, before MV-D15's coverage
+    cap is applied. :func:`capped_tier` combines the two.
+    """
     if score >= MV_TIER_HIGH_MIN:
         return TIER_HIGH
     if score >= MV_TIER_MEDIUM_MIN:
@@ -636,6 +752,57 @@ def tier_for(score: float) -> str | None:
     if score >= MV_TIER_LOW_MIN:
         return TIER_LOW
     return None
+
+
+def coverage_ceiling(coverage: float) -> str:
+    """The best tier ``coverage`` permits (MV-D15).
+
+    Never returns ``None``: coverage bounds a tier from above and does not
+    suppress. Suppression is a statement about the score being too low to be
+    worth a reviewer's time, which is :func:`tier_for`'s judgment to make.
+    """
+    if coverage >= MV_COVERAGE_HIGH_MIN:
+        return TIER_HIGH
+    if coverage >= MV_COVERAGE_MEDIUM_MIN:
+        return TIER_MEDIUM
+    return TIER_LOW
+
+
+@dataclass(frozen=True)
+class TierDecision:
+    """A tier, the tier the score alone earned, and whether coverage bound it."""
+
+    tier: str | None
+    uncapped_tier: str | None
+    capped_by_coverage: bool
+    evidence_coverage: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tier": self.tier,
+            "uncapped_tier": self.uncapped_tier,
+            "tier_capped_by_coverage": self.capped_by_coverage,
+            "evidence_coverage": self.evidence_coverage,
+        }
+
+
+def capped_tier(score: float, coverage: float) -> TierDecision:
+    """Apply MV-D15's coverage cap to the tier the score earned.
+
+    Reports the uncapped tier alongside the capped one so a reviewer can see
+    both what the evidence said and what the coverage allowed — a candidate
+    shown as MEDIUM because it was capped is a different thing from one that
+    scored MEDIUM, and collapsing them hides the missing producer that caused it.
+    """
+    uncapped = tier_for(score)
+    if uncapped is None:
+        return TierDecision(None, None, False, coverage)
+
+    ceiling = coverage_ceiling(coverage)
+    order = (TIER_LOW, TIER_MEDIUM, TIER_HIGH)
+    if order.index(uncapped) <= order.index(ceiling):
+        return TierDecision(uncapped, uncapped, False, coverage)
+    return TierDecision(ceiling, uncapped, True, coverage)
 
 
 # ── Dedup gate ───────────────────────────────────────────────────────────
@@ -858,6 +1025,13 @@ class ScoredProposal:
     provenance: Mapping[str, Any] = field(default_factory=dict)
     alternatives: tuple[dict[str, Any], ...] = ()
     conflicts: tuple[dict[str, Any], ...] = ()
+    uncapped_tier: str | None = None
+    tier_capped_by_coverage: bool = False
+
+    @property
+    def evidence_coverage(self) -> float:
+        """MV-D15 coverage, read off the components rather than stored twice."""
+        return self.components.evidence_coverage
 
     @property
     def is_persistable(self) -> bool:
@@ -882,6 +1056,9 @@ class ScoredProposal:
             "type": self.candidate_type,
             "confidence_score": self.confidence_score,
             "tier": self.tier,
+            "uncapped_tier": self.uncapped_tier,
+            "tier_capped_by_coverage": self.tier_capped_by_coverage,
+            "evidence_coverage": self.evidence_coverage,
             "target_space_id": self.target_space_id,
             "proposed_object": self.proposed_object,
             "score_components": self.components.to_dict(),
@@ -903,6 +1080,23 @@ def suggestion_id_for(dedup_fingerprint: str) -> str:
     return f"sug_{(dedup_fingerprint or '')[:12]}"
 
 
+def _default_statuses(semantic: SemanticMatch) -> dict[str, str]:
+    """Per-signal statuses this module can determine on its own (MV-D15).
+
+    Only **S** is knowable here — :func:`semantic_score` reports whether it
+    reached an endpoint. L, Y and D are precomputed by the caller, so only the
+    caller knows whether a producer ran; they default to ``COMPUTED`` and the
+    caller overrides the ones that did not. The caller's map is merged **over**
+    this one, so naming L does not silently reset S.
+    """
+    return {
+        "L": MV_SIGNAL_COMPUTED,
+        "Y": MV_SIGNAL_COMPUTED,
+        "S": semantic.status,
+        "D": MV_SIGNAL_COMPUTED,
+    }
+
+
 def score_candidate(
     candidate: MetricViewCandidate,
     *,
@@ -912,6 +1106,7 @@ def score_candidate(
     intent_texts: Sequence[str] = (),
     embedding_client: EmbeddingClient | None = None,
     weights: Mapping[str, float] | None = None,
+    statuses: Mapping[str, str] | None = None,
     auth_identity: str = "OBO",
     generated_at: str | None = None,
 ) -> ScoredProposal:
@@ -938,9 +1133,11 @@ def score_candidate(
         S=semantic.cosine,
         D=demand_score(candidate.demand),
         weights=dict(weights) if weights is not None else dict(MV_SCORE_WEIGHTS),
+        statuses={**_default_statuses(semantic), **dict(statuses or {})},
     )
     score = blended_score(components)
-    tier = tier_for(score)
+    decision = capped_tier(score, components.evidence_coverage)
+    tier = decision.tier
 
     verdict = outcome.verdict
     if verdict == VERDICT_PROPOSE and tier is None:
@@ -968,6 +1165,8 @@ def score_candidate(
         components=components,
         confidence_score=score,
         tier=tier if verdict != VERDICT_SUPPRESSED else None,
+        uncapped_tier=decision.uncapped_tier if verdict != VERDICT_SUPPRESSED else None,
+        tier_capped_by_coverage=decision.capped_by_coverage,
         proposed_object=candidate.proposed_object,
         run_id=run_id,
         blocked_by=outcome.blocked_by,
@@ -1107,7 +1306,10 @@ __all__ = [
     "SemanticMatch",
     "SemanticReference",
     "SourceColumnMetadata",
+    "TierDecision",
     "blended_score",
+    "capped_tier",
+    "coverage_ceiling",
     "dedup_gate",
     "demand_decay",
     "demand_score",

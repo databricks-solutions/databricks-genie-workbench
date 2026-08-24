@@ -154,6 +154,35 @@ def test_worked_example_two_raw_table_to_existing_mv_scores_exactly_58_75_medium
     assert components.weighted_terms() == {"L": 0.3325, "Y": 0.06, "S": 0.15, "D": 0.045}
 
 
+def test_the_pinned_worked_examples_are_untouched_by_renormalization() -> None:
+    """MV-D15 clause 5, made executable.
+
+    Both POV Part 3 examples supply all four components, so all four are
+    ``COMPUTED``, coverage is exactly 1.0, and the divisor is a no-op. The point
+    of asserting coverage and the cap flag alongside the two scores is that a
+    future change to the renormalization cannot move 80.0 or 58.75 without
+    failing here — and cannot reach them by rounding back to them either, since
+    ``==`` on the exact IEEE double is what is asserted.
+    """
+    for values, expected_score, expected_tier in (
+        ({"L": 0.90, "Y": 0.95, "S": 0.40, "D": 0.80}, 80.0, mv_scoring.TIER_HIGH),
+        ({"L": 0.95, "Y": 0.20, "S": 0.75, "D": 0.30}, 58.75, mv_scoring.TIER_MEDIUM),
+    ):
+        components = ScoreComponents(**values)
+
+        assert components.evidence_coverage == 1.0
+        assert all(
+            components.status_of(key) == config.MV_SIGNAL_COMPUTED
+            for key in ("L", "Y", "S", "D")
+        )
+        assert blended_score(components) == expected_score
+
+        decision = mv_scoring.capped_tier(expected_score, components.evidence_coverage)
+        assert decision.tier == expected_tier
+        assert decision.uncapped_tier == expected_tier
+        assert decision.capped_by_coverage is False
+
+
 def test_worked_example_component_inputs_reproduce_their_stated_values() -> None:
     """The blend is pinned above; this pins the curves that feed it.
 
@@ -206,6 +235,164 @@ def test_blend_is_not_rounded_so_the_suppression_floor_holds() -> None:
     changes which candidates reach a human is not a presentation detail."""
     assert tier_for(24.999) is None
     assert round(24.999, 2) == 25.0
+
+
+# ── MV-D15 signal availability, renormalization, coverage caps ────────────
+
+
+def test_an_unavailable_signal_does_not_score_zero() -> None:
+    """The distinction MV-D15 exists for, stated as arithmetic.
+
+    Same three measured signals; the only difference is whether the fourth is
+    reported as never-measured or measured-at-zero. Scoring them identically
+    would make a candidate nobody could gather lineage for indistinguishable
+    from one whose lineage was gathered and found disjoint.
+    """
+    measured = {"L": 1.0, "Y": 1.0, "S": 1.0}
+
+    unavailable = ScoreComponents(**measured, D=0.0, statuses={"D": config.MV_SIGNAL_UNAVAILABLE})
+    assert unavailable.evidence_coverage == 0.85
+    assert blended_score(unavailable) == 100.0
+
+    empty = ScoreComponents(**measured, D=0.0, statuses={"D": config.MV_SIGNAL_EMPTY})
+    assert empty.evidence_coverage == 1.0
+    assert blended_score(empty) == 85.0
+
+
+def test_an_unavailable_signal_cannot_smuggle_a_value_into_the_blend() -> None:
+    """A value carried alongside an ``UNAVAILABLE`` status is ignored.
+
+    Belt and braces: nothing should populate a component it also marks
+    unavailable, but if a producer regresses and leaves a stale number behind,
+    the status governs rather than the number. Otherwise the divisor shrinks
+    while the numerator keeps the value, which inflates rather than renormalizes.
+    """
+    stale = ScoreComponents(
+        L=0.9, Y=1.0, S=0.0, D=0.0,
+        statuses={"L": config.MV_SIGNAL_UNAVAILABLE, "D": config.MV_SIGNAL_UNAVAILABLE},
+    )
+
+    assert stale.value_of("L") == 0.0
+    assert stale.evidence_coverage == 0.50
+    assert blended_score(stale) == 60.0
+    assert stale.weighted_terms()["L"] == 0.0
+
+
+def test_a_computed_y_only_candidate_renormalizes_and_is_low_capped() -> None:
+    """The single-signal case renormalization alone would misreport.
+
+    Y=0.90 on its own renormalizes to 90.0, which reads as a HIGH-tier finding
+    and would outrank a fully-corroborated 78. Coverage 0.30 caps it at LOW and
+    records both tiers, so the ranking reflects how much was measured rather
+    than only what the one measurement said.
+    """
+    only_y = ScoreComponents(
+        Y=0.90,
+        statuses={
+            "L": config.MV_SIGNAL_UNAVAILABLE,
+            "S": config.MV_SIGNAL_UNAVAILABLE,
+            "D": config.MV_SIGNAL_UNAVAILABLE,
+        },
+    )
+
+    assert only_y.evidence_coverage == 0.30
+    assert blended_score(only_y) == pytest.approx(90.0)
+
+    decision = mv_scoring.capped_tier(blended_score(only_y), only_y.evidence_coverage)
+    assert decision.tier == mv_scoring.TIER_LOW
+    assert decision.uncapped_tier == mv_scoring.TIER_HIGH
+    assert decision.capped_by_coverage is True
+    assert decision.to_dict()["tier_capped_by_coverage"] is True
+
+
+def test_todays_coverage_holds_everything_at_or_below_medium() -> None:
+    """MV-D15's legibility claim: with no L producer, HIGH is out of reach.
+
+    0.50 is today (L and D unavailable), 0.65 is a partial 6a that lands D, and
+    both ceiling at MEDIUM because L alone is 0.35 and HIGH needs 0.80. This is
+    the assertion that turns "nothing can exceed MEDIUM until 6a" from a claim
+    in the decision note into something a regression would break.
+    """
+    todays = ScoreComponents(
+        Y=1.0, S=1.0,
+        statuses={"L": config.MV_SIGNAL_UNAVAILABLE, "D": config.MV_SIGNAL_UNAVAILABLE},
+    )
+    assert todays.evidence_coverage == 0.50
+    assert mv_scoring.coverage_ceiling(todays.evidence_coverage) == mv_scoring.TIER_MEDIUM
+
+    after_partial_6a = ScoreComponents(
+        Y=1.0, S=1.0, D=1.0, statuses={"L": config.MV_SIGNAL_UNAVAILABLE}
+    )
+    assert after_partial_6a.evidence_coverage == 0.65
+    assert mv_scoring.coverage_ceiling(0.65) == mv_scoring.TIER_MEDIUM
+
+    # A perfect score on either still cannot present as HIGH.
+    for components in (todays, after_partial_6a):
+        decision = mv_scoring.capped_tier(100.0, components.evidence_coverage)
+        assert decision.tier == mv_scoring.TIER_MEDIUM
+        assert decision.capped_by_coverage is True
+
+
+def test_the_high_coverage_boundary_survives_its_floating_point_seam() -> None:
+    """The S-unavailable case sums to 0.7999999999999999 unrounded.
+
+    That is the most common real coverage value — every candidate in a workspace
+    with no embedding endpoint — and it sits exactly on
+    ``MV_COVERAGE_HIGH_MIN``. Unrounded it fails ``>=`` by one ULP and HIGH
+    becomes unreachable for the whole class by accident. Pinned here because the
+    failure is invisible in a payload that prints ``0.8``.
+    """
+    assert 0.35 + 0.30 + 0.15 < 0.80  # the seam is real, not hypothetical
+
+    no_embeddings = ScoreComponents(
+        L=1.0, Y=1.0, D=1.0, statuses={"S": config.MV_SIGNAL_UNAVAILABLE}
+    )
+    assert no_embeddings.evidence_coverage == 0.80
+    assert mv_scoring.coverage_ceiling(no_embeddings.evidence_coverage) == mv_scoring.TIER_HIGH
+
+
+def test_coverage_ceiling_never_suppresses() -> None:
+    """Coverage bounds a tier from above; suppression is the score's call.
+
+    A candidate with almost no coverage still reports LOW rather than None, so
+    "not enough evidence to rank confidently" stays distinguishable from "scored
+    too low to be worth a reviewer's time."
+    """
+    assert mv_scoring.coverage_ceiling(0.0) == mv_scoring.TIER_LOW
+    assert mv_scoring.capped_tier(10.0, 1.0).tier is None
+    assert mv_scoring.capped_tier(10.0, 0.0).tier is None
+
+
+def test_a_candidate_with_no_coverage_scores_zero_rather_than_dividing_by_zero() -> None:
+    nothing = ScoreComponents(
+        L=1.0, Y=1.0, S=1.0, D=1.0,
+        statuses={key: config.MV_SIGNAL_UNAVAILABLE for key in ("L", "Y", "S", "D")},
+    )
+
+    assert nothing.evidence_coverage == 0.0
+    assert blended_score(nothing) == 0.0
+    assert mv_scoring.capped_tier(0.0, 0.0).tier is None
+
+
+def test_a_caller_naming_one_status_does_not_reset_the_others() -> None:
+    """Partial maps are the normal case, so the merge direction matters.
+
+    ``score_candidate`` derives S from the embedding attempt and takes L/Y/D from
+    the caller. A caller marking L unavailable must not thereby overwrite the S
+    status the module just determined, or the endpoint's own report is lost.
+    """
+    client = FakeEmbeddingClient({"revenue": (1.0, 0.0, 0.0), "l discount": (1.0, 0.0, 0.0)})
+    proposal = score_candidate(
+        strong_candidate(source_column_metadata=SOURCE_COLUMNS),
+        run_id="r1",
+        intent_texts=("revenue",),
+        embedding_client=client,
+        statuses={"L": config.MV_SIGNAL_UNAVAILABLE},
+    )
+
+    assert proposal.components.status_of("L") == config.MV_SIGNAL_UNAVAILABLE
+    assert proposal.components.status_of("S") == config.MV_SIGNAL_COMPUTED
+    assert proposal.components.status_of("Y") == config.MV_SIGNAL_COMPUTED
 
 
 # ── L ────────────────────────────────────────────────────────────────────
@@ -323,32 +510,58 @@ def test_semantic_score_reports_the_best_matching_field() -> None:
     assert match.field == f"{GOVERNED_MV}.discounted_revenue"
 
 
-def test_semantic_score_degrades_to_zero_without_a_client_or_references() -> None:
+def test_semantic_score_separates_a_dead_endpoint_from_an_absent_reference_set() -> None:
+    """MV-D15: both give cosine 0.0, and they are not the same fact.
+
+    Before ``status`` existed these four cases returned byte-identical payloads,
+    so an operator reading a zero afterwards could not tell a missing dependency
+    from a negative finding. No client is ``UNAVAILABLE`` and leaves the blend;
+    nothing to compare is ``EMPTY`` and keeps its weight.
+    """
     fields = metric_view_fields(governed_revenue_yaml())
-    assert semantic_score(("revenue",), fields, None) == mv_scoring.SemanticMatch()
-    assert semantic_score(("revenue",), (), FakeEmbeddingClient()) == mv_scoring.SemanticMatch()
-    assert semantic_score((), fields, FakeEmbeddingClient()) == mv_scoring.SemanticMatch()
-    assert semantic_score(("   ",), fields, FakeEmbeddingClient()) == mv_scoring.SemanticMatch()
+
+    no_client = semantic_score(("revenue",), fields, None)
+    assert no_client.cosine == 0.0
+    assert no_client.status == config.MV_SIGNAL_UNAVAILABLE
+
+    for nothing_to_compare in (
+        semantic_score(("revenue",), (), FakeEmbeddingClient()),
+        semantic_score((), fields, FakeEmbeddingClient()),
+        semantic_score(("   ",), fields, FakeEmbeddingClient()),
+    ):
+        assert nothing_to_compare.cosine == 0.0
+        assert nothing_to_compare.status == config.MV_SIGNAL_EMPTY
 
 
 def test_semantic_score_survives_an_embedding_failure() -> None:
-    """A missing endpoint costs one signal out of four, not the run."""
+    """A missing endpoint costs one signal out of four, not the run.
+
+    Reported ``UNAVAILABLE`` rather than ``EMPTY``: the endpoint raising says
+    nothing about whether the reference set had a match, so under MV-D15 the
+    signal leaves the blend instead of contributing a zero it did not measure.
+    """
 
     class Exploding:
         def embed(self, texts):
             raise RuntimeError("endpoint unavailable")
 
     fields = metric_view_fields(governed_revenue_yaml())
-    assert semantic_score(("revenue",), fields, Exploding()).cosine == 0.0
+    match = semantic_score(("revenue",), fields, Exploding())
+    assert match.cosine == 0.0
+    assert match.status == config.MV_SIGNAL_UNAVAILABLE
 
 
 def test_semantic_score_rejects_a_client_returning_the_wrong_vector_count() -> None:
+    """A client that miscounts is broken, not empty — the same UNAVAILABLE path."""
+
     class Truncating:
         def embed(self, texts):
             return [[1.0, 0.0, 0.0]]
 
     fields = metric_view_fields(governed_revenue_yaml())
-    assert semantic_score(("revenue",), fields, Truncating()).cosine == 0.0
+    match = semantic_score(("revenue",), fields, Truncating())
+    assert match.cosine == 0.0
+    assert match.status == config.MV_SIGNAL_UNAVAILABLE
 
 
 def test_negative_cosine_is_reported_as_no_match() -> None:
@@ -415,14 +628,25 @@ def test_a_new_metric_view_candidate_scores_s_against_its_source_columns() -> No
         "field": f"{LINEITEM}.l_extendedprice",
         "cosine": pytest.approx(1.0),
         "reference_kind": COLUMN_METADATA,
+        "status": config.MV_SIGNAL_COMPUTED,
     }
     assert proposal.tier == mv_scoring.TIER_HIGH
 
 
 def test_a_new_metric_view_candidate_is_no_longer_capped_below_high() -> None:
-    """Regression guard for the capping argument itself: with S structurally
-    zero the same candidate's ceiling is 80, so a tightened HIGH threshold would
-    make the tier unreachable for the engine's primary output."""
+    """Regression guard for MV-D12's capping argument, now enforced by MV-D15.
+
+    MV-D12 rejected a reading under which S was structurally 0.0 for every
+    ``NEW_METRIC_VIEW`` candidate, because that caps the class at 80 against
+    thresholds calibrated for 100 and makes HIGH structurally unreachable for the
+    engine's primary output. MV-D15 removes the ceiling by a different route: an
+    unmeasured signal leaves the blend and the rest renormalize, so the ceiling
+    is 100 and HIGH does not depend on 0.35 + 0.30 + 0.15 happening to clear 75.
+
+    The EMPTY leg is what keeps this honest. A *measured* zero still costs the
+    full 20 points — so the old 80.0 is preserved exactly where it is the truth,
+    and only the never-measured case is excused.
+    """
     signals = dict(
         lineage=LineageOverlap(
             candidate_columns=frozenset({"a"}), reference_columns=frozenset({"a"})
@@ -434,8 +658,23 @@ def test_a_new_metric_view_candidate_is_no_longer_capped_below_high() -> None:
             distinct_users=config.MV_DEMAND_BREADTH_SATURATION,
         ),
     )
-    without_s = score_candidate(candidate(**signals), run_id="r1")
-    assert without_s.confidence_score == pytest.approx(80.0)
+
+    # S never ran (no client): weight leaves the blend, three signals renormalize.
+    unavailable_s = score_candidate(candidate(**signals), run_id="r1")
+    assert unavailable_s.components.status_of("S") == config.MV_SIGNAL_UNAVAILABLE
+    assert unavailable_s.confidence_score == pytest.approx(100.0)
+    assert unavailable_s.evidence_coverage == pytest.approx(0.80)
+    assert unavailable_s.tier == mv_scoring.TIER_HIGH
+    assert unavailable_s.tier_capped_by_coverage is False
+
+    # S ran and found nothing: the old 80.0, because a measured zero keeps its weight.
+    empty_s = score_candidate(
+        candidate(**signals),
+        run_id="r1",
+        statuses={"S": config.MV_SIGNAL_EMPTY},
+    )
+    assert empty_s.confidence_score == pytest.approx(80.0)
+    assert empty_s.evidence_coverage == pytest.approx(1.0)
 
     client = FakeEmbeddingClient({"revenue": (1.0, 0.0, 0.0), "l discount": (1.0, 0.0, 0.0)})
     with_s = score_candidate(
@@ -445,6 +684,7 @@ def test_a_new_metric_view_candidate_is_no_longer_capped_below_high() -> None:
         embedding_client=client,
     )
     assert with_s.confidence_score == pytest.approx(100.0)
+    assert with_s.evidence_coverage == pytest.approx(1.0)
 
 
 def test_a_replace_raw_table_candidate_prefers_governed_field_text() -> None:
@@ -505,6 +745,7 @@ def test_both_references_absent_yields_zero_with_a_null_field() -> None:
         "field": None,
         "cosine": 0.0,
         "reference_kind": mv_scoring.SEMANTIC_REF_NONE,
+        "status": config.MV_SIGNAL_EMPTY,
     }
 
 
@@ -783,6 +1024,9 @@ def test_score_candidate_emits_the_pov_part_4_payload() -> None:
         "type",
         "confidence_score",
         "tier",
+        "uncapped_tier",
+        "tier_capped_by_coverage",
+        "evidence_coverage",
         "target_space_id",
         "proposed_object",
         "score_components",
@@ -794,10 +1038,17 @@ def test_score_candidate_emits_the_pov_part_4_payload() -> None:
     }
     assert payload["type"] == "NEW_METRIC_VIEW"
     assert payload["tier"] == mv_scoring.TIER_HIGH
+    assert payload["uncapped_tier"] == mv_scoring.TIER_HIGH
+    assert payload["tier_capped_by_coverage"] is False
+    assert payload["evidence_coverage"] == pytest.approx(1.0)
     assert payload["confidence_score"] == pytest.approx(91.98, abs=0.01)
     assert payload["target_space_id"] == SPACE_ID
     assert payload["proposed_object"] == "finance.sales.discounted_revenue_metrics"
     assert payload["score_components"]["weights"] == dict(config.MV_SCORE_WEIGHTS)
+    assert payload["score_components"]["statuses"] == {
+        key: config.MV_SIGNAL_COMPUTED for key in ("L", "Y", "S", "D")
+    }
+    assert payload["score_components"]["evidence_coverage"] == pytest.approx(1.0)
     assert payload["evidence"]["ast_fingerprint_recurrence"] == 60
     assert payload["evidence"]["lineage_source_tables"] == [LINEITEM, ORDERS]
     assert payload["provenance"] == {
@@ -1057,8 +1308,14 @@ def test_persist_proposal_maps_the_payload_onto_the_prompt_1_accessor(monkeypatc
     assert kwargs["dedup_fingerprint"] == proposal.dedup_fingerprint
     assert kwargs["candidate_type"] == "NEW_METRIC_VIEW"
     assert kwargs["confidence_score"] == proposal.confidence_score
-    assert kwargs["tier"] == proposal.tier == mv_scoring.TIER_MEDIUM
+    # HIGH rather than MEDIUM because this proposal has no embedding client, so S
+    # is UNAVAILABLE and the remaining 0.80 of weight renormalizes (MV-D15).
+    assert kwargs["tier"] == proposal.tier == mv_scoring.TIER_HIGH
     assert kwargs["score_components"] == proposal.components.to_dict()
+    # Coverage and statuses reach Delta, not just the in-memory payload — a
+    # persisted score without its divisor is the unauditable case MV-D15 forbids.
+    assert kwargs["score_components"]["evidence_coverage"] == pytest.approx(0.80)
+    assert kwargs["score_components"]["statuses"]["S"] == config.MV_SIGNAL_UNAVAILABLE
     assert kwargs["evidence"] == dict(proposal.evidence)
     assert kwargs["provenance"] == dict(proposal.provenance)
     assert kwargs["requested_mode"] == "create_and_attach"

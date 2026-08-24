@@ -489,16 +489,16 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2669 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2743 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
   jobs/           the four notebooks + _helpers.py
   optimization/   applier.py (4721 L), benchmarking.py (4594 L), unified_loop.py (3628 L),
-                  preflight.py (3461 L), state.py (1790 L), publish.py, ddl.py,
+                  preflight.py (3461 L), state.py (1804 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
-                  mv_fingerprint.py (1333 L), mv_scoring.py (1125 L),
+                  mv_fingerprint.py (1333 L), mv_scoring.py (1327 L),
                   mv_state.py (639 L), mv_yaml.py (1755 L), ...
 ```
 <!-- END GENERATED: package-layout -->
@@ -743,6 +743,26 @@ or `WITH METRICS` in any executable string outside it — the `ddl.py:262` comme
 allowed by exact `(path, line)` pin, not by a substring exemption, so a new f-string assembly
 site fails even if it copies that wording. Execution remains the backend's under OBO (MV-D1);
 the job, which runs as the service principal, still never issues the statement.
+
+**Open follow-up — the L signal needs a `WATCH_SYSTEM_GRANTS` addition, and Prompt 6a owns it.**
+Recorded during Prompt 6 so the grant question is visible now rather than discovered when 6a
+tries to build a lineage producer. `WATCH_SYSTEM_GRANTS` (`scripts/deploy_lib/uc.py:30-43`) is
+the single source of truth for the app service principal's system-table reads, and it grants
+`SELECT` on `system.access.table_lineage` (`:40`) — **table-level lineage only**. The **L**
+signal is a Jaccard over *column* sets (`mv_scoring.py:150`, `LineageOverlap`), which needs
+`system.access.column_lineage`, and that table appears nowhere in the list. So L is not a
+code-only change: it needs a grant addition in `uc.py`, which both install paths pick up, plus
+a re-run of `scripts/grant_permissions.py` against existing deployments — and the grant is
+admin-only and best-effort, so 6a must handle its absence rather than assume it.
+
+Two consequences that shape 6a rather than merely inform it. The grant is workspace-scoped and
+issued at install time, so an existing deployment upgrading into 6a will have the code and not
+the grant until an admin re-runs the script — meaning L must report `UNAVAILABLE` on a
+permission failure (MV-D15) rather than an empty overlap, or every candidate in a
+not-yet-regranted workspace would score as having *disjoint* lineage. And these reads are
+service-principal reads by design (system tables are not OBO-readable), which is why POV Part 5's
+"already scoped" sentence needed the correction recorded in this same change: SP-computed
+lineage evidence is filtered at presentation, not at read.
 
 **Open follow-up — `update_mv_yaml` is unvalidated, and Prompt 7 owns it**
 ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)).
