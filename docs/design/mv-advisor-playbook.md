@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D18 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D19 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -268,9 +268,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D18)
+## Decisions register (MV-D1–MV-D19)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (**open** — Prompt 6c decides it) and MV-D18 during the Prompt 7 review; later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -422,7 +422,23 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 *Three consequences recorded so they are not relitigated.* **Detach uses `applier.rollback` against `apply_log["pre_snapshot"]`, not `integration/revert.py`.** `revert_optimization` (`integration/revert.py:55`) is a backend surface: it reads run history through the warehouse and its `_assert_no_active_space_runs` guard (`:221`) rejects mid-run **by design**. The primitive changes; detach-never-drop does not. **`mv_remove_raw_table` is dropped from the design.** `remove_table` already exists, is `HIGH_RISK` (`common/config.py:1481`), has a working render (`applier.py:3166-3170`) and config applier (`:3880-3886`), and is already outside the LLM allowlist — a twin buys nothing and creates a second path for one behavior. **The `mv_consent_id` job parameter carries a `probe_id`**, because `genie_opt_mv_consents` is keyed on `probe_id` (`ddl.py:235`) and no `consent_id` column exists; the read site says so.
 
-**MV-D17 — OPEN: how evidence provenance enters the score.** Raised during the Prompt 7 review, to be **decided when Prompt 6c runs** — flagged here now so no earlier prompt quietly settles it by accident. **Y** counts every corpus occurrence equally (`normalized_recurrence` over `FingerprintRecurrence.recurrence`), so once 6c harvests curated sources into the same corpus, 60 occurrences of generated SQL outscore 3 occurrences of trusted-asset SQL — inverting the POV's own evidence hierarchy, which calls an optimized space the single highest-precision seed. Three options to weigh at that time, none chosen now: a **provenance multiplier inside Y**, which keeps the blend arithmetic and the MV-D15 coverage arithmetic untouched; a **separate signal with its own weight**, which is more honest about being different evidence but changes the coverage arithmetic MV-D15 fixed; or a **tier floor for curated-sourced candidates**, which leaves the score alone and moves the correction into `tier_for`. Do not implement any of them before 6c.
+**MV-D17 — DECIDED (Prompt 6c): curated provenance credits extra occurrences inside Y, and the corpus 6c harvests is narrower than the five-source list implied.** Raised during the Prompt 7 review, decided during Prompt 6c execution. **Y** counted every corpus occurrence equally (`normalized_recurrence` over `FingerprintRecurrence.recurrence`), so once 6c harvests curated sources into the same corpus, 60 occurrences of generated SQL would outscore 3 occurrences of trusted-asset SQL — inverting the POV's evidence hierarchy, which calls a curated source the higher-precision seed.
+
+**(a) The provenance credit lives inside Y, and it is neutral at zero.** Chosen over a fifth blend signal and over a `tier_for` floor. The deciding reason is arithmetic, not preference: `evidence_coverage` (`mv_scoring.py`) rounds to six places and the docstring is explicit that the rounding is load-bearing — the S-unavailable case sums to `0.7999999999999999`, one ULP under `MV_COVERAGE_HIGH_MIN`. A fifth weight puts every authored decimal in that sum back in play, including the two IEEE-exact pins at `test_mv_scoring.py`. **The credit is added to the occurrence count inside the log, not multiplied onto its output:** `Y = normalized_recurrence(r + k * curated_provenance_count)`, `k = MV_CURATED_OCCURRENCE_EQUIVALENT` (default 20). The first draft multiplied the saturated base by `1 + w * curated_provenance_count`; that shape was wrong twice over — it under-credited the modal case (one human curates a measure the generator derived once: `0.115 * 2 = 0.23`, still buried) and walled at the 1.0 clamp for anything already recurring, so Y stopped discriminating among curated candidates at `r ≥ 8` for a single source. Adding inside the log is monotone throughout and clamps only at genuinely saturating effective counts. It is neutral **by construction** when `curated_provenance_count` is 0 (`k * 0 == 0` returns the identical float), so every generated-only candidate — the pinned POV worked examples included — scores precisely as before; the blend and the MV-D15 divisor are untouched.
+
+**`k` is an authored number, not a clamp accident.** `k` is how many generated occurrences one curated source is worth, and the modal question MV-D17 names — one human curated the measure once, the generator produced sixty — is answered by `k`'s value, not by the function's shape. At the default `k = 20` (with `MV_RECURRENCE_SATURATION = 75`): a single curated source with `r = 1` scores `normalized_recurrence(21) = 0.714`, worth ~21 generated derivations — decisively above a lightly-recurring generated measure and below sixty of them (`r = 60 → 0.949`); the named example of 3 curated occurrences scores `normalized_recurrence(63) = 0.960` and clears 60 generated. `k = 20` is the default and there is no legitimate opposite pole. Raising `k` toward 60 is **not** the symmetric "highest-precision seed" choice it looks like — it defeats itself. At `k = 60` the single-curated case scores `normalized_recurrence(61) = 0.953` against generated-sixty's `0.949`: that does not make curated outrank volume, it pushes both into saturation where Y stops ordering anything, reintroducing the clamp cliff through the env var. A 0.004 "win" in the saturated region is a coin flip against the other signals' noise, not a ranking. The deeper reason `k` stays low: **Y is recurrence evidence and nothing else, and authority already has its own channels.** The intuition that one curated definition should top sixty derivations conflates per-occurrence precision with authority — but when curated SQL contradicts a proposal, `trusted_asset_definitions` feeds the conflict path, and when a governed MV already defines the measure, the dedup gate blocks outright. Sixty independent re-derivations of one canonical form is genuinely strong demand evidence; a curated measure the corpus never re-derived should rank *below* it on Y while still surfacing. `k = 20` preserves that ordering; `k = 60` erases it. The earlier draft's claim that the credit "lets a curated expression the corpus rarely re-derived outrank a high-recurrence measure only the generator produced" is **withdrawn** as unconditional — it is true only above a `k` that saturates Y, i.e. no `k` orders it both correctly and non-trivially, which is the point.
+
+**Coverage note — a LOW-tier curated candidate is a signal-availability problem, not a `k` problem.** At today's availability (L and D unavailable, S empty without an embedding endpoint) `evidence_coverage` is 0.50, so the single-curated candidate lands at score 42.8 (LOW) while generated-sixty gets 57.0 (MEDIUM). That reads like curated evidence being disrespected, but the cause is the 0.50 coverage, not the occurrence-equivalent. Raising `k` to compensate would bake a workaround for missing signals into a constant that outlives them; Prompt 6a's L and D producers are the actual fix, since curated candidates sitting on established lineage pick up L credit that generated-only ones may not. Recorded explicitly because someone will read the LOW tier as a `k` problem: flipping the env var to `k = 60` collapses Y's discrimination at the top (0.953 vs 0.949) and is **not** the remedy for curated candidates ranking LOW under partial coverage.
+
+**Curated-ness is a recorded kind, not an inferred prefix.** The credit reads a new `FingerprintRecurrence.curated_provenance_count`, threaded through the bucket: `mv_fingerprint.CURATED_PROVENANCE_KIND` on `Provenance.kind`, one `_Bucket` slot, one line in `observe`, one line in `freeze`, one pass-through in `candidate_from_measure`, and `RecurrenceSignal.curated_provenance_count` that `syntactic_score` reads. It is **not** inferred from a `provenance_ids` prefix — the prefix route was available (ids survive `freeze` and `TRUSTED_ASSET_SOURCE_PREFIX` already establishes the convention) but making a string prefix structural to scoring cuts against this codebase's house style (`LineageOverlap.reference_kind`, `Provenance.kind`, the MV-D15 status vocabulary all record a kind). A `FingerprintRecurrence.to_dict()` key-set pin was added at the same time, since none existed — so the new key is a deliberate addition to persisted `evidence_json`, and `evidence["ast_curated_provenance_count"]` is the new auditable surface.
+
+**Sub-decision — breadth damping is separable and deferred.** `FingerprintRecurrence`'s own docstring argues "sixty occurrences from one query is not a recurring measure," yet `syntactic_score` uses raw recurrence and ignores `provenance_count` (which is populated but read nowhere in scoring). Damping Y by distinct-source **breadth** is a distinct fix from up-weighting curated **provenance**; MV-D17 does only the latter, because breadth-damping would move Y for the two IEEE-pinned POV examples and every existing candidate — a separate calibration owed its own change. Recorded here so the curated credit does not quietly stand in for the breadth fix.
+
+**Blocker 2 — `sql_functions` dropped, `sql_snippets` substituted.** `SqlFunction` carries only `id` + `identifier` in `serialized_space` (no body), so harvesting it needs a `DESCRIBE FUNCTION` UC read outside 6c's boundary. Dropped. Its curated-measure role is served by `instructions.sql_snippets` → `filters` / `expressions` / `measures`, each a `SqlSnippetBase` carrying `sql: list[str]` — real inline curated SQL already in the applied `serialized_space`, needing no new read. The five-source list this playbook implied missed it; this is a scope substitution, not a cut. A bodyless `sql_functions` entry (the shape the synthetic-data path appends) is skipped rather than crashing the loader, pinned by test.
+
+**Blocker 3 — `join_specs` skipped, no synthetic wrapping.** `JoinSpec.sql` is a bare predicate fragment (`a.x = b.y`) that no extractor reads without synthetic wrapping, which is forbidden — and join keys do not feed Y for measure candidates anyway (the seed surface is `scan.measures`; join keys feed the YAML ladder and source-set). Skipped. Using `JoinSpec.left/right.identifier` as curated join topology for `mv_yaml`'s ladder is a legitimate but different consumer — **deferred**, not done here.
+
+**Blocker 4 — governed metric views are a post-scan seed exclusion, not a corpus channel.** `dedup_gate` returns `VERDICT_BLOCKED` on an exact match, so a governed-MV measure entering the seed set would produce a candidate blocked by the very MV it came from. `corpus_scan` has no notion of an evidence-only entry — anything fed to it becomes a `_Bucket` and therefore a seed — so rather than add an evidence-only channel to the scan, `mv_advisor` filters seeds post-scan against the estate MV index it already holds at the assembly site. Realized as: harvest `example_question_sqls` + `sql_snippets` + `genie_opt_patches` into the corpus (curated), and drop any `scan.measures` entry whose canonical matches a governed measure before it consumes a candidate slot.
 
 **MV-D18 — A kept attach survives every loop outcome, and the champion record has to say so.** Taken during the Prompt 7 review, from tracing the four finalize trajectories rather than from reading the design. The starting question was whether champion selection could drop a metric view that passed its own lift gate. It cannot drop it from the **space** — but it could drop it from the **record**, which costs the user the same third run.
 
@@ -448,6 +464,13 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 *One window is unprotected, and the reason to leave it is the property above.* Between the attach PATCH landing (`mv_attach.py:515`) and the `ATTACHED` status write (`:611-623`) sits the entire lift eval — the longest operation in the phase. An exception anywhere in there leaves the view **live in the space** with the row still saying `CREATED`. This fails in the safe direction: it **under-claims**, and the direction that would actually hurt — `ATTACHED` recorded for a view that is not there — cannot arise here, because nothing between that write and the loop's exit removes the view. `attach_patch_id` is stamped on the `CREATED` row immediately after the PATCH (`:541-551`), so a reader can distinguish "the PATCH landed, the verdict is unknown" from "never attached"; only the two Delta writes between the PATCH and that stamp are fully ambiguous. We are **not** adding an exception handler to close it, because the only thing such a handler could do is read the live config and promote `CREATED` → `ATTACHED` — which is precisely the promotion path the demote-only property forbids, and for the same reason: config presence is not consent. A conservative under-claim costs the user a re-run; a promotion path costs the consent chain its meaning. Prompt 9 and Prompt 13 must therefore treat `CREATED` as "not attached, may still be live" rather than as "not live", and Prompt 9's re-attach must be idempotent against an identifier already on `data_sources.metric_views`.
 
 *One dependency the trace surfaced, worth knowing before Prompt 8.* The loop replaces its in-memory config from a live GET each iteration (`unified_loop.py:3382-3390`, preferring the observed read-back over its own submitted config). A late champion therefore carries the view because the attach really PATCHed the space — not because the loop remembers it. Both paths are asserted: the four cases are tested under a live read-back *and* under an unavailable one, the second proving the attach survives through the loop's own config lineage. Should a future API normalization ever drop `metric_views` from a read-back, the loop would lose it silently and reconciliation is what turns that into a truthful `DETACHED` rather than a lie.
+
+**MV-D19 — Lineage grain for L (OPEN — decided at Prompt 6a).** Recorded when Prompts 6a and 6b were drafted, so no other prompt settles it by accident. **L carries the blend's largest weight (0.35, `MV_SCORE_WEIGHTS`) and has no producer** — the advisor constructs an empty `LineageOverlap()` and reports `UNAVAILABLE` (`mv_advisor.py:664`, `:725`). The signal recon (Q2) found the grant surface splits the options: the SP's system-schema grants (`WATCH_SYSTEM_GRANTS`, `scripts/deploy_lib/uc.py:30-43`, applied by `scripts/grant_permissions.py`) already include `system.access.table_lineage` SELECT, but `system.access.column_lineage` is **not granted**. The decision:
+
+- **(a) Table-grain L on the existing grant.** No install change and no new permission ask — but `LineageOverlap` and `lineage_overlap_score` (`mv_scoring.py:159`, `:432`) are written and documented for *column* sets, so the normalization and every docstring that says "column" must be restated for table grain in the same commit, and the POV Part 3 arithmetic re-derived at that grain. The recon's RECOMMENDATION explicitly sanctions this as the shippable first version.
+- **(b) Column-grain L.** Matches POV Part 3 as written, at the cost of a new grant row in `WATCH_SYSTEM_GRANTS`, an upgrade path for existing installs (re-run `grant_permissions.py`), and a documented degradation when the grant is absent: the read fails, L is `UNAVAILABLE` with the missing grant named in the recorded reason — never a silent zero.
+
+*Settled regardless of grain, per the recon's contradiction #3 (POV:266):* lineage evidence is **computed under the SP and filtered at presentation** per the viewing user's grants — never computed under OBO in-job, which the job's identity makes impossible anyway (MV-D1). And per MV-D15's vocabulary: a lineage read that runs and resolves to genuinely disjoint sets is `EMPTY` (a measurement); a read that could not run is `UNAVAILABLE` with a recorded reason. One-year lineage retention and Public Preview status (POV Caveat 8) are reasons, not surprises.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -930,6 +953,113 @@ mv_materialize in the job — materialization is a backend/OBO concern under MV-
   Do NOT weaken any existing assertion.
 - Add a small sync test that parses all four sources and asserts the parameter
   sets are identical, so MV-D5 drift fails a test instead of a demo.
+```
+
+### Prompt 6a — Signal producers for L and D
+
+*Sequenced after Prompt 8 and not yet run. Drafted from the signal recon's RECOMMENDATION (docs/design/mv-advisor-signal-recon.md), which proposed splitting the original Prompt 6 into signal producers (6a) and the advisor phase (6b). The phase half shipped as Prompt 6, deliberately against injected fixtures — `mv_scoring` takes `LineageOverlap`, `DemandSignal` and the embedding client as inputs, so the advisor could be built and tested in full before its data existed. Two of the recon's four 6a items shipped along the way (`write_artifact`'s `content_hash` passthrough; `SemanticMatch.status`). What remains under these names is the producers (this prompt) and the wiring (Prompt 6b). The arithmetic that makes this the priority after Prompt 8: with L (0.35) and D (0.15) `UNAVAILABLE`, `evidence_coverage` is 0.50, nothing can exceed MEDIUM, and the advisor's ordering — not just its scores — is an artifact of Y. The recon's bottom line stands: a first version ships without S and without full D, but not without L, because zeroing the largest weight distorts ranking rather than merely lowering scores.*
+
+```
+Per the signal recon (Q2, Q3, RECOMMENDATION) and MV-D19, which this prompt must
+DECIDE: build the two missing signal producers as standalone, injected inputs.
+This prompt does NOT touch mv_advisor.py or run_optimize.py — the producers are
+built and tested against warehouse-row fixtures here, and wired in Prompt 6b, so
+the seam the advisor was built on stays reviewable.
+
+PLACEMENT: a new module, optimization/mv_signals.py. Both producers read as the
+service principal through the existing warehouse seam
+(common/warehouse.sql_warehouse_query, warehouse.py:34) — the same identity and
+read path every other in-job system-table read uses. No OBO in-job (MV-D1;
+POV:266 correction — computed under SP, filtered at presentation).
+
+L PRODUCER — decide MV-D19 first (table grain on the existing
+system.access.table_lineage grant, vs column grain requiring a new
+WATCH_SYSTEM_GRANTS row and an install upgrade path). Register the choice with
+its reasoning in the same commit. The producer reads lineage for the space's
+source tables and the candidate's source set, and returns a populated
+LineageOverlap (mv_scoring.py:159) — candidate_columns, reference_columns,
+reference_kind per candidate type (REPLACE_RAW_TABLE reads a governed MV's
+source set; NEW_METRIC_VIEW/ADD_MEASURE read the lineage footprint the space's
+queries touch). If MV-D19 lands on table grain, restate
+lineage_overlap_score's normalization and every "column" docstring for that
+grain in the same commit — do not leave the code claiming a grain it does not
+read.
+
+D PRODUCER — a dedicated per-measure query over system.query.history, not a
+remap of wide_schema_history (whose SELECT has no duration or user column — the
+recon's contradiction #1, already corrected at mv_scoring.py:217). Measure-grain
+mapping reuses the one canonicalizer rather than inventing a grain mapper:
+fingerprint the history statements through mv_fingerprint.corpus_scan and join
+candidate fingerprints against them (MV-D10 — no second parser, by
+construction). From the matched statements: frequency = recurrence, distinct
+users = distinct executed_by, cost_ms = summed duration, age_days from the most
+recent occurrence — a populated DemandSignal for demand_score
+(mv_scoring.py:625). Scope the history read to the space's warehouse and a
+bounded window; make the window a config constant.
+
+FAILURE SEMANTICS (MV-D15): a read that cannot run — missing grant, missing
+table, empty statement_text under CMK, retention window exceeded — returns
+UNAVAILABLE with the reason recorded on the payload, never a silent zero. A
+read that ran and found nothing is EMPTY. Every producer result carries its
+status; the advisor must never have to infer why a signal is missing.
+
+FIREWALL: system.query.history statement_text is raw user SQL and enters ONLY
+as fingerprint input — canonicalization erases literals (MV-D10(b)) and no
+history text may reach a comment, display_name, synonym, or any shipped
+surface. Extend the quoted-literal property test to the history-derived corpus.
+
+VERIFY: producer unit tests against fixture warehouse rows (populated, EMPTY,
+and each UNAVAILABLE reason); the MV-D19 pinning test (grant row present if
+column grain; normalization restated if table grain); firewall property test
+green; both suites via ./scripts/test.sh; mv_advisor.py and run_optimize.py
+untouched (assert via git diff, not inspection).
+```
+
+### Prompt 6b — Wire the producers into the advisor
+
+*Sequenced after Prompt 6a. A naming note so the recon and this playbook stay reconcilable: the recon's "6b" meant the advisor phase itself, which shipped as Prompt 6 — what this prompt carries under that name is the remaining half, swapping the advisor's empty defaults for 6a's producers. Kept separate from 6a on the recon's own caveat (the one MV-D14's marker records): fixtures prove the consumer, so the wiring owes an integration assertion that a real producer's output reaches the scorer in the shape the scorer expects.*
+
+```
+Per the signal recon's RECOMMENDATION and MV-D15/MV-D19: connect 6a's producers
+to the advisor phase. Small diff, three change sites, no scoring changes.
+
+CHANGE SITES:
+- jobs/run_optimize.py:445-456 — construct the producers beside
+  FoundationModelEmbeddingClient and pass them into run_mv_advisor_phase, same
+  injection pattern.
+- optimization/mv_advisor.py:664 and :672 — stop constructing empty
+  LineageOverlap() / DemandSignal(); consume the producer results per
+  candidate.
+- optimization/mv_advisor.py:725 — advisor_statuses stops hardcoding
+  {"L": UNAVAILABLE, "D": UNAVAILABLE} and reports each producer's actual
+  status (COMPUTED / EMPTY / UNAVAILABLE with reason) into the evidence
+  payload.
+
+THE INTEGRATION ASSERTION 6a OWES: one test that drives a real producer (over
+fixture warehouse rows, not a mocked producer) end-to-end into
+candidate_from_measure and asserts the scorer received L and D in the shapes
+mv_scoring declares — the recon's point that fixtures prove the consumer, so
+the producer-to-consumer shape must be proven separately.
+
+COVERAGE FLIP — refresh every committed sentence that states today's coverage
+arithmetic, per MV-D9. The register's MV-D17 coverage note and the 6a preamble
+state the three coverage states (0.50 today / 0.65 with D / 1.0 with L and D)
+and that "nothing can exceed MEDIUM"; after this prompt those are historical.
+Re-verify the pinned tier behavior at full coverage: the POV worked examples
+already assume coverage 1.0 and must not move; what changes is that HIGH
+becomes reachable, so assert capped_tier grants it only at >= 0.80 coverage
+with a genuinely computed L.
+
+DEGRADED MODE STAYS FIRST-CLASS: a workspace where the producers return
+UNAVAILABLE (missing grant, CMK, retention) must behave exactly as the advisor
+behaves today — same scores, same MEDIUM cap, same legible statuses. Pin that
+with a test: producers-all-UNAVAILABLE reproduces today's byte-identical
+evidence payloads. The upgrade is additive or it is a regression.
+
+VERIFY: integration assertion green; degraded-mode pin green; coverage-text
+sites refreshed (register, gap-report Y/coverage rows) per MV-D9; both suites
+via ./scripts/test.sh; grep confirms no empty-default LineageOverlap() /
+DemandSignal() construction remains in the advisor path.
 ```
 
 ---
