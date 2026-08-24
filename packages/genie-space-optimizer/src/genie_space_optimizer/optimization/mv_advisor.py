@@ -1123,9 +1123,14 @@ def _write_ddl_artifact(
 
     ``content_hash`` is the candidate's dedup fingerprint, not the text's hash,
     so ``genie_opt_artifacts`` and ``genie_opt_mv_candidates`` join on one key
-    (MV-D7). A content hash would break that join the moment the same candidate
-    re-rendered differently — which MV-D15 guarantees will happen, since Prompt 9
-    regenerates under probe capabilities the job does not have.
+    (MV-D7), independent of how the body is rendered or re-wrapped. The raw
+    ``yaml_text`` is persisted next to the wrapped ``ddl`` so the backend can
+    replay the immutable body with revalidation at create time (MV-D22,
+    superseding MV-D15's regeneration clause) — re-wrapping it for the consented
+    target via ``create_ddl`` rather than string-slicing the stored DDL. The
+    backend does not regenerate: capabilities derive from the compute, and the
+    backend probes via SQL warehouse exactly as the job does, so a regeneration
+    would reproduce this same rung-3 body (MV-D13).
 
     ``validate`` runs before the write and its findings ride along. The YAML came
     from ``mv_yaml.generate``, so this is not a trust check on the renderer; it
@@ -1141,6 +1146,10 @@ def _write_ddl_artifact(
         "target_space_id": proposal.target_space_id,
         "proposed_object": target,
         "join_strategy": rendered.join_strategy,
+        # The immutable rendered body (MV-D22). The backend recovers this to
+        # re-wrap for the consented target via ``create_ddl`` and revalidate,
+        # rather than string-slicing the AS $$…$$ fence out of ``ddl``.
+        "yaml_text": rendered.yaml_text,
         "ddl": create_ddl(target, rendered.yaml_text),
         "validation": {
             "ok": report.ok,

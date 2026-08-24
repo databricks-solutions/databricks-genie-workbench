@@ -1194,3 +1194,51 @@ def test_an_unusable_applied_config_is_not_a_failure(monkeypatch) -> None:
 
     assert load.usable
     assert load.applied_config is None
+
+
+# ── MV-D22: the artifact persists the raw rendered body ──────────────────
+
+
+def test_ddl_artifact_persists_raw_yaml_text(monkeypatch) -> None:
+    """MV-D22: the backend replays ``yaml_text``, so it must be its own field.
+
+    Without this the backend would have to string-slice the body out of the
+    wrapped ``ddl`` (coupling it to ``create_ddl``'s fence) or regenerate it
+    (impossible — ``generate()``'s inputs are not persisted). The field is the
+    seam that lets the create path re-wrap for the consented target.
+    """
+    from types import SimpleNamespace
+
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        mv_advisor, "write_artifact",
+        lambda spark, run_id, kind, payload, **kw: captured.append(payload) or "art_1",
+    )
+    monkeypatch.setattr(
+        mv_advisor, "validate",
+        lambda text: SimpleNamespace(
+            ok=True, errors=(), warnings=(), downgrade_to=None, echo_check="NOT_COMPARED",
+        ),
+    )
+
+    proposal = SimpleNamespace(
+        proposed_object="sales.core.revenue_metrics",
+        suggestion_id="sug_abc123",
+        dedup_fingerprint="fp_abc123",
+        target_space_id=SPACE_ID,
+    )
+    rendered = SimpleNamespace(
+        yaml_text="version: 0.1\nsource: sales.core.orders\n",
+        join_strategy="subquery_source",
+    )
+
+    mv_advisor._write_ddl_artifact(
+        FakeSpark(), proposal, rendered, run_id="r1", catalog="main", schema="gso",
+    )
+
+    assert len(captured) == 1
+    payload = captured[0]
+    assert payload["yaml_text"] == rendered.yaml_text
+    # The wrapped DDL still ships too; yaml_text is additive, not a replacement.
+    assert "ddl" in payload
+    assert rendered.yaml_text in payload["ddl"]

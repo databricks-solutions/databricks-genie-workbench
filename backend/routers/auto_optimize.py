@@ -16,7 +16,15 @@ from pydantic import BaseModel, Field
 
 from backend.models import (
     CurrentVersionResponse,
+    MvConsentPayload,
+    MvDdlArtifact,
+    MvDropRequest,
+    MvDropResponse,
     MvProbeResult,
+    MvProposal,
+    MvProposalDecisionRequest,
+    MvProposalDecisionResponse,
+    MvProposalsResponse,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
     QueryUsageSignal,
@@ -25,13 +33,18 @@ from backend.models import (
 )
 from backend.routers._validators import RunId, SpaceId
 
-from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
+from backend.services.auth import (
+    get_databricks_host,
+    get_service_principal_client,
+    get_workspace_client,
+    require_obo_workspace_client,
+)
 from backend.services import gso_lakebase
 from backend.services import lakebase as workbench_lakebase
 from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
 from backend.services.genie_client import get_genie_space
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
-from backend.services import mv_entitlement
+from backend.services import mv_create, mv_entitlement
 from backend.services.mv_entitlement import MvProbeError
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
@@ -188,6 +201,20 @@ class TriggerRequest(BaseModel):
     workload_warehouse_ids: list[
         Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
     ] = Field(default_factory=list, max_length=20)
+    # Metric view advisor knobs (Prompt 9, MV-D1/D5). enable_metric_view_suggestions
+    # gates the job's advisor phase; mv_action_mode="create_and_attach" additionally
+    # asks the backend to create the approved candidates under OBO before submit
+    # (MV-D20). create_and_attach requires mv_consent (a re-verifiable probe_id) and
+    # is gated on approved_for_rerun candidates (MV-D1); it silently downgrades to
+    # suggest_only whenever re-verification or every create fails.
+    enable_metric_view_suggestions: bool = False
+    mv_action_mode: Literal["suggest_only", "create_and_attach"] = "suggest_only"
+    mv_min_confidence: int | None = Field(None, ge=0, le=100)
+    mv_approved_suggestion_ids: list[
+        Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
+    ] = Field(default_factory=list, max_length=50)
+    mv_consent: MvConsentPayload | None = None
+    mv_materialize: bool = False
 
 
 class MvProbeRequest(BaseModel):
@@ -1480,6 +1507,30 @@ async def trigger(body: TriggerRequest, request: Request):
 
     config = _build_gso_config(llm_model_override=selected_llm_model)
 
+    # Build the OBO create-and-attach hook only when the caller both enabled the
+    # advisor and asked for create_and_attach with a consent to re-verify. The
+    # hook runs inside trigger_optimization (same request context, so the OBO
+    # ContextVar is visible) after the run row exists and before submit (MV-D20).
+    mv_attach_hook = None
+    if (
+        body.enable_metric_view_suggestions
+        and body.mv_action_mode == "create_and_attach"
+        and body.mv_consent is not None
+    ):
+        consent = body.mv_consent
+
+        def mv_attach_hook(run_id: str):
+            return mv_create.create_and_attach_for_run(
+                run_id,
+                space_id=body.space_id,
+                probe_id=consent.probe_id,
+                approved_suggestion_ids=body.mv_approved_suggestion_ids,
+                materialize=body.mv_materialize,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                warehouse_id=config.warehouse_id,
+            )
+
     try:
         result = trigger_optimization(
             space_id=body.space_id,
@@ -1494,6 +1545,10 @@ async def trigger(body: TriggerRequest, request: Request):
             max_attempts=body.max_attempts,
             workload_warehouse_ids=body.workload_warehouse_ids,
             benchmark_policy=body.benchmark_policy,
+            enable_metric_view_suggestions=body.enable_metric_view_suggestions,
+            mv_action_mode=body.mv_action_mode,
+            mv_min_confidence=body.mv_min_confidence,
+            mv_attach_hook=mv_attach_hook,
         )
         # Echo the resolved knobs (request value or the job default) so the UI
         # can confirm what the run will use without re-reading the job config.
@@ -1521,6 +1576,268 @@ async def trigger(body: TriggerRequest, request: Request):
     except Exception as e:
         logger.exception("Failed to trigger optimization: %s", e)
         raise HTTPException(status_code=500, detail="Failed to start optimization job.")
+
+
+# ---------------------------------------------------------------------------
+# Metric view proposals / create-and-attach lifecycle (Prompt 9)
+# ---------------------------------------------------------------------------
+
+
+def _mv_str(value: Any) -> str | None:
+    """Coerce a warehouse cell (datetime/NaN/None) to a JSON-safe string or None."""
+    if value is None:
+        return None
+    try:
+        import pandas as pd
+
+        if value is pd.NaT or (isinstance(value, float) and pd.isna(value)):
+            return None
+    except Exception:
+        pass
+    text = str(value)
+    return text if text and text.lower() not in ("nan", "nat", "none") else None
+
+
+def _mv_proposal_from_row(row: dict) -> MvProposal:
+    """Map a decoded ``genie_opt_mv_candidates`` row to the API shape."""
+    return MvProposal(
+        suggestion_id=str(row.get("suggestion_id") or ""),
+        dedup_fingerprint=str(row.get("dedup_fingerprint") or ""),
+        target_space_id=str(row.get("target_space_id") or ""),
+        run_id=_mv_str(row.get("run_id")),
+        candidate_type=str(row.get("candidate_type") or ""),
+        confidence_score=_safe_float(row.get("confidence_score")),
+        tier=_mv_str(row.get("tier")),
+        proposed_object=_mv_str(row.get("proposed_object")),
+        score_components=row.get("score_components") if isinstance(row.get("score_components"), dict) else None,
+        evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else None,
+        provenance=row.get("provenance") if isinstance(row.get("provenance"), dict) else None,
+        alternatives=row.get("alternatives") if isinstance(row.get("alternatives"), list) else None,
+        conflicts=row.get("conflicts") if isinstance(row.get("conflicts"), list) else None,
+        requested_mode=_mv_str(row.get("requested_mode")),
+        effective_mode=_mv_str(row.get("effective_mode")),
+        decision=_mv_str(row.get("decision")),
+        decided_by=_mv_str(row.get("decided_by")),
+        decided_at=_mv_str(row.get("decided_at")),
+        suppressed_until=_mv_str(row.get("suppressed_until")),
+        approved_for_rerun=bool(row.get("approved_for_rerun")),
+        created_at=_mv_str(row.get("created_at")),
+        updated_at=_mv_str(row.get("updated_at")),
+    )
+
+
+@router.get("/runs/{run_id}/mv-proposals", response_model=MvProposalsResponse)
+async def list_mv_proposals(run_id: RunId):
+    """List the metric view proposals the advisor recorded for this run (MV-D21)."""
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return MvProposalsResponse(run_id=run_id, proposals=[])
+
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+
+    try:
+        rows = await _offload(
+            wh_load_mv_candidates,
+            get_service_principal_client(),
+            config.warehouse_id,
+            config.catalog,
+            config.schema_name,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        logger.warning("Could not load MV proposals for run %s: %s", run_id, exc)
+        rows = []
+    return MvProposalsResponse(
+        run_id=run_id, proposals=[_mv_proposal_from_row(r) for r in rows]
+    )
+
+
+@router.get("/runs/{run_id}/mv-ddl", response_model=MvDdlArtifact)
+async def get_mv_ddl(run_id: RunId):
+    """Return the rendered metric view DDL artifact plus a copy-ready GRANT (MV-D22).
+
+    ``yaml_text`` is the immutable rendered body the create path replays; ``ddl``
+    is the render-time wrapper. ``grant_sql`` is a template the operator edits with
+    the audience — the app never grants on the user's behalf.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+
+    payload = await _offload(_load_latest_artifact, run_id, "mv_candidate_ddl")
+    if not payload:
+        raise HTTPException(status_code=404, detail="No metric view DDL artifact for this run.")
+
+    proposed = payload.get("proposed_object")
+    grant_sql = (
+        f"GRANT SELECT ON VIEW {proposed} TO `<grantee>`;" if proposed else None
+    )
+    validation = payload.get("validation")
+    return MvDdlArtifact(
+        suggestion_id=payload.get("suggestion_id"),
+        dedup_fingerprint=payload.get("dedup_fingerprint"),
+        proposed_object=proposed,
+        join_strategy=payload.get("join_strategy"),
+        yaml_text=payload.get("yaml_text"),
+        ddl=payload.get("ddl"),
+        validation=validation if isinstance(validation, dict) else None,
+        grant_sql=grant_sql,
+    )
+
+
+@router.post("/mv/proposals/{suggestion_id}/decision", response_model=MvProposalDecisionResponse)
+async def decide_mv_proposal(
+    suggestion_id: str, body: MvProposalDecisionRequest, request: Request
+):
+    """Record an approve/reject on a proposal (MV-D1).
+
+    Approve sets ``approved_for_rerun`` so a later ``create_and_attach`` run may
+    create the view; reject writes the suppression window so the advisor does not
+    re-surface the fingerprint. Keyed on ``(space_id, dedup_fingerprint)``, which
+    the suggestion is resolved to via the space's candidate rows.
+    """
+    if not re.fullmatch(r"[0-9a-zA-Z_-]{1,128}", suggestion_id or ""):
+        raise HTTPException(status_code=422, detail="Invalid suggestion_id.")
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(status_code=503, detail="No SQL warehouse configured.")
+
+    from genie_space_optimizer.common.warehouse import (
+        wh_load_mv_candidates,
+        wh_record_mv_candidate_decision,
+    )
+
+    rows = await _offload(
+        wh_load_mv_candidates,
+        get_service_principal_client(),
+        config.warehouse_id,
+        config.catalog,
+        config.schema_name,
+        target_space_id=body.space_id,
+    )
+    match = next((r for r in rows if r.get("suggestion_id") == suggestion_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Proposal not found for this space.")
+
+    decided_by = (request.headers.get("x-forwarded-email") or "").strip() or "unknown"
+    approved_for_rerun = body.decision == "approved"
+    try:
+        await _offload(
+            wh_record_mv_candidate_decision,
+            get_service_principal_client(),
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            target_space_id=body.space_id,
+            dedup_fingerprint=str(match.get("dedup_fingerprint") or ""),
+            decision=body.decision,
+            decided_by=decided_by,
+            suppressed_until=body.suppressed_until,
+            approved_for_rerun=approved_for_rerun,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to record MV decision for %s: %s", suggestion_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to record the decision.")
+
+    return MvProposalDecisionResponse(
+        suggestion_id=suggestion_id,
+        decision=body.decision,
+        approved_for_rerun=approved_for_rerun,
+    )
+
+
+@router.post("/mv/created/{suggestion_id}/drop", response_model=MvDropResponse)
+async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
+    """Drop a metric view the backend created under OBO (MV-D6).
+
+    OBO only and destructive: it refuses unless ``confirm`` is set, the caller is
+    the ``created_by`` owner, and the object is already ``DETACHED`` — the run's
+    detach-never-drop invariant means a live/attached view is never dropped here.
+    """
+    if not re.fullmatch(r"[0-9a-zA-Z_-]{1,128}", suggestion_id or ""):
+        raise HTTPException(status_code=422, detail="Invalid suggestion_id.")
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="Set confirm=true to drop a metric view.")
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(status_code=503, detail="No SQL warehouse configured.")
+
+    try:
+        obo_ws = require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    try:
+        caller = (obo_ws.current_user.me().user_name or "").strip()
+    except Exception:
+        raise HTTPException(status_code=401, detail="Could not resolve the signed-in user.")
+
+    from genie_space_optimizer.common.warehouse import (
+        sql_warehouse_execute,
+        wh_load_mv_created_object,
+        wh_update_mv_created_object_status,
+    )
+
+    obj = await _offload(
+        wh_load_mv_created_object,
+        get_service_principal_client(),
+        config.warehouse_id,
+        catalog=config.catalog,
+        schema=config.schema_name,
+        run_id=body.run_id,
+        suggestion_id=suggestion_id,
+    )
+    if obj is None:
+        raise HTTPException(status_code=404, detail="No created metric view for this run/suggestion.")
+
+    created_by = (str(obj.get("created_by") or "")).strip()
+    if created_by.lower() != caller.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="Only the user who created this metric view may drop it.",
+        )
+    status = str(obj.get("status") or "").upper()
+    if status != "DETACHED":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Metric view is {status or 'in an unknown state'}; only a DETACHED view can be dropped.",
+        )
+
+    full_name = str(obj.get("full_name") or "")
+    try:
+        await _offload(
+            sql_warehouse_execute,
+            obo_ws,
+            config.warehouse_id,
+            f"DROP VIEW IF EXISTS {full_name}",
+        )
+    except Exception as exc:
+        logger.exception("OBO drop of %s failed: %s", full_name, exc)
+        raise HTTPException(status_code=500, detail="Failed to drop the metric view.")
+
+    try:
+        await _offload(
+            wh_update_mv_created_object_status,
+            get_service_principal_client(),
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            run_id=body.run_id,
+            suggestion_id=suggestion_id,
+            status="DROPPED",
+        )
+    except Exception:
+        logger.warning("Dropped %s but could not record DROPPED status", full_name, exc_info=True)
+
+    return MvDropResponse(
+        suggestion_id=suggestion_id, full_name=full_name, status="DROPPED", dropped=True,
+    )
 
 
 # ---------------------------------------------------------------------------

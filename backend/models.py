@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -246,6 +246,132 @@ class MvConsentVerification(BaseModel):
     verdict: Literal["SUFFICIENT", "INSUFFICIENT", "UNKNOWN"]
     downgrade_reason: str | None = None
     fresh_probe: MvProbeResult
+
+
+# ── Metric view proposals / create-and-attach (Prompt 9, MV-D1/D21/D22) ──
+# TS MIRROR OWED BY PROMPT 11: the models below (MvConsentPayload, MvProposal,
+# MvProposalsResponse, MvDdlArtifact, MvProposalDecisionRequest/Response,
+# MvDropRequest/Response, MvCreatedObject) have no frontend consumer until the
+# Prompt 11 run-config panel lands. Per AGENTS.md §Models they must be mirrored
+# in `frontend/src/types/index.ts` as Prompt 11's first step; adding dead TS
+# surface now would only invite drift before there is a caller (the same
+# dangling-parameter anti-pattern as mv_action_mode).
+
+
+class MvConsentPayload(BaseModel):
+    """The scoped, recorded authorization carried on a ``create_and_attach`` run.
+
+    ``probe_id`` keys ``genie_opt_mv_consents`` (MV-D16 — there is no
+    ``consent_id`` column); ``granted_by`` / ``granted_at`` are the audit pair.
+    Re-verified under OBO at trigger time before any write (MV-D1)."""
+
+    granted_by: str
+    granted_at: str
+    probe_id: str
+
+
+class MvProposal(BaseModel):
+    """One advisor proposal (a ``genie_opt_mv_candidates`` row) as the UI reads it.
+
+    JSON columns arrive decoded to their POV Part 4 field names. ``confidence_score``
+    is 0–100; ``approved_for_rerun`` gates ``create_and_attach`` (MV-D1)."""
+
+    suggestion_id: str
+    dedup_fingerprint: str
+    target_space_id: str
+    run_id: str | None = None
+    candidate_type: str
+    confidence_score: float | None = None
+    tier: str | None = None
+    proposed_object: str | None = None
+    score_components: dict[str, Any] | None = None
+    evidence: dict[str, Any] | None = None
+    provenance: dict[str, Any] | None = None
+    alternatives: list[Any] | None = None
+    conflicts: list[Any] | None = None
+    requested_mode: str | None = None
+    effective_mode: str | None = None
+    decision: str | None = None
+    decided_by: str | None = None
+    decided_at: str | None = None
+    suppressed_until: str | None = None
+    approved_for_rerun: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class MvProposalsResponse(BaseModel):
+    """``GET /runs/{run_id}/mv-proposals`` — the run's proposals, newest first."""
+
+    run_id: str
+    proposals: list[MvProposal] = Field(default_factory=list)
+
+
+class MvDdlArtifact(BaseModel):
+    """``GET /runs/{run_id}/mv-ddl`` — the rendered DDL artifact plus GRANT remediation.
+
+    ``yaml_text`` is the immutable rendered body (MV-D22); ``ddl`` is the
+    render-time ``CREATE VIEW`` wrapper; ``grant_sql`` is the copy-ready
+    ``GRANT SELECT`` checklist for the space's audience, never auto-applied."""
+
+    suggestion_id: str | None = None
+    dedup_fingerprint: str | None = None
+    proposed_object: str | None = None
+    join_strategy: str | None = None
+    yaml_text: str | None = None
+    ddl: str | None = None
+    validation: dict[str, Any] | None = None
+    grant_sql: str | None = None
+
+
+class MvProposalDecisionRequest(BaseModel):
+    """``POST /mv/proposals/{suggestion_id}/decision`` body.
+
+    ``space_id`` resolves the ``(target_space_id, dedup_fingerprint)`` key the
+    decision is recorded against. ``suppressed_until`` applies to a rejection."""
+
+    space_id: str = Field(..., pattern=r"^[0-9a-zA-Z_-]{1,128}$")
+    run_id: str | None = None
+    decision: Literal["approved", "rejected"]
+    suppressed_until: str | None = None
+
+
+class MvProposalDecisionResponse(BaseModel):
+    suggestion_id: str
+    decision: Literal["approved", "rejected"]
+    approved_for_rerun: bool
+
+
+class MvDropRequest(BaseModel):
+    """``POST /mv/created/{suggestion_id}/drop`` body.
+
+    ``confirm`` must be ``true`` — the UC object may already have other consumers,
+    so the drop is explicit and refuses unless ``status = DETACHED`` (MV-D6)."""
+
+    run_id: str
+    confirm: bool = False
+
+
+class MvCreatedObject(BaseModel):
+    """A metric view created under OBO for a run (a ``genie_opt_mv_created_objects`` row)."""
+
+    run_id: str
+    suggestion_id: str
+    full_name: str
+    created_by: str | None = None
+    status: Literal["CREATED", "ATTACHED", "DETACHED", "DROPPED"]
+    attach_patch_id: str | None = None
+    baseline_eval_run_id: str | None = None
+    post_attach_eval_run_id: str | None = None
+    on_regression_action: str | None = None
+    created_at: str | None = None
+
+
+class MvDropResponse(BaseModel):
+    suggestion_id: str
+    full_name: str
+    status: Literal["CREATED", "ATTACHED", "DETACHED", "DROPPED"]
+    dropped: bool
 
 
 # ── Auto-Optimize current version ────────────────────────────────────────
