@@ -167,9 +167,9 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   every VERIFY section.
 
 - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-  `uv run --frozen --extra dev`. Expected baseline: 604 backend + 1420 GSO,
-  measured at 26989309 as 596 + 1420, +8 backend at Prompt 12 (the space-scoped
-  semantic-graph route). A count BELOW this is a regression — investigate. A
+  `uv run --frozen --extra dev`. Expected baseline: 608 backend + 1427 GSO,
+  measured 2026-08-24 as 604 + 1420, +4 backend / +7 GSO at Prompt 13 (the
+  create-and-attach results read and its two warehouse readers). A count BELOW this is a regression — investigate. A
   count ABOVE it is normal growth: update this line and the playbook's copy in
   the same commit that adds the tests (test_rules_parity.py enforces the two
   copies match, so you cannot update one).

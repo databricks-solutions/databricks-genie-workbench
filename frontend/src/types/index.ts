@@ -937,8 +937,9 @@ export interface MvProbeRequest {
 // ── Metric view proposals / consent (Prompt 11, MV-D1/D23) ──────────────────
 // Mirrors MvConsentPayload / MvProposal / MvProposalsResponse /
 // MvSpaceProposalsResponse in backend/models.py; update together. The output-
-// screen shapes (MvDdlArtifact, decision/drop, MvCreatedObject) are mirrored by
-// Prompt 13 when they gain a consumer, not here.
+// screen shapes (MvDdlArtifact, MvLiftReport, MvCreatedObject,
+// MvCreatedObjectsResponse, decision/drop) are mirrored below now that Prompt 13
+// wires the run output/results panels to them.
 
 // The scoped, recorded authorization carried on a create_and_attach run. Built
 // from a SUFFICIENT probe: probe_id keys the consent, checked_as/checked_at are
@@ -988,6 +989,97 @@ export interface MvProposalsResponse {
 export interface MvSpaceProposalsResponse {
   space_id: string
   proposals: MvProposal[]
+}
+
+// ── Metric view output-screen shapes (Prompt 13, MV-D21) ────────────────────
+// Mirror MvDdlArtifact / MvLiftReport / MvCreatedObject /
+// MvCreatedObjectsResponse / decision + drop req-resp in backend/models.py and
+// backend/routers/auto_optimize.py; update together.
+
+// GET /runs/{run_id}/mv-ddl — the rendered DDL artifact plus GRANT remediation.
+// yaml_text is the immutable rendered body (MV-D22); ddl is the CREATE VIEW
+// wrapper; grant_sql is the copy-ready GRANT SELECT, never auto-applied.
+export interface MvDdlArtifact {
+  suggestion_id: string | null
+  dedup_fingerprint: string | null
+  proposed_object: string | null
+  join_strategy: string | null
+  yaml_text: string | null
+  ddl: string | null
+  validation: Record<string, unknown> | null
+  grant_sql: string | null
+}
+
+// Verbatim mirror of the engine's frozen 14-key LiftReport (never reshaped).
+// Accuracies/deltas are 0–1 fractions; needs-review is counted separately and
+// excluded from both sides of the comparison.
+export interface MvLiftReport {
+  delta_affected: number
+  delta_suite: number
+  regressed_question_ids: string[]
+  needs_review_count: number
+  pre_eval_run_id: string
+  post_eval_run_id: string
+  question_subset: string[]
+  pre_accuracy_affected: number
+  post_accuracy_affected: number
+  pre_accuracy_suite: number
+  post_accuracy_suite: number
+  needs_review_question_ids: string[]
+  graded_affected_count: number
+  graded_suite_count: number
+}
+
+// A metric view created under OBO for a run (a genie_opt_mv_created_objects row).
+// lift_report is present once the isolated attach eval ran.
+export interface MvCreatedObject {
+  run_id: string
+  suggestion_id: string
+  full_name: string
+  created_by: string | null
+  status: "CREATED" | "ATTACHED" | "DETACHED" | "DROPPED"
+  attach_patch_id: string | null
+  baseline_eval_run_id: string | null
+  post_attach_eval_run_id: string | null
+  on_regression_action: string | null
+  created_at: string | null
+  lift_report: MvLiftReport | null
+}
+
+// GET /runs/{run_id}/mv-created — the run's created-object ledger. downgrade_reason
+// is run-level (why a create_and_attach run was downgraded to suggest_only), and
+// is distinct from a per-object DETACHED status (a post-attach regression revert).
+export interface MvCreatedObjectsResponse {
+  run_id: string
+  created: MvCreatedObject[]
+  downgrade_reason: string | null
+}
+
+// POST /mv/proposals/{suggestion_id}/decision — approve/reject a proposal (MV-D1).
+export interface MvProposalDecisionRequest {
+  space_id: string
+  run_id?: string | null
+  decision: "approved" | "rejected"
+  suppressed_until?: string | null
+}
+
+export interface MvProposalDecisionResponse {
+  suggestion_id: string
+  decision: "approved" | "rejected"
+  approved_for_rerun: boolean
+}
+
+// POST /mv/created/{suggestion_id}/drop — explicit OBO drop, DETACHED only (MV-D6).
+export interface MvDropRequest {
+  run_id: string
+  confirm: boolean
+}
+
+export interface MvDropResponse {
+  suggestion_id: string
+  full_name: string
+  status: "CREATED" | "ATTACHED" | "DETACHED" | "DROPPED"
+  dropped: boolean
 }
 
 // ── Semantic model graph (Prompt 12, MV-D23) ────────────────────────────────

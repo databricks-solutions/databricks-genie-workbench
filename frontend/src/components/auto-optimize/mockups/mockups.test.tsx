@@ -14,7 +14,6 @@ import {
   FirstRunConfigFrame,
   RerunConfigFrame,
 } from "./MvRunConfigMockups"
-import { CreateAndAttachOutputFrame, SuggestOnlyOutputFrame } from "./MvOutputMockups"
 import {
   ModelNodeDetailFrame,
   ModelTabEmptyFrame,
@@ -75,43 +74,8 @@ describe("frame 3 — denial", () => {
   })
 })
 
-describe("frame 4 — suggest-only output", () => {
-  const html = render(<SuggestOnlyOutputFrame />)
-  it("carries the verbatim Lift-not-measured label and both actions", () => {
-    expect(html).toContain("Lift not measured")
-    expect(html).toContain("was not created or attached during this run")
-    expect(html).toContain("Approve for re-run")
-    expect(html).toContain("Re-run with this metric view")
-  })
-  it("renders the DDL and GRANT panels", () => {
-    expect(html).toContain("WITH METRICS")
-    expect(html).toContain("GRANT (run before others query this Agent)")
-  })
-  it("depicts only reachable join strategies: card 1 has no ladder, card 2 keeps Subquery source", () => {
-    // "nested" is unreachable today (MV-D14/D15); a single direct join needs no badge.
-    expect(html).not.toContain("Nested join")
-    expect(html).toContain("Subquery source")
-  })
-})
-
-describe("frame 5 — create and attach (regression)", () => {
-  const html = render(<CreateAndAttachOutputFrame />)
-  it("shows DETACHED, drop, both eval links, tables freed and needs-review", () => {
-    expect(html).toContain("DETACHED")
-    expect(html).toContain("Drop view")
-    expect(html).toContain("Baseline accuracy")
-    expect(html).toContain("Post-attach accuracy")
-    expect(html).toContain("Tables freed")
-    expect(html).toContain("Needs review")
-    expect(html).toContain("eval_a1")
-    expect(html).toContain("eval_b2")
-  })
-  it("names provenance OBO_CREATED, drops the unreachable nested badge, and de-dups the eval prefix", () => {
-    expect(html).toContain("OBO_CREATED")
-    expect(html).not.toContain("Nested join")
-    expect(html).not.toContain("evaleval")
-  })
-})
+// Frames 4–5 (run output panels) graduated to production at Prompt 13; their
+// copy is now pinned by the production panel tests (MvOutputPanels.test.tsx).
 
 describe("frame 9 — Model tab (Prompt 12.0)", () => {
   it("9a populated: tab strip, all three governance rungs, labeled SCD2 join", () => {

@@ -38,6 +38,13 @@ import type {
   MvProbeRequest,
   MvProbeResult,
   MvSpaceProposalsResponse,
+  MvProposalsResponse,
+  MvDdlArtifact,
+  MvCreatedObjectsResponse,
+  MvProposalDecisionRequest,
+  MvProposalDecisionResponse,
+  MvDropRequest,
+  MvDropResponse,
   SemanticGraphResponse,
 } from "@/types"
 
@@ -482,6 +489,64 @@ export async function fetchSemanticGraph(
 ): Promise<SemanticGraphResponse> {
   return fetchWithTimeout<SemanticGraphResponse>(
     `${API_BASE}/auto-optimize/spaces/${spaceId}/semantic-graph`,
+  )
+}
+
+// ── Metric view output-screen reads/actions (Prompt 13, MV-D21/D23) ─────────
+// The run-detail CONTAINER fetches these by run_id — it lives on a run screen —
+// and passes the results to presentational panels as props; nothing downstream
+// keys state, cache, or identity on run_id (MV-D23).
+
+// GET /runs/{run_id}/mv-proposals — the run's advisor proposals (suggest-only).
+export async function getRunMvProposals(runId: string): Promise<MvProposalsResponse> {
+  return fetchWithTimeout<MvProposalsResponse>(
+    `${API_BASE}/auto-optimize/runs/${runId}/mv-proposals`,
+  )
+}
+
+// GET /runs/{run_id}/mv-ddl — the rendered DDL artifact + copy-ready GRANT.
+export async function getMvDdl(runId: string): Promise<MvDdlArtifact> {
+  return fetchWithTimeout<MvDdlArtifact>(
+    `${API_BASE}/auto-optimize/runs/${runId}/mv-ddl`,
+  )
+}
+
+// GET /runs/{run_id}/mv-created — the create-and-attach ledger + downgrade_reason.
+export async function getMvCreatedObjects(runId: string): Promise<MvCreatedObjectsResponse> {
+  return fetchWithTimeout<MvCreatedObjectsResponse>(
+    `${API_BASE}/auto-optimize/runs/${runId}/mv-created`,
+  )
+}
+
+// POST /mv/proposals/{suggestion_id}/decision — approve/reject (MV-D1).
+export async function decideMvProposal(
+  suggestionId: string,
+  request: MvProposalDecisionRequest,
+): Promise<MvProposalDecisionResponse> {
+  return fetchWithTimeout<MvProposalDecisionResponse>(
+    `${API_BASE}/auto-optimize/mv/proposals/${suggestionId}/decision`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
+  )
+}
+
+// POST /mv/created/{suggestion_id}/drop — explicit OBO drop, DETACHED only (MV-D6).
+export async function dropMvCreated(
+  suggestionId: string,
+  request: MvDropRequest,
+): Promise<MvDropResponse> {
+  return fetchWithTimeout<MvDropResponse>(
+    `${API_BASE}/auto-optimize/mv/created/${suggestionId}/drop`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
   )
 }
 

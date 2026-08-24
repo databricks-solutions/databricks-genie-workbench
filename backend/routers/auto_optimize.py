@@ -17,9 +17,12 @@ from pydantic import BaseModel, Field
 from backend.models import (
     CurrentVersionResponse,
     MvConsentPayload,
+    MvCreatedObject,
+    MvCreatedObjectsResponse,
     MvDdlArtifact,
     MvDropRequest,
     MvDropResponse,
+    MvLiftReport,
     MvProbeResult,
     MvProposal,
     MvProposalDecisionRequest,
@@ -2099,6 +2102,111 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
 
     return MvDropResponse(
         suggestion_id=suggestion_id, full_name=full_name, status="DROPPED", dropped=True,
+    )
+
+
+def _mv_lift_from_row(value: Any) -> MvLiftReport | None:
+    """Build ``MvLiftReport`` from a decoded ``lift_report`` dict, or ``None``.
+
+    The dict is ``LiftReport.to_dict()`` verbatim (MV-D21), so keys line up; this
+    only coerces cell types and tolerates a partial row rather than 500-ing the
+    whole results screen on one malformed report.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        return MvLiftReport(
+            delta_affected=_safe_float(value.get("delta_affected")) or 0.0,
+            delta_suite=_safe_float(value.get("delta_suite")) or 0.0,
+            regressed_question_ids=list(value.get("regressed_question_ids") or []),
+            needs_review_count=safe_int(value.get("needs_review_count")) or 0,
+            pre_eval_run_id=str(value.get("pre_eval_run_id") or ""),
+            post_eval_run_id=str(value.get("post_eval_run_id") or ""),
+            question_subset=list(value.get("question_subset") or []),
+            pre_accuracy_affected=_safe_float(value.get("pre_accuracy_affected")) or 0.0,
+            post_accuracy_affected=_safe_float(value.get("post_accuracy_affected")) or 0.0,
+            pre_accuracy_suite=_safe_float(value.get("pre_accuracy_suite")) or 0.0,
+            post_accuracy_suite=_safe_float(value.get("post_accuracy_suite")) or 0.0,
+            needs_review_question_ids=list(value.get("needs_review_question_ids") or []),
+            graded_affected_count=safe_int(value.get("graded_affected_count")) or 0,
+            graded_suite_count=safe_int(value.get("graded_suite_count")) or 0,
+        )
+    except Exception:
+        logger.debug("Could not coerce lift_report row: %r", value, exc_info=True)
+        return None
+
+
+def _mv_created_object_from_row(row: dict) -> MvCreatedObject:
+    """Map a decoded ``genie_opt_mv_created_objects`` row to the API shape."""
+    status = str(row.get("status") or "CREATED").upper()
+    return MvCreatedObject(
+        run_id=str(row.get("run_id") or ""),
+        suggestion_id=str(row.get("suggestion_id") or ""),
+        full_name=str(row.get("full_name") or ""),
+        created_by=_mv_str(row.get("created_by")),
+        status=status if status in ("CREATED", "ATTACHED", "DETACHED", "DROPPED") else "CREATED",
+        attach_patch_id=_mv_str(row.get("attach_patch_id")),
+        baseline_eval_run_id=_mv_str(row.get("baseline_eval_run_id")),
+        post_attach_eval_run_id=_mv_str(row.get("post_attach_eval_run_id")),
+        on_regression_action=_mv_str(row.get("on_regression_action")),
+        created_at=_mv_str(row.get("created_at")),
+        lift_report=_mv_lift_from_row(row.get("lift_report")),
+    )
+
+
+@router.get("/runs/{run_id}/mv-created", response_model=MvCreatedObjectsResponse)
+async def list_mv_created(run_id: RunId):
+    """List the metric views the backend created under OBO for this run (MV-D21).
+
+    The create-and-attach output panel reads this: each created object with its
+    isolated-lift report (baseline vs post-attach accuracy, needs-review, both
+    eval-run ids) plus the run-level ``downgrade_reason`` from the consent row.
+    Read-only, so the SP-tolerant client is correct here (MV-D20) — only writes
+    that create or drop a UC object require the hard-fail OBO client.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return MvCreatedObjectsResponse(run_id=run_id, created=[], downgrade_reason=None)
+
+    from genie_space_optimizer.common.warehouse import (
+        wh_load_mv_consent_by_run,
+        wh_load_mv_created_objects,
+    )
+
+    sp = get_service_principal_client()
+    try:
+        rows = await _offload(
+            wh_load_mv_created_objects,
+            sp,
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        logger.warning("Could not load MV created objects for run %s: %s", run_id, exc)
+        rows = []
+
+    downgrade_reason: str | None = None
+    try:
+        consent = await _offload(
+            wh_load_mv_consent_by_run,
+            sp,
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            run_id=run_id,
+        )
+        downgrade_reason = _mv_str((consent or {}).get("downgrade_reason"))
+    except Exception as exc:
+        logger.warning("Could not load MV consent for run %s: %s", run_id, exc)
+
+    return MvCreatedObjectsResponse(
+        run_id=run_id,
+        created=[_mv_created_object_from_row(r) for r in rows],
+        downgrade_reason=downgrade_reason,
     )
 
 

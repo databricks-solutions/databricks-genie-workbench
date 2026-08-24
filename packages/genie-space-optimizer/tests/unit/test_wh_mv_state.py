@@ -321,3 +321,116 @@ def test_load_created_object_escapes_the_key(monkeypatch):
         run_id="r1' OR '1'='1", suggestion_id="sug1",
     )
     assert "run_id = 'r1'' OR ''1''=''1'" in seen[0]
+
+
+# ── Created objects: plural read (run output / results screen) ─────────────
+
+
+def test_load_created_objects_returns_all_rows_and_decodes_lift(monkeypatch):
+    lift_a = {"delta_affected": -0.07, "needs_review_count": 3}
+    lift_b = {"delta_affected": 0.02, "needs_review_count": 0}
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: pd.DataFrame([
+            {
+                "run_id": "r1", "suggestion_id": "sugA",
+                "full_name": "finance.sales.a", "status": "DETACHED",
+                "lift_report_json": json.dumps(lift_a),
+            },
+            {
+                "run_id": "r1", "suggestion_id": "sugB",
+                "full_name": "finance.sales.b", "status": "ATTACHED",
+                "lift_report_json": json.dumps(lift_b),
+            },
+        ]),
+    )
+    rows = warehouse.wh_load_mv_created_objects(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", run_id="r1",
+    )
+    assert [r["suggestion_id"] for r in rows] == ["sugA", "sugB"]
+    assert rows[0]["lift_report"] == lift_a
+    assert rows[1]["lift_report"] == lift_b
+    assert all("lift_report_json" not in r for r in rows)
+
+
+def test_load_created_objects_orders_newest_first_and_scopes_to_the_run(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (seen.append(sql), pd.DataFrame())[1],
+    )
+    warehouse.wh_load_mv_created_objects(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", run_id="r1",
+    )
+    assert "WHERE run_id = 'r1'" in seen[0]
+    assert "ORDER BY updated_at DESC" in seen[0]
+
+
+def test_load_created_objects_returns_empty_on_read_failure(monkeypatch):
+    def _boom(ws, warehouse_id, sql):
+        raise RuntimeError("warehouse asleep")
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", _boom)
+    assert warehouse.wh_load_mv_created_objects(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", run_id="r1",
+    ) == []
+
+
+def test_load_created_objects_escapes_the_run_key(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (seen.append(sql), pd.DataFrame())[1],
+    )
+    warehouse.wh_load_mv_created_objects(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        run_id="r1' OR '1'='1",
+    )
+    assert "run_id = 'r1'' OR ''1''=''1'" in seen[0]
+
+
+# ── Consent: read by run (downgrade_reason for the results screen) ─────────
+
+
+def test_load_consent_by_run_returns_row_and_decodes_probe_results(monkeypatch):
+    probe = {"verdict": "SUFFICIENT"}
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: pd.DataFrame([
+            {
+                "probe_id": "probe_1", "run_id": "r1",
+                "downgrade_reason": "grant revoked before trigger",
+                "probe_results_json": json.dumps(probe),
+            },
+        ]),
+    )
+    row = warehouse.wh_load_mv_consent_by_run(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", run_id="r1",
+    )
+    assert row is not None
+    assert row["downgrade_reason"] == "grant revoked before trigger"
+    assert row["probe_results"] == probe
+    assert "probe_results_json" not in row
+
+
+def test_load_consent_by_run_orders_newest_first_and_scopes_to_the_run(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (seen.append(sql), pd.DataFrame())[1],
+    )
+    warehouse.wh_load_mv_consent_by_run(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", run_id="r1",
+    )
+    assert "WHERE run_id = 'r1'" in seen[0]
+    assert "ORDER BY updated_at DESC LIMIT 1" in seen[0]
+
+
+def test_load_consent_by_run_is_none_when_absent(monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: pd.DataFrame(),
+    )
+    assert warehouse.wh_load_mv_consent_by_run(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", run_id="r1",
+    ) is None

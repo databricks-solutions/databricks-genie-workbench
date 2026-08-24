@@ -16,6 +16,14 @@ import {
 } from "@/components/auto-optimize/optimizationRequest"
 import type { GSOPermissionCheck, MvProbeResult, MvProposal } from "@/types"
 
+// Prefill carried from a suggest-only run's "Re-run with this metric view"
+// action (MV-D1). It opens the MV section in create_and_attach mode; the actual
+// create still passes the OBO probe gate at start, so this only pre-selects.
+export interface MvRerunPrefill {
+  mode: "create_and_attach"
+  suggestionId?: string | null
+}
+
 interface OptimizationConfigProps {
   spaceId: string
   onStarted: (runId: string) => void
@@ -26,6 +34,7 @@ interface OptimizationConfigProps {
   permsLoading: boolean
   healthIssues?: string[]
   onRefreshPermissions?: () => void
+  initialMv?: MvRerunPrefill | null
 }
 
 // Levers 1–6 scope the bounded native patch/eval attempts. There is no
@@ -54,7 +63,7 @@ function PillarHeader({ icon: Icon, children }: { icon: LucideIcon; children: Re
   )
 }
 
-export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTriggerError, hasActiveRun, permissions, permsLoading, healthIssues, onRefreshPermissions }: OptimizationConfigProps) {
+export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTriggerError, hasActiveRun, permissions, permsLoading, healthIssues, onRefreshPermissions, initialMv }: OptimizationConfigProps) {
   const [selectedLevers, setSelectedLevers] = useState<Set<number>>(new Set(LEVERS.map((l) => l.id)))
   const [applyMode] = useState<"genie_config" | "both">("genie_config")
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
@@ -69,12 +78,16 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   // section fetches its own space-scoped proposals and OBO probe lazily when the
   // toggle first expands. Empty approved set ⇒ first-run; a non-empty set ⇒
   // re-run, where the probe gates "Create and attach".
-  const [mvEnabled, setMvEnabled] = useState(false)
+  // A "Re-run with this metric view" prefill opens the section in create_and_attach
+  // mode; otherwise the section starts collapsed and suggest_only (first-run).
+  const [mvEnabled, setMvEnabled] = useState(!!initialMv)
   const [mvProposals, setMvProposals] = useState<MvProposal[]>([])
   const [mvProposalsLoaded, setMvProposalsLoaded] = useState(false)
   const [mvProposalsLoading, setMvProposalsLoading] = useState(false)
   const [mvSelectedIds, setMvSelectedIds] = useState<Set<string>>(new Set())
-  const [mvMode, setMvMode] = useState<"suggest_only" | "create_and_attach">("suggest_only")
+  const [mvMode, setMvMode] = useState<"suggest_only" | "create_and_attach">(
+    initialMv?.mode ?? "suggest_only",
+  )
   const [mvProbe, setMvProbe] = useState<MvProbeResult | null>(null)
   const [mvProbeLoading, setMvProbeLoading] = useState(false)
   const [mvProbeError, setMvProbeError] = useState<string | null>(null)

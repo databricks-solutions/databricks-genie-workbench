@@ -882,6 +882,93 @@ def wh_load_mv_created_object(
     return _wh_decode_json_columns(dict(df.iloc[0].to_dict()), ("lift_report_json",))
 
 
+def wh_load_mv_created_objects(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    run_id: str,
+) -> list[dict]:
+    """Read every created-object row for a run via SQL warehouse — plural twin of
+    ``wh_load_mv_created_object``.
+
+    The run output/results screen needs the full ledger for a run (each proposal
+    the backend created under OBO), not the single row the drop route authorizes
+    against. Same ``lift_report_json`` → ``lift_report`` decode per row so callers
+    see the ``mv_state`` field name. Newest first; ``[]`` on read failure.
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CREATED_OBJECTS
+
+    fqn = f"{catalog}.{schema}.{TABLE_MV_CREATED_OBJECTS}"
+    try:
+        df = sql_warehouse_query(
+            ws,
+            warehouse_id,
+            f"SELECT * FROM {fqn} WHERE run_id = {_wh_literal(run_id)} "
+            "ORDER BY updated_at DESC",
+        )
+    except Exception:
+        logger.debug(
+            "wh_load_mv_created_objects: could not read run %s", run_id, exc_info=True
+        )
+        return []
+    if getattr(df, "empty", True):
+        return []
+    return [
+        _wh_decode_json_columns(dict(record), ("lift_report_json",))
+        for record in df.to_dict(orient="records")
+    ]
+
+
+def wh_load_mv_consent_by_run(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    run_id: str,
+) -> dict | None:
+    """Read the consent row carried into a run via SQL warehouse, or ``None``.
+
+    The consent table is keyed on ``probe_id`` (written before any run exists),
+    but ``run_id`` is filled at trigger time (``mv_state.upsert_mv_consent``), so a
+    run has at most one consent. The run output/results screen reads it for the
+    run's ``downgrade_reason`` — why a ``create_and_attach`` run was downgraded to
+    ``suggest_only``. Newest first, one row. Decodes ``probe_results_json`` to
+    ``probe_results`` like ``wh_load_mv_consent``.
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CONSENTS
+
+    fqn = f"{catalog}.{schema}.{TABLE_MV_CONSENTS}"
+    try:
+        df = sql_warehouse_query(
+            ws,
+            warehouse_id,
+            f"SELECT * FROM {fqn} WHERE run_id = {_wh_literal(run_id)} "
+            "ORDER BY updated_at DESC LIMIT 1",
+        )
+    except Exception:
+        logger.debug(
+            "wh_load_mv_consent_by_run: could not read run %s", run_id, exc_info=True
+        )
+        return None
+    if getattr(df, "empty", True):
+        return None
+
+    row = dict(df.iloc[0].to_dict())
+    raw = row.pop("probe_results_json", None)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            row["probe_results"] = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid JSON in probe_results_json; surfacing raw text")
+            row["probe_results"] = raw
+    else:
+        row["probe_results"] = raw
+    return row
+
+
 # ── Warehouse ID resolution ──────────────────────────────────────────
 #
 # The optimization pipeline historically read only

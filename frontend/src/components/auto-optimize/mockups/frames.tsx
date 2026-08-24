@@ -3,7 +3,8 @@
  *
  * Single registry of every mockup frame, consumed by both mockups.test.tsx
  * (copy assertions) and frontend/scripts/mockups/emit.tsx (static HTML export).
- * Deleted alongside the frames as Prompts 11 / 13 / 13.5 land the real panels.
+ * Frames graduate to production and drop out here as Prompts 11 / 13 / 13.5 land
+ * the real panels (frames 4–5 are gone; the output panels ship in production).
  */
 import type { ReactElement } from "react"
 import {
@@ -11,7 +12,6 @@ import {
   FirstRunConfigFrame,
   RerunConfigFrame,
 } from "./MvRunConfigMockups"
-import { CreateAndAttachOutputFrame, SuggestOnlyOutputFrame } from "./MvOutputMockups"
 import {
   ModelNodeDetailFrame,
   ModelTabEmptyFrame,
@@ -41,8 +41,8 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "1-runconfig-first-run", title: "1 · Run config — first run (Create and attach disabled)", element: <FirstRunConfigFrame /> },
   { id: "2-runconfig-rerun", title: "2 · Run config — re-run (approved for this Agent, granted)", element: <RerunConfigFrame /> },
   { id: "3-runconfig-denial", title: "3 · Run config — denial", element: <DenialConfigFrame /> },
-  { id: "4-output-suggest-only", title: "4 · Output — suggest only (Lift not measured)", element: <SuggestOnlyOutputFrame /> },
-  { id: "5-output-create-attach", title: "5 · Output — create and attach (DETACHED regression)", element: <CreateAndAttachOutputFrame /> },
+  // Frames 4–5 (run output panels) graduated to production at Prompt 13 and were
+  // removed from this registry (see MvSuggestOnlyPanel / MvCreateAttachPanel).
   // Model tab (Prompt 12.0). Frame 6 was retired into these — 9c is its
   // descendant (proposal overlay). Kept in frame 6's old array slot so the
   // emitter's export ordering is unchanged (MOCKUP_FRAMES is order-driven, not

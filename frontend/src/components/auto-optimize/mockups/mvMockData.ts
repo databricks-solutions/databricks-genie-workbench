@@ -3,9 +3,10 @@
  *
  * Disposal (see docs/design/mockups/README.md): these frames exist only for the
  * Prompt 10 design review and are deleted as the real panels land — Prompt 11
- * removes the run-config frames, Prompt 13 the output frames, Prompt 13.5 the
- * IQ-Scan frames (and graduates or deletes MvProposalCard). Do not wire them to
- * the backend and do not grow a dependency on them.
+ * removed the run-config frames, Prompt 13 removed the output frames (4–5, now
+ * MvSuggestOnlyPanel / MvCreateAttachPanel), Prompt 13.5 the IQ-Scan frames (and
+ * graduates or deletes MvProposalCard). tables_freed was CUT, never shipped (no
+ * producer). Do not wire them to the backend and do not grow a dependency on them.
  *
  * Fixture shapes mirror the backend Pydantic models so Prompt 13/13.5 can feed
  * the same components from a real payload without a shape change:

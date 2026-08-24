@@ -428,6 +428,31 @@ class MvDropRequest(BaseModel):
     confirm: bool = False
 
 
+class MvLiftReport(BaseModel):
+    """The isolated-lift report persisted on ``genie_opt_mv_created_objects.lift_report_json``.
+
+    A verbatim mirror of ``LiftReport.to_dict()`` (the engine's frozen 14-key
+    contract at ``optimization/eval_runner.py`` — mirror it, never reshape it):
+    accuracies and deltas are 0–1 fractions, and needs-review questions are
+    counted separately, excluded from both numerator and denominator on each
+    side of the comparison."""
+
+    delta_affected: float
+    delta_suite: float
+    regressed_question_ids: list[str] = Field(default_factory=list)
+    needs_review_count: int
+    pre_eval_run_id: str
+    post_eval_run_id: str
+    question_subset: list[str] = Field(default_factory=list)
+    pre_accuracy_affected: float
+    post_accuracy_affected: float
+    pre_accuracy_suite: float
+    post_accuracy_suite: float
+    needs_review_question_ids: list[str] = Field(default_factory=list)
+    graded_affected_count: int
+    graded_suite_count: int
+
+
 class MvCreatedObject(BaseModel):
     """A metric view created under OBO for a run (a ``genie_opt_mv_created_objects`` row)."""
 
@@ -441,6 +466,21 @@ class MvCreatedObject(BaseModel):
     post_attach_eval_run_id: str | None = None
     on_regression_action: str | None = None
     created_at: str | None = None
+    # Decoded from ``lift_report_json``; present once the isolated attach eval ran.
+    lift_report: MvLiftReport | None = None
+
+
+class MvCreatedObjectsResponse(BaseModel):
+    """``GET /runs/{run_id}/mv-created`` — the run's created-object ledger.
+
+    ``downgrade_reason`` is a run-level signal read from the consent row: why a
+    ``create_and_attach`` run was downgraded to ``suggest_only`` at trigger, or
+    ``None`` when it was not. It is distinct from a per-object ``DETACHED`` status,
+    which is a post-attach regression revert, not a pre-write downgrade."""
+
+    run_id: str
+    created: list[MvCreatedObject] = Field(default_factory=list)
+    downgrade_reason: str | None = None
 
 
 class MvDropResponse(BaseModel):

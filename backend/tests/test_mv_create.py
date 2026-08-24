@@ -378,6 +378,90 @@ def test_drop_refuses_a_non_detached_object(client, monkeypatch):
     assert resp.status_code == 409
 
 
+# ── Created-object results read (Prompt 13 step 0) ─────────────────────────
+
+_RUN_UUID = "22222222-2222-4222-8222-222222222222"
+
+_LIFT = {
+    "delta_affected": -0.07, "delta_suite": -0.03,
+    "regressed_question_ids": ["bq_0007"], "needs_review_count": 3,
+    "pre_eval_run_id": "eval_a1", "post_eval_run_id": "eval_b2",
+    "question_subset": ["bq_0007", "bq_0019"],
+    "pre_accuracy_affected": 0.78, "post_accuracy_affected": 0.71,
+    "pre_accuracy_suite": 0.80, "post_accuracy_suite": 0.77,
+    "needs_review_question_ids": ["bq_0022", "bq_0033", "bq_0041"],
+    "graded_affected_count": 12, "graded_suite_count": 40,
+}
+
+
+def test_list_mv_created_returns_objects_with_lift(client, monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_created_objects",
+        lambda *a, **k: [{
+            "run_id": "r1", "suggestion_id": "sug1",
+            "full_name": "finance.sales.order_revenue",
+            "created_by": "analyst@example.com", "status": "DETACHED",
+            "baseline_eval_run_id": "eval_a1", "post_attach_eval_run_id": "eval_b2",
+            "on_regression_action": "DETACH_ONLY_NEVER_DROP",
+            "lift_report": _LIFT,
+        }],
+    )
+    monkeypatch.setattr(warehouse, "wh_load_mv_consent_by_run", lambda *a, **k: None)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN_UUID}/mv-created")
+    assert resp.status_code == 200
+    data = resp.json()
+    obj = data["created"][0]
+    assert obj["full_name"] == "finance.sales.order_revenue"
+    assert obj["status"] == "DETACHED"
+    # The 14-key lift shape is mirrored verbatim, not reshaped.
+    assert obj["lift_report"]["pre_accuracy_affected"] == 0.78
+    assert obj["lift_report"]["post_accuracy_affected"] == 0.71
+    assert obj["lift_report"]["needs_review_count"] == 3
+    assert obj["lift_report"]["pre_eval_run_id"] == "eval_a1"
+    assert data["downgrade_reason"] is None
+
+
+def test_list_mv_created_surfaces_downgrade_reason(client, monkeypatch):
+    monkeypatch.setattr(warehouse, "wh_load_mv_created_objects", lambda *a, **k: [])
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_consent_by_run",
+        lambda *a, **k: {"run_id": "r1", "downgrade_reason": "grant revoked before trigger"},
+    )
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN_UUID}/mv-created")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["created"] == []
+    assert data["downgrade_reason"] == "grant revoked before trigger"
+
+
+def test_list_mv_created_tolerates_a_missing_lift_report(client, monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_created_objects",
+        lambda *a, **k: [{
+            "run_id": "r1", "suggestion_id": "sug1",
+            "full_name": "finance.sales.order_revenue",
+            "status": "ATTACHED",
+        }],
+    )
+    monkeypatch.setattr(warehouse, "wh_load_mv_consent_by_run", lambda *a, **k: None)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN_UUID}/mv-created")
+    assert resp.status_code == 200
+    obj = resp.json()["created"][0]
+    assert obj["status"] == "ATTACHED"
+    assert obj["lift_report"] is None
+
+
+def test_list_mv_created_returns_empty_on_read_failure(client, monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("warehouse asleep")
+
+    monkeypatch.setattr(warehouse, "wh_load_mv_created_objects", _boom)
+    monkeypatch.setattr(warehouse, "wh_load_mv_consent_by_run", lambda *a, **k: None)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN_UUID}/mv-created")
+    assert resp.status_code == 200
+    assert resp.json() == {"run_id": _RUN_UUID, "created": [], "downgrade_reason": None}
+
+
 # ── Trigger threading ──────────────────────────────────────────────────────
 
 
