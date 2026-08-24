@@ -117,6 +117,19 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   and gap-report changes ride inside the code commit that made them
   necessary (MV-D9 already requires same-commit gap-report refresh).
   Exception: a factual error that would misdirect the next prompt.
+- METRIC VIEW BEST PRACTICES: before authoring or reviewing metric view YAML,
+  joins, level-of-detail semantics, validation queries, or Genie-facing MV
+  metadata, read the skills under
+  /Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+  — SKILL.md plus references/ (yaml-reference, advanced-patterns,
+  composability-patterns, level-of-detail, querying-metric-views,
+  validation-checklist, validation-queries, implementation-workflow) and
+  scripts/validate_metric_view.py. This is a standing NAMED EXCEPTION to the
+  in-repository context rule above, and the only one. It is external,
+  machine-local guidance: it informs generated YAML and validation but never
+  outranks repo reality, the gap report, or MV-D8 below. If the path is not
+  present on this machine, proceed without it — do not block, and do not
+  substitute a different checkout.
 - GENERATED YAML conforms to the generation quality standard in POV Part 4
   (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
   window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
