@@ -447,3 +447,115 @@ the assertions are reproducible):
 **Not yet run:** Tier 2 (`-k "scenario_a or scenario_b"`, `max_attempts=1`) — the
 next entry records the live A/B results. This entry records only the fixture
 config so the run is reproducible.
+
+### 2026-08-25 — Tier 2 (Scenarios A + B), against redeployed Prompt 15.3 (`e65cc5a6`)
+
+**Code under test.** Committed `e65cc5a6` (Prompt 15.3 — view-grained bundles,
+per-measure suppression fan-out, justified EMPTY / MV-D30), **redeployed** to the
+`fevm-serverless-stable` app before this run (the runbook's own redeploy rule —
+15.3 changed the proposal grain and generation semantics, so a Tier that
+validates the deployed app must run against the redeployed code). An earlier Tier
+2 attempt on 2026-08-25 (job `893007930871503`, then `run2`) is **VOID** — it ran
+mid-edit against a tree where `TABLE_MV_SUPPRESSIONS` was not yet importable, so
+`mv_state` failed on import and the result was a stale-tree artifact, not an A/B
+signal. This entry is the clean re-run after commit + redeploy.
+
+**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
+primary identity `prashanth.subrahmanyam@databricks.com` (PAT; `current_user.me()`
+gate passed). GSO `serverless_stable_6t92c3_catalog.genie_space_optimizer`,
+warehouse `41cfe645e10807a4`.
+
+**Config present (names only):** Tier 1 config plus `MV_E2E_SPACE_ID =
+01f1a04003201e38b6f66cddc8d7d0ee` (the Tier 2-prep `mv-e2e-tier2-tpch` fixture,
+built in the entry above). `GSO_JOB_ID` is now a **real trigger** (not a gate).
+Scenario B denies the primary identity via `MV_E2E_DENIED_CATALOG/SCHEMA` default
+`samples.tpch`. The app service principal holds `CAN_MANAGE` on the fixture space
+(granted after the first real job surfaced the missing-SP-grant `PermissionDenied`
+— see the fixture recipe note).
+
+**Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k "scenario_a
+or scenario_b" -v -s` (3094.49s = **51m34s**; serialized; xdist refused).
+
+**Results (1 passed, 2 failed):**
+
+| Scenario | Test | Result |
+|---|---|---|
+| A — `suggest_only` run serves DDL + GRANT, creates no MV | `test_scenario_a_suggest_only` | **FAIL.** The optimization run reached `SUCCESS` and persisted ≥1 candidate (both asserts passed), but `GET /runs/{run_id}/mv-ddl` returned **404**. Verbatim below. |
+| B — denied-permission probe verdict | `test_scenario_b_probe_insufficient` | **PASS** — the probe on the read-only denied schema returns a non-SUFFICIENT verdict, as designed. |
+| B — auto-downgrade run creates nothing, records a reason | `test_scenario_b_run_auto_downgrades` | **FAIL.** The downgraded run reached `SUCCESS` and created **no** MV (that assert passed), but `downgrade_reason` was `None` on `/runs/{run_id}/mv-created`. Verbatim below. |
+
+**Verbatim failure — `test_scenario_a_suggest_only`:**
+
+```
+    ddl_resp = api_primary.get(f"/api/auto-optimize/runs/{run_id}/mv-ddl")
+>       assert ddl_resp.status_code == 200, ddl_resp.text
+E       AssertionError: {"detail":"No metric view DDL artifact for this run."}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/e2e/test_mv_advisor_e2e.py:227: AssertionError
+```
+
+**Verbatim failure — `test_scenario_b_run_auto_downgrades`:**
+
+```
+        created = api_primary.get(f"/api/auto-optimize/runs/{run_id}/mv-created").json()
+        assert created["created"] == [], "a downgraded run must create NO metric view"
+>       assert created["downgrade_reason"], "downgrade left no downgrade_reason on the run"
+E       AssertionError: downgrade left no downgrade_reason on the run
+E       assert None
+
+tests/e2e/test_mv_advisor_e2e.py:332: AssertionError
+```
+
+**Characterization (findings, not fixed — per the ground rules). Both mirrored as
+gap-report rows (MV-D9) in `docs/design/mv-advisor-gap-report.md`.**
+
+- **Scenario A — the in-job twin of the Prompt 15.1 finding, reborn at the view
+  grain.** The exact `404 {"detail":"No metric view DDL artifact for this run."}`
+  that 15.1 resolved for the *standalone suggest* path has reappeared on the
+  *in-job* `suggest_only` path. 15.1's read-side fallback (`get_mv_ddl` →
+  candidate `yaml_text`) still works for Scenario D because `mv_suggest._persist`
+  writes `yaml_text` unconditionally on `rendered.ok`; but Scenario A goes through
+  the in-job engine, where **both** `write_ddl_artifact` and the candidate's
+  `yaml_text` are gated on `rendered.ok` (`mv_advisor.py:1346-1348`). Prime
+  suspect introduced by MV-D30: the view-grained **bundle** body does not render
+  `ok` on the in-job path (or the bundle's rendered body is not propagated to the
+  in-job persist), so neither the run artifact nor the fallback resolves and
+  `/mv-ddl` 404s even though the candidate row exists. To confirm in the fix
+  prompt: dump the Scenario-A candidate row's `yaml_text` and the bundle
+  `rendered.ok` on the in-job path; do **not** assume — the unit suite is green
+  because it covers the standalone `_persist` writer, not the in-job bundle
+  render. This is a real 15.3 regression signal, not a fixture issue.
+
+- **Scenario B — downgrade recorded no `downgrade_reason`.** The probe half is
+  green (verdict is non-SUFFICIENT), and the run correctly created no MV, but the
+  reason the create was abandoned is absent on `/runs/{run_id}/mv-created`. Two
+  candidate loci, to be told apart in triage: (a) the downgrade path wrote no
+  `downgrade_reason` (`mv_create.verify_consent` / `mv_entitlement.verify`), or
+  (b) it was written but the `/mv-created` response does not surface it. This is
+  the **first live Tier-2 observation of B's run-half** (the prior Tier 2 was
+  VOID), so whether it is a 15.3 regression or pre-existing is **undetermined** —
+  the create/downgrade path is largely untouched by MV-D30 (only the proposal
+  grain changed), which points more toward pre-existing or environmental than a
+  15.3 regression. Flag for the reviewer's triage; not fixed here.
+
+**Eval budget spent.** Both scenarios triggered real optimization jobs
+(`max_attempts=1`), which consume the workspace's bounded native benchmark eval
+for the optimization loop's iteration-0. The **MV-lift subset eval is Tier 3
+only** and was not spent here.
+
+**Teardown.** Neither scenario creates a persisted UC object (A is `suggest_only`;
+B downgraded and created nothing), so there was nothing to drop. The fixture space
+and scratch schema are left in place for reuse.
+
+**Retries:** none — this is the single clean post-redeploy run; both failures are
+deterministic (the earlier VOID run is not counted as a retry, it tested a
+different, stale tree).
+
+**Manual UI smoke checklist:** pending — the reviewer runs it against the deployed
+app after the 15.4 / 12c-Part-2 surfaces land, before Prompt 16.
+
+**Tier 3:** held behind the reviewer's explicit go (and behind the redeploy rule),
+unchanged by this run. The two findings above are triage input for that go, not a
+blocker recorded as fixed.

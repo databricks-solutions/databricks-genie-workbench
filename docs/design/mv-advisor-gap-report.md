@@ -2183,3 +2183,76 @@ MV-D10 change the register forbids re-deriving).
    exposure matrix is unchanged (the render source flows in-memory into the
    already-SERVED `yaml_text`). Exit: Scenario D BYO leg's `CREATE VIEW`
    executes a literal-bearing measure — recorded in the runbook's rerun entry.
+
+### 2026-08-25 — Tier 2 (Scenario A), in-job `suggest_only` run has no servable `mv-ddl` — OPEN (finding)
+
+**Observed.** First clean Tier 2 A/B run against the **redeployed** Prompt 15.3
+tree (`e65cc5a6`; the earlier attempt was VOID on a stale-import tree).
+`test_scenario_a_suggest_only` reaches `SUCCESS` and persists ≥1 candidate, then:
+
+```
+    ddl_resp = api_primary.get(f"/api/auto-optimize/runs/{run_id}/mv-ddl")
+>       assert ddl_resp.status_code == 200, ddl_resp.text
+E       AssertionError: {"detail":"No metric view DDL artifact for this run."}
+E       assert 404 == 200
+
+tests/e2e/test_mv_advisor_e2e.py:227: AssertionError
+```
+
+**Impact.** This is the **in-job twin of the Prompt 15.1 finding** (above),
+reborn at the view grain. 15.1 resolved the same 404 for the *standalone suggest*
+path by falling back to the candidate's `yaml_text`; Scenario D stays green
+because `mv_suggest._persist` writes `yaml_text` unconditionally on `rendered.ok`.
+Scenario A drives the **in-job** engine instead, where both `write_ddl_artifact`
+and the candidate `yaml_text` are gated on `rendered.ok` (`mv_advisor.py:1346-1348`,
+the bundle persist/artifact pair). So a candidate persists but neither the
+run-scoped `mv_candidate_ddl` artifact nor the 15.1 fallback resolves, and the
+run-scoped endpoint 404s. The IQ-Scan / run-output "copy-ready DDL" contract is
+broken for any in-job `suggest_only` run whose proposal is a bundle.
+
+**Prime suspect (verify in the fix prompt, do not assume).** MV-D30's view-grained
+**bundle** body either does not render `ok` on the in-job path, or its rendered
+body is not propagated into the in-job persist — so `rendered.ok` is False and the
+gated writes are skipped. The offline unit suite is green because it covers the
+standalone `_persist` writer, not the in-job bundle render, which is exactly the
+gap a live Tier catches. Concrete next step: dump the Scenario-A candidate row's
+`yaml_text` and the bundle `rendered.ok` on the in-job path; decide whether the
+fix is to make the bundle render `ok` (renderer), to propagate the bundle body to
+the in-job persist (engine wiring), or to extend the read-side fallback to a
+bundle row that legitimately carries no single-object DDL. A **real 15.3
+regression signal**, not a fixture issue. Verbatim failure and full config:
+`scripts/e2e/mv_advisor_e2e.md` → Run record → 2026-08-25 Tier 2.
+
+### 2026-08-25 — Tier 2 (Scenario B), auto-downgraded run records no `downgrade_reason` — OPEN (finding, triage undetermined)
+
+**Observed.** Same run. The probe half is green
+(`test_scenario_b_probe_insufficient` — the denied read-only schema yields a
+non-SUFFICIENT verdict). The run half creates no MV (correct) but records no
+reason:
+
+```
+        created = api_primary.get(f"/api/auto-optimize/runs/{run_id}/mv-created").json()
+        assert created["created"] == [], "a downgraded run must create NO metric view"
+>       assert created["downgrade_reason"], "downgrade left no downgrade_reason on the run"
+E       AssertionError: downgrade left no downgrade_reason on the run
+E       assert None
+
+tests/e2e/test_mv_advisor_e2e.py:332: AssertionError
+```
+
+**Impact.** The downgrade transparency contract (POV §7.7.1 `downgrade_reason`;
+UI smoke item 10) is unmet: a create_and_attach run that re-verified to a
+non-SUFFICIENT verdict downgraded to `suggest_only` and created nothing, but the
+surface that should explain *why* returns `None`.
+
+**Triage undetermined — first live Tier-2 observation of B's run-half** (the prior
+Tier 2 was VOID). Two candidate loci to tell apart: (a) the downgrade path wrote
+no `downgrade_reason` — `mv_create.verify_consent` / `mv_entitlement.verify` (the
+gap-report row above notes `verify` "only ever returns … with a
+`downgrade_reason`", so a genuine downgrade should carry one); or (b) it was
+written to the run/created row but the `/runs/{run_id}/mv-created` response
+assembly does not surface it. Because MV-D30 left the create/downgrade path
+untouched except the proposal grain, this is **more likely pre-existing or
+environmental than a 15.3 regression** — but that is a hypothesis for the
+reviewer's triage, not a conclusion. Not fixed here. Verbatim and config:
+`scripts/e2e/mv_advisor_e2e.md` → Run record → 2026-08-25 Tier 2.
