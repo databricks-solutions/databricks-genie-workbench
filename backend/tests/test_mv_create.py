@@ -385,6 +385,80 @@ def test_decision_records_and_flips_rerun(client, monkeypatch):
     assert recorded[0]["decided_by"] == "analyst@example.com"
 
 
+def test_reject_fans_out_to_per_measure_suppression(client, monkeypatch):
+    """MV-D30 as-implemented (Prompt 15.3): rejecting a view-grained bundle must
+    suppress each member measure, not just the bundle key. The bundle's
+    dedup_fingerprint is membership-sensitive, so recording the bundle decision
+    alone lets a rejected measure resurface inside a differently-membered bundle.
+    The router fans the rejection out to the per-measure suppression ledger,
+    reading member fingerprints from the row's evidence.measures[]."""
+    recorded: list[dict] = []
+    suppressed: list[dict] = []
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "bundle1",
+            "dedup_fingerprint": "bundle-fp",
+            "evidence": {"measures": [
+                {"dedup_fingerprint": "m-fp-1"},
+                {"dedup_fingerprint": "m-fp-2"},
+            ]},
+        }],
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_record_mv_candidate_decision",
+        lambda ws, warehouse_id, **kw: recorded.append(kw),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_suppress_mv_measures",
+        lambda ws, warehouse_id, **kw: suppressed.append(kw),
+    )
+    resp = client.post(
+        "/api/auto-optimize/mv/proposals/bundle1/decision",
+        json={"space_id": "space-1", "decision": "rejected"},
+        headers={"x-forwarded-email": "analyst@example.com"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["approved_for_rerun"] is False
+    # The bundle-row decision is still recorded, keyed on the view-grained key.
+    assert recorded[0]["dedup_fingerprint"] == "bundle-fp"
+    # AND every member fingerprint is written to the suppression ledger,
+    # tagged with the originating bundle so the fan-out is auditable.
+    assert len(suppressed) == 1
+    assert set(suppressed[0]["measure_fingerprints"]) == {"m-fp-1", "m-fp-2"}
+    assert suppressed[0]["originating_suggestion_id"] == "bundle1"
+    assert suppressed[0]["target_space_id"] == "space-1"
+
+
+def test_approve_does_not_suppress_members(client, monkeypatch):
+    """Approval stays bundle-grained: approving a bundle records the decision but
+    never writes to the suppression ledger (per-measure partial approval is out
+    of scope — MV-D30 future note)."""
+    suppressed: list[dict] = []
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "bundle1",
+            "dedup_fingerprint": "bundle-fp",
+            "evidence": {"measures": [{"dedup_fingerprint": "m-fp-1"}]},
+        }],
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_record_mv_candidate_decision",
+        lambda ws, warehouse_id, **kw: None,
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_suppress_mv_measures",
+        lambda ws, warehouse_id, **kw: suppressed.append(kw),
+    )
+    resp = client.post(
+        "/api/auto-optimize/mv/proposals/bundle1/decision",
+        json={"space_id": "space-1", "decision": "approved"},
+    )
+    assert resp.status_code == 200
+    assert suppressed == []
+
+
 def test_decision_404_when_suggestion_not_in_space(client, monkeypatch):
     monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
     resp = client.post(

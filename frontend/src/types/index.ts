@@ -953,6 +953,17 @@ export interface MvConsentPayload {
 // One advisor proposal (a genie_opt_mv_candidates row). JSON columns arrive
 // decoded; confidence_score is 0–100; approved_for_rerun gates create_and_attach
 // (MV-D1). run_id is presentational only — never a state/fetch key (MV-D23).
+// One member measure of a view-grained bundle (MV-D30). A pre-15.3 single-measure
+// proposal reads back as a one-element `measures`, so every proposal is a bundle.
+export interface MvProposalMeasure {
+  display_name: string | null
+  expr: string | null
+  dedup_fingerprint: string | null
+  recurrence: number | null
+  provenance_count: number | null
+  benchmark_question_ids: string[] | null
+}
+
 export interface MvProposal {
   suggestion_id: string
   dedup_fingerprint: string
@@ -962,6 +973,7 @@ export interface MvProposal {
   confidence_score: number | null
   tier: string | null
   proposed_object: string | null
+  measures: MvProposalMeasure[]
   score_components: Record<string, unknown> | null
   evidence: Record<string, unknown> | null
   provenance: Record<string, unknown> | null
@@ -1003,6 +1015,10 @@ export interface MvSuggestResponse {
   run_id: string
   status: string
   skip_reason: string | null
+  // Prompt 15.3 governance ladder: disambiguates the two NO_CANDIDATES empties.
+  // 0 ⇒ nothing recurring found; > 0 with NO_CANDIDATES ⇒ every recurring
+  // measure is already governed (the "you're in good shape" confidence empty).
+  measures_found: number | null
   error: string | null
   proposals: MvProposal[]
 }

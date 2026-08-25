@@ -1294,3 +1294,149 @@ def test_ddl_artifact_persists_raw_yaml_text(monkeypatch) -> None:
     # The wrapped DDL still ships too; yaml_text is additive, not a replacement.
     assert "ddl" in payload
     assert rendered.yaml_text in payload["ddl"]
+
+
+# ── View-grained consolidation + fan-out suppression (MV-D30, Prompt 15.3) ──
+
+ORDERS_SQL = (
+    "SELECT SUM(o_totalprice) AS total_order_value, o_orderpriority "
+    "FROM samples.tpch.orders GROUP BY o_orderpriority"
+)
+AVG_QTY_SQL = (
+    "SELECT AVG(l_quantity) AS avg_quantity, l_returnflag "
+    f"FROM {LINEITEM} GROUP BY l_returnflag"
+)
+
+
+def _rows(*specs):
+    """Flatten ``(sql, prefix, times)`` specs into distinct-id eval rows."""
+    rows = []
+    for sql, prefix, times in specs:
+        rows.extend(eval_row(sql, f"{prefix}_{i}") for i in range(times))
+    return rows
+
+
+def test_bundle_grain_resolves_a_three_part_source() -> None:
+    obj, concept = mv_advisor._bundle_grain(["cat.sch.orders"])
+    assert obj == "cat.sch.orders_metrics"
+    assert concept == "orders_metrics"
+
+
+def test_bundle_grain_without_a_catalog_is_dropped_not_rendered_blank() -> None:
+    """MV-D30 validate-don't-render: a two-part source has no catalog to place
+    the view in, so the bundle has no resolvable object and ``_build_bundle``
+    drops it rather than surfacing a blank-named card."""
+    obj, _concept = mv_advisor._bundle_grain(["sales.orders"])
+    assert obj is None
+
+
+def test_measures_on_one_source_set_consolidate_into_one_bundle(monkeypatch) -> None:
+    """MV-D30: two recurring measures over one table become ONE view proposal."""
+    _stages, _artifacts, upserts = patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8))
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert len(outcome.proposals) == 1
+    bundle = outcome.proposals[0]
+    assert bundle.evidence["bundle"] is True
+    assert bundle.evidence["measure_count"] == 2
+    assert len(bundle.evidence["measures"]) == 2
+    assert bundle.proposed_object.endswith("lineitem_metrics")
+    assert len(upserts) == 1
+    # Each member carries its own per-measure fingerprint — the grain suppression
+    # cross-references — and the view key is not any member's key.
+    member_fps = {m["dedup_fingerprint"] for m in bundle.evidence["measures"]}
+    assert len(member_fps) == 2
+    assert bundle.dedup_fingerprint not in member_fps
+
+
+def test_measures_on_different_source_sets_are_separate_bundles(monkeypatch) -> None:
+    _stages, _artifacts, upserts = patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 8), (ORDERS_SQL, "ord", 8))
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 2
+    objects = sorted(p.proposed_object for p in outcome.proposals)
+    assert any(o.endswith("lineitem_metrics") for o in objects)
+    assert any(o.endswith("orders_metrics") for o in objects)
+    assert len(upserts) == 2
+
+
+def test_a_suppressed_member_is_dropped_before_bundling(monkeypatch) -> None:
+    """A rejected measure never enters a bundle, and dropping it changes the
+    view key (membership drives the MV-D30 bundle fingerprint)."""
+    patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8))
+    baseline = advise(monkeypatch, [iteration(rows)])
+    members = baseline.proposals[0].evidence["measures"]
+    victim = members[0]["dedup_fingerprint"]
+
+    monkeypatch.setattr(
+        mv_advisor, "load_mv_suppressed_fingerprints", lambda *a, **k: {victim}
+    )
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 1
+    remaining = {m["dedup_fingerprint"] for m in outcome.proposals[0].evidence["measures"]}
+    assert victim not in remaining
+    assert outcome.proposals[0].dedup_fingerprint != baseline.proposals[0].dedup_fingerprint
+    assert outcome.candidates_dropped_suppressed == 1
+
+
+def test_rejected_members_never_return_when_a_new_measure_joins_the_grain(
+    monkeypatch,
+) -> None:
+    """The load-bearing MV-D30 invariant: reject a bundle, then a later scan finds
+    a new recurring measure on the same grain — the resurfaced bundle contains
+    only the unsuppressed member, never the rejected ones back (the view-grained
+    reincarnation of test_re_proposing_does_not_resurrect_a_rejected_candidate)."""
+    patch_writes(monkeypatch)
+    rows1 = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8))
+    first = advise(monkeypatch, [iteration(rows1)])
+    rejected = {m["dedup_fingerprint"] for m in first.proposals[0].evidence["measures"]}
+    assert len(rejected) == 2
+
+    # The reject fan-out suppressed both members; the next scan adds a 3rd measure.
+    monkeypatch.setattr(
+        mv_advisor, "load_mv_suppressed_fingerprints", lambda *a, **k: set(rejected)
+    )
+    rows2 = rows1 + _rows((AVG_QTY_SQL, "avg", 8))
+    second = advise(monkeypatch, [iteration(rows2)])
+
+    assert len(second.proposals) == 1
+    survivors = {m["dedup_fingerprint"] for m in second.proposals[0].evidence["measures"]}
+    assert survivors.isdisjoint(rejected)
+    assert len(survivors) == 1
+
+
+def test_when_every_member_is_suppressed_no_bundle_surfaces(monkeypatch) -> None:
+    patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8))
+    first = advise(monkeypatch, [iteration(rows)])
+    all_fps = {m["dedup_fingerprint"] for m in first.proposals[0].evidence["measures"]}
+
+    monkeypatch.setattr(
+        mv_advisor, "load_mv_suppressed_fingerprints", lambda *a, **k: set(all_fps)
+    )
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert outcome.proposals == ()
+    assert outcome.candidates_dropped_suppressed == 2
+
+
+def test_the_in_job_advisor_injects_the_suppression_reader(monkeypatch) -> None:
+    """MV-D30: the Spark (in-job) caller MUST pass a decisions-reader, or the job
+    would re-propose what the IQ Scan user rejected and the two surfaces would
+    disagree about what 'rejected' means."""
+    captured: dict = {}
+
+    def fake_advise(**kwargs):
+        captured.update(kwargs)
+        return AdvisorOutcome(status=mv_advisor.STATUS_COMPLETE)
+
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", fake_advise)
+    patch_writes(monkeypatch)
+    advise(monkeypatch, [iteration(recurring())])
+
+    assert callable(captured.get("read_suppressed_fingerprints"))

@@ -27,6 +27,7 @@ from backend.models import (
     MvProposal,
     MvProposalDecisionRequest,
     MvProposalDecisionResponse,
+    MvProposalMeasure,
     MvProposalsResponse,
     MvRegisterRequest,
     MvRegisterResponse,
@@ -1666,6 +1667,39 @@ def _mv_str(value: Any) -> str | None:
     return text if text and text.lower() not in ("nan", "nat", "none") else None
 
 
+def _mv_measures_from_row(row: dict) -> list[MvProposalMeasure]:
+    """The bundle's member measures (MV-D30), read from ``evidence.measures``.
+
+    A pre-15.3 single-measure row carries no ``evidence.measures``; it reads back
+    as a one-element bundle synthesized from the row itself, so the UI can treat
+    every proposal uniformly as a bundle. The per-measure ``dedup_fingerprint``
+    is preserved on each member because that — not the view-grained bundle key —
+    is the identity suppression cross-references."""
+    evidence = row.get("evidence")
+    raw = evidence.get("measures") if isinstance(evidence, dict) else None
+    if isinstance(raw, list) and raw:
+        members: list[MvProposalMeasure] = []
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            qids = m.get("benchmark_question_ids")
+            members.append(MvProposalMeasure(
+                display_name=_mv_str(m.get("display_name")),
+                expr=_mv_str(m.get("expr")),
+                dedup_fingerprint=_mv_str(m.get("dedup_fingerprint")),
+                recurrence=_safe_int(m.get("recurrence")),
+                provenance_count=_safe_int(m.get("provenance_count")),
+                benchmark_question_ids=[str(q) for q in qids] if isinstance(qids, list) else None,
+            ))
+        if members:
+            return members
+    legacy_qids = evidence.get("benchmark_question_ids") if isinstance(evidence, dict) else None
+    return [MvProposalMeasure(
+        dedup_fingerprint=str(row.get("dedup_fingerprint") or "") or None,
+        benchmark_question_ids=[str(q) for q in legacy_qids] if isinstance(legacy_qids, list) else None,
+    )]
+
+
 def _mv_proposal_from_row(row: dict) -> MvProposal:
     """Map a decoded ``genie_opt_mv_candidates`` row to the API shape."""
     return MvProposal(
@@ -1677,6 +1711,7 @@ def _mv_proposal_from_row(row: dict) -> MvProposal:
         confidence_score=_safe_float(row.get("confidence_score")),
         tier=_mv_str(row.get("tier")),
         proposed_object=_mv_str(row.get("proposed_object")),
+        measures=_mv_measures_from_row(row),
         score_components=row.get("score_components") if isinstance(row.get("score_components"), dict) else None,
         evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else None,
         provenance=row.get("provenance") if isinstance(row.get("provenance"), dict) else None,
@@ -1857,6 +1892,7 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
         run_id=run_id,
         status=getattr(outcome, "status", "FAILED"),
         skip_reason=getattr(outcome, "skip_reason", None),
+        measures_found=getattr(outcome, "measures_found", None),
         error=getattr(outcome, "error", None),
         proposals=[_mv_proposal_from_row(r) for r in rows],
     )
@@ -2455,6 +2491,7 @@ async def decide_mv_proposal(
     from genie_space_optimizer.common.warehouse import (
         wh_load_mv_candidates,
         wh_record_mv_candidate_decision,
+        wh_suppress_mv_measures,
     )
 
     rows = await _offload(
@@ -2485,6 +2522,33 @@ async def decide_mv_proposal(
             suppressed_until=body.suppressed_until,
             approved_for_rerun=approved_for_rerun,
         )
+        # MV-D30 as-implemented: a rejection FANS OUT to per-measure suppression.
+        # The bundle row's dedup_fingerprint is view-grained and changes when
+        # membership changes, so recording the bundle decision alone cannot stop
+        # a rejected measure resurfacing inside a differently-membered bundle.
+        # Writing each member's per-measure fingerprint into the suppression
+        # ledger is what makes the rejection stick to the measures. Legacy
+        # one-element rows carry no measures[] and are covered by the reader's
+        # rejected-candidate union, so no fan-out is needed for them.
+        if body.decision == "rejected":
+            evidence = match.get("evidence")
+            member_fps = [
+                str(m.get("dedup_fingerprint"))
+                for m in (evidence.get("measures") if isinstance(evidence, dict) else None) or []
+                if isinstance(m, dict) and m.get("dedup_fingerprint")
+            ]
+            if member_fps:
+                await _offload(
+                    wh_suppress_mv_measures,
+                    get_service_principal_client(),
+                    config.warehouse_id,
+                    catalog=config.catalog,
+                    schema=config.schema_name,
+                    target_space_id=body.space_id,
+                    measure_fingerprints=member_fps,
+                    originating_suggestion_id=suggestion_id,
+                    suppressed_until=body.suppressed_until,
+                )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:

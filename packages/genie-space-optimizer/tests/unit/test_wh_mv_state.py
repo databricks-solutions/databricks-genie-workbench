@@ -23,6 +23,7 @@ from genie_space_optimizer.optimization.ddl import (
     ADDITIVE_COLUMN_MIGRATIONS,
     _GENIE_OPT_MV_CANDIDATES_DDL,
     _GENIE_OPT_MV_CREATED_OBJECTS_DDL,
+    _GENIE_OPT_MV_SUPPRESSIONS_DDL,
 )
 from genie_space_optimizer.common.config import (
     TABLE_MV_CANDIDATES,
@@ -569,3 +570,94 @@ def test_load_consent_by_run_is_none_when_absent(monkeypatch):
     assert warehouse.wh_load_mv_consent_by_run(
         _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", run_id="r1",
     ) is None
+
+
+# ── Per-measure suppression fan-out (MV-D30 as-implemented) ───────────────
+
+
+def test_suppress_merges_one_row_per_fingerprint_on_the_measure_key(executed):
+    written = warehouse.wh_suppress_mv_measures(
+        _FakeWorkspaceClient(), "wh1",
+        catalog="main", schema="gso", target_space_id="space-1",
+        measure_fingerprints=["fpA", "fpB"], originating_suggestion_id="sug1",
+    )
+    assert written == ["fpA", "fpB"]
+    assert len(executed) == 2
+    for sql in executed:
+        assert sql.startswith("MERGE INTO main.gso.genie_opt_mv_suppressions")
+        assert (
+            "ON t.target_space_id = s.target_space_id "
+            "AND t.measure_fingerprint = s.measure_fingerprint" in sql
+        )
+        assert "WHEN MATCHED THEN UPDATE SET" in sql
+        assert "WHEN NOT MATCHED THEN INSERT" in sql
+
+
+def test_suppress_writes_only_columns_the_table_declares(executed):
+    warehouse.wh_suppress_mv_measures(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="s", measure_fingerprints=["fpA"],
+        originating_suggestion_id="sug1",
+    )
+    sql = executed[-1]
+    written = {
+        col for col in (
+            "target_space_id", "measure_fingerprint", "suppressed_until",
+            "originating_suggestion_id", "reason", "created_at", "updated_at",
+        )
+        if col in sql
+    }
+    assert len(written) == 7
+    for col in written:
+        assert col in _GENIE_OPT_MV_SUPPRESSIONS_DDL
+
+
+def test_suppress_escapes_quotes_in_the_fingerprint(executed):
+    warehouse.wh_suppress_mv_measures(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="s", measure_fingerprints=["f' OR '1'='1"],
+    )
+    assert "'f'' OR ''1''=''1'" in executed[-1]
+
+
+def test_suppress_no_op_on_empty_fingerprints(executed):
+    written = warehouse.wh_suppress_mv_measures(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="s", measure_fingerprints=["", None],
+    )
+    assert written == []
+    assert executed == []
+
+
+def test_load_suppressed_unions_ledger_and_legacy_rejected(monkeypatch):
+    def fake_query(ws, warehouse_id, sql):
+        if "genie_opt_mv_suppressions" in sql:
+            return pd.DataFrame({"measure_fingerprint": ["fpA"]})
+        if "genie_opt_mv_candidates" in sql:
+            return pd.DataFrame({"dedup_fingerprint": ["fpB"]})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", fake_query)
+    result = warehouse.wh_load_mv_suppressed_fingerprints(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="s",
+    )
+    assert result == {"fpA", "fpB"}
+
+
+def test_load_suppressed_scopes_to_space_and_filters_non_expired(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (seen.append(sql), pd.DataFrame())[1],
+    )
+    warehouse.wh_load_mv_suppressed_fingerprints(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="space-1",
+    )
+    ledger = next(s for s in seen if "genie_opt_mv_suppressions" in s)
+    assert "target_space_id = 'space-1'" in ledger
+    assert (
+        "suppressed_until IS NULL OR suppressed_until > current_timestamp()"
+        in ledger
+    )

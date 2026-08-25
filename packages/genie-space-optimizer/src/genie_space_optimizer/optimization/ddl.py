@@ -7,6 +7,7 @@ from genie_space_optimizer.common.config import (
     TABLE_MV_CANDIDATES,
     TABLE_MV_CONSENTS,
     TABLE_MV_CREATED_OBJECTS,
+    TABLE_MV_SUPPRESSIONS,
     TABLE_PATCHES,
     TABLE_RUNS,
     TABLE_STAGES,
@@ -197,7 +198,7 @@ TBLPROPERTIES (
 
 _GENIE_OPT_MV_CANDIDATES_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_candidates (
-    dedup_fingerprint   STRING        NOT NULL COMMENT 'MV-D7 idempotency key: sha256(space_id | canonical_measure_expr | sorted_source_set). Upsert key together with target_space_id; also the content_hash of the rendered-DDL genie_opt_artifacts row for this candidate',
+    dedup_fingerprint   STRING        NOT NULL COMMENT 'MV-D7/MV-D30 idempotency key. Legacy (pre-15.3) single-measure rows: sha256(space_id | canonical_measure_expr | sorted_source_set). View-grained bundle rows (MV-D30, Prompt 15.3): sha256(space_id | sorted member dedup_fingerprints | sorted_source_set) — one row per view. Upsert key together with target_space_id; also the content_hash of the rendered-DDL genie_opt_artifacts row for this candidate. Per-measure suppression is tracked separately in genie_opt_mv_suppressions because this key changes when bundle membership changes',
     target_space_id     STRING        NOT NULL COMMENT 'Genie Agent the candidate is proposed for',
     suggestion_id       STRING        NOT NULL COMMENT 'Stable proposal id surfaced to the UI and carried on approve/reject decisions',
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id — the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)',
@@ -278,6 +279,25 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+_GENIE_OPT_MV_SUPPRESSIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_suppressions (
+    target_space_id     STRING        NOT NULL COMMENT 'Genie Agent the suppressed measure belongs to. Upsert key together with measure_fingerprint',
+    measure_fingerprint STRING        NOT NULL COMMENT 'Per-measure dedup fingerprint (the MV-D10 identity grain): sha256(space_id | canonical_measure_expr | sorted_source_set) for a single measure. This is the grain suppression is enforced at, independent of which view bundle carried the measure',
+    suppressed_until    TIMESTAMP              COMMENT 'Rejection decay window — the advisor must not re-surface this measure inside any bundle before this timestamp. NULL means suppressed indefinitely (no decay)',
+    originating_suggestion_id STRING           COMMENT 'The bundle suggestion_id whose rejection fanned out to this per-measure suppression — the audit link back to the decision that created the row',
+    reason              STRING                 COMMENT 'Why the measure is suppressed, e.g. bundle_rejected',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the suppression was first written',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp — a re-rejection refreshes the window'
+)
+USING DELTA
+PARTITIONED BY (target_space_id)
+COMMENT 'Per-measure suppression ledger (MV-D30 as-implemented, Prompt 15.3) - one row per (target_space_id, measure_fingerprint). Bundle rejection fans out here so a rejected measure never resurfaces inside a future view bundle whose key changed with membership'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 _ALL_DDL: dict[str, str] = {
     TABLE_RUNS: _GENIE_OPT_RUNS_DDL,
     TABLE_STAGES: _GENIE_OPT_STAGES_DDL,
@@ -288,6 +308,7 @@ _ALL_DDL: dict[str, str] = {
     TABLE_MV_CANDIDATES: _GENIE_OPT_MV_CANDIDATES_DDL,
     TABLE_MV_CONSENTS: _GENIE_OPT_MV_CONSENTS_DDL,
     TABLE_MV_CREATED_OBJECTS: _GENIE_OPT_MV_CREATED_OBJECTS_DDL,
+    TABLE_MV_SUPPRESSIONS: _GENIE_OPT_MV_SUPPRESSIONS_DDL,
 }
 
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (

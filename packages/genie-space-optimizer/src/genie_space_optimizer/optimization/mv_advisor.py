@@ -90,7 +90,13 @@ from .mv_scoring import (
     metric_view_fields,
     persist_proposal,
     score_candidate,
+    suggestion_id_for,
     trusted_asset_definitions,
+)
+from .mv_state import (
+    load_mv_suppressed_fingerprints,
+    mv_bundle_fingerprint,
+    mv_candidate_fingerprint,
 )
 from .mv_signals import (
     REASON_NO_SCOPE,
@@ -181,6 +187,7 @@ class AdvisorOutcome:
     measures_found: int = 0
     candidates_scored: int = 0
     candidates_dropped_for_leakage: int = 0
+    candidates_dropped_suppressed: int = 0
     proposals_persisted: int = 0
     artifacts_written: int = 0
     echo_checks: tuple[str, ...] = ()
@@ -202,6 +209,7 @@ class AdvisorOutcome:
             "measures_found": self.measures_found,
             "candidates_scored": self.candidates_scored,
             "candidates_dropped_for_leakage": self.candidates_dropped_for_leakage,
+            "candidates_dropped_suppressed": self.candidates_dropped_suppressed,
             "proposals_persisted": self.proposals_persisted,
             "artifacts_written": self.artifacts_written,
             "echo_checks": sorted(set(self.echo_checks)),
@@ -759,6 +767,24 @@ def _proposed_object(measure: FingerprintRecurrence, concept: str) -> str | None
     return f"{catalog}.{schema}.{concept}_metrics"
 
 
+def _bundle_grain(source_tables: Sequence[str]) -> tuple[str | None, str]:
+    """Where a view-grained bundle would live, and its concept name (MV-D30).
+
+    The bundle is one metric view over one source-table set, so it is named for
+    the primary (first, sorted) source table's grain — ``{table}_metrics`` in
+    that table's own catalog.schema — not per measure. Returns ``(None, concept)``
+    when no source table is a three-part name: with no catalog to place the view
+    in, the bundle has no resolvable ``proposed_object`` and must be DROPPED as a
+    validation failure rather than surfaced as a blank card.
+    """
+    refs = _refs_from_tables(source_tables)
+    if not refs:
+        return None, "metrics"
+    catalog, schema, name = refs[0]
+    concept = f"{name}_metrics"
+    return f"{catalog}.{schema}.{concept}", concept
+
+
 def advisor_statuses(lineage: SignalResult, demand: SignalResult) -> dict[str, str]:
     """The L and D statuses this phase measured for one candidate (MV-D15).
 
@@ -1012,7 +1038,113 @@ def _advise(
             catalog=catalog,
             schema=schema,
         ),
+        # MV-D30: the in-job advisor honours the same per-measure suppression the
+        # IQ Scan user's rejections write, so the job never re-proposes what a
+        # user rejected and the two surfaces agree on "rejected".
+        read_suppressed_fingerprints=lambda: load_mv_suppressed_fingerprints(
+            spark, catalog, schema, target_space_id=space_id
+        ),
     )
+
+
+def _build_bundle(
+    *,
+    space_id: str,
+    source_tables: Sequence[str],
+    members: Sequence[tuple[ScoredProposal, MetricViewCandidate]],
+    table_columns: Mapping[str, tuple[ColumnFacts, ...]],
+    domain: str,
+    shapes: Any,
+    oracle: Any,
+) -> tuple[ScoredProposal, Any] | None:
+    """Consolidate one source-table set's PROPOSE members into ONE view (MV-D30).
+
+    The persisted grain becomes the view: members are rendered as one
+    multi-measure YAML through the single ``mv_yaml.generate``; the bundle key is
+    ``mv_bundle_fingerprint`` (a function of member fingerprints + source set);
+    confidence/tier come from the strongest member; evidence is the union,
+    carrying ``measures[]`` (each with its per-measure ``dedup_fingerprint`` so
+    suppression cross-references survive bundling). Returns ``None`` when the
+    grain has no resolvable ``proposed_object`` — a validation failure that is
+    DROPPED, never surfaced as a blank card.
+    """
+    proposed_object, concept = _bundle_grain(source_tables)
+    if not proposed_object:
+        logger.info(
+            "mv_advisor: dropping bundle over %s — no resolvable proposed_object "
+            "(MV-D30 validate-don't-render)", tuple(source_tables),
+        )
+        return None
+
+    # The strongest member drives confidence/tier and is the row we replace from;
+    # ties broken on fingerprint so the choice is deterministic across scans.
+    strongest_proposal, strongest_candidate = max(
+        members, key=lambda m: (m[0].confidence_score, m[0].dedup_fingerprint)
+    )
+
+    requests: list[MeasureRequest] = []
+    used_names: set[str] = set()
+    member_evidence: list[dict[str, Any]] = []
+    member_fps: list[str] = []
+    question_ids: set[str] = set()
+    # Members walked in fingerprint order so bundle rendering + evidence are
+    # deterministic regardless of scan order.
+    for proposal, candidate in sorted(members, key=lambda m: m[0].dedup_fingerprint):
+        base = (candidate.concept or "measure").strip("_") or "measure"
+        name = base
+        suffix = 2
+        while name in used_names:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used_names.add(name)
+        if candidate.measure_expr:
+            requests.append(MeasureRequest(name=name, expr=candidate.measure_expr))
+        member_fps.append(proposal.dedup_fingerprint)
+        rec = candidate.recurrence
+        qids = list(candidate.benchmark_question_ids)
+        question_ids.update(qids)
+        member_evidence.append({
+            "display_name": name,
+            "expr": candidate.measure_expr,
+            "dedup_fingerprint": proposal.dedup_fingerprint,
+            "recurrence": rec.recurrence,
+            "provenance_count": rec.provenance_count,
+            "curated_provenance_count": rec.curated_provenance_count,
+            "benchmark_question_ids": qids,
+        })
+
+    primary_refs = _refs_from_tables(source_tables)
+    primary_table = (
+        ".".join(primary_refs[0]) if primary_refs
+        else (source_tables[0] if source_tables else "")
+    )
+    profiling = MvProfiling(
+        source_table=primary_table,
+        table_columns={t: table_columns.get(t, ()) for t in source_tables},
+        measures=tuple(requests),
+        capabilities={},
+        domain=domain,
+    )
+    rep_candidate = replace(
+        strongest_candidate, proposed_object=proposed_object, concept=concept
+    )
+    rendered = generate(rep_candidate, profiling, shapes=shapes, oracle=oracle)
+
+    bundle_fp = mv_bundle_fingerprint(space_id, member_fps, source_tables)
+    evidence = dict(strongest_proposal.evidence)
+    evidence["bundle"] = True
+    evidence["measures"] = member_evidence
+    evidence["measure_count"] = len(member_evidence)
+    evidence["benchmark_question_ids"] = sorted(question_ids)
+    evidence["distinct_source_count"] = len(question_ids)
+    bundle_proposal = replace(
+        strongest_proposal,
+        suggestion_id=suggestion_id_for(bundle_fp),
+        dedup_fingerprint=bundle_fp,
+        proposed_object=proposed_object,
+        evidence=evidence,
+    )
+    return _with_generation_evidence(bundle_proposal, rendered), rendered
 
 
 def advise_from_corpus(
@@ -1031,6 +1163,7 @@ def advise_from_corpus(
     max_candidates: int | None,
     persist_proposal: Callable[[ScoredProposal, Any], bool],
     write_ddl_artifact: Callable[[ScoredProposal, Any], bool],
+    read_suppressed_fingerprints: Callable[[], set[str]] | None = None,
 ) -> AdvisorOutcome:
     """Corpus-agnostic advisor orchestration (MV-D23 scope item 2).
 
@@ -1102,13 +1235,39 @@ def advise_from_corpus(
     # contradicting a curated answer would reach PROPOSE unchallenged.
     trusted_assets = trusted_asset_definitions(applied_config)
 
+    # MV-D30 as-implemented: a rejected measure never resurfaces inside a bundle.
+    # The injected reader returns the per-measure fingerprints suppressed for this
+    # space (fan-out ledger ∪ legacy rejected rows); suppressed members are
+    # dropped BEFORE scoring so they cannot re-enter through a differently-
+    # membered bundle. The reader is injected by BOTH callers (the in-job Spark
+    # path and the backend suggest route), so the two surfaces agree on what
+    # "rejected" means; None means a caller that opted out of suppression (tests).
+    suppressed = read_suppressed_fingerprints() if read_suppressed_fingerprints else set()
+
     persisted = 0
     artifacts = 0
     dropped_for_leakage = 0
+    dropped_suppressed = 0
     echo_checks: list[str] = []
     proposals: list[ScoredProposal] = []
+    # PROPOSE suggestions collected for view-grained consolidation, keyed by
+    # source-table set (the natural grain key). CONFLICT and any other
+    # persistable-but-not-PROPOSE verdict keeps the per-measure path untouched, so
+    # its adjudication grain is unaffected by MV-D30.
+    bundles: dict[tuple[str, ...], list[tuple[ScoredProposal, MetricViewCandidate]]] = {}
 
+    # ── Pass 1: per-measure scoring (identity/leakage/dedup grain unchanged) ──
     for measure in measures:
+        measure_fp = mv_candidate_fingerprint(
+            space_id, measure.canonical_expr, measure.source_tables
+        )
+        if measure_fp in suppressed:
+            dropped_suppressed += 1
+            logger.info(
+                "mv_advisor: dropped measure %s — per-measure fingerprint is "
+                "suppressed (MV-D30 rejected-stays-rejected)", measure.fingerprint,
+            )
+            continue
         lineage_result, demand_result = _candidate_signals(
             measure, space_id=space_id, signal_reader=signal_reader
         )
@@ -1147,6 +1306,12 @@ def advise_from_corpus(
         if not proposal.is_persistable:
             continue
 
+        if proposal.is_suggestion:
+            key = tuple(sorted(candidate.source_tables))
+            bundles.setdefault(key, []).append((proposal, candidate))
+            continue
+
+        # Non-PROPOSE persistable (e.g. CONFLICT): keep the per-measure path.
         rendered = generate(
             candidate,
             profiling_for(candidate, table_columns=table_columns, domain=domain),
@@ -1156,11 +1321,31 @@ def advise_from_corpus(
         echo_checks.append(rendered.echo_check)
         proposal = _with_generation_evidence(proposal, rendered)
         proposals.append(proposal)
-
         if persist_proposal(proposal, rendered):
             persisted += 1
-
         if rendered.ok and write_ddl_artifact(proposal, rendered):
+            artifacts += 1
+
+    # ── Pass 2: consolidate each source-table set into ONE view proposal ──
+    for source_key, members in bundles.items():
+        built = _build_bundle(
+            space_id=space_id,
+            source_tables=source_key,
+            members=members,
+            table_columns=table_columns,
+            domain=domain,
+            shapes=scan.shapes,
+            oracle=oracle,
+        )
+        if built is None:
+            # No resolvable proposed_object — validation failure, never renders.
+            continue
+        bundle_proposal, rendered = built
+        echo_checks.append(rendered.echo_check)
+        proposals.append(bundle_proposal)
+        if persist_proposal(bundle_proposal, rendered):
+            persisted += 1
+        if rendered.ok and write_ddl_artifact(bundle_proposal, rendered):
             artifacts += 1
 
     return AdvisorOutcome(
@@ -1168,8 +1353,9 @@ def advise_from_corpus(
         statements_scanned=scan.statements_scanned,
         parse_failures=scan.parse_failures,
         measures_found=len(scan.measures),
-        candidates_scored=len(measures) - dropped_for_leakage,
+        candidates_scored=len(measures) - dropped_for_leakage - dropped_suppressed,
         candidates_dropped_for_leakage=dropped_for_leakage,
+        candidates_dropped_suppressed=dropped_suppressed,
         proposals_persisted=persisted,
         artifacts_written=artifacts,
         echo_checks=tuple(echo_checks),

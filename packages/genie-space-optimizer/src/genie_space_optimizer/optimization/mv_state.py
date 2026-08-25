@@ -38,6 +38,7 @@ from genie_space_optimizer.common.config import (
     TABLE_MV_CANDIDATES,
     TABLE_MV_CONSENTS,
     TABLE_MV_CREATED_OBJECTS,
+    TABLE_MV_SUPPRESSIONS,
 )
 from genie_space_optimizer.common.delta_helpers import (
     _fqn,
@@ -124,6 +125,31 @@ def mv_candidate_fingerprint(
 
     sources = sorted({str(s) for s in source_set if str(s)})
     material = "|".join([space_id, canonical_measure_expr, ",".join(sources)])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def mv_bundle_fingerprint(
+    space_id: str,
+    member_fingerprints: Iterable[str],
+    source_set: Iterable[str],
+) -> str:
+    """Return the MV-D30 view-grained dedup key for a consolidated bundle.
+
+    ``sha256(space_id | sorted member dedup_fingerprints | sorted_source_set)``.
+    One row per view: the key is a function of *which measures* the bundle
+    governs and *over what grain*, so two scans that find the same measures on
+    the same source set upsert onto one row. It deliberately CHANGES when
+    membership changes — which is exactly why a bundle rejection must fan out to
+    per-measure suppression (``suppress_mv_measures``) rather than relying on
+    this key to keep a rejected measure away.
+    """
+    if not space_id:
+        raise ValueError("space_id is required to fingerprint a bundle")
+    members = sorted({str(f) for f in member_fingerprints if str(f)})
+    if not members:
+        raise ValueError("a bundle needs at least one member fingerprint")
+    sources = sorted({str(s) for s in source_set if str(s)})
+    material = "|".join([space_id, ",".join(members), ",".join(sources)])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -329,6 +355,116 @@ def load_mv_candidates(
         _parse_json_columns(row, _CANDIDATE_JSON_COLUMNS)
         for row in df.to_dict(orient="records")
     ]
+
+
+# ── Per-measure suppressions (MV-D30 as-implemented, Prompt 15.3) ─────────
+
+
+def suppress_mv_measures(
+    spark: SparkSession,
+    *,
+    catalog: str,
+    schema: str,
+    target_space_id: str,
+    measure_fingerprints: Iterable[str],
+    originating_suggestion_id: str | None = None,
+    suppressed_until: str | None = None,
+    reason: str = "bundle_rejected",
+) -> list[str]:
+    """Fan a bundle rejection out to one suppression row per member measure.
+
+    Under MV-D30 the persisted proposal is a *view* whose ``dedup_fingerprint``
+    changes when its membership changes, so rejecting the bundle row alone would
+    not stop the same measures resurfacing inside a differently-membered bundle
+    (the ``test_re_proposing_does_not_resurrect_a_rejected_candidate`` defect
+    reborn at the view grain). Recording each member's per-measure fingerprint
+    here, at the MV-D10 identity grain, is what makes the rejection stick to the
+    measures rather than to one accidental bundling of them. Keyed on
+    ``(target_space_id, measure_fingerprint)`` so a re-rejection refreshes the
+    window rather than duplicating a row.
+    """
+    if not target_space_id:
+        raise ValueError("target_space_id is required to suppress measures")
+    written: list[str] = []
+    now = _now()
+    for fingerprint in measure_fingerprints:
+        if not fingerprint:
+            continue
+        merge_row(
+            spark,
+            catalog,
+            schema,
+            TABLE_MV_SUPPRESSIONS,
+            {"target_space_id": target_space_id, "measure_fingerprint": fingerprint},
+            {
+                "suppressed_until": suppressed_until,
+                "originating_suggestion_id": originating_suggestion_id,
+                "reason": reason,
+                "updated_at": now,
+            },
+            insert_only_cols={"created_at": now},
+        )
+        written.append(fingerprint)
+    if written:
+        logger.info(
+            "Suppressed %d measure fingerprint(s) for space %s (from %s)",
+            len(written), target_space_id, originating_suggestion_id,
+        )
+    return written
+
+
+def load_mv_suppressed_fingerprints(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    *,
+    target_space_id: str,
+) -> set[str]:
+    """Return every per-measure fingerprint the advisor must NOT re-surface.
+
+    Two sources, unioned (MV-D30 as-implemented):
+
+    * the fan-out ledger ``genie_opt_mv_suppressions`` — non-expired rows
+      (``suppressed_until`` NULL = indefinite, or in the future);
+    * legacy per-measure ``rejected`` candidate rows (pre-15.3), whose
+      ``dedup_fingerprint`` *is* a measure fingerprint. Post-15.3 rejected
+      *bundle* rows are unioned too but are inert: a bundle key never equals a
+      member's measure fingerprint, so it silently matches nothing.
+
+    The consolidation drops any member measure whose per-measure fingerprint is
+    in this set BEFORE bundling, so a rejected measure never resurfaces inside a
+    future bundle. Returns ``set()`` when both tables are absent.
+    """
+    suppressed: set[str] = set()
+    if not target_space_id:
+        return suppressed
+
+    sup_fqn = _fqn(catalog, schema, TABLE_MV_SUPPRESSIONS)
+    try:
+        df = run_query(
+            spark,
+            f"SELECT measure_fingerprint FROM {sup_fqn} "
+            f"WHERE target_space_id = '{target_space_id}' "
+            "AND (suppressed_until IS NULL OR suppressed_until > current_timestamp())",
+        )
+        if not df.empty:
+            suppressed.update(str(v) for v in df["measure_fingerprint"] if v)
+    except Exception:
+        logger.debug("load_mv_suppressed_fingerprints: no suppressions table", exc_info=True)
+
+    cand_fqn = _fqn(catalog, schema, TABLE_MV_CANDIDATES)
+    try:
+        df = run_query(
+            spark,
+            f"SELECT dedup_fingerprint FROM {cand_fqn} "
+            f"WHERE target_space_id = '{target_space_id}' AND decision = 'rejected'",
+        )
+        if not df.empty:
+            suppressed.update(str(v) for v in df["dedup_fingerprint"] if v)
+    except Exception:
+        logger.debug("load_mv_suppressed_fingerprints: no candidates table", exc_info=True)
+
+    return suppressed
 
 
 # ── Consents ─────────────────────────────────────────────────────────────
@@ -644,9 +780,12 @@ __all__ = [
     "load_mv_consent",
     "load_mv_created_object_by_name",
     "load_mv_created_objects",
+    "load_mv_suppressed_fingerprints",
     "mark_mv_consent_reverified",
+    "mv_bundle_fingerprint",
     "mv_candidate_fingerprint",
     "record_mv_candidate_decision",
+    "suppress_mv_measures",
     "update_mv_created_object_status",
     "upsert_mv_candidate",
     "upsert_mv_consent",

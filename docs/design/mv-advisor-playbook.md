@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D29 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D31 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -135,6 +135,16 @@
      writing a second scanner. No literals, sample values, or PII in shipped
      metadata, DDL comments, or logs.
    - Materialization is a separate consent (mv_materialize); never bundled.
+   - SUGGEST-SURFACE CONTRACT (from the first human smoke run): a proposal is a
+     metric VIEW bundling the measures of one grain, never one card per measure;
+     MEDIUM+ surfaces by default, LOW behind explicit disclosure, and a proposal
+     with no proposed_object never renders; every surfaced card carries its
+     justification (measures, evidence counts, gain); EMPTY states are variant-
+     specific (already-governed / nothing-recurring / no-corpus), never one
+     generic shrug; results hydrate from persisted candidates on mount and are
+     never lost to navigation; long operations show staged progress and report
+     where they stopped on failure. A visualization must never crash the page —
+     error boundaries are mandatory on graph surfaces.
    - ONTOLOGY PAGES (Prompt 17.x): Databricks Pages have NO public create/update
      API — they are created in the Discover UI. Never invent a Pages endpoint.
      The workbench emits copy-ready Page drafts (manual paste) and API-writes
@@ -314,9 +324,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D29)
+## Decisions register (MV-D1–MV-D31)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -581,6 +591,14 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 *Why this survived to a live workspace, which is the more useful finding.* Every offline fixture was literal-free, and nothing in the offline suite executes DDL. `mv_yaml.validate` — the MV-D8 sole gate whose whole purpose is that emitted YAML is never "invalid or silently wrong" — has no check for placeholder tokens (`?n`, `?s`) in an emitted expression, so it passed a body that cannot be created. **The POV's own worked example is the exact expression that fails**: `SUM(l_extendedprice * (1 - l_discount))` appears at `metric-view-suggestion-engine-pov.md:114` as the headline candidate and at `:176` as the sample YAML body. A defect that makes the design document's canonical example unrenderable is not an edge case.
 
 *Decision (Prompt 15.2), taking the resolution shape as stated.* `FingerprintRecurrence` and `MeasureRef` gain a `representative_expr`: a **literal-preserving** render form of one recorded occurrence — the same normalization `canonicalize_expr` runs (qualifiers stripped so it references the metric view's `source:` columns, identifiers and temporal units normalized) **minus the `_erase_literals` pass**, so `1 - l_discount` survives verbatim. It is a NEW field used ONLY as the render source: identity, scoring and dedup keep reading `canonical_expr` / `MetricViewCandidate.canonical_measure_expr` (which prefers `recurrence.canonical_expr`), and a test pins that two measures differing only in a literal still share one `fingerprint` while their `representative_expr` differs. `canonicalize_expr` output is byte-identical to before (the new form is a separate `erase_literals=False` code path). `candidate_from_measure` renders `measure_expr=representative_expr`. The firewall becomes an actual gate: before a candidate is scored or persisted, `LeakageOracle.contains_sql(representative_expr)` runs, and a representative that matches the benchmark corpus DROPS the candidate (`candidates_dropped_for_leakage` on the outcome) rather than shipping either a masked body or a leaked literal — the existing oracle, no second scanner. `mv_yaml.validate` (and `validate_registered`) reject `?n` / `?s` anywhere in an emitted `expr`, the cheap MV-D8 static guard that would have caught this at Prompt 5.5. `representative_expr` is NOT persisted as a Delta column (it flows through in-memory to the emitted `yaml_text`, which the artifact already carries), so the exposure matrix gains no row; the `yaml_text` SERVED classification now legitimately covers oracle-passed literals. The rejected alternative (context-sensitive erasure) stays rejected: it is an MV-D10 change to fingerprint identity, out of scope for a defect fix.
+
+**MV-D30 — Proposal grain: a proposal is a metric VIEW, not a measure (DECIDED at Prompt 15.3).** Found by the first human smoke run: a real space produced a wall of LOW-confidence cards, one per recurring measure, each proposing its own single-measure view (`_proposed_object` renders `{catalog}.{schema}.{concept}_metrics` per measure, `mv_advisor.py:759` — `measure_total_booking_value_metrics`, `measure_booking_count_metrics`, …). That is the wrong product: a metric view's value is BUNDLING the measures and dimensions of one grain behind one governed object — the POV's own sample YAML carries two measures and two dimensions. One-view-per-measure also makes every candidate individually weak (each splits the evidence), which is why everything surfaced LOW. What 15.3 decides: consolidation mechanics — group measure candidates by source-table set (the natural grain key) into one view proposal carrying multiple MeasureRequests, at GENERATION time (preferred: one candidate row per view, evidence union, confidence from the strongest members) versus presentation time (cheaper, but the ledger and create path then disagree with the screen about what a suggestion is — the two-readers hazard). Constraints not open: `canonicalize_expr`/MV-D10 identity is untouched (per-measure fingerprints remain the dedup/suppression grain — a rejected measure stays rejected inside any bundle); `mv_yaml.generate` already accepts multiple measures; the surfacing floor rises — the panel shows MEDIUM+ by default with LOW behind an explicit disclosure, and a candidate with no `proposed_object` never surfaces at all (the smoke run's first card rendered a BLANK title — validate, don't render). And EVERY surfaced proposal carries its justification on the card: the measures it would govern, the evidence (recurrence, distinct sources, contributing questions), and what the user gains ("these 4 measures recur across 9 curated queries and are ungoverned today").
+
+*Decision (Prompt 15.3), taking the preferred generation-time shape.* Consolidation happens at GENERATION time, not presentation time — the ledger, the create path and the screen must agree on what one suggestion is, so the persisted grain IS the surfaced grain (the two-readers hazard is closed, not deferred to every reader). Mechanics: per-measure scoring is unchanged — each recurring measure is still individually gated, leakage-checked (MV-D29) and scored, so `canonicalize_expr`/MV-D10 identity and the dedup/suppression grain stay per-measure and a rejected or suppressed measure never resurfaces inside a bundle. AFTER scoring, the persistable proposals are grouped by their **source-table set** (the frozenset of `source_tables`, the natural grain key) into one bundle each; a bundle carries multiple `MeasureRequest`s and renders through the single existing `mv_yaml.generate` (which already accepts multiple measures) into one multi-measure YAML/DDL. The bundle's `dedup_fingerprint` becomes view-grained — `sha256(space_id | sorted member dedup_fingerprints | sorted source set)` — so `genie_opt_mv_candidates` now holds **one row per view** (the schema comment's per-measure key semantics are updated in the same change; the column and table are otherwise unchanged, no migration). The bundle's `confidence_score`/`tier` are taken from the strongest member (max confidence), `evidence` is the union (member measures with their `expr`/recurrence/distinct-source/question-id provenance, the total distinct-source count, and the contributing benchmark question ids), and the member per-measure fingerprints are retained in `evidence.measures[*].dedup_fingerprint` so suppression cross-references survive bundling. A bundle whose `proposed_object` cannot be resolved (no source refs) is a VALIDATION FAILURE dropped before persistence — it never reaches the screen as a blank card. Surfacing: MEDIUM+ by default, LOW behind an explicit "show N low-confidence" disclosure. Justification is pure assembly from the carried evidence (no LLM): the measures the view would govern, recurrence + distinct-source counts, contributing benchmark question ids, and a one-line gain statement. The `MvProposal` model/type gains an additive `measures: list[MvProposalMeasure]` (name, expr, recurrence, distinct_sources, question_ids, dedup_fingerprint) — older single-measure rows read back as a one-element bundle, so nothing pre-15.3 breaks. Rejected alternative (presentation-time grouping) stays rejected: it would leave the create path keyed on per-measure rows while the screen shows views, the exact disagreement MV-D30 names.
+
+*As implemented (Prompt 15.3) — bundle rejection fans out to per-measure suppression.* The Decision above kept per-measure identity as the suppression grain, but the persisted row is now view-grained, and that opened a resurrection hole the four-point plan did not name. The decision endpoint records against `(target_space_id, dedup_fingerprint)`, and the bundle key is `sha256(space_id | sorted member fingerprints | sorted source set)` — **membership-sensitive**. So: reject a 4-measure bundle today; next scan finds a 5th recurring measure on the same grain; the bundle key changes; there is no decision row for the new key; the rejected members resurface wearing one new measure. That is `test_re_proposing_does_not_resurrect_a_rejected_candidate`'s exact defect reborn at the view grain, and the consolidation's decisions-reader cannot catch it because nothing wrote per-measure state on the reject. The fix, implemented here: **a bundle rejection writes the bundle-row decision AND a suppression entry per member fingerprint.** Member fingerprints ride in the row's `evidence.measures[*].dedup_fingerprint` (retained by the Decision above), so the reject route fans them out. Home for the fan-out is a dedicated `genie_opt_mv_suppressions` table (`target_space_id`, `measure_fingerprint`, `suppressed_until`, `originating_suggestion_id`, `reason`, timestamps) — **not** synthetic per-measure rows in `genie_opt_mv_candidates`, which would put two grains back in one table and recreate the two-readers hazard MV-D30 just paid to remove. The consolidation's decisions-reader (`load_mv_suppressed_fingerprints` / `wh_load_mv_suppressed_fingerprints`) unions the fan-out ledger with legacy per-measure `rejected` candidate rows, so both the historical per-measure grain and the new view grain are covered by one read. New table → `_ALL_DDL` entry, `wh_*` twins (MV-D21 Spark/warehouse parity), exposure-matrix classification (all columns DELIBERATELY INTERNAL — consumed only by the advisor's consolidation), all in this commit. Semantics pinned by tests: reject bundle → members suppressed → next scan with an extra recurring measure on the same grain surfaces a bundle of only the unsuppressed members (or nothing, if none remain) — never the rejected members back. The decisions-reader is injected in **both** callers — the Spark in-job advisor and the backend IQ-Scan path — asserted by test in each, so the two surfaces cannot disagree about what "rejected" means. Approval stays bundle-grained; **per-measure partial approval is explicitly out of scope** (future work, not built here — approving a bundle approves it whole).
+
+**MV-D31 — The scan is a lifecycle, not a request (OPEN — decided at Prompt 15.4).** Three smoke findings compose into one defect: the scan leaves the user with a bare spinner for minutes (no staged progress); navigating away destroys the result and forces a full re-scan (the panel never hydrates — it imports `suggestSpaceMv` only, though candidates are PERSISTED in `genie_opt_mv_candidates` and the space-scoped read has existed since Prompt 11); and the entry affordance is a small easy-to-miss control. The fix shape 15.4 decides: on mount the panel HYDRATES from `GET /spaces/{id}/mv-proposals` and shows "last scanned <when> — N proposals" with Re-scan as the explicit refresh (the advice run row carries the timestamp); the scan itself reports staged progress — either SSE per the create-agent precedent (`create.py:288`, `StreamingResponse` + typed events) or polling the advice run's stage rows, whichever the implementer defends — with honest stage names (reading curated SQL → scanning for recurring measures → scoring → rendering DDL); and the affordance becomes a first-class action with an explanation of what a scan reads and roughly how long it takes. Constraint not open: a scan that fails or times out reports WHERE it stopped, never a spinner that resolves to nothing (the frame-7b rule, transposed to progress).
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -1981,6 +1999,114 @@ DECIDE MV-D29 first and record it in the register.
    CREATE VIEW executing a literal-bearing measure.
 ```
 
+### Prompt 15.3 — Proposal quality: view-grained bundles, gated surfacing, justified EMPTY (decides MV-D30)
+
+*From smoke findings 3 and 7 (and the closing product bar: "not so many, not
+none; if none — justification; if some — clear justification"). Read MV-D30
+first; it forecloses presentation-time-only grouping unless you defend it.*
+
+```
+DECIDE MV-D30 first, record it. Then:
+1. Consolidation per the decision: measure candidates sharing a source-table
+   set become ONE view proposal with multiple MeasureRequests; evidence is
+   the union; confidence per the recorded rule. Per-measure fingerprints
+   remain the dedup/suppression grain — a rejected measure never resurfaces
+   inside a bundle. mv_yaml.generate already takes multiple measures.
+2. Surfacing gates on the IQ Scan panel: MEDIUM+ shown by default; LOW
+   behind an explicit "show N low-confidence" disclosure; a candidate with
+   no proposed_object is a validation failure that never renders (the blank
+   card from the smoke run).
+3. Justification on every card, from data already carried: which measures,
+   recurrence + distinct-source counts, contributing benchmark question ids,
+   and the one-line gain statement. No LLM call — this is assembly.
+4. Justified EMPTY, keyed on the governance ladder the semantic-graph
+   endpoint already computes: (a) space already uses metric views and the
+   curated corpus routes through them -> say that plainly ("Your measures
+   are already governed — N governed concepts, no ungoverned recurrence.
+   You're in good shape."); (b) corpus present but nothing recurs ->
+   today's honest-EMPTY copy; (c) no corpus -> what to add and where.
+   Three variants, chosen from signals we already have — never one generic
+   shrug. This is smoke finding 3's "what is the point?" answered.
+5. Tests: consolidation (two measures, one source set, one proposal);
+   suppression survives bundling; gating (LOW hidden by default, disclosed
+   on demand); blank-proposed_object never renders; each EMPTY variant.
+6. Scenario D assertions updated if the proposal count changes shape;
+   exposure matrix if any column is added; baseline lockstep.
+```
+
+### Prompt 15.4 — The scan lifecycle: hydrate, progress, affordance (decides MV-D31)
+
+*From smoke findings 1, 2, 6, 7-CTA, 8. Read MV-D31 first.*
+
+```
+DECIDE MV-D31 first, record it. Then:
+1. Hydration: on mount the panel loads persisted proposals via the
+   space-scoped read (fetchSpaceMvProposals — it has existed since Prompt
+   11) and renders "last scanned <relative time> · N proposals" with
+   [Re-scan] as the explicit refresh. Navigation away and back costs
+   nothing. The advice run row supplies the timestamp.
+2. Staged progress per the decision (SSE per create.py:288 precedent, or
+   stage-row polling): honest stage names, a failure or timeout reports
+   WHERE it stopped. The bare minutes-long spinner is gone.
+3. Affordance: the scan entry is a first-class action ("Scan for metric
+   view suggestions") with one line on what it reads and expected duration
+   — not a small icon-button.
+4. Copy fixes: MvSuggestSection.tsx:89 "Looking for proposals approved for
+   this Agent..." rewritten to say what it is actually doing and shown only
+   when the check is genuinely pending; the IQ Scan CTA "Review and create
+   metric view" either expands the card inline (DDL, GRANT, evidence — the
+   15.1 wiring already fetches these) with the navigation clearly labeled
+   ("Approve & create opens the run configuration with this proposal
+   selected"), or is renamed to say where it goes. Never a button whose
+   destination surprises.
+5. Tests: hydration-on-mount (no scan call when proposals exist), re-scan
+   flow, progress states incl. failure-with-location, copy assertions.
+```
+
+### Prompt 12c — Semantic model visualization v2 (crash fix first, then the redesign)
+
+*From smoke findings 4 and 5. The v1 layout is structurally wrong for real
+spaces: dozens of measure chips stack in one column, squashing the whole
+graph into an unreadable vertical sliver inside a fixed 700x260 viewBox, with
+edge spaghetti across it. And pan/zoom crashes: drag.current!.tx uses
+non-null assertions inside mousemove (SemanticGraph.tsx:219) — a mouseup race
+nulls the ref and the page dies with "Cannot read properties of null
+(reading 'tx')" and no boundary to catch it.*
+
+```
+PART 1 — ship immediately, before the redesign:
+- Fix the pan/zoom null race (guard drag.current, no non-null assertions in
+  event handlers) and wrap the graph in an error boundary that renders a
+  "the visualization failed — refresh to retry" card instead of killing the
+  tab. A viz must never take the page down.
+
+PART 2 — the redesign. Research first, then a SHORT design note in
+docs/design/ before implementing (this is a checkpoint: post the note, get
+sign-off). Grounding requirements from the research already recorded:
+Catalog Explorer's ERD and lineage graphs are the visual language users
+know (layered left-to-right, expandable nodes); the repo's own testability
+rationale for deterministic SVG stands (renderToStaticMarkup). Directions
+the note must evaluate:
+- GROUPING over sprawl: measures render INSIDE their owning node (an MV
+  card with its measure chips, expandable; a table card with a column
+  count, not columns) — the v1 defect was giving every measure its own
+  node, which no real space survives.
+- Fit-to-content: viewBox computed from layout extents, never fixed;
+  initial render fits the graph; zoom/pan on top of a sane fit.
+- Focus interactions: click a node -> highlight its edges and dim the
+  rest; a search/jump box for spaces with many tables; collapse-by-default
+  when node count exceeds a threshold.
+- Edge routing: orthogonal or curved with labels on demand (the 12
+  carry-forward), never straight lines through node stacks.
+- The governance ladder stays the headline; coverage badges (12b) stay.
+If the note concludes a layout library is genuinely needed, that is an
+explicit decision with the no-new-graph-dependency rule amended knowingly —
+not a quiet npm install; the default remains a hand-rolled layered layout
+over GROUPED nodes, which collapses the cardinality that broke v1.
+Tests: fixture spaces at 3, 10, 30 tables render legibly (structural
+assertions on grouping/fit), crash-race regression test, boundary test.
+```
+
 ### Prompt 16 — Docs, changelog, PR
 
 ```
@@ -2037,6 +2163,24 @@ Decisions MV-D26 (persistence, 17a), MV-D27 (instruction write path, 17c),
 MV-D28 (web enrichment, 17b) are OPEN in the register; each sub-prompt decides
 its own and records it BEFORE writing code, the 13.5 discipline.*
 
+*ENRICHED 2026-08-24 from a Genie-generated architecture self-description,
+distilled into docs/design/genie-retrieval-notes.md — READ IT before any 17.x
+prompt; page-archetypes.md's "How Genie consumes what we write" section is now
+normative. The material facts: Pages and instructions are auto-extracted into
+CHUNKED ontology snippets ranked by semantic similarity × authority (source
+type, corroboration, specificity), searched BEFORE schema; certified Pages sit
+at the top of the trust stack and win conflicts absolutely, Pages outrank
+instructions, instructions outrank metric views. Consequences baked into the
+sub-prompts below: synonyms are retrieval-critical (validator-enforced, ≥3
+across four classes); rules are written chunk-safe (each sentence self-
+contained) and specific (exact identifiers — vagueness loses ranking);
+the top rules are deliberately DUPLICATED across instruction delta and Page
+with consistent wording, because corroboration raises authority; every draft
+passes a contradiction gate against the space's existing instructions, because
+a conflicted low-authority snippet loses silently; and each Page draft carries
+a certify-yes/no recommendation, since certification is the single strongest
+retrieval lever and is a manual UI step the checklist must name.*
+
 **The eight archetypes (the standard 17.0 codifies — title prefix is part of
 the format):**
 
@@ -2055,7 +2199,11 @@ the format):**
 
 ```
 No production code. Three deliverables, then STOP for review:
-1. docs/design/page-archetypes.md — the Page standard: the eight-archetype
+1. docs/design/page-archetypes.md — the Page standard: complete the seed,
+   keeping its "How Genie consumes what we write" section NORMATIVE and
+   consistent with docs/design/genie-retrieval-notes.md (read that first;
+   if the two ever disagree, fix them in the same commit — that pair is
+   this track's rules-parity analogue). The eight-archetype
    table above (verbatim), plus the format template drawn from the
    demonstrator Pages: title = "[Archetype] Name"; header fields Domain,
    Owner, Synonyms, Description (one line); a Definition body that answers
@@ -2123,6 +2271,26 @@ DECIDE MV-D28 first, record it. Then:
   (title prefix from the eight, required sections present, identifiers
   backticked and EXISTING in the space — an LLM-invented column name fails
   validation, it does not ship).
+- Retrieval gates, per genie-retrieval-notes.md (validator-enforced, not
+  stylistic): SYNONYMS ≥3 spanning the four classes (acronym, casual, jargon,
+  abbreviation) — a page without them is invisible to the ontology search;
+  CHUNK-SAFE rules — every rule sentence names the metric/table it governs
+  (no bare pronouns opening a rule line); SPECIFICITY — at least one
+  backticked identifier or literal formula per Definition/Rules section;
+  CONTRADICTION GATE — the draft and its instruction delta are checked
+  against the space's CURRENT text_instructions for conflicting guidance
+  (reuse the conflict-surface machinery, not a new comparator; a detected
+  contradiction downgrades the suggestion to CONFLICT for human
+  adjudication, never auto-resolves — the candidates-table precedent).
+  Scope honesty: existing Discover Pages cannot be enumerated (no Pages read
+  API), so the gate covers what we CAN read — say so in the response rather
+  than implying page-conflict coverage. CORROBORATION: for Routing /
+  Guardrail / Defaults / Disambiguation, the top rule appears in BOTH the
+  Page draft and the instruction delta with byte-consistent wording (one
+  renderer for the shared sentence, not two paraphrases). CERTIFY
+  RECOMMENDATION: every draft states certify yes/no per the standard
+  (formulas yes, informational context no; a Recent-context section never
+  earns certify-yes).
 - Firewall: extend LeakageOracle for Page bodies and instruction deltas —
   benchmark question text never lands verbatim (the MV-D8 comment-echo rule
   transposed; same oracle, no second scanner).
@@ -2136,7 +2304,11 @@ DECIDE MV-D28 first, record it. Then:
   within the length budget, marked with a provenance tag so a later
   suggestion supersedes rather than appends (the MV-D27 entry names this).
 - Tests: format validation (golden Page fixture), identifier-existence gate,
-  firewall assertions, enrichment-degradation, budget enforcement.
+  firewall assertions, enrichment-degradation, budget enforcement, plus the
+  retrieval gates: synonym-count/class failure, a chunk-unsafe rule line
+  rejected, a contradiction downgraded to CONFLICT (and NOT auto-resolved),
+  byte-consistency of the corroborated sentence across both outputs, and
+  certify-recommendation presence.
 ```
 
 ### Prompt 17c — Ontology tab + consent-gated instruction augmentation (decides MV-D27)
@@ -2158,7 +2330,13 @@ before touching anything near instructions — CLAUDE.md mandates it. Then:
   components), archetype grouping, Page-draft copy panel, the augmentation
   diff + [Apply to instructions] + [Copy Page for Discover] dual actions,
   the manual-steps line for Discover paste (Pages are UI-created — say so
-  plainly rather than pretending an API).
+  plainly rather than pretending an API). The manual checklist includes the
+  CERTIFY step: which pages the draft recommends marking Certified in the
+  Discover UI and why it matters (certified wins conflicts absolutely — the
+  strongest single retrieval lever, per genie-retrieval-notes.md), plus the
+  domain/subdomain to file under. Surface the synonym list prominently in
+  the draft panel — it is what makes the page findable, and the user pastes
+  it into a dedicated UI field.
 - Empty/failed states per the mockups; run_kind machinery reused if MV-D26
   chose advice-run scoping.
 - Tests: route tests incl. the changed-block refusal and apply-refused-

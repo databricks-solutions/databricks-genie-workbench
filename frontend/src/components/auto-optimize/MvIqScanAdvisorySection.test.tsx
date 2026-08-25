@@ -30,6 +30,7 @@ const proposal: MvProposal = {
   confidence_score: 82,
   tier: "HIGH",
   proposed_object: "finance.sales.order_revenue",
+  measures: [],
   score_components: null,
   evidence: { recurrence_count: 6 },
   provenance: null,
@@ -81,14 +82,64 @@ describe("IQ Scan advisory — found (MV-D23 prop-driven payoff)", () => {
   })
 })
 
-describe("IQ Scan advisory — EMPTY (MV-D15, authored copy)", () => {
-  it("names what the scan read and reads as a clean result, not an error", () => {
-    const html = render(<MvAdvisoryEmpty />)
+describe("IQ Scan advisory — EMPTY (MV-D15/D30, governance ladder)", () => {
+  it("nothing-recurring: names what the scan read and reads as a clean result", () => {
+    // Default variant (no skip reason, or NO_CANDIDATES with nothing found).
+    const html = render(<MvAdvisoryEmpty skipReason="NO_CANDIDATES" measuresFound={0} />)
     expect(html).toContain("No recurring measures to propose yet")
     expect(html).toContain("example question SQL")
     expect(html).toContain("clean result")
     // The omission is load-bearing: query history is not in the corpus at all.
     expect(html).not.toContain("query history")
+  })
+
+  it("already-governed: measures were found but all are governed — a confidence empty", () => {
+    // NO_CANDIDATES with measures_found > 0 is NOT barren: every recurring
+    // measure is already governed. This is the "you're in good shape" statement,
+    // not the "nothing recurring" copy — the two must not collapse into one.
+    const html = render(<MvAdvisoryEmpty skipReason="NO_CANDIDATES" measuresFound={4} />)
+    expect(html).toContain("already governed")
+    expect(html).toContain("4 recurring measures")
+    expect(html).not.toContain("No recurring measures to propose yet")
+  })
+
+  it("no-SQL: NO_PARSEABLE_SQL asks for example questions, not 'nothing recurring'", () => {
+    const html = render(<MvAdvisoryEmpty skipReason="NO_PARSEABLE_SQL" measuresFound={0} />)
+    expect(html).toContain("No SQL to scan yet")
+    expect(html).toContain("example question")
+    expect(html).not.toContain("No recurring measures to propose yet")
+  })
+})
+
+describe("IQ Scan advisory — per-card justification (MV-D30)", () => {
+  it("a bundle card names the measures it governs and the gain, from evidence", () => {
+    const bundle: MvProposal = {
+      ...proposal,
+      measures: [
+        {
+          display_name: "total_booking_value",
+          expr: "SUM(booking_value)",
+          dedup_fingerprint: "m1",
+          recurrence: 5,
+          provenance_count: 5,
+          benchmark_question_ids: ["q1", "q2"],
+        },
+        {
+          display_name: "booking_count",
+          expr: "COUNT(1)",
+          dedup_fingerprint: "m2",
+          recurrence: 4,
+          provenance_count: 4,
+          benchmark_question_ids: ["q2", "q3"],
+        },
+      ],
+    }
+    const html = render(<MvProposalCard proposal={bundle} />)
+    expect(html).toContain("Governs 2 measures")
+    expect(html).toContain("total_booking_value")
+    expect(html).toContain("booking_count")
+    // Gain line: 2 measures across 3 distinct curated queries (q1,q2,q3).
+    expect(html).toContain("These 2 measures recur across 3 curated queries")
   })
 })
 

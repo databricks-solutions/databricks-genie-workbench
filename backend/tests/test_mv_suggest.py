@@ -108,6 +108,41 @@ def test_service_ensures_tables_before_creating_the_advice_run(monkeypatch):
     assert run_id
 
 
+def test_service_injects_the_suppression_reader(monkeypatch):
+    """MV-D30 as-implemented (Prompt 15.3): the backend (IQ Scan) caller must
+    inject ``read_suppressed_fingerprints`` — the warehouse twin of the ledger
+    the reject route writes — or a re-scan would resurface a measure the user
+    just rejected. This is the backend half of the both-callers invariant; the
+    Spark job half is pinned in test_mv_advisor. Both surfaces must agree about
+    what "rejected" means."""
+    captured: dict = {}
+
+    monkeypatch.setattr(warehouse, "wh_ensure_optimization_tables", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_create_advice_run", lambda *a, **k: None)
+    monkeypatch.setattr(mv_advisor, "space_corpus_entries", lambda cfg: ())
+    monkeypatch.setattr(mv_advisor, "estate_metric_view_yamls", lambda *a, **k: {})
+
+    def _capture(**k):
+        captured.update(k)
+        return SimpleNamespace(status="SKIPPED", skip_reason="no_candidates", error=None)
+
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", _capture)
+
+    mv_suggest.suggest_for_space(
+        sp_ws=MagicMock(),
+        catalog="main",
+        schema="gso",
+        warehouse_id="wh1",
+        llm_model="m",
+        space_id="space-1",
+        applied_config={"instructions": {}},
+        triggered_by="analyst@example.com",
+    )
+
+    reader = captured.get("read_suppressed_fingerprints")
+    assert callable(reader), "backend caller must inject the suppression reader"
+
+
 # ── The route ──────────────────────────────────────────────────────────────
 
 
@@ -172,7 +207,9 @@ def test_suggest_reports_skip_reason_when_advisor_finds_nothing(client, monkeypa
     monkeypatch.setattr(
         mv_suggest, "suggest_for_space",
         lambda **k: (
-            SimpleNamespace(status="SKIPPED", skip_reason="no_candidates", error=None),
+            SimpleNamespace(
+                status="SKIPPED", skip_reason="no_candidates", error=None, measures_found=0
+            ),
             "run-adv-2",
         ),
     )
@@ -185,4 +222,33 @@ def test_suggest_reports_skip_reason_when_advisor_finds_nothing(client, monkeypa
     # suggest" from skip_reason, not from an inferred empty list.
     assert body["status"] == "SKIPPED"
     assert body["skip_reason"] == "no_candidates"
+    assert body["proposals"] == []
+
+
+def test_suggest_surfaces_measures_found_for_the_governance_ladder(client, monkeypatch):
+    """Prompt 15.3: the panel needs measures_found to tell the two NO_CANDIDATES
+    empties apart — 'nothing recurring' (0) vs 'already governed' (> 0). The route
+    must pass the advisor's count through, not swallow it."""
+    from genie_space_optimizer.common import genie_client
+
+    monkeypatch.setattr(
+        genie_client, "fetch_space_config",
+        lambda ws, space_id: {"_parsed_space": {"instructions": {}}},
+    )
+    monkeypatch.setattr(
+        mv_suggest, "suggest_for_space",
+        lambda **k: (
+            SimpleNamespace(
+                status="SKIPPED", skip_reason="NO_CANDIDATES", error=None, measures_found=4
+            ),
+            "run-adv-3",
+        ),
+    )
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
+
+    resp = client.post("/api/auto-optimize/spaces/space-1/mv/suggest")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["skip_reason"] == "NO_CANDIDATES"
+    assert body["measures_found"] == 4
     assert body["proposals"] == []

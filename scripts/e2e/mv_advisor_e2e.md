@@ -69,6 +69,17 @@ as a clear gate error, not a mid-scenario 401).
 - **Bare (`MV_E2E_EMPTY_SPACE_ID`):** create a Genie Agent with a single table and
   **no** example SQLs, **no** `sql_snippets`, and never query it. No parseable SQL
   and no history is exactly the EMPTY-with-a-reason case a customer demo hits first.
+- **Eval-capable (`MV_E2E_SPACE_ID`, Tier 2+):** create a Genie Agent over
+  `samples.tpch` with 10–15 benchmark questions, each with exactly one SQL answer,
+  and at least one literal-bearing measure (an arithmetic constant *and* a
+  predicate literal such as `o_orderstatus = 'F'`, to exercise both halves of
+  MV-D29). **Grant the app service principal `CAN_MANAGE` on this space — and on
+  any fixture space a real job run will touch.** Tiers 2 and 3 launch the real
+  optimization job, which runs as the **SP**, not your OBO identity, so the SP
+  must be able to read the space. Tier 1's in-process OBO masks this: Scenario D
+  never triggers the job, so a missing SP grant only surfaces the first time a
+  real job runs — as an `INTERNAL_ERROR` job failure with a `PermissionDenied`
+  reading the space, not as a config error you can catch locally.
 
 ## Tiers — cheapest first
 
@@ -118,6 +129,16 @@ create under the user's identity in the consented schema → `Type: METRIC_VIEW`
 YAML validates → mv_attach patch → mv_lift eval to DONE with both eval run ids →
 `lift_report` + audit rows. This is the only scenario that spends the extra
 mv_lift subset-eval budget.
+
+> **Redeploy before Tier 3 — it validates the *deployed* app, not your tree.**
+> Scenarios A/C run approve → create → attach against the deployed app over
+> Statement Execution, so a Tier 3 run measures whatever code is currently
+> deployed. Any prompt that changes approval or generation semantics (e.g.
+> Prompt 15.3 changed the proposal grain to view-grained bundles, bundle-grained
+> approval, multi-measure YAML through `generate`, and fan-out on reject) must be
+> **redeployed first**, or Tier 3 spends the branch's one eval budget validating
+> code you have already replaced. The same rule already governs the `scenario_d`
+> rerun; it applies to Scenario C for the same reason.
 
 ```bash
 uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_c -v
@@ -336,7 +357,7 @@ benchmark corpus's measures should be authored, so the build is deferred pending
 the reviewer's call on whether to fix the masking first or author literal-free
 measures around it. **Resolved 2026-08-24 by Prompt 15.2 (MV-D29) — see the next
 entry; the masking is fixed, so `MV_E2E_SPACE_ID` measures may be authored
-literal-bearing.**
+literal-bearing.** **Built 2026-08-24 (Tier 2 prep entry below).**
 
 ### 2026-08-24 — Tier 1 re-rerun (Scenario D), after Prompt 15.2 (MV-D29)
 
@@ -371,3 +392,58 @@ route refuses and drops manually — the app never dropped it). D fixtures left 
 place for reuse.
 
 **Retries:** none — a single clean 3/3 run.
+
+### 2026-08-24 — MV_E2E_SPACE_ID built (Tier 2 prep)
+
+**Workspace / identity:** `fevm-serverless` profile, primary identity
+`prashanth.subrahmanyam@databricks.com`. Same `GENIE_*→GSO_*` env remap and
+`GSO_JOB_ID` resolution as the Tier 1 entries.
+
+**Fixture created via API** (`POST /api/2.0/genie/spaces`,
+`warehouse_id=41cfe645e10807a4`, parent
+`/Users/prashanth.subrahmanyam@databricks.com`; serialized_space 8015 bytes):
+
+- `MV_E2E_SPACE_ID = 01f1a04003201e38b6f66cddc8d7d0ee` — title
+  `mv-e2e-tier2-tpch`, two tables `samples.tpch.lineitem` + `samples.tpch.orders`
+  (with a join_spec `lineitem.l_orderkey = orders.o_orderkey`,
+  `FROM_RELATIONSHIP_TYPE_MANY_TO_ONE`).
+
+**Corpus authored to exercise both MV-D29 halves** (config recorded by shape, so
+the assertions are reproducible):
+
+- **12 benchmark questions**, each with exactly one SQL answer (for iteration-0
+  eval → the in-job advisor corpus).
+  - **Arithmetic-constant recurring measure** `SUM(l_extendedprice * (1 -
+    l_discount))` across **six distinct** benchmark questions (Q1 by return
+    flag/line status, Q2 by ship mode, Q3 by ship year, Q4 top-10 parts, Q5 large
+    quantity, Q6 finished-orders join). Each answer is deliberately **multi-clause**
+    (GROUP BY dims / JOIN / WHERE) so the ~40-char representative is a small
+    fraction of the answer text → low char-3-gram Jaccard vs the benchmark-only
+    LeakageOracle → the candidate is expected to **survive** the gate and render
+    executable DDL with the `(1 - l_discount)` literal preserved.
+  - **Predicate literal `o_orderstatus = 'F'`** in a `WHERE` clause (Q6) — the
+    reviewer's exact example — exercises the erasure that keeps the measure
+    fingerprint stable (the literal is not in the measure expr, so Q6's discounted
+    revenue buckets with Q1-Q5).
+  - **Predicate-literal CASE measure** `SUM(CASE WHEN o_orderstatus = 'F' THEN
+    o_totalprice ELSE 0 END)` across **two distinct** questions (Q7 total, Q8 by
+    priority). This is the literal-bearing measure whose representative carries
+    `'F'`; Q7's answer is short/measure-dominated so the representative gate has a
+    candidate whose text overlaps the benchmark corpus. Whether the gate fires
+    (`candidates_dropped_for_leakage ≥ 1`) is a **reported Tier-2 outcome**, not an
+    assumption — if it does not fire, that is a gap row, not a silent fix.
+  - Q9-Q12 are single-occurrence measures (`AVG(o_totalprice)`, `COUNT(*)` by
+    status, `SUM(l_quantity)`, `COUNT(DISTINCT o_custkey)`) — realism; they should
+    not clear recurrence, confirming provenance breadth (not raw count) is what
+    makes a candidate.
+- **Curated corpus** for the advisor (MV-D17 up-weight, feeds recurrence
+  alongside the generated half): **4** `example_question_sqls` (three discounted-
+  revenue slices distinct from the benchmarks — monthly trend, by return flag, air
+  shipments — plus one finished/open CASE comparison) and **2**
+  `sql_snippets.measures` (`Discounted Revenue` = `SUM(lineitem.l_extendedprice *
+  (1 - lineitem.l_discount))`; `Finished Order Value` = the CASE measure).
+- One `text_instructions` PURPOSE block; three `sample_questions`.
+
+**Not yet run:** Tier 2 (`-k "scenario_a or scenario_b"`, `max_attempts=1`) — the
+next entry records the live A/B results. This entry records only the fixture
+config so the run is reproducible.

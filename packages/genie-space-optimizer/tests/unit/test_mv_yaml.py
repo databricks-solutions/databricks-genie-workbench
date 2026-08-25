@@ -1176,7 +1176,7 @@ def test_mv_yaml_is_the_only_module_that_renders_yaml():
 # edit shifts these lines, re-pin deliberately — that is the same discipline
 # MV-D9 applies to quoted anchors.
 SANCTIONED_DDL_TEXT_SITES: dict[tuple[str, int], str] = {
-    ("optimization/ddl.py", 262): (
+    ("optimization/ddl.py", 263): (
         "created_by          STRING        NOT NULL COMMENT 'Identity that executed "
         "CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never "
         "the service principal',"

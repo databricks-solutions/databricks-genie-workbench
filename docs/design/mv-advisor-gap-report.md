@@ -489,7 +489,7 @@ read it downstream by `run_id`.
 src/genie_space_optimizer/
   _telemetry.py, _version.py, _workspace_client.py
   backend/        job_launcher.py, utils.py          # shared with Workbench
-  common/         config.py (2880 L), genie_client.py, metric_view_catalog.py,
+  common/         config.py (2894 L), genie_client.py, metric_view_catalog.py,
                   asset_semantics.py, delta_helpers.py, warehouse.py, uc_metadata.py, ...
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
@@ -499,7 +499,7 @@ src/genie_space_optimizer/
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
                   mv_fingerprint.py (1446 L), mv_scoring.py (1558 L),
-                  mv_state.py (654 L), mv_yaml.py (1835 L), ...
+                  mv_state.py (793 L), mv_yaml.py (1835 L), ...
 ```
 <!-- END GENERATED: package-layout -->
 

@@ -308,6 +308,111 @@ def test_fingerprint_rejects_empty_inputs(space_id: str, expr: str) -> None:
         mv_state.mv_candidate_fingerprint(space_id, expr, ["t"])
 
 
+# ── Bundle fingerprint (MV-D30 view grain) ───────────────────────────────
+
+
+def test_bundle_fingerprint_matches_the_documented_recipe() -> None:
+    fingerprint = mv_state.mv_bundle_fingerprint(
+        "space-1", ["m2", "m1"], ["b.c.t2", "b.c.t1"],
+    )
+    expected = hashlib.sha256(
+        "space-1|m1,m2|b.c.t1,b.c.t2".encode("utf-8")
+    ).hexdigest()
+    assert fingerprint == expected
+
+
+def test_bundle_fingerprint_is_membership_sensitive() -> None:
+    """Why reject must fan out: adding a member changes the view key, so a
+    bundle-row rejection alone cannot keep the old members away."""
+    four = mv_state.mv_bundle_fingerprint("s", ["m1", "m2", "m3", "m4"], ["t"])
+    five = mv_state.mv_bundle_fingerprint("s", ["m1", "m2", "m3", "m4", "m5"], ["t"])
+    assert four != five
+
+
+def test_bundle_fingerprint_requires_at_least_one_member() -> None:
+    with pytest.raises(ValueError):
+        mv_state.mv_bundle_fingerprint("s", [], ["t"])
+
+
+# ── Per-measure suppression ledger (MV-D30 as-implemented) ───────────────
+
+
+def test_suppress_writes_one_row_per_measure_fingerprint() -> None:
+    spark = FakeDeltaSpark()
+    written = mv_state.suppress_mv_measures(
+        spark,
+        catalog="cat",
+        schema="sch",
+        target_space_id="space-1",
+        measure_fingerprints=["fpA", "fpB"],
+        originating_suggestion_id="sug1",
+    )
+    assert written == ["fpA", "fpB"]
+    by_fp = {r["measure_fingerprint"]: r for r in spark.rows}
+    assert set(by_fp) == {"fpA", "fpB"}
+    assert all(r["target_space_id"] == "space-1" for r in spark.rows)
+    assert all(r["originating_suggestion_id"] == "sug1" for r in spark.rows)
+    assert all(r["reason"] == "bundle_rejected" for r in spark.rows)
+
+
+def test_re_suppressing_the_same_fingerprint_refreshes_one_row() -> None:
+    spark = FakeDeltaSpark()
+    mv_state.suppress_mv_measures(
+        spark, catalog="cat", schema="sch", target_space_id="s",
+        measure_fingerprints=["fpA"], originating_suggestion_id="sug1",
+    )
+    mv_state.suppress_mv_measures(
+        spark, catalog="cat", schema="sch", target_space_id="s",
+        measure_fingerprints=["fpA"], originating_suggestion_id="sug2",
+    )
+    rows = [r for r in spark.rows if r["measure_fingerprint"] == "fpA"]
+    assert len(rows) == 1
+    assert rows[0]["originating_suggestion_id"] == "sug2"
+
+
+def test_load_suppressed_unions_the_ledger_and_legacy_rejected_rows(monkeypatch) -> None:
+    """The decisions-reader is the union of the fan-out ledger and legacy
+    per-measure rejected candidate rows (MV-D30)."""
+    def fake_run_query(spark, query):
+        if "genie_opt_mv_suppressions" in query:
+            return pd.DataFrame({"measure_fingerprint": ["fpA", "fpB"]})
+        if "genie_opt_mv_candidates" in query:
+            return pd.DataFrame({"dedup_fingerprint": ["fpC"]})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(mv_state, "run_query", fake_run_query)
+    result = mv_state.load_mv_suppressed_fingerprints(
+        FakeDeltaSpark(), "cat", "sch", target_space_id="s",
+    )
+    assert result == {"fpA", "fpB", "fpC"}
+
+
+def test_load_suppressed_filters_non_expired_windows(monkeypatch) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        mv_state, "run_query",
+        lambda spark, query: (seen.append(query), pd.DataFrame())[1],
+    )
+    mv_state.load_mv_suppressed_fingerprints(
+        FakeDeltaSpark(), "cat", "sch", target_space_id="s",
+    )
+    ledger_query = next(q for q in seen if "genie_opt_mv_suppressions" in q)
+    assert (
+        "suppressed_until IS NULL OR suppressed_until > current_timestamp()"
+        in ledger_query
+    )
+
+
+def test_load_suppressed_is_empty_when_both_tables_are_absent(monkeypatch) -> None:
+    def _boom(spark, query):
+        raise RuntimeError("no such table")
+
+    monkeypatch.setattr(mv_state, "run_query", _boom)
+    assert mv_state.load_mv_suppressed_fingerprints(
+        FakeDeltaSpark(), "cat", "sch", target_space_id="s",
+    ) == set()
+
+
 # ── Candidates round-trip ───────────────────────────────────────────────
 
 

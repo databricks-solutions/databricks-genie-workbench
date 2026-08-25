@@ -22,10 +22,11 @@
  * action — invariant 1) or refused (the reason, nothing recorded — invariant 2).
  */
 import { useState } from "react"
-import { ArrowUpRight, Check, RefreshCw, Sparkles, AlertTriangle } from "lucide-react"
+import { ArrowUpRight, Check, ChevronDown, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
+import { splitProposalsByConfidence } from "@/components/auto-optimize/mvFormat"
 import { suggestSpaceMv, registerSpaceMv, getMvDdl } from "@/lib/api"
 import type { MvProposal, MvSuggestResponse, MvRegisterResponse, MvDdlArtifact } from "@/types"
 
@@ -54,11 +55,14 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   const [registerBusy, setRegisterBusy] = useState(false)
   const [registerResult, setRegisterResult] = useState<MvRegisterResponse | null>(null)
   const [registerError, setRegisterError] = useState<string | null>(null)
+  // MV-D30 surfacing: LOW-confidence proposals hide behind an explicit disclosure.
+  const [showLow, setShowLow] = useState(false)
 
   async function runSuggest() {
     setLoading(true)
     setError(null)
     setDdlById({})
+    setShowLow(false)
     try {
       const res = await suggestSpaceMv(spaceId)
       setResult(res)
@@ -108,6 +112,10 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
 
   const proposals = result?.proposals ?? []
   const failed = result?.status === "FAILED"
+  // Blank-never-renders + MEDIUM+ floor (MV-D30): a proposal with no
+  // proposed_object is dropped, MEDIUM+ surface by default, LOW is disclosed.
+  const { primary, low } = splitProposalsByConfidence(proposals)
+  const hasRenderable = primary.length > 0 || low.length > 0
 
   return (
     <div className="bg-surface border border-default rounded-xl p-5 space-y-4">
@@ -134,29 +142,50 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
       {result && (
         failed ? (
           <MvAdvisoryCouldNotRun reason={result.error} onRetry={runSuggest} />
-        ) : proposals.length > 0 ? (
+        ) : hasRenderable ? (
           <div className="space-y-4">
-            {proposals.map((proposal) => (
-              <MvProposalCard
+            {primary.map((proposal) => (
+              <ScanProposalCard
                 key={proposal.suggestion_id}
                 proposal={proposal}
                 ddl={ddlById[proposal.suggestion_id]}
-                actions={
-                  <>
-                    <Button size="sm" onClick={() => onReviewCreate?.(proposal)}>
-                      Review and create metric view
-                    </Button>
-                    {/* tertiary — the MV-D24 affordance for the copied-DDL path */}
-                    <Button size="sm" variant="ghost" onClick={() => claimFromCard(proposal)}>
-                      I created this myself
-                    </Button>
-                  </>
-                }
+                onReviewCreate={onReviewCreate}
+                onClaim={claimFromCard}
               />
             ))}
+
+            {low.length > 0 && (
+              <div className="space-y-4">
+                {!showLow ? (
+                  <button
+                    onClick={() => setShowLow(true)}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-default px-3 py-2 text-xs text-muted transition-colors hover:text-accent"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                    Show {low.length} low-confidence {low.length === 1 ? "suggestion" : "suggestions"}
+                    {primary.length === 0 && " (nothing scored MEDIUM or higher)"}
+                  </button>
+                ) : (
+                  <>
+                    <p className="text-xs text-muted">
+                      Low-confidence suggestions — weaker recurrence or thinner evidence. Review before creating.
+                    </p>
+                    {low.map((proposal) => (
+                      <ScanProposalCard
+                        key={proposal.suggestion_id}
+                        proposal={proposal}
+                        ddl={ddlById[proposal.suggestion_id]}
+                        onReviewCreate={onReviewCreate}
+                        onClaim={claimFromCard}
+                      />
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         ) : (
-          <MvAdvisoryEmpty />
+          <MvAdvisoryEmpty skipReason={result.skip_reason} measuresFound={result.measures_found} />
         )
       )}
 
@@ -182,14 +211,93 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   )
 }
 
-// ── EMPTY (MV-D15) — AUTHORED COPY, graduated verbatim from mockup frame 7b ──
-export function MvAdvisoryEmpty() {
+// A scan proposal card with the two IQ-Scan actions, shared by the primary and
+// low-confidence lists so both render identically (only their placement differs).
+function ScanProposalCard({
+  proposal,
+  ddl,
+  onReviewCreate,
+  onClaim,
+}: {
+  proposal: MvProposal
+  ddl: MvDdlArtifact | undefined
+  onReviewCreate?: (proposal: MvProposal | null) => void
+  onClaim: (proposal: MvProposal) => void
+}) {
+  return (
+    <MvProposalCard
+      proposal={proposal}
+      ddl={ddl}
+      actions={
+        <>
+          <Button size="sm" onClick={() => onReviewCreate?.(proposal)}>
+            Review and create metric view
+          </Button>
+          {/* tertiary — the MV-D24 affordance for the copied-DDL path */}
+          <Button size="sm" variant="ghost" onClick={() => onClaim(proposal)}>
+            I created this myself
+          </Button>
+        </>
+      }
+    />
+  )
+}
+
+// ── EMPTY (MV-D15/D30) — three variants keyed on the governance ladder ───────
+//
+// A single "nothing to propose" copy misread three distinct states as one. The
+// advisor's skip_reason + measures_found distinguish them, and each earns its
+// own honest copy (Prompt 15.3, finding 3):
+//   - NO_PARSEABLE_SQL          → no curated SQL to read yet (add example
+//                                  questions / SQL snippets, then re-scan)
+//   - NO_CANDIDATES, found == 0 → the scan looked and found nothing recurring
+//                                  (the original clean-result copy)
+//   - NO_CANDIDATES, found > 0  → every recurring measure is ALREADY governed —
+//                                  the "you're in good shape" confidence empty
+// Any other/absent reason falls back to the found-nothing copy (a clean empty is
+// the safe default; we never imply a failure the advisor didn't report).
+export function MvAdvisoryEmpty({
+  skipReason,
+  measuresFound,
+}: {
+  skipReason?: string | null
+  measuresFound?: number | null
+}) {
+  if (skipReason === "NO_PARSEABLE_SQL") {
+    return (
+      <div className="rounded-xl border border-default bg-elevated px-4 py-6 text-center">
+        <p className="text-sm font-medium text-primary">No SQL to scan yet</p>
+        <p className="mx-auto mt-2 max-w-prose text-sm text-muted">
+          A metric-view scan reads this Agent&rsquo;s example question SQL, saved SQL snippets, and benchmark
+          answers &mdash; and there&rsquo;s no parseable SQL here to read. Add a few example questions with SQL
+          answers or attach SQL snippets, then re-scan and any recurring measures will surface as proposals.
+        </p>
+      </div>
+    )
+  }
+
+  if (skipReason === "NO_CANDIDATES" && (measuresFound ?? 0) > 0) {
+    const n = measuresFound ?? 0
+    return (
+      <div className="rounded-xl border border-success/30 bg-success/10 px-4 py-6 text-center">
+        <ShieldCheck className="mx-auto h-5 w-5 text-success" />
+        <p className="mt-2 text-sm font-medium text-primary">You&rsquo;re in good shape &mdash; already governed</p>
+        <p className="mx-auto mt-2 max-w-prose text-sm text-muted">
+          The scan found {n} recurring {n === 1 ? "measure" : "measures"} in this Agent&rsquo;s SQL, and every one
+          is already defined in a governed metric view. There&rsquo;s nothing new to propose &mdash; the measures
+          your questions rely on are already governed. Re-scan after adding new SQL and any un-governed measures
+          will appear here.
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className="rounded-xl border border-default bg-elevated px-4 py-6 text-center">
       <p className="text-sm font-medium text-primary">No recurring measures to propose yet</p>
       <p className="mx-auto mt-2 max-w-prose text-sm text-muted">
         The scan read this Agent&rsquo;s example question SQL, saved SQL snippets, and benchmark answers, and found
-        no measure that recurs often enough to justify a governed metric view. That&rsquo;s a clean result — the
+        no measure that recurs often enough to justify a governed metric view. That&rsquo;s a clean result &mdash; the
         scan ran and looked; it simply found nothing recurring. As this Agent gains more questions and its SQL
         builds up repeated aggregations, re-run the scan and any proposals will appear here.
       </p>

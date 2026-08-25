@@ -269,11 +269,32 @@ class MvConsentPayload(BaseModel):
     probe_id: str
 
 
+class MvProposalMeasure(BaseModel):
+    """One member measure of a view-grained proposal bundle (MV-D30).
+
+    A bundle governs one or more recurring measures over a shared source-table
+    grain. Each member carries its own per-measure ``dedup_fingerprint`` — the
+    identity suppression is enforced at — plus the recurrence evidence the card's
+    justification is assembled from. A legacy single-measure proposal reads back
+    as a one-element list, so a client can treat every proposal uniformly."""
+
+    display_name: str | None = None
+    expr: str | None = None
+    dedup_fingerprint: str | None = None
+    recurrence: int | None = None
+    provenance_count: int | None = None
+    benchmark_question_ids: list[str] | None = None
+
+
 class MvProposal(BaseModel):
     """One advisor proposal (a ``genie_opt_mv_candidates`` row) as the UI reads it.
 
     JSON columns arrive decoded to their POV Part 4 field names. ``confidence_score``
-    is 0–100; ``approved_for_rerun`` gates ``create_and_attach`` (MV-D1)."""
+    is 0–100; ``approved_for_rerun`` gates ``create_and_attach`` (MV-D1).
+
+    ``measures`` (MV-D30, Prompt 15.3) is the view-grained bundle's members,
+    read from ``evidence.measures``. A pre-15.3 single-measure row synthesizes a
+    one-element list from its own row, so every proposal is a bundle to the UI."""
 
     suggestion_id: str
     dedup_fingerprint: str
@@ -283,6 +304,7 @@ class MvProposal(BaseModel):
     confidence_score: float | None = None
     tier: str | None = None
     proposed_object: str | None = None
+    measures: list[MvProposalMeasure] = []
     score_components: dict[str, Any] | None = None
     evidence: dict[str, Any] | None = None
     provenance: dict[str, Any] | None = None
@@ -332,14 +354,20 @@ class MvSuggestResponse(BaseModel):
     ``skip_reason`` distinguishes the honest empties (no parseable SQL, no
     candidates, an estate that already governs every measure) from a failure, so
     the panel can render *found* vs *EMPTY* vs *denial* without inferring intent
-    from an empty list. ``proposals`` is the SAME ``MvProposal`` shape the
-    space-scoped and run-keyed lists return, so ``MvSuggestOnlyPanel`` mounts
-    these cards from this space-scoped source with no component change."""
+    from an empty list. ``measures_found`` disambiguates the two ``NO_CANDIDATES``
+    empties the skip reason alone conflates (Prompt 15.3, the governance ladder):
+    ``0`` means the scan found no recurring measure to govern, while ``> 0`` with
+    ``NO_CANDIDATES`` means every recurring measure is ALREADY governed — the
+    "you're in good shape" confidence empty, not a barren one. ``proposals`` is
+    the SAME ``MvProposal`` shape the space-scoped and run-keyed lists return, so
+    ``MvSuggestOnlyPanel`` mounts these cards from this space-scoped source with
+    no component change."""
 
     space_id: str
     run_id: str
     status: str
     skip_reason: str | None = None
+    measures_found: int | None = None
     error: str | None = None
     proposals: list[MvProposal] = Field(default_factory=list)
 

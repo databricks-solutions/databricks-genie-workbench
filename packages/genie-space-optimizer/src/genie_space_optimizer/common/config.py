@@ -1880,6 +1880,20 @@ their attach/detach lifecycle (MV-D7). One row per
 DETACHED → DROPPED over the life of the object. Backed by
 ``ddl._GENIE_OPT_MV_CREATED_OBJECTS_DDL``; upserted via
 ``mv_state.upsert_mv_created_object``."""
+TABLE_MV_SUPPRESSIONS = "genie_opt_mv_suppressions"
+"""Per-measure suppression ledger (MV-D30 as-implemented, Prompt 15.3). When a
+user rejects a view-grained bundle, the rejection FANS OUT to one row per member
+measure fingerprint here — because under MV-D30 the persisted proposal grain is
+the *view* and its ``dedup_fingerprint`` changes when membership changes, so a
+bundle-row rejection alone cannot stop a bundle from resurfacing wearing one new
+measure. Keyed on ``(target_space_id, measure_fingerprint)``. The advisor's
+consolidation reads this (unioned with legacy per-measure ``rejected`` candidate
+rows) and drops suppressed members BEFORE bundling, so a rejected measure never
+resurfaces inside any future bundle. Kept as a dedicated table rather than
+synthetic per-measure rows in ``genie_opt_mv_candidates`` so the two grains do
+not share one table and reintroduce the two-readers hazard MV-D30 removed.
+Backed by ``ddl._GENIE_OPT_MV_SUPPRESSIONS_DDL``; written via
+``mv_state.suppress_mv_measures`` / ``warehouse.wh_suppress_mv_measures``."""
 
 # ── 13. Trace Destination Convention ──────────────────────────────────
 

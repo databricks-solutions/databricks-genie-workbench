@@ -111,6 +111,33 @@ included in `backend/main.py`). The ten MV routes:
 | genie_opt_mv_created_objects | lift_report_json | SERVED | route 10 (`lift_report`) |
 | genie_opt_mv_created_objects | provenance | SERVED | route 10 (`MvCreatedObject.provenance`, Prompt 14.1). MV-D24 create-path discriminator: written by route 5 (register, `USER_CREATED`), gates route 9 (drop refuses `USER_CREATED`) and attach's identity relaxation server-side. Route 10 now returns it (NULL → `OBO_CREATED`), so a reloaded UI hides the Drop affordance the mockups (frame 8b) omit. Closed the exposure sweep's first GAP. |
 
+### `genie_opt_mv_suppressions`
+
+Per-measure suppression ledger (MV-D30 as-implemented, Prompt 15.3). Every column
+is **DELIBERATELY INTERNAL — until a surface explains suppression to the user.**
+The ledger exists solely so the advisor's consolidation
+(`mv_state.load_mv_suppressed_fingerprints` / warehouse twin) can drop rejected
+members before bundling. No route serves a suppression row — the client only ever
+sees its *effect* (a rejected measure absent from future bundles). It is written
+by route 8's fan-out (`wh_suppress_mv_measures`), never read by a client.
+
+The classification is correct today but conditional by design: a user who rejects
+a bundle and later wonders why a measure never reappears has no surface that
+explains it. If 15.4's hydrated panel grows a "suppressed measures" disclosure,
+`measure_fingerprint`, `suppressed_until`, `originating_suggestion_id`, and
+`reason` flip to **SERVED** — and that flip is planned, not a correction. This
+note is the matrix doing its job: making the eventual flip visible in advance.
+
+| Table | Column | Exposure | Route / Reason |
+|---|---|---|---|
+| genie_opt_mv_suppressions | target_space_id | DELIBERATELY INTERNAL | suppression-ledger key; scopes the internal decisions-reader, never a client field |
+| genie_opt_mv_suppressions | measure_fingerprint | DELIBERATELY INTERNAL | the per-measure identity suppression is enforced at; consumed only by the advisor consolidation to drop rejected members before bundling |
+| genie_opt_mv_suppressions | suppressed_until | DELIBERATELY INTERNAL | decay window read by the internal reader (NULL = indefinite); the served copy is the bundle row's own `suppressed_until` |
+| genie_opt_mv_suppressions | originating_suggestion_id | DELIBERATELY INTERNAL | audit link back to the bundle rejection that fanned out to this row |
+| genie_opt_mv_suppressions | reason | DELIBERATELY INTERNAL | suppression provenance (e.g. `bundle_rejected`); audit-only |
+| genie_opt_mv_suppressions | created_at | DELIBERATELY INTERNAL | ledger audit timestamp |
+| genie_opt_mv_suppressions | updated_at | DELIBERATELY INTERNAL | ledger audit timestamp (a re-rejection refreshes the window) |
+
 ### `genie_opt_runs` (MV columns only)
 
 | Table | Column | Exposure | Route / Reason |

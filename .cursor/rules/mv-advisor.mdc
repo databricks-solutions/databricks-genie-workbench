@@ -112,6 +112,16 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   writing a second scanner. No literals, sample values, or PII in shipped
   metadata, DDL comments, or logs.
 - Materialization is a separate consent (mv_materialize); never bundled.
+- SUGGEST-SURFACE CONTRACT (from the first human smoke run): a proposal is a
+  metric VIEW bundling the measures of one grain, never one card per measure;
+  MEDIUM+ surfaces by default, LOW behind explicit disclosure, and a proposal
+  with no proposed_object never renders; every surfaced card carries its
+  justification (measures, evidence counts, gain); EMPTY states are variant-
+  specific (already-governed / nothing-recurring / no-corpus), never one
+  generic shrug; results hydrate from persisted candidates on mount and are
+  never lost to navigation; long operations show staged progress and report
+  where they stopped on failure. A visualization must never crash the page —
+  error boundaries are mandatory on graph surfaces.
 - ONTOLOGY PAGES (Prompt 17.x): Databricks Pages have NO public create/update
   API — they are created in the Discover UI. Never invent a Pages endpoint.
   The workbench emits copy-ready Page drafts (manual paste) and API-writes

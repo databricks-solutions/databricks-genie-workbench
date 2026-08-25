@@ -106,6 +106,7 @@ def suggest_for_space(
     from genie_space_optimizer.common.warehouse import (
         wh_create_advice_run,
         wh_ensure_optimization_tables,
+        wh_load_mv_suppressed_fingerprints,
         wh_upsert_mv_candidate,
     )
     from genie_space_optimizer.optimization.mv_advisor import (
@@ -208,5 +209,13 @@ def suggest_for_space(
         max_candidates=None,
         persist_proposal=_persist,
         write_ddl_artifact=_no_artifact,
+        # MV-D30: the interactive suggest path reads the SAME per-measure
+        # suppression ledger the reject route writes (warehouse twin), so a
+        # re-scan never resurfaces a measure the user rejected — and the in-job
+        # advisor, which injects the Spark-side reader, agrees with it.
+        read_suppressed_fingerprints=lambda: wh_load_mv_suppressed_fingerprints(
+            sp_ws, warehouse_id, catalog=catalog, schema=schema,
+            target_space_id=space_id,
+        ),
     )
     return outcome, run_id

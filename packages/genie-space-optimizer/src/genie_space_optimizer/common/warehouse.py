@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -791,6 +792,127 @@ def wh_record_mv_candidate_decision(
         "Candidate %s for space %s %s by %s (approved_for_rerun=%s) via SQL warehouse",
         dedup_fingerprint, target_space_id, decision, decided_by, approved_for_rerun,
     )
+
+
+def wh_suppress_mv_measures(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    target_space_id: str,
+    measure_fingerprints: Iterable[str],
+    originating_suggestion_id: str | None = None,
+    suppressed_until: str | None = None,
+    reason: str = "bundle_rejected",
+) -> list[str]:
+    """Fan a bundle rejection out to per-measure suppression — twin of
+    ``mv_state.suppress_mv_measures``.
+
+    One ``MERGE INTO genie_opt_mv_suppressions`` per member fingerprint, keyed on
+    ``(target_space_id, measure_fingerprint)``. This is MV-D30's load-bearing
+    half: because the view-grained bundle key changes when membership changes,
+    only a per-measure record keeps a rejected measure out of a future bundle.
+    The backend reject route calls this alongside
+    ``wh_record_mv_candidate_decision`` on the bundle row.
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_SUPPRESSIONS
+
+    if not target_space_id:
+        raise ValueError("target_space_id is required to suppress measures")
+
+    fqn = f"{catalog}.{schema}.{TABLE_MV_SUPPRESSIONS}"
+    written: list[str] = []
+    for fingerprint in measure_fingerprints:
+        if not fingerprint:
+            continue
+        value_cols = {
+            "suppressed_until": _wh_timestamp_literal(suppressed_until)
+            if suppressed_until
+            else "NULL",
+            "originating_suggestion_id": _wh_literal(originating_suggestion_id),
+            "reason": _wh_literal(reason),
+            "updated_at": "current_timestamp()",
+        }
+        set_clause = ", ".join(f"t.{col} = {val}" for col, val in value_cols.items())
+        insert_cols = ", ".join(
+            ["target_space_id", "measure_fingerprint", *value_cols, "created_at"]
+        )
+        insert_vals = ", ".join(
+            ["s.target_space_id", "s.measure_fingerprint", *value_cols.values(),
+             "current_timestamp()"]
+        )
+        sql = (
+            f"MERGE INTO {fqn} AS t USING (SELECT "
+            f"{_wh_literal(target_space_id)} AS target_space_id, "
+            f"{_wh_literal(fingerprint)} AS measure_fingerprint) AS s "
+            "ON t.target_space_id = s.target_space_id "
+            "AND t.measure_fingerprint = s.measure_fingerprint "
+            f"WHEN MATCHED THEN UPDATE SET {set_clause} "
+            f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+        )
+        sql_warehouse_execute(ws, warehouse_id, sql)
+        written.append(fingerprint)
+    if written:
+        logger.info(
+            "Suppressed %d measure fingerprint(s) for space %s (from %s) via SQL warehouse",
+            len(written), target_space_id, originating_suggestion_id,
+        )
+    return written
+
+
+def wh_load_mv_suppressed_fingerprints(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    target_space_id: str,
+) -> set[str]:
+    """Return suppressed per-measure fingerprints — twin of
+    ``mv_state.load_mv_suppressed_fingerprints``.
+
+    Unions the non-expired fan-out ledger rows with legacy per-measure
+    ``rejected`` candidate rows (bundle-key rejections are inert — a bundle key
+    never equals a member measure fingerprint). Returns ``set()`` when neither
+    table is readable.
+    """
+    from genie_space_optimizer.common.config import (
+        TABLE_MV_CANDIDATES,
+        TABLE_MV_SUPPRESSIONS,
+    )
+
+    suppressed: set[str] = set()
+    if not target_space_id:
+        return suppressed
+    space_lit = _wh_literal(target_space_id)
+
+    try:
+        df = sql_warehouse_query(
+            ws,
+            warehouse_id,
+            f"SELECT measure_fingerprint FROM {catalog}.{schema}.{TABLE_MV_SUPPRESSIONS} "
+            f"WHERE target_space_id = {space_lit} "
+            "AND (suppressed_until IS NULL OR suppressed_until > current_timestamp())",
+        )
+        if not getattr(df, "empty", True):
+            suppressed.update(str(v) for v in df["measure_fingerprint"] if v)
+    except Exception:
+        logger.debug("wh_load_mv_suppressed_fingerprints: no suppressions table", exc_info=True)
+
+    try:
+        df = sql_warehouse_query(
+            ws,
+            warehouse_id,
+            f"SELECT dedup_fingerprint FROM {catalog}.{schema}.{TABLE_MV_CANDIDATES} "
+            f"WHERE target_space_id = {space_lit} AND decision = 'rejected'",
+        )
+        if not getattr(df, "empty", True):
+            suppressed.update(str(v) for v in df["dedup_fingerprint"] if v)
+    except Exception:
+        logger.debug("wh_load_mv_suppressed_fingerprints: no candidates table", exc_info=True)
+
+    return suppressed
 
 
 def wh_upsert_mv_candidate(

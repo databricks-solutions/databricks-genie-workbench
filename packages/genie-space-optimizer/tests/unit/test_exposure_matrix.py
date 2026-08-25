@@ -27,6 +27,7 @@ from genie_space_optimizer.common.config import (
     TABLE_MV_CANDIDATES,
     TABLE_MV_CONSENTS,
     TABLE_MV_CREATED_OBJECTS,
+    TABLE_MV_SUPPRESSIONS,
     TABLE_RUNS,
 )
 from genie_space_optimizer.optimization.ddl import (
@@ -45,8 +46,13 @@ _DDL_COLUMN_RE = re.compile(
     r"^\s{4}(\w+)\s+(?:STRING|INT|DOUBLE|BOOLEAN|TIMESTAMP)\b", re.MULTILINE,
 )
 
-# The three MV tables, in full. run_kind is the only MV column outside them.
-_MV_TABLES = (TABLE_MV_CANDIDATES, TABLE_MV_CONSENTS, TABLE_MV_CREATED_OBJECTS)
+# The four MV tables, in full. run_kind is the only MV column outside them.
+_MV_TABLES = (
+    TABLE_MV_CANDIDATES,
+    TABLE_MV_CONSENTS,
+    TABLE_MV_CREATED_OBJECTS,
+    TABLE_MV_SUPPRESSIONS,
+)
 _EXTRA_MV_COLUMNS = ((TABLE_RUNS, "run_kind"),)
 
 
