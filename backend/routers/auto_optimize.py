@@ -494,6 +494,60 @@ def _load_latest_artifact(run_id: str, artifact_kind: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _load_candidate_ddl_fallback(run_id: str, suggestion_id: str | None) -> dict | None:
+    """Render a DDL payload from a candidate row when no artifact exists (MV-D23).
+
+    The read-side twin of ``mv_create._load_ddl_artifact``'s candidate fallback.
+    A standalone advice run writes no run-partitioned ``mv_candidate_ddl``
+    artifact — it carries the rendered body on the candidate row itself
+    (``yaml_text`` + ``evidence.join_strategy``, ddl.py:352). This renders the
+    same ``MvDdlArtifact`` shape from that row so route 7 serves advice runs, not
+    only in-job runs (Prompt 15.1 — the Tier 1 live finding).
+
+    Returns None (→ the caller 404s) when the run has no candidates, the named
+    ``suggestion_id`` is not among them, or the chosen row has no rendered body.
+    """
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return None
+
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+    from genie_space_optimizer.optimization.mv_yaml import create_ddl
+
+    rows = wh_load_mv_candidates(
+        get_service_principal_client(),
+        config.warehouse_id,
+        config.catalog,
+        config.schema_name,
+        run_id=run_id,
+    )
+    if not rows:
+        return None
+    if suggestion_id:
+        row = next((r for r in rows if r.get("suggestion_id") == suggestion_id), None)
+    else:
+        row = rows[0]
+    if row is None or not row.get("yaml_text"):
+        return None
+
+    yaml_text = str(row["yaml_text"])
+    proposed = str(row.get("proposed_object") or "")
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    return {
+        "suggestion_id": row.get("suggestion_id"),
+        "dedup_fingerprint": row.get("dedup_fingerprint"),
+        "proposed_object": proposed,
+        "join_strategy": evidence.get("join_strategy"),
+        "yaml_text": yaml_text,
+        "ddl": create_ddl(proposed, yaml_text) if proposed else None,
+        # A preview: the artifact carries the real validation (echo-check +
+        # capability rung, pinned at render). The candidate row does not, and
+        # re-running validate() at read time would need a fresh capability probe
+        # for no gain — the create path revalidates before it writes. So None.
+        "validation": None,
+    }
+
+
 # target_accuracy lives on TWO native scales across the loop artifacts (B3):
 #   • genie_opt_iterations.target_accuracy + publish_record.target_accuracy →
 #     0–100 (run_03 / run_publish_and_audit normalize ≤1 to 0–100 so the value
@@ -2333,17 +2387,32 @@ def _read_governed_measure_fields(space_data: dict) -> list[Any]:
 
 
 @router.get("/runs/{run_id}/mv-ddl", response_model=MvDdlArtifact)
-async def get_mv_ddl(run_id: RunId):
+async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=None)):
     """Return the rendered metric view DDL artifact plus a copy-ready GRANT (MV-D22).
 
     ``yaml_text`` is the immutable rendered body the create path replays; ``ddl``
     is the render-time wrapper. ``grant_sql`` is a template the operator edits with
     the audience — the app never grants on the user's behalf.
+
+    Two sources, one shape (Prompt 15.1). An in-job run writes a run-partitioned
+    ``mv_candidate_ddl`` artifact and that is served first; a standalone advice
+    run (MV-D23) writes none and carries the body on the candidate row, so the
+    fallback renders the same shape from there. The two picks differ on purpose
+    and it is documented here so the difference is not read as a bug: the artifact
+    path is **latest-wins** (``created_at DESC LIMIT 1``), while the candidate
+    fallback is **best-wins** (``wh_load_mv_candidates`` orders confidence DESC),
+    so a run with several advice candidates serves the highest-confidence one.
+    An optional ``suggestion_id`` pins one candidate exactly on the fallback path.
+    On that fallback path ``validation`` is ``None`` — it is a preview of an
+    unexecuted body; the real validation (echo-check + capability rung) lives on
+    the artifact and is re-run by the create path before any write.
     """
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
     payload = await _offload(_load_latest_artifact, run_id, "mv_candidate_ddl")
+    if not payload:
+        payload = await _offload(_load_candidate_ddl_fallback, run_id, suggestion_id)
     if not payload:
         raise HTTPException(status_code=404, detail="No metric view DDL artifact for this run.")
 

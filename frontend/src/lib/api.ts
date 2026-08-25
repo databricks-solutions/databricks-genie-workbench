@@ -542,9 +542,15 @@ export async function getRunMvProposals(runId: string): Promise<MvProposalsRespo
 }
 
 // GET /runs/{run_id}/mv-ddl — the rendered DDL artifact + copy-ready GRANT.
-export async function getMvDdl(runId: string): Promise<MvDdlArtifact> {
+// suggestionId pins one candidate on the advice-run fallback path (Prompt 15.1);
+// omitted, the route serves the artifact (in-job) or the best candidate (advice).
+export async function getMvDdl(
+  runId: string,
+  suggestionId?: string,
+): Promise<MvDdlArtifact> {
+  const qs = suggestionId ? `?suggestion_id=${encodeURIComponent(suggestionId)}` : ''
   return fetchWithTimeout<MvDdlArtifact>(
-    `${API_BASE}/auto-optimize/runs/${runId}/mv-ddl`,
+    `${API_BASE}/auto-optimize/runs/${runId}/mv-ddl${qs}`,
   )
 }
 

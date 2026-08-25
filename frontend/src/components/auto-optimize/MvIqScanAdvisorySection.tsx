@@ -26,8 +26,8 @@ import { ArrowUpRight, Check, RefreshCw, Sparkles, AlertTriangle } from "lucide-
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
-import { suggestSpaceMv, registerSpaceMv } from "@/lib/api"
-import type { MvProposal, MvSuggestResponse, MvRegisterResponse } from "@/types"
+import { suggestSpaceMv, registerSpaceMv, getMvDdl } from "@/lib/api"
+import type { MvProposal, MvSuggestResponse, MvRegisterResponse, MvDdlArtifact } from "@/types"
 
 // VERBATIM from the Prompt 10 review (mockup frame 8b) — do not paraphrase.
 const REGISTERED_COPY =
@@ -45,6 +45,9 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<MvSuggestResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Prompt 15.1: an advice run writes no DDL artifact, so DDL is fetched per
+  // proposal from route 7's candidate fallback (pinned by suggestion_id).
+  const [ddlById, setDdlById] = useState<Record<string, MvDdlArtifact>>({})
 
   const [registerValue, setRegisterValue] = useState("")
   const [claimId, setClaimId] = useState<string | null>(null)
@@ -55,8 +58,23 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   async function runSuggest() {
     setLoading(true)
     setError(null)
+    setDdlById({})
     try {
-      setResult(await suggestSpaceMv(spaceId))
+      const res = await suggestSpaceMv(spaceId)
+      setResult(res)
+      // Fetch each proposal's copy-ready DDL best-effort — a card whose DDL fetch
+      // fails still renders its evidence, so this never blocks the scan result.
+      const props = res.proposals ?? []
+      if (res.run_id && props.length > 0) {
+        const settled = await Promise.allSettled(
+          props.map((p) => getMvDdl(res.run_id, p.suggestion_id)),
+        )
+        const map: Record<string, MvDdlArtifact> = {}
+        settled.forEach((s, i) => {
+          if (s.status === "fulfilled") map[props[i].suggestion_id] = s.value
+        })
+        setDdlById(map)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not run the metric-view scan.")
     } finally {
@@ -122,6 +140,7 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
               <MvProposalCard
                 key={proposal.suggestion_id}
                 proposal={proposal}
+                ddl={ddlById[proposal.suggestion_id]}
                 actions={
                   <>
                     <Button size="sm" onClick={() => onReviewCreate?.(proposal)}>

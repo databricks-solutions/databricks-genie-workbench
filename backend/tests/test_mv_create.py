@@ -327,9 +327,41 @@ def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
 
 
 def test_get_mv_ddl_404_when_absent(client, monkeypatch):
+    # No artifact AND no candidate fallback (an advice run with nothing rendered):
+    # the route still 404s. The fallback is stubbed to None so this pins the
+    # empty case, not the warehouse read.
     monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda run_id, kind: None)
+    monkeypatch.setattr(
+        auto_optimize, "_load_candidate_ddl_fallback", lambda run_id, suggestion_id: None
+    )
     resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
     assert resp.status_code == 404
+
+
+def test_get_mv_ddl_falls_back_to_candidate_yaml_text(client, monkeypatch):
+    """MV-D23 / Prompt 15.1: with no run-partitioned artifact (an advice run),
+    route 7 renders the DDL from the candidate row's yaml_text — best-wins on the
+    wh_load_mv_candidates ordering — so a never-optimized space serves copy-ready
+    DDL instead of 404ing. validation is None on this preview path (documented)."""
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda run_id, kind: None)
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "sugA", "dedup_fingerprint": "fpA",
+            "proposed_object": "finance.sales.revenue_metrics",
+            "yaml_text": "version: 0.1\n",
+            "evidence": {"join_strategy": "subquery_source"},
+        }],
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["suggestion_id"] == "sugA"
+    assert data["yaml_text"] == "version: 0.1\n"
+    assert data["join_strategy"] == "subquery_source"
+    assert "CREATE VIEW finance.sales.revenue_metrics" in data["ddl"]
+    assert data["grant_sql"] == "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO `<grantee>`;"
+    assert data["validation"] is None
 
 
 def test_decision_records_and_flips_rerun(client, monkeypatch):

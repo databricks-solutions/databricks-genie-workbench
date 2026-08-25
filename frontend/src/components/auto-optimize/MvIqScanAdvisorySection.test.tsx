@@ -17,7 +17,7 @@ import {
   MvRegisterRefused,
 } from "./MvIqScanAdvisorySection"
 import { MvProposalCard } from "./MvProposalCard"
-import type { MvProposal, MvRegisterResponse } from "@/types"
+import type { MvProposal, MvRegisterResponse, MvDdlArtifact } from "@/types"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 
@@ -55,6 +55,29 @@ describe("IQ Scan advisory — found (MV-D23 prop-driven payoff)", () => {
     )
     expect(html).toContain("finance.sales.order_revenue")
     expect(html).not.toContain("Lift not measured")
+  })
+
+  it("renders copy-ready DDL + GRANT when the advice-run fallback supplies it (Prompt 15.1)", () => {
+    // The container fetches this per proposal from route 7's candidate fallback
+    // (a never-optimized space has no artifact); given the ddl prop the card
+    // shows the executable CREATE VIEW wrapper and the copy-ready GRANT.
+    const ddl: MvDdlArtifact = {
+      suggestion_id: "sug1",
+      dedup_fingerprint: "fp1",
+      proposed_object: "finance.sales.order_revenue",
+      join_strategy: "subquery_source",
+      yaml_text: "version: 0.1\n",
+      ddl: "CREATE VIEW finance.sales.order_revenue\nWITH METRICS\nLANGUAGE YAML\nAS $$\nversion: 0.1\n$$",
+      validation: null,
+      grant_sql: "GRANT SELECT ON VIEW finance.sales.order_revenue TO `<grantee>`;",
+    }
+    const html = render(<MvProposalCard proposal={proposal} ddl={ddl} />)
+    // Two SqlCodeBlock panels render — the CREATE VIEW wrapper and the GRANT.
+    // (prism-react-renderer tokenizes the SQL, so assert on the panel count and
+    // the intact keyword tokens rather than the full split identifier string.)
+    expect(html.match(/>SQL</g)?.length).toBe(2)
+    expect(html).toContain(">CREATE<")
+    expect(html).toContain(">GRANT<")
   })
 })
 

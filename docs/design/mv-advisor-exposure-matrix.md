@@ -74,7 +74,7 @@ included in `backend/main.py`). The ten MV routes:
 | genie_opt_mv_candidates | approved_for_rerun | SERVED | routes 2/3 (also route-3 query filter) |
 | genie_opt_mv_candidates | created_at | SERVED | routes 2/3/4/6 |
 | genie_opt_mv_candidates | updated_at | SERVED | routes 2/3/4/6 |
-| genie_opt_mv_candidates | yaml_text | DELIBERATELY INTERNAL | MV-D23 replay source: consumed by `mv_create._load_ddl_artifact` fallback; the rendered form is served by route 7 (`mv-ddl`), never this raw column |
+| genie_opt_mv_candidates | yaml_text | SERVED | route 7 (`mv-ddl`) returns it verbatim as `MvDdlArtifact.yaml_text` (models.py:476), and `create_ddl` embeds the same body inside the `AS $$…$$` fence. The prior "DELIBERATELY INTERNAL / never this raw column" token was false twice over: route 7 served the raw column directly for artifact-backed runs even before the fallback, and advice runs (which write no artifact) 404'd instead — the exact gap the matrix exists to surface. Prompt 15.1 added the candidate-row fallback so advice runs serve it too. Still the MV-D23 replay source for `mv_create._load_ddl_artifact`. |
 
 ### `genie_opt_mv_consents`
 

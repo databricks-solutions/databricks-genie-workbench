@@ -2048,7 +2048,7 @@ Prompt 12 body), charts (all in `frontend/package.json`) · OBO-only client acce
 Findings from running the Prompt 15 live suite against a real workspace. These
 are recorded here (not fixed inline) so the run and the repo state stay in sync.
 
-### 2026-08-24 — Tier 1 (Scenario D), suggest run has no `mv-ddl` artifact
+### 2026-08-24 — Tier 1 (Scenario D), suggest run has no `mv-ddl` artifact — RESOLVED (Prompt 15.1, 2026-08-24)
 
 **Observed.** `POST /api/auto-optimize/spaces/{space_id}/mv/suggest` returns a
 born-terminal sentinel advice run and persists proposals (each `MvProposal`
@@ -2071,3 +2071,22 @@ BYO leg from a full run that emits the artifact, or (b) have the suggest route
 persist a `mv_candidate_ddl` artifact for its sentinel run so the run-scoped
 endpoint is uniform across suggest and optimize. Verbatim failure and full
 config are in `scripts/e2e/mv_advisor_e2e.md` → Run record → 2026-08-24 Tier 1.
+
+**Resolution (Prompt 15.1, 2026-08-24) — option (b), read-side.** `get_mv_ddl`
+(`auto_optimize.py`) now falls back to the candidate rows when no
+`mv_candidate_ddl` artifact exists: a new `_load_candidate_ddl_fallback` reads
+`wh_load_mv_candidates(run_id=…)`, picks the row named by an optional
+`suggestion_id` query param (else the best-confidence row — `wh_load_mv_candidates`
+orders confidence DESC), and renders the same `MvDdlArtifact` shape via
+`mv_yaml.create_ddl` off the row's `yaml_text` + `evidence.join_strategy`. So an
+advice run serves copy-ready DDL instead of 404ing, and the IQ Scan advisory
+panel fetches DDL per proposal (`getMvDdl(run_id, suggestion_id)`,
+`MvIqScanAdvisorySection.tsx`). Two orderings on one route — artifact latest-wins,
+fallback best-wins — and `validation: None` on the fallback (a preview; the
+artifact carries the real validation) are documented in the route docstring so
+the difference is not read as a bug. The exposure-matrix `yaml_text` row was
+corrected (`DELIBERATELY INTERNAL` → `SERVED | route 7`) — the old rationale was
+false twice over (route 7 served the raw column for artifact-backed runs even
+before this, and advice runs 404'd). Pinned by
+`test_get_mv_ddl_falls_back_to_candidate_yaml_text` (backend 637 → 638) and the
+IQ Scan DDL-panel frontend test. Scenario D reruns three-for-three green.
