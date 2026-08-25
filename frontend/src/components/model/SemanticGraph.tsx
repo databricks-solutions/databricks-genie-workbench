@@ -14,8 +14,8 @@
  * ungoverned=danger), each rung carrying a non-color label so it never leans on
  * hue alone.
  */
-import { useMemo, useRef, useState } from "react"
-import { AlertTriangle, Maximize2, Minus, Plus, ShieldCheck, Wrench } from "lucide-react"
+import { Component, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react"
+import { AlertTriangle, Maximize2, Minus, Plus, RefreshCw, ShieldCheck, Wrench } from "lucide-react"
 import type { MvGovernance, SemanticGraphEdge, SemanticGraphNode } from "@/types"
 
 export const GOVERNANCE: Record<
@@ -72,6 +72,21 @@ function layout(nodes: SemanticGraphNode[]): { placed: Map<string, Placed>; widt
 
 function abbreviate(text: string, max = 28): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
+/**
+ * Pan delta from a drag anchor to the current pointer. Null-safe by contract:
+ * a null anchor (the pointerup-vs-pointermove race that used to crash the tab
+ * via `drag.current!.tx`) yields null and the caller no-ops. Pure so the
+ * invariant is testable without a DOM.
+ */
+export function panDelta(
+  anchor: { x: number; y: number } | null,
+  clientX: number,
+  clientY: number,
+): { dx: number; dy: number } | null {
+  if (!anchor) return null
+  return { dx: clientX - anchor.x, dy: clientY - anchor.y }
 }
 
 function EdgeView({
@@ -194,7 +209,7 @@ interface SemanticGraphProps {
   label?: string
 }
 
-export function SemanticGraph({ nodes, edges, selectedId, onSelectNode, label = "Semantic model" }: SemanticGraphProps) {
+function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "Semantic model" }: SemanticGraphProps) {
   const { placed, width, height } = useMemo(() => layout(nodes), [nodes])
   const [hoverEdge, setHoverEdge] = useState<number | null>(null)
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 })
@@ -215,8 +230,13 @@ export function SemanticGraph({ nodes, edges, selectedId, onSelectNode, label = 
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
   }
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!drag.current) return
-    setView((v) => ({ ...v, tx: drag.current!.tx + (e.clientX - drag.current!.x), ty: drag.current!.ty + (e.clientY - drag.current!.y) }))
+    // Read the ref ONCE into a local: a pointerup between this guard and the
+    // setView closure would otherwise null drag.current and crash the tab
+    // (the SemanticGraph.tsx:219 non-null-assertion race). No `!` in handlers.
+    const d = drag.current
+    const delta = panDelta(d, e.clientX, e.clientY)
+    if (!d || !delta) return
+    setView((v) => ({ ...v, tx: d.tx + delta.dx, ty: d.ty + delta.dy }))
   }
   const onPointerUp = () => {
     drag.current = null
@@ -273,5 +293,56 @@ export function SemanticGraph({ nodes, edges, selectedId, onSelectNode, label = 
         </div>
       )}
     </div>
+  )
+}
+
+// ── Error boundary (12c Part 1) ──────────────────────────────────────────────
+// A visualization must never take the page down. Any render/interaction throw
+// inside the graph is caught here and replaced with a recoverable card, instead
+// of an uncaught error unmounting the whole tab (smoke finding 5).
+export class GraphErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { failed: false }
+  }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("SemanticGraph render failed", error, info)
+  }
+
+  handleRetry = () => this.setState({ failed: false })
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div
+          role="alert"
+          className="flex flex-col items-center justify-center gap-2 rounded-lg border border-default bg-sunken px-4 py-8 text-center"
+        >
+          <AlertTriangle className="h-5 w-5 text-[var(--color-danger)]" />
+          <p className="text-sm text-secondary">The visualization failed to render.</p>
+          <button
+            type="button"
+            onClick={this.handleRetry}
+            className="mt-1 inline-flex items-center gap-1.5 rounded border border-default bg-surface px-2.5 py-1 text-xs text-secondary hover:text-primary"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> Refresh to retry
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+export function SemanticGraph(props: SemanticGraphProps) {
+  return (
+    <GraphErrorBoundary>
+      <SemanticGraphInner {...props} />
+    </GraphErrorBoundary>
   )
 }
