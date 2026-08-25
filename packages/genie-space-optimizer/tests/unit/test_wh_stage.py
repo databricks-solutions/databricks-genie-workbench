@@ -56,11 +56,14 @@ def test_started_row_has_no_completed_at_or_duration(executed):
     assert sql.startswith(
         "INSERT INTO main.genie_space_optimizer.genie_opt_stages"
     )
+    # INSERT ... SELECT, not VALUES — a terminal row's duration is a scalar
+    # subquery, which Databricks rejects inside a VALUES clause.
+    assert "SELECT" in sql and "VALUES" not in sql
     # A STARTED row opens the interval: started now, no end, no duration yet.
     assert "current_timestamp()" in sql
-    # The VALUES carry NULL for completed_at and duration_seconds (no diff yet).
-    values = sql.split("VALUES", 1)[1]
-    assert "NULL" in values
+    # The projection carries NULL for completed_at and duration_seconds (no diff yet).
+    projection = sql.split("SELECT", 1)[1]
+    assert "NULL" in projection
 
 
 def test_terminal_row_diffs_the_started_row_for_duration(executed):

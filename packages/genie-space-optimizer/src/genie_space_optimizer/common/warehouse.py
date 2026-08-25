@@ -454,8 +454,12 @@ def wh_write_stage(
             _wh_literal(error_message),
         ]
     )
+    # INSERT ... SELECT, not VALUES: the terminal-row duration is a scalar
+    # subquery (the STARTED-row diff), and Databricks rejects scalar subqueries
+    # in a VALUES clause (UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.
+    # SCALAR_SUBQUERY_IN_VALUES) — a SELECT projection permits it.
     sql_warehouse_execute(
-        ws, warehouse_id, f"INSERT INTO {fqn} ({cols}) VALUES ({vals})"
+        ws, warehouse_id, f"INSERT INTO {fqn} ({cols}) SELECT {vals}"
     )
     logger.info("Stage %s/%s for run %s (warehouse)", stage, status, run_id)
 
