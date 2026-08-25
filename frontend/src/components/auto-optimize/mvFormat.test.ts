@@ -8,6 +8,8 @@
  */
 import { describe, expect, it } from "vitest"
 import {
+  confidenceDisplay,
+  evidenceGrowth,
   evidenceSummary,
   isLowConfidence,
   MV_DEFAULT_VISIBLE,
@@ -238,5 +240,59 @@ describe("MV_DEFAULT_VISIBLE", () => {
   it("is a small, positive default the card list and its test share", () => {
     expect(MV_DEFAULT_VISIBLE).toBeGreaterThan(0)
     expect(MV_DEFAULT_VISIBLE).toBeLessThanOrEqual(5)
+  })
+})
+
+describe("confidenceDisplay (Prompt 15.7 / MV-D32(1) — coverage-aware, blend untouched)", () => {
+  it("keeps the number, captions evidence-poor as evidence-poor (fresh table)", () => {
+    // L and D UNAVAILABLE on a fresh table: only curated SQL (Y) + semantic (S).
+    const p = mk({
+      confidence_score: 34,
+      tier: "LOW",
+      score_components: { statuses: { L: "UNAVAILABLE", Y: "COMPUTED", S: "COMPUTED", D: "UNAVAILABLE" } },
+    })
+    const d = confidenceDisplay(p)
+    expect(d.percent).toBe(34) // number is unchanged — the blend is byte-untouched
+    expect(d.evidencePoor).toBe(true)
+    expect(d.caption).toBe("Based on curated SQL only — no usage history yet.")
+  })
+
+  it("captions an evidence-rich proposal as backed by usage + lineage", () => {
+    const p = mk({
+      confidence_score: 88,
+      score_components: { statuses: { L: "COMPUTED", Y: "COMPUTED", S: "COMPUTED", D: "COMPUTED" } },
+    })
+    const d = confidenceDisplay(p)
+    expect(d.evidencePoor).toBe(false)
+    expect(d.caption).toBe("Backed by usage history and lineage.")
+  })
+
+  it("treats EMPTY (a measured zero) as available, not absent", () => {
+    const p = mk({ score_components: { statuses: { L: "EMPTY", Y: "COMPUTED", S: "COMPUTED", D: "EMPTY" } } })
+    expect(confidenceDisplay(p).evidencePoor).toBe(false)
+  })
+
+  it("says nothing when score_components carries no statuses — never asserts a basis it didn't read", () => {
+    expect(confidenceDisplay(mk({ score_components: null })).caption).toBeNull()
+    expect(confidenceDisplay(mk({ confidence_score: null, score_components: null })).percent).toBeNull()
+  })
+})
+
+describe("evidenceGrowth (Prompt 15.7 / MV-D32(3) — cross-surface enrichment, no fabrication)", () => {
+  it("a cold scan-only proposal shows NO growth (Y+S only, no history/lineage)", () => {
+    const p = mk({ score_components: { statuses: { L: "UNAVAILABLE", Y: "COMPUTED", S: "COMPUTED", D: "UNAVAILABLE" } } })
+    expect(evidenceGrowth(p)).toEqual([])
+  })
+
+  it("surfaces the enrichment a GSO run added — signals a scan cannot produce", () => {
+    const p = mk({
+      score_components: { statuses: { L: "COMPUTED", Y: "COMPUTED", S: "COMPUTED", D: "COMPUTED" } },
+      evidence: { query_history_statement_ids: ["s1", "s2"] },
+    })
+    expect(evidenceGrowth(p)).toEqual(["generated-SQL recurrence", "usage signals", "lineage"])
+  })
+
+  it("returns [] when there are no statuses to read (nothing to claim)", () => {
+    expect(evidenceGrowth(mk({ score_components: null }))).toEqual([])
   })
 })

@@ -14,10 +14,12 @@
  * disclosure (finding 3). An optional Recommended badge marks the ranked pick.
  */
 import { useState } from "react"
-import { ChevronDown, ChevronRight, FlaskConical, GitBranch, Layers, Star } from "lucide-react"
+import { ChevronDown, ChevronRight, FlaskConical, GitBranch, Layers, Star, TrendingUp } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { SqlCodeBlock } from "@/components/SqlCodeBlock"
 import {
+  confidenceDisplay,
+  evidenceGrowth,
   evidenceSummary,
   joinStrategyLabel,
   proposalGainSentence,
@@ -133,6 +135,9 @@ export function MvProposalCard({
   const measureCount = (proposal.measures ?? []).filter(
     (m) => (m.display_name && m.display_name.trim()) || (m.expr && m.expr.trim()),
   ).length
+  // Prompt 15.7 — coverage-aware confidence caption + cross-surface enrichment.
+  const confidence = confidenceDisplay(proposal)
+  const growth = evidenceGrowth(proposal)
 
   return (
     <div
@@ -180,6 +185,25 @@ export function MvProposalCard({
 
       {/* Gain line — part of the always-visible skeleton (MV-D30 justification). */}
       <p className="text-xs text-muted">{proposalGainSentence(proposal)}</p>
+
+      {/* Prompt 15.7 / MV-D32(1): the confidence number reflects only the
+          signals a fresh table can offer, so a caption names the evidence basis
+          — evidence-poor is presented as evidence-poor, not as low quality. */}
+      {confidence.caption && (
+        <p className="text-xs text-muted">
+          <span className="text-secondary">Confidence basis:</span> {confidence.caption}
+        </p>
+      )}
+
+      {/* Prompt 15.7 / MV-D32(3): cross-surface enrichment made visible. These
+          signals cannot come from a cold scan, so their presence is proof the
+          proposal grew beyond the initial scan. */}
+      {growth.length > 0 && (
+        <p className="flex items-center gap-1 text-xs text-accent">
+          <TrendingUp className="h-3.5 w-3.5 shrink-0" />
+          Evidence grew beyond the initial scan: +{growth.join(", +")}
+        </p>
+      )}
 
       {/* Explicit expand/collapse of the detail — no implicit inconsistency. */}
       <button

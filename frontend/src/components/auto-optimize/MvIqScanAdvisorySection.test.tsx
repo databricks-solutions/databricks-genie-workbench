@@ -158,6 +158,33 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
     expect(html).toContain("Recommended")
     expect(html).toContain("Strongest candidate")
   })
+
+  it("captions an evidence-poor proposal's confidence (15.7 / MV-D32(1))", () => {
+    const poor: MvProposal = {
+      ...bundle,
+      confidence_score: 34,
+      tier: "LOW",
+      score_components: { statuses: { L: "UNAVAILABLE", Y: "COMPUTED", S: "COMPUTED", D: "UNAVAILABLE" } },
+    }
+    const html = render(<MvProposalCard proposal={poor} defaultExpanded={false} />)
+    expect(html).toContain("34% confidence")
+    expect(html).toContain("Confidence basis")
+    expect(html).toContain("Based on curated SQL only")
+    // A cold, evidence-poor proposal shows no cross-surface growth line.
+    expect(html).not.toContain("Evidence grew beyond the initial scan")
+  })
+
+  it("surfaces cross-surface enrichment when a GSO run added signals (15.7 / MV-D32(3))", () => {
+    const enriched: MvProposal = {
+      ...bundle,
+      score_components: { statuses: { L: "COMPUTED", Y: "COMPUTED", S: "COMPUTED", D: "COMPUTED" } },
+      evidence: { query_history_statement_ids: ["s1"] },
+    }
+    const html = render(<MvProposalCard proposal={enriched} defaultExpanded={false} />)
+    expect(html).toContain("Evidence grew beyond the initial scan")
+    expect(html).toContain("usage signals")
+    expect(html).toContain("lineage")
+  })
 })
 
 describe("IQ Scan advisory — per-card justification (MV-D30)", () => {

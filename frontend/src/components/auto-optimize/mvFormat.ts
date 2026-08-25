@@ -215,6 +215,98 @@ export function stageProgressFraction(
   return Math.min(1, (done + active / 2) / total)
 }
 
+// ── Prompt 15.7 / MV-D32(1) — coverage-aware confidence display ───────────
+//
+// The surfaced confidence is the LYDS blend renormalized over the signals that
+// were actually measured (mv_scoring.blended_score divides by evidence_coverage
+// — MV-D15). On a fresh table lineage (L) and usage/demand (D) are STRUCTURALLY
+// absent, so the number reflects the strength of curated-SQL recurrence (Y) and
+// the semantic match (S) alone. Shown bare, "34%" reads as "this candidate is
+// doubtful", which is false — it is a statement about how much evidence exists,
+// not how strong it is. The fix is DISPLAY-only: the number is unchanged (the
+// blend arithmetic is byte-untouched), but a caption states the evidence basis
+// so evidence-poor is presented as evidence-poor. The raw blend, weights and
+// coverage stay in `score_components` for the debugging user.
+//
+// Signal → producer, from mv_scoring: L = lineage overlap, Y = curated/generated
+// SQL recurrence, S = semantic match, D = usage/demand (query history). A signal
+// is "available" when its status is COMPUTED or EMPTY (a measured zero counts);
+// UNAVAILABLE means no producer ran (nobody looked).
+const MV_SIGNAL_UNAVAILABLE = "UNAVAILABLE"
+
+function signalStatuses(proposal: MvProposal): Record<string, string> {
+  const sc = proposal.score_components
+  const statuses = sc && typeof sc === "object" ? (sc as Record<string, unknown>).statuses : null
+  if (statuses && typeof statuses === "object") {
+    return statuses as Record<string, string>
+  }
+  return {}
+}
+
+// A signal counts as available unless it is explicitly UNAVAILABLE. An absent
+// status is treated as available (COMPUTED) — the same default the engine uses,
+// so a payload that names only the absent signals reads the same on both sides.
+function signalAvailable(statuses: Record<string, string>, key: string): boolean {
+  return (statuses[key] ?? "COMPUTED") !== MV_SIGNAL_UNAVAILABLE
+}
+
+export interface ConfidenceDisplay {
+  /** The rounded blend percent (unchanged — display framing only). */
+  percent: number | null
+  /** Human caption naming the evidence basis, or null when unknowable. */
+  caption: string | null
+  /** True when usage history (D) and lineage (L) are both absent — cold start. */
+  evidencePoor: boolean
+}
+
+export function confidenceDisplay(proposal: MvProposal): ConfidenceDisplay {
+  const percent =
+    proposal.confidence_score === null ? null : Math.round(proposal.confidence_score)
+  const statuses = signalStatuses(proposal)
+  const hasUsage = signalAvailable(statuses, "D")
+  const hasLineage = signalAvailable(statuses, "L")
+  const evidencePoor = !hasUsage && !hasLineage
+
+  // No score_components → we cannot honestly caption the basis; say nothing
+  // rather than assert an evidence profile we did not read.
+  const caption =
+    Object.keys(statuses).length === 0
+      ? null
+      : evidencePoor
+        ? "Based on curated SQL only — no usage history yet."
+        : hasUsage && hasLineage
+          ? "Backed by usage history and lineage."
+          : hasUsage
+            ? "Backed by curated SQL and usage history."
+            : "Backed by curated SQL and lineage."
+
+  return { percent, caption, evidencePoor }
+}
+
+// ── Prompt 15.7 / MV-D32(3) — cross-surface enrichment made visible ───────
+//
+// The advisor upserts the SAME candidate by fingerprint across surfaces: an IQ
+// scan (advice run) seeds it from curated SQL (Y) and the semantic match (S),
+// and a later GSO run adds generated-SQL recurrence, lineage (L) and usage/
+// demand (D) — signals a COLD scan structurally cannot produce. So a COMPUTED
+// D or L, or a non-empty query-history statement set, is proof the proposal was
+// enriched beyond the initial scan. Surfacing it is assembly from what already
+// rides on the row — no new machinery, and no fabricated "run N" delta: the
+// claim is falsifiable ("these signals cannot come from a scan"), not a stored
+// snapshot comparison. Returns [] for a scan-only proposal, so the line only
+// appears when there is genuine cross-surface growth.
+export function evidenceGrowth(proposal: MvProposal): string[] {
+  const statuses = signalStatuses(proposal)
+  if (Object.keys(statuses).length === 0) return []
+  const grew: string[] = []
+  const ev = proposal.evidence
+  const qh = ev && typeof ev === "object" ? (ev as Record<string, unknown>).query_history_statement_ids : null
+  if (Array.isArray(qh) && qh.length > 0) grew.push("generated-SQL recurrence")
+  if (signalAvailable(statuses, "D")) grew.push("usage signals")
+  if (signalAvailable(statuses, "L")) grew.push("lineage")
+  return grew
+}
+
 // A metric_views[] entry identifies its UC object by `identifier`.
 export function metricViewIdentifiers(spaceData: unknown): string[] {
   if (!spaceData || typeof spaceData !== "object") return []
