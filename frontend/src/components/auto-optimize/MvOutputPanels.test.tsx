@@ -80,6 +80,7 @@ const detached: MvCreatedObject = {
   suggestion_id: "sug1",
   full_name: "finance.sales.order_revenue",
   created_by: "analyst@example.com",
+  provenance: "OBO_CREATED",
   status: "DETACHED",
   attach_patch_id: null,
   baseline_eval_run_id: "eval_a1",
@@ -149,6 +150,26 @@ describe("create-and-attach panel — healthy ATTACHED object", () => {
     expect(html).toContain("ATTACHED")
     expect(html).not.toContain("Drop view")
     expect(html).not.toContain("reverted to the pre-attach snapshot")
+  })
+})
+
+describe("create-and-attach panel — USER_CREATED (bring-your-own, MV-D24 invariant 1)", () => {
+  // Same DETACHED status that shows Drop for an OBO_CREATED view: proving the
+  // affordance is gated on provenance, not status. The server refuses to drop a
+  // USER_CREATED view, so the panel must not render the button (Prompt 14.1).
+  const userCreated: MvCreatedObject = {
+    ...detached,
+    provenance: "USER_CREATED",
+    created_by: "prashanth@example.com",
+  }
+  const html = render(<MvCreateAttachPanel obj={userCreated} ddl={ddl} catalogUrl={null} />)
+  it("renders the USER_CREATED badge and the frame-8b vocabulary", () => {
+    expect(html).toContain("USER_CREATED")
+    expect(html).toContain("dropping this one stays in your hands")
+  })
+  it("NEVER renders a Drop view action, even while DETACHED", () => {
+    expect(html).toContain("DETACHED")
+    expect(html).not.toContain("Drop view")
   })
 })
 

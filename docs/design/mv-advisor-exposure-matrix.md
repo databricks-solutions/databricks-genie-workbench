@@ -109,7 +109,7 @@ included in `backend/main.py`). The ten MV routes:
 | genie_opt_mv_created_objects | on_regression_action | SERVED | route 10 |
 | genie_opt_mv_created_objects | updated_at | DELIBERATELY INTERNAL | lifecycle audit timestamp (moves with every status transition); the transitions themselves are served via `status` |
 | genie_opt_mv_created_objects | lift_report_json | SERVED | route 10 (`lift_report`) |
-| genie_opt_mv_created_objects | provenance | GAP | MV-D24 create-path discriminator. Written by route 5 (register, `USER_CREATED`) and gates route 9 (drop refuses `USER_CREATED`) and attach's identity relaxation server-side — but route 10 does **not** return it, so a reloaded UI cannot distinguish `USER_CREATED` from `OBO_CREATED` to hide the Drop affordance the mockups (frame 8b) omit. Raised in the gap report; not fixed in Prompt 14. |
+| genie_opt_mv_created_objects | provenance | SERVED | route 10 (`MvCreatedObject.provenance`, Prompt 14.1). MV-D24 create-path discriminator: written by route 5 (register, `USER_CREATED`), gates route 9 (drop refuses `USER_CREATED`) and attach's identity relaxation server-side. Route 10 now returns it (NULL → `OBO_CREATED`), so a reloaded UI hides the Drop affordance the mockups (frame 8b) omit. Closed the exposure sweep's first GAP. |
 
 ### `genie_opt_runs` (MV columns only)
 

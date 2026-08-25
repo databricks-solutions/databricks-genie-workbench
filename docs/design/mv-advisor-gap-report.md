@@ -1767,14 +1767,18 @@ proposals read (Prompt 11, `GET spaces/{space_id}/mv-proposals`) and the
 created-objects/lift read (Prompt 13 step 0, `GET runs/{run_id}/mv-created`) — so the
 matrix reopened neither.
 
-**GAP (1) — `genie_opt_mv_created_objects.provenance`.** The MV-D24 create-path
-discriminator. Written by route 5 (`register`, value `USER_CREATED`); it gates route 9
-(`drop` refuses `USER_CREATED`) and the attach-phase identity relaxation server-side, but
-route 10 (`mv-created`) does **not** return it. A reloaded UI therefore cannot tell
-`USER_CREATED` from `OBO_CREATED`, so it cannot hide the Drop affordance the mockups
-(frame 8b) omit for bring-your-own views. Raised, not fixed in Prompt 14 — the fix is
-additive (surface `provenance` on the `mv-created` payload and `MvCreatedObject`) and
-belongs to a later prompt.
+**GAP (1) — `genie_opt_mv_created_objects.provenance` — RESOLVED (Prompt 14.1, 2026-08-24).**
+The MV-D24 create-path discriminator. Written by route 5 (`register`, value `USER_CREATED`);
+it gates route 9 (`drop` refuses `USER_CREATED`) and the attach-phase identity relaxation
+server-side. Raised at Prompt 14 because route 10 (`mv-created`) did not return it, so a
+reloaded UI could not tell `USER_CREATED` from `OBO_CREATED` to hide the Drop affordance the
+mockups (frame 8b) omit for bring-your-own views. Closed at Prompt 14.1, additively: the
+field is now on `MvCreatedObject` (`backend/models.py`) and its TS mirror
+(`frontend/src/types/index.ts`), mapped by `_mv_created_object_from_row`
+(`backend/routers/auto_optimize.py`) with NULL → `OBO_CREATED`, and `MvCreateAttachPanel`
+hides Drop plus shows the `USER_CREATED` badge on that provenance. The server-side drop
+guard is untouched — this is truthfulness, not enforcement. The exposure-matrix row moves
+GAP → SERVED (route 10) in the same commit.
 
 **Finding — the exclusion-predicate pin is comment-satisfiable (narrow, not broken).**
 `test_mv_advice_run_exclusion_pin.py::test_every_run_listing_site_routes_through_the_pinned_predicate`

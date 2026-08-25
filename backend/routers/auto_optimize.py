@@ -61,7 +61,10 @@ from genie_space_optimizer.common.accuracy import (
     compute_run_scores,
     derived_accuracy as _canonical_derived_accuracy,
 )
-from genie_space_optimizer.common.config import MV_PROVENANCE_USER_CREATED
+from genie_space_optimizer.common.config import (
+    MV_PROVENANCE_OBO_CREATED,
+    MV_PROVENANCE_USER_CREATED,
+)
 from genie_space_optimizer.common.genie_client import user_can_edit_space
 from genie_space_optimizer.integration import (
     trigger_optimization,
@@ -2562,11 +2565,20 @@ def _mv_lift_from_row(value: Any) -> MvLiftReport | None:
 def _mv_created_object_from_row(row: dict) -> MvCreatedObject:
     """Map a decoded ``genie_opt_mv_created_objects`` row to the API shape."""
     status = str(row.get("status") or "CREATED").upper()
+    # MV-D24: NULL/legacy/anything-else reads as OBO_CREATED; only an explicit
+    # USER_CREATED marks a bring-your-own view. Mirrors the drop route's read at
+    # ``:2483`` so the UI hides the Drop affordance on exactly the rows the server
+    # refuses to drop.
+    prov = str(row.get("provenance") or "").strip().upper()
+    provenance = (
+        MV_PROVENANCE_USER_CREATED if prov == MV_PROVENANCE_USER_CREATED else MV_PROVENANCE_OBO_CREATED
+    )
     return MvCreatedObject(
         run_id=str(row.get("run_id") or ""),
         suggestion_id=str(row.get("suggestion_id") or ""),
         full_name=str(row.get("full_name") or ""),
         created_by=_mv_str(row.get("created_by")),
+        provenance=provenance,
         status=status if status in ("CREATED", "ATTACHED", "DETACHED", "DROPPED") else "CREATED",
         attach_patch_id=_mv_str(row.get("attach_patch_id")),
         baseline_eval_run_id=_mv_str(row.get("baseline_eval_run_id")),

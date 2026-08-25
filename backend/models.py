@@ -539,6 +539,10 @@ class MvCreatedObject(BaseModel):
     suggestion_id: str
     full_name: str
     created_by: str | None = None
+    # MV-D24 create-path discriminator. NULL in the ledger reads as the legacy
+    # OBO_CREATED (additive-migration convention); USER_CREATED marks a view the
+    # user registered themselves, which the app never drops.
+    provenance: Literal["OBO_CREATED", "USER_CREATED"] = "OBO_CREATED"
     status: Literal["CREATED", "ATTACHED", "DETACHED", "DROPPED"]
     attach_patch_id: str | None = None
     baseline_eval_run_id: str | None = None

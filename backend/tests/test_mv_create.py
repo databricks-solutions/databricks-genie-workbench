@@ -466,6 +466,34 @@ def test_list_mv_created_returns_objects_with_lift(client, monkeypatch):
     assert data["downgrade_reason"] is None
 
 
+def test_list_mv_created_returns_provenance(client, monkeypatch):
+    # Prompt 14.1 (exposure-matrix GAP 1): route 10 surfaces provenance so a
+    # reloaded UI can hide the Drop affordance on USER_CREATED views. A row with
+    # no provenance column reads as the legacy OBO_CREATED (NULL convention).
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_created_objects",
+        lambda *a, **k: [
+            {
+                "run_id": "r1", "suggestion_id": "byo1",
+                "full_name": "finance.sales.net_revenue",
+                "created_by": "prashanth@example.com", "status": "CREATED",
+                "provenance": "USER_CREATED",
+            },
+            {
+                "run_id": "r1", "suggestion_id": "obo1",
+                "full_name": "finance.sales.order_revenue",
+                "created_by": "analyst@example.com", "status": "ATTACHED",
+            },
+        ],
+    )
+    monkeypatch.setattr(warehouse, "wh_load_mv_consent_by_run", lambda *a, **k: None)
+    resp = client.get(f"/api/auto-optimize/runs/{_RUN_UUID}/mv-created")
+    assert resp.status_code == 200
+    by_id = {o["suggestion_id"]: o for o in resp.json()["created"]}
+    assert by_id["byo1"]["provenance"] == "USER_CREATED"
+    assert by_id["obo1"]["provenance"] == "OBO_CREATED"
+
+
 def test_list_mv_created_surfaces_downgrade_reason(client, monkeypatch):
     monkeypatch.setattr(warehouse, "wh_load_mv_created_objects", lambda *a, **k: [])
     monkeypatch.setattr(

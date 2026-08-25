@@ -1078,6 +1078,9 @@ export interface MvCreatedObject {
   suggestion_id: string
   full_name: string
   created_by: string | null
+  // MV-D24 create-path discriminator (NULL reads as OBO_CREATED server-side).
+  // USER_CREATED = a bring-your-own view the app never drops (frame 8b).
+  provenance: "OBO_CREATED" | "USER_CREATED"
   status: "CREATED" | "ATTACHED" | "DETACHED" | "DROPPED"
   attach_patch_id: string | null
   baseline_eval_run_id: string | null

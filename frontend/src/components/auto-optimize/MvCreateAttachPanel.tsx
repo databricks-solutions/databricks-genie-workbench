@@ -56,6 +56,11 @@ export function MvCreateAttachPanel({ obj, ddl, catalogUrl, onDropped }: MvCreat
   const [error, setError] = useState<string | null>(null)
 
   const detached = obj.status === "DETACHED"
+  // MV-D24 invariant 1: the app never drops a USER_CREATED (bring-your-own)
+  // view — the drop route refuses it server-side (auto_optimize.py:2483), so the
+  // panel must not offer a Drop affordance that would 403. This is truthfulness,
+  // not enforcement; the server guard is authoritative.
+  const userCreated = obj.provenance === "USER_CREATED"
   const lift = obj.lift_report
   const joinLabel = joinStrategyLabel(ddl?.join_strategy)
   const baselineEvalId = obj.baseline_eval_run_id ?? lift?.pre_eval_run_id ?? null
@@ -93,18 +98,31 @@ export function MvCreateAttachPanel({ obj, ddl, catalogUrl, onDropped }: MvCreat
             <p className="font-mono text-sm font-medium text-primary">{obj.full_name}</p>
           )}
           <p className="mt-0.5 text-xs text-muted">
-            Created under OBO{obj.created_by ? ` by ${obj.created_by}` : ""}
+            {userCreated ? "Verified under OBO" : "Created under OBO"}
+            {obj.created_by ? ` by ${obj.created_by}` : ""}
             {catalogUrl ? " · opens in Catalog Explorer" : ""}
           </p>
-          <p className="mt-0.5 text-xs text-muted">
-            Provenance <span className="font-mono">OBO_CREATED</span> — the app created this view, so
-            the app can drop it. Views you register yourself are{" "}
-            <span className="font-mono">USER_CREATED</span> and the app never drops them.
-          </p>
+          {userCreated ? (
+            <p className="mt-0.5 text-xs text-muted">
+              Provenance <span className="font-mono">USER_CREATED</span> — you registered this view
+              yourself. The app never drops views it didn&rsquo;t create; dropping this one stays in
+              your hands.
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs text-muted">
+              Provenance <span className="font-mono">OBO_CREATED</span> — the app created this view, so
+              the app can drop it. Views you register yourself are{" "}
+              <span className="font-mono">USER_CREATED</span> and the app never drops them.
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <Badge variant={detached ? "danger" : "secondary"}>{obj.status}</Badge>
-          <Badge variant="secondary">OBO_CREATED</Badge>
+          {userCreated ? (
+            <Badge variant="info">USER_CREATED</Badge>
+          ) : (
+            <Badge variant="secondary">OBO_CREATED</Badge>
+          )}
           {joinLabel && (
             <Badge variant="secondary">
               <GitBranch className="mr-1 h-3 w-3" />
@@ -157,7 +175,7 @@ export function MvCreateAttachPanel({ obj, ddl, catalogUrl, onDropped }: MvCreat
         </div>
       )}
 
-      {detached && (
+      {detached && !userCreated && (
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <Button size="sm" variant="danger" onClick={() => setConfirmOpen(true)}>
             <Trash2 className="mr-1.5 h-3.5 w-3.5" />

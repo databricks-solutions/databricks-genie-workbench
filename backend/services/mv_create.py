@@ -360,6 +360,7 @@ def create_and_attach_for_run(
             created.append(MvCreatedObject(
                 run_id=run_id, suggestion_id=suggestion_id, full_name=full_name,
                 created_by=fresh_probe.checked_as, status="CREATED",
+                provenance=MV_PROVENANCE_OBO_CREATED,
                 on_regression_action="DETACH_ONLY_NEVER_DROP",
             ))
             logger.info("Created metric view %s for run %s", full_name, run_id)
