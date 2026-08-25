@@ -2405,3 +2405,79 @@ that the committed frame is the approved contract — step 1 reconciles
 `computeFit`, density/spacing/typography/legend/controls/chips/badges). The 12e
 mechanics (dedup canvas, proof arrows, boundaries, drag) are not rebuilt. The
 new fidelity-gate rule (both rules copies) exists to prevent a recurrence.
+
+**Resolution, round 2 (2026-08-25, after reviewer confirmed the committed 9e
+frame and reported the remaining gap as "polish and professionalism").** Step 1's
+first pass fixed the fit *math* but the reviewer's comparison still failed, so a
+second reconciliation pass ran with the reviewer's instruction to compare for
+myself. Six causes were found by reading the exports rather than the code:
+
+1. **Dead reserved width (the dominant cause).** `layoutCards` sized content to
+   `COL_X[3] + COL_W[3]`, reserving all four columns whether or not they held
+   cards. A space whose measures all belong to metric views leaves column 3
+   empty, so ~29% of the content box was empty space on the right — and
+   `computeFit` dutifully shrank the *whole* canvas by that much. Empty columns
+   are now compacted away and width follows the real rightmost edge; the column
+   captions follow the compacted positions.
+2. **Height-priority fit on a tall model.** `computeFit` took
+   `min(byWidth, byHeight)`, so a 30-table stack (~2400 units) framed in a 520px
+   canvas resolved to ~20% scale — the tiny-blob defect arriving by a second
+   road, every label illegible so that the whole graph could "fit". The fit now
+   prefers the width and refuses to shrink past a legibility floor (0.8, itself
+   yielding to the width fit), top-aligning the overflow so drag pans it.
+3. **Fixed canvas height.** A 380px box gave a wide-and-short model (the common
+   shape) ~250px of dead vertical space. The canvas now takes the content's
+   aspect ratio, bounded 220–520px. NOTE: `aspect-ratio` alone let the browser
+   derive *width* from a binding `min-height` and the canvas blew out past its
+   panel (measured 1316px inside a 798px parent) — the width is now explicit.
+4. **Unbacked edge labels printing across card borders.** Selecting a card made
+   every edge in its neighborhood verbose, so several full `ON` predicates and a
+   second stacked relationship line drew straight over the cards. The reveal is
+   now narrowed to the edge actually pointed at (hovered, or an endpoint IS the
+   selection), collapsed to one line, and every edge label carries an opaque
+   plate. Same for the boundary caption and the `replaces` label.
+5. **Erasure-grade dimming.** Out-of-focus cards at 0.3 opacity were unreadable
+   and translucent enough for edges to print through their labels; now 0.45.
+6. **The inset was a flat key/value list.** The v7 frame's curator inset is where
+   a curator decides something, so `NodeDetail` was rebuilt as a titled panel:
+   governance roll-up chips, source tables, the metric view's measures (with the
+   canvas's own `+N unnamed` treatment, which the inset previously contradicted
+   by printing `canonical_expr` internals raw), and the declared joins with their
+   full `ON` predicates — the detail the canvas can only afford a glyph for.
+
+Also: frame `9f` now renders the **full** `SemanticModelView` (panel header,
+ladder, canvas, inset) rather than the bare `SemanticGraph`. Exporting only the
+canvas made the comparison against 9e — which depicts the whole panel — unfair in
+reality's favour, and hid the surface where most of the gap lived. A new
+`initialSelectedId` prop seeds the selection so a static export can show the
+selected state at all (boundary, focus dimming, inset), which is the state the
+contract frame depicts.
+
+**Named deviations that remain (contract vs reality, deliberate).**
+- *Loose measures placement.* 9e draws "Space config · loose measures" as a
+  full-width panel BELOW the canvas; reality keeps it as canvas column 4 (12e's
+  dedup canvas, which Prompt 12f is instructed not to rebuild). The vocabulary,
+  warning treatment and `+N unnamed` row now match the frame; only the placement
+  differs. Consequence: a space WITH loose measures occupies four columns and
+  therefore renders at ~70% rather than ~94%.
+- *Unmodeled region.* 9e wraps `calendar_date` in a labeled `UNMODELED · no MV`
+  container; reality marks the card inline ("no metric view" + dashed zero
+  coverage badge) and explains the vocabulary in the legend. Not fixed: another
+  full-width overlay is another thing that can collide, and the inline treatment
+  already carries the meaning.
+- *YAML-derived inset fields.* 9e shows the metric view's join TREE, dimensions
+  by binding, `filter`, `materialization` and reuse count. The semantic-graph
+  payload carries none of them, and an inset that prints "unknown" for a
+  governance-relevant field is worse than one that omits it. The declared-joins
+  list is the honest form of the tree from the edge set we do have.
+- *Reset control.* 9e always shows it; reality shows it once there is a drag to
+  reset.
+- *Edge bundling at 30 tables.* 29 dimension→fact edges converge into a visible
+  band. Routing/bundling is a new mechanic, not a fidelity fix.
+
+**Verification.** 366 frontend tests green (three new `computeFit` pins: tall
+graphs fit to width, overflow top-aligns while a fitting graph centers, and the
+floor yields to the width fit), lint clean (also fixed a pre-existing
+`react-refresh/only-export-components` error in `MvAcceptFlow.tsx` from 15.8),
+frames re-emitted in both themes. A static export cannot exercise the
+measured-viewport fit, so the runtime fill is confirmed on the redeploy.

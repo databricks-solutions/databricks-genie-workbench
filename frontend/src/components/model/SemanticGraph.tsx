@@ -40,7 +40,7 @@
  * viewport), so renderToStaticMarkup testability holds.
  */
 import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react"
-import { AlertTriangle, Maximize2, Minus, Plus, RefreshCw, RotateCcw, Search, ShieldCheck, Wrench } from "lucide-react"
+import { AlertTriangle, Crosshair, Maximize2, Minus, Plus, RefreshCw, RotateCcw, Search, ShieldCheck, Wrench } from "lucide-react"
 import type { MvGovernance, SemanticGraphEdge, SemanticGraphNode } from "@/types"
 
 export const GOVERNANCE: Record<
@@ -74,7 +74,10 @@ export function countGovernance(nodes: SemanticGraphNode[]): Record<MvGovernance
 // -threshold stride (§9), pinned by SemanticGraph.grouped.test.tsx, and are a
 // derivation constant, not a visual one.
 const COL_X = [24, 268, 512, 792]
-const COL_W = [204, 208, 244, 256]
+// The measure columns carry the longest strings on the canvas (fully-qualified
+// measure names), so 12f gives them the width the v7 frame gives them rather
+// than abbreviating harder than the mockup does.
+const COL_W = [204, 208, 272, 272]
 const COL_HEADERS = ["Source · facts", "Dimensions", "Metric views · measures", "Measure concepts"]
 const ROW_TOP = 44
 // ROW_GAP is the per-card stride the derived threshold solves against (§9); the
@@ -82,7 +85,7 @@ const ROW_TOP = 44
 // not the visual VGAP; see the 12f note above.)
 const ROW_GAP = 58
 const VGAP = 26
-const CARD_HDR = 50
+const CARD_HDR = 58
 const CHIP_STEP = 24
 const CHIP_H = 19
 const CARD_PAD_B = 10
@@ -241,27 +244,67 @@ function cardHeight(card: GraphCard, collapsed: boolean): number {
 // Deterministic layered placement: cards stack top-to-bottom within their
 // column, ordered by the server-assigned row then label (stable). Height is a
 // pure function of the cards and the collapse flag.
+//
+// 12f: EMPTY COLUMNS ARE COMPACTED AWAY. The old formula reserved every one of
+// the four columns and sized width to the LAST one, so a space whose measures
+// all belong to metric views (no standalone concepts) reserved ~29% dead width
+// on the right — which forced computeFit to shrink the whole canvas by that much
+// and is the single largest reason the shipped canvas read smaller than the
+// mockup. Occupied columns now take sequential positions and width follows the
+// real rightmost edge. `columns` is returned so the headers follow the compacted
+// positions rather than the nominal ones.
+const COL_GUTTER = 40
+// The visual top of the card stack, kept SEPARATE from ROW_TOP (which is purely
+// the collapse-threshold derivation constant, §9, and stays put). The band above
+// the cards has to hold the column captions AND the select-time boundary caption
+// without either printing over a card border, which 44 could not.
+const CARD_TOP = 66
+// The canvas is at most this wide-to-tall (a 780×520-ish box). Used as the
+// pre-measurement framing bound so the SSR/first-paint viewBox matches the shape
+// the measured canvas will actually have.
+const CANVAS_MAX_ASPECT = 1.5
+
 export function layoutCards(
   cards: GraphCard[],
   collapsed: boolean,
-): { placed: Map<string, PlacedCard>; width: number; height: number } {
+): {
+  placed: Map<string, PlacedCard>
+  width: number
+  height: number
+  columns: { col: number; x: number; w: number }[]
+} {
   const placed = new Map<string, PlacedCard>()
   const byCol: GraphCard[][] = [[], [], [], []]
   for (const c of cards) byCol[Math.max(0, Math.min(3, c.col))].push(c)
-  let maxBottom = ROW_TOP
+
+  // Sequential x for occupied columns only (keeps product-semantic order).
+  const columns: { col: number; x: number; w: number }[] = []
+  let cursor = COL_X[0]
   byCol.forEach((column, col) => {
+    if (column.length === 0) return
+    const w = COL_W[col]
+    columns.push({ col, x: cursor, w })
+    cursor += w + COL_GUTTER
+  })
+  const xOf = new Map(columns.map((c) => [c.col, c]))
+
+  let maxBottom = CARD_TOP
+  byCol.forEach((column, col) => {
+    const slot = xOf.get(col)
+    if (!slot) return
     column.sort((a, b) => a.row - b.row || a.label.localeCompare(b.label))
-    let y = ROW_TOP
+    let y = CARD_TOP
     for (const c of column) {
       const h = cardHeight(c, collapsed)
-      placed.set(c.id, { card: c, box: { x: COL_X[col], y, w: COL_W[col], h } })
+      placed.set(c.id, { card: c, box: { x: slot.x, y, w: slot.w, h } })
       y += h + VGAP
       maxBottom = Math.max(maxBottom, y)
     }
   })
-  const width = COL_X[COL_X.length - 1] + COL_W[COL_W.length - 1] + 24
-  const height = Math.max(ROW_TOP + ROW_GAP, maxBottom - VGAP + 16)
-  return { placed, width, height }
+  const rightEdge = columns.length > 0 ? cursor - COL_GUTTER : COL_X[0]
+  const width = rightEdge + 24
+  const height = Math.max(CARD_TOP + ROW_GAP, maxBottom - VGAP + 16)
+  return { placed, width, height, columns }
 }
 
 // Edge ports (§5, reviewer note): left/right edge-midpoints of a placed card,
@@ -376,6 +419,10 @@ export function collapseThreshold(
 // measured viewport with padding, centered horizontally and top-aligned so a
 // tall graph reads from the top. Scale is capped at 1 (fit never zooms in past
 // 100%, the v1 reset() defect) and floored so it stays interactive. Pure.
+// Below this, the card type captions and mono labels stop being readable, and a
+// graph you cannot read is not a graph you have fitted.
+const LEGIBILITY_FLOOR = 0.8
+
 export function computeFit(
   contentW: number,
   contentH: number,
@@ -384,14 +431,25 @@ export function computeFit(
   pad = 24,
 ): { scale: number; tx: number; ty: number } {
   if (contentW <= 0 || contentH <= 0 || viewW <= 0 || viewH <= 0) return { scale: 1, tx: 0, ty: 0 }
-  const raw = Math.min((viewW - 2 * pad) / contentW, (viewH - 2 * pad) / contentH, 1)
-  const scale = Math.min(1, Math.max(0.2, raw))
+  const byWidth = (viewW - 2 * pad) / contentW
+  const byHeight = (viewH - 2 * pad) / contentH
+  const meet = Math.min(byWidth, byHeight, 1)
+  // 12f: "fit everything in" is the WRONG goal for a tall model. A 30-table space
+  // stacks ~2400 units of cards; framing that in a 520px canvas means 20% scale,
+  // which is the tiny-blob defect arriving by a different road — every label
+  // illegible so the whole graph fits. So: fit to WIDTH (columns stay readable)
+  // and refuse to shrink past a legibility floor, letting the reader pan the
+  // overflow (drag already pans). The floor yields to the width fit, so a genuinely
+  // wide model is never blown out sideways just to honour a minimum.
+  const floor = Math.min(byWidth, LEGIBILITY_FLOOR, 1)
+  const scale = Math.min(1, Math.max(meet, floor))
   const tx = Math.max(pad, (viewW - contentW * scale) / 2)
-  // Center vertically too (12f): a wide-and-short graph (the common shape) framed
-  // at width leaves vertical slack; centering makes it read as intentional rather
-  // than a blob pinned to the top. A tall graph scales by height, so the centered
-  // ty naturally lands near `pad` — no top clipping.
-  const ty = Math.max(pad, (viewH - contentH * scale) / 2)
+  // Centered when it fits — a wide-and-short graph (the common shape) framed at
+  // width leaves vertical slack, and centering reads as intentional rather than
+  // as a blob pinned to the top. Top-aligned when it overflows, so the reader
+  // starts at the beginning of the model instead of its middle.
+  const overflowsV = contentH * scale > viewH - 2 * pad
+  const ty = overflowsV ? pad : Math.max(pad, (viewH - contentH * scale) / 2)
   return { scale, tx, ty }
 }
 
@@ -599,11 +657,30 @@ function CoverageBadge({ x, y, w, coverage }: { x: number; y: number; w: number;
   )
 }
 
+// An edge label always sits on top of SOMETHING (a card border, another edge, a
+// boundary dash), so it carries its own opaque plate. Width is derived from the
+// string rather than measured, which keeps the component renderToStaticMarkup-
+// pure; the estimate runs slightly generous so it never clips.
+function EdgeLabel({ x, y, text, emphasis }: { x: number; y: number; text: string; emphasis?: boolean }) {
+  if (!text) return null
+  const w = text.length * 4.9 + 12
+  const h = 15
+  return (
+    <g pointerEvents="none">
+      <rect x={x - w / 2} y={y - h + 3} width={w} height={h} rx="4"
+        fill="var(--bg-sunken)" stroke="var(--border-color-default)" strokeWidth="0.75" />
+      <text x={x} y={y + 3.5} textAnchor="middle" fontSize="8.5"
+        className={emphasis ? "fill-[var(--text-secondary)]" : "fill-[var(--text-muted)]"}>{text}</text>
+    </g>
+  )
+}
+
 function EdgeView({
   edge,
   src,
   dst,
   active,
+  verbose,
   onHover,
 }: {
   edge: SemanticGraphEdge
@@ -612,6 +689,10 @@ function EdgeView({
   src: { x: number; y: number }
   dst: { x: number; y: number }
   active: boolean
+  // Neighborhood emphasis (`active`) is wide; the label reveal (`verbose`) is the
+  // one edge the reader pointed at. Keeping them separate is what stops a single
+  // selection from spraying full ON predicates across the canvas.
+  verbose: boolean
   onHover: (on: boolean) => void
 }) {
   // Column-aware cubic curve: control points offset horizontally so edges bend
@@ -625,7 +706,10 @@ function EdgeView({
     return (
       <g>
         <path d={path} fill="none" stroke="var(--color-danger)" strokeWidth="1.5" strokeDasharray="4 3" />
-        <text x={midX} y={midY - 4} textAnchor="middle" className="fill-[var(--color-danger)]" fontSize="9">replaces</text>
+        <g pointerEvents="none">
+          <rect x={midX - 24} y={midY - 15} width="48" height="15" rx="4" fill="var(--bg-sunken)" stroke="var(--color-danger)" strokeWidth="0.75" />
+          <text x={midX} y={midY - 4} textAnchor="middle" className="fill-[var(--color-danger)]" fontSize="9">replaces</text>
+        </g>
       </g>
     )
   }
@@ -659,23 +743,44 @@ function EdgeView({
   const weightLabel = typeof edge.weight === "number" && edge.weight > 0 ? `×${edge.weight}` : null
   const glyph = relationshipGlyph(edge.relationship)
   const restLabel = [glyph, edge.scd2 ? "SCD2" : null, weightLabel].filter(Boolean).join(" · ")
+  // 12f: ONE label line, on an opaque backing chip, and the verbose reveal is
+  // narrowed to the edge the reader actually pointed at (`verbose` = hovered or
+  // an endpoint IS the selection). `active` stays neighborhood-wide for stroke
+  // emphasis. Before this split, selecting one card turned every edge around it
+  // verbose at once and printed several full predicates across the card borders.
+  // The suffix uses the compact glyph rather than the spelled-out relationship so
+  // the chip cannot outgrow the gap it sits in.
+  const label = verbose
+    ? [edge.on ? `ON ${abbreviate(edge.on, 34)}` : null, glyph, edge.scd2 ? "SCD2" : null].filter(Boolean).join(" · ")
+    : restLabel
   return (
     <g onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)} style={{ cursor: "default" }}>
       <path d={path} fill="none" stroke="var(--border-color-strong)" strokeWidth={active ? 2 : 1.5} markerEnd="url(#mv-arrow)" />
-      {active && edge.on ? (
-        <text x={midX} y={midY - 6} textAnchor="middle" className="fill-[var(--text-secondary)]" fontSize="8.5">
-          ON {abbreviate(edge.on, 42)}
-        </text>
-      ) : (
-        restLabel && (
-          <text x={midX} y={midY - 6} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="8.5">{restLabel}</text>
-        )
-      )}
-      {active && (edge.relationship || edge.scd2) && (
-        <text x={midX} y={midY + 8} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="8.5">
-          {[edge.relationship, edge.scd2 ? "SCD2 (is_current)" : null].filter(Boolean).join(" · ")}
-        </text>
-      )}
+      <EdgeLabel x={midX} y={midY - 6} text={label} emphasis={verbose} />
+    </g>
+  )
+}
+
+// The per-box chip the v7 contract puts on every measure box: "N measures ·
+// <dominant rung>", a tinted pill with a rung dot. The dominant rung is the
+// highest present on the ladder, so the pill never claims governance the card
+// does not have. Absent measures render no pill (nothing to count).
+function MeasurePill({ x, y, w, card }: { x: number; y: number; w: number; card: GraphCard }) {
+  const rungs = rollup(card)
+  const total = card.measures.length + card.unnamedMeasures.length
+  if (total === 0) return null
+  const noun = card.kind === "concepts" ? "measure" : "measure"
+  const dominant = rungs[0]?.rung
+  const color = dominant ? GOVERNANCE[dominant].color : "var(--border-color-strong)"
+  const text = `${total} ${noun}${total === 1 ? "" : "s"}${dominant ? ` · ${GOVERNANCE[dominant].label.toLowerCase()}` : ""}`
+  // Width tracks the label so a long rung name never overflows the card.
+  const pw = Math.min(w - 24, 22 + text.length * 5.4)
+  const px = x + w - pw - 10
+  return (
+    <g aria-label={text}>
+      <rect x={px} y={y} width={pw} height="18" rx="9" fill={color} opacity="0.16" />
+      <circle cx={px + 11} cy={y + 9} r="3.5" fill={color} />
+      <text x={px + 19} y={y + 13} className="fill-[var(--text-secondary)]" fontSize="9" fontWeight="600">{text}</text>
     </g>
   )
 }
@@ -756,7 +861,10 @@ function CardView({
   const selfSelected = card.node != null && card.id === selectedId
   const stroke = selfSelected ? "var(--color-accent)" : undefined
   const selWidth = selfSelected ? 2 : 1.5
-  const opacity = dim ? 0.3 : 1
+  // 12f: 0.3 pushed out-of-focus cards past readable — a de-emphasis, not an
+  // erasure, and at 0.3 the card's own fill went translucent enough for edges to
+  // print through its label. Dimmed still means "not the story", just legible.
+  const opacity = dim ? 0.45 : 1
   // A selected card is draggable (§7) — spread the canvas to create room. The
   // grab cursor advertises it; the actual offset is session-only.
   const pointerDown = (e: React.PointerEvent) => onCardPointerDown(card.id, e)
@@ -794,29 +902,41 @@ function CardView({
   // Prompt 12e / MV-D33: an MV whose YAML could not be read renders "definition
   // unavailable" (and drew no arrows) — unreadable is unproven.
   const defUnavailable = isMv && card.node?.definition_available === false
-  // 12f: the v7 contract puts a "N measures · <governance>" chip on each box.
-  // The measures-count leads the subtitle; the colored governance roll-up below
-  // carries the rung breakdown, so together they read as the frame's chip.
+  // 12f: the count moved OUT of the subtitle and into the frame's pill on the
+  // right (MeasurePill), so the subtitle carries only the card's STATE. Doubling
+  // the count in both places is what made the shipped header read cramped and
+  // noisy next to the frame.
   const subtitle = isMv
     ? card.proposed
       ? "proposed metric view"
       : defUnavailable
         ? "definition unavailable"
-        : `${conceptCount} measure${conceptCount === 1 ? "" : "s"} · metric view`
-    : `${conceptCount} concept${conceptCount === 1 ? "" : "s"}`
+        : "metric view"
+    : "loose measures · not in any MV"
+  // The frame names the concepts card for what it is: measures the space config
+  // declares that no metric view governs. It wears the warning treatment
+  // (dashed, amber) because that gap is the thing the curator must act on. The
+  // frame's full title ("Space config · loose measures") is split across title
+  // and subtitle here — in the frame this box spans the panel width, whereas on
+  // the canvas it lives in a column and the one-line title collided with the pill.
+  const displayLabel = isMv ? abbreviate(card.label, 22) : "Space config"
+  const rungCount = rollup(card).length
   const clickableHeader = card.node
   const hidden = collapsed
   return (
     <g opacity={opacity}>
       <g onClick={() => clickableHeader && onSelect(clickableHeader)} onPointerDown={pointerDown} style={{ cursor: dragCursor ?? (clickableHeader ? "pointer" : "default") }}>
-        <title>{card.proposed ? `${card.label} — proposed metric view` : defUnavailable ? `${card.label} — definition unavailable` : card.label}</title>
+        <title>{card.proposed ? `${card.label} — proposed metric view` : defUnavailable ? `${card.label} — definition unavailable` : isMv ? card.label : `${conceptCount} measure${conceptCount === 1 ? "" : "s"} governed by no metric view`}</title>
         <rect x={x} y={y} width={w} height={h} rx="10"
-          fill={isMv ? "var(--color-accent)" : "var(--bg-surface)"} opacity={isMv ? (card.proposed ? 0.1 : 0.15) : 1}
-          stroke={stroke ?? (isMv ? "var(--color-accent)" : "var(--border-color-strong)")} strokeWidth={selWidth}
-          strokeDasharray={card.proposed ? "5 3" : undefined} />
-        <text x={x + 12} y={y + 20} className="fill-[var(--text-primary)]" fontSize="12" fontWeight="700">{abbreviate(card.label, 22)}</text>
-        <text x={x + 12} y={y + 34} className="fill-[var(--text-muted)]" fontSize="8.5">{subtitle}{hidden ? " · collapsed" : ""}</text>
-        <RollUp x={x + 12} y={y + 45} card={card} />
+          fill={isMv ? "var(--color-accent)" : "var(--color-warning)"} opacity={isMv ? (card.proposed ? 0.1 : 0.15) : 0.08}
+          stroke={stroke ?? (isMv ? "var(--color-accent)" : "var(--color-warning)")} strokeWidth={selWidth}
+          strokeDasharray={card.proposed || !isMv ? "5 3" : undefined} />
+        <text x={x + 12} y={y + 21} className="fill-[var(--text-primary)]" fontSize="12.5" fontWeight="700">{displayLabel}</text>
+        <text x={x + 12} y={y + 38} className="fill-[var(--text-muted)]" fontSize="9">{subtitle}{hidden ? " · collapsed" : ""}</text>
+        <MeasurePill x={x} y={y + 9} w={w} card={card} />
+        {/* The rung breakdown only earns a line when the pill's dominant rung
+            doesn't already tell the whole story. */}
+        {rungCount > 1 && <RollUp x={x + 12} y={y + 51} card={card} />}
         <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} />
       </g>
       {!hidden && (
@@ -895,7 +1015,7 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const collapsible = tallestColumn > threshold
   const collapsed = collapsible && !expandAll
 
-  const { placed: placedBase, width, height } = useMemo(() => layoutCards(cards, collapsed), [cards, collapsed])
+  const { placed: placedBase, width, height, columns } = useMemo(() => layoutCards(cards, collapsed), [cards, collapsed])
 
   // Session-only drag offsets (§7) applied on top of the deterministic home
   // layout. With no offsets this is byte-identical to the layout, so the home
@@ -1044,6 +1164,18 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const select = (n: SemanticGraphNode) => onSelectNode?.(n)
   const selectedCardDim = (cardId: string) => (highlight ? !highlight.has(cardId) : false)
 
+  // The frame's selected-context chip: the canvas dims and boundaries change
+  // meaning entirely with selection, so the control row names what is selected
+  // instead of leaving the reader to infer it from the highlight.
+  const selectedLabel = useMemo(() => {
+    if (!selectedId) return null
+    for (const c of cards) {
+      if (c.id === selectedId) return c.kind === "concepts" ? "Space config" : c.label
+      for (const m of [...c.measures, ...c.unnamedMeasures]) if (m.id === selectedId) return m.label
+    }
+    return null
+  }, [cards, selectedId])
+
   // A card matches the search if the card itself or any of its chips matches.
   const cardMatchesSearch = (card: GraphCard) =>
     matchesSearch(card.label, search) || card.measures.some((m) => matchesSearch(m.label, search))
@@ -1055,7 +1187,12 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   // the inner computeFit transform is the ONLY scaling; before measurement it
   // falls back to the content box so SSR/first-paint renders the whole graph.
   const vbW = viewportWidth ?? width
-  const vbH = viewportHeight ?? height
+  // Before measurement (SSR / first paint) there is no viewport to fit against,
+  // so the viewBox IS the frame. Capping its height to the canvas's widest
+  // aspect crops a tall model to its top at a legible scale, rather than
+  // meet-shrinking the whole 2400-unit stack into a microscopic band — the same
+  // choice computeFit makes once a measurement exists.
+  const vbH = viewportHeight ?? Math.min(height, width / CANVAS_MAX_ASPECT)
 
   return (
     <div ref={containerRef} className="space-y-2">
@@ -1102,9 +1239,27 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
             <RotateCcw className="h-3.5 w-3.5" /> Reset
           </button>
         )}
+        {selectedLabel && (
+          <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[var(--color-accent)] px-2 py-1 text-xs font-medium text-[var(--color-accent)]">
+            <Crosshair className="h-3.5 w-3.5" />
+            {abbreviate(selectedLabel, 30)} selected
+          </span>
+        )}
       </div>
 
-      <div className="relative overflow-hidden rounded-lg border border-default bg-sunken" style={{ height: 420 }}>
+      {/* The canvas takes the CONTENT's aspect ratio (bounded), instead of a fixed
+          height. A wide-and-short model — the common shape, and what four
+          occupied columns always produces — was rendering as a thin band adrift
+          in a tall box, which reads as the tiny-blob defect even after the fit
+          math is correct. Bounds keep it interactive (never a sliver) and keep a
+          tall model from taking the whole page. */}
+      <div
+        className="relative overflow-hidden rounded-lg border border-default bg-sunken"
+        // width MUST stay explicit: with only aspect-ratio set, a binding
+        // min-height makes the browser derive the WIDTH from the height, and the
+        // canvas blows out past its panel.
+        style={{ width: "100%", aspectRatio: `${width} / ${height}`, minHeight: 220, maxHeight: 520 }}
+      >
       <svg
         ref={svgRef}
         viewBox={`0 0 ${vbW} ${vbH}`}
@@ -1128,8 +1283,10 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
           </marker>
         </defs>
         <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
-          {COL_HEADERS.map((h, i) => (
-            <text key={h} x={COL_X[i] + COL_W[i] / 2} y={20} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="9" fontWeight="600">{h}</text>
+          {/* Headers follow the COMPACTED column positions (12f) — an empty
+              column reserves neither space nor a caption. */}
+          {columns.map((c) => (
+            <text key={c.col} x={c.x + c.w / 2} y={22} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="10" fontWeight="700" letterSpacing="0.04em">{COL_HEADERS[c.col]}</text>
           ))}
           {/* Select-time MV boundary (MV-D33): wraps the tables the selected MV
               uses. Hull (per-member outlines) is the norm; a single rect is the
@@ -1141,21 +1298,32 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
                   fill="var(--color-accent)" fillOpacity="0.06"
                   stroke="var(--color-accent)" strokeWidth="1.5" strokeDasharray="6 4" />
               ))}
-              {boundary.rects[0] && (
-                <text x={boundary.rects[0].x + 10} y={boundary.rects[0].y - 5} className="fill-[var(--color-accent)]" fontSize="9" fontWeight="700">
-                  tables used by {abbreviate(boundary.mvLabel, 22)}
-                </text>
-              )}
+              {/* 12f: the caption gets a plate and is anchored to the TOPMOST
+                  member rect, clamped below the column headers — unbacked at
+                  rect[0].y it printed over both the header and the card border. */}
+              {(() => {
+                const top = boundary.rects.reduce((a, b) => (b.y < a.y ? b : a), boundary.rects[0])
+                if (!top) return null
+                const text = `tables used by ${abbreviate(boundary.mvLabel, 22)}`
+                const w = text.length * 5.1 + 14
+                const y = Math.max(top.y - 8, CARD_TOP - 18)
+                return (
+                  <g pointerEvents="none">
+                    <rect x={top.x} y={y - 12} width={w} height="16" rx="4"
+                      fill="var(--bg-sunken)" stroke="var(--color-accent)" strokeWidth="0.75" />
+                    <text x={top.x + 7} y={y} className="fill-[var(--color-accent)]" fontSize="9" fontWeight="700">{text}</text>
+                  </g>
+                )
+              })()}
             </g>
           )}
           {renderedEdges.map(({ index, edge, fromCardId, toCardId }) => {
             const ports = edgePorts.get(index)
             if (!ports) return null
+            const endpointSelected = fromCardId === selectedId || toCardId === selectedId
+            const verbose = hoverEdge === index || endpointSelected
             const active =
-              hoverEdge === index ||
-              fromCardId === selectedId ||
-              toCardId === selectedId ||
-              (highlight != null && highlight.has(fromCardId) && highlight.has(toCardId))
+              verbose || (highlight != null && highlight.has(fromCardId) && highlight.has(toCardId))
             return (
               <EdgeView
                 key={index}
@@ -1163,6 +1331,7 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
                 src={ports.src}
                 dst={ports.dst}
                 active={active}
+                verbose={verbose}
                 onHover={(on) => setHoverEdge(on ? index : null)}
               />
             )

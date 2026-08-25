@@ -1244,6 +1244,10 @@
     min-width: calc(var(--spacing) * 64);
   }
 
+  .min-w-\[3ch\] {
+    min-width: 3ch;
+  }
+
   .min-w-\[11rem\] {
     min-width: 11rem;
   }
@@ -1260,7 +1264,15 @@
     flex: 1;
   }
 
-  .flex-shrink-0, .shrink-0 {
+  .flex-shrink-0 {
+    flex-shrink: 0;
+  }
+
+  .shrink {
+    flex-shrink: 1;
+  }
+
+  .shrink-0 {
     flex-shrink: 0;
   }
 
@@ -2721,6 +2733,10 @@
 
   .p-0 {
     padding: calc(var(--spacing) * 0);
+  }
+
+  .p-0\.5 {
+    padding: calc(var(--spacing) * .5);
   }
 
   .p-1 {

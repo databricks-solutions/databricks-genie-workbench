@@ -25,6 +25,7 @@
  */
 import type { SemanticGraphEdge, SemanticGraphNode } from "@/types"
 import { SemanticGraph } from "@/components/model/SemanticGraph"
+import { SemanticModelView } from "@/components/model/SemanticModelTab"
 
 // ── The 9e scenario as real graph data ───────────────────────────────────────
 // Mirrors MvSemanticV7ContractFrame's model: two facts, three dims (one
@@ -67,17 +68,20 @@ const V7_EDGES: SemanticGraphEdge[] = [
   { from: "measure:gross_margin", to: "sales.mv.margin_mv", kind: "membership" },
 ]
 
+// 12f round 2: this frame renders the REAL FULL SURFACE (SemanticModelView —
+// panel header, governance ladder, canvas, curator inset), not the bare canvas.
+// The bare-canvas version made the comparison against 9e unfair in reality's
+// favour-of-doubt: 9e depicts the whole panel including the inset, so exporting
+// only the graph hid the surface where most of the polish gap actually lived.
 export function RealModelV7Frame() {
   return (
-    <div className="space-y-3 rounded-xl border border-default bg-surface p-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-secondary">Semantic model</h3>
-      <SemanticGraph
-        nodes={V7_NODES}
-        edges={V7_EDGES}
-        selectedId="sales.mv.revenue_mv"
-        label="Semantic model — real component, Revenue MV selected"
-      />
-    </div>
+    <SemanticModelView
+      graph={{ space_id: "space-v7", nodes: V7_NODES, edges: V7_EDGES, proposals: [], coverage_status: "ok", coverage_reason: null }}
+      isLoading={false}
+      error={null}
+      onRefresh={() => {}}
+      initialSelectedId="sales.mv.revenue_mv"
+    />
   )
 }
 

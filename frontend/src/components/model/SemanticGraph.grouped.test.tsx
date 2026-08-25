@@ -167,6 +167,29 @@ describe("computeFit — a real fit, never reset()'s 100% on a tall graph (§3)"
   it("returns identity for a degenerate (unmeasured) viewport", () => {
     expect(computeFit(960, 2364, 0, 0)).toEqual({ scale: 1, tx: 0, ty: 0 })
   })
+
+  // 12f: framing a 30-table stack in a 520px canvas by height means ~20% scale —
+  // every label illegible so that the whole graph "fits". That is the tiny-blob
+  // defect arriving by a different road, so the fit prefers WIDTH and lets the
+  // reader pan the vertical overflow.
+  it("a tall graph fits to width and is not shrunk into illegibility", () => {
+    const tall = computeFit(1124, 2436, 780, 520)
+    const byHeight = (520 - 48) / 2436
+    expect(tall.scale).toBeGreaterThan(byHeight * 2)
+    expect(tall.scale).toBeCloseTo((780 - 48) / 1124, 5)
+  })
+
+  it("top-aligns a graph that overflows vertically, centers one that fits", () => {
+    expect(computeFit(1124, 2436, 780, 520).ty).toBe(24)
+    const short = computeFit(812, 300, 780, 520)
+    expect(short.ty).toBeGreaterThan(24)
+  })
+
+  // The legibility floor must never widen a graph past its own width fit.
+  it("the floor yields to the width fit on a very wide graph", () => {
+    const wide = computeFit(4000, 200, 780, 520)
+    expect(wide.scale).toBeCloseTo((780 - 48) / 4000, 5)
+  })
 })
 
 describe("matchesSearch — the jump box filters by name (§4)", () => {

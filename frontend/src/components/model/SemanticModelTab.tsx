@@ -14,12 +14,12 @@
  * empty / populated / overlay / node-detail) renders under renderToStaticMarkup
  * in tests without a live fetch.
  */
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { AlertTriangle, GitBranch, RefreshCw } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { fetchSemanticGraph } from "@/lib/api"
 import type { MvGovernance, MvProposal, SemanticGraphEdge, SemanticGraphNode, SemanticGraphResponse } from "@/types"
-import { GOVERNANCE, LADDER_ORDER, SemanticGraph, countGovernance } from "./SemanticGraph"
+import { GOVERNANCE, LADDER_ORDER, SemanticGraph, countGovernance, isDisplayableMeasureLabel, relationshipGlyph } from "./SemanticGraph"
 
 function shortName(identifier: string): string {
   const cleaned = (identifier || "").replace(/`/g, "").trim()
@@ -139,39 +139,156 @@ export function NodeDetail({
   const usedByMvs = node.kind === "table" ? edges.filter((e) => e.kind === "uses" && e.to === node.id).map((e) => labelOf(e.from)) : []
   const defUnavailable = node.kind === "metric_view" && !node.proposed && node.definition_available === false
 
+  // 12f: the curator inset the v7 contract frame shows, rather than the flat
+  // key/value list that shipped. The panel earns a header (name + kind +
+  // governance roll-up) and sectioned columns, because this is the surface a
+  // curator reads to decide something — the joins that were DECLARED (with their
+  // ON predicates, where the canvas can only afford a glyph), the measures the
+  // metric view governs, and the evidence behind a proposed one.
+  //
+  // What it does NOT show, deliberately: the metric view's filter,
+  // materialization, and reuse count. The v7 frame drew them from the MV's YAML;
+  // the semantic-graph payload does not carry them, and an inset that prints
+  // "unknown" for a governance-relevant field is worse than one that omits it.
+  const memberTableIds = new Set(
+    node.kind === "metric_view" ? edges.filter((e) => e.kind === "uses" && e.from === node.id).map((e) => e.to) : [],
+  )
+  // Joins worth showing: for an MV, the ones INSIDE its own source set (its join
+  // graph); for a table, every join it participates in.
+  const joins = edges.filter((e) => {
+    if (e.kind !== "join") return false
+    if (node.kind === "metric_view") return memberTableIds.has(e.from) && memberTableIds.has(e.to)
+    if (node.kind === "table") return e.from === node.id || e.to === node.id
+    return false
+  })
+  // The measures this metric view governs, with their rungs — the roll-up the
+  // canvas chip summarises, itemised.
+  const ownMeasures =
+    node.kind === "metric_view"
+      ? edges
+          .filter((e) => e.kind === "membership" && e.to === node.id)
+          .map((e) => nodes.find((n) => n.id === e.from))
+          .filter((n): n is SemanticGraphNode => n != null)
+      : []
+  const namedMeasures = ownMeasures.filter((m) => isDisplayableMeasureLabel(m.label))
+  const unnamedCount = ownMeasures.length - namedMeasures.length
+  const rollup = LADDER_ORDER.map((rung) => ({
+    rung,
+    count: ownMeasures.filter((m) => m.governance === rung).length,
+  })).filter((r) => r.count > 0)
+
   return (
-    <div className="space-y-2 rounded-lg border border-default bg-elevated p-3">
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-sm font-medium text-primary">{node.label}</span>
-        {g && <Badge variant={node.governance === "governed" ? "success" : node.governance === "curated" ? "warning" : "danger"}>{g.label}</Badge>}
-        {node.kind === "metric_view" && <Badge variant="secondary"><GitBranch className="mr-1 h-3 w-3" />{node.proposed ? "Proposed" : "Metric view"}</Badge>}
+    <div className="overflow-hidden rounded-lg border border-default bg-elevated">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-default px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-mono text-sm font-medium text-primary">{node.label}</span>
+          {node.kind === "metric_view" && <Badge variant="secondary"><GitBranch className="mr-1 h-3 w-3" />{node.proposed ? "Proposed" : "Metric view"}</Badge>}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {g && <Badge variant={node.governance === "governed" ? "success" : node.governance === "curated" ? "warning" : "danger"}>{g.label}</Badge>}
+          {rollup.map(({ rung, count }) => (
+            <span key={rung} className="inline-flex items-center gap-1.5 rounded-full border border-default px-2 py-0.5 text-[11px] text-secondary">
+              <span className="h-2 w-2 rounded-full" style={{ background: GOVERNANCE[rung].color }} />
+              {count} {GOVERNANCE[rung].label.toLowerCase()}
+            </span>
+          ))}
+        </div>
       </div>
-      <dl className="space-y-1 text-xs text-muted">
-        {node.origin && (
-          <div className="flex gap-2"><dt className="text-secondary">origin</dt><dd>{node.origin}</dd></div>
-        )}
-        {defUnavailable && (
-          <div className="flex items-center gap-2 text-[var(--color-warning)]"><AlertTriangle className="h-3 w-3" />definition unavailable — its YAML could not be read, so no source or joins are shown</div>
-        )}
+
+      {defUnavailable && (
+        <p className="flex items-start gap-2 border-b border-default bg-[var(--color-warning)]/5 px-3 py-2 text-xs text-[var(--color-warning)]">
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+          definition unavailable — its YAML could not be read, so no source or joins are shown
+        </p>
+      )}
+      {conflicts.length > 0 && (
+        <p className="flex items-start gap-2 border-b border-default bg-[var(--color-warning)]/5 px-3 py-2 text-xs text-[var(--color-warning)]">
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+          {conflicts.length} conflict{conflicts.length > 1 ? "s" : ""} reported — its measures overlap another proposal's
+        </p>
+      )}
+
+      <div className="grid gap-x-6 gap-y-4 p-3 sm:grid-cols-2">
         {memberTables.length > 0 && (
-          <div className="flex gap-2"><dt className="text-secondary">tables used</dt><dd className="font-mono">{memberTables.join(", ")}</dd></div>
+          <InsetSection title="Source tables">
+            <div className="flex flex-wrap gap-1.5">
+              {memberTables.map((t) => (
+                <span key={t} className="rounded border border-default px-1.5 py-0.5 font-mono text-[11px] text-secondary">{t}</span>
+              ))}
+            </div>
+          </InsetSection>
         )}
+
+        {ownMeasures.length > 0 && (
+          <InsetSection title={`Measures (${ownMeasures.length})`}>
+            <ul className="space-y-1">
+              {namedMeasures.map((m) => (
+                <li key={m.id} className="flex items-center gap-2">
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: m.governance ? GOVERNANCE[m.governance].color : "var(--border-color-strong)" }} />
+                  <span className="truncate font-mono text-[11px] text-secondary">{m.label}</span>
+                </li>
+              ))}
+              {/* Same truth the canvas tells (12d finding 1): a canonical_expr or
+                  sug_ id is not a name, so it is counted, never printed. The
+                  inset listing them raw while the canvas summarised them was the
+                  two surfaces disagreeing about the same measures. */}
+              {unnamedCount > 0 && (
+                <li className="text-[11px] italic text-muted">+{unnamedCount} unnamed</li>
+              )}
+            </ul>
+          </InsetSection>
+        )}
+
+        {joins.length > 0 && (
+          <InsetSection title={`Declared joins (${joins.length})`}>
+            <ul className="space-y-1.5">
+              {joins.map((e, i) => (
+                <li key={i}>
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] text-secondary">
+                    <span className="truncate">{labelOf(e.from)}</span>
+                    <span className="text-muted">→</span>
+                    <span className="truncate">{labelOf(e.to)}</span>
+                    {relationshipGlyph(e.relationship) && <span className="rounded bg-[var(--bg-sunken)] px-1 text-[10px] text-muted">{relationshipGlyph(e.relationship)}</span>}
+                    {e.scd2 && <span className="rounded bg-[var(--bg-sunken)] px-1 text-[10px] text-muted">SCD2</span>}
+                  </div>
+                  {e.on && <div className="truncate font-mono text-[10px] text-muted">ON {e.on}</div>}
+                </li>
+              ))}
+            </ul>
+          </InsetSection>
+        )}
+
         {usedByMvs.length > 0 && (
-          <div className="flex gap-2"><dt className="text-secondary">used by</dt><dd className="font-mono">{usedByMvs.join(", ")}{usedByMvs.length > 1 ? " — shared, changes ripple" : ""}</dd></div>
+          <InsetSection title="Used by">
+            <div className="flex flex-wrap gap-1.5">
+              {usedByMvs.map((m) => (
+                <span key={m} className="rounded border border-default px-1.5 py-0.5 font-mono text-[11px] text-secondary">{m}</span>
+              ))}
+            </div>
+            {usedByMvs.length > 1 && <p className="mt-1 text-[11px] text-muted">shared, changes ripple</p>}
+          </InsetSection>
         )}
-        {recurrence != null && (
-          <div className="flex gap-2"><dt className="text-secondary">recurrence</dt><dd>{recurrence} occurrences</dd></div>
+
+        {(node.origin || recurrence != null || questionIds.length > 0 || sourceTables.length > 0) && (
+          <InsetSection title="Evidence">
+            <dl className="space-y-1 text-[11px] text-muted">
+              {node.origin && <div className="flex gap-2"><dt className="shrink-0 text-secondary">origin</dt><dd className="truncate">{node.origin}</dd></div>}
+              {recurrence != null && <div className="flex gap-2"><dt className="shrink-0 text-secondary">recurrence</dt><dd>{recurrence} occurrences</dd></div>}
+              {questionIds.length > 0 && <div className="flex gap-2"><dt className="shrink-0 text-secondary">questions</dt><dd className="truncate font-mono">{questionIds.join(", ")}</dd></div>}
+              {sourceTables.length > 0 && <div className="flex gap-2"><dt className="shrink-0 text-secondary">source tables</dt><dd className="truncate font-mono">{sourceTables.join(", ")}</dd></div>}
+            </dl>
+          </InsetSection>
         )}
-        {questionIds.length > 0 && (
-          <div className="flex gap-2"><dt className="text-secondary">questions</dt><dd className="font-mono">{questionIds.join(", ")}</dd></div>
-        )}
-        {sourceTables.length > 0 && (
-          <div className="flex gap-2"><dt className="text-secondary">source tables</dt><dd className="font-mono">{sourceTables.join(", ")}</dd></div>
-        )}
-        {conflicts.length > 0 && (
-          <div className="flex items-center gap-2 text-[var(--color-warning)]"><AlertTriangle className="h-3 w-3" />{conflicts.length} conflict{conflicts.length > 1 ? "s" : ""} reported</div>
-        )}
-      </dl>
+      </div>
+    </div>
+  )
+}
+
+function InsetSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted">{title}</p>
+      {children}
     </div>
   )
 }
@@ -181,14 +298,20 @@ export function SemanticModelView({
   isLoading,
   error,
   onRefresh,
+  initialSelectedId = null,
 }: {
   graph: SemanticGraphResponse | null
   isLoading: boolean
   error: string | null
   onRefresh: () => void
+  // Seeds the selection. Selection is otherwise internal state, which means a
+  // static render (the fidelity-gate export) could never show the selected-state
+  // surface — the boundary, the focus dimming, the curator inset — and that is
+  // exactly the state the v7 contract frame depicts.
+  initialSelectedId?: string | null
 }) {
   const [showOverlay, setShowOverlay] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId)
 
   const hasProposals = (graph?.proposals.length ?? 0) > 0
   const rendered = useMemo(() => {

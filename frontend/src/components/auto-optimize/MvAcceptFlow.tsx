@@ -66,7 +66,7 @@ type FlowStatus =
 // The proposed identifier is `catalog.schema.name`; the probe targets the
 // schema the view will be created in, and the create route re-derives the same
 // from the consent, so this parse is display/probe-only.
-export function proposalTarget(
+function proposalTarget(
   proposal: MvProposal,
 ): { catalog: string; schema: string } | null {
   const parts = (proposal.proposed_object ?? "").split(".")
