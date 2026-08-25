@@ -328,6 +328,27 @@ class MvProposalsResponse(BaseModel):
     proposals: list[MvProposal] = Field(default_factory=list)
 
 
+class MvLastScan(BaseModel):
+    """Summary of a space's most recent advice scan, for MV-D31 hydrate-on-mount.
+
+    Lets the panel say "last scanned <when> — N proposals" and reproduce the last
+    run's empty/skip state on mount without re-running a multi-minute scan. Every
+    field is *derived* — ``scanned_at`` / ``duration_seconds`` / ``status`` come
+    from the advice run's terminal ``genie_opt_stages`` row, and ``skip_reason`` /
+    ``measures_found`` from that row's ``detail_json`` (``AdvisorOutcome.detail()``
+    already carries both keys) — so this is a read of existing state, not a new
+    ``genie_opt_runs`` column. ``None`` at the response level means the space has
+    never been scanned, which the panel renders as the never-scanned state (a
+    first-class "Scan" affordance) rather than as an empty result."""
+
+    scanned_at: str | None = None
+    duration_seconds: float | None = None
+    status: str | None = None
+    skip_reason: str | None = None
+    measures_found: int | None = None
+    proposal_count: int = 0
+
+
 class MvSpaceProposalsResponse(BaseModel):
     """``GET /spaces/{space_id}/mv-proposals`` — a space's proposals (MV-D23).
 
@@ -336,10 +357,17 @@ class MvSpaceProposalsResponse(BaseModel):
     approved?") and must not borrow a prior ``run_id`` to stand in for it. The
     element type is the SAME ``MvProposal`` as the run-keyed response, so the
     proposal card renders from one shape in both the output screen (per-run) and
-    this panel (per-space)."""
+    this panel (per-space).
+
+    ``last_scan`` (MV-D31) hydrates the advice panel on mount: the timestamp,
+    real duration, and empty/skip state of the space's most recent scan, so the
+    surface opens showing "last scanned … — N proposals" instead of a bare
+    button, and the multi-minute scan is a deliberate Re-scan, not the price of
+    opening the panel. ``None`` means never scanned."""
 
     space_id: str
     proposals: list[MvProposal] = Field(default_factory=list)
+    last_scan: MvLastScan | None = None
 
 
 class MvSuggestResponse(BaseModel):

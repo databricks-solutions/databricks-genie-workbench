@@ -15,6 +15,7 @@ import {
   MvRegisterInput,
   MvRegisterVerified,
   MvRegisterRefused,
+  ScanProgress,
 } from "./MvIqScanAdvisorySection"
 import { MvProposalCard } from "./MvProposalCard"
 import type { MvProposal, MvRegisterResponse, MvDdlArtifact } from "@/types"
@@ -149,6 +150,28 @@ describe("IQ Scan advisory — couldn't-run (FAILED is not a silent empty)", () 
     expect(html).toContain("didn")
     expect(html).toContain("corpus read timed out")
     expect(html).toContain("Try again")
+  })
+})
+
+describe("IQ Scan advisory — staged progress (MV-D31, finding 2)", () => {
+  it("shows all four honest stages, with SCORING labelled by what it waits on", () => {
+    // Not a bare spinner: the four stages render as a checklist, and the long
+    // SCORING stage names what it is waiting on (embeddings + usage signals) so
+    // an honest label carries the multi-minute wait.
+    const html = render(<ScanProgress stages={["reading curated SQL"]} lastDuration={null} />)
+    expect(html).toContain("reading curated SQL")
+    expect(html).toContain("scanning for recurring measures")
+    expect(html).toContain("scoring candidates (embeddings + usage signals)")
+    expect(html).toContain("rendering DDL")
+    // No fabricated estimate when there's no prior duration — honest and vague.
+    expect(html).toContain("a few minutes")
+  })
+
+  it("frames the wait with the last scan's REAL duration when known (note 3)", () => {
+    // Duration comes from the previous scan's measured wall time, never a made-up
+    // "~30–60s". The staged progress is what makes the wait tolerable.
+    const html = render(<ScanProgress stages={["scoring candidates (embeddings + usage signals)"]} lastDuration="4m 12s" />)
+    expect(html).toContain("The last scan took 4m 12s")
   })
 })
 

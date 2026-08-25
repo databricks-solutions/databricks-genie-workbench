@@ -996,11 +996,27 @@ export interface MvProposalsResponse {
   proposals: MvProposal[]
 }
 
+// Summary of a space's most recent advice scan, for MV-D31 hydrate-on-mount.
+// Every field is DERIVED from the advice run's terminal genie_opt_stages row
+// (skip_reason / measures_found from its detail_json), never a new column — the
+// panel opens showing "last scanned … — N proposals" instead of a bare button.
+// null at the response level ⇒ the space has never been scanned.
+export interface MvLastScan {
+  scanned_at: string | null
+  duration_seconds: number | null
+  status: string | null
+  skip_reason: string | null
+  measures_found: number | null
+  proposal_count: number
+}
+
 // GET /spaces/{space_id}/mv-proposals — a space's proposals (MV-D23). Same
 // MvProposal element type as the run-keyed response so one card renders both.
 export interface MvSpaceProposalsResponse {
   space_id: string
   proposals: MvProposal[]
+  // MV-D31: present on the unfiltered panel load; null on the re-run gate query.
+  last_scan?: MvLastScan | null
 }
 
 // POST /spaces/{space_id}/mv/suggest — an on-demand advice run (MV-D23). The IQ

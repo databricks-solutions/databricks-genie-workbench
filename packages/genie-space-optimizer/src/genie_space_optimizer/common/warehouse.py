@@ -384,6 +384,145 @@ def wh_create_advice_run(
     logger.info("Created born-terminal MV-D23 advice run %s for space %s", run_id, space_id)
 
 
+def wh_write_stage(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    run_id: str,
+    stage: str,
+    status: str,
+    catalog: str,
+    schema: str,
+    detail: dict | None = None,
+    error_message: str | None = None,
+) -> None:
+    """SQL-warehouse twin of :func:`optimization.state.write_stage` (MV-D21 pin).
+
+    The interactive advice path has no SparkSession, so it cannot call the Spark
+    ``write_stage``; without a twin the advice run left no ``genie_opt_stages``
+    row, and MV-D31 hydration ("last scanned + N proposals", skip reason,
+    duration) had nothing to read. This writes the same columns the Spark writer
+    does, and — for a terminal status — computes ``duration_seconds`` the same
+    way: by diffing the matching ``STARTED`` row's ``started_at``. ``detail`` is
+    JSON-serialized into ``detail_json`` (base64-routed so nested JSON survives
+    the warehouse's string-escape mode, as the candidate/consent JSON columns
+    are). The advice caller writes one ``STARTED`` then one terminal row for the
+    :data:`MV_ADVISOR_PHASE_NAME` stage; the four interactive sub-stages ride the
+    SSE ``on_stage`` seam and are transient progress, never persisted here.
+
+    Only the columns the advice path uses are exposed (no ``task_key`` / ``lever``
+    / ``iteration``, which are job-orchestration concerns); the DDL leaves them
+    nullable, so an advice stage row is well-formed without them.
+    """
+    from genie_space_optimizer.common.config import TABLE_STAGES
+
+    if not run_id:
+        raise ValueError("run_id is required")
+    if not stage:
+        raise ValueError("stage is required")
+
+    fqn = f"{catalog}.{schema}.{TABLE_STAGES}"
+
+    completed_at_sql = "NULL"
+    duration_sql = "NULL"
+    if status in ("COMPLETE", "FAILED", "SKIPPED", "ROLLED_BACK"):
+        completed_at_sql = "current_timestamp()"
+        # Duration is the diff against this stage's STARTED row, computed in-engine
+        # so it uses the warehouse's own clock for both endpoints (no client-skew).
+        duration_sql = (
+            "(SELECT unix_timestamp(current_timestamp()) - "
+            f"unix_timestamp(MAX(started_at)) FROM {fqn} "
+            f"WHERE run_id = {_wh_literal(run_id)} AND stage = {_wh_literal(stage)} "
+            "AND status = 'STARTED')"
+        )
+
+    detail_json = json.dumps(detail) if detail else None
+
+    cols = (
+        "run_id, stage, status, started_at, completed_at, "
+        "duration_seconds, detail_json, error_message"
+    )
+    vals = ", ".join(
+        [
+            _wh_literal(run_id),
+            _wh_literal(stage),
+            _wh_literal(status),
+            "current_timestamp()",
+            completed_at_sql,
+            duration_sql,
+            _wh_literal(detail_json, encode=True) if detail_json else "NULL",
+            _wh_literal(error_message),
+        ]
+    )
+    sql_warehouse_execute(
+        ws, warehouse_id, f"INSERT INTO {fqn} ({cols}) VALUES ({vals})"
+    )
+    logger.info("Stage %s/%s for run %s (warehouse)", stage, status, run_id)
+
+
+def wh_load_latest_advice_scan(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    space_id: str,
+) -> dict | None:
+    """Newest advice scan for a space, for MV-D31 hydrate-on-mount.
+
+    Joins the newest ``mv_advice`` run (MV-D23 sentinel) for ``space_id`` to its
+    terminal :data:`MV_ADVISOR_PHASE_NAME` stage row and returns the fields the
+    hydrated panel shows: ``scanned_at`` (the run's ``completed_at``),
+    ``duration_seconds`` (real wall time from the stage), ``status``, and the
+    ``skip_reason`` / ``measures_found`` derived from ``detail_json`` — the
+    note-2 source, a derivation from the existing stage detail, not a new column.
+    Returns ``None`` when the space has never been scanned, which the panel
+    renders as the never-scanned state rather than an empty result.
+    """
+    from genie_space_optimizer.common.config import (
+        MV_RUN_KIND_ADVICE,
+        TABLE_RUNS,
+        TABLE_STAGES,
+    )
+    from genie_space_optimizer.optimization.mv_advisor import MV_ADVISOR_PHASE_NAME
+
+    runs_fqn = f"{catalog}.{schema}.{TABLE_RUNS}"
+    stages_fqn = f"{catalog}.{schema}.{TABLE_STAGES}"
+    df = sql_warehouse_query(
+        ws,
+        warehouse_id,
+        f"SELECT r.run_id AS run_id, r.completed_at AS scanned_at, "
+        f"s.status AS status, s.duration_seconds AS duration_seconds, "
+        f"s.detail_json AS detail_json "
+        f"FROM {runs_fqn} r "
+        f"LEFT JOIN {stages_fqn} s "
+        f"ON s.run_id = r.run_id AND s.stage = {_wh_literal(MV_ADVISOR_PHASE_NAME)} "
+        f"AND s.status <> 'STARTED' "
+        f"WHERE r.space_id = {_wh_literal(space_id)} "
+        f"AND r.run_kind = {_wh_literal(MV_RUN_KIND_ADVICE)} "
+        f"ORDER BY r.started_at DESC LIMIT 1",
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    detail_raw = row.get("detail_json")
+    detail: dict = {}
+    if detail_raw:
+        try:
+            detail = json.loads(detail_raw)
+        except (ValueError, TypeError):
+            detail = {}
+    duration = row.get("duration_seconds")
+    return {
+        "run_id": row.get("run_id"),
+        "scanned_at": row.get("scanned_at"),
+        "status": row.get("status") or detail.get("status"),
+        "duration_seconds": float(duration) if duration is not None else None,
+        "skip_reason": detail.get("skip_reason"),
+        "measures_found": detail.get("measures_found"),
+    }
+
+
 def wh_load_run(
     ws: WorkspaceClient,
     warehouse_id: str,

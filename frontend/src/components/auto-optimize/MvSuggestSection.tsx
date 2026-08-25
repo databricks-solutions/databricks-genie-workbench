@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Copy, Sparkles } from "lucide-react"
+import { AlertTriangle, Check, Copy, Loader2, Sparkles } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Button } from "@/components/ui/button"
 import type { MvProposal, MvProbeResult } from "@/types"
@@ -86,7 +86,10 @@ export function MvSuggestSection(props: MvSuggestSectionProps) {
       {enabled && (
         <div className="space-y-4 border-t border-default pt-3">
           {proposalsLoading ? (
-            <p className="text-xs text-muted">Looking for proposals approved for this Agent&hellip;</p>
+            <p className="flex items-center gap-1.5 text-xs text-muted">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Checking this Agent for previously approved proposals&hellip;
+            </p>
           ) : isFirstRun ? (
             <FirstRunModes disabled={disabled} mode={mode} onModeChange={onModeChange} />
           ) : (

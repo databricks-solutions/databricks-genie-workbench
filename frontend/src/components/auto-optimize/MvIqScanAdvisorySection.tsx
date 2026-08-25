@@ -21,14 +21,45 @@
  * the one `MvRegisterResponse` shape renders verified (USER_CREATED, NO drop
  * action — invariant 1) or refused (the reason, nothing recorded — invariant 2).
  */
-import { useState } from "react"
-import { ArrowUpRight, Check, ChevronDown, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { ArrowUpRight, Check, CheckCircle2, ChevronDown, Circle, Loader2, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
 import { splitProposalsByConfidence } from "@/components/auto-optimize/mvFormat"
-import { suggestSpaceMv, registerSpaceMv, getMvDdl } from "@/lib/api"
-import type { MvProposal, MvSuggestResponse, MvRegisterResponse, MvDdlArtifact } from "@/types"
+import { streamSpaceMvSuggest, fetchSpaceMvProposals, registerSpaceMv, getMvDdl } from "@/lib/api"
+import type { MvProposal, MvSuggestResponse, MvRegisterResponse, MvDdlArtifact, MvLastScan } from "@/types"
+
+// The four honest scan stages, in entry order — the literal labels the backend
+// emits over SSE (MV_ADVISOR_STAGES). Named for where the wall time goes, not by
+// module: SCORING predictably holds for most of a multi-minute scan, so its
+// label says what it waits on. Kept here so the progress checklist can show all
+// four (entered vs pending) rather than a bare spinner (finding 2).
+const SCAN_STAGES = [
+  "reading curated SQL",
+  "scanning for recurring measures",
+  "scoring candidates (embeddings + usage signals)",
+  "rendering DDL",
+] as const
+
+function formatDuration(seconds: number | null | undefined): string | null {
+  if (seconds == null || seconds <= 0) return null
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.round(seconds % 60)
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+}
+
+function formatRelative(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const parsed = Date.parse(iso)
+  if (Number.isNaN(parsed)) return null
+  const mins = Math.floor((Date.now() - parsed) / 60000)
+  if (mins < 1) return "just now"
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  return `${Math.floor(hrs / 24)}d ago`
+}
 
 // VERBATIM from the Prompt 10 review (mockup frame 8b) — do not paraphrase.
 const REGISTERED_COPY =
@@ -49,6 +80,13 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   // Prompt 15.1: an advice run writes no DDL artifact, so DDL is fetched per
   // proposal from route 7's candidate fallback (pinned by suggestion_id).
   const [ddlById, setDdlById] = useState<Record<string, MvDdlArtifact>>({})
+  // MV-D31: the stages entered so far (SSE, on entry) drive the progress
+  // checklist; last_scan hydrates the panel on mount; hydrating gates the mount
+  // read so a never-scanned space shows a first-class Scan affordance, not empty.
+  const [stages, setStages] = useState<string[]>([])
+  const [lastScan, setLastScan] = useState<MvLastScan | null>(null)
+  const [hydrating, setHydrating] = useState(true)
+  const abortRef = useRef<(() => void) | null>(null)
 
   const [registerValue, setRegisterValue] = useState("")
   const [claimId, setClaimId] = useState<string | null>(null)
@@ -58,32 +96,96 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   // MV-D30 surfacing: LOW-confidence proposals hide behind an explicit disclosure.
   const [showLow, setShowLow] = useState(false)
 
-  async function runSuggest() {
+  // Best-effort per-proposal DDL fetch (route 7 candidate fallback, by run_id).
+  // A card whose DDL fetch fails still renders its evidence, so this never
+  // blocks the result. Proposals can span advice runs (hydration), so group by
+  // each proposal's own run_id rather than assuming a single run.
+  async function loadDdl(props: MvProposal[]) {
+    const withRun = props.filter((p) => p.run_id)
+    if (withRun.length === 0) {
+      setDdlById({})
+      return
+    }
+    const settled = await Promise.allSettled(
+      withRun.map((p) => getMvDdl(p.run_id as string, p.suggestion_id)),
+    )
+    const map: Record<string, MvDdlArtifact> = {}
+    settled.forEach((s, i) => {
+      if (s.status === "fulfilled") map[withRun[i].suggestion_id] = s.value
+    })
+    setDdlById(map)
+  }
+
+  // Hydrate-on-mount (MV-D31, finding 8): the panel opens from persisted state —
+  // "last scanned … — N proposals" — without re-running a multi-minute scan.
+  // Proposals were persisted all along (fetchSpaceMvProposals); a prior EMPTY /
+  // SKIP hydrates too, from last_scan's derived skip_reason / measures_found.
+  useEffect(() => {
+    let alive = true
+    setHydrating(true)
+    fetchSpaceMvProposals(spaceId)
+      .then((res) => {
+        if (!alive) return
+        const scan = res.last_scan ?? null
+        setLastScan(scan)
+        const props = res.proposals ?? []
+        if (props.length > 0 || scan) {
+          // Reconstruct the advisor's own shape from persisted state so the same
+          // found / EMPTY / (never FAILED — a failure is not hydrated) rendering
+          // runs, keyed off last_scan's derived skip_reason + measures_found.
+          setResult({
+            space_id: spaceId,
+            run_id: props[0]?.run_id ?? "",
+            status: scan?.status ?? (props.length > 0 ? "COMPLETE" : "SKIPPED"),
+            skip_reason: scan?.skip_reason ?? null,
+            measures_found: scan?.measures_found ?? null,
+            error: null,
+            proposals: props,
+          })
+          if (props.length > 0) void loadDdl(props)
+        }
+      })
+      .catch(() => { /* hydration is best-effort; the Scan affordance still works */ })
+      .finally(() => { if (alive) setHydrating(false) })
+    return () => { alive = false }
+  }, [spaceId])
+
+  // Cancel any in-flight scan stream when the component unmounts.
+  useEffect(() => () => abortRef.current?.(), [])
+
+  function runSuggest() {
+    abortRef.current?.()
     setLoading(true)
     setError(null)
     setDdlById({})
     setShowLow(false)
-    try {
-      const res = await suggestSpaceMv(spaceId)
-      setResult(res)
-      // Fetch each proposal's copy-ready DDL best-effort — a card whose DDL fetch
-      // fails still renders its evidence, so this never blocks the scan result.
-      const props = res.proposals ?? []
-      if (res.run_id && props.length > 0) {
-        const settled = await Promise.allSettled(
-          props.map((p) => getMvDdl(res.run_id, p.suggestion_id)),
-        )
-        const map: Record<string, MvDdlArtifact> = {}
-        settled.forEach((s, i) => {
-          if (s.status === "fulfilled") map[props[i].suggestion_id] = s.value
+    setStages([])
+    abortRef.current = streamSpaceMvSuggest(spaceId, {
+      // Emit on entry: append each stage as the backend reaches it, so the
+      // checklist advances live instead of sitting on one label for 90% of the
+      // wait. Dedupe defensively (a stage should arrive once).
+      onStage: (stage) =>
+        setStages((prev) => (prev.includes(stage) ? prev : [...prev, stage])),
+      onResult: (res) => {
+        setResult(res)
+        setLastScan({
+          scanned_at: new Date().toISOString(),
+          duration_seconds: null,
+          status: res.status,
+          skip_reason: res.skip_reason,
+          measures_found: res.measures_found,
+          proposal_count: (res.proposals ?? []).length,
         })
-        setDdlById(map)
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not run the metric-view scan.")
-    } finally {
-      setLoading(false)
-    }
+        void loadDdl(res.proposals ?? [])
+        setLoading(false)
+        abortRef.current = null
+      },
+      onError: (message) => {
+        setError(message)
+        setLoading(false)
+        abortRef.current = null
+      },
+    })
   }
 
   async function runRegister() {
@@ -116,30 +218,77 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   // proposed_object is dropped, MEDIUM+ surface by default, LOW is disclosed.
   const { primary, low } = splitProposalsByConfidence(proposals)
   const hasRenderable = primary.length > 0 || low.length > 0
+  // Never-scanned = mount finished, no prior scan recorded, and nothing is
+  // running. That state earns a first-class Scan affordance, not a bare result.
+  const neverScanned = !hydrating && !loading && !result && !lastScan
+  const scannedAt = formatRelative(lastScan?.scanned_at)
+  const lastDuration = formatDuration(lastScan?.duration_seconds)
 
   return (
     <div className="bg-surface border border-default rounded-xl p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-secondary">
-          <Sparkles className="h-4 w-4 text-accent" />
-          Metric view suggestions
-        </h3>
-        <button
-          onClick={runSuggest}
-          disabled={loading}
-          className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
-          title="Scan this Agent's SQL for un-governed measures"
-        >
-          <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-          {loading ? "Scanning…" : result ? "Re-scan" : "Scan for suggestions"}
-        </button>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-secondary">
+            <Sparkles className="h-4 w-4 text-accent" />
+            Metric view suggestions
+          </h3>
+          {/* Hydrated framing (finding 8): what the panel is showing and when it
+              was last scanned — so results are not silently lost between visits. */}
+          {!loading && !neverScanned && lastScan && (
+            <p className="mt-1 text-xs text-muted">
+              {scannedAt ? `Last scanned ${scannedAt}` : "Last scanned"}
+              {typeof lastScan.proposal_count === "number" &&
+                ` · ${lastScan.proposal_count} ${lastScan.proposal_count === 1 ? "proposal" : "proposals"}`}
+              {lastDuration && ` · took ${lastDuration}`}
+            </p>
+          )}
+        </div>
+        {/* Re-scan stays a light affordance once a result exists; the first-run
+            Scan is promoted to a first-class action below (finding 1). */}
+        {!neverScanned && (
+          <button
+            onClick={runSuggest}
+            disabled={loading}
+            className="flex shrink-0 items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+            title="Re-scan this Agent's SQL for un-governed measures"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+            {loading ? "Scanning…" : "Re-scan"}
+          </button>
+        )}
       </div>
 
-      {error && (
+      {/* Finding 1 — a first-class Scan action for a never-scanned space: names
+          what it reads and sets an honest expectation for how long it takes. */}
+      {neverScanned && (
+        <div className="rounded-xl border border-dashed border-default bg-elevated px-4 py-6 text-center">
+          <Sparkles className="mx-auto h-5 w-5 text-accent" />
+          <p className="mt-2 text-sm font-medium text-primary">
+            Scan for metric-view suggestions
+          </p>
+          <p className="mx-auto mt-1 mb-4 max-w-prose text-xs text-muted">
+            Reads this Agent&rsquo;s example question SQL, saved SQL snippets, and benchmark answers, and proposes
+            governed metric views for the measures that recur. This can take a few minutes.
+          </p>
+          <Button size="sm" onClick={runSuggest}>
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+            Scan for suggestions
+          </Button>
+        </div>
+      )}
+
+      {/* Finding 2 — staged progress, not a bare spinner. Each stage is shown on
+          entry; the active one spins, entered ones check, later ones wait. An
+          honest label on the long SCORING stage is what makes the wait tolerable. */}
+      {loading && (
+        <ScanProgress stages={stages} lastDuration={lastDuration} />
+      )}
+
+      {error && !loading && (
         <p className="text-xs text-danger">{error}</p>
       )}
 
-      {result && (
+      {!loading && result && (
         failed ? (
           <MvAdvisoryCouldNotRun reason={result.error} onRetry={runSuggest} />
         ) : hasRenderable ? (
@@ -230,8 +379,12 @@ function ScanProposalCard({
       ddl={ddl}
       actions={
         <>
+          {/* Finding 7 tail — the CTA now names where it goes. "Review and create"
+              read as an in-place create; it actually opens the run setup in
+              create-and-attach mode, so say so rather than surprise the user. */}
           <Button size="sm" onClick={() => onReviewCreate?.(proposal)}>
-            Review and create metric view
+            Review in run setup
+            <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
           </Button>
           {/* tertiary — the MV-D24 affordance for the copied-DDL path */}
           <Button size="sm" variant="ghost" onClick={() => onClaim(proposal)}>
@@ -240,6 +393,54 @@ function ScanProposalCard({
         </>
       }
     />
+  )
+}
+
+// ── Staged progress (MV-D31, finding 2) ─────────────────────────────────────
+// The four honest stages as a live checklist. Emitted on entry, so the last
+// stage received is the one running NOW: it spins; earlier ones are done; later
+// ones wait. This replaces the bare "Scanning…" spinner that sat unmoving for
+// minutes and left the user unsure it was working at all.
+export function ScanProgress({
+  stages,
+  lastDuration,
+}: {
+  stages: string[]
+  lastDuration: string | null
+}) {
+  // Index of the stage currently running = the last one entered. Before the
+  // first event arrives, treat stage 0 as active (the request is in flight).
+  const currentIdx = stages.length > 0 ? SCAN_STAGES.indexOf(stages[stages.length - 1] as (typeof SCAN_STAGES)[number]) : 0
+
+  return (
+    <div className="space-y-2 rounded-xl border border-default bg-elevated px-4 py-3">
+      <p className="text-xs font-medium text-secondary">Scanning this Agent&rsquo;s SQL…</p>
+      <ul className="space-y-1.5">
+        {SCAN_STAGES.map((stage, i) => {
+          const done = i < currentIdx
+          const active = i === currentIdx
+          return (
+            <li key={stage} className="flex items-center gap-2 text-xs">
+              {done ? (
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+              ) : active ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+              ) : (
+                <Circle className="h-3.5 w-3.5 shrink-0 text-muted opacity-40" />
+              )}
+              <span className={done ? "text-muted" : active ? "text-primary" : "text-muted opacity-60"}>
+                {stage}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+      <p className="text-xs text-muted">
+        {lastDuration
+          ? `The last scan took ${lastDuration}. You can leave this open — it keeps running.`
+          : "This can take a few minutes. You can leave this open — it keeps running."}
+      </p>
+    </div>
   )
 }
 

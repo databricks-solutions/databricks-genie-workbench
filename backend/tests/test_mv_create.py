@@ -360,10 +360,60 @@ def test_list_space_mv_proposals_defaults_approved_to_none(client, monkeypatch):
         return []
 
     monkeypatch.setattr(warehouse, "wh_load_mv_candidates", fake_load)
+    # MV-D31: the unfiltered panel load also reads the last-scan summary; stub it
+    # so this test pins the candidate read + response shape (last_scan hydrates on
+    # its own, and is None here — this space has no advice run in the stub).
+    monkeypatch.setattr(warehouse, "wh_load_latest_advice_scan", lambda *a, **k: None)
     resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
     assert resp.status_code == 200
-    assert resp.json() == {"space_id": "space-1", "proposals": []}
+    assert resp.json() == {"space_id": "space-1", "proposals": [], "last_scan": None}
     assert captured.get("approved_for_rerun") is None
+
+
+def test_list_space_mv_proposals_hydrates_last_scan(client, monkeypatch):
+    """MV-D31 hydrate-on-mount: the unfiltered panel load returns the last scan's
+    timestamp, real duration, and empty/skip state, so the surface opens showing
+    "last scanned … — N proposals" instead of a bare button."""
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(
+        warehouse, "wh_load_latest_advice_scan",
+        lambda *a, **k: {
+            "run_id": "run-adv-9",
+            "scanned_at": "2026-08-25T05:00:00Z",
+            "status": "SKIPPED",
+            "duration_seconds": 252.0,
+            "skip_reason": "NO_CANDIDATES",
+            "measures_found": 4,
+        },
+    )
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+    assert resp.status_code == 200
+    scan = resp.json()["last_scan"]
+    assert scan["status"] == "SKIPPED"
+    assert scan["skip_reason"] == "NO_CANDIDATES"
+    assert scan["measures_found"] == 4
+    assert scan["duration_seconds"] == 252.0
+    assert scan["proposal_count"] == 0
+
+
+def test_list_space_mv_proposals_rerun_gate_skips_last_scan(client, monkeypatch):
+    """The re-run gate query (approved_for_rerun=true) asks a different question
+    ("what has this Agent had approved?") and never wants the last-scan framing,
+    so the summary read is not issued on that path."""
+    read = {"called": False}
+
+    def _scan(*a, **k):
+        read["called"] = True
+        return None
+
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(warehouse, "wh_load_latest_advice_scan", _scan)
+    resp = client.get(
+        "/api/auto-optimize/spaces/space-1/mv-proposals?approved_for_rerun=true"
+    )
+    assert resp.status_code == 200
+    assert resp.json()["last_scan"] is None
+    assert read["called"] is False
 
 
 def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):

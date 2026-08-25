@@ -148,6 +148,42 @@ SKIP_NO_CANDIDATES = "NO_CANDIDATES"
 the space's queries do not repeat a measure."""
 
 
+# ── Progress stages (MV-D31) ─────────────────────────────────────────────
+#
+# The four honest stages an interactive advice request moves through, emitted
+# ON ENTRY so the user always knows what it is doing *now* (a stage that reports
+# only on completion reproduces the dead-air problem inside its own boundary).
+# Labels name where the wall time goes, not the module: the SCORING stage
+# predictably holds for most of a multi-minute scan — a per-candidate embedding
+# round-trip for S plus two warehouse signal reads (lineage + demand) each — so
+# its label says so, which is what makes the wait tolerable. These ride the
+# optional ``on_stage`` seam only; they are progress, not persisted state (the
+# persisted summary is the single advice stage row carrying ``outcome.detail()``).
+
+STAGE_READING = "reading curated SQL"
+"""Assembling the corpus: this Agent's curated example SQL, snippet measures and
+applied patches. Emitted by the caller, which owns the config read."""
+
+STAGE_SCANNING = "scanning for recurring measures"
+"""Parsing the corpus for repeated measures/shapes and reading the governed
+estate (DESCRIBE ... AS JSON) to exclude what a metric view already defines."""
+
+STAGE_SCORING = "scoring candidates (embeddings + usage signals)"
+"""The dominant stage on a real space: per candidate, one embedding round-trip
+for the semantic signal S and two warehouse reads for lineage + demand. Labelled
+with what it waits on because it is where nearly all the wall time goes."""
+
+STAGE_RENDERING = "rendering DDL"
+"""Consolidating scored measures into view-grained bundles and rendering each to
+executable metric-view YAML/DDL."""
+
+MV_ADVISOR_STAGES: tuple[str, ...] = (
+    STAGE_READING, STAGE_SCANNING, STAGE_SCORING, STAGE_RENDERING,
+)
+"""The staged-progress vocabulary, in entry order. Pinned by test so the SSE
+surface and the engine cannot drift on what a scan is doing."""
+
+
 @dataclass(frozen=True)
 class CorpusLoad:
     """Iteration-0 generated SQL, or the reason there is none."""
@@ -1179,6 +1215,7 @@ def advise_from_corpus(
     persist_proposal: Callable[[ScoredProposal, Any], bool],
     write_ddl_artifact: Callable[[ScoredProposal, Any], bool],
     read_suppressed_fingerprints: Callable[[], set[str]] | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ) -> AdvisorOutcome:
     """Corpus-agnostic advisor orchestration (MV-D23 scope item 2).
 
@@ -1198,7 +1235,18 @@ def advise_from_corpus(
     The MV-D16(b) contamination rule is unweakened — nothing this produces
     re-enters the corpus as recurrence evidence; the corpus is the caller's
     input and is never appended to here.
+
+    ``on_stage`` is the MV-D31 progress seam — an optional callback, injected
+    exactly like ``persist_proposal`` / ``metric_view_reader`` / the signal
+    readers, called with a :data:`MV_ADVISOR_STAGES` label ON ENTRY to each
+    phase (scanning → scoring → rendering; the caller owns ``STAGE_READING``).
+    It defaults to a no-op, so the in-job Spark caller passes nothing and is
+    byte-unchanged; only the interactive SSE caller binds it. It is progress
+    reporting, never control flow — an early SKIP simply stops emitting.
     """
+    emit_stage = on_stage or (lambda _stage: None)
+
+    emit_stage(STAGE_SCANNING)
     scan = corpus_scan(tuple(corpus_entries))
     if not scan.statements_scanned:
         return AdvisorOutcome(
@@ -1301,6 +1349,7 @@ def advise_from_corpus(
     bundles: dict[tuple[str, ...], list[tuple[ScoredProposal, MetricViewCandidate]]] = {}
 
     # ── Pass 1: per-measure scoring (identity/leakage/dedup grain unchanged) ──
+    emit_stage(STAGE_SCORING)
     for measure in measures:
         measure_fp = mv_candidate_fingerprint(
             space_id, measure.canonical_expr, measure.source_tables
@@ -1371,6 +1420,8 @@ def advise_from_corpus(
             artifacts += 1
 
     # ── Pass 2: consolidate each source-table set into ONE view proposal ──
+    if bundles:
+        emit_stage(STAGE_RENDERING)
     for source_key, members in bundles.items():
         built = _build_bundle(
             space_id=space_id,

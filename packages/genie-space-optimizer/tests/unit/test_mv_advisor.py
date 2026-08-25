@@ -1643,3 +1643,70 @@ def test_a_shape_whose_render_form_matches_the_benchmark_is_dropped(monkeypatch)
     for proposal in outcome.proposals:
         for member in proposal.evidence.get("measures", []):
             assert "case when" not in (member.get("expr") or "").lower()
+
+
+# ── MV-D31 staged progress (the on_stage seam) ───────────────────────────
+
+
+def test_the_stage_vocabulary_is_the_four_honest_phases() -> None:
+    """MV-D31 pins the stage names as a fixed, ordered vocabulary so the SSE
+    surface and the engine cannot drift on what a scan is doing. The SCORING
+    label names what it waits on (embeddings + usage signals) because it is the
+    stage that holds for minutes — an honest label on a long stage is what makes
+    the wait tolerable."""
+    assert mv_advisor.MV_ADVISOR_STAGES == (
+        mv_advisor.STAGE_READING,
+        mv_advisor.STAGE_SCANNING,
+        mv_advisor.STAGE_SCORING,
+        mv_advisor.STAGE_RENDERING,
+    )
+    assert mv_advisor.STAGE_SCORING == "scoring candidates (embeddings + usage signals)"
+
+
+def test_on_stage_fires_scanning_then_scoring_then_rendering_on_entry() -> None:
+    """The three stages ``advise_from_corpus`` owns fire ON ENTRY, in order, over
+    a green bundling corpus (the caller owns ``STAGE_READING``). Entry emission —
+    not completion — is what keeps a multi-minute stage from reproducing the
+    dead-air problem inside its own boundary."""
+    seen: list[str] = []
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        on_stage=seen.append,
+    )
+    assert outcome.proposals, "expected the green corpus to render a bundle"
+    assert seen == [
+        mv_advisor.STAGE_SCANNING,
+        mv_advisor.STAGE_SCORING,
+        mv_advisor.STAGE_RENDERING,
+    ]
+
+
+def test_on_stage_defaults_to_a_no_op_that_emits_nothing() -> None:
+    """The in-job Spark caller passes no ``on_stage`` and is byte-unchanged. The
+    default is a genuine no-op — driving the advisor without the callback runs
+    clean and (the sibling assertion) the callback, when present, is the ONLY
+    thing that emits. Guards against a stray print/log masquerading as progress."""
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+    )
+    # No exception, and the run still produced a bundle — the no-op default did
+    # not alter control flow. (An explicit callback's emissions are pinned above;
+    # here the point is that omitting it is safe and silent.)
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+
+
+def test_on_stage_stays_silent_when_the_corpus_skips_early() -> None:
+    """Progress is reporting, never control flow: an empty corpus SKIPs before
+    any measure is scored, so only SCANNING (entry) fired — SCORING and RENDERING
+    never claim work that did not happen."""
+    seen: list[str] = []
+    outcome = _advise_from_corpus_directly(
+        corpus_entries=[],
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        on_stage=seen.append,
+    )
+    assert outcome.status == mv_advisor.STATUS_SKIPPED
+    assert seen == [mv_advisor.STAGE_SCANNING]

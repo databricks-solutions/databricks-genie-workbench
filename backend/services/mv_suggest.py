@@ -29,6 +29,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -95,21 +96,35 @@ def suggest_for_space(
     applied_config: dict | None,
     triggered_by: str | None,
     embedding_timeout_s: float = DEFAULT_EMBEDDING_TIMEOUT_S,
+    on_stage: Callable[[str], None] | None = None,
 ) -> tuple[Any, str]:
     """Run one advice request. Returns ``(AdvisorOutcome, run_id)``.
 
-    Blocking by design (seconds, not minutes): the caller offloads it to a
-    worker thread so the event loop stays free. ``sp_ws`` is the service
-    principal client; ``applied_config`` is the space's parsed serialized_space
-    the route already fetched under OBO.
+    Blocking by design (multiple minutes on a real space — the SCORING stage's
+    per-candidate embedding + warehouse signal reads dominate): the caller
+    offloads it to a worker thread so the event loop stays free. ``sp_ws`` is the
+    service principal client; ``applied_config`` is the space's parsed
+    serialized_space the route already fetched under OBO.
+
+    ``on_stage`` (MV-D31) is an optional progress callback the streaming route
+    binds; it is called with a :data:`MV_ADVISOR_STAGES` label ON ENTRY to each
+    phase (``STAGE_READING`` here, the rest inside ``advise_from_corpus``). It
+    defaults to ``None`` (no-op), so the blocking route and the in-job path are
+    unchanged. Independent of ``on_stage``, this always persists ONE
+    ``genie_opt_stages`` row per advice run — a ``STARTED`` then a terminal row
+    carrying ``AdvisorOutcome.detail()`` and the real ``duration_seconds`` — so a
+    later mount can hydrate "last scanned + N proposals" without re-running.
     """
     from genie_space_optimizer.common.warehouse import (
         wh_create_advice_run,
         wh_ensure_optimization_tables,
         wh_load_mv_suppressed_fingerprints,
         wh_upsert_mv_candidate,
+        wh_write_stage,
     )
     from genie_space_optimizer.optimization.mv_advisor import (
+        MV_ADVISOR_PHASE_NAME,
+        STAGE_READING,
         advise_from_corpus,
         estate_metric_view_yamls,
         space_corpus_entries,
@@ -144,6 +159,19 @@ def suggest_for_space(
         llm_model=llm_model,
     )
 
+    # One persisted stage row per advice run (MV-D31 hydration source): STARTED
+    # now, terminal below. The four interactive sub-stages ride ``on_stage`` and
+    # are transient — they are never persisted here.
+    wh_write_stage(
+        sp_ws, warehouse_id, run_id=run_id, stage=MV_ADVISOR_PHASE_NAME,
+        status="STARTED", catalog=catalog, schema=schema,
+    )
+
+    emit_stage = on_stage or (lambda _stage: None)
+
+    # STAGE_READING is the caller's to emit — it owns the config read that the
+    # corpus is assembled from; the remaining three fire inside advise_from_corpus.
+    emit_stage(STAGE_READING)
     corpus = space_corpus_entries(applied_config)
     embedding_client = _TimeoutEmbeddingClient(
         FoundationModelEmbeddingClient(sp_ws), embedding_timeout_s
@@ -194,28 +222,49 @@ def suggest_for_space(
         # there is no run-keyed artifact to write here.
         return False
 
-    outcome = advise_from_corpus(
-        space_id=space_id,
-        run_id=run_id,
-        corpus_entries=corpus,
-        applied_config=applied_config,
-        benchmarks=(),
-        wide_schema_inventory=None,
-        metric_view_reader=_reader,
-        embedding_client=embedding_client,
-        signal_reader=signal_reader,
-        intent_texts=(),
-        domain=domain,
-        max_candidates=None,
-        persist_proposal=_persist,
-        write_ddl_artifact=_no_artifact,
-        # MV-D30: the interactive suggest path reads the SAME per-measure
-        # suppression ledger the reject route writes (warehouse twin), so a
-        # re-scan never resurfaces a measure the user rejected — and the in-job
-        # advisor, which injects the Spark-side reader, agrees with it.
-        read_suppressed_fingerprints=lambda: wh_load_mv_suppressed_fingerprints(
-            sp_ws, warehouse_id, catalog=catalog, schema=schema,
-            target_space_id=space_id,
-        ),
+    try:
+        outcome = advise_from_corpus(
+            space_id=space_id,
+            run_id=run_id,
+            corpus_entries=corpus,
+            applied_config=applied_config,
+            benchmarks=(),
+            wide_schema_inventory=None,
+            metric_view_reader=_reader,
+            embedding_client=embedding_client,
+            signal_reader=signal_reader,
+            intent_texts=(),
+            domain=domain,
+            max_candidates=None,
+            persist_proposal=_persist,
+            write_ddl_artifact=_no_artifact,
+            # MV-D30: the interactive suggest path reads the SAME per-measure
+            # suppression ledger the reject route writes (warehouse twin), so a
+            # re-scan never resurfaces a measure the user rejected — and the in-job
+            # advisor, which injects the Spark-side reader, agrees with it.
+            read_suppressed_fingerprints=lambda: wh_load_mv_suppressed_fingerprints(
+                sp_ws, warehouse_id, catalog=catalog, schema=schema,
+                target_space_id=space_id,
+            ),
+            on_stage=emit_stage,
+        )
+    except Exception as exc:
+        # The phase is isolated, but a swallowed exception must still leave a
+        # terminal stage row, or hydration would read a stuck STARTED forever.
+        wh_write_stage(
+            sp_ws, warehouse_id, run_id=run_id, stage=MV_ADVISOR_PHASE_NAME,
+            status="FAILED", catalog=catalog, schema=schema,
+            error_message=type(exc).__name__,
+        )
+        raise
+
+    # Terminal row: COMPLETE unless the outcome is a clean SKIP. detail() carries
+    # skip_reason + measures_found (the note-2 hydration source); duration_seconds
+    # is computed in-engine against the STARTED row above.
+    terminal_status = "SKIPPED" if outcome.status == "SKIPPED" else outcome.status
+    wh_write_stage(
+        sp_ws, warehouse_id, run_id=run_id, stage=MV_ADVISOR_PHASE_NAME,
+        status=terminal_status, catalog=catalog, schema=schema,
+        detail=outcome.detail(),
     )
     return outcome, run_id

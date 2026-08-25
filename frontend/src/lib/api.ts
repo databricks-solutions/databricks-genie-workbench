@@ -497,6 +497,76 @@ export async function suggestSpaceMv(spaceId: string): Promise<MvSuggestResponse
   )
 }
 
+// POST /spaces/{space_id}/mv/suggest/stream — staged-progress twin of
+// suggestSpaceMv (MV-D31). Emits a `stage` event on ENTRY to each of the four
+// honest phases (reading → scanning → scoring → rendering) so the surface shows
+// what it is doing *now* over a multi-minute scan, then a final `result` event
+// carrying the same MvSuggestResponse. Consumed with fetch + ReadableStream
+// (not EventSource), buffer-split on \n\n, exactly like streamAgentChat.
+// Returns an abort function so the caller can cancel an in-flight scan.
+export interface MvSuggestStreamCallbacks {
+  onStage: (stage: string) => void
+  onResult: (result: MvSuggestResponse) => void
+  onError: (message: string) => void
+}
+
+export function streamSpaceMvSuggest(
+  spaceId: string,
+  callbacks: MvSuggestStreamCallbacks,
+): () => void {
+  const abortController = new AbortController()
+
+  fetch(`${API_BASE}/auto-optimize/spaces/${spaceId}/mv/suggest/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: abortController.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new ApiError("Metric-view scan request failed", response.status)
+      }
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error("No response body")
+      const decoder = new TextDecoder()
+      let buffer = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split("\n\n")
+        buffer = chunks.pop() || ""
+
+        for (const chunk of chunks) {
+          let eventType = ""
+          let dataStr = ""
+          for (const line of chunk.split("\n")) {
+            if (line.startsWith("event: ")) eventType = line.slice(7)
+            else if (line.startsWith("data: ")) dataStr = line.slice(6)
+          }
+          if (!eventType || !dataStr) continue
+          try {
+            const data = JSON.parse(dataStr)
+            switch (eventType) {
+              case "stage": callbacks.onStage(data.stage); break
+              case "result": callbacks.onResult(data as MvSuggestResponse); break
+              case "error": callbacks.onError(data.detail || "Metric-view scan failed."); break
+            }
+          } catch { /* ignore parse errors (keepalive comments, partial frames) */ }
+        }
+      }
+    })
+    .catch((error) => {
+      if (error.name !== "AbortError") {
+        callbacks.onError(
+          error instanceof Error ? error.message : "Could not run the metric-view scan.",
+        )
+      }
+    })
+
+  return () => abortController.abort()
+}
+
 // POST /spaces/{space_id}/mv/register — a bring-your-own view (MV-D24). A user
 // who created the suggested view themselves reports its identifier; the backend
 // verifies it under OBO and, on success, records a USER_CREATED ledger row so

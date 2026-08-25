@@ -12,6 +12,7 @@ import time
 from typing import Annotated, Any, Callable, Literal, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.models import (
@@ -22,6 +23,7 @@ from backend.models import (
     MvDdlArtifact,
     MvDropRequest,
     MvDropResponse,
+    MvLastScan,
     MvLiftReport,
     MvProbeResult,
     MvProposal,
@@ -1784,12 +1786,16 @@ async def list_space_mv_proposals(
     if not config.warehouse_id:
         return MvSpaceProposalsResponse(space_id=space_id, proposals=[])
 
-    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+    from genie_space_optimizer.common.warehouse import (
+        wh_load_latest_advice_scan,
+        wh_load_mv_candidates,
+    )
 
+    sp_ws = get_service_principal_client()
     try:
         rows = await _offload(
             wh_load_mv_candidates,
-            get_service_principal_client(),
+            sp_ws,
             config.warehouse_id,
             config.catalog,
             config.schema_name,
@@ -1799,8 +1805,41 @@ async def list_space_mv_proposals(
     except Exception as exc:
         logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
         rows = []
+
+    proposals = [_mv_proposal_from_row(r) for r in rows]
+
+    # MV-D31 hydrate-on-mount: the newest advice scan's timestamp, real duration,
+    # and empty/skip state — derived from the advice run's terminal stage row, so
+    # the panel opens hydrated. The re-run gate query (approved_for_rerun) never
+    # wants this framing, so it is only read on the unfiltered panel load.
+    last_scan: MvLastScan | None = None
+    if approved_for_rerun is None:
+        try:
+            summary = await _offload(
+                wh_load_latest_advice_scan,
+                sp_ws,
+                config.warehouse_id,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                space_id=space_id,
+            )
+        except Exception as exc:
+            logger.warning("Could not load last MV scan for space %s: %s", space_id, exc)
+            summary = None
+        if summary is not None:
+            last_scan = MvLastScan(
+                scanned_at=(
+                    str(summary["scanned_at"]) if summary.get("scanned_at") else None
+                ),
+                duration_seconds=summary.get("duration_seconds"),
+                status=summary.get("status"),
+                skip_reason=summary.get("skip_reason"),
+                measures_found=summary.get("measures_found"),
+                proposal_count=len(proposals),
+            )
+
     return MvSpaceProposalsResponse(
-        space_id=space_id, proposals=[_mv_proposal_from_row(r) for r in rows]
+        space_id=space_id, proposals=proposals, last_scan=last_scan
     )
 
 
@@ -1895,6 +1934,184 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
         measures_found=getattr(outcome, "measures_found", None),
         error=getattr(outcome, "error", None),
         proposals=[_mv_proposal_from_row(r) for r in rows],
+    )
+
+
+def _mv_sse_event(event_type: str, data: dict) -> str:
+    """Format a dict as an SSE event frame (buffer-split on ``\\n\\n``)."""
+    return f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+# Seconds between SSE keepalive comments — matches the create-agent stream so a
+# proxy idle timeout can never sever a multi-minute scan mid-flight (MV-D31).
+_MV_STREAM_KEEPALIVE_S = 15
+
+
+@router.post("/spaces/{space_id}/mv/suggest/stream")
+async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
+    """Streaming twin of ``/mv/suggest`` with staged progress (MV-D31).
+
+    Finding 2 was a bare spinner over a multi-minute wait. This runs the same
+    advisor but emits a typed ``stage`` event on ENTRY to each of the four honest
+    phases (``reading curated SQL`` → ``scanning for recurring measures`` →
+    ``scoring candidates (embeddings + usage signals)`` → ``rendering DDL``) so
+    the surface always shows what it is doing *now*, then a final ``result`` event
+    carrying the same ``MvSuggestResponse`` the blocking route returns. A 15s
+    keepalive holds the connection through the long SCORING stage.
+
+    OBO/SSE trap (the repo's documented gotcha): ``call_next`` returns before this
+    generator runs, so the OBO ContextVar does not propagate into it — the token
+    is re-set from ``request.state`` *inside* the generator, exactly as the
+    create-agent route does, and the identity-bound config read runs there under
+    ``_offload`` (which copies the contextvars context into its worker). The
+    advisor itself runs as the SP, unchanged.
+    """
+    from backend.services.auth import clear_obo_user_token, set_obo_user_token
+
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    # Fail fast (before streaming) when no user token reached us: the ContextVar
+    # is still valid in the handler body here, so a missing-OBO request is a clean
+    # 401, not a mid-stream error the client has to parse out of the event frames.
+    try:
+        require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    user_token = getattr(request.state, "user_token", "")
+    sp_ws = get_service_principal_client()
+    user_email = request.headers.get("x-forwarded-email") or os.environ.get(
+        "DEV_USER_EMAIL"
+    )
+
+    from backend.services import mv_suggest
+    from genie_space_optimizer.common.genie_client import (
+        MissingSerializedSpaceError,
+        fetch_space_config,
+    )
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+
+    async def event_stream():
+        # Re-establish OBO inside the generator (ContextVars do not cross the lazy
+        # stream boundary — the create.py precedent).
+        if user_token:
+            set_obo_user_token(user_token)
+        try:
+            yield _mv_sse_event("started", {"space_id": space_id})
+
+            # Identity-bound read: fetch_space_config runs under the OBO client
+            # obtained from the re-set ContextVar. _offload copies the context in,
+            # so the worker thread sees the same user identity. Scope-error falls
+            # back to the SP for this read only, as the blocking route does.
+            obo_ws = require_obo_workspace_client()
+            try:
+                raw = await _offload(fetch_space_config, obo_ws, space_id)
+            except MissingSerializedSpaceError:
+                raw = await _offload(fetch_space_config, sp_ws, space_id)
+            except Exception as exc:
+                logger.warning(
+                    "mv/suggest/stream: could not fetch space %s config: %s",
+                    space_id, exc,
+                )
+                yield _mv_sse_event(
+                    "error", {"detail": "Could not read the Agent configuration."}
+                )
+                return
+            applied_config = raw.get("_parsed_space") if isinstance(raw, dict) else None
+
+            # Bridge the blocking advisor's on_stage (called from a worker thread)
+            # to this async generator via a thread-safe hand-off. The advisor runs
+            # as the SP, so it needs no OBO context in the worker.
+            loop = asyncio.get_running_loop()
+            events: asyncio.Queue = asyncio.Queue()
+
+            def _emit(kind: str, payload: Any) -> None:
+                loop.call_soon_threadsafe(events.put_nowait, (kind, payload))
+
+            def _run() -> None:
+                try:
+                    outcome, run_id = mv_suggest.suggest_for_space(
+                        sp_ws=sp_ws,
+                        catalog=config.catalog,
+                        schema=config.schema_name,
+                        warehouse_id=config.warehouse_id,
+                        llm_model=config.llm_model,
+                        space_id=space_id,
+                        applied_config=applied_config,
+                        triggered_by=user_email,
+                        on_stage=lambda stage: _emit("stage", stage),
+                    )
+                    _emit("done", (outcome, run_id))
+                except Exception as exc:  # noqa: BLE001 — relayed as an SSE error
+                    logger.exception("mv/suggest/stream failed for space %s", space_id)
+                    _emit("error", exc)
+
+            loop.run_in_executor(None, _run)
+
+            while True:
+                try:
+                    kind, payload = await asyncio.wait_for(
+                        events.get(), timeout=_MV_STREAM_KEEPALIVE_S
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+
+                if kind == "stage":
+                    yield _mv_sse_event("stage", {"stage": payload})
+                    continue
+                if kind == "error":
+                    yield _mv_sse_event(
+                        "error", {"detail": "Metric-view advice failed."}
+                    )
+                    return
+
+                # kind == "done": reload the persisted proposals (SP) and emit the
+                # same MvSuggestResponse shape the blocking route returns.
+                outcome, run_id = payload
+                try:
+                    rows = await _offload(
+                        wh_load_mv_candidates,
+                        sp_ws,
+                        config.warehouse_id,
+                        config.catalog,
+                        config.schema_name,
+                        target_space_id=space_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "mv/suggest/stream: could not reload proposals for %s: %s",
+                        space_id, exc,
+                    )
+                    rows = []
+                response = MvSuggestResponse(
+                    space_id=space_id,
+                    run_id=run_id,
+                    status=getattr(outcome, "status", "FAILED"),
+                    skip_reason=getattr(outcome, "skip_reason", None),
+                    measures_found=getattr(outcome, "measures_found", None),
+                    error=getattr(outcome, "error", None),
+                    proposals=[_mv_proposal_from_row(r) for r in rows],
+                )
+                yield _mv_sse_event("result", response.model_dump())
+                return
+        finally:
+            clear_obo_user_token()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
