@@ -22,6 +22,15 @@ import type { MvProposal, MvRegisterResponse, MvDdlArtifact } from "@/types"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 
+// The four honest scan stages, in order — mirrors SCAN_STAGES in the component.
+// Passing all four to ScanProgress means the LAST stage is active (idx 3).
+const SCAN_STAGES_FIXTURE = [
+  "reading curated SQL",
+  "scanning for recurring measures",
+  "scoring candidates (embeddings + usage signals)",
+  "rendering DDL",
+]
+
 const proposal: MvProposal = {
   suggestion_id: "sug1",
   dedup_fingerprint: "fp1",
@@ -112,6 +121,45 @@ describe("IQ Scan advisory — EMPTY (MV-D15/D30, governance ladder)", () => {
   })
 })
 
+describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 finding 2)", () => {
+  const bundle: MvProposal = {
+    ...proposal,
+    measures: [
+      { display_name: "total_booking_value", expr: "SUM(booking_value)", dedup_fingerprint: "m1", recurrence: 5, provenance_count: 5, benchmark_question_ids: ["sql_snippet:a", "q_bare"] },
+    ],
+  }
+
+  it("collapsed by default (defaultExpanded=false): skeleton shows, detail hidden", () => {
+    const html = render(<MvProposalCard proposal={bundle} defaultExpanded={false} />)
+    // Skeleton is always visible.
+    expect(html).toContain("finance.sales.order_revenue")
+    expect(html).toContain("Governs 1 measure")
+    expect(html).toContain("Show detail")
+    // Detail (the measure expr) is NOT rendered while collapsed.
+    expect(html).not.toContain("SUM(booking_value)")
+  })
+
+  it("expanded (default): renders the detail and the evidence chips, hides raw ids", () => {
+    const html = render(<MvProposalCard proposal={bundle} />)
+    expect(html).toContain("Hide detail")
+    expect(html).toContain("SUM(booking_value)")
+    // Evidence for humans: counts + labels, never the raw prefixed id.
+    expect(html).toContain("Evidence")
+    expect(html).toContain("curated snippet")
+    expect(html).toContain("details") // the disclosure control for raw ids
+    // Raw ids live behind the closed disclosure — not in the default markup.
+    expect(html).not.toContain("sql_snippet:a")
+  })
+
+  it("Recommended badge renders with its one-line reason", () => {
+    const html = render(
+      <MvProposalCard proposal={bundle} recommended recommendedReason="Strongest candidate — high confidence." />,
+    )
+    expect(html).toContain("Recommended")
+    expect(html).toContain("Strongest candidate")
+  })
+})
+
 describe("IQ Scan advisory — per-card justification (MV-D30)", () => {
   it("a bundle card names the measures it governs and the gain, from evidence", () => {
     const bundle: MvProposal = {
@@ -172,6 +220,18 @@ describe("IQ Scan advisory — staged progress (MV-D31, finding 2)", () => {
     // "~30–60s". The staged progress is what makes the wait tolerable.
     const html = render(<ScanProgress stages={["scoring candidates (embeddings + usage signals)"]} lastDuration="4m 12s" />)
     expect(html).toContain("The last scan took 4m 12s")
+    expect(html).toContain("usually takes about that long")
+  })
+
+  it("renders a weighted progress bar that advances with the active stage (finding 8)", () => {
+    // On the first stage the bar is a small positive fraction (active-half of one
+    // of four equal segments = ~13%); by the last it is well past halfway.
+    const early = render(<ScanProgress stages={["reading curated SQL"]} lastDuration={null} />)
+    expect(early).toContain('role="progressbar"')
+    expect(early).toContain('aria-valuenow="13"')
+    const late = render(<ScanProgress stages={SCAN_STAGES_FIXTURE} lastDuration={null} />)
+    // Last of four stages: 3 done + half of the fourth = 87.5% → 88.
+    expect(late).toContain('aria-valuenow="88"')
   })
 })
 

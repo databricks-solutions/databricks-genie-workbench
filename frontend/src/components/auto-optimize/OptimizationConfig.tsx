@@ -84,6 +84,11 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [mvProposals, setMvProposals] = useState<MvProposal[]>([])
   const [mvProposalsLoaded, setMvProposalsLoaded] = useState(false)
   const [mvProposalsLoading, setMvProposalsLoading] = useState(false)
+  // Prompt 15.6 finding 6 — the check must resolve to found / none /
+  // failed-with-reason within a bounded time (fetchSpaceMvProposals already
+  // carries the 30s fetch timeout). On failure we surface the reason instead of
+  // silently degrading to "first-run" (which reads as "no proposals" — a lie).
+  const [mvProposalsError, setMvProposalsError] = useState<string | null>(null)
   const [mvSelectedIds, setMvSelectedIds] = useState<Set<string>>(new Set())
   const [mvMode, setMvMode] = useState<"suggest_only" | "create_and_attach">(
     initialMv?.mode ?? "suggest_only",
@@ -101,20 +106,36 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const mvTarget = useMemo(() => deriveMvTarget(mvProposals), [mvProposals])
   const mvGranted = mvProbe?.verdict === "SUFFICIENT"
 
-  // Load the space's approved-for-rerun proposals the first time the section
-  // expands (MV-D23 — space-scoped, never keyed on a prior run).
+  // Load the space's proposals the first time the section expands (MV-D23 —
+  // space-scoped, never keyed on a prior run). A "Re-run with this metric view"
+  // prefill lists approved-for-rerun proposals and selects them all. A
+  // "Review in run setup" deep-link (Prompt 15.6 finding 6) carries a specific
+  // suggestionId that may not be approved yet, so it loads UNFILTERED and
+  // preselects only that suggestion; the create still gates on the probe +
+  // MV-D1 approval at start, so this only pre-populates the setup.
+  const prefillSuggestionId = initialMv?.suggestionId ?? null
   useEffect(() => {
     if (!mvEnabled || mvProposalsLoaded || mvProposalsLoading) return
     let cancelled = false
     setMvProposalsLoading(true)
-    fetchSpaceMvProposals(spaceId, true)
+    setMvProposalsError(null)
+    fetchSpaceMvProposals(spaceId, prefillSuggestionId ? undefined : true)
       .then((res) => {
         if (cancelled) return
         setMvProposals(res.proposals)
-        setMvSelectedIds(new Set(res.proposals.map((p) => p.suggestion_id)))
+        if (prefillSuggestionId) {
+          const hit = res.proposals.some((p) => p.suggestion_id === prefillSuggestionId)
+          setMvSelectedIds(new Set(hit ? [prefillSuggestionId] : []))
+        } else {
+          setMvSelectedIds(new Set(res.proposals.map((p) => p.suggestion_id)))
+        }
       })
-      .catch(() => {
-        if (!cancelled) setMvProposals([])
+      .catch((e) => {
+        if (cancelled) return
+        setMvProposals([])
+        setMvProposalsError(
+          e instanceof Error ? e.message : "Couldn't check this Agent for existing proposals.",
+        )
       })
       .finally(() => {
         if (cancelled) return
@@ -124,7 +145,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     return () => {
       cancelled = true
     }
-  }, [mvEnabled, mvProposalsLoaded, mvProposalsLoading, spaceId])
+  }, [mvEnabled, mvProposalsLoaded, mvProposalsLoading, spaceId, prefillSuggestionId])
 
   // Probe entitlement once approved proposals with a target are known (re-run).
   // Fires once per target; a failure records an error rather than re-looping.
@@ -436,6 +457,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           onToggle={setMvEnabled}
           disabled={loading || hasActiveRun}
           proposalsLoading={mvProposalsLoading}
+          proposalsError={mvProposalsError}
           proposals={mvProposals}
           selectedProposalIds={mvSelectedIds}
           onToggleProposal={toggleMvProposal}

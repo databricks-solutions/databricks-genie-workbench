@@ -6,7 +6,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw, Network } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
-import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
+import type { ScanResult, ScoreHistoryPoint, OptimizationEvent, MvProposal } from "@/types"
+import type { MvRerunPrefill } from "@/components/auto-optimize/OptimizationConfig"
 import { IQScoreTab } from "./IQScoreTab"
 import { HistoryTab } from "./HistoryTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
@@ -38,6 +39,28 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
   const [configExpanded, setConfigExpanded] = useState(false)
+
+  // Prompt 15.6 finding 6 — a proposal carried from the IQ-scan "Review in run
+  // setup" deep-link. Seeds the optimize tab's MV prefill on mount, then is
+  // cleared when the user leaves the optimize tab so a later plain visit does
+  // not reopen create_and_attach.
+  const [mvPrefill, setMvPrefill] = useState<MvRerunPrefill | null>(null)
+
+  useEffect(() => {
+    if (activeTab !== "optimize" && mvPrefill) setMvPrefill(null)
+  }, [activeTab, mvPrefill])
+
+  const handleReviewProposal = useCallback(
+    (proposal: MvProposal | null) => {
+      setMvPrefill(
+        proposal
+          ? { mode: "create_and_attach", suggestionId: proposal.suggestion_id }
+          : { mode: "create_and_attach", suggestionId: null },
+      )
+      onNavigate("optimize")
+    },
+    [onNavigate],
+  )
 
   const { state, actions } = useAnalysis()
   // Pull the stable callback out of `actions` so the load effect can depend on
@@ -286,6 +309,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
               spaceId={spaceId}
               {...actionProps}
               onNavigateToOptimize={() => onNavigate("optimize")}
+              onReviewProposal={handleReviewProposal}
             />
 
             {/* Collapsible space configuration */}
@@ -329,12 +353,13 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
 
         {activeTab === "optimize" && (
           <AutoOptimizeTab
-            key={runId ?? "configure"}
+            key={`${runId ?? "configure"}:${mvPrefill?.suggestionId ?? ""}`}
             spaceId={spaceId}
             requestedRunId={runId}
             onRunChange={(nextRunId) => onNavigate("optimize", nextRunId)}
             onRefreshIqScore={handlePostOptimizationScan}
             onViewIqScore={() => onNavigate("score")}
+            initialMvPrefill={mvPrefill}
           />
         )}
 

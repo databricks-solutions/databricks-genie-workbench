@@ -321,12 +321,20 @@ def load_mv_candidates(
     target_space_id: str | None = None,
     run_id: str | None = None,
     approved_for_rerun: bool | None = None,
+    include_superseded: bool = False,
 ) -> list[dict[str, Any]]:
     """Read candidates, newest first, with JSON columns decoded.
 
     At least one of ``target_space_id`` or ``run_id`` must be given so a caller
     cannot accidentally scan every space. Returns ``[]`` when the table is
     absent or nothing matches.
+
+    ``include_superseded`` defaults to ``False`` so proposal-serving reads
+    (hydration, suggest, the create path) never surface a legacy per-measure row
+    a view-grained bundle has retired (MV-D30 as-implemented, Prompt 15.6). The
+    filter is applied in Python on the decoded ``superseded_by`` field rather
+    than in the WHERE clause, so a candidate table that has not yet gained the
+    additive column reads exactly as before (missing key → treated as live).
     """
     if not target_space_id and not run_id:
         raise ValueError("load_mv_candidates requires target_space_id or run_id")
@@ -351,10 +359,71 @@ def load_mv_candidates(
         return []
     if df.empty:
         return []
-    return [
+    rows = [
         _parse_json_columns(row, _CANDIDATE_JSON_COLUMNS)
         for row in df.to_dict(orient="records")
     ]
+    if include_superseded:
+        return rows
+    return [row for row in rows if not row.get("superseded_by")]
+
+
+def supersede_legacy_mv_candidates(
+    spark: SparkSession,
+    *,
+    catalog: str,
+    schema: str,
+    target_space_id: str,
+    member_fingerprints: Iterable[str],
+    superseded_by: str,
+) -> list[str]:
+    """Retire legacy per-measure rows a landing bundle now covers (Prompt 15.6).
+
+    When a view-grained bundle persists, every legacy (pre-15.3) single-measure
+    candidate whose ``dedup_fingerprint`` *is* one of the bundle's member
+    measure fingerprints is stamped ``superseded_by = <bundle fingerprint>``.
+    Proposal reads (:func:`load_mv_candidates` with the default
+    ``include_superseded=False``) then drop it, so the panel shows the bundle
+    instead of both grains mixed — the second-smoke-run defect where a
+    detail-less single-measure card sat next to the bundle governing the same
+    measure.
+
+    The human decision on a superseded row is deliberately left untouched: a
+    superseded *rejected* row still feeds :func:`load_mv_suppressed_fingerprints`
+    (which filters on ``decision``, not ``superseded_by``), so supersession
+    retires the surfaced proposal without erasing the rejection that suppresses
+    its measure. The bundle key never equals a member measure fingerprint, so a
+    bundle row can never supersede itself; the guard is kept explicit anyway.
+    """
+    if not target_space_id:
+        raise ValueError("target_space_id is required to supersede candidates")
+    if not superseded_by:
+        raise ValueError("superseded_by (the covering bundle fingerprint) is required")
+    members = sorted({str(f) for f in member_fingerprints if f and str(f) != superseded_by})
+    if not members:
+        return []
+    in_list = ", ".join("'" + m.replace("'", "''") + "'" for m in members)
+    fqn = _fqn(catalog, schema, TABLE_MV_CANDIDATES)
+    now = _now()
+    try:
+        run_query(
+            spark,
+            f"UPDATE {fqn} SET superseded_by = '{superseded_by}', updated_at = '{now}' "
+            f"WHERE target_space_id = '{target_space_id}' "
+            f"AND dedup_fingerprint IN ({in_list}) "
+            "AND superseded_by IS NULL",
+        )
+    except Exception:
+        logger.debug(
+            "supersede_legacy_mv_candidates: update skipped for %s (%d members)",
+            target_space_id, len(members), exc_info=True,
+        )
+        return []
+    logger.info(
+        "Superseded up to %d legacy per-measure candidate(s) for space %s by bundle %s",
+        len(members), target_space_id, superseded_by,
+    )
+    return members
 
 
 # ── Per-measure suppressions (MV-D30 as-implemented, Prompt 15.3) ─────────

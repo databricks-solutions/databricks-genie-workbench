@@ -375,6 +375,47 @@ describe("MvSuggestSection states", () => {
     expect(html).not.toContain("Also materialize")
   })
 
+  it("loading is NON-BLOCKING: Suggest only is usable, check runs as a caption (15.6)", () => {
+    const html = renderToStaticMarkup(
+      <MvSuggestSection
+        {...commonProps}
+        enabled
+        proposalsLoading
+        proposals={[]}
+        target={null}
+        probe={null}
+        probeLoading={false}
+        probeError={null}
+      />,
+    )
+    // The check runs as a subtle caption, not a blocking replacement…
+    expect(html).toContain("Checking this Agent for approved proposals")
+    expect(html).toContain("you can start with Suggest")
+    // …and the mode UI (Suggest only) is present the moment the section opens.
+    expect(html).toContain("Suggest only")
+  })
+
+  it("proposals check failed: surfaces the reason, keeps Suggest only usable (15.6)", () => {
+    const html = renderToStaticMarkup(
+      <MvSuggestSection
+        {...commonProps}
+        enabled
+        proposalsLoading={false}
+        proposalsError="request timed out"
+        proposals={[]}
+        target={null}
+        probe={null}
+        probeLoading={false}
+        probeError={null}
+      />,
+    )
+    expect(html).toContain("Couldn")
+    expect(html).toContain("request timed out")
+    expect(html).toContain("Suggest only")
+    // A failed check must NOT masquerade as "no approved proposals".
+    expect(html).not.toContain("Approved for this Agent")
+  })
+
   it("first-run: disables Create and attach with the MV-D1 rationale", () => {
     const html = renderToStaticMarkup(
       <MvSuggestSection

@@ -21,6 +21,9 @@ export interface MvSuggestSectionProps {
   /** loading || hasActiveRun — mirrors the rest of the form's disabled gate. */
   disabled?: boolean
   proposalsLoading: boolean
+  /** Prompt 15.6 finding 6 — the proposals check failed; surface the reason
+      instead of a silent degrade to "first-run". The toggle stays usable. */
+  proposalsError?: string | null
   /** Space-scoped, approved-for-rerun proposals (MV-D23). Empty ⇒ first-run. */
   proposals: MvProposal[]
   selectedProposalIds: Set<string>
@@ -46,6 +49,7 @@ export function MvSuggestSection(props: MvSuggestSectionProps) {
     onToggle,
     disabled,
     proposalsLoading,
+    proposalsError,
     proposals,
     selectedProposalIds,
     onToggleProposal,
@@ -85,12 +89,28 @@ export function MvSuggestSection(props: MvSuggestSectionProps) {
 
       {enabled && (
         <div className="space-y-4 border-t border-default pt-3">
-          {proposalsLoading ? (
+          {/* Finding 6 — the check is NON-BLOCKING: Suggest only is usable the
+              moment the section opens, with the approved-proposals check running
+              alongside as a subtle caption. The copy never implies the check
+              gates the toggle. */}
+          {proposalsLoading && (
             <p className="flex items-center gap-1.5 text-xs text-muted">
               <Loader2 className="h-3 w-3 animate-spin" />
-              Checking this Agent for previously approved proposals&hellip;
+              Checking this Agent for approved proposals&hellip; you can start with Suggest
+              only now.
             </p>
-          ) : isFirstRun ? (
+          )}
+          {!proposalsLoading && proposalsError && (
+            <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Couldn&rsquo;t check for approved proposals ({proposalsError}). You can still
+                run <span className="font-medium">Suggest only</span>.
+              </span>
+            </p>
+          )}
+
+          {proposalsLoading || proposalsError || isFirstRun ? (
             <FirstRunModes disabled={disabled} mode={mode} onModeChange={onModeChange} />
           ) : (
             <>

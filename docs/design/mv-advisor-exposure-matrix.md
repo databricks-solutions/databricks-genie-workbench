@@ -75,6 +75,7 @@ included in `backend/main.py`). The ten MV routes:
 | genie_opt_mv_candidates | created_at | SERVED | routes 2/3/4/6 |
 | genie_opt_mv_candidates | updated_at | SERVED | routes 2/3/4/6 |
 | genie_opt_mv_candidates | yaml_text | SERVED | route 7 (`mv-ddl`) returns it verbatim as `MvDdlArtifact.yaml_text` (models.py:476), and `create_ddl` embeds the same body inside the `AS $$…$$` fence. The prior "DELIBERATELY INTERNAL / never this raw column" token was false twice over: route 7 served the raw column directly for artifact-backed runs even before the fallback, and advice runs (which write no artifact) 404'd instead — the exact gap the matrix exists to surface. Prompt 15.1 added the candidate-row fallback so advice runs serve it too. Still the MV-D23 replay source for `mv_create._load_ddl_artifact`. |
+| genie_opt_mv_candidates | superseded_by | DELIBERATELY INTERNAL | MV-D30 as-implemented (Prompt 15.6) lifecycle mechanism. Set on a legacy per-measure row when a view-grained bundle covering its fingerprint lands. It is not a client field — the *served* behavior is the exclusion: `wh_load_mv_candidates` / `load_mv_candidates` default `include_superseded=False`, so a superseded row never reaches routes 2/3, and the panel surfaces the bundle alone rather than both grains mixed. The suppression reader (`load_mv_suppressed_fingerprints`) deliberately does NOT filter on it, so a superseded+rejected row still suppresses its measure — supersession retires the proposal without erasing the decision. |
 
 ### `genie_opt_mv_consents`
 

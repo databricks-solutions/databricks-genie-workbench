@@ -898,6 +898,7 @@ def wh_load_mv_candidates(
     target_space_id: str | None = None,
     run_id: str | None = None,
     approved_for_rerun: bool | None = None,
+    include_superseded: bool = False,
 ) -> list[dict]:
     """Read advisor proposals via SQL warehouse — the twin of ``mv_state.load_mv_candidates``.
 
@@ -905,6 +906,11 @@ def wh_load_mv_candidates(
     decode, so the backend sees the shape the Spark reader exposes. At least one
     of ``target_space_id`` / ``run_id`` is required so a caller cannot scan every
     space.
+
+    ``include_superseded`` defaults to ``False`` (MV-D30 as-implemented, Prompt
+    15.6): proposal reads never surface a legacy per-measure row a view-grained
+    bundle has retired. Filtered in Python on the decoded ``superseded_by`` field
+    so a table missing the additive column reads exactly as before.
     """
     from genie_space_optimizer.common.config import TABLE_MV_CANDIDATES
 
@@ -931,10 +937,68 @@ def wh_load_mv_candidates(
         return []
     if getattr(df, "empty", True):
         return []
-    return [
+    rows = [
         _wh_decode_json_columns(dict(record), _WH_CANDIDATE_JSON_COLUMNS)
         for record in df.to_dict(orient="records")
     ]
+    if include_superseded:
+        return rows
+    return [row for row in rows if not row.get("superseded_by")]
+
+
+def wh_supersede_legacy_mv_candidates(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    target_space_id: str,
+    member_fingerprints: Iterable[str],
+    superseded_by: str,
+) -> list[str]:
+    """Retire legacy per-measure rows a landing bundle covers — twin of
+    ``mv_state.supersede_legacy_mv_candidates``.
+
+    A single ``UPDATE`` stamps ``superseded_by`` on every candidate whose
+    ``dedup_fingerprint`` is one of the bundle's member measure fingerprints and
+    is not yet superseded. The backend suggest path (``_persist``) calls this
+    right after upserting a bundle so hydration/suggest reads drop the covered
+    legacy grain. The human decision is left untouched, so a superseded rejected
+    row still feeds the suppression reader (MV-D30 as-implemented, Prompt 15.6).
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CANDIDATES
+
+    if not target_space_id:
+        raise ValueError("target_space_id is required to supersede candidates")
+    if not superseded_by:
+        raise ValueError("superseded_by (the covering bundle fingerprint) is required")
+    members = sorted(
+        {str(f) for f in member_fingerprints if f and str(f) != superseded_by}
+    )
+    if not members:
+        return []
+    in_list = ", ".join(_wh_literal(m) for m in members)
+    fqn = f"{catalog}.{schema}.{TABLE_MV_CANDIDATES}"
+    sql = (
+        f"UPDATE {fqn} SET superseded_by = {_wh_literal(superseded_by)}, "
+        "updated_at = current_timestamp() "
+        f"WHERE target_space_id = {_wh_literal(target_space_id)} "
+        f"AND dedup_fingerprint IN ({in_list}) "
+        "AND superseded_by IS NULL"
+    )
+    try:
+        sql_warehouse_execute(ws, warehouse_id, sql)
+    except Exception:
+        logger.debug(
+            "wh_supersede_legacy_mv_candidates: update skipped for %s", target_space_id,
+            exc_info=True,
+        )
+        return []
+    logger.info(
+        "Superseded up to %d legacy candidate(s) for space %s by bundle %s via SQL warehouse",
+        len(members), target_space_id, superseded_by,
+    )
+    return members
 
 
 def wh_record_mv_candidate_decision(

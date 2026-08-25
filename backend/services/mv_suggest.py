@@ -119,6 +119,7 @@ def suggest_for_space(
         wh_create_advice_run,
         wh_ensure_optimization_tables,
         wh_load_mv_suppressed_fingerprints,
+        wh_supersede_legacy_mv_candidates,
         wh_upsert_mv_candidate,
         wh_write_stage,
     )
@@ -214,6 +215,27 @@ def suggest_for_space(
             effective_mode="suggest_only",
             yaml_text=yaml_text,
         )
+        # MV-D30 as-implemented (Prompt 15.6): when a view-grained bundle lands,
+        # retire any legacy per-measure candidate it now covers so hydration and
+        # a re-scan surface the bundle alone, never both grains mixed. The member
+        # fingerprints ride in evidence["measures"][].dedup_fingerprint.
+        evidence = getattr(proposal, "evidence", None) or {}
+        if evidence.get("bundle"):
+            member_fps = [
+                str(m.get("dedup_fingerprint"))
+                for m in evidence.get("measures", [])
+                if isinstance(m, dict) and m.get("dedup_fingerprint")
+            ]
+            if member_fps:
+                wh_supersede_legacy_mv_candidates(
+                    sp_ws,
+                    warehouse_id,
+                    catalog=catalog,
+                    schema=schema,
+                    target_space_id=proposal.target_space_id,
+                    member_fingerprints=member_fps,
+                    superseded_by=proposal.dedup_fingerprint,
+                )
         return True
 
     def _no_artifact(_proposal: Any, _rendered: Any) -> bool:

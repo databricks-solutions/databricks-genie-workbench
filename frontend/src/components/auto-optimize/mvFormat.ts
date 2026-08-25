@@ -100,6 +100,121 @@ export function proposalGainSentence(proposal: MvProposal): string {
   return `These ${n} ${measureWord} recur in this Agent\u2019s generated SQL and are ungoverned today.`
 }
 
+// Prompt 15.6 finding 1 — evidence for humans, never raw ids. The advisor's
+// provenance ids carry a source-type prefix (mv_advisor._curated_provenance:
+// `sql_snippet:` / `trusted_asset:` / `gso_patch:`) or, for a benchmark answer,
+// no prefix at all. Rendering those raw strings (`sql_snippet:measures:01f13…`)
+// to the user violated the justification clause of the Suggest-Surface Contract.
+// Categorize by prefix into human counts+labels; keep the raw ids for a
+// debugging "details" disclosure. Deterministic assembly, no LLM.
+export interface EvidenceSummary {
+  chips: { label: string; count: number }[]
+  rawIds: string[]
+}
+
+const EVIDENCE_CATEGORIES: { prefix: string; singular: string; plural: string }[] = [
+  { prefix: "sql_snippet:", singular: "curated snippet", plural: "curated snippets" },
+  { prefix: "trusted_asset:", singular: "trusted asset", plural: "trusted assets" },
+  { prefix: "gso_patch:", singular: "generated-SQL match", plural: "generated-SQL matches" },
+]
+
+export function evidenceSummary(proposal: MvProposal): EvidenceSummary {
+  const rawIds = new Set<string>()
+  for (const m of proposal.measures ?? []) {
+    for (const q of m.benchmark_question_ids ?? []) if (q) rawIds.add(String(q))
+  }
+  if (rawIds.size === 0 && proposal.evidence) {
+    const ev = proposal.evidence.benchmark_question_ids
+    if (Array.isArray(ev)) for (const q of ev) if (q != null) rawIds.add(String(q))
+  }
+  const ids = [...rawIds]
+  const counts = new Map<string, number>()
+  let curatedQueries = 0
+  for (const id of ids) {
+    const cat = EVIDENCE_CATEGORIES.find((c) => id.startsWith(c.prefix))
+    if (cat) counts.set(cat.prefix, (counts.get(cat.prefix) ?? 0) + 1)
+    else curatedQueries += 1 // a bare id is a benchmark/curated-query answer
+  }
+  const chips: { label: string; count: number }[] = []
+  for (const cat of EVIDENCE_CATEGORIES) {
+    const n = counts.get(cat.prefix) ?? 0
+    if (n > 0) chips.push({ label: n === 1 ? cat.singular : cat.plural, count: n })
+  }
+  if (curatedQueries > 0) {
+    chips.push({
+      label: curatedQueries === 1 ? "curated query" : "curated queries",
+      count: curatedQueries,
+    })
+  }
+  return { chips, rawIds: ids.sort() }
+}
+
+// Prompt 15.6 finding 4 — deterministic ranking so one proposal can be
+// "Recommended" and the default list shows only the strongest few. Order:
+// tier (HIGH > MEDIUM > LOW/other), then measures governed (coverage), then
+// distinct curated-query count, then suggestion_id for a stable tiebreak. Pure
+// assembly — never an LLM call.
+const TIER_RANK: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 }
+
+function tierRank(tier: string | null | undefined): number {
+  return TIER_RANK[(tier ?? "").toUpperCase()] ?? 0
+}
+
+export function rankProposals(proposals: MvProposal[]): MvProposal[] {
+  return [...proposals].sort((a, b) => {
+    const tier = tierRank(b.tier) - tierRank(a.tier)
+    if (tier !== 0) return tier
+    const cover = (b.measures?.length ?? 0) - (a.measures?.length ?? 0)
+    if (cover !== 0) return cover
+    const q = distinctQuestionCount(b) - distinctQuestionCount(a)
+    if (q !== 0) return q
+    return a.suggestion_id.localeCompare(b.suggestion_id)
+  })
+}
+
+// The one-line "why this is the pick" for the Recommended badge, assembled from
+// the same facts the ranking used — so the badge explains itself rather than
+// asserting authority.
+export function recommendedReason(proposal: MvProposal): string {
+  const n = proposal.measures?.length ?? 0
+  const q = distinctQuestionCount(proposal)
+  const tier = (proposal.tier ?? "").toUpperCase()
+  const parts: string[] = []
+  if (tier === "HIGH" || tier === "MEDIUM") parts.push(`${tier.toLowerCase()} confidence`)
+  if (n > 0) parts.push(`governs ${n} ${n === 1 ? "measure" : "measures"}`)
+  if (q > 0) parts.push(`recurs across ${q} ${q === 1 ? "curated query" : "curated queries"}`)
+  return parts.length > 0
+    ? `Strongest candidate — ${parts.join(", ")}.`
+    : "Strongest candidate for this Agent."
+}
+
+// The default list shows the top N; the rest hide behind "show all". Kept as a
+// constant so the card list and its test agree.
+export const MV_DEFAULT_VISIBLE = 5
+
+// Prompt 15.6 finding 8 — a weighted progress fraction for the scan bar. The
+// four stages advance a bar whose segment widths come from the LAST scan's
+// per-stage durations when available (measured client-side, since the sub-stages
+// are transient and unpersisted), and equal weights otherwise. Completed stages
+// count fully; the active one counts half (it is in flight, not done), so the
+// bar always moves on entry without ever claiming completion early.
+export function stageProgressFraction(
+  totalStages: number,
+  currentIdx: number,
+  weights?: number[],
+): number {
+  if (totalStages <= 0) return 0
+  const w =
+    weights && weights.length === totalStages && weights.every((x) => x > 0)
+      ? weights
+      : new Array(totalStages).fill(1)
+  const total = w.reduce((s, x) => s + x, 0)
+  const idx = Math.max(0, Math.min(currentIdx, totalStages - 1))
+  const done = w.slice(0, idx).reduce((s, x) => s + x, 0)
+  const active = w[idx] ?? 0
+  return Math.min(1, (done + active / 2) / total)
+}
+
 // A metric_views[] entry identifies its UC object by `identifier`.
 export function metricViewIdentifiers(spaceData: unknown): string[] {
   if (!spaceData || typeof spaceData !== "object") return []

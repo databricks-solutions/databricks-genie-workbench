@@ -6,7 +6,7 @@ import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, AlertTriangle, Ch
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
 import { MvIqScanAdvisorySection } from "@/components/auto-optimize/MvIqScanAdvisorySection"
-import type { ScanResult, CheckDetail } from "@/types"
+import type { ScanResult, CheckDetail, MvProposal } from "@/types"
 
 interface IQScoreTabProps {
   scanResult: ScanResult | null
@@ -20,9 +20,15 @@ interface IQScoreTabProps {
   actionIcon?: React.ReactNode
   actionDescription?: React.ReactNode
   onNavigateToOptimize?: () => void
+  /**
+   * Prompt 15.6 finding 6 — "Review in run setup" from an advisory proposal.
+   * Carries the proposal so run setup opens with the MV section expanded and
+   * this suggestion preselected, instead of a bare tab switch.
+   */
+  onReviewProposal?: (proposal: MvProposal | null) => void
 }
 
-export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, spaceId, onAction, actionLabel, actionIcon, actionDescription, onNavigateToOptimize }: IQScoreTabProps) {
+export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, spaceId, onAction, actionLabel, actionIcon, actionDescription, onNavigateToOptimize, onReviewProposal }: IQScoreTabProps) {
   const [checksExpanded, setChecksExpanded] = useState(false)
 
   if (isLoading) {
@@ -314,7 +320,13 @@ export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, spaceId,
           the run output uses, fed from a space-scoped source (MV-D23). */}
       <MvIqScanAdvisorySection
         spaceId={spaceId}
-        onReviewCreate={onNavigateToOptimize ? () => onNavigateToOptimize() : undefined}
+        onReviewCreate={
+          onReviewProposal
+            ? (proposal) => onReviewProposal(proposal)
+            : onNavigateToOptimize
+              ? () => onNavigateToOptimize()
+              : undefined
+        }
       />
     </div>
   )

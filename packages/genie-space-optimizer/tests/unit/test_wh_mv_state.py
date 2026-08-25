@@ -412,6 +412,94 @@ def test_load_candidates_returns_empty_on_read_failure(monkeypatch):
     ) == []
 
 
+# ── Supersession — the mixed-grain fixture surfaces the bundle only (15.6) ──
+
+
+def _mixed_grain_frame():
+    """A bundle row next to the two legacy per-measure rows it superseded.
+
+    Reproduces the second-smoke-run defect: hydration returned both grains, so
+    a detail-less single-measure card sat beside the bundle governing the same
+    measure. A superseded legacy row carries a non-NULL ``superseded_by``.
+    """
+    return pd.DataFrame([
+        {"suggestion_id": "bundle", "dedup_fingerprint": "bfp", "superseded_by": None},
+        {"suggestion_id": "legacyA", "dedup_fingerprint": "fpA", "superseded_by": "bfp"},
+        {"suggestion_id": "legacyB", "dedup_fingerprint": "fpB", "superseded_by": "bfp"},
+    ])
+
+
+def test_load_candidates_excludes_superseded_rows_by_default(monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: _mixed_grain_frame(),
+    )
+    rows = warehouse.wh_load_mv_candidates(
+        _FakeWorkspaceClient(), "wh1", "main", "gso", target_space_id="space-1",
+    )
+    assert [r["suggestion_id"] for r in rows] == ["bundle"]
+
+
+def test_load_candidates_can_include_superseded_for_auditing(monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: _mixed_grain_frame(),
+    )
+    rows = warehouse.wh_load_mv_candidates(
+        _FakeWorkspaceClient(), "wh1", "main", "gso",
+        target_space_id="space-1", include_superseded=True,
+    )
+    assert {r["suggestion_id"] for r in rows} == {"bundle", "legacyA", "legacyB"}
+
+
+def test_load_candidates_treats_missing_column_as_live(monkeypatch):
+    # A candidate table that has not yet gained the additive superseded_by
+    # column must read exactly as before 15.6 (every row is live).
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: pd.DataFrame([
+            {"suggestion_id": "sug1", "dedup_fingerprint": "fp1"},
+        ]),
+    )
+    rows = warehouse.wh_load_mv_candidates(
+        _FakeWorkspaceClient(), "wh1", "main", "gso", target_space_id="space-1",
+    )
+    assert [r["suggestion_id"] for r in rows] == ["sug1"]
+
+
+def test_supersede_stamps_member_rows_only(executed):
+    written = warehouse.wh_supersede_legacy_mv_candidates(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="space-1", member_fingerprints=["fpA", "fpB"],
+        superseded_by="bfp",
+    )
+    assert written == ["fpA", "fpB"]
+    sql = executed[-1]
+    assert sql.startswith("UPDATE main.gso.genie_opt_mv_candidates SET superseded_by = 'bfp'")
+    assert "dedup_fingerprint IN ('fpA', 'fpB')" in sql
+    assert "AND superseded_by IS NULL" in sql
+    assert "target_space_id = 'space-1'" in sql
+
+
+def test_supersede_never_marks_the_bundle_itself(executed):
+    # The bundle key can never equal a member measure fingerprint, but the guard
+    # is explicit: a member list that accidentally includes the bundle fp drops it.
+    warehouse.wh_supersede_legacy_mv_candidates(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="s", member_fingerprints=["fpA", "bfp"], superseded_by="bfp",
+    )
+    assert "IN ('fpA')" in executed[-1]
+
+
+def test_supersede_no_op_on_empty_members(executed):
+    written = warehouse.wh_supersede_legacy_mv_candidates(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        target_space_id="s", member_fingerprints=["", None], superseded_by="bfp",
+    )
+    assert written == []
+    assert executed == []
+
+
 def test_load_created_object_returns_the_row_and_decodes_lift(monkeypatch):
     lift = {"kept": False, "delta": -0.2}
     monkeypatch.setattr(

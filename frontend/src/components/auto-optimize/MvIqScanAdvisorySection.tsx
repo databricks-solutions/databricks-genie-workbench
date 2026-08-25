@@ -26,7 +26,13 @@ import { ArrowUpRight, Check, CheckCircle2, ChevronDown, Circle, Loader2, Refres
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
-import { splitProposalsByConfidence } from "@/components/auto-optimize/mvFormat"
+import {
+  MV_DEFAULT_VISIBLE,
+  rankProposals,
+  recommendedReason,
+  splitProposalsByConfidence,
+  stageProgressFraction,
+} from "@/components/auto-optimize/mvFormat"
 import { streamSpaceMvSuggest, fetchSpaceMvProposals, registerSpaceMv, getMvDdl } from "@/lib/api"
 import type { MvProposal, MvSuggestResponse, MvRegisterResponse, MvDdlArtifact, MvLastScan } from "@/types"
 
@@ -59,6 +65,59 @@ function formatRelative(iso: string | null | undefined): string | null {
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs}h ago`
   return `${Math.floor(hrs / 24)}d ago`
+}
+
+// Finding 8 — per-stage weights for the progress bar are the LAST scan's
+// measured durations, kept in localStorage keyed by space (the sub-stages are
+// transient and never persisted server-side, so client memory is the source).
+// All three helpers are defensive: a private-mode / disabled storage or a
+// malformed blob degrades to "no history" → equal weights, never a throw.
+const STAGE_WEIGHTS_KEY = "mv-scan-stage-weights"
+
+function loadStageWeights(spaceId: string): number[] | undefined {
+  try {
+    const raw = window.localStorage.getItem(`${STAGE_WEIGHTS_KEY}:${spaceId}`)
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed) && parsed.length === SCAN_STAGES.length && parsed.every((n) => typeof n === "number" && n > 0)) {
+      return parsed as number[]
+    }
+  } catch {
+    /* no history */
+  }
+  return undefined
+}
+
+function saveStageWeights(spaceId: string, weights: number[]): void {
+  try {
+    window.localStorage.setItem(`${STAGE_WEIGHTS_KEY}:${spaceId}`, JSON.stringify(weights))
+  } catch {
+    /* storage unavailable — the bar just falls back to equal weights */
+  }
+}
+
+// Turn the current scan's per-stage entry timestamps into positive per-stage
+// durations. Needs every stage's entry time plus the end time; returns
+// undefined if any stage was skipped (an early SKIP), so a partial scan never
+// poisons the next bar's weighting.
+function computeStageWeights(
+  entryTimes: Record<number, number>,
+  endTime: number,
+): number[] | undefined {
+  const times: number[] = []
+  for (let i = 0; i < SCAN_STAGES.length; i++) {
+    const t = entryTimes[i]
+    if (t == null) return undefined
+    times.push(t)
+  }
+  const weights: number[] = []
+  for (let i = 0; i < SCAN_STAGES.length; i++) {
+    const next = i + 1 < SCAN_STAGES.length ? times[i + 1] : endTime
+    const d = next - times[i]
+    if (d <= 0) return undefined
+    weights.push(d)
+  }
+  return weights
 }
 
 // VERBATIM from the Prompt 10 review (mockup frame 8b) — do not paraphrase.
@@ -95,6 +154,15 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
   const [registerError, setRegisterError] = useState<string | null>(null)
   // MV-D30 surfacing: LOW-confidence proposals hide behind an explicit disclosure.
   const [showLow, setShowLow] = useState(false)
+  // Finding 4: the default list shows the top few; the rest behind "show all".
+  const [showAllPrimary, setShowAllPrimary] = useState(false)
+  // Finding 8: per-stage weights for the progress bar, from the last scan's
+  // measured durations (client-side memory; sub-stages are unpersisted). The
+  // entry timestamps of the CURRENT scan are captured to compute the NEXT one's.
+  const [stageWeights, setStageWeights] = useState<number[] | undefined>(() =>
+    loadStageWeights(spaceId),
+  )
+  const stageTimesRef = useRef<Record<number, number>>({})
 
   // Best-effort per-proposal DDL fetch (route 7 candidate fallback, by run_id).
   // A card whose DDL fetch fails still renders its evidence, so this never
@@ -159,14 +227,28 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
     setError(null)
     setDdlById({})
     setShowLow(false)
+    setShowAllPrimary(false)
     setStages([])
+    stageTimesRef.current = {}
     abortRef.current = streamSpaceMvSuggest(spaceId, {
       // Emit on entry: append each stage as the backend reaches it, so the
       // checklist advances live instead of sitting on one label for 90% of the
-      // wait. Dedupe defensively (a stage should arrive once).
-      onStage: (stage) =>
-        setStages((prev) => (prev.includes(stage) ? prev : [...prev, stage])),
+      // wait. Dedupe defensively (a stage should arrive once). Record each
+      // stage's entry time so the NEXT scan's bar can be weighted by where the
+      // time actually went (finding 8).
+      onStage: (stage) => {
+        const idx = SCAN_STAGES.indexOf(stage as (typeof SCAN_STAGES)[number])
+        if (idx >= 0 && stageTimesRef.current[idx] == null) {
+          stageTimesRef.current[idx] = Date.now()
+        }
+        setStages((prev) => (prev.includes(stage) ? prev : [...prev, stage]))
+      },
       onResult: (res) => {
+        const weights = computeStageWeights(stageTimesRef.current, Date.now())
+        if (weights) {
+          saveStageWeights(spaceId, weights)
+          setStageWeights(weights)
+        }
         setResult(res)
         setLastScan({
           scanned_at: new Date().toISOString(),
@@ -281,7 +363,7 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
           entry; the active one spins, entered ones check, later ones wait. An
           honest label on the long SCORING stage is what makes the wait tolerable. */}
       {loading && (
-        <ScanProgress stages={stages} lastDuration={lastDuration} />
+        <ScanProgress stages={stages} lastDuration={lastDuration} stageWeights={stageWeights} />
       )}
 
       {error && !loading && (
@@ -293,15 +375,38 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
           <MvAdvisoryCouldNotRun reason={result.error} onRetry={runSuggest} />
         ) : hasRenderable ? (
           <div className="space-y-4">
-            {primary.map((proposal) => (
-              <ScanProposalCard
-                key={proposal.suggestion_id}
-                proposal={proposal}
-                ddl={ddlById[proposal.suggestion_id]}
-                onReviewCreate={onReviewCreate}
-                onClaim={claimFromCard}
-              />
-            ))}
+            {(() => {
+              // Finding 4: rank deterministically, mark the top pick Recommended,
+              // and show only the top few by default with "show all N".
+              const ranked = rankProposals(primary)
+              const visible = showAllPrimary ? ranked : ranked.slice(0, MV_DEFAULT_VISIBLE)
+              const hidden = ranked.length - visible.length
+              return (
+                <>
+                  {visible.map((proposal, i) => (
+                    <ScanProposalCard
+                      key={proposal.suggestion_id}
+                      proposal={proposal}
+                      ddl={ddlById[proposal.suggestion_id]}
+                      onReviewCreate={onReviewCreate}
+                      onClaim={claimFromCard}
+                      recommended={i === 0}
+                      recommendedReason={i === 0 ? recommendedReason(proposal) : undefined}
+                      defaultExpanded={i === 0}
+                    />
+                  ))}
+                  {hidden > 0 && (
+                    <button
+                      onClick={() => setShowAllPrimary(true)}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-default px-3 py-2 text-xs text-muted transition-colors hover:text-accent"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5" />
+                      Show all {ranked.length} suggestions ({hidden} more)
+                    </button>
+                  )}
+                </>
+              )
+            })()}
 
             {low.length > 0 && (
               <div className="space-y-4">
@@ -367,16 +472,25 @@ function ScanProposalCard({
   ddl,
   onReviewCreate,
   onClaim,
+  recommended,
+  recommendedReason,
+  defaultExpanded,
 }: {
   proposal: MvProposal
   ddl: MvDdlArtifact | undefined
   onReviewCreate?: (proposal: MvProposal | null) => void
   onClaim: (proposal: MvProposal) => void
+  recommended?: boolean
+  recommendedReason?: string
+  defaultExpanded?: boolean
 }) {
   return (
     <MvProposalCard
       proposal={proposal}
       ddl={ddl}
+      recommended={recommended}
+      recommendedReason={recommendedReason}
+      defaultExpanded={defaultExpanded}
       actions={
         <>
           {/* Finding 7 tail — the CTA now names where it goes. "Review and create"
@@ -404,17 +518,36 @@ function ScanProposalCard({
 export function ScanProgress({
   stages,
   lastDuration,
+  stageWeights,
 }: {
   stages: string[]
   lastDuration: string | null
+  /** Finding 8 — per-stage weights from the last scan's measured durations, so
+      the bar's segments reflect where the time actually goes; equal when none. */
+  stageWeights?: number[]
 }) {
   // Index of the stage currently running = the last one entered. Before the
   // first event arrives, treat stage 0 as active (the request is in flight).
   const currentIdx = stages.length > 0 ? SCAN_STAGES.indexOf(stages[stages.length - 1] as (typeof SCAN_STAGES)[number]) : 0
+  const fraction = stageProgressFraction(SCAN_STAGES.length, currentIdx, stageWeights)
+  const pct = Math.round(fraction * 100)
 
   return (
     <div className="space-y-2 rounded-xl border border-default bg-elevated px-4 py-3">
       <p className="text-xs font-medium text-secondary">Scanning this Agent&rsquo;s SQL…</p>
+      {/* Weighted progress bar (finding 8): completed stages full, active half. */}
+      <div
+        className="h-1.5 w-full overflow-hidden rounded-full bg-default"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className="h-full rounded-full bg-accent transition-all duration-500"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
       <ul className="space-y-1.5">
         {SCAN_STAGES.map((stage, i) => {
           const done = i < currentIdx
@@ -437,7 +570,7 @@ export function ScanProgress({
       </ul>
       <p className="text-xs text-muted">
         {lastDuration
-          ? `The last scan took ${lastDuration}. You can leave this open — it keeps running.`
+          ? `The last scan took ${lastDuration} — this usually takes about that long. You can leave this open — it keeps running.`
           : "This can take a few minutes. You can leave this open — it keeps running."}
       </p>
     </div>

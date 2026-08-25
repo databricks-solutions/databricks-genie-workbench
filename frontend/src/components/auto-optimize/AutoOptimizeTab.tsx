@@ -45,6 +45,13 @@ interface AutoOptimizeTabProps {
   onRunChange?: (runId?: string) => void
   onRefreshIqScore?: (runId: string, force?: boolean) => Promise<boolean>
   onViewIqScore?: () => void
+  /**
+   * Prompt 15.6 finding 6 — a proposal carried from the IQ-scan "Review in run
+   * setup" deep-link. Opens the configure view with the MV section expanded and
+   * this suggestion preselected in create_and_attach mode (reuses the MV-D1
+   * prefill flow; does not fork it).
+   */
+  initialMvPrefill?: MvRerunPrefill | null
 }
 
 type View = "configure" | "monitoring" | "detail"
@@ -136,6 +143,7 @@ export function AutoOptimizeTab({
   onRunChange,
   onRefreshIqScore,
   onViewIqScore,
+  initialMvPrefill,
 }: AutoOptimizeTabProps) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [healthIssues, setHealthIssues] = useState<string[]>([])
@@ -146,9 +154,12 @@ export function AutoOptimizeTab({
   const [stepperError, setStepperError] = useState<string | null>(null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   // Carried from a suggest-only run's "Re-run with this metric view" action to
-  // the configure view (MV-D1). Cleared once consumed so a later plain configure
-  // does not re-open create_and_attach.
-  const [mvRerunPrefill, setMvRerunPrefill] = useState<MvRerunPrefill | null>(null)
+  // the configure view (MV-D1), or from the IQ-scan "Review in run setup"
+  // deep-link (Prompt 15.6 finding 6). Cleared once consumed so a later plain
+  // configure does not re-open create_and_attach.
+  const [mvRerunPrefill, setMvRerunPrefill] = useState<MvRerunPrefill | null>(
+    initialMvPrefill ?? null,
+  )
   const [runStatus, setRunStatus] = useState<GSORunStatus | null>(null)
   const [runDetail, setRunDetail] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])

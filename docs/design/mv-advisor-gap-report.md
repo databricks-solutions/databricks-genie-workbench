@@ -499,8 +499,8 @@ src/genie_space_optimizer/
                   preflight.py (3461 L), state.py (1871 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
-                  mv_fingerprint.py (1474 L), mv_scoring.py (1558 L),
-                  mv_state.py (793 L), mv_yaml.py (1839 L), ...
+                  mv_fingerprint.py (1474 L), mv_scoring.py (1587 L),
+                  mv_state.py (862 L), mv_yaml.py (1839 L), ...
 ```
 <!-- END GENERATED: package-layout -->
 

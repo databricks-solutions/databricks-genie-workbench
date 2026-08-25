@@ -94,7 +94,12 @@ from genie_space_optimizer.common.config import (
 )
 
 from .mv_fingerprint import canonicalize_expr, extract_measures
-from .mv_state import MV_CANDIDATE_TYPES, mv_candidate_fingerprint, upsert_mv_candidate
+from .mv_state import (
+    MV_CANDIDATE_TYPES,
+    mv_candidate_fingerprint,
+    supersede_legacy_mv_candidates,
+    upsert_mv_candidate,
+)
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -1467,7 +1472,7 @@ def persist_proposal(
     if not effective_run_id:
         raise ValueError("run_id is required to persist a metric view candidate")
 
-    return upsert_mv_candidate(
+    fingerprint = upsert_mv_candidate(
         spark,
         catalog=catalog,
         schema=schema,
@@ -1487,6 +1492,30 @@ def persist_proposal(
         requested_mode=requested_mode,
         effective_mode=effective_mode,
     )
+
+    # MV-D30 as-implemented (Prompt 15.6): when this run persists a view-grained
+    # bundle, retire any legacy per-measure candidate it covers so the in-job
+    # advisor and the interactive suggest surface agree on the served grain. The
+    # member fingerprints ride in evidence["measures"][].dedup_fingerprint. This
+    # mirrors the backend ``mv_suggest._persist`` twin.
+    evidence = dict(proposal.evidence)
+    if evidence.get("bundle"):
+        member_fps = [
+            str(m.get("dedup_fingerprint"))
+            for m in evidence.get("measures", [])
+            if isinstance(m, dict) and m.get("dedup_fingerprint")
+        ]
+        if member_fps:
+            supersede_legacy_mv_candidates(
+                spark,
+                catalog=catalog,
+                schema=schema,
+                target_space_id=proposal.target_space_id,
+                member_fingerprints=member_fps,
+                superseded_by=proposal.dedup_fingerprint,
+            )
+
+    return fingerprint
 
 
 def score_candidates(

@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_candidates (
     decided_at          TIMESTAMP              COMMENT 'When the decision was recorded',
     suppressed_until    TIMESTAMP              COMMENT 'Rejection decay window — the advisor must not re-surface this fingerprint before this timestamp',
     approved_for_rerun  BOOLEAN       DEFAULT false COMMENT 'MV-D1: true only when an approved candidate is eligible to be created under OBO on a subsequent run. create_and_attach is gated on this flag',
+    superseded_by       STRING                 COMMENT 'MV-D30 as-implemented (Prompt 15.6): the dedup_fingerprint of the view-grained bundle that now governs this row''s measure. Set on a LEGACY per-measure row when a bundle covering its fingerprint lands, so proposal reads (hydration/suggest) exclude it and the two grains never surface mixed. NULL for a live row. Decisions on a superseded row are preserved (the suppression reader still sees a superseded+rejected row), so supersession retires the proposal without losing the rejection',
     created_at          TIMESTAMP     NOT NULL COMMENT 'When the candidate was first proposed',
     updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp — a later run re-proposing the same fingerprint refreshes this'
 )
@@ -377,4 +378,11 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # (before the status check), and mv_attach relaxes its created_by identity
     # guard only for USER_CREATED rows.
     (TABLE_MV_CREATED_OBJECTS, "provenance", "STRING COMMENT 'MV-D24: OBO_CREATED (default; NULL treated as OBO_CREATED) | USER_CREATED. The app never drops a USER_CREATED view.'"),
+    # MV-D30 as-implemented (Prompt 15.6): supersession retires a legacy
+    # per-measure candidate row when a view-grained bundle covering its
+    # fingerprint lands. Additive so existing candidate tables gain it in place;
+    # NULL = a live row, non-NULL = the bundle dedup_fingerprint that now governs
+    # this measure. Proposal reads exclude non-NULL; the suppression reader does
+    # not, so a superseded+rejected row still suppresses.
+    (TABLE_MV_CANDIDATES, "superseded_by", "STRING COMMENT 'MV-D30 as-implemented (Prompt 15.6): dedup_fingerprint of the bundle that superseded this legacy per-measure row. NULL = live. Proposal reads exclude non-NULL rows; the suppression reader still sees them so a rejection survives supersession.'"),
 )

@@ -151,6 +151,95 @@ def test_service_injects_the_suppression_reader(monkeypatch):
     assert callable(reader), "backend caller must inject the suppression reader"
 
 
+def test_persist_bundle_fans_out_supersession_to_legacy_members(monkeypatch):
+    """MV-D30 as-implemented (Prompt 15.6): when the injected persist callback
+    writes a view-grained bundle, it retires any legacy per-measure candidate the
+    bundle covers so hydration surfaces the bundle alone — never both grains. The
+    member fingerprints ride in ``evidence["measures"][].dedup_fingerprint``."""
+    captured: dict = {}
+    superseded: dict = {}
+
+    monkeypatch.setattr(warehouse, "wh_ensure_optimization_tables", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_create_advice_run", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_write_stage", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_upsert_mv_candidate", lambda *a, **k: None)
+    monkeypatch.setattr(mv_advisor, "space_corpus_entries", lambda cfg: ())
+    monkeypatch.setattr(mv_advisor, "estate_metric_view_yamls", lambda *a, **k: {})
+    monkeypatch.setattr(
+        warehouse, "wh_supersede_legacy_mv_candidates",
+        lambda ws, wh, **k: superseded.update(k),
+    )
+
+    def _capture(**k):
+        captured.update(k)
+        return SimpleNamespace(
+            status="COMPLETE", skip_reason=None, error=None,
+            detail=lambda: {"status": "COMPLETE"},
+        )
+
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", _capture)
+
+    mv_suggest.suggest_for_space(
+        sp_ws=MagicMock(), catalog="main", schema="gso", warehouse_id="wh1",
+        llm_model="m", space_id="space-1", applied_config={"instructions": {}},
+        triggered_by="analyst@example.com",
+    )
+
+    persist = captured["persist_proposal"]
+    bundle = SimpleNamespace(
+        target_space_id="space-1", suggestion_id="bundle", dedup_fingerprint="bfp",
+        candidate_type="NEW_METRIC_VIEW", confidence_score=80.0, tier="HIGH",
+        proposed_object="main.gso.v", components=SimpleNamespace(to_dict=lambda: {}),
+        evidence={"bundle": True, "measures": [
+            {"dedup_fingerprint": "fpA"}, {"dedup_fingerprint": "fpB"},
+        ]},
+        provenance={}, alternatives=[], conflicts=[],
+    )
+    assert persist(bundle, SimpleNamespace(ok=True, yaml_text="y")) is True
+    assert superseded.get("target_space_id") == "space-1"
+    assert superseded.get("superseded_by") == "bfp"
+    assert sorted(superseded.get("member_fingerprints")) == ["fpA", "fpB"]
+
+
+def test_persist_single_measure_does_not_supersede(monkeypatch):
+    """A non-bundle proposal (legacy/CONFLICT grain) never fans out — supersession
+    is a bundle-landing event only."""
+    captured: dict = {}
+    calls: list = []
+
+    monkeypatch.setattr(warehouse, "wh_ensure_optimization_tables", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_create_advice_run", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_write_stage", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_upsert_mv_candidate", lambda *a, **k: None)
+    monkeypatch.setattr(mv_advisor, "space_corpus_entries", lambda cfg: ())
+    monkeypatch.setattr(mv_advisor, "estate_metric_view_yamls", lambda *a, **k: {})
+    monkeypatch.setattr(
+        warehouse, "wh_supersede_legacy_mv_candidates",
+        lambda *a, **k: calls.append(k),
+    )
+    monkeypatch.setattr(
+        mv_advisor, "advise_from_corpus",
+        lambda **k: captured.update(k) or SimpleNamespace(
+            status="COMPLETE", skip_reason=None, error=None, detail=lambda: {},
+        ),
+    )
+
+    mv_suggest.suggest_for_space(
+        sp_ws=MagicMock(), catalog="main", schema="gso", warehouse_id="wh1",
+        llm_model="m", space_id="space-1", applied_config={"instructions": {}},
+        triggered_by="analyst@example.com",
+    )
+    persist = captured["persist_proposal"]
+    single = SimpleNamespace(
+        target_space_id="space-1", suggestion_id="s", dedup_fingerprint="fp1",
+        candidate_type="CONFLICT", confidence_score=50.0, tier="LOW",
+        proposed_object=None, components=SimpleNamespace(to_dict=lambda: {}),
+        evidence={}, provenance={}, alternatives=[], conflicts=[],
+    )
+    persist(single, SimpleNamespace(ok=False, yaml_text=None))
+    assert calls == []
+
+
 def test_service_writes_a_started_then_terminal_stage_row(monkeypatch):
     """MV-D31 hydration source: every advice run persists ONE ``genie_opt_stages``
     row (a STARTED then a terminal), the terminal carrying
