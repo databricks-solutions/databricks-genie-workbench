@@ -233,6 +233,13 @@ class MvProbeResult(BaseModel):
     materialize_consented: bool = False
     consent_recorded: bool = False
     errors: list[str] = Field(default_factory=list)
+    # Prompt 15.8 fix #3 — the space's audience, derived from its ACL (principals
+    # with CAN RUN / CAN VIEW / CAN MANAGE), so the consent modal's GRANT preview
+    # names a real grantee instead of a literal ``<grantee>``. Best-effort: an
+    # unreadable ACL leaves this empty and the modal falls back to the raw
+    # statement. Populated in the router after the probe (the entitlement probe
+    # stays audience-agnostic).
+    audience_grantees: list[str] = Field(default_factory=list)
 
 
 class MvConsentVerification(BaseModel):
@@ -312,6 +319,15 @@ class MvProposal(BaseModel):
     tier_capped_by_coverage: bool | None = None
     proposed_object: str | None = None
     measures: list[MvProposalMeasure] = []
+    # MV-D35 (Prompt 15.8) — the facts row leads the card with the proven gates.
+    # COMPUTED at hydration from per-row proof, never persisted: each key is
+    # present ONLY when that gate provably ran for this row (a servable rendered
+    # body proves validated+executable; a PROPOSE verdict with no conflicts
+    # proves no-overlap). A row lacking the proof carries no key for that check,
+    # so a check that did not run is never rendered — "a check that lies is
+    # worse than the percent". Values are "PASS" today; the map is open so a
+    # future gate outcome (e.g. a soft warning) can ride the same field.
+    checks: dict[str, str] | None = None
     score_components: dict[str, Any] | None = None
     evidence: dict[str, Any] | None = None
     provenance: dict[str, Any] | None = None
@@ -435,6 +451,45 @@ class MvRegisterResponse(BaseModel):
     suggestion_id: str | None = None
     reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
+
+
+class MvCreateAtApprovalRequest(BaseModel):
+    """``POST /spaces/{space_id}/mv/create`` — create-at-approval (MV-D34).
+
+    The user is standing in front of the suggestion on the IQ surface, their OBO
+    token is live, and a fresh probe already ran and recorded consent. This
+    creates the ONE approved proposal now, under OBO, in the consented schema —
+    the same rails as bring-your-own registration (advice run + ``OBO_CREATED``
+    ledger), except the app issues the ``CREATE`` instead of verifying an
+    existing view. ``probe_id`` keys the recorded consent to re-verify
+    (downgrade-never-upgrade); attach and lift stay the next run's job."""
+
+    suggestion_id: str = Field(..., pattern=r"^[0-9a-zA-Z_:-]{1,128}$")
+    probe_id: str = Field(..., pattern=r"^[0-9a-zA-Z_:-]{1,128}$")
+
+
+class MvCreateAtApprovalResponse(BaseModel):
+    """Result of a create-at-approval (MV-D34).
+
+    One shape carries the three outcomes the card renders. ``created`` true: the
+    metric view exists under OBO — ``full_name`` + the sentinel advice ``run_id``
+    hosting the ``OBO_CREATED`` ledger row, attached-and-measured on the next
+    run. ``created`` false with ``degraded`` true: the fresh probe re-verified
+    below SUFFICIENT (downgrade-never-upgrade, MV-D1/MV-D34), so nothing was
+    created and the card falls back to [Approve for later] with
+    ``remediation_sql`` shown copy-ready. ``created`` false with ``degraded``
+    false: a create-time failure (revalidation drop, collision) with ``reason``,
+    never a silent empty."""
+
+    created: bool
+    degraded: bool = False
+    full_name: str | None = None
+    run_id: str | None = None
+    suggestion_id: str | None = None
+    provenance: str = "OBO_CREATED"
+    verdict: str | None = None
+    remediation_sql: str | None = None
+    reason: str | None = None
 
 
 class MvSemanticGraphNode(BaseModel):

@@ -29,6 +29,8 @@ const proposal: MvProposal = {
   uncapped_tier: "HIGH",
   tier_capped_by_coverage: false,
   proposed_object: "finance.sales.order_revenue",
+  measures: [],
+  checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
   score_components: null,
   evidence: {
     recurrence_count: 6,
@@ -102,11 +104,13 @@ describe("suggest-only panel (frame 4)", () => {
       onRerun={() => {}}
     />,
   )
-  it("carries the verbatim lift-not-measured label and both actions", () => {
+  it("carries the verbatim lift-not-measured label and the shared accept flow's actions (MV-D34)", () => {
     expect(html).toContain(LIFT_NOT_MEASURED)
     expect(html).toContain("was not created or attached during this run")
-    expect(html).toContain("Approve for re-run")
-    expect(html).toContain("Re-run with this metric view")
+    // The run-output surface now renders the SAME accept flow the IQ surface
+    // does: the primary [Create this metric view] plus [Review in run setup].
+    expect(html).toContain("Create this metric view")
+    expect(html).toContain("Review in run setup")
   })
   it("renders the proposed object, its DDL, and the space-config diff", () => {
     expect(html).toContain("finance.sales.order_revenue")

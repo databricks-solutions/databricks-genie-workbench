@@ -28,6 +28,7 @@ import {
   ByoRefusedFrame,
   ByoVerifiedFrame,
 } from "./MvByoRegistrationMockups"
+import { Iq158CardFrame, RunOutput158Frame } from "./Mv158FidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -57,4 +58,8 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "8a-byo-entry-points", title: "8a · BYO registration — entry points (MV-D24)", element: <ByoEntryPointsFrame /> },
   { id: "8b-byo-verified", title: "8b · BYO registration — verified (USER_CREATED, no Drop)", element: <ByoVerifiedFrame /> },
   { id: "8c-byo-refused", title: "8c · BYO registration — refused (not a metric view / not visible)", element: <ByoRefusedFrame /> },
+  // Prompt 15.8 fidelity-gate exports — the REAL production surfaces (facts row,
+  // one shared [Create this metric view] accept flow, no "%"/"confidence").
+  { id: "15.8a-iq-scan-card", title: "15.8a · IQ scan — facts-lead card + accept flow (production)", element: <Iq158CardFrame /> },
+  { id: "15.8b-run-output", title: "15.8b · Run output — suggest-only panel, count truth + ranked (production)", element: <RunOutput158Frame /> },
 ]

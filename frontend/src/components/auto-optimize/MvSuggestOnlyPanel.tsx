@@ -11,12 +11,15 @@
  * Prompt 13.5 can feed the same components from a space-scoped source unchanged.
  */
 import { useState } from "react"
-import { CheckCircle2 } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
+import { MvAcceptFlow } from "@/components/auto-optimize/MvAcceptFlow"
 import { MvSpaceConfigDiff } from "@/components/auto-optimize/MvSpaceConfigDiff"
-import { LIFT_NOT_MEASURED } from "@/components/auto-optimize/mvFormat"
-import { decideMvProposal } from "@/lib/api"
+import {
+  LIFT_NOT_MEASURED,
+  orthogonalityCallout,
+  rankProposals,
+  recommendedReason,
+} from "@/components/auto-optimize/mvFormat"
 import type { MvDdlArtifact, MvProposal } from "@/types"
 
 interface MvSuggestOnlyPanelProps {
@@ -45,28 +48,20 @@ export function MvSuggestOnlyPanel({
   currentIdentifiers,
   onRerun,
 }: MvSuggestOnlyPanelProps) {
-  const [approved, setApproved] = useState<Record<string, boolean>>({})
-  const [busy, setBusy] = useState<Record<string, boolean>>({})
-  const [error, setError] = useState<string | null>(null)
+  // Fix #1 (count truth): the header counts what actually happened. `created`
+  // tracks suggestion ids the shared accept flow created inline this session, on
+  // top of any already-created ledger provenance the row carries; `proposed`
+  // is the rendered count, one-to-one with the cards below. No hardcoded zero.
+  const [created, setCreated] = useState<Set<string>>(new Set())
+  const createdCount = created.size
+  const proposedCount = proposals.length
+  // MV-D35: the shared display module ranks and picks ONE Recommended on BOTH
+  // surfaces (the divergence this prompt ends), UNLESS every proposal governs a
+  // disjoint measure set — then the orthogonality callout replaces the forced
+  // ranking. The first card opens (fix #2); the rest collapse.
+  const ranked = rankProposals(proposals)
+  const callout = orthogonalityCallout(ranked)
 
-  async function handleApprove(proposal: MvProposal) {
-    setBusy((b) => ({ ...b, [proposal.suggestion_id]: true }))
-    setError(null)
-    try {
-      const res = await decideMvProposal(proposal.suggestion_id, {
-        space_id: proposal.target_space_id,
-        run_id: runId,
-        decision: "approved",
-      })
-      setApproved((a) => ({ ...a, [proposal.suggestion_id]: res.approved_for_rerun }))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not record the decision.")
-    } finally {
-      setBusy((b) => ({ ...b, [proposal.suggestion_id]: false }))
-    }
-  }
-
-  const createdCount = 0
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -74,43 +69,32 @@ export function MvSuggestOnlyPanel({
           Metric views proposed
         </h3>
         <span className="text-xs text-muted">
-          {proposals.length} proposed · {createdCount === 0 ? "none created" : `${createdCount} created`}
+          {proposedCount} proposed · {createdCount === 0 ? "none created" : `${createdCount} created`}
         </span>
       </div>
 
-      {error && <p className="text-xs text-danger">{error}</p>}
+      {callout && <p className="text-xs text-secondary">{callout}</p>}
 
-      {proposals.map((proposal) => {
-        const isApproved =
-          approved[proposal.suggestion_id] ?? proposal.approved_for_rerun
+      {ranked.map((proposal, i) => {
         const proposalDdl = ddl && ddl.suggestion_id === proposal.suggestion_id ? ddl : null
         return (
           <div key={proposal.suggestion_id} className="space-y-2">
             <MvProposalCard
               proposal={proposal}
               ddl={proposalDdl}
+              recommended={!callout && i === 0}
+              recommendedReason={!callout && i === 0 ? recommendedReason(proposal) : undefined}
+              defaultExpanded={i === 0}
               liftLabel={<LiftNotMeasuredLabel />}
               actions={
-                <>
-                  {isApproved ? (
-                    <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      Approved for re-run
-                    </span>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={busy[proposal.suggestion_id]}
-                      onClick={() => handleApprove(proposal)}
-                    >
-                      {busy[proposal.suggestion_id] ? "Approving…" : "Approve for re-run"}
-                    </Button>
-                  )}
-                  <Button size="sm" onClick={() => onRerun(proposal)}>
-                    Re-run with this metric view
-                  </Button>
-                </>
+                <MvAcceptFlow
+                  proposal={proposal}
+                  runId={runId}
+                  onStartRun={onRerun}
+                  onCreated={(p) =>
+                    setCreated((c) => new Set(c).add(p.suggestion_id))
+                  }
+                />
               }
             />
             {proposal.proposed_object && (

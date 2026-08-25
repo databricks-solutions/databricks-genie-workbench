@@ -14,18 +14,16 @@
  * disclosure (finding 3). An optional Recommended badge marks the ranked pick.
  */
 import { useState } from "react"
-import { ChevronDown, ChevronRight, FlaskConical, GitBranch, Layers, Star, TrendingUp } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, FlaskConical, GitBranch, Layers, Star, TrendingUp } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { SqlCodeBlock } from "@/components/SqlCodeBlock"
 import {
-  MV_CAPPED_STRONG_LABEL,
   confidenceDisplay,
   evidenceGrowth,
   evidenceSummary,
-  isCappedStrong,
+  factsChecks,
   joinStrategyLabel,
   proposalGainSentence,
-  tierVariant,
 } from "@/components/auto-optimize/mvFormat"
 import type { MvDdlArtifact, MvProposal } from "@/types"
 
@@ -129,22 +127,24 @@ export function MvProposalCard({
   actions,
   recommended,
   recommendedReason,
-  defaultExpanded = true,
+  defaultExpanded,
 }: MvProposalCardProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded)
+  // Fix #2 — uniform collapse across BOTH surfaces: the detail is collapsed by
+  // default beyond the first Recommended card. An explicit defaultExpanded still
+  // wins; absent it, only the recommended card opens.
+  const [expanded, setExpanded] = useState(defaultExpanded ?? Boolean(recommended))
   const joinLabel = joinStrategyLabel(ddl?.join_strategy)
   // The always-visible skeleton line: how many measures this view governs.
   const measureCount = (proposal.measures ?? []).filter(
     (m) => (m.display_name && m.display_name.trim()) || (m.expr && m.expr.trim()),
   ).length
-  // Prompt 15.7 — coverage-aware confidence caption + cross-surface enrichment.
+  // MV-D35 (Prompt 15.8) — the card LEADS with the proven quality gates, not a
+  // percent. `confidence` now carries only the evidence-basis caption (its
+  // percent is unused here — the score orders the list and picks Recommended,
+  // it is never rendered as a number or the word "confidence").
+  const facts = factsChecks(proposal)
   const confidence = confidenceDisplay(proposal)
   const growth = evidenceGrowth(proposal)
-  // Prompt 15.7b / MV-D32 — a coverage-capped-strong proposal wears the
-  // "Strong (evidence-limited)" badge instead of a bare LOW, and its % badge is
-  // colored by the tier its evidence earned (uncapped) rather than the capped one.
-  const cappedStrong = isCappedStrong(proposal)
-  const confidenceTier = cappedStrong ? proposal.uncapped_tier : proposal.tier
 
   return (
     <div
@@ -162,7 +162,9 @@ export function MvProposalCard({
         </div>
       )}
 
-      {/* Uniform skeleton (finding 2): identifier, tier/confidence, governs-N. */}
+      {/* Uniform skeleton (finding 2): identifier, governs-N, join strategy. The
+          score is gone from the card face (MV-D35) — no percent, no "confidence"
+          badge, no bare tier; the facts row below carries what is proven. */}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate font-mono text-sm font-medium text-primary">
@@ -174,35 +176,40 @@ export function MvProposalCard({
               : "Proposed metric view"}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {proposal.confidence_score !== null && (
-            <Badge variant={tierVariant(confidenceTier)}>
-              {Math.round(proposal.confidence_score)}% confidence
-            </Badge>
-          )}
-          {cappedStrong ? (
-            <Badge variant={tierVariant(proposal.uncapped_tier)}>{MV_CAPPED_STRONG_LABEL}</Badge>
-          ) : (
-            proposal.tier && <Badge variant="secondary">{proposal.tier}</Badge>
-          )}
-          {joinLabel && (
+        {joinLabel && (
+          <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant="secondary">
               <GitBranch className="mr-1 h-3 w-3" />
               {joinLabel}
             </Badge>
-          )}
-        </div>
+          </div>
+        )}
       </div>
+
+      {/* MV-D35 — FACTS LEAD. The proven, gated checks, each rendered ONLY when
+          its gate ran for this row (proposal.checks). Quality is binary and
+          already gated; this states it plainly where the percent used to sow
+          doubt. Renders nothing when no check is proven (never decorative). */}
+      {facts.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {facts.map((f) => (
+            <span key={f.key} className="inline-flex items-center gap-1 text-xs font-medium text-success">
+              <Check className="h-3.5 w-3.5 shrink-0" />
+              {f.label}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Gain line — part of the always-visible skeleton (MV-D30 justification). */}
       <p className="text-xs text-muted">{proposalGainSentence(proposal)}</p>
 
-      {/* Prompt 15.7 / MV-D32(1): the confidence number reflects only the
-          signals a fresh table can offer, so a caption names the evidence basis
-          — evidence-poor is presented as evidence-poor, not as low quality. */}
+      {/* MV-D35 fix #4: the evidence BASIS as a human sentence — reflects signal
+          CONTRIBUTION (value above a floor), not mere execution. No percent, no
+          "confidence": evidence-poor is presented as evidence-poor. */}
       {confidence.caption && (
         <p className="text-xs text-muted">
-          <span className="text-secondary">Confidence basis:</span> {confidence.caption}
+          <span className="text-secondary">Evidence:</span> {confidence.caption}
         </p>
       )}
 

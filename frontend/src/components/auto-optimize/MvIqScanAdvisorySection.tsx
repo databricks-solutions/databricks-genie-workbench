@@ -26,8 +26,10 @@ import { ArrowUpRight, Check, CheckCircle2, ChevronDown, Circle, Loader2, Refres
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
+import { MvAcceptFlow } from "@/components/auto-optimize/MvAcceptFlow"
 import {
   MV_DEFAULT_VISIBLE,
+  orthogonalityCallout,
   rankProposals,
   recommendedReason,
   splitProposalsByConfidence,
@@ -376,13 +378,18 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
         ) : hasRenderable ? (
           <div className="space-y-4">
             {(() => {
-              // Finding 4: rank deterministically, mark the top pick Recommended,
-              // and show only the top few by default with "show all N".
+              // Finding 4 / MV-D35: rank deterministically and mark the top pick
+              // Recommended — UNLESS every surfaced proposal governs a disjoint
+              // measure set, in which case a forced ranking asserts an order that
+              // does not exist, so render the orthogonality callout instead and
+              // mark none Recommended. The first card still opens (fix #2).
               const ranked = rankProposals(primary)
+              const callout = orthogonalityCallout(ranked)
               const visible = showAllPrimary ? ranked : ranked.slice(0, MV_DEFAULT_VISIBLE)
               const hidden = ranked.length - visible.length
               return (
                 <>
+                  {callout && <p className="text-xs text-secondary">{callout}</p>}
                   {visible.map((proposal, i) => (
                     <ScanProposalCard
                       key={proposal.suggestion_id}
@@ -390,8 +397,8 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
                       ddl={ddlById[proposal.suggestion_id]}
                       onReviewCreate={onReviewCreate}
                       onClaim={claimFromCard}
-                      recommended={i === 0}
-                      recommendedReason={i === 0 ? recommendedReason(proposal) : undefined}
+                      recommended={!callout && i === 0}
+                      recommendedReason={!callout && i === 0 ? recommendedReason(proposal) : undefined}
                       defaultExpanded={i === 0}
                     />
                   ))}
@@ -467,7 +474,10 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
 
 // A scan proposal card with the two IQ-Scan actions, shared by the primary and
 // low-confidence lists so both render identically (only their placement differs).
-function ScanProposalCard({
+// Exported so the shared-component structural test (Prompt 15.8) can prove the
+// IQ surface mounts the SAME MvProposalCard + MvAcceptFlow the run-output surface
+// does — divergence between the two surfaces is the defect class 15.8 ends.
+export function ScanProposalCard({
   proposal,
   ddl,
   onReviewCreate,
@@ -493,13 +503,12 @@ function ScanProposalCard({
       defaultExpanded={defaultExpanded}
       actions={
         <>
-          {/* Finding 7 tail — the CTA now names where it goes. "Review and create"
-              read as an in-place create; it actually opens the run setup in
-              create-and-attach mode, so say so rather than surprise the user. */}
-          <Button size="sm" onClick={() => onReviewCreate?.(proposal)}>
-            Review in run setup
-            <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
-          </Button>
+          {/* MV-D34 — the SAME accept flow the run-output surface renders. The
+              primary [Create this metric view] now exists on the surface where
+              the user meets the suggestion (the third-look's structurally-dead
+              acceptance CUJ); [Review in run setup] is its secondary via
+              onStartRun (create-at-trigger, unchanged). */}
+          <MvAcceptFlow proposal={proposal} onStartRun={onReviewCreate} />
           {/* tertiary — the MV-D24 affordance for the copied-DDL path */}
           <Button size="sm" variant="ghost" onClick={() => onClaim(proposal)}>
             I created this myself
@@ -569,8 +578,13 @@ export function ScanProgress({
         })}
       </ul>
       <p className="text-xs text-muted">
+        {/* Fix #4 (honest-estimate rule): state the FACT of the last scan's
+            duration; do NOT project it forward as "usually takes about that
+            long" from a single sample. One run is not a distribution — a
+            projected ETA earns its place only once there are >=3 samples to
+            range over, which this surface does not yet carry. */}
         {lastDuration
-          ? `The last scan took ${lastDuration} — this usually takes about that long. You can leave this open — it keeps running.`
+          ? `The last scan took ${lastDuration}. You can leave this open — it keeps running.`
           : "This can take a few minutes. You can leave this open — it keeps running."}
       </p>
     </div>

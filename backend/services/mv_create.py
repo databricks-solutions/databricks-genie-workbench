@@ -711,10 +711,192 @@ def register_user_created_view(
     )
 
 
+# ── Create-at-approval (MV-D34) ─────────────────────────────────────────────
+
+
+@dataclass
+class MvCreateAtApprovalResult:
+    """Outcome of accepting a suggestion on the IQ surface (MV-D34).
+
+    ``created`` true: the metric view exists under OBO in the consented schema —
+    ``full_name`` and the sentinel advice ``run_id`` hosting the ``OBO_CREATED``
+    ledger row, picked up and measured on the next run. ``degraded`` true: the
+    fresh probe re-verified below SUFFICIENT, so nothing was created and the card
+    falls back to [Approve for later] with ``remediation_sql``. Both false: a
+    create-time failure (revalidation drop, collision) with ``reason``.
+    """
+
+    created: bool
+    degraded: bool = False
+    full_name: str | None = None
+    run_id: str | None = None
+    suggestion_id: str | None = None
+    provenance: str = MV_PROVENANCE_OBO_CREATED
+    verdict: str | None = None
+    remediation_sql: str | None = None
+    reason: str | None = None
+
+
+def create_at_approval(
+    *,
+    space_id: str,
+    suggestion_id: str,
+    probe_id: str,
+    catalog: str,
+    schema: str,
+    warehouse_id: str,
+) -> MvCreateAtApprovalResult:
+    """Create ONE approved proposal now, under OBO (MV-D34).
+
+    The user is present on the IQ surface with a live OBO token and a fresh
+    consent recorded at click. This transposes MV-D1's four invariants to the
+    at-approval moment and REUSES the create-at-trigger machinery rather than
+    forking it: the same ``verify_consent`` (downgrade-never-upgrade), the same
+    MV-D22 replay body (``_load_ddl_artifact`` / candidate ``yaml_text``), the
+    same ``mv_yaml.create_ddl`` under ``require_obo_workspace_client`` (never the
+    SP), the same ``_confirm_metric_view`` gate, and the same BYO-register rails
+    (``wh_create_advice_run`` + a ``CREATED`` ledger row with ``OBO_CREATED``
+    provenance) that attach-on-next-run already picks up (MV-D24). Attach and
+    lift stay the next run's job (MV-D16 isolation intact).
+
+    Identity is the hard-fail seam: ``require_obo_workspace_client`` raises if no
+    user token reached us, so a create can never silently run as the SP.
+    """
+    from genie_space_optimizer.common.warehouse import (
+        sql_warehouse_execute,
+        wh_create_advice_run,
+        wh_ensure_optimization_tables,
+        wh_load_mv_candidates,
+        wh_upsert_mv_created_object,
+    )
+    from genie_space_optimizer.optimization.mv_yaml import create_ddl, validate
+
+    obo_ws = require_obo_workspace_client()
+    sp_ws = get_service_principal_client()
+
+    verification, consent = verify_consent(
+        probe_id=probe_id, space_id=space_id,
+        catalog=catalog, schema=schema, warehouse_id=warehouse_id,
+    )
+    if consent is None or verification is None:
+        return MvCreateAtApprovalResult(
+            created=False, degraded=True, suggestion_id=suggestion_id,
+            reason="no consent record was found for this probe; re-check and retry",
+        )
+    if verification.effective_mode != "create_and_attach":
+        # Downgrade-never-upgrade (MV-D1/MV-D34): the button degrades to
+        # [Approve for later] with the missing GRANT, never a dead end.
+        return MvCreateAtApprovalResult(
+            created=False, degraded=True, suggestion_id=suggestion_id,
+            verdict=verification.verdict,
+            remediation_sql=verification.fresh_probe.remediation_sql,
+            reason=verification.downgrade_reason
+            or "your access to the consented schema is no longer sufficient",
+        )
+
+    fresh_probe = verification.fresh_probe
+    candidates = wh_load_mv_candidates(
+        sp_ws, warehouse_id, catalog, schema, target_space_id=space_id
+    )
+    candidate = next(
+        (c for c in candidates if str(c.get("suggestion_id") or "") == suggestion_id),
+        None,
+    )
+    if candidate is None:
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason=f"no proposal {suggestion_id} exists for this space",
+        )
+
+    fingerprint = str(candidate.get("dedup_fingerprint") or "")
+    # MV-D22 replay body — artifact first, candidate row fallback (never a
+    # second render), identical to create_and_attach_for_run.
+    artifact = _load_ddl_artifact(
+        sp_ws, warehouse_id, catalog=catalog, schema=schema, fingerprint=fingerprint
+    )
+    if artifact and artifact.get("yaml_text"):
+        yaml_text = str(artifact["yaml_text"])
+        stored_strategy = artifact.get("join_strategy")
+        proposed_object = str(artifact.get("proposed_object") or "")
+    elif candidate.get("yaml_text"):
+        yaml_text = str(candidate["yaml_text"])
+        evidence = candidate.get("evidence") or {}
+        stored_strategy = evidence.get("join_strategy") if isinstance(evidence, dict) else None
+        proposed_object = str(candidate.get("proposed_object") or "")
+    else:
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason="this proposal has no rendered body to create; re-scan and retry",
+        )
+
+    full_name = _consented_full_name(consent, proposed_object)
+    report = validate(yaml_text, capabilities=fresh_probe.capabilities)
+    if not report.ok:
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason="the metric view failed re-validation: "
+            + ("; ".join(report.errors) or "no detail"),
+        )
+    if _rung_below(report.downgrade_to, stored_strategy):
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason="re-validation demands a join strategy below the rendered one; "
+            "not creating (MV-D22)",
+        )
+    if _object_exists(obo_ws, warehouse_id, full_name):
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason=f"{full_name} already exists; refusing to clobber it",
+        )
+
+    sql_warehouse_execute(obo_ws, warehouse_id, create_ddl(full_name, yaml_text))
+    if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
+        try:
+            sql_warehouse_execute(
+                obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {full_name}"
+            )
+        except Exception:
+            logger.warning("Could not clean up %s after a failed create", full_name)
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason=f"{full_name} was created but is not a usable metric view; "
+            "it was removed",
+        )
+
+    # BYO-register rails (MV-D24): the advice run + CREATED ledger row are the
+    # last fallible steps, and attach-on-next-run picks the row up unchanged.
+    created_by = fresh_probe.checked_as
+    wh_ensure_optimization_tables(sp_ws, warehouse_id, catalog, schema)
+    run_id = str(uuid.uuid4())
+    wh_create_advice_run(
+        sp_ws, warehouse_id,
+        run_id=run_id, space_id=space_id, domain="",
+        catalog=catalog, schema=schema,
+        triggered_by=created_by, llm_model="",
+    )
+    wh_upsert_mv_created_object(
+        sp_ws, warehouse_id,
+        catalog=catalog, schema=schema,
+        run_id=run_id, suggestion_id=suggestion_id,
+        full_name=full_name, created_by=created_by,
+        status="CREATED", provenance=MV_PROVENANCE_OBO_CREATED,
+    )
+    logger.info(
+        "Created OBO_CREATED metric view %s for space %s at approval (run %s)",
+        full_name, space_id, run_id,
+    )
+    return MvCreateAtApprovalResult(
+        created=True, full_name=full_name, run_id=run_id,
+        suggestion_id=suggestion_id, verdict=verification.verdict,
+    )
+
+
 __all__ = [
     "MvAttachHandoff",
+    "MvCreateAtApprovalResult",
     "MvRegisterResult",
     "create_and_attach_for_run",
+    "create_at_approval",
     "register_user_created_view",
     "verify_consent",
 ]

@@ -12,7 +12,17 @@ export default defineConfig({
   root,
   configFile: false,
   plugins: [react()],
-  resolve: { alias: { "@": path.resolve(root, "src") } },
+  resolve: {
+    alias: { "@": path.resolve(root, "src") },
+    // Prompt 15.8 fidelity frames pull the production cards into the SSR bundle;
+    // those use forwardRef/memo (lucide icons, ui primitives). A second React
+    // copy makes their `$$typeof` unrecognizable and renderToStaticMarkup throws
+    // "Element type is invalid … got: object". Dedupe pins one React instance.
+    dedupe: ["react", "react-dom"],
+  },
+  // Bundle first-party + npm UI deps (icons, cva) so they share the deduped
+  // React; only Node builtins stay external.
+  ssr: { noExternal: true },
   build: {
     ssr: true,
     outDir: path.resolve(root, "scripts/mockups/.dist"),

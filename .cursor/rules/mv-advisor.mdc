@@ -124,6 +124,24 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   never lost to navigation; long operations show staged progress and report
   where they stopped on failure. A visualization must never crash the page —
   error boundaries are mandatory on graph surfaces.
+  FACTS LEAD, THE SCORE RANKS (MV-D35): quality is binary and gated — a card
+  leads with the proven checks (validated / executable / no-overlap), each
+  wired to the gate that proved it; the numeric score orders the list and
+  picks one Recommended (or the orthogonality callout when all are
+  independent) and is NEVER displayed as a percent or the word "confidence".
+  Both suggestion surfaces (IQ panel and run-output panels) render through
+  SHARED components — one card, one accept flow, one display module — so a
+  fix on one surface is a fix on both by construction.
+- FIDELITY GATE (from the third-smoke process autopsy — three waves of
+  green-tested patches missed the experience): any prompt that changes a
+  user-facing surface must, in its VERIFY, export the changed surface states
+  through the mockup emitter (both themes) and attach them to the report
+  next to the approved reference frames; the reviewer compares them and
+  adversarially re-greps every numbered spec item before accepting.
+  Structural tests green is NOT acceptance. An approved mockup is a visual
+  CONTRACT: implementation matches its default-view density and layout, or
+  the deviation is called out in the report with a reason — never
+  discovered by the reviewer in the deployed app.
 - ONTOLOGY PAGES (Prompt 17.x): Databricks Pages have NO public create/update
   API — they are created in the Discover UI. Never invent a Pages endpoint.
   The workbench emits copy-ready Page drafts (manual paste) and API-writes
@@ -193,8 +211,9 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   every VERIFY section.
 
 - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-  `uv run --frozen --extra dev`. Expected baseline: 638 backend + 1461 GSO,
-  measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). A count BELOW this is a regression — investigate. A
+  `uv run --frozen --extra dev`. Expected baseline: 673 backend + 1512 GSO,
+  measured 2026-08-25 (this supersedes the prior 638+1461 floor). Historical
+  ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees). A count BELOW this is a regression — investigate. A
   count ABOVE it is normal growth: update this line and the playbook's copy in
   the same commit that adds the tests (test_rules_parity.py enforces the two
   copies match, so you cannot update one).

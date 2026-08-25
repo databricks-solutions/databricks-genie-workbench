@@ -43,6 +43,7 @@ const proposal: MvProposal = {
   tier_capped_by_coverage: false,
   proposed_object: "finance.sales.order_revenue",
   measures: [],
+  checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
   score_components: null,
   evidence: { recurrence_count: 6 },
   provenance: null,
@@ -84,7 +85,7 @@ describe("IQ Scan advisory — found (MV-D23 prop-driven payoff)", () => {
       validation: null,
       grant_sql: "GRANT SELECT ON VIEW finance.sales.order_revenue TO `<grantee>`;",
     }
-    const html = render(<MvProposalCard proposal={proposal} ddl={ddl} />)
+    const html = render(<MvProposalCard proposal={proposal} ddl={ddl} defaultExpanded />)
     // Two SqlCodeBlock panels render — the CREATE VIEW wrapper and the GRANT.
     // (prism-react-renderer tokenizes the SQL, so assert on the panel count and
     // the intact keyword tokens rather than the full split identifier string.)
@@ -141,8 +142,8 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
     expect(html).not.toContain("SUM(booking_value)")
   })
 
-  it("expanded (default): renders the detail and the evidence chips, hides raw ids", () => {
-    const html = render(<MvProposalCard proposal={bundle} />)
+  it("expanded: renders the detail and the evidence chips, hides raw ids", () => {
+    const html = render(<MvProposalCard proposal={bundle} defaultExpanded />)
     expect(html).toContain("Hide detail")
     expect(html).toContain("SUM(booking_value)")
     // Evidence for humans: counts + labels, never the raw prefixed id.
@@ -155,23 +156,29 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
 
   it("Recommended badge renders with its one-line reason", () => {
     const html = render(
-      <MvProposalCard proposal={bundle} recommended recommendedReason="Strongest candidate — high confidence." />,
+      <MvProposalCard proposal={bundle} recommended recommendedReason="Strongest candidate — governs 1 measure." />,
     )
     expect(html).toContain("Recommended")
     expect(html).toContain("Strongest candidate")
   })
 
-  it("captions an evidence-poor proposal's confidence (15.7 / MV-D32(1))", () => {
+  it("the facts row leads with the proven gates, and the card shows NO percent and NO 'confidence' (MV-D35)", () => {
     const poor: MvProposal = {
       ...bundle,
       confidence_score: 34,
       tier: "LOW",
+      checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
       score_components: { statuses: { L: "UNAVAILABLE", Y: "COMPUTED", S: "COMPUTED", D: "UNAVAILABLE" } },
     }
     const html = render(<MvProposalCard proposal={poor} defaultExpanded={false} />)
-    expect(html).toContain("34% confidence")
-    expect(html).toContain("Confidence basis")
+    // Facts lead.
+    expect(html).toContain("validated")
+    expect(html).toContain("executable")
+    expect(html).toContain("no overlap with existing metric views")
+    // Evidence basis as a human sentence — no "confidence" word, no percent.
     expect(html).toContain("Based on curated SQL only")
+    expect(html).not.toMatch(/\d+%/)
+    expect(html.toLowerCase()).not.toContain("confidence")
     // A cold, evidence-poor proposal shows no cross-surface growth line.
     expect(html).not.toContain("Evidence grew beyond the initial scan")
   })
@@ -188,23 +195,28 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
     expect(html).toContain("lineage")
   })
 
-  it("badges a coverage-capped-strong proposal 'Strong (evidence-limited)', never a bare LOW (15.7b / MV-D32)", () => {
+  it("a coverage-capped-strong proposal shows facts + evidence basis — never a bare LOW, a percent, or 'confidence' (MV-D35 supersedes 15.7b badge)", () => {
     // Fresh-space case: strong Y, L and D UNAVAILABLE, so MV-D15 capped the
-    // served tier to LOW while the score-only tier stayed HIGH.
+    // served tier to LOW while the score-only tier stayed HIGH. Under MV-D35 the
+    // "Strong (evidence-limited)" badge is retired from the card face; the facts
+    // row and the honest evidence basis carry it instead.
     const cappedStrong: MvProposal = {
       ...bundle,
       confidence_score: 82,
       tier: "LOW",
       uncapped_tier: "HIGH",
       tier_capped_by_coverage: true,
+      checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
       score_components: { statuses: { L: "UNAVAILABLE", Y: "COMPUTED", S: "COMPUTED", D: "UNAVAILABLE" } },
     }
     const html = render(<MvProposalCard proposal={cappedStrong} defaultExpanded={false} />)
-    // The distinct badge, the honest %, and the §2 caption — never a bare LOW.
-    expect(html).toContain("Strong (evidence-limited)")
-    expect(html).toContain("82% confidence")
+    expect(html).toContain("validated")
     expect(html).toContain("Based on curated SQL only")
+    // No percent, no "confidence", and never a bare LOW badge on the card face.
+    expect(html).not.toMatch(/\d+%/)
+    expect(html.toLowerCase()).not.toContain("confidence")
     expect(html).not.toContain(">LOW<")
+    expect(html).not.toContain("Strong (evidence-limited)")
   })
 })
 
@@ -231,7 +243,7 @@ describe("IQ Scan advisory — per-card justification (MV-D30)", () => {
         },
       ],
     }
-    const html = render(<MvProposalCard proposal={bundle} />)
+    const html = render(<MvProposalCard proposal={bundle} defaultExpanded />)
     expect(html).toContain("Governs 2 measures")
     expect(html).toContain("total_booking_value")
     expect(html).toContain("booking_count")
@@ -268,7 +280,9 @@ describe("IQ Scan advisory — staged progress (MV-D31, finding 2)", () => {
     // "~30–60s". The staged progress is what makes the wait tolerable.
     const html = render(<ScanProgress stages={["scoring candidates (embeddings + usage signals)"]} lastDuration="4m 12s" />)
     expect(html).toContain("The last scan took 4m 12s")
-    expect(html).toContain("usually takes about that long")
+    // Fix #4 (honest-estimate rule): one sample is not a distribution — the
+    // projection is dropped until there are >=3 samples to range over.
+    expect(html).not.toContain("usually takes about that long")
   })
 
   it("renders a weighted progress bar that advances with the active stage (finding 8)", () => {

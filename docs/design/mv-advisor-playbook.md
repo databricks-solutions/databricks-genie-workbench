@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D33 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D35 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -147,6 +147,24 @@
      never lost to navigation; long operations show staged progress and report
      where they stopped on failure. A visualization must never crash the page —
      error boundaries are mandatory on graph surfaces.
+     FACTS LEAD, THE SCORE RANKS (MV-D35): quality is binary and gated — a card
+     leads with the proven checks (validated / executable / no-overlap), each
+     wired to the gate that proved it; the numeric score orders the list and
+     picks one Recommended (or the orthogonality callout when all are
+     independent) and is NEVER displayed as a percent or the word "confidence".
+     Both suggestion surfaces (IQ panel and run-output panels) render through
+     SHARED components — one card, one accept flow, one display module — so a
+     fix on one surface is a fix on both by construction.
+   - FIDELITY GATE (from the third-smoke process autopsy — three waves of
+     green-tested patches missed the experience): any prompt that changes a
+     user-facing surface must, in its VERIFY, export the changed surface states
+     through the mockup emitter (both themes) and attach them to the report
+     next to the approved reference frames; the reviewer compares them and
+     adversarially re-greps every numbered spec item before accepting.
+     Structural tests green is NOT acceptance. An approved mockup is a visual
+     CONTRACT: implementation matches its default-view density and layout, or
+     the deviation is called out in the report with a reason — never
+     discovered by the reviewer in the deployed app.
    - ONTOLOGY PAGES (Prompt 17.x): Databricks Pages have NO public create/update
      API — they are created in the Discover UI. Never invent a Pages endpoint.
      The workbench emits copy-ready Page drafts (manual paste) and API-writes
@@ -216,8 +234,9 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 638 backend + 1461 GSO,
-     measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 673 backend + 1512 GSO,
+     measured 2026-08-25 (this supersedes the prior 638+1461 floor). Historical
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -326,9 +345,9 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D33)
+## Decisions register (MV-D1–MV-D35)
 
-The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
+The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. MV-D33 (the semantic-model graph, reviewer-approved directly) is decided at Prompt 12e. MV-D34 (create-at-approval) and MV-D35 (facts lead, score ranks) were reviewer-approved at the THIRD smoke review after a process autopsy found three waves of display patches had never owned the acceptance journey end-to-end — both are implemented at Prompt 15.8, and the autopsy's process fix (the fidelity gate) is now a rules-file discipline. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
 **MV-D1 — Two-run consent model (the big one).** The job launches as the service principal (`integration/trigger.py` → `backend/job_launcher.py`), and the no-SP-writes rule stands. So the job cannot run `CREATE VIEW … WITH METRICS` under the user's identity, and there is no supported way to run the job as the requesting user per-run. Resolution: **creation moves to the backend, at trigger time, under OBO — which means create_and_attach applies to already-approved proposals.** The flow becomes: run N (any mode) produces proposals → user reviews and approves → **[Re-run with this metric view]** → backend re-probes entitlement, creates the approved MV under OBO, passes its identifier as a job parameter → run N+1 attaches it via patch, measures lift, and optimizes on top. A *first* run for a given proposal is always suggest-only, because the proposal does not exist until the advisor has seen the baseline SQL. Rejected alternatives: passing an OBO token as a job parameter (a credential in run metadata), and SP-created views (ownership lands on the app identity and violates the design's own rule). The consent-panel copy in Prompt 10 changes accordingly: "Create and attach" is enabled only when approved proposals exist for the space.
 
@@ -623,6 +642,10 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 **MV-D33 — The metric view is a semantic model, and the graph must draw it as one: a deduplicated relational canvas with metric views as on-demand boundaries and provenance-tagged measure boxes (DECIDED — Prompt 12e; reviewer-approved, see `docs/design/semantic-graph-v3-note.md`).** From the semantic-model smoke review of the v2 grouped layout (Prompt 12c/12d): a Databricks metric view is not a leaf — it is a `source` fact + a `joins` star/snowflake of dimension tables + its own `dimensions`/`measures` (the exact shape `mv_yaml.generate` emits and the DBR `WITH METRICS` YAML spec defines), yet the graph drew it as one opaque "N measures" card, hiding the model it exists to express. Two constraints the reviewer set are non-negotiable and eliminate whole branches: **(1) a relational model is duplicate-free** — no table, fact or dim, appears twice; a dim shared by two MVs is ONE node, killing the "each MV holds copies of its tables" shape (brainstorm v5); **(2) arrows require proof** — an edge is drawn only where a join is declared (`joins.on`/`using` in the MV YAML) or a relationship is declared in the Genie space config; no declared relationship → no arrow, so unmodeled tables float edgeless. What 12e decides, taking the v7 mockup as the visual contract: tables are the deduplicated node set; **measures are boxed by owner** on the right — one box per MV plus a Space-config box for the loose (ungoverned/curated) measures NOT in any MV — each measure provenance-tagged, unnamed measures collapsed to a count (12d/MV-D29 hygiene carried forward); **the MV is a BOUNDARY, not a node** — at rest the boundary is the measure box with subtle arrows to the tables it uses (declared joins only), and on SELECTION a second boundary wraps the tables in its definition ("tables used by Revenue MV"); reuse is membership not duplication (a shared dim lights the multiple MV boxes that use it); **unmodeled tables get a neutral edgeless region** (the governance gap made visible); and **any box is draggable** (session-only user transform, reset restores the deterministic home layout). Determinism and the diff-overlay invariant hold byte-for-byte: the render stays a pure function of `(tables, edges, mvBoxes, selection, dragOffsets, viewport)`; drag is layered on top of a deterministic home layout, never persisted, so it cannot perturb the diff. The layout-library position is REAFFIRMED (v2 §6 grounds unchanged) — the new pieces (Euler-aware member-contiguous placement so a select-time boundary encloses exactly its members; free-form drag) are pure placement rules plus a user offset, not a solver; the boundary that would flip it is unchanged. New data the reader must fetch (grounding, not invention): the MV's internal `source`/`joins`/`dimensions`/`measures` from its YAML (the source of both the join-arrow PROOF and the inset join tree), read via the existing describe path / `data_sources.metric_views`, never re-derived. This SUPERSEDES the v2 note only where it drew the MV as a leaf card; v2's legibility levers (grouping, fit, focus/search, the derived collapse threshold §9, edge ports §5, governance-roll-up-survives-grouping §8) are all carried forward unchanged.
 
 > *DECISION (Prompt 12e, reviewer-approved).* The three v3-note checkpoint questions are settled as: **(1)** shared-dim at-rest cue is on-demand boundaries + measure boxes/arrows (optional membership dots), NOT persistent hulls (the v6 overlapping-set clutter finding); **(2)** the Euler-aware contiguity pass is prototyped against 3/10/30-table fixtures before the boundary rectangle is committed, falling back to a member-hull outline if contiguity cannot be guaranteed for pathological membership overlaps; **(3)** user drag is session-only, "Reset layout" restores home, and layout is NOT persisted (keeps the model and the diff clean). Governance stays the headline (MV-D8/12b spirit): the per-box and panel-level governed/curated/ungoverned roll-up renders even when detail is collapsed.
+
+**MV-D34 — Create-at-approval: accepting a suggestion on the IQ surface may create the metric view inline, under the same four invariants as create-at-trigger (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8).** The third smoke run proved the acceptance CUJ was structurally dead: the IQ card offered only [Review in run setup] and [I created this myself] — **no Approve action exists on the surface where the user meets the suggestion** (`MvIqScanAdvisorySection.tsx:500-505`; the decision endpoint has existed since Prompt 9 and nothing on the panel calls it) — so run setup forever found zero approved proposals and "Create and attach" could never enable from this path. The two-run consent model (MV-D1) was designed for proposals *discovered by a run the user is not watching*; on the IQ surface the user is PRESENT, their OBO token is live, and every piece of the create machinery already runs interactively for BYO registration. So: **accepting a suggestion offers to create it now** — probe (`mv_entitlement.probe`, fresh, at click) → consent captured in the modal (`record_consent`) → `CREATE VIEW … WITH METRICS` under OBO through the `mv_create` seam (never a fork, never the SP) → ledger row `OBO_CREATED` with `created_by`, written under the space's advice run — **the BYO-register rails exactly** (MV-D24 built create-outside-a-run persistence and the attach-on-next-run pickup; this decision reuses those rails with `OBO_CREATED` provenance rather than inventing parallel ones). Attach and lift measurement remain the next run's job, unchanged (MV-D16's isolation intact). MV-D1's four invariants transpose verbatim: identity = `require_obo_workspace_client` (hard-fail); a recorded, fresh consent; downgrade-never-upgrade — an insufficient probe degrades the button to [Approve for later] (`approved_for_rerun`, the classic path, which REMAINS the alternative on both surfaces) with the missing GRANT shown, never a dead end; and the target is the consented schema and nowhere else. MV-D1 is NOT superseded: create-at-trigger remains the path for run-output proposals approved asynchronously; create-at-approval is the path for a user standing in front of the suggestion. Both write the same ledger; both feed the same next-run attach.
+
+**MV-D35 — Proven facts lead; the score ranks; a percent is never displayed as "confidence" (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8; supersedes MV-D32(1)'s caption-as-fix IN PART).** The reviewer's challenge, third smoke run: "if a metric view is syntactically accurate, executable, and orthogonal to existing metric views, why is our confidence low? Would you, as a user, accept a low-confidence suggestion?" The challenge is correct and the display was a category error, twice band-aided (MV-D32(1)'s caption, 15.7b's badge) instead of replaced. The facts: **quality is binary and already gated** — nothing surfaces without a rendered, validated, placeholder-free, executable body (MV-D8, MV-D29, 15.5's servable-body invariant), and dedup guarantees non-overlap with existing governed measures; the LYDS score measures **demand evidence**, a RANKING signal, not doubt about correctness. Displaying it as "NN% confidence / LOW" told users their strongest candidate might be broken — false, and corrosive. The replacement: (1) cards LEAD with proven facts as explicit checks — "✓ validated · ✓ executable · ✓ no overlap with existing metric views" — each check backed by the gate that proved it, never decorative; (2) evidence renders as a human sentence ("18 curated queries · usage history"); the numeric score is used ONLY for ordering plus ONE Recommended pick — or, when all surfaced proposals are mutually orthogonal (disjoint measure sets), the panel says so plainly ("all N are independent — any or all can be created") instead of forcing a ranking that does not exist; (3) the raw blend, weights, and coverage stay in `score_components` for the debugging user; (4) the COMPUTED≠SUPPORTIVE defect is fixed — `confidenceDisplay` captions "Backed by usage history and lineage" whenever L/D *ran*, even at near-zero values (`mvFormat.ts:313-315`); basis captions must reflect signal CONTRIBUTION, not signal execution. MV-D30's tier gating survives as the ordering/disclosure mechanism; what dies is the naked percent and the word "confidence" anywhere a user reads it. This applies to EVERY surface that renders a proposal — the IQ panel AND the run-output panels — through shared components, so the post-GSO surface inherits it by construction.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -2369,6 +2392,140 @@ extension, no scoring or persistence changes:
    materialization, and reuse/conflict signals.
 10. Structural tests per item above; before/after screenshots into the run
     record. No layout library (MV-D33 / v2 §6 reaffirmed).
+```
+
+### Prompt 15.8 — The acceptance journey, owned end-to-end (implements MV-D34 + MV-D35; blocks the fourth look and Tier 3)
+
+*From the third smoke run's process autopsy: three waves of display patches
+never owned "user sees a suggestion → accepts it → the metric view exists" as
+one journey, the Approve affordance never existed on the IQ surface, the
+Recommended badge was reported done and never implemented, and the percent
+display was band-aided twice instead of replaced. This prompt is the journey,
+not patches — and it is built in SHARED components consumed by BOTH suggestion
+surfaces (the IQ panel and the run-output panels), so the post-GSO surface
+inherits every fix by construction rather than by a repeat of this work. READ
+MV-D34 and MV-D35 first; both are reviewer-approved — confirm, do not reopen;
+a repo contradiction STOPs and amends, never silently diverges.*
+
+```
+ARCHITECTURE CONSTRAINT, first-class: one MvProposalCard, one accept flow, one
+display module — consumed by MvIqScanAdvisorySection AND the run-output panels
+(MvSuggestOnlyPanel / MvCreateAttachPanel). A structural test asserts both
+surfaces render the SAME card component and the SAME accept-flow component.
+Divergence between the two suggestion surfaces is the defect class this
+prompt exists to end.
+
+1. THE ACCEPT FLOW (MV-D34). On every proposal card, the primary action is
+   [Create this metric view]:
+   a. Click → fresh probe (POST /mv/probe, the OBO route that exists) against
+      the proposal's target schema.
+   b. SUFFICIENT → consent modal: target shown, GRANT preview, an explicit
+      consent confirm (record_consent) → create under OBO through the
+      mv_create seam (reuse; never fork, never SP) → ledger row OBO_CREATED
+      under the space's advice run — the BYO-register rails (MV-D24), same
+      pickup: attached and measured on the next optimization run. Success
+      state on the card: "Created · will be attached and measured on the next
+      run" + Catalog Explorer link + [Start an optimization run].
+   c. INSUFFICIENT/UNKNOWN → the button degrades to [Approve for later]
+      (approved_for_rerun — the classic MV-D1 path, retained on both
+      surfaces) with the remediation GRANT shown copy-ready. Never a dead
+      end, never a silent downgrade.
+   d. Run setup coherence: the run-config MV section lists created-unattached
+      views ("will be attached this run") and approved-for-rerun proposals
+      (create-at-trigger, unchanged); the [Review in run setup] deep-link
+      carries the suggestion id and preselects it. The "Checking..." state
+      resolves within bounded time (found / none / failed-with-reason).
+2. THE DISPLAY REPLACEMENT (MV-D35), in the shared display module:
+   - Facts row of explicit checks (validated / executable / no-overlap), each
+     wired to the gate that proved it — the check renders ONLY if its gate
+     actually ran (a check that lies is worse than the percent).
+   - Evidence as a human sentence; ids resolved to human things in the
+     details disclosure — a trusted_asset id resolves to its example-question
+     text, a sql_snippet id to the snippet's name/expr (UI display; the
+     metadata firewall is untouched — it governs what ships INTO metric-view
+     metadata, not what the owner sees in their own panel).
+   - Score never displayed as a percent or the word "confidence": it orders
+     the list and picks ONE Recommended (rationale line included); when all
+     surfaced proposals have disjoint measure sets, render the orthogonality
+     callout ("all N are independent — any or all can be created") instead
+     of a forced ranking.
+   - Fix COMPUTED≠SUPPORTIVE in confidenceDisplay (mvFormat.ts:313-315):
+     basis captions reflect signal CONTRIBUTION (value above a floor), not
+     mere execution.
+3. SMALL FIXES, same commit, all verified defects from the third look:
+   - Proposal count = rendered count (server list length minus client-side
+     filters, or the server excludes what the client would filter — one
+     truth, tested).
+   - Uniform expand/collapse on every card section (detail, evidence, SQL),
+     collapsed by default beyond the first Recommended card.
+   - GRANT grantee prefilled from the space's ACL (principals with CAN RUN
+     via the existing permissions read) — a picker when several, never
+     `<grantee>` in the copy-ready statement.
+   - ETA phrasing: "last scan took Xm Ys" states the fact; drop "this
+     usually takes about that long" until there are >=3 samples (then a
+     range). Honest-estimate rule.
+4. TESTS: the journey as one test (suggest -> create -> ledger row
+   OBO_CREATED under an advice run -> run-config lists it as
+   will-be-attached); the degrade path (insufficient probe -> approve-for-
+   later + remediation GRANT, nothing created); shared-component structural
+   test (both surfaces, same card); display checks (facts row gated on real
+   gates, no "%" and no "confidence" string in any rendered proposal card,
+   orthogonality callout, resolved evidence labels); count truth; the
+   COMPUTED≠SUPPORTIVE caption fix. Extend the E2E BYO leg's sibling: a
+   scenario_d sub-leg exercising create-at-approval against the live
+   workspace (create, verify Type: METRIC_VIEW, ledger provenance, manual
+   teardown — the app never drops).
+5. FIDELITY GATE (the process fix, now a rules-file discipline — see the
+   fidelity-gate rule added to .cursor/rules/mv-advisor.mdc alongside this
+   prompt): before reporting done,
+   export the IQ panel and run-output panel states through the mockup
+   emitter (both themes) and attach them to the report next to the approved
+   reference frames; the reviewer accepts only after comparing them and
+   adversarially re-grepping every numbered item above. Structural tests
+   green is NOT acceptance.
+6. MV-D9: matrix classification for any served field this adds; gap-report
+   rows for the third-look findings flipped RESOLVED self-dated; baseline
+   lockstep; redeploy; rerun -k scenario_d.
+```
+
+### Prompt 12f — Semantic canvas fidelity: reconcile the deployed v3 to the approved v7 contract (third-look finding 1; runs with 15.8, same redeploy)
+
+*The third look found a large fidelity gap between the approved v7 mockup and
+the deployed canvas: a tiny cramped diagram floating in a mostly-empty panel
+vs the mockup's spacious, legible, legend-equipped frame. Root cause, found at
+review: **the v7 mockup was never committed** — the v3 note names it "the
+visual contract" but it exists only in the interactive session that produced
+it (brainstorm v4→v7). 12e implemented mechanics against an uncommitted
+contract; structural tests cannot see density; the reviewer met the gap in
+production. The fidelity-gate rule now requires committed references — this
+prompt creates the first one.*
+
+```
+0. COMMIT THE CONTRACT FIRST. Rebuild the approved v7 frame as an emitter
+   mockup (frame 9-family, both themes) from the v3 note's spec §3-§4 and
+   the reviewer's approved v7 screenshot (in the third-look record):
+   spacious columns, fact/dim cards with type captions and coverage dots,
+   MV measure-boxes right with per-box "N measures · governed" chips,
+   Space-config box with overlap warnings and the +N-unnamed row, legend
+   (top-right), header controls (search, Lineage/Impact, Fit, +/-, Reset
+   layout), zoom % indicator, footer tip line, curator inset strip below.
+   STOP for the reviewer's confirmation that the committed frame IS the
+   contract they approved — then it is the reference the gate compares
+   against, forever.
+1. RECONCILE SemanticGraph to it. The mechanics (dedup canvas, proof
+   arrows, boundaries, drag) landed in 12e and are NOT rebuilt; this is
+   fidelity: initial render FILLS the viewport via computeFit (no tiny blob
+   in an empty panel — the fit that ships is the fit the mockup shows),
+   spacing/density constants matched to the frame, card typography and
+   captions, the legend, the visible control row, the zoom indicator, the
+   footer tip, per-box chips, overlap badges, unnamed-measures row styling.
+   Every deviation from the frame is either fixed or named in the report
+   with a reason (the fidelity-gate contract).
+2. VERIFY through the gate it inaugurates: emitter exports of the real
+   component (fixture data, both themes) attached side-by-side with the
+   committed v7 frame; the 3/10/30-table fixtures re-exported; structural
+   tests unchanged and green; the reviewer accepts on visual comparison,
+   not on green tests.
 ```
 
 ### Prompt 16 — Docs, changelog, PR

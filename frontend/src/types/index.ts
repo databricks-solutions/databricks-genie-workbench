@@ -921,6 +921,10 @@ export interface MvProbeResult {
   materialize_consented: boolean
   consent_recorded: boolean
   errors: string[]
+  // Prompt 15.8 fix #3 — the space audience (ACL principals with CAN RUN/VIEW/
+  // MANAGE), so the consent modal's GRANT preview names a real grantee instead
+  // of `<grantee>`. Empty when the ACL was unreadable (modal keeps raw copy).
+  audience_grantees: string[]
 }
 
 // Body for POST /api/auto-optimize/mv/probe. Mirrors MvProbeRequest in
@@ -979,6 +983,12 @@ export interface MvProposal {
   tier_capped_by_coverage: boolean | null
   proposed_object: string | null
   measures: MvProposalMeasure[]
+  // MV-D35 (Prompt 15.8) — the facts row: quality gates this row PROVES ran and
+  // passed, computed server-side from per-row proof (never persisted). A key is
+  // present ONLY when its gate ran ("validated"/"executable" from the servable-
+  // body invariant; "no_overlap" from the dedup gate finding no conflicts), so a
+  // check that did not run is never rendered. null/absent on rows lacking proof.
+  checks: Record<string, string> | null
   score_components: Record<string, unknown> | null
   evidence: Record<string, unknown> | null
   provenance: Record<string, unknown> | null
@@ -993,6 +1003,25 @@ export interface MvProposal {
   approved_for_rerun: boolean
   created_at: string | null
   updated_at: string | null
+}
+
+// POST /api/auto-optimize/spaces/{space_id}/mv/create — create-at-approval
+// (MV-D34). Mirrors MvCreateAtApprovalRequest/Response in backend/models.py.
+export interface MvCreateAtApprovalRequest {
+  suggestion_id: string
+  probe_id: string
+}
+
+export interface MvCreateAtApprovalResponse {
+  created: boolean
+  degraded: boolean
+  full_name: string | null
+  run_id: string | null
+  suggestion_id: string | null
+  provenance: string
+  verdict: string | null
+  remediation_sql: string | null
+  reason: string | null
 }
 
 // GET /runs/{run_id}/mv-proposals — the run's proposals, newest first.

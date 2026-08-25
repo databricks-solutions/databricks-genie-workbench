@@ -11,10 +11,12 @@ import {
   confidenceDisplay,
   evidenceGrowth,
   evidenceSummary,
+  factsChecks,
   isCappedStrong,
   isLowConfidence,
   MV_CAPPED_STRONG_LABEL,
   MV_DEFAULT_VISIBLE,
+  orthogonalityCallout,
   proposalGainSentence,
   rankProposals,
   recommendedReason,
@@ -36,6 +38,7 @@ function mk(overrides: Partial<MvProposal>): MvProposal {
     tier_capped_by_coverage: null,
     proposed_object: "c.s.v",
     measures: [],
+    checks: null,
     score_components: null,
     evidence: null,
     provenance: null,
@@ -145,13 +148,17 @@ describe("coverage-capped-strong surfacing (MV-D32 / Prompt 15.7b)", () => {
     expect(ranked.map((p) => p.suggestion_id)).toEqual(["capped", "med"])
   })
 
-  it("recommendedReason phrases a capped-strong pick by uncapped tier with the evidence-limited note", () => {
+  it("recommendedReason notes a capped-strong pick as evidence-limited — and never says 'confidence' (MV-D35)", () => {
     const reason = recommendedReason(cappedStrong)
-    expect(reason).toContain("high confidence (evidence-limited)")
-    expect(reason).not.toContain("low confidence")
+    expect(reason).toContain("evidence-limited")
+    // MV-D35: the word "confidence" is gone from every rendered rationale.
+    expect(reason.toLowerCase()).not.toContain("confidence")
+    expect(reason).not.toMatch(/\d+%/)
   })
 
-  it("exposes the badge label constant for the card", () => {
+  it("still exposes the split-logic label constant (badge retired from the card, MV-D35)", () => {
+    // The badge no longer renders on the card, but isCappedStrong still drives
+    // the default-list promotion (MV-D30 split), so the constant survives.
     expect(MV_CAPPED_STRONG_LABEL).toBe("Strong (evidence-limited)")
   })
 })
@@ -267,12 +274,12 @@ describe("rankProposals + recommendedReason (Prompt 15.6 finding 4)", () => {
     expect(input.map((p) => p.suggestion_id)).toEqual(snapshot)
   })
 
-  it("recommendedReason assembles the same facts the ranking used", () => {
+  it("recommendedReason assembles facts only — no tier word, no 'confidence', no percent (MV-D35)", () => {
     const p = mk({ tier: "HIGH", measures: [
       { display_name: "a", expr: "x", dedup_fingerprint: "1", recurrence: 1, provenance_count: 1, benchmark_question_ids: ["q1", "q2"] },
     ] })
     expect(recommendedReason(p)).toBe(
-      "Strongest candidate — high confidence, governs 1 measure, recurs across 2 curated queries.",
+      "Strongest candidate — governs 1 measure, recurs across 2 curated queries.",
     )
   })
 
@@ -280,6 +287,64 @@ describe("rankProposals + recommendedReason (Prompt 15.6 finding 4)", () => {
     expect(recommendedReason(mk({ tier: null, measures: [] }))).toBe(
       "Strongest candidate for this Agent.",
     )
+  })
+})
+
+describe("factsChecks (MV-D35 facts row — gated on real gates)", () => {
+  it("renders each check present in proposal.checks, in fixed order", () => {
+    const p = mk({ checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" } })
+    expect(factsChecks(p).map((f) => f.key)).toEqual(["validated", "executable", "no_overlap"])
+    expect(factsChecks(p).map((f) => f.label)).toEqual([
+      "validated",
+      "executable",
+      "no overlap with existing metric views",
+    ])
+  })
+
+  it("renders ONLY the checks whose gate ran — a check that lies is worse than the percent", () => {
+    // A row that proves validated/executable but carries an overlap conflict:
+    // the backend omits no_overlap, so the facts row must not claim it.
+    const p = mk({ checks: { validated: "PASS", executable: "PASS" } })
+    expect(factsChecks(p).map((f) => f.key)).toEqual(["validated", "executable"])
+  })
+
+  it("renders nothing when the row proves no gate (legacy / no checks)", () => {
+    expect(factsChecks(mk({ checks: null }))).toEqual([])
+    expect(factsChecks(mk({ checks: {} }))).toEqual([])
+  })
+
+  it("ignores a non-PASS value — the facts row states passing gates only", () => {
+    const p = mk({ checks: { validated: "PASS", no_overlap: "WARN" } })
+    expect(factsChecks(p).map((f) => f.key)).toEqual(["validated"])
+  })
+})
+
+describe("orthogonalityCallout (MV-D35 — callout instead of a forced ranking)", () => {
+  const withMeasures = (id: string, fps: string[]) =>
+    mk({
+      suggestion_id: id,
+      measures: fps.map((fp) => ({
+        display_name: fp, expr: fp, dedup_fingerprint: fp,
+        recurrence: 1, provenance_count: 1, benchmark_question_ids: null,
+      })),
+    })
+
+  it("fires when 2+ proposals govern pairwise-disjoint measure sets", () => {
+    const a = withMeasures("a", ["m1", "m2"])
+    const b = withMeasures("b", ["m3"])
+    expect(orthogonalityCallout([a, b])).toBe(
+      "All 2 are independent — any or all can be created.",
+    )
+  })
+
+  it("stays null when any measure is shared (a real ranking exists)", () => {
+    const a = withMeasures("a", ["m1", "m2"])
+    const b = withMeasures("b", ["m2", "m3"])
+    expect(orthogonalityCallout([a, b])).toBeNull()
+  })
+
+  it("stays null for a single proposal (nothing to be independent of)", () => {
+    expect(orthogonalityCallout([withMeasures("a", ["m1"])])).toBeNull()
   })
 })
 
@@ -330,19 +395,27 @@ describe("confidenceDisplay (Prompt 15.7 / MV-D32(1) — coverage-aware, blend u
     expect(d.caption).toBe("Based on curated SQL only — no usage history yet.")
   })
 
-  it("captions an evidence-rich proposal as backed by usage + lineage", () => {
+  it("captions an evidence-rich proposal as backed by usage + lineage — CONTRIBUTION, not just execution (MV-D35 fix #4)", () => {
     const p = mk({
       confidence_score: 88,
-      score_components: { statuses: { L: "COMPUTED", Y: "COMPUTED", S: "COMPUTED", D: "COMPUTED" } },
+      // L and D both COMPUTED AND carrying a value above the floor — they truly
+      // contribute, so the caption may claim them.
+      score_components: { L: 0.6, D: 0.5, statuses: { L: "COMPUTED", Y: "COMPUTED", S: "COMPUTED", D: "COMPUTED" } },
     })
     const d = confidenceDisplay(p)
     expect(d.evidencePoor).toBe(false)
     expect(d.caption).toBe("Backed by usage history and lineage.")
   })
 
-  it("treats EMPTY (a measured zero) as available, not absent", () => {
-    const p = mk({ score_components: { statuses: { L: "EMPTY", Y: "COMPUTED", S: "COMPUTED", D: "EMPTY" } } })
-    expect(confidenceDisplay(p).evidencePoor).toBe(false)
+  it("COMPUTED≠SUPPORTIVE: a usage/lineage signal that RAN but measured zero does NOT back the caption (MV-D35 fix #4)", () => {
+    // Both producers ran (COMPUTED / EMPTY) but measured nothing — value 0. The
+    // pre-15.8 defect captioned this "backed by usage history"; the fix treats
+    // execution-without-contribution as evidence-poor.
+    const ranZero = mk({
+      confidence_score: 40,
+      score_components: { L: 0, D: 0, statuses: { L: "COMPUTED", Y: "COMPUTED", S: "COMPUTED", D: "EMPTY" } },
+    })
+    expect(confidenceDisplay(ranZero).evidencePoor).toBe(true)
   })
 
   it("says nothing when score_components carries no statuses — never asserts a basis it didn't read", () => {

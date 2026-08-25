@@ -35,6 +35,8 @@ import type {
   GSOPublishRecordResponse,
   CurrentVersionResponse,
   GSORevertOptions,
+  MvCreateAtApprovalRequest,
+  MvCreateAtApprovalResponse,
   MvProbeRequest,
   MvProbeResult,
   MvSpaceProposalsResponse,
@@ -578,6 +580,26 @@ export async function registerSpaceMv(
 ): Promise<MvRegisterResponse> {
   return fetchWithTimeout<MvRegisterResponse>(
     `${API_BASE}/auto-optimize/spaces/${spaceId}/mv/register`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
+  )
+}
+
+// POST /spaces/{space_id}/mv/create — create-at-approval (MV-D34). The user
+// accepted a suggestion where they meet it; a fresh probe already recorded
+// consent. Creates the one proposal now under OBO and returns one of: created,
+// degraded (probe fell below SUFFICIENT → approve-for-later), or a create-time
+// failure with a reason. Attach + lift stay the next run's job.
+export async function createMvAtApproval(
+  spaceId: string,
+  request: MvCreateAtApprovalRequest,
+): Promise<MvCreateAtApprovalResponse> {
+  return fetchWithTimeout<MvCreateAtApprovalResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv/create`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

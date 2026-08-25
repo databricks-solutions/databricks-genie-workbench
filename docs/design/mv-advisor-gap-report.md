@@ -16,7 +16,7 @@ written — see [§3 Decisions needed](#3-decisions-needed).
 | Pre-17.0 drift check | **Clean as of 2026-08-25** (branch @ `9aeabc70`). `git fetch` + `git rev-list --count HEAD..origin/main` = **0** — `origin/main` is still at `ae8c4367`, exactly this branch's merge-base, so no upstream commit has moved under the gap-report surfaces (job YAML, optimizer package, routers, UI components) since the 2026-08-23 survey. No Prompt 0 diff-mode re-run is required; 17.0's PLAN phase may treat this recon as current rather than re-deriving it. Re-run this line if `main` advances before 17.0 starts. |
 | Method | Direct file reads. Every quote below was read from the working tree on the date above. Line numbers are from that state. |
 | Scope | Read-only. No feature code was written or modified in producing this report. |
-| Last MV-D9 refresh | 2026-08-25, in the Prompt 15.5 commit (Tier-2 read-back integrity: the bundle body and the downgrade reason). Refreshed here: the two 2026-08-25 Tier-2 findings (Scenario A in-job `mv-ddl` 404; Scenario B downgraded-run `downgrade_reason` NULL) flipped OPEN → RESOLVED with root-cause resolutions appended; the generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`mv_yaml.py` grew by the `render_components` render path); no fenced code quotes moved. Previously, 2026-08-24, in the Prompt 12b commit (semantic-graph coverage lens + deferred parsing: the three debts Prompt 12 signed as swap-point comments are paid). Refreshed here: the semantic-graph API row (§ API surface) re-anchored `auto_optimize.py:1869 → :2236` (`get_space_semantic_graph`, shifted by the assembler rewrite and the new `_build_semantic_graph` at `:1990`) and `models.py:323 → :377` (`MvSemanticGraph{,Node,Edge}`, additive lens fields `coverage`/`weight`/`coverage_status`/`coverage_reason`), status moved **LANDED → LANDED+EXTENDED**; the deleted `_is_measure_column` speculative probe and the exact-name concept identity it described are gone from the code and from that row's prose (governed chips now read `DESCRIBE ... AS JSON` via `metric_view_catalog`, concept identity is `canonicalize_expr`). No fenced code quotes moved. Previously, 2026-08-23, in the Prompt 7 review commit (MV-D18 champion-record fix, end-of-run reconciliation, trusted-asset conflict surface). Refreshed there: **two fenced quotes this commit moved** (`unified_loop.py` `80-94` → `83-97` and `2862-2867` → `2894-2899`, both shifted by the reconciliation import and helper) and **six line anchors** — `unified_loop.py:3287-3292` → `:3373-3378` (candidate eval), `:2854-2859` → `:2894-2899` (Appendix baseline row), `:133-146` → `:137-150` (`_TRANSIENT_EVAL_STATUSES`, which had drifted onto the leak-drop frozenset), `state.py:923-966` → `:889` + `:983-1004` (`write_iteration` and its `eval_run_status` columns), `state.py:1101-1108` → `:1168-1175` (`mark_patches_rolled_back`), and `mv_scoring.py:150` → `:158` (`LineageOverlap`, shifted by the trusted-asset docstring). **The two fences that were already stale at HEAD are now clean**: `ddl.py:182` byte-matches (the `artifact_kind` enum gained `mv_candidate_ddl` in Prompt 6) and `test_phase7_job_dag.py:397-405` matches. The generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`unified_loop.py` 3674 → 3727 L, `state.py` 1804 → 1871 L, `mv_scoring.py` 1327 → 1498 L). All 48 fenced quotes byte-match live source as of this row; the third staleness class this exposed is recorded in MV-D9. Previously, in the Prompt 7 commit (attach patch type + lift phase). Refreshed there: **six fenced quotes whose line numbers this commit moved** (`unified_loop.py` `79-93` → `80-94` and `2854-2859` → `2862-2867`; `applier.py` `3914-3917` → `3974-3977` and `4550-4560` → `4617-4627`; `ddl.py` `280-290` → `281-291` and `292-297` → `293-298` — the `_ALL_DDL` and migrations fences shifted by the `lift_report_json` column, exactly as MV-D7 anticipated); the `PATCH_TYPES` count (50 → 51) and the now-accurate section comment; the patch-path anchor table (`_apply_action_to_config` `:3409` → `:3442`, `_apply_action_to_uc` `:3942` → `:4002`, `apply_patch_set` `:4025` → `:4091`); the "critical gap — nothing attaches a metric view" paragraph, which this commit closed; the §2.2 parameter preamble (three widget reads landed ahead of Prompt 8's mirrors); five §2.5/§2.6 rows moved off DOES-NOT-EXIST-YET (attach, rollback inheritance, `DETACH_ONLY_NEVER_DROP`, `mv_baseline`, raw-table companion); §3 items 8, 9 and 10 resolved, item 8's `attach_metric_view`/`detach_metric_view` proposal replaced by the shipped `mv_attach_data_source` so two names are not left live; and the `update_mv_yaml` follow-up ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)) closed. **Two quotes were already stale at HEAD and are re-quoted in passing** (`test_phase7_job_dag.py:397-406` → `397-405`, unchanged content one line shorter; `ddl.py:182` `artifact_kind`, whose comment gained `mv_candidate_ddl` in Prompt 6 without the fence being refreshed) — neither file was touched by this commit. All 48 fenced quotes byte-match live source as of this row. Previously, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
+| Last MV-D9 refresh | 2026-08-25, in the Prompt 15.8 commit (create-at-approval + facts-lead display: MV-D34/MV-D35). Refreshed here: four third-look findings appended below — the dead acceptance CUJ (RESOLVED, MV-D34), the "% confidence" category error (RESOLVED, MV-D35), the four presentation defects (RESOLVED), and finding 1's semantic-canvas fidelity gap (OPEN, tracked to Prompt 12f in the same redeploy); the baseline-count line in both rules copies moved to the measured floor 673 backend + 1512 GSO. No fenced code quotes moved (`checks`/`audience_grantees` are computed/derived, not persisted columns, so the exposure matrix and the generated package-layout block are unchanged). Previously, 2026-08-25, in the Prompt 15.5 commit (Tier-2 read-back integrity: the bundle body and the downgrade reason). Refreshed here: the two 2026-08-25 Tier-2 findings (Scenario A in-job `mv-ddl` 404; Scenario B downgraded-run `downgrade_reason` NULL) flipped OPEN → RESOLVED with root-cause resolutions appended; the generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`mv_yaml.py` grew by the `render_components` render path); no fenced code quotes moved. Previously, 2026-08-24, in the Prompt 12b commit (semantic-graph coverage lens + deferred parsing: the three debts Prompt 12 signed as swap-point comments are paid). Refreshed here: the semantic-graph API row (§ API surface) re-anchored `auto_optimize.py:1869 → :2236` (`get_space_semantic_graph`, shifted by the assembler rewrite and the new `_build_semantic_graph` at `:1990`) and `models.py:323 → :377` (`MvSemanticGraph{,Node,Edge}`, additive lens fields `coverage`/`weight`/`coverage_status`/`coverage_reason`), status moved **LANDED → LANDED+EXTENDED**; the deleted `_is_measure_column` speculative probe and the exact-name concept identity it described are gone from the code and from that row's prose (governed chips now read `DESCRIBE ... AS JSON` via `metric_view_catalog`, concept identity is `canonicalize_expr`). No fenced code quotes moved. Previously, 2026-08-23, in the Prompt 7 review commit (MV-D18 champion-record fix, end-of-run reconciliation, trusted-asset conflict surface). Refreshed there: **two fenced quotes this commit moved** (`unified_loop.py` `80-94` → `83-97` and `2862-2867` → `2894-2899`, both shifted by the reconciliation import and helper) and **six line anchors** — `unified_loop.py:3287-3292` → `:3373-3378` (candidate eval), `:2854-2859` → `:2894-2899` (Appendix baseline row), `:133-146` → `:137-150` (`_TRANSIENT_EVAL_STATUSES`, which had drifted onto the leak-drop frozenset), `state.py:923-966` → `:889` + `:983-1004` (`write_iteration` and its `eval_run_status` columns), `state.py:1101-1108` → `:1168-1175` (`mark_patches_rolled_back`), and `mv_scoring.py:150` → `:158` (`LineageOverlap`, shifted by the trusted-asset docstring). **The two fences that were already stale at HEAD are now clean**: `ddl.py:182` byte-matches (the `artifact_kind` enum gained `mv_candidate_ddl` in Prompt 6) and `test_phase7_job_dag.py:397-405` matches. The generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`unified_loop.py` 3674 → 3727 L, `state.py` 1804 → 1871 L, `mv_scoring.py` 1327 → 1498 L). All 48 fenced quotes byte-match live source as of this row; the third staleness class this exposed is recorded in MV-D9. Previously, in the Prompt 7 commit (attach patch type + lift phase). Refreshed there: **six fenced quotes whose line numbers this commit moved** (`unified_loop.py` `79-93` → `80-94` and `2854-2859` → `2862-2867`; `applier.py` `3914-3917` → `3974-3977` and `4550-4560` → `4617-4627`; `ddl.py` `280-290` → `281-291` and `292-297` → `293-298` — the `_ALL_DDL` and migrations fences shifted by the `lift_report_json` column, exactly as MV-D7 anticipated); the `PATCH_TYPES` count (50 → 51) and the now-accurate section comment; the patch-path anchor table (`_apply_action_to_config` `:3409` → `:3442`, `_apply_action_to_uc` `:3942` → `:4002`, `apply_patch_set` `:4025` → `:4091`); the "critical gap — nothing attaches a metric view" paragraph, which this commit closed; the §2.2 parameter preamble (three widget reads landed ahead of Prompt 8's mirrors); five §2.5/§2.6 rows moved off DOES-NOT-EXIST-YET (attach, rollback inheritance, `DETACH_ONLY_NEVER_DROP`, `mv_baseline`, raw-table companion); §3 items 8, 9 and 10 resolved, item 8's `attach_metric_view`/`detach_metric_view` proposal replaced by the shipped `mv_attach_data_source` so two names are not left live; and the `update_mv_yaml` follow-up ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)) closed. **Two quotes were already stale at HEAD and are re-quoted in passing** (`test_phase7_job_dag.py:397-406` → `397-405`, unchanged content one line shorter; `ddl.py:182` `artifact_kind`, whose comment gained `mv_candidate_ddl` in Prompt 6 without the fence being refreshed) — neither file was touched by this commit. All 48 fenced quotes byte-match live source as of this row. Previously, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
 
 ## Headline
 
@@ -2304,3 +2304,104 @@ consent→run loop is now closed, so route 10 surfaces the reason. Offline pins:
 in `test_wh_mv_consent.py`, and `test_downgrade_stamps_the_consent_with_run_and_reason`
 / `test_success_stamps_the_consent_run_without_a_downgrade_reason` in
 `test_mv_create.py`. Live re-confirmation is the Tier 2 rerun's run-half.
+
+### 2026-08-25 — Third look (finding: acceptance CUJ), the IQ card offers no way to accept a suggestion — RESOLVED (Prompt 15.8, MV-D34, 2026-08-25)
+
+**Observed.** Third human smoke run. On the IQ-Scan surface — where the user
+first meets a suggestion — the proposal card exposed only `[Review in run
+setup]` and `[I created this myself]` (`MvIqScanAdvisorySection.tsx:500-505`).
+No action on the panel called the decision endpoint that has existed since
+Prompt 9, so run setup forever found zero approved proposals and "Create and
+attach" could never enable from this path.
+
+**Impact.** The primary CUJ (see a suggestion → accept it → get a metric view)
+was structurally dead on the surface the user actually visits. The two-run
+consent model (MV-D1) was designed for proposals discovered by a run the user
+is *not* watching; on the IQ surface the user is present, the OBO token is
+live, and every piece of the create machinery already runs interactively for
+BYO registration — so the missing path was a UI gap, not a safety one.
+
+**Resolution (Prompt 15.8, MV-D34).** A single shared accept flow
+(`MvAcceptFlow.tsx`) now leads every proposal card on BOTH surfaces (IQ +
+run-output) with `[Create this metric view]`. It reuses the existing seams with
+zero forks: `POST /spaces/{space_id}/mv/create` (`auto_optimize.py`) →
+`mv_create.create_at_approval`, which reuses `mv_entitlement.probe`,
+`record_consent`/`verify_consent`, the `mv_create` DDL replay + `_confirm_metric_view`,
+`wh_create_advice_run` (sentinel run id) and `wh_upsert_mv_created_object`
+(`OBO_CREATED`) — the same BYO-register rails MV-D24 attach-on-next-run already
+picks up. An INSUFFICIENT fresh probe (or a create-time degrade) falls back to
+`[Approve for later]` + the remediation GRANT, creating nothing. Offline pins:
+`test_mv_create_at_approval.py` (happy path → `OBO_CREATED` ledger under an
+advice run; degrade-with-remediation; revalidation/rung-below/collision refusals;
+route created/degraded/OBO-required) and the shared-component structural test
+`MvSharedAcceptFlow.test.tsx`. Live re-confirmation is the scenario_d
+create-at-approval sub-leg (create → `Type: METRIC_VIEW` → ledger provenance →
+manual teardown).
+
+### 2026-08-25 — Third look (finding: quality display), the score shown as "NN% confidence / LOW" is a category error — RESOLVED (Prompt 15.8, MV-D35, 2026-08-25)
+
+**Observed.** Third smoke run, reviewer's challenge: "if a metric view is
+syntactically accurate, executable, and orthogonal to existing metric views,
+why is our confidence low? Would you accept a low-confidence suggestion?" The
+card led with "NN% confidence / LOW" for proposals that were in fact validated,
+executable, and non-overlapping.
+
+**Impact.** The display was a category error twice band-aided (MV-D32(1)'s
+caption, 15.7b's badge) rather than replaced. Quality is binary and already
+gated — nothing surfaces without a rendered, validated, placeholder-free,
+executable body (MV-D8, MV-D29, 15.5's servable-body invariant), and dedup
+guarantees non-overlap; the LYDS score measures *demand evidence* (a ranking
+signal), not doubt about correctness. Showing it as confidence told users their
+strongest suggestions were weak.
+
+**Resolution (Prompt 15.8, MV-D35).** The card now leads with a facts row of the
+gates it PROVES ran — validated / executable / no-overlap — each key present
+only when its gate provably ran for that row (`_mv_checks_from_row` in
+`auto_optimize.py`, computed at hydration from `proposed_object` + `conflicts`,
+never persisted, so a check that did not run is never rendered). The numeric
+score orders the list and picks one Recommended (or an orthogonality callout
+when all surfaced proposals are disjoint) and is NEVER rendered as a percent or
+the word "confidence" (`mvFormat.ts`; the evidence caption replaces "Confidence
+basis:"). Both surfaces render through the one shared card + display module.
+Offline pins: `mvFormat.test.ts` (facts row, orthogonality, resolved-evidence
+caption, no "%"/"confidence"), `MvSharedAcceptFlow.test.tsx` (re-grep of both
+rendered surfaces). Live re-confirmation is the scenario_d rerun's IQ + run-
+output surfaces.
+
+### 2026-08-25 — Third look (four presentation defects) — RESOLVED (Prompt 15.8, 2026-08-25)
+
+**Observed / Resolution.** Four numbered defects from the third look, each
+fixed and adversarially re-greppable: **(1) count truth** — the run-output
+header counts created suggestions from the accept flow's callbacks, not a static
+proposal length (`MvSuggestOnlyPanel.tsx`); **(2) uniform collapse** — cards
+default collapsed unless explicitly Recommended, identical on both surfaces
+(`MvProposalCard.tsx` `defaultExpanded ?? Boolean(recommended)`); **(3) ACL-
+derived grantees** — the consent modal's GRANT preview names a real audience
+principal (CAN RUN/VIEW/MANAGE, deduped) via `_space_audience_grantees`
+(`auto_optimize.py`) → `MvProbeResult.audience_grantees`, falling back to the raw
+statement when the ACL is unreadable; **(4) ETA phrasing** — the scan-progress
+line drops the "usually takes about that long" projection when only a single
+sample exists (`MvIqScanAdvisorySection.tsx` `ScanProgress`), an honest-estimate
+fix. Offline pins across `test_mv_create_at_approval.py`, `mvFormat.test.ts`,
+`MvIqScanAdvisorySection.test.tsx`, `MvOutputPanels.test.tsx`.
+
+### 2026-08-25 — Third look finding 1: semantic canvas mockup-vs-reality fidelity gap — OPEN (tracked to Prompt 12f, same redeploy)
+
+**Observed.** Third look found a large fidelity gap between the approved v7
+mockup and the deployed canvas: a small, cramped diagram floating in a mostly-
+empty panel vs the mockup's spacious, legible, legend-equipped frame.
+
+**Root cause (recorded).** The v7 mockup was never committed — the v3 note
+(`semantic-graph-v2-note.md` / v3 note §3–§4) names it "the visual contract" but
+it existed only in the interactive session that produced it (brainstorm v4→v7).
+Prompt 12e implemented the mechanics against an uncommitted contract; structural
+tests cannot see density; the reviewer met the gap in production.
+
+**Not in Prompt 15.8's scope.** Tracked to **Prompt 12f** (runs with 15.8 in the
+same redeploy): step 0 commits the v7 frame as an emitter mockup (frame 9-family,
+both themes) as the fidelity-gate reference, then — after reviewer confirmation
+that the committed frame is the approved contract — step 1 reconciles
+`SemanticGraph` fidelity to it (initial render fills the viewport via
+`computeFit`, density/spacing/typography/legend/controls/chips/badges). The 12e
+mechanics (dedup canvas, proof arrows, boundaries, drag) are not rebuilt. The
+new fidelity-gate rule (both rules copies) exists to prevent a recurrence.

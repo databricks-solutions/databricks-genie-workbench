@@ -1466,6 +1466,39 @@ per-measure proposals were an acceptable presentation of the advisor's output.)*
 
 **The process point worth keeping.** Two prompts of green offline suites and a green E2E tier did not catch any of this — the eight findings all required a person at the browser with a real space. The smoke checkpoint is not a formality after testing; it is the only test of the thing the feature actually is.
 
+#### Delta 12 — The acceptance journey, and the death of the percent
+
+*(Recorded 2026-08-25 from the third human smoke review and its process
+autopsy — decisions MV-D34 and MV-D35, playbook Prompt 15.8. Supersedes Part
+4's proposal-card sketch where it displays a numeric confidence, and Part 7's
+implicit assumption that approval happens on the run-output surface.)*
+
+**Create-at-approval (MV-D34).** Three review waves proved the acceptance
+journey was structurally dead on the IQ surface: no Approve action existed
+where the user meets the suggestion, so the two-run flow could never begin
+from the surface most users start on. The resolution extends MV-D1 rather than
+replacing it: when the user is present and their OBO token is live, accepting
+a suggestion may create the view inline — fresh probe, modal-captured consent,
+create through the same `mv_create` seam, ledger row under the space's advice
+run on the BYO-register rails — with attach-and-measure remaining the next
+run's job. Create-at-trigger stays for asynchronously-approved run-output
+proposals. Same four invariants, same ledger, same next-run pickup.
+
+**Facts lead, the score ranks (MV-D35).** The displayed "NN% confidence" was a
+category error: correctness is binary and already gated (validated, executable,
+placeholder-free, non-overlapping — nothing surfaces otherwise), while the
+LYDS blend measures demand evidence, a ranking signal. Cards now lead with the
+proven checks, render evidence as a human sentence, and use the score only to
+order and to pick one Recommended (or to say plainly that all proposals are
+independent). No percent, no "confidence," on any surface a user reads.
+
+**The architectural rule that makes this stick:** both suggestion surfaces —
+the IQ panel and the post-GSO run-output panels — render through shared
+components (one card, one accept flow, one display module), so every fix
+lands on both by construction. And the process fix: an approved mockup is a
+visual contract, enforced by a fidelity gate in every UI prompt's VERIFY —
+the lesson of three waves of green-tested patches that missed the experience.
+
 ### What this appendix does not decide
 
 Open items, deferred to `docs/design/mv-advisor-gap-report.md` §3: names for the two new

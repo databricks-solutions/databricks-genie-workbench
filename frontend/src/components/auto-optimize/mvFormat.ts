@@ -218,18 +218,16 @@ export function rankProposals(proposals: MvProposal[]): MvProposal[] {
 export function recommendedReason(proposal: MvProposal): string {
   const n = proposal.measures?.length ?? 0
   const q = distinctQuestionCount(proposal)
-  // (MV-D32/15.7b) phrase the confidence by the EFFECTIVE tier, so a
-  // capped-strong pick reads "medium confidence (evidence-limited)" rather than
-  // the bare "low" its served tier would give — the honesty rides the parens,
-  // and the §2 caption on the card carries the full evidence basis.
-  const tier = (effectiveTier(proposal) ?? "").toUpperCase()
+  // MV-D35: the score orders the list and picks this one — it is NEVER rendered
+  // as a percent or the word "confidence". The rationale explains the pick from
+  // the same FACTS the ranking used (coverage + recurrence), so the badge earns
+  // itself rather than asserting a doubtful-sounding tier. A capped-strong pick
+  // notes it is evidence-limited (honest, not a percent); "confidence" is gone.
   const capped = isCappedStrong(proposal)
   const parts: string[] = []
-  if (tier === "HIGH" || tier === "MEDIUM") {
-    parts.push(`${tier.toLowerCase()} confidence${capped ? " (evidence-limited)" : ""}`)
-  }
   if (n > 0) parts.push(`governs ${n} ${n === 1 ? "measure" : "measures"}`)
   if (q > 0) parts.push(`recurs across ${q} ${q === 1 ? "curated query" : "curated queries"}`)
+  if (capped) parts.push("evidence-limited")
   return parts.length > 0
     ? `Strongest candidate — ${parts.join(", ")}.`
     : "Strongest candidate for this Agent."
@@ -293,8 +291,80 @@ function signalStatuses(proposal: MvProposal): Record<string, string> {
 // A signal counts as available unless it is explicitly UNAVAILABLE. An absent
 // status is treated as available (COMPUTED) — the same default the engine uses,
 // so a payload that names only the absent signals reads the same on both sides.
+// "Available" is EXECUTION (a producer ran), which is what evidenceGrowth needs:
+// a scan structurally cannot execute L/D, so their execution is proof of growth.
 function signalAvailable(statuses: Record<string, string>, key: string): boolean {
   return (statuses[key] ?? "COMPUTED") !== MV_SIGNAL_UNAVAILABLE
+}
+
+// The raw signal value (0–1) the engine measured — score_components carries L/Y/
+// S/D at the top level alongside `statuses` (mv_scoring ScoreComponents.to_dict).
+function signalValue(proposal: MvProposal, key: string): number {
+  const sc = proposal.score_components
+  if (!sc || typeof sc !== "object") return 0
+  const raw = (sc as Record<string, unknown>)[key]
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : 0
+}
+
+// MV-D35 fix #4 — COMPUTED≠SUPPORTIVE. A basis caption must reflect signal
+// CONTRIBUTION, not mere execution: a producer that ran (COMPUTED) but measured
+// zero (value at or below the floor) contributed nothing, and captioning it as
+// "backed by usage history" when usage contributed 0 is the defect this closes.
+// A signal contributes when it both ran AND its measured value clears the floor.
+const MV_SIGNAL_CONTRIBUTION_FLOOR = 0
+function signalContributes(proposal: MvProposal, key: string): boolean {
+  const statuses = signalStatuses(proposal)
+  return signalAvailable(statuses, key) && signalValue(proposal, key) > MV_SIGNAL_CONTRIBUTION_FLOOR
+}
+
+// ── MV-D35 (Prompt 15.8) — facts lead, in one place both surfaces share ──────
+//
+// The card LEADS with the proven quality gates instead of a percent. The
+// backend computes `proposal.checks` from per-row proof and includes a key ONLY
+// when that gate provably ran (see _mv_checks_from_row); this renders whatever
+// keys are present, in a fixed order, and never invents one. A row with no
+// checks (legacy, or proof absent) yields an empty list and the facts row does
+// not render — a check that lies is worse than the percent it replaced.
+const FACTS_ORDER: { key: string; label: string }[] = [
+  { key: "validated", label: "validated" },
+  { key: "executable", label: "executable" },
+  { key: "no_overlap", label: "no overlap with existing metric views" },
+]
+
+export function factsChecks(proposal: MvProposal): { key: string; label: string }[] {
+  const checks = proposal.checks
+  if (!checks || typeof checks !== "object") return []
+  return FACTS_ORDER.filter((f) => (checks as Record<string, string>)[f.key] === "PASS")
+}
+
+// The set of member-measure identities a proposal governs — its dedup
+// fingerprints, falling back to the measure expr so a legacy row still compares.
+function measureIdentitySet(proposal: MvProposal): Set<string> {
+  const ids = new Set<string>()
+  for (const m of proposal.measures ?? []) {
+    const id = (m.dedup_fingerprint && m.dedup_fingerprint.trim())
+      || (m.expr && m.expr.trim())
+    if (id) ids.add(id)
+  }
+  return ids
+}
+
+// MV-D35 (2) — when every surfaced proposal governs a disjoint measure set, a
+// forced "Recommended" ranking asserts an order that does not exist; say so
+// plainly instead. Returns the callout string when 2+ proposals are pairwise
+// disjoint, else null (a single proposal, or any shared measure, keeps the
+// ranked Recommended pick). Pure set assembly — no LLM, no score.
+export function orthogonalityCallout(proposals: MvProposal[]): string | null {
+  const sets = proposals.map(measureIdentitySet).filter((s) => s.size > 0)
+  if (sets.length < 2 || sets.length !== proposals.length) return null
+  const seen = new Set<string>()
+  for (const s of sets) {
+    for (const id of s) {
+      if (seen.has(id)) return null
+      seen.add(id)
+    }
+  }
+  return `All ${proposals.length} are independent — any or all can be created.`
 }
 
 export interface ConfidenceDisplay {
@@ -310,8 +380,12 @@ export function confidenceDisplay(proposal: MvProposal): ConfidenceDisplay {
   const percent =
     proposal.confidence_score === null ? null : Math.round(proposal.confidence_score)
   const statuses = signalStatuses(proposal)
-  const hasUsage = signalAvailable(statuses, "D")
-  const hasLineage = signalAvailable(statuses, "L")
+  // MV-D35 fix #4: CONTRIBUTION, not execution. hasUsage/hasLineage are true
+  // only when the signal ran AND measured a value above the floor, so the basis
+  // caption never claims "backed by usage history" for a usage signal that ran
+  // and contributed nothing.
+  const hasUsage = signalContributes(proposal, "D")
+  const hasLineage = signalContributes(proposal, "L")
   const evidencePoor = !hasUsage && !hasLineage
 
   // No score_components → we cannot honestly caption the basis; say nothing

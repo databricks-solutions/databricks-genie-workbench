@@ -25,6 +25,8 @@ from backend.models import (
     MvDropResponse,
     MvLastScan,
     MvLiftReport,
+    MvCreateAtApprovalRequest,
+    MvCreateAtApprovalResponse,
     MvProbeResult,
     MvProposal,
     MvProposalDecisionRequest,
@@ -1520,6 +1522,48 @@ async def check_permissions(space_id: SpaceId):
     )
 
 
+def _space_audience_grantees(space_id: str) -> list[str]:
+    """The space's audience, from its ACL — Prompt 15.8 fix #3.
+
+    The GRANT preview in the consent modal must name a real grantee, not a
+    literal ``<grantee>``. The audience of a metric view built for a space is
+    the principals who can query that space, so we read the space ACL and return
+    the principals with CAN RUN / CAN VIEW / CAN MANAGE (the run/view rung and
+    up). Best-effort and SP-read (the ACL is the space's, not the caller's): any
+    failure returns ``[]`` and the modal falls back to the raw statement. Owners
+    and dedup keep the list stable and duplicate-free.
+    """
+    audience_levels = {"CAN_RUN", "CAN_VIEW", "CAN_MANAGE", "CAN_EDIT"}
+    try:
+        acl = get_service_principal_client().api_client.do(
+            method="GET", path=f"/api/2.0/permissions/genie/{space_id}"
+        )
+        if not isinstance(acl, dict):
+            return []
+        grantees: list[str] = []
+        for entry in acl.get("access_control_list", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            principal = (
+                entry.get("user_name")
+                or entry.get("group_name")
+                or entry.get("service_principal_name")
+            )
+            if not principal:
+                continue
+            levels = {
+                str(p.get("permission_level") or "").upper()
+                for p in entry.get("all_permissions", []) or []
+                if isinstance(p, dict)
+            }
+            if levels & audience_levels and principal not in grantees:
+                grantees.append(str(principal))
+        return grantees
+    except Exception:
+        logger.warning("Could not read ACL for space %s grantees", space_id, exc_info=True)
+        return []
+
+
 @router.post("/mv/probe", response_model=MvProbeResult)
 async def probe_mv_entitlement(body: MvProbeRequest):
     """Probe the signed-in user's entitlement to create a metric view.
@@ -1558,6 +1602,9 @@ async def probe_mv_entitlement(body: MvProbeRequest):
         result,
         materialize_consented=body.materialize_consented,
     )
+    # Fix #3 — prefill the GRANT preview's grantee from the space audience. Best
+    # effort: an unreadable ACL leaves it empty and the modal keeps the raw copy.
+    result.audience_grantees = await _offload(_space_audience_grantees, body.space_id)
     return result
 
 
@@ -1702,6 +1749,35 @@ def _mv_measures_from_row(row: dict) -> list[MvProposalMeasure]:
     )]
 
 
+def _mv_checks_from_row(row: dict) -> dict[str, str] | None:
+    """The MV-D35 facts row: the quality gates this row PROVES ran and passed.
+
+    Not persisted — computed here from proof already on the row, so the shared
+    card can lead with facts instead of a percent. Each key is present ONLY when
+    its gate provably ran for THIS row; a check that did not run is never
+    rendered (MV-D35: "a check that lies is worse than the percent").
+
+    - ``validated`` / ``executable``: a non-empty ``proposed_object`` is the
+      servable-body invariant's proof (Prompt 15.5 / MV-D8 / MV-D29): nothing
+      surfaces without a rendered, validated, placeholder-free, executable body,
+      so the identifier's presence is the gate having run and passed. A blank
+      row (dropped before surfacing) carries neither key.
+    - ``no_overlap``: the dedup gate (MV-D7) runs for every persisted candidate;
+      a partial overlap with a governed measure is recorded in ``conflicts``, so
+      an empty/absent ``conflicts`` is the gate having found no overlap. A row
+      carrying conflicts omits the key (it does NOT claim non-overlap).
+    """
+    checks: dict[str, str] = {}
+    proposed = row.get("proposed_object")
+    if isinstance(proposed, str) and proposed.strip():
+        checks["validated"] = "PASS"
+        checks["executable"] = "PASS"
+    conflicts = row.get("conflicts")
+    if not (isinstance(conflicts, list) and len(conflicts) > 0):
+        checks["no_overlap"] = "PASS"
+    return checks or None
+
+
 def _mv_proposal_from_row(row: dict) -> MvProposal:
     """Map a decoded ``genie_opt_mv_candidates`` row to the API shape."""
     return MvProposal(
@@ -1723,6 +1799,7 @@ def _mv_proposal_from_row(row: dict) -> MvProposal:
         ),
         proposed_object=_mv_str(row.get("proposed_object")),
         measures=_mv_measures_from_row(row),
+        checks=_mv_checks_from_row(row),
         score_components=row.get("score_components") if isinstance(row.get("score_components"), dict) else None,
         evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else None,
         provenance=row.get("provenance") if isinstance(row.get("provenance"), dict) else None,
@@ -2184,6 +2261,70 @@ async def register_space_mv(space_id: SpaceId, body: MvRegisterRequest):
         suggestion_id=result.suggestion_id,
         reason=result.reason,
         warnings=result.warnings,
+    )
+
+
+@router.post(
+    "/spaces/{space_id}/mv/create", response_model=MvCreateAtApprovalResponse
+)
+async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprovalRequest):
+    """Create an approved proposal now, under OBO (MV-D34 — create-at-approval).
+
+    The user accepted a suggestion on the surface where they meet it, with a
+    fresh consent recorded at click. This creates the ONE proposal in the
+    consented schema under the user's identity and records an ``OBO_CREATED``
+    ledger row on a sentinel advice run — the BYO-register rails, so
+    attach-and-lift run on the next optimization run unchanged (MV-D24/MV-D16).
+
+    Three outcomes, all normal 200s the card renders from one shape: created,
+    degraded (fresh probe below SUFFICIENT → [Approve for later] + remediation
+    GRANT, nothing created), and a create-time failure with a reason. Missing
+    OBO is a 401 (MV-D20) — a create never falls back to the SP.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    # MV-D20/MV-D34 identity invariant: refuse up front when no OBO token reached
+    # us, so the create can never silently run as the service principal.
+    try:
+        require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    try:
+        result = await _offload(
+            mv_create.create_at_approval,
+            space_id=space_id,
+            suggestion_id=body.suggestion_id,
+            probe_id=body.probe_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            warehouse_id=config.warehouse_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except Exception:
+        logger.exception("mv/create (at approval) failed for space %s", space_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Create failed; please retry or approve for the next run.",
+        )
+
+    return MvCreateAtApprovalResponse(
+        created=result.created,
+        degraded=result.degraded,
+        full_name=result.full_name,
+        run_id=result.run_id,
+        suggestion_id=result.suggestion_id,
+        provenance=result.provenance,
+        verdict=result.verdict,
+        remediation_sql=result.remediation_sql,
+        reason=result.reason,
     )
 
 
