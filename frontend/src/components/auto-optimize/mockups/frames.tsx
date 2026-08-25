@@ -29,6 +29,7 @@ import {
   ByoVerifiedFrame,
 } from "./MvByoRegistrationMockups"
 import { Iq158CardFrame, RunOutput158Frame } from "./Mv158FidelityFrames"
+import { ModelV7ContractFrame } from "./MvSemanticV7ContractFrame"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -52,6 +53,10 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "9b-model-empty", title: "9b · Model tab — never optimized (empty, honest ladder)", element: <ModelTabEmptyFrame /> },
   { id: "9c-model-proposal-overlay", title: "9c · Model tab — proposal overlay ON", element: <ModelTabProposalOverlayFrame /> },
   { id: "9d-model-node-detail", title: "9d · Model tab — node detail (measure + join)", element: <ModelNodeDetailFrame /> },
+  // Prompt 12f step 0 — the committed v7 semantic-canvas CONTRACT (the frame the
+  // v3 note called "the visual contract" but that was never committed). Prompt
+  // 12f step 1 reconciles the deployed SemanticGraph to this.
+  { id: "9e-model-v7-contract", title: "9e · Model tab — v7 contract (dedup canvas, boxed measures, curator inset)", element: <ModelV7ContractFrame /> },
   { id: "7a-iqscan-found", title: "7a · IQ Scan — proposals found", element: <IqScanAdvisoryFoundFrame /> },
   { id: "7b-iqscan-empty", title: "7b · IQ Scan — empty (authored copy, needs review)", element: <IqScanAdvisoryEmptyFrame /> },
   { id: "7c-iqscan-not-entitled", title: "7c · IQ Scan — not entitled", element: <IqScanAdvisoryNotEntitledFrame /> },
