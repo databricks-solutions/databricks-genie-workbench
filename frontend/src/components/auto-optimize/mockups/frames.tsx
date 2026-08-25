@@ -30,6 +30,7 @@ import {
 } from "./MvByoRegistrationMockups"
 import { Iq158CardFrame, RunOutput158Frame } from "./Mv158FidelityFrames"
 import { ModelV7ContractFrame } from "./MvSemanticV7ContractFrame"
+import { RealModel3Frame, RealModel10Frame, RealModel30Frame, RealModelV7Frame } from "./Mv12fFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -57,6 +58,12 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   // v3 note called "the visual contract" but that was never committed). Prompt
   // 12f step 1 reconciles the deployed SemanticGraph to this.
   { id: "9e-model-v7-contract", title: "9e · Model tab — v7 contract (dedup canvas, boxed measures, curator inset)", element: <ModelV7ContractFrame /> },
+  // Prompt 12f step 1 — fidelity-gate exports of the REAL SemanticGraph against
+  // the 9e contract: the selected-MV scenario + the 3/10/30 scale fixtures.
+  { id: "9f-model-real-v7", title: "9f · Model tab — REAL component, v7 scenario (Revenue selected)", element: <RealModelV7Frame /> },
+  { id: "9g-model-real-3", title: "9g · Model tab — REAL component, 3 tables (expanded)", element: <RealModel3Frame /> },
+  { id: "9h-model-real-10", title: "9h · Model tab — REAL component, 10 tables", element: <RealModel10Frame /> },
+  { id: "9i-model-real-30", title: "9i · Model tab — REAL component, 30 tables (collapsed)", element: <RealModel30Frame /> },
   { id: "7a-iqscan-found", title: "7a · IQ Scan — proposals found", element: <IqScanAdvisoryFoundFrame /> },
   { id: "7b-iqscan-empty", title: "7b · IQ Scan — empty (authored copy, needs review)", element: <IqScanAdvisoryEmptyFrame /> },
   { id: "7c-iqscan-not-entitled", title: "7c · IQ Scan — not entitled", element: <IqScanAdvisoryNotEntitledFrame /> },

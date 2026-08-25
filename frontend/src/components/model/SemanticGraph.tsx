@@ -40,7 +40,7 @@
  * viewport), so renderToStaticMarkup testability holds.
  */
 import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react"
-import { AlertTriangle, Maximize2, Minus, Plus, RefreshCw, Search, ShieldCheck, Wrench } from "lucide-react"
+import { AlertTriangle, Maximize2, Minus, Plus, RefreshCw, RotateCcw, Search, ShieldCheck, Wrench } from "lucide-react"
 import type { MvGovernance, SemanticGraphEdge, SemanticGraphNode } from "@/types"
 
 export const GOVERNANCE: Record<
@@ -66,19 +66,27 @@ export function countGovernance(nodes: SemanticGraphNode[]): Record<MvGovernance
 // Columns keep their product-semantic meaning (source → dim → metric view →
 // concepts); measures no longer occupy a column of their own — they ride as
 // chips inside the card that owns them.
-const COL_X = [32, 236, 452, 700]
-const COL_W = [176, 188, 220, 240]
-const COL_HEADERS = ["source / fact", "dimensions", "metric views", "measure concepts"]
+// ── Density / spacing (12f: matched to the committed v7 contract frame 9e) ────
+// The v7 frame is spacious: wide columns with generous inter-column gutters,
+// tall typed table cards, a larger card header, and roomier chip rows. These
+// constants replace the cramped 12c values so the shipped fit reads like the
+// mockup. ROW_TOP and ROW_GAP are deliberately UNCHANGED — they are the collapse
+// -threshold stride (§9), pinned by SemanticGraph.grouped.test.tsx, and are a
+// derivation constant, not a visual one.
+const COL_X = [24, 268, 512, 792]
+const COL_W = [204, 208, 244, 256]
+const COL_HEADERS = ["Source · facts", "Dimensions", "Metric views · measures", "Measure concepts"]
 const ROW_TOP = 44
 // ROW_GAP is the per-card stride the derived threshold solves against (§9); the
-// grouped table/MV cards stack at ROW_TOP + N · ROW_GAP.
+// grouped table/MV cards stack at ROW_TOP + N · ROW_GAP. (Collapse math only —
+// not the visual VGAP; see the 12f note above.)
 const ROW_GAP = 58
-const VGAP = 18
-const CARD_HDR = 44
-const CHIP_STEP = 22
-const CHIP_H = 18
-const CARD_PAD_B = 8
-const TABLE_H = 44
+const VGAP = 26
+const CARD_HDR = 50
+const CHIP_STEP = 24
+const CHIP_H = 19
+const CARD_PAD_B = 10
+const TABLE_H = 56
 const CONCEPTS_ID = "__concepts__"
 
 // ── Label hygiene (12d finding 1) ────────────────────────────────────────────
@@ -379,7 +387,11 @@ export function computeFit(
   const raw = Math.min((viewW - 2 * pad) / contentW, (viewH - 2 * pad) / contentH, 1)
   const scale = Math.min(1, Math.max(0.2, raw))
   const tx = Math.max(pad, (viewW - contentW * scale) / 2)
-  const ty = pad
+  // Center vertically too (12f): a wide-and-short graph (the common shape) framed
+  // at width leaves vertical slack; centering makes it read as intentional rather
+  // than a blob pinned to the top. A tall graph scales by height, so the centered
+  // ty naturally lands near `pad` — no top clipping.
+  const ty = Math.max(pad, (viewH - contentH * scale) / 2)
   return { scale, tx, ty }
 }
 
@@ -752,15 +764,20 @@ function CardView({
 
   if (card.kind === "table") {
     const clickable = card.node
+    // 12f: typed card — a FACT (source column 0) vs DIM (joined column 1)
+    // caption above the identifier, matching the v7 contract frame. Left-aligned
+    // with the label so the card reads like the mockup's fact/dim cards.
+    const typeCaption = card.col === 0 ? "FACT" : "DIM"
     return (
       <g opacity={opacity} onClick={() => clickable && onSelect(clickable)} onPointerDown={pointerDown} style={{ cursor: dragCursor ?? (clickable ? "pointer" : "default") }}>
         <title>{unmodeled ? `${card.label} — in no metric view` : card.label}</title>
-        <rect x={x} y={y} width={w} height={h} rx="6" fill="var(--bg-surface)" stroke={stroke ?? "var(--border-color-strong)"} strokeWidth={selWidth} strokeDasharray={card.coverage === 0 ? "4 3" : undefined} />
-        <text x={x + w / 2} y={y + (unmodeled ? 22 : 27)} textAnchor="middle" className="fill-[var(--text-secondary)]" fontSize="10">{abbreviate(card.label, 22)}</text>
+        <rect x={x} y={y} width={w} height={h} rx="8" fill="var(--bg-surface)" stroke={stroke ?? "var(--border-color-strong)"} strokeWidth={selWidth} strokeDasharray={card.coverage === 0 ? "4 3" : undefined} />
+        <text x={x + 14} y={y + 20} className="fill-[var(--text-muted)]" fontSize="8.5" fontWeight="700" letterSpacing="0.06em">{typeCaption}</text>
+        <text x={x + 14} y={y + 39} className="fill-[var(--text-primary)]" fontSize="12.5" fontWeight="600" fontFamily="monospace">{abbreviate(card.label, 20)}</text>
         {/* Prompt 12e / MV-D33: the unmodeled region — a table in no metric view.
             The governance gap made visible, in words not just hue. */}
         {unmodeled && (
-          <text x={x + w / 2} y={y + 34} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="7.5" fontStyle="italic">no metric view</text>
+          <text x={x + w - 12} y={y + 20} textAnchor="end" className="fill-[var(--text-muted)]" fontSize="7.5" fontStyle="italic">no metric view</text>
         )}
         <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} />
       </g>
@@ -777,12 +794,15 @@ function CardView({
   // Prompt 12e / MV-D33: an MV whose YAML could not be read renders "definition
   // unavailable" (and drew no arrows) — unreadable is unproven.
   const defUnavailable = isMv && card.node?.definition_available === false
+  // 12f: the v7 contract puts a "N measures · <governance>" chip on each box.
+  // The measures-count leads the subtitle; the colored governance roll-up below
+  // carries the rung breakdown, so together they read as the frame's chip.
   const subtitle = isMv
     ? card.proposed
       ? "proposed metric view"
       : defUnavailable
         ? "definition unavailable"
-        : "metric view"
+        : `${conceptCount} measure${conceptCount === 1 ? "" : "s"} · metric view`
     : `${conceptCount} concept${conceptCount === 1 ? "" : "s"}`
   const clickableHeader = card.node
   const hidden = collapsed
@@ -790,13 +810,13 @@ function CardView({
     <g opacity={opacity}>
       <g onClick={() => clickableHeader && onSelect(clickableHeader)} onPointerDown={pointerDown} style={{ cursor: dragCursor ?? (clickableHeader ? "pointer" : "default") }}>
         <title>{card.proposed ? `${card.label} — proposed metric view` : defUnavailable ? `${card.label} — definition unavailable` : card.label}</title>
-        <rect x={x} y={y} width={w} height={h} rx="8"
+        <rect x={x} y={y} width={w} height={h} rx="10"
           fill={isMv ? "var(--color-accent)" : "var(--bg-surface)"} opacity={isMv ? (card.proposed ? 0.1 : 0.15) : 1}
           stroke={stroke ?? (isMv ? "var(--color-accent)" : "var(--border-color-strong)")} strokeWidth={selWidth}
           strokeDasharray={card.proposed ? "5 3" : undefined} />
-        <text x={x + 10} y={y + 16} className="fill-[var(--text-primary)]" fontSize="10" fontWeight="600">{abbreviate(card.label, 24)}</text>
-        <text x={x + 10} y={y + 29} className="fill-[var(--text-muted)]" fontSize="8">{subtitle}{hidden ? " · collapsed" : ""}</text>
-        <RollUp x={x + 10} y={y + 40} card={card} />
+        <text x={x + 12} y={y + 20} className="fill-[var(--text-primary)]" fontSize="12" fontWeight="700">{abbreviate(card.label, 22)}</text>
+        <text x={x + 12} y={y + 34} className="fill-[var(--text-muted)]" fontSize="8.5">{subtitle}{hidden ? " · collapsed" : ""}</text>
+        <RollUp x={x + 12} y={y + 45} card={card} />
         <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} />
       </g>
       {!hidden && (
@@ -851,6 +871,11 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const containerRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const [viewportHeight, setViewportHeight] = useState<number | null>(null)
+  // 12f: the measured viewport WIDTH too. The viewBox tracks the measured pixel
+  // box (1 unit = 1px) so computeFit's pixel math is self-consistent — the old
+  // content-sized viewBox double-scaled against the inner transform and produced
+  // the tiny-blob-in-empty-panel defect (third-look finding 1).
+  const [viewportWidth, setViewportWidth] = useState<number | null>(null)
   const [expandAll, setExpandAll] = useState(false)
   const [search, setSearch] = useState("")
   const [hoverEdge, setHoverEdge] = useState<number | null>(null)
@@ -940,19 +965,21 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   // viewport. Falls back to identity only when nothing has been measured yet.
   const fitToContent = () => {
     const rect = svgRef.current?.getBoundingClientRect()
-    const viewW = rect?.width ?? width
-    const viewH = rect?.height ?? Math.min(480, height)
+    const viewW = rect?.width ?? viewportWidth ?? width
+    const viewH = rect?.height ?? viewportHeight ?? height
     setView(computeFit(width, height, viewW, viewH))
   }
 
-  // Measure the rendered box once mounted and on resize: this feeds both the
-  // derived collapse threshold and the initial fit. Guarded for SSR/node env.
+  // Measure the rendered box once mounted and on resize: this feeds the derived
+  // collapse threshold, the initial fit, AND the viewBox (12f). Guarded for
+  // SSR/node env.
   useEffect(() => {
     const el = svgRef.current
     if (!el || typeof ResizeObserver === "undefined") return
     const measure = () => {
       const rect = el.getBoundingClientRect()
       if (rect.height > 0) setViewportHeight(rect.height)
+      if (rect.width > 0) setViewportWidth(rect.width)
     }
     measure()
     const ro = new ResizeObserver(measure)
@@ -960,11 +987,13 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
     return () => ro.disconnect()
   }, [])
 
-  // Frame the content once we have a measurement (initial fit, §3.1).
+  // Frame the content once we have a measurement (initial fit, §3.1). Depends on
+  // both measured dimensions so a resize re-fits and the ship-time fit is the
+  // fit the mockup shows.
   useEffect(() => {
-    if (viewportHeight != null) fitToContent()
+    if (viewportHeight != null && viewportWidth != null) fitToContent()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewportHeight, width, height])
+  }, [viewportHeight, viewportWidth, width, height])
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()
@@ -1019,51 +1048,69 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const cardMatchesSearch = (card: GraphCard) =>
     matchesSearch(card.label, search) || card.measures.some((m) => matchesSearch(m.label, search))
 
+  // 12f: the shipped zoom readout (the v7 zoom % indicator) reflects the live
+  // scale — after the initial computeFit it shows the fit that ships.
+  const zoomPct = Math.round(view.scale * 100)
+  // viewBox tracks the measured pixel viewport (1 unit = 1px) once measured, so
+  // the inner computeFit transform is the ONLY scaling; before measurement it
+  // falls back to the content box so SSR/first-paint renders the whole graph.
+  const vbW = viewportWidth ?? width
+  const vbH = viewportHeight ?? height
+
   return (
-    <div ref={containerRef} className="relative overflow-hidden rounded-lg border border-default bg-sunken">
-      <div className="absolute left-2 top-2 z-10 flex items-center gap-2">
-        <div className="flex items-center gap-1 rounded border border-default bg-surface px-1.5 py-1">
-          <Search className="h-3 w-3 text-muted" />
+    <div ref={containerRef} className="space-y-2">
+      {/* Visible control row (v7 contract 9e): search · Lineage/Impact · Fit ·
+          − % + · Reset. Lifted out of the canvas corners (the deployed overlay
+          that the mockup never had) into a legible row above the canvas. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1.5 rounded-md border border-default bg-surface px-2 py-1">
+          <Search className="h-3.5 w-3.5 text-muted" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Find a table or measure…"
             aria-label="Find a table or measure"
-            className="w-40 bg-transparent text-xs text-primary placeholder:text-muted focus:outline-none"
+            className="w-44 bg-transparent text-xs text-primary placeholder:text-muted focus:outline-none"
           />
+        </div>
+        {/* Focus mode (§4 / MV-D33): Lineage traces both directions; Impact shows
+            the downstream blast radius of a selected table. */}
+        <div className="inline-flex items-center overflow-hidden rounded-md border border-default text-xs" role="group" aria-label="Focus mode">
+          <button type="button" aria-pressed={mode === "lineage"} onClick={() => setMode("lineage")} className={`px-2.5 py-1 ${mode === "lineage" ? "bg-[var(--color-accent)] font-medium text-white" : "text-secondary hover:text-primary"}`}>Lineage</button>
+          <button type="button" aria-pressed={mode === "impact"} onClick={() => setMode("impact")} className={`px-2.5 py-1 ${mode === "impact" ? "bg-[var(--color-accent)] font-medium text-white" : "text-secondary hover:text-primary"}`}>Impact</button>
+        </div>
+        <button type="button" onClick={fitToContent} className="inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary hover:text-primary" title="Fit the model to the view">
+          <Maximize2 className="h-3.5 w-3.5" /> Fit
+        </button>
+        <div className="inline-flex items-center gap-1 rounded-md border border-default bg-surface px-1 py-1 text-xs text-secondary">
+          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(0.83)} className="rounded p-0.5 hover:text-primary"><Minus className="h-3.5 w-3.5" /></button>
+          <span className="min-w-[3ch] px-1 text-center tabular-nums" aria-label="Zoom level">{zoomPct}%</span>
+          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.2)} className="rounded p-0.5 hover:text-primary"><Plus className="h-3.5 w-3.5" /></button>
         </div>
         {collapsible && (
           <button
             type="button"
             onClick={() => setExpandAll((v) => !v)}
-            className="rounded border border-default bg-surface px-2 py-1 text-xs text-muted hover:text-secondary"
+            className="rounded-md border border-default bg-surface px-2 py-1 text-xs text-muted hover:text-secondary"
           >
             {expandAll ? "Collapse all" : "Expand all"}
           </button>
         )}
-        {/* Focus mode (§4 / MV-D33): Lineage traces both directions; Impact shows
-            the downstream blast radius of a selected table. */}
-        <div className="flex items-center overflow-hidden rounded border border-default bg-surface text-xs" role="group" aria-label="Focus mode">
-          <button type="button" aria-pressed={mode === "lineage"} onClick={() => setMode("lineage")} className={`px-2 py-1 ${mode === "lineage" ? "bg-[var(--color-accent)] text-white" : "text-muted hover:text-secondary"}`}>Lineage</button>
-          <button type="button" aria-pressed={mode === "impact"} onClick={() => setMode("impact")} className={`px-2 py-1 ${mode === "impact" ? "bg-[var(--color-accent)] text-white" : "text-muted hover:text-secondary"}`}>Impact</button>
-        </div>
         {Object.keys(offsets).length > 0 && (
-          <button type="button" onClick={resetLayout} className="rounded border border-default bg-surface px-2 py-1 text-xs text-muted hover:text-secondary" title="Restore the default layout (clears your dragging)">
-            Reset layout
+          <button type="button" onClick={resetLayout} className="inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-muted hover:text-secondary" title="Restore the default layout (clears your dragging)">
+            <RotateCcw className="h-3.5 w-3.5" /> Reset
           </button>
         )}
       </div>
-      <div className="absolute right-2 top-2 z-10 flex flex-col gap-1">
-        <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.2)} className="rounded border border-default bg-surface p-1 text-muted hover:text-secondary"><Plus className="h-3.5 w-3.5" /></button>
-        <button type="button" aria-label="Zoom out" onClick={() => zoomBy(0.83)} className="rounded border border-default bg-surface p-1 text-muted hover:text-secondary"><Minus className="h-3.5 w-3.5" /></button>
-        <button type="button" aria-label="Fit to view" onClick={fitToContent} className="rounded border border-default bg-surface p-1 text-muted hover:text-secondary"><Maximize2 className="h-3.5 w-3.5" /></button>
-      </div>
+
+      <div className="relative overflow-hidden rounded-lg border border-default bg-sunken" style={{ height: 420 }}>
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${width} ${height}`}
-        className="w-full touch-none select-none"
-        style={{ maxHeight: 480, cursor: dragging ? "grabbing" : "grab" }}
+        viewBox={`0 0 ${vbW} ${vbH}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="h-full w-full touch-none select-none"
+        style={{ cursor: dragging ? "grabbing" : "grab" }}
         role="img"
         aria-label={label}
         onWheel={onWheel}
@@ -1136,6 +1183,39 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
           ))}
         </g>
       </svg>
+      </div>
+
+      {/* Legend (v7 contract 9e) — the vocabulary the canvas speaks, so a first
+          reading needs no caption hunting. */}
+      <Legend />
+
+      {/* Footer tip (v7 contract 9e) — the two on-demand affordances the at-rest
+          canvas can't advertise: the select-time boundary and the spread-drag. */}
+      <p className="text-xs text-muted">
+        Tip: click a metric view to wrap the tables in its definition · drag any box to spread the canvas · Reset restores the layout.
+      </p>
+    </div>
+  )
+}
+
+// The canvas legend (v7 contract 9e). Static — a pure vocabulary key; kept a
+// component so both the graph and its tests read one source of truth.
+function Legend() {
+  const items: { swatch: ReactNode; label: string }[] = [
+    { swatch: <span className="inline-block h-2.5 w-3.5 rounded-sm border border-[var(--border-color-strong)] bg-[var(--bg-surface)]" />, label: "table (fact / dim)" },
+    { swatch: <span className="inline-block h-2.5 w-3.5 rounded-sm border border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)]" />, label: "metric view (measures)" },
+    { swatch: <span className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--color-success)]" />, label: "governed / in an MV" },
+    { swatch: <span className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--color-danger)]" />, label: "unmodeled (no MV)" },
+    { swatch: <span className="text-[var(--color-accent)]">→</span>, label: "declared join (N:1)" },
+  ]
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted" aria-label="Legend">
+      {items.map((it, i) => (
+        <span key={i} className="inline-flex items-center gap-1.5">
+          {it.swatch}
+          {it.label}
+        </span>
+      ))}
     </div>
   )
 }
