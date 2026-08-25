@@ -181,6 +181,81 @@ on failure. If a run is interrupted, manually `DROP VIEW IF EXISTS` any
 10. **Downgrade transparency** — a downgraded run shows the `downgrade_reason`
     and that nothing was created.
 
+## Manual UI smoke RE-CHECK sheet (post-15.3 / 15.4 / 12c — Prompt 16 before/after)
+
+The ≤10-item checklist above predates the fixes for the eight findings the first
+smoke pass surfaced. This sheet turns the re-check from "look around again" into a
+verification of *specific* fixes: each row names the original finding, what the
+reviewer saw then, and **what they should see now instead**. Record pass/fail per
+row against the **deployed** app (verbatim on failure), same discipline as the
+run record. Fixture spaces: the never-optimized curated space
+(`MV_E2E_SUGGEST_SPACE_ID`), the bare space (`MV_E2E_EMPTY_SPACE_ID`), and a
+larger space for the graph (any Agent with ≥12 tables, or the Tier-2 fixture).
+These results are Prompt 16's before/after story for the PR.
+
+**A. The eight findings → what fixed them, and the pass condition now**
+
+1. **Scan affordance was a tiny icon** (finding 1 → Prompt 15.4). The IQ Scan
+   advisory now leads with a **first-class "Scan for suggestions" action** that
+   names what it reads and (once a prior scan exists) how long the last scan
+   took. *Pass:* a never-scanned space shows the explained scan button, not a
+   bare icon.
+2. **Bare spinner for minutes** (finding 2 → 15.4 / MV-D31). A running scan shows
+   **staged progress** — the four honest stages (reading corpus · scanning for
+   recurrence · scoring candidates · rendering DDL), each lit **on entry**, with a
+   15s keepalive so it never looks dead. *Pass:* during a live scan the stage
+   checklist advances; no unmoving spinner.
+3. **EMPTY with no point** (finding 3 → 15.3). The empty state is now **keyed to
+   the governance ladder** — "no curated SQL", "nothing recurring yet", or
+   "already governed — you're in good shape" — a reason, not one generic blank.
+   *Pass:* the bare space shows the honest reason; a fully-governed space reads as
+   a confidence statement, not a failure.
+4. **Viz unusable at scale** (finding 4 → 12c Part 2). Measures render as **chips
+   inside their owning card** (no per-measure column), a large space **opens
+   collapsed** with **governance roll-up counts** on each card, **Fit** frames the
+   whole graph (never zoom-to-100%), the **search box jump-focuses** by name, and
+   selecting a node **dims all but its 1-hop neighborhood**. *Pass:* a ≥12-table
+   space is legible on open (collapsed + roll-ups), Fit frames it, search finds a
+   table, expand-all reveals chips.
+5. **Page-killing crash** (finding 5 → 12c Part 1, already shipped `9c2737f7`).
+   Panning during a fast pointer-up no longer crashes the tab; a viz throw is
+   caught by the error boundary into a recoverable card. *Pass:* aggressive
+   pan/zoom never white-screens the tab.
+6. **"Looking for proposals approved…" shown always** (finding 6 → 15.4). The
+   run-config suggest section shows its pending copy **only while genuinely
+   pending**, with a spinner. *Pass:* the message appears during the check and
+   clears when done — not shown at rest.
+7. **Wall of undifferentiated LOW cards, surprising CTA** (finding 7 → 15.3 grain
+   + 15.4 CTA). Proposals are **view-grained bundles**, **MEDIUM+ by default**,
+   each card carries a **justification**, and **blank names never render**. The
+   card action is honestly labeled ("Review in run setup" with a nav icon), not a
+   silent jump. *Pass:* no blank-titled cards, no wall of bare LOW cards, the CTA
+   names where it goes.
+8. **Results lost, 5-minute re-scan** (finding 8 → 15.4 / MV-D31). *Navigate away
+   and back:* the proposals are **still there**, the panel reads **"last scanned
+   X ago · N proposals"**, and **no re-scan fires** on mount — Re-scan is an
+   explicit action. *Pass:* returning to the tab hydrates instantly with the prior
+   results; the only scan is one you click.
+
+**B. New surfaces that did not exist at the first pass (verify they work)**
+
+- **Stage progress during a scan** — the SSE-streamed stage checklist (item A2)
+  is itself new; confirm it renders and completes into the results panel.
+- **Scan failure names its stage** — if a scan fails, the panel says **which
+  stage it stopped at** (the terminal stage row / outcome), not a bare error
+  toast. (Force by scanning a space whose warehouse read is denied, if available;
+  otherwise note as not-exercised.)
+- **Hydration summary line** — "last scanned X ago · N proposals" with an
+  explicit **Re-scan** (item A8) is a new first-class surface.
+- **Derived-threshold graph** — the collapse point adapts to the viewport
+  (a taller panel opens denser); confirm resizing the window changes how much
+  opens expanded vs collapsed, and that governance roll-ups persist when
+  collapsed.
+- **Copy-ready DDL on the advice/suggest surface** — the suggest output serves
+  the metric-view DDL + `GRANT` (checklist item 3); confirm it is present and
+  copyable on a suggest-only surface, now that the in-job `mv-ddl` 404 is fixed
+  (Prompt 15.5).
+
 ## Run record
 
 Live results against the dev workspace. Config is recorded by **name only** —
@@ -559,3 +634,82 @@ app after the 15.4 / 12c-Part-2 surfaces land, before Prompt 16.
 **Tier 3:** held behind the reviewer's explicit go (and behind the redeploy rule),
 unchanged by this run. The two findings above are triage input for that go, not a
 blocker recorded as fixed.
+
+### 2026-08-25 — Tier 2 rerun (Scenarios A + B) + `scenario_d`, against redeployed 15.5 + 15.4 — GREEN (Tier 3 gate met)
+
+**Code under test.** Committed `5f7274ee` (Prompt 15.4 — SSE staged progress,
+hydrate-on-mount, first-class Scan / MV-D31) on top of `eb6dc9bf` (Prompt 15.5 —
+servable-body guard + literal-preserving shape render + consent-downgrade stamp),
+with `b44f847f` (`wh_write_stage` uses `INSERT…SELECT`) — **redeployed** to the
+`fevm-serverless-stable` app before this run (the runbook's redeploy rule: 15.5
+changed the in-job render/persist and downgrade-stamp, 15.4 added the interactive
+advice stage-row write, so a Tier that validates the deployed app must run against
+the redeployed code).
+
+**A voided net attempt, recorded for honesty.** A first Tier 2 rerun on 2026-08-25
+is **VOID (environmental)** — a local DNS/network outage broke the test client's
+name resolution mid-poll (`socket.gaierror: nodename nor servname provided` →
+`NameResolutionError` → `MaxRetryError` on `jobs.get_run`), even though the
+underlying workspace job had run. It is not counted as a failed attempt; this
+entry is the clean rerun after connectivity was restored. Separately, the
+`wh_write_stage` **gate-catch** paid for itself before this run: an earlier
+`scenario_d` attempt surfaced
+`[UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.SCALAR_SUBQUERY_IN_VALUES]` from the new
+interactive advice stage-row write — caught by the cheap Tier-1 gate, fixed in
+`b44f847f` (`INSERT…SELECT`), and redeployed before this record was written.
+
+**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
+primary identity `prashanth.subrahmanyam@databricks.com` (OAuth token; gate
+passed). GSO `serverless_stable_6t92c3_catalog.genie_space_optimizer`, warehouse
+`41cfe645e10807a4`; app SP holds `CAN_MANAGE` on the fixture space.
+
+**Config present (names only):** Tier 1 config plus `MV_E2E_SPACE_ID =
+01f1a04003201e38b6f66cddc8d7d0ee`. `GSO_JOB_ID` a **real trigger**. Scenario B
+denies the primary identity via `MV_E2E_DENIED_CATALOG/SCHEMA` default
+`samples.tpch`.
+
+**Commands.**
+- `uv run --frozen --extra dev pytest -m e2e tests/e2e -k "scenario_a or scenario_b" -v -s`
+  — **3271.50s = 54m31s**; serialized; xdist refused.
+- `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
+  — **215.29s = 3m35s**; the Tier-1 gate, confirming the interactive suggest path
+  post-`wh_write_stage`-fix + redeploy.
+
+**Results — `scenario_a or scenario_b` (3 passed):**
+
+| Scenario | Test | Result |
+|---|---|---|
+| A — `suggest_only` run serves DDL + GRANT, creates no MV | `test_scenario_a_suggest_only` | **PASS** — the in-job `GET /runs/{run_id}/mv-ddl` **404 is gone**. Prompt 15.5's servable-body guard + literal-preserving shape render land live: the in-job `suggest_only` path now serves a copy-ready DDL artifact, confirming the 2026-08-25 Tier-2 Scenario-A finding is RESOLVED against the deployed app. |
+| B — denied-permission probe verdict | `test_scenario_b_probe_insufficient` | **PASS** — non-SUFFICIENT verdict on the read-only denied schema, as designed. |
+| B — auto-downgrade run creates nothing, records a reason | `test_scenario_b_run_auto_downgrades` | **PASS** — the downgraded run created **no** MV **and** `/runs/{run_id}/mv-created` now carries a non-null `downgrade_reason`. Prompt 15.5's consent-row stamp (`wh_mark_mv_consent_reverified`, called from `create_and_attach_for_run`) lands live: the 2026-08-25 Tier-2 Scenario-B finding is RESOLVED. |
+
+**Results — `scenario_d` (3 passed — 3/3, unchanged exit criterion held):**
+
+| Scenario D leg | Test | Result |
+|---|---|---|
+| suggest COMPLETE on curated SQL | `test_scenario_d_suggest_with_curated_sql` | **PASS**. |
+| suggest EMPTY-with-reason on a bare space | `test_scenario_d_suggest_empty_with_reason` | **PASS**. |
+| BYO register → `USER_CREATED`, drop 409, provenance | `test_scenario_d_byo_register_refuse_and_provenance` | **PASS** — the interactive suggest path (which writes the new advice stage row via `wh_write_stage`) completes cleanly after the `INSERT…SELECT` fix; no `SCALAR_SUBQUERY_IN_VALUES`. |
+
+**What this exit means.** Both live Tier-2 findings from the 2026-08-25 Tier-2
+entry (Scenario A in-job `mv-ddl` 404; Scenario B `downgrade_reason` NULL) are now
+**green against the redeployed app**, and `scenario_d` is a clean 3/3 on the same
+deploy. This is **Tier 3's gate** — met. The suppression-disclosure surface
+considered at 15.4 was deferred (the `genie_opt_mv_suppressions` columns stay
+all-INTERNAL until a surface explains suppression to the user), noted here so the
+eventual flip reads as planned.
+
+**Eval budget spent.** A/B triggered real optimization jobs (`max_attempts=1`,
+iteration-0 native eval). The **MV-lift subset eval is Tier 3 only** and was not
+spent. `scenario_d` triggered no job / no eval.
+
+**Teardown.** A is `suggest_only` and B downgraded — neither persists a UC object.
+`scenario_d`'s BYO leg created a real view and its finalizer dropped it (the app
+never dropped it). Fixture spaces and scratch schema left in place for reuse.
+
+**Retries:** none for the counted runs; the earlier DNS-broken attempt is VOID
+(environmental), not a retry.
+
+**Manual UI smoke checklist / re-check sheet:** pending — the reviewer runs the
+re-check sheet (added above, next to the ≤10-item checklist) against the deployed
+app after the small 12c-Part-2 redeploy, before Prompt 16.
