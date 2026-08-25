@@ -146,3 +146,98 @@ on failure. If a run is interrupted, manually `DROP VIEW IF EXISTS` any
    was read, what would change the answer), not an error toast.
 10. **Downgrade transparency** — a downgraded run shows the `downgrade_reason`
     and that nothing was created.
+
+## Run record
+
+Live results against the dev workspace. Config is recorded by **name only** —
+no hosts, tokens, or other values. A failure is recorded verbatim and mirrored
+as a gap-report row in `docs/design/mv-advisor-gap-report.md` (MV-D9).
+
+### 2026-08-24 — Tier 1 (Scenario D)
+
+**Workspace / identity:** `fevm-serverless` profile, primary identity
+`prashanth.subrahmanyam@databricks.com` (OAuth token exported in-shell only;
+`current_user.me()` credential gate passed).
+
+**Config present (names only):** `DATABRICKS_HOST`, `DATABRICKS_TOKEN`,
+`GSO_CATALOG`, `GSO_SCHEMA`, `GSO_WAREHOUSE_ID`, `GSO_JOB_ID` (config gate only —
+never triggered), `MV_E2E_SUGGEST_SPACE_ID`, `MV_E2E_EMPTY_SPACE_ID`,
+`MV_E2E_SCRATCH_CATALOG`, `MV_E2E_SCRATCH_SCHEMA`.
+
+**Env-provenance finding (setup):** `.env.deploy` on this machine uses `GENIE_*`
+keys (`GENIE_CATALOG`, `GENIE_WAREHOUSE_ID`, `GENIE_DEPLOY_PROFILE`), **not** the
+`GSO_*` / `DATABRICKS_*` names the config table names. Mapping used:
+`GSO_CATALOG ← GENIE_CATALOG`, `GSO_WAREHOUSE_ID ← GENIE_WAREHOUSE_ID`,
+host+token ← the `GENIE_DEPLOY_PROFILE` CLI profile; `GSO_SCHEMA` defaulted to
+`genie_space_optimizer`; `GSO_JOB_ID` is not in `.env.deploy` and was resolved
+from the deployed job (`genie-workbench-gso-optimization-job`). The runbook's
+env-provenance table should say "from `.env.deploy`'s `GENIE_*` keys (remapped)"
+rather than imply the `GSO_*` names live there verbatim.
+
+**Fixtures created via API (exact config, since the assertions depend on it):**
+- `MV_E2E_SUGGEST_SPACE_ID = 01f1a02f907314728c3fc05d5118b516` — title
+  `mv-e2e-suggest-curated`, parent `/Users/prashanth.subrahmanyam@databricks.com`,
+  one table `samples.tpch.lineitem`, **4** `instructions.example_question_sqls`
+  each aggregating the same measure
+  `SUM(l_extendedprice * (1 - l_discount)) AS discounted_revenue` (total, by
+  ship mode, by return flag, by line status) plus **1**
+  `instructions.sql_snippets.measures` entry
+  `SUM(lineitem.l_extendedprice * (1 - lineitem.l_discount))`. Never optimized.
+  The repeated measure is deliberate: the advisor is recurrence-ranked, so one
+  fingerprint recurring across four curated statements clears candidate emission.
+- `MV_E2E_EMPTY_SPACE_ID = 01f1a02f90151e9abc8b8a8914707dab` — title
+  `mv-e2e-empty-bare`, one table `samples.tpch.region`, **no**
+  `example_question_sqls`, **no** `sql_snippets`, no benchmarks, never queried.
+- Scratch schema `serverless_stable_6t92c3_catalog.mv_advisor_e2e` created for
+  the BYO leg (empty; no views leaked — see teardown).
+
+**Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
+(171.34s; serialized; xdist refused by design).
+
+**Results (2 passed, 1 failed):**
+
+| Scenario D leg | Test | Result |
+|---|---|---|
+| suggest COMPLETE on curated SQL | `test_scenario_d_suggest_with_curated_sql` | **PASS** — status `COMPLETE`, ≥1 proposal, each proposal carries `evidence`. |
+| suggest EMPTY-with-reason on a bare space | `test_scenario_d_suggest_empty_with_reason` | **PASS** — HTTP 200, status `SKIPPED`, non-empty `skip_reason`, `proposals == []`, `error is None`. Not a 500, not silence. |
+| BYO register → `USER_CREATED`, drop refused 409, route-10 provenance | `test_scenario_d_byo_register_refuse_and_provenance` | **FAIL** — blocked at setup; see verbatim below. The register / 409 / provenance assertions were **not reached**. |
+
+**Verbatim failure (`test_scenario_d_byo_register_refuse_and_provenance`):**
+
+```
+    suggest_run = suggest["run_id"]
+    ddl_resp = api_primary.get(f"/api/auto-optimize/runs/{suggest_run}/mv-ddl")
+>   assert ddl_resp.status_code == 200, ddl_resp.text
+E   AssertionError: {"detail":"No metric view DDL artifact for this run."}
+E   assert 404 == 200
+E    +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/e2e/test_mv_advisor_e2e.py:153: AssertionError
+```
+
+**Root cause (characterized, not fixed — a finding per the ground rules):** the
+space-scoped suggest route writes a *born-terminal sentinel advice run* and
+persists proposals (each `MvProposal` carries `proposed_object`, the rendered
+body), but it does **not** write a run-scoped `mv_candidate_ddl` artifact. The
+`GET /runs/{run_id}/mv-ddl` endpoint reads exactly that artifact
+(`_load_latest_artifact(run_id, "mv_candidate_ddl")`), which only the full
+optimization/create path emits — so it 404s for a suggest-only run. The BYO test
+sources its manually-created view's DDL from that endpoint, so its precondition
+is incompatible with the suggest path. The fix belongs in the suite (source the
+BYO DDL from `proposal.proposed_object`, or drive the BYO leg from a real run),
+or in the route (have suggest persist a candidate-DDL artifact for its sentinel
+run) — a design call for review, not made in this run.
+
+**Eval budget spent:** none. Tier 1 triggers no optimization job and no native
+benchmark eval; `GSO_JOB_ID` was a config gate only.
+
+**Teardown confirmed:** the BYO test failed *before* its `CREATE VIEW` step, so
+the app created nothing and the test's finalizer had nothing to drop. Verified
+directly: `SHOW VIEWS IN serverless_stable_6t92c3_catalog.mv_advisor_e2e`
+returned `[]`. The two Genie spaces and the empty scratch schema are left in
+place for Tier 2/3 reuse (ids above); delete them when the suite is retired.
+
+**Retries:** none (the failure is deterministic, not transient).
+
+**Manual UI smoke checklist:** not yet run — it is a human step against the
+deployed app (browser). Pending the reviewer.

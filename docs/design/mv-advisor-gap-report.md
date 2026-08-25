@@ -2040,3 +2040,34 @@ pattern (`OptimizationConfig.tsx:141-164`) · copyable grant-SQL textarea patter
 (Watch resource view only — the semantic-model view is layered SVG per the amended
 Prompt 12 body), charts (all in `frontend/package.json`) · OBO-only client accessor
 (`require_obo_workspace_client`).
+
+---
+
+## Live E2E findings (MV-D9)
+
+Findings from running the Prompt 15 live suite against a real workspace. These
+are recorded here (not fixed inline) so the run and the repo state stay in sync.
+
+### 2026-08-24 — Tier 1 (Scenario D), suggest run has no `mv-ddl` artifact
+
+**Observed.** `POST /api/auto-optimize/spaces/{space_id}/mv/suggest` returns a
+born-terminal sentinel advice run and persists proposals (each `MvProposal`
+carries `proposed_object`, the rendered body), but it does **not** write a
+run-scoped `mv_candidate_ddl` artifact. `GET /api/auto-optimize/runs/{run_id}/mv-ddl`
+reads only that artifact kind, so it returns `404 {"detail":"No metric view DDL
+artifact for this run."}` for a suggest-only run. The full optimization/create
+path is the only writer of that artifact.
+
+**Impact.** The E2E BYO leg (`test_scenario_d_byo_register_refuse_and_provenance`)
+sources its manually-created view's DDL from the `mv-ddl` endpoint, so its
+precondition is incompatible with the suggest path and the leg's real assertions
+(register → `USER_CREATED`, drop refused 409, route-10 provenance) were not
+reached. The other two Scenario-D legs (curated → `COMPLETE` with proposals
+carrying `evidence`; bare → `SKIPPED` with a `skip_reason`, no 500) passed.
+
+**Resolution options (for review, not decided here).** Either (a) point the BYO
+setup at `proposal.proposed_object` (already returned by suggest) or drive the
+BYO leg from a full run that emits the artifact, or (b) have the suggest route
+persist a `mv_candidate_ddl` artifact for its sentinel run so the run-scoped
+endpoint is uniform across suggest and optimize. Verbatim failure and full
+config are in `scripts/e2e/mv_advisor_e2e.md` → Run record → 2026-08-24 Tier 1.
