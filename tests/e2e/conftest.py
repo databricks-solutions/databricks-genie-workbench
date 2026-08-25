@@ -2,8 +2,9 @@
 
 OPT-IN and ENV-GATED. Nothing here touches a workspace unless the tier's config
 is present. A missing variable skips with a message naming the variable AND the
-scenario it gates ("skipped: MV_E2E_LOWPRIV_TOKEN unset (Scenario B)") — never a
-bare skip count. See ``scripts/e2e/mv_advisor_e2e.md`` for the tiered runbook.
+scenario it gates ("skipped: MV_E2E_SCRATCH_SCHEMA unset (Scenarios C/D-BYO)") —
+never a bare skip count. See ``scripts/e2e/mv_advisor_e2e.md`` for the tiered
+runbook.
 
 Invocation model (Prompt 15, decision A). The real FastAPI route code runs
 IN-PROCESS via ``TestClient``; the caller's identity is injected exactly as
@@ -160,15 +161,18 @@ def primary_email(primary_token: str) -> str:
 
 
 @pytest.fixture(scope="session")
-def lowpriv_token() -> str:
-    return require("MV_E2E_LOWPRIV_TOKEN", "Scenario B")
+def denied() -> tuple[str, str]:
+    """A (catalog, schema) the primary identity CANNOT create in — Scenario B.
 
-
-@pytest.fixture(scope="session")
-def lowpriv_email(lowpriv_token: str) -> str:
-    return _resolve_identity(
-        lowpriv_token, label="MV_E2E_LOWPRIV_TOKEN", scenario="Scenario B"
-    )
+    The simplified Scenario B drops the second low-privilege identity: instead of
+    a low-priv token that lacks CREATE on the scratch schema, it points the
+    PRIMARY identity at a schema it cannot write. Defaults to the read-only
+    ``samples.tpch`` every workspace ships, so the tier needs no extra provisioning;
+    override via ``MV_E2E_DENIED_CATALOG`` / ``MV_E2E_DENIED_SCHEMA`` if samples is
+    absent or (unusually) writable. The tradeoff — SP-fallback detection is not
+    exercised live — is recorded in the runbook and the run record.
+    """
+    return (_env("MV_E2E_DENIED_CATALOG") or "samples", _env("MV_E2E_DENIED_SCHEMA") or "tpch")
 
 
 # ── the in-process API client (faithful OBO via the real middleware) ─────────
@@ -219,12 +223,6 @@ class E2EClient:
 def api_primary(primary_token: str, primary_email: str, gso: GsoConfig) -> E2EClient:
     """API client as the signed-in user. Requires the primary credential gate."""
     return E2EClient(primary_token, primary_email)
-
-
-@pytest.fixture
-def api_lowpriv(lowpriv_token: str, lowpriv_email: str, gso: GsoConfig) -> E2EClient:
-    """API client as the low-privilege identity (Scenario B)."""
-    return E2EClient(lowpriv_token, lowpriv_email)
 
 
 # ── direct workspace access for setup / assertions / teardown ────────────────

@@ -31,31 +31,33 @@ to "save time" — you'll blow the ceiling and get throttled failures, not speed
 ## Prerequisites (dev workspace)
 
 Per the playbook "Before you start": the TPC-H samples catalog (`samples.tpch`),
-a scratch schema you own (e.g. `main.mv_advisor_dev`), a small Genie Agent with
-10–15 benchmark questions, and a **second** test identity that lacks
-`CREATE TABLE` / `USE SCHEMA` on the scratch schema.
+a scratch schema you own (e.g. `main.mv_advisor_dev`), and a small Genie Agent
+with 10–15 benchmark questions. **No second identity is required** — the
+simplified Scenario B denies the *primary* identity by pointing it at a
+read-only schema (`samples.tpch` by default) it cannot create in, rather than
+minting a low-privilege token.
 
 ## Configuration — what each value is and where it comes from
 
 Every variable is env-gated. A missing one **skips** the tests it gates with a
 message naming the variable and the scenario — e.g.
-`skipped: MV_E2E_LOWPRIV_TOKEN unset (Scenario B)` — never a bare skip count. A
+`skipped: MV_E2E_SPACE_ID unset (Scenario B)` — never a bare skip count. A
 credential that is *set but invalid* fails the gate loudly (a bad token surfaces
 as a clear gate error, not a mid-scenario 401).
 
 | Variable | What it is | Where it comes from |
 |---|---|---|
-| `DATABRICKS_HOST` | Workspace URL | Your dev workspace |
+| `DATABRICKS_HOST` | Workspace URL | Your dev workspace (or the host of the `.env.deploy` `GENIE_DEPLOY_PROFILE` CLI profile) |
 | `DATABRICKS_TOKEN` | PAT for the **signed-in user** | `databricks auth token` / a PAT; this identity is `created_by` for Scenario C |
-| `GSO_CATALOG` | GSO Delta catalog | `.env.deploy` (written by `scripts/install.sh`) or the deployed app's `app.yaml` |
-| `GSO_SCHEMA` | GSO Delta schema (default `genie_space_optimizer`) | `.env.deploy` / `app.yaml` |
-| `GSO_WAREHOUSE_ID` (or `SQL_WAREHOUSE_ID`) | SQL warehouse for Delta reads + DDL | `.env.deploy` / `app.yaml` |
-| `GSO_JOB_ID` | The optimization job id | `.env.deploy` / `app.yaml`. **Tier 1 needs it present only as the `_is_configured` gate — suggest never triggers it.** |
+| `GSO_CATALOG` | GSO Delta catalog | `.env.deploy` — as the `GENIE_CATALOG` key (remapped); or the deployed app's `app.yaml` as `GSO_CATALOG` |
+| `GSO_SCHEMA` | GSO Delta schema (default `genie_space_optimizer`) | Not in `.env.deploy` — default it, or read `GSO_SCHEMA` from `app.yaml` |
+| `GSO_WAREHOUSE_ID` (or `SQL_WAREHOUSE_ID`) | SQL warehouse for Delta reads + DDL | `.env.deploy` — as the `GENIE_WAREHOUSE_ID` key (remapped); or `app.yaml` as `GSO_WAREHOUSE_ID` |
+| `GSO_JOB_ID` | The optimization job id | **Not** in `.env.deploy`. Read it from `app.yaml`, or resolve from the deployed job (`genie-workbench-gso-optimization-job`). **Tier 1 needs it present only as the `_is_configured` gate — suggest never triggers it.** |
 | `MV_E2E_SUGGEST_SPACE_ID` | A never-optimized space **with** curated SQL | You create it by hand (recipe below) |
 | `MV_E2E_EMPTY_SPACE_ID` | A genuinely bare space (no curated SQL, no history) | You create it by hand (recipe below) |
-| `MV_E2E_SPACE_ID` | An eval-capable space with 10–15 benchmark questions | Playbook "Before you start" step 3 |
+| `MV_E2E_SPACE_ID` | An eval-capable space with 10–15 benchmark questions | You create it by hand (Tier 2 prep; recorded in the run record) |
 | `MV_E2E_SCRATCH_CATALOG` / `MV_E2E_SCRATCH_SCHEMA` | The consented scratch schema you own | You own it (e.g. `main` / `mv_advisor_dev`) |
-| `MV_E2E_LOWPRIV_TOKEN` | PAT for a user deliberately lacking `USE SCHEMA`/`CREATE TABLE` on the scratch schema | A second workspace user (playbook step 3) |
+| `MV_E2E_DENIED_CATALOG` / `MV_E2E_DENIED_SCHEMA` | A schema the **primary** identity cannot create in (Scenario B) | **Optional** — defaults to the read-only `samples` / `tpch` every workspace ships. Override only if samples is absent or writable. |
 
 ### Recipes for the two Scenario-D spaces
 
@@ -84,14 +86,24 @@ on a bare space, and the BYO cheap path (register → `USER_CREATED`, drop **ref
 uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v
 ```
 
-### Tier 2 — Scenarios A and B (adds `GSO_JOB_ID` as a real job + `MV_E2E_LOWPRIV_TOKEN`)
+### Tier 2 — Scenarios A and B (adds `GSO_JOB_ID` as a real job + `MV_E2E_SPACE_ID`)
 
-Needs Tier 1 plus `MV_E2E_SPACE_ID` and `MV_E2E_LOWPRIV_TOKEN`. Proves: a
-`suggest_only` run completes with ≥1 candidate, a parseable/structurally-valid
-DDL artifact, DDL + GRANT on the UI endpoints, and no MV created (A); and the
-denied-permission **INSUFFICIENT** probe plus the auto-downgrade run that creates
-nothing and records a `downgrade_reason` (B). These trigger real optimization
-runs (bounded with `max_attempts=1`).
+Needs Tier 1 plus `MV_E2E_SPACE_ID` (an eval-capable space). Scenario B needs no
+extra identity or token — it denies the **primary** identity by pointing the
+probe at `MV_E2E_DENIED_CATALOG/SCHEMA` (default `samples.tpch`, read-only).
+Proves: a `suggest_only` run completes with ≥1 candidate, a
+parseable/structurally-valid DDL artifact, DDL + GRANT on the UI endpoints, and
+no MV created (A); and the denied-permission probe (**INSUFFICIENT** on
+not-granted, or **UNKNOWN** on unreadable — both downgrade) plus the
+auto-downgrade run that creates nothing and records a `downgrade_reason` (B).
+These trigger real optimization runs (bounded with `max_attempts=1`).
+
+> **Scenario B tradeoff.** Denying the primary identity on a read-only schema
+> covers what matters — the INSUFFICIENT/UNKNOWN verdict and the downgrade — but
+> it does **not** exercise the SP-fallback path a genuinely low-privilege OBO
+> token would (where the probe reads succeed but the create is denied at a
+> different layer). That path is pinned **offline** by the backend unit suite;
+> the live tier verifies the boundary and the downgrade only.
 
 ```bash
 uv run --frozen --extra dev pytest -m e2e tests/e2e -k "scenario_a or scenario_b" -v
@@ -129,8 +141,9 @@ on failure. If a run is interrupted, manually `DROP VIEW IF EXISTS` any
 
 1. **Consent panel** — enabling create-and-attach shows the schema-scoped consent
    with the target catalog/schema and a materialize checkbox that is *separate*.
-2. **Denial banner** — as the low-priv user, the probe surfaces INSUFFICIENT with
-   the missing privilege and a copy-ready GRANT; the run falls back to suggest_only.
+2. **Denial banner** — probing a schema you cannot create in (e.g. `samples.tpch`)
+   surfaces INSUFFICIENT/UNKNOWN with the missing privilege and a copy-ready GRANT;
+   the run falls back to suggest_only.
 3. **DDL panel** — the suggest_only output shows the metric-view DDL and the
    `GRANT SELECT ON VIEW … TO` line, both copyable.
 4. **Created-object panel** — after create_and_attach, the object shows
@@ -241,3 +254,84 @@ place for Tier 2/3 reuse (ids above); delete them when the suite is retired.
 
 **Manual UI smoke checklist:** not yet run — it is a human step against the
 deployed app (browser). Pending the reviewer.
+
+### 2026-08-24 — Tier 1 rerun (Scenario D), after the Prompt 15.1 DDL fix
+
+**Same workspace / identity / D fixtures as the Tier 1 entry above** (`fevm-serverless`
+profile; `MV_E2E_SUGGEST_SPACE_ID`/`MV_E2E_EMPTY_SPACE_ID`/scratch ids unchanged;
+`GENIE_*` remap; `GSO_JOB_ID` resolved from the deployed job; config gate only).
+
+**Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
+(170.06s; serialized; xdist refused).
+
+**Results (2 passed, 1 failed — 2/3):**
+
+| Scenario D leg | Test | Result |
+|---|---|---|
+| suggest COMPLETE on curated SQL | `test_scenario_d_suggest_with_curated_sql` | **PASS** (unchanged). |
+| suggest EMPTY-with-reason on a bare space | `test_scenario_d_suggest_empty_with_reason` | **PASS** (unchanged). |
+| BYO register → `USER_CREATED`, drop 409, provenance | `test_scenario_d_byo_register_refuse_and_provenance` | **FAIL — new blocker.** The 404 is GONE (the leg cleared `assert ddl_resp.status_code == 200` and received `yaml_text`, confirming the Prompt 15.1 fallback works live); it then failed one step later at the manual `CREATE VIEW`. |
+
+**What the rerun proved about Prompt 15.1.** The fix works: `GET /runs/{id}/mv-ddl`
+now returns 200 for a suggest-only sentinel run and serves the candidate row's
+`yaml_text`. The prior 404 (`tests/…:153`) is resolved; the leg advanced to
+`tests/…:162`.
+
+**New finding (recorded, not fixed) — masked numeric literal in the rendered expr:**
+
+```
+E   RuntimeError: SQL warehouse query failed:
+E   [INVALID_IDENTIFIER] The unquoted identifier n-l_discount is invalid and must be back quoted as: `n-l_discount`.
+E   == SQL of METRIC VIEW …mv_e2e_byo [measures.`measure_l_discount_l_extendedprice`.expr] …
+```
+
+The dumped `yaml_text` (read from `genie_opt_mv_candidates`) shows the culprit —
+the curated measure `SUM(l_extendedprice * (1 - l_discount))` was persisted as:
+
+```
+measures:
+  - name: measure_l_discount_l_extendedprice
+    expr: sum(l_extendedprice * (?n - l_discount))
+```
+
+The numeric literal `1` was masked to a placeholder `?n` upstream (a
+literal-normalization/parameterization step), so the served "copy-ready" DDL is
+not executable for any literal-bearing measure. Mirrored as a gap-report row
+(MV-D9, 2026-08-24 Tier 1 rerun). This is a product defect in the measure-expr
+rendering, orthogonal to Prompt 15.1 (whose read route faithfully served what was
+stored) and to the Scenario-B simplification.
+
+**Eval budget spent:** none (Scenario D triggers no job / no native eval).
+
+**Teardown confirmed:** the BYO test failed *before* a successful CREATE (the
+CREATE was rejected), so nothing was created; the finalizer's `DROP VIEW IF
+EXISTS` was a no-op. D fixtures left in place for reuse.
+
+**Retries:** one targeted rerun of the BYO leg alone (`-k byo`) to capture the
+full traceback — same deterministic failure, not transient.
+
+### 2026-08-24 — Scenario B simplification (no live run)
+
+Scenario B was simplified to drop the second low-privilege identity. It now denies
+the **primary** identity by probing a schema it cannot create in
+(`MV_E2E_DENIED_CATALOG/SCHEMA`, default the read-only `samples.tpch`), and the
+probe assertion accepts `verdict in {INSUFFICIENT, UNKNOWN}` — denied and
+unreadable are indistinguishable at the UC boundary (the MV-D13 reasoning), and
+`_verdict` returns INSUFFICIENT only on DENIED while UNKNOWN short-circuits
+(`mv_entitlement.py:400-402`). The downgrade assertion stays strict: `verify()`
+treats anything short of SUFFICIENT as a downgrade, so the run-half test holds for
+either verdict. Fixtures `lowpriv_token`/`lowpriv_email`/`api_lowpriv` and the
+`MV_E2E_LOWPRIV_TOKEN` variable are retired.
+
+**Tradeoff (recorded).** This covers the denial verdict and the downgrade, but
+does **not** exercise live the SP-fallback detection a genuinely low-privilege
+OBO token would (probe reads succeed, create denied at a different layer). That
+path stays pinned **offline** by the backend unit suite. If the live UNKNOWN
+outcome is what a future Tier-2 run observes, record it there — it is information
+about the workspace's `samples` grants, not a defect.
+
+**MV_E2E_SPACE_ID (Tier 2 prep):** not yet built. The rerun finding above (numeric
+literals mask to `?n` in the rendered measure expr) directly shapes how the
+benchmark corpus's measures should be authored, so the build is deferred pending
+the reviewer's call on whether to fix the masking first or author literal-free
+measures around it.

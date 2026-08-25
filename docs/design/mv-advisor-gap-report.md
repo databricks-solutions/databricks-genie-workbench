@@ -2089,4 +2089,57 @@ corrected (`DELIBERATELY INTERNAL` → `SERVED | route 7`) — the old rationale
 false twice over (route 7 served the raw column for artifact-backed runs even
 before this, and advice runs 404'd). Pinned by
 `test_get_mv_ddl_falls_back_to_candidate_yaml_text` (backend 637 → 638) and the
-IQ Scan DDL-panel frontend test. Scenario D reruns three-for-three green.
+IQ Scan DDL-panel frontend test. The Scenario D rerun VERIFIED the 404 is gone —
+the BYO leg now clears `assert ddl_resp.status_code == 200` and receives
+`yaml_text` — but then surfaced a distinct, deeper defect one step later (at the
+CREATE), recorded as its own finding below. So this gap is resolved; the rerun is
+**2/3** (curated-COMPLETE and empty-SKIPPED still pass), not three-for-three, for
+a reason orthogonal to this fix.
+
+### 2026-08-24 — Tier 1 rerun (Scenario D), rendered measure expr masks numeric literals
+
+**Observed.** With the 404 resolved, the BYO leg now fetches the advisor's
+rendered DDL (HTTP 200) and executes `CREATE VIEW … WITH METRICS LANGUAGE YAML`
+against the warehouse. The CREATE fails:
+
+```
+[INVALID_IDENTIFIER] The unquoted identifier n-l_discount is invalid and must be
+back quoted as: `n-l_discount`. … == SQL of METRIC VIEW …
+[measures.`measure_l_discount_l_extendedprice`.expr] …
+```
+
+The stored `yaml_text` (read directly from `genie_opt_mv_candidates`) contains:
+
+```
+measures:
+  - name: measure_l_discount_l_extendedprice
+    expr: sum(l_extendedprice * (?n - l_discount))
+```
+
+The curated measure was the canonical TPC-H revenue measure
+`SUM(l_extendedprice * (1 - l_discount))`. The numeric literal `1` was masked to
+a placeholder token `?n` somewhere in the candidate/measure synthesis (a
+literal-normalization or parameterization step — the same class of transform
+used for fingerprint dedup / leakage-guarding), and that masked form is what got
+persisted as the measure `expr`. When the metric-view engine parses the body,
+`?n - l_discount` is read as an expression referencing an invalid identifier
+`n-l_discount`, so the DDL is rejected.
+
+**Impact.** This is more consequential than a test blocker. Prompt 15.1's whole
+promise is *copy-ready* DDL, and for any measure containing a numeric literal
+(discounted revenue, tax-inclusive totals, percentage-of, etc. — a large and
+common class) the served DDL is **not executable as-is**. The read route is
+faithful — it serves exactly what was rendered — so the defect is upstream in
+the measure-expr rendering, not in the Prompt 15.1 fallback. Scenario A's
+"structurally-valid DDL artifact" assertion and any create-and-attach on such a
+measure are exposed to the same masking.
+
+**Not fixed here (a finding per the ground rules).** The literal-masking is
+outside the Prompt 15.1 / Scenario-B scope and belongs in the measure-synthesis
+/ mv_yaml expr path, with its own review — the parameterized form must not leak
+into the persisted `expr`; the human-readable literal (`1`) must survive to the
+rendered body. Recorded so the "copy-ready DDL" claim is qualified until it is
+fixed. Root-cause pointer: search the candidate/measure expr construction for
+where a normalized/parameterized expression (`?`-placeholders) is used in place
+of the literal source expression. Verbatim failure and the dumped `yaml_text`
+are in `scripts/e2e/mv_advisor_e2e.md` → Run record → 2026-08-24 Tier 1 rerun.

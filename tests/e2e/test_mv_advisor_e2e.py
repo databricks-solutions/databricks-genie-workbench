@@ -240,17 +240,28 @@ def test_scenario_a_suggest_only(api_primary, ws, gso, poll_job_run):
 # ── Scenario B — denied permission downgrade (Tier 2) ────────────────────────
 
 
-def test_scenario_b_probe_insufficient(api_lowpriv, gso, scratch, lowpriv_email):
-    """B (probe half): the low-priv identity's probe for create_and_attach on the
-    scratch schema returns INSUFFICIENT with the missing privilege named."""
-    require("GSO_JOB_ID", "Scenario B")
-    scratch_catalog, scratch_schema = scratch
+def test_scenario_b_probe_insufficient(api_primary, gso, denied):
+    """B (probe half): the PRIMARY identity's probe for create_and_attach on a
+    schema it cannot write returns a non-SUFFICIENT verdict — either INSUFFICIENT
+    (grants resolve as not-granted) or UNKNOWN (grants resolve as unreadable).
 
-    resp = api_lowpriv.post(
+    Both are acceptable and asserted as a set: at the UC boundary denied and
+    unreadable are indistinguishable (the same reasoning MV-D13 recorded for
+    NOT_FOUND being treated as DENIED), and ``_verdict`` returns INSUFFICIENT only
+    on DENIED while UNKNOWN short-circuits to UNKNOWN (mv_entitlement.py:400-402).
+    Either downgrades a create_and_attach run, so the scenario's substance holds;
+    the strict downgrade is pinned by the run-half test below. (This is the
+    simplified Scenario B — no second low-priv identity; the SP-fallback detection
+    it would have exercised is pinned offline instead, per the runbook tradeoff.)
+    """
+    require("GSO_JOB_ID", "Scenario B")
+    denied_catalog, denied_schema = denied
+
+    resp = api_primary.post(
         "/api/auto-optimize/mv/probe",
         json={
-            "catalog": scratch_catalog,
-            "schema": scratch_schema,
+            "catalog": denied_catalog,
+            "schema": denied_schema,
             "space_id": require("MV_E2E_SPACE_ID", "Scenario B"),
             "source_tables": [],
             "materialize_consented": False,
@@ -258,27 +269,37 @@ def test_scenario_b_probe_insufficient(api_lowpriv, gso, scratch, lowpriv_email)
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["verdict"] == "INSUFFICIENT", (
-        f"low-priv identity should be INSUFFICIENT; got {body['verdict']}. "
-        f"Ensure MV_E2E_LOWPRIV_TOKEN's user lacks USE SCHEMA/CREATE TABLE on "
-        f"{scratch_catalog}.{scratch_schema}."
+    verdict = body["verdict"]
+    assert verdict in {"INSUFFICIENT", "UNKNOWN"}, (
+        f"primary identity on the denied schema {denied_catalog}.{denied_schema} "
+        f"should be INSUFFICIENT (not-granted) or UNKNOWN (unreadable) — both "
+        f"downgrade a create_and_attach run and are indistinguishable at the UC "
+        f"boundary (MV-D13). Got {verdict}. A SUFFICIENT verdict means the denied "
+        f"schema is unexpectedly writable by this identity; set "
+        f"MV_E2E_DENIED_CATALOG/SCHEMA to one it cannot create in."
     )
-    assert body["missing"], "INSUFFICIENT verdict named no missing privilege"
+    # missing is named on the DENIED path; UNKNOWN short-circuits before it.
+    if verdict == "INSUFFICIENT":
+        assert body["missing"], "INSUFFICIENT verdict named no missing privilege"
 
 
-def test_scenario_b_run_auto_downgrades(api_lowpriv, ws, gso, scratch, poll_job_run, lowpriv_email):
-    """B (run half): a create_and_attach run whose consent re-verifies to
-    INSUFFICIENT auto-downgrades to suggest_only, creates NO UC object, records a
-    downgrade_reason, and still completes the optimization."""
+def test_scenario_b_run_auto_downgrades(api_primary, ws, gso, denied, poll_job_run, primary_email):
+    """B (run half): a create_and_attach run whose consent re-verifies to a
+    non-SUFFICIENT verdict on the denied schema auto-downgrades to suggest_only,
+    creates NO UC object, records a downgrade_reason, and still completes the
+    optimization. This is the assertion that carries the scenario — verify()
+    treats anything short of SUFFICIENT as a downgrade, so it holds identically
+    for INSUFFICIENT and UNKNOWN and stays strict regardless of which the probe
+    half observed."""
     require("GSO_JOB_ID", "Scenario B")
     space_id = require("MV_E2E_SPACE_ID", "Scenario B")
-    scratch_catalog, scratch_schema = scratch
+    denied_catalog, denied_schema = denied
 
-    probe = api_lowpriv.post(
+    probe = api_primary.post(
         "/api/auto-optimize/mv/probe",
         json={
-            "catalog": scratch_catalog,
-            "schema": scratch_schema,
+            "catalog": denied_catalog,
+            "schema": denied_schema,
             "space_id": space_id,
             "source_tables": [],
             "materialize_consented": False,
@@ -286,7 +307,7 @@ def test_scenario_b_run_auto_downgrades(api_lowpriv, ws, gso, scratch, poll_job_
     ).json()
     probe_id = probe["probe_id"]
 
-    resp = api_lowpriv.post(
+    resp = api_primary.post(
         "/api/auto-optimize/trigger",
         json={
             "space_id": space_id,
@@ -294,7 +315,7 @@ def test_scenario_b_run_auto_downgrades(api_lowpriv, ws, gso, scratch, poll_job_
             "mv_action_mode": "create_and_attach",
             "max_attempts": 1,
             "mv_consent": {
-                "granted_by": lowpriv_email,
+                "granted_by": primary_email,
                 "granted_at": _now_iso(),
                 "probe_id": probe_id,
             },
@@ -306,7 +327,7 @@ def test_scenario_b_run_auto_downgrades(api_lowpriv, ws, gso, scratch, poll_job_
     result = poll_job_run(job_run_id)
     assert result.result_state == "SUCCESS", f"downgraded run must still finish: {result}"
 
-    created = api_lowpriv.get(f"/api/auto-optimize/runs/{run_id}/mv-created").json()
+    created = api_primary.get(f"/api/auto-optimize/runs/{run_id}/mv-created").json()
     assert created["created"] == [], "a downgraded run must create NO metric view"
     assert created["downgrade_reason"], "downgrade left no downgrade_reason on the run"
 
