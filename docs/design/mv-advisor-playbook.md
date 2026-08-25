@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D32 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D33 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -326,7 +326,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D32)
+## Decisions register (MV-D1–MV-D33)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -619,6 +619,10 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 **MV-D32 — Confidence semantics for evidence-poor spaces, and the cold-start quality question (DECIDED — Prompt 15.7; reviewer-approved).** From the second smoke run: a real proposal governing 5 measures recurring across 18 curated queries surfaced at 34% / LOW, and the user's question — "why so low, and can we improve without queries, since tables are sometimes fresh?" — exposes that the displayed number conflates two things MV-D15 keeps separate: how strong the AVAILABLE evidence is, and how much evidence is available. On a fresh table L and D are structurally absent (no lineage, no history), so the blend is capped near Y+S's 0.50 weight share — the 34% is mostly a statement about coverage, not about the proposal being doubtful. Displaying the raw blend as "confidence" tells the user their strongest candidate is weak, which is false. Two sub-questions 15.7 decides, with the constraint that the LYDS blend arithmetic and MV-D15's availability honesty stay byte-untouched: (1) DISPLAY — whether the surfaced number becomes coverage-aware (e.g. score-of-available-signals plus an explicit "based on curated SQL only — no usage history yet" caption), so evidence-poor is presented as evidence-poor rather than as low-quality; (2) COLD-START QUALITY — whether an LLM-grounded quality judgment (schema + profiling + curated context, through the workbench's model-serving path, structurally validated like 17b's drafts) joins as a NEW, separately-labeled signal for fresh-table spaces — related to MV-D25's SCHEMA_DERIVED provenance and Prompt 18's profiling route, and bound by the same rule: a judgment-backed score never silently shares a scale with a recurrence-backed one. Industry grounding for 15.7's research: the deterministic-ontology-plus-LLM-decomposition pattern (dbt MetricFlow, Cube, AtScale) generates the semantic layer from declared schema + relationships, not from query recurrence — evidence that a schema-first route can be credible when usage history does not exist yet.
 
 > *DECISION (Prompt 15.7, reviewer-approved; see `docs/design/mv-cold-start-confidence-note.md`).* **(1) DISPLAY and (3) cross-surface enrichment ship as-implemented** — the coverage-aware evidence-basis caption (`confidenceDisplay`) and the "evidence grew beyond the initial scan" line (`evidenceGrowth`), both pure display/assembly with the LYDS blend and MV-D15 coverage byte-untouched. **(2) COLD-START QUALITY is deferred per §5**: the LLM-grounded judgment signal does NOT ship on this branch and, if it ever ships, must be a separately-labeled axis (its own SCHEMA_DERIVED provenance, never scale-shared with recurrence) — it collides with MV-D25 (owned by the create-agent branch) and is bound by the scale-sharing rule. The research note stops at its checkpoint accordingly. **Pre-planned follow-up, now built (Prompt 15.7b):** the note's §2 recorded that promoting coverage-capped-strong proposals into the default list was rejected *for now* only because `uncapped_tier`/`tier_capped_by_coverage` (computed in `mv_scoring.to_payload`) were not persisted. 15.7b persists them additively (CREATE DDL + `ADDITIVE_COLUMN_MIGRATIONS`, both `wh_*`/Spark writers, exposure-matrix SERVED rows, MV-D21 written-column pin extended) and splits surfacing on them: a proposal whose uncapped tier is MEDIUM+ but was coverage-capped joins the default list wearing a distinct **"Strong (evidence-limited)"** badge with the §2 caption, never a bare LOW and never buried behind the MV-D30 disclosure; plain LOW (uncapped LOW included) stays behind the disclosure. The Recommended-badge ranking (15.6) orders a capped-strong proposal by its *uncapped* tier, with the caption carrying the honesty. The coverage cap × MEDIUM+-default composition makes this load-bearing, not optional: without it a genuinely-strong cold-start proposal is capped to LOW and buried, reintroducing the very "strong candidate hidden" defect the caption only half-closed.
+
+**MV-D33 — The metric view is a semantic model, and the graph must draw it as one: a deduplicated relational canvas with metric views as on-demand boundaries and provenance-tagged measure boxes (DECIDED — Prompt 12e; reviewer-approved, see `docs/design/semantic-graph-v3-note.md`).** From the semantic-model smoke review of the v2 grouped layout (Prompt 12c/12d): a Databricks metric view is not a leaf — it is a `source` fact + a `joins` star/snowflake of dimension tables + its own `dimensions`/`measures` (the exact shape `mv_yaml.generate` emits and the DBR `WITH METRICS` YAML spec defines), yet the graph drew it as one opaque "N measures" card, hiding the model it exists to express. Two constraints the reviewer set are non-negotiable and eliminate whole branches: **(1) a relational model is duplicate-free** — no table, fact or dim, appears twice; a dim shared by two MVs is ONE node, killing the "each MV holds copies of its tables" shape (brainstorm v5); **(2) arrows require proof** — an edge is drawn only where a join is declared (`joins.on`/`using` in the MV YAML) or a relationship is declared in the Genie space config; no declared relationship → no arrow, so unmodeled tables float edgeless. What 12e decides, taking the v7 mockup as the visual contract: tables are the deduplicated node set; **measures are boxed by owner** on the right — one box per MV plus a Space-config box for the loose (ungoverned/curated) measures NOT in any MV — each measure provenance-tagged, unnamed measures collapsed to a count (12d/MV-D29 hygiene carried forward); **the MV is a BOUNDARY, not a node** — at rest the boundary is the measure box with subtle arrows to the tables it uses (declared joins only), and on SELECTION a second boundary wraps the tables in its definition ("tables used by Revenue MV"); reuse is membership not duplication (a shared dim lights the multiple MV boxes that use it); **unmodeled tables get a neutral edgeless region** (the governance gap made visible); and **any box is draggable** (session-only user transform, reset restores the deterministic home layout). Determinism and the diff-overlay invariant hold byte-for-byte: the render stays a pure function of `(tables, edges, mvBoxes, selection, dragOffsets, viewport)`; drag is layered on top of a deterministic home layout, never persisted, so it cannot perturb the diff. The layout-library position is REAFFIRMED (v2 §6 grounds unchanged) — the new pieces (Euler-aware member-contiguous placement so a select-time boundary encloses exactly its members; free-form drag) are pure placement rules plus a user offset, not a solver; the boundary that would flip it is unchanged. New data the reader must fetch (grounding, not invention): the MV's internal `source`/`joins`/`dimensions`/`measures` from its YAML (the source of both the join-arrow PROOF and the inset join tree), read via the existing describe path / `data_sources.metric_views`, never re-derived. This SUPERSEDES the v2 note only where it drew the MV as a leaf card; v2's legibility levers (grouping, fit, focus/search, the derived collapse threshold §9, edge ports §5, governance-roll-up-survives-grouping §8) are all carried forward unchanged.
+
+> *DECISION (Prompt 12e, reviewer-approved).* The three v3-note checkpoint questions are settled as: **(1)** shared-dim at-rest cue is on-demand boundaries + measure boxes/arrows (optional membership dots), NOT persistent hulls (the v6 overlapping-set clutter finding); **(2)** the Euler-aware contiguity pass is prototyped against 3/10/30-table fixtures before the boundary rectangle is committed, falling back to a member-hull outline if contiguity cannot be guaranteed for pathological membership overlaps; **(3)** user drag is session-only, "Reset layout" restores home, and layout is NOT persisted (keeps the model and the diff clean). Governance stays the headline (MV-D8/12b spirit): the per-box and panel-level governed/curated/ungoverned roll-up renders even when detail is collapsed.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -2302,6 +2306,69 @@ that still is not fitted.*
    the multi-edge fan-out that still crosses; ports exist, use them per-side.
 5. Structural tests per item; screenshots into the run record for the
    before/after story.
+```
+
+### Prompt 12e — Semantic model v3: the metric view drawn as a semantic model (decides MV-D33)
+
+*From the semantic-model smoke review of the v2 grouped layout: the graph draws
+a metric view as one opaque "N measures" card, but an MV is itself a semantic
+model (`source` fact + `joins` star/snowflake of dims + its own `dimensions`/
+`measures`). READ `docs/design/semantic-graph-v3-note.md` first — it is the
+approved design and the v7 mockup is its visual contract. DECIDE MV-D33 (it is
+recorded reviewer-approved; confirm it stands, do not re-open) and honor its two
+hard constraints: a relational model is duplicate-free, and arrows require
+declared proof.*
+
+```
+DECIDE MV-D33 first (confirm the register entry). Then, frontend + one reader
+extension, no scoring or persistence changes:
+
+1. Data (grounding, not invention): extend the semantic-graph reader to fetch
+   each metric view's INTERNAL structure — source, joins (on/using),
+   dimensions, measures — from its YAML via the existing describe path /
+   data_sources.metric_views. This is the ONLY admissible source of join-arrow
+   proof and of the inset join tree; never re-derive a join from name
+   similarity or co-membership. A join with no declared on/using yields NO
+   arrow. Config measures (loose, in no MV) come from the space config the
+   reader already assembles.
+2. Deduplicated relational canvas (constraint 1): tables (fact + dim) are the
+   node set, each rendered EXACTLY ONCE; a dim shared by two MVs is one node.
+   Test: shared dim => single node, membership marked in both MV boxes.
+3. Measures boxed by owner: one box per metric view carrying its measures, plus
+   a Space-config box for measures in no MV; each measure provenance-tagged
+   (MV/governed vs config/ungoverned); unnamed measures collapse to a count
+   (+N unnamed) — the 12d/MV-D29 hygiene validator (no ?n/?s, no sug_) extended
+   to this surface.
+4. MV as an on-demand boundary (not a node): at rest the boundary is the
+   measure box, with subtle arrows from the box to the tables it uses (declared
+   joins only), and tables carry NO boundary at rest; on SELECT of an MV box,
+   draw a labeled boundary wrapping EXACTLY its member tables (the Euler
+   contiguity guarantee — no foreign table inside the rect; fall back to a
+   member-hull outline if contiguity fails), highlight only its declared join
+   arrows (N:1 glyph at rest, full on-predicate on hover — labels-on-demand),
+   light its measures, dim the rest.
+5. Unmodeled region (constraint 2 corollary): tables in the space/catalog but
+   in no MV render in a neutral "Unmodeled · no MV" region with ZERO edges.
+   Test: unmodeled table has no arrows.
+6. Selection semantics: select table => light the MV box(es) using it (shared
+   table lights several) + its declared edges; Lineage vs Impact retained from
+   12c (both-direction vs downstream blast radius). Select measure => owning box
+   + the tables in that MV's definition.
+7. Direct manipulation: any table or MV box is DRAGGABLE (session-only offset,
+   layered on the deterministic home layout, cleared by "Reset layout"); pan on
+   empty background. Drag is NOT persisted and NOT part of the diff seed.
+8. Determinism preserved (v2 §7): render stays a pure function of
+   (tables, edges, mvBoxes, selection, dragOffsets, viewport);
+   renderToStaticMarkup-testable; the proposed-MV diff overlay draws as a dashed
+   boundary over existing tables (no ghost table copies). Carry forward v2's
+   fit / focus / derived collapse threshold (§9) / edge ports (§5) unchanged.
+9. Governance roll-up survives grouping (v2 §8, MV-D8 spirit): per-box and
+   panel-level governed/curated/ungoverned counts render even when detail is
+   collapsed. Inset (curator panel) carries the join tree (indented for
+   snowflake), dimensions grouped by binding, measure governance, filter,
+   materialization, and reuse/conflict signals.
+10. Structural tests per item above; before/after screenshots into the run
+    record. No layout library (MV-D33 / v2 §6 reaffirmed).
 ```
 
 ### Prompt 16 — Docs, changelog, PR

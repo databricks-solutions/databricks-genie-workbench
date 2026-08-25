@@ -1,5 +1,13 @@
 # Semantic model visualization v2 — design note (Prompt 12c Part 2)
 
+> **Superseded in part by `semantic-graph-v3-note.md` (MV-D33 / Prompt 12e).**
+> v3 keeps every legibility lever below (grouping, fit, focus/search, the
+> derived collapse threshold §9, edge ports §5, governance-roll-up §8) but
+> replaces the "MV drawn as a single leaf card" model with a deduplicated
+> relational canvas where the metric view is an on-demand boundary and measures
+> are boxed by owner. Read v3 for the current model; this note stands for the
+> legibility reasoning it still owns.
+
 **Status: CHECKPOINT — awaiting reviewer sign-off. Docs-only; no code lands
 until this note is approved.** Part 1 (the pan/zoom null-race fix + error
 boundary, smoke finding 5) already shipped (`9c2737f7`); this note covers the

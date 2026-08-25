@@ -713,3 +713,58 @@ never dropped it). Fixture spaces and scratch schema left in place for reuse.
 **Manual UI smoke checklist / re-check sheet:** pending — the reviewer runs the
 re-check sheet (added above, next to the ≤10-item checklist) against the deployed
 app after the small 12c-Part-2 redeploy, before Prompt 16.
+
+### 2026-08-25 — `scenario_d` against redeployed 15.6 / 15.7 / 15.7b / 12d — 3/3 GREEN
+
+**Code under test.** Committed `c9fd9f6c` (Prompt 15.7b — persist
+`uncapped_tier`/`tier_capped_by_coverage` + coverage-capped-strong surfacing,
+MV-D32 DECIDED) on top of `d77ae7bd` (Prompt 12d — semantic graph data hygiene +
+edge polish), `a05583ab` (Prompt 15.7 — coverage-aware confidence + cross-surface
+enrichment, MV-D32(1)/(3)), and `ced7a2fa` (Prompt 15.6 — proposal lifecycle +
+presentation coherence) — **redeployed** to the `fevm-serverless-stable` app
+before this run. The redeploy rule applies: 15.7b changed the candidate-row
+persistence (two additive columns) and the interactive suggest write path
+(`wh_upsert_mv_candidate` now carries the two fields), so a Tier that validates
+the deployed app must run against the redeployed code.
+
+**Deploy record.** `./scripts/deploy.sh --update`, `fevm-serverless` profile.
+App `genie-workbench` (`genie-workbench-7474656657532371.aws.databricksapps.com`),
+job `1102443228792203`, SP `a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`, deployer
+`prashanth.subrahmanyam@databricks.com`. App reported **RUNNING** after the deploy.
+
+**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
+primary identity `prashanth.subrahmanyam@databricks.com` (OAuth bearer minted from
+the `fevm-serverless` profile; gate passed). GSO
+`serverless_stable_6t92c3_catalog.genie_space_optimizer`, warehouse
+`41cfe645e10807a4`. D fixtures unchanged (`MV_E2E_SUGGEST_SPACE_ID`,
+`MV_E2E_EMPTY_SPACE_ID`, scratch `serverless_stable_6t92c3_catalog.mv_advisor_e2e`).
+`GSO_JOB_ID` a config gate only (Scenario D triggers no job).
+
+**Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
+(243.68s = 4m04s; serialized; xdist refused).
+
+**Results — `scenario_d` (3 passed — 3/3, exit criterion held):**
+
+| Scenario D leg | Test | Result |
+|---|---|---|
+| suggest COMPLETE on curated SQL | `test_scenario_d_suggest_with_curated_sql` | **PASS** — status `COMPLETE`, ≥1 proposal each carrying `evidence`. The two new additive columns (`uncapped_tier`, `tier_capped_by_coverage`) read back cleanly through the SERVED routes; no read/hydrate regression from the 15.7b schema change. |
+| suggest EMPTY-with-reason on a bare space | `test_scenario_d_suggest_empty_with_reason` | **PASS** — HTTP 200, `SKIPPED`, non-empty `skip_reason`, `proposals == []`. |
+| BYO register → `USER_CREATED`, drop 409, provenance | `test_scenario_d_byo_register_refuse_and_provenance` | **PASS** — register → `USER_CREATED`, drop refused 409, route-10 provenance all hold on the redeployed tree. |
+
+**What this proved about 15.7b.** The additive migration lands live: the suggest
+path persists and serves the two new candidate columns without breaking the
+existing suggest/BYO legs, and the MV-D21 write-set pin (now 21 columns) matches
+what the deployed warehouse-twin writes. The coverage-capped-strong surfacing is
+frontend-only (split/badge/rank), covered by the component + `mvFormat` unit
+suites; `scenario_d` confirms the backend persistence half is non-regressive.
+
+**Eval budget spent:** none (Scenario D triggers no job / no native eval).
+
+**Teardown.** The BYO leg created a real view and its finalizer dropped it (the app
+never dropped it). Fixture spaces and scratch schema left in place for reuse.
+
+**Retries:** none — a single clean 3/3 run.
+
+**Manual UI smoke / 12d before-after screenshots:** pending the reviewer — a human
+browser step against the deployed app (Databricks OAuth SSO cannot be established
+from a headless test client), tracked as the 12d item-5 owe.
