@@ -334,4 +334,40 @@ about the workspace's `samples` grants, not a defect.
 literals mask to `?n` in the rendered measure expr) directly shapes how the
 benchmark corpus's measures should be authored, so the build is deferred pending
 the reviewer's call on whether to fix the masking first or author literal-free
-measures around it.
+measures around it. **Resolved 2026-08-24 by Prompt 15.2 (MV-D29) — see the next
+entry; the masking is fixed, so `MV_E2E_SPACE_ID` measures may be authored
+literal-bearing.**
+
+### 2026-08-24 — Tier 1 re-rerun (Scenario D), after Prompt 15.2 (MV-D29)
+
+**Same workspace / identity / D fixtures as the entries above** (`fevm-serverless`
+profile; `MV_E2E_SUGGEST_SPACE_ID`/`MV_E2E_EMPTY_SPACE_ID`/scratch ids unchanged;
+`GENIE_*` remap; `GSO_JOB_ID` config gate only). Offline baseline moved to
+638 backend + **1461** GSO (+9 GSO at Prompt 15.2).
+
+**Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
+(206.90s; serialized; xdist refused).
+
+**Results (3 passed — 3/3, the exit criterion):**
+
+| Scenario D leg | Test | Result |
+|---|---|---|
+| suggest COMPLETE on curated SQL | `test_scenario_d_suggest_with_curated_sql` | **PASS** (unchanged). |
+| suggest EMPTY-with-reason on a bare space | `test_scenario_d_suggest_empty_with_reason` | **PASS** (unchanged). |
+| BYO register → `USER_CREATED`, drop 409, provenance | `test_scenario_d_byo_register_refuse_and_provenance` | **PASS — the `?n` blocker is gone.** The manual `CREATE VIEW … WITH METRICS LANGUAGE YAML` that failed the prior rerun with `INVALID_IDENTIFIER` now executes: the served DDL carries `SUM(source.l_extendedprice * (1 - source.l_discount))` (literal preserved) instead of `(?n - l_discount)`. Register → `USER_CREATED`, drop refused 409, and route 10's provenance assertion all hold. |
+
+**What this proved about Prompt 15.2.** MV-D29's render source works end to end
+against a live warehouse: the advisor now renders from `representative_expr`
+(literal-preserving), the `LeakageOracle` gate did not drop the structural-constant
+measure, and the copy-ready DDL is executable. The gap-report row
+(2026-08-24 Tier 1 rerun) is resolved; the "copy-ready DDL" claim is no longer
+qualified for literal-bearing measures.
+
+**Eval budget spent:** none (Scenario D triggers no job / no native eval).
+
+**Teardown confirmed:** the BYO leg now creates a real view; the finalizer's
+`DROP VIEW IF EXISTS` in the scratch schema removed it (the test asserts the drop
+route refuses and drops manually — the app never dropped it). D fixtures left in
+place for reuse.
+
+**Retries:** none — a single clean 3/3 run.
