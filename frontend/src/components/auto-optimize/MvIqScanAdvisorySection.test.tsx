@@ -39,6 +39,8 @@ const proposal: MvProposal = {
   candidate_type: "NEW_METRIC_VIEW",
   confidence_score: 82,
   tier: "HIGH",
+  uncapped_tier: "HIGH",
+  tier_capped_by_coverage: false,
   proposed_object: "finance.sales.order_revenue",
   measures: [],
   score_components: null,
@@ -184,6 +186,25 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
     expect(html).toContain("Evidence grew beyond the initial scan")
     expect(html).toContain("usage signals")
     expect(html).toContain("lineage")
+  })
+
+  it("badges a coverage-capped-strong proposal 'Strong (evidence-limited)', never a bare LOW (15.7b / MV-D32)", () => {
+    // Fresh-space case: strong Y, L and D UNAVAILABLE, so MV-D15 capped the
+    // served tier to LOW while the score-only tier stayed HIGH.
+    const cappedStrong: MvProposal = {
+      ...bundle,
+      confidence_score: 82,
+      tier: "LOW",
+      uncapped_tier: "HIGH",
+      tier_capped_by_coverage: true,
+      score_components: { statuses: { L: "UNAVAILABLE", Y: "COMPUTED", S: "COMPUTED", D: "UNAVAILABLE" } },
+    }
+    const html = render(<MvProposalCard proposal={cappedStrong} defaultExpanded={false} />)
+    // The distinct badge, the honest %, and the §2 caption — never a bare LOW.
+    expect(html).toContain("Strong (evidence-limited)")
+    expect(html).toContain("82% confidence")
+    expect(html).toContain("Based on curated SQL only")
+    expect(html).not.toContain(">LOW<")
   })
 })
 

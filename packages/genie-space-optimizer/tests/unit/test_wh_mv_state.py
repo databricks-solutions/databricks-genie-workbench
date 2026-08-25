@@ -238,7 +238,9 @@ def test_upsert_candidate_writes_only_columns_the_table_declares(executed):
     _, sql = _upsert_candidate(
         executed,
         confidence_score=82.0,
-        tier="HIGH",
+        tier="LOW",
+        uncapped_tier="HIGH",
+        tier_capped_by_coverage=True,
         proposed_object="finance.sales.revenue_metrics",
         score_components={"L": 40},
         evidence={"benchmark_ids": ["q1"]},
@@ -252,7 +254,8 @@ def test_upsert_candidate_writes_only_columns_the_table_declares(executed):
     written = {
         col for col in (
             "target_space_id", "dedup_fingerprint", "suggestion_id", "run_id",
-            "candidate_type", "confidence_score", "tier", "proposed_object",
+            "candidate_type", "confidence_score", "tier", "uncapped_tier",
+            "tier_capped_by_coverage", "proposed_object",
             "score_components_json", "evidence_json", "provenance_json",
             "alternatives_json", "conflicts_json", "requested_mode",
             "effective_mode", "yaml_text", "updated_at", "created_at",
@@ -260,9 +263,15 @@ def test_upsert_candidate_writes_only_columns_the_table_declares(executed):
         )
         if col in sql
     }
-    assert len(written) == 19
+    # MV-D21: 19 columns pre-15.7b + uncapped_tier + tier_capped_by_coverage.
+    assert len(written) == 21
     additive = _additive_columns(TABLE_MV_CANDIDATES)
     assert "yaml_text" in additive
+    # MV-D32 as-implemented (Prompt 15.7b): both new columns are additive AND in
+    # the CREATE DDL (mirroring superseded_by), so a fresh install and an
+    # in-place migration converge on the same schema.
+    assert "uncapped_tier" in additive
+    assert "tier_capped_by_coverage" in additive
     for col in written:
         assert col in _GENIE_OPT_MV_CANDIDATES_DDL or col in additive
 

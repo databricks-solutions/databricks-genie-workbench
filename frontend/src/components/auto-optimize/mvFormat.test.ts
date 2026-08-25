@@ -11,7 +11,9 @@ import {
   confidenceDisplay,
   evidenceGrowth,
   evidenceSummary,
+  isCappedStrong,
   isLowConfidence,
+  MV_CAPPED_STRONG_LABEL,
   MV_DEFAULT_VISIBLE,
   proposalGainSentence,
   rankProposals,
@@ -30,6 +32,8 @@ function mk(overrides: Partial<MvProposal>): MvProposal {
     candidate_type: "NEW_METRIC_VIEW",
     confidence_score: null,
     tier: null,
+    uncapped_tier: null,
+    tier_capped_by_coverage: null,
     proposed_object: "c.s.v",
     measures: [],
     score_components: null,
@@ -80,6 +84,75 @@ describe("splitProposalsByConfidence (MV-D30 surfacing floor)", () => {
     expect(isLowConfidence("MEDIUM")).toBe(false)
     expect(isLowConfidence(null)).toBe(false)
     expect(isLowConfidence(undefined)).toBe(false)
+  })
+})
+
+describe("coverage-capped-strong surfacing (MV-D32 / Prompt 15.7b)", () => {
+  // Fresh-space case: strong curated-SQL recurrence, but lineage (L) and
+  // usage/demand (D) structurally absent, so MV-D15 capped the served tier to
+  // LOW while the score-only tier was MEDIUM+.
+  const cappedStrong = mk({
+    suggestion_id: "capped",
+    tier: "LOW",
+    uncapped_tier: "HIGH",
+    tier_capped_by_coverage: true,
+    confidence_score: 82,
+  })
+  // Genuinely weak: the evidence itself only earned LOW; coverage did not cap it.
+  const genuinelyWeak = mk({
+    suggestion_id: "weak",
+    tier: "LOW",
+    uncapped_tier: "LOW",
+    tier_capped_by_coverage: false,
+    confidence_score: 30,
+  })
+  // Legacy row: neither field persisted (pre-15.7b) — must behave exactly as the
+  // 15.7 tier-only split did.
+  const legacyLow = mk({ suggestion_id: "legacy", tier: "LOW", confidence_score: 28 })
+
+  it("isCappedStrong: true only when uncapped MEDIUM+ AND coverage capped", () => {
+    expect(isCappedStrong(cappedStrong)).toBe(true)
+    expect(isCappedStrong(mk({ tier: "LOW", uncapped_tier: "MEDIUM", tier_capped_by_coverage: true }))).toBe(true)
+    // uncapped LOW is not strong, even if the flag is set.
+    expect(isCappedStrong(mk({ tier: "LOW", uncapped_tier: "LOW", tier_capped_by_coverage: true }))).toBe(false)
+    // MEDIUM+ uncapped but not capped is just a normal proposal.
+    expect(isCappedStrong(mk({ tier: "MEDIUM", uncapped_tier: "MEDIUM", tier_capped_by_coverage: false }))).toBe(false)
+    // legacy row (nulls) is never capped-strong.
+    expect(isCappedStrong(legacyLow)).toBe(false)
+  })
+
+  it("capped-strong joins the default list; genuinely-weak and legacy stay behind the disclosure", () => {
+    const { primary, low } = splitProposalsByConfidence([cappedStrong, genuinelyWeak, legacyLow])
+    expect(primary.map((p) => p.suggestion_id)).toEqual(["capped"])
+    expect(low.map((p) => p.suggestion_id).sort()).toEqual(["legacy", "weak"])
+  })
+
+  it("legacy rows split exactly as the 15.7 tier-only rule (no regression)", () => {
+    const rows = [
+      mk({ suggestion_id: "hi", tier: "HIGH" }),
+      mk({ suggestion_id: "lo", tier: "LOW" }),
+    ]
+    const { primary, low } = splitProposalsByConfidence(rows)
+    expect(primary.map((p) => p.suggestion_id)).toEqual(["hi"])
+    expect(low.map((p) => p.suggestion_id)).toEqual(["lo"])
+  })
+
+  it("ranking orders a capped-strong proposal by its UNCAPPED tier", () => {
+    const med = mk({ suggestion_id: "med", tier: "MEDIUM", uncapped_tier: "MEDIUM" })
+    // capped-strong with uncapped HIGH must rank ahead of a served-MEDIUM proposal,
+    // even though its served tier is LOW.
+    const ranked = rankProposals([med, cappedStrong])
+    expect(ranked.map((p) => p.suggestion_id)).toEqual(["capped", "med"])
+  })
+
+  it("recommendedReason phrases a capped-strong pick by uncapped tier with the evidence-limited note", () => {
+    const reason = recommendedReason(cappedStrong)
+    expect(reason).toContain("high confidence (evidence-limited)")
+    expect(reason).not.toContain("low confidence")
+  })
+
+  it("exposes the badge label constant for the card", () => {
+    expect(MV_CAPPED_STRONG_LABEL).toBe("Strong (evidence-limited)")
   })
 })
 

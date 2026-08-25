@@ -205,6 +205,11 @@ def suggest_for_space(
             candidate_type=proposal.candidate_type,
             confidence_score=proposal.confidence_score,
             tier=proposal.tier,
+            # MV-D32 as-implemented (Prompt 15.7b): carry the score-only tier and
+            # coverage-cap flag so the interactive-suggest surface persists the
+            # same split inputs the in-job path does (both already on ScoredProposal).
+            uncapped_tier=getattr(proposal, "uncapped_tier", None),
+            tier_capped_by_coverage=getattr(proposal, "tier_capped_by_coverage", None),
             proposed_object=proposal.proposed_object,
             score_components=proposal.components.to_dict(),
             evidence=dict(proposal.evidence),

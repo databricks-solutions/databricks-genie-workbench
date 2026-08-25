@@ -21,6 +21,8 @@ function proposal(overrides: Partial<MvProposal> = {}): MvProposal {
     candidate_type: "PROPOSE",
     confidence_score: 88,
     tier: "HIGH",
+    uncapped_tier: "HIGH",
+    tier_capped_by_coverage: false,
     proposed_object: "finance.sales.order_revenue",
     score_components: null,
     evidence: { source_tables: ["finance.sales.orders", "finance.sales.order_items"] },

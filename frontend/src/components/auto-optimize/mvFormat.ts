@@ -57,18 +57,62 @@ export function isLowConfidence(tier: string | null | undefined): boolean {
   return (tier ?? "").toUpperCase() === "LOW"
 }
 
+// ── MV-D32 as-implemented (Prompt 15.7b) — coverage-capped-strong surfacing ──
+//
+// MV-D15 caps the SERVED tier by evidence coverage: on a fresh table lineage (L)
+// and usage/demand (D) are structurally absent, so even a strongly-recurring
+// measure is held at LOW no matter how high the score-only tier was. Under the
+// 15.7 tier-only split that proposal sat behind the disclosure — the exact
+// "strong candidate buried" defect the cold-start caption only half-closed. Now
+// that `uncapped_tier` and `tier_capped_by_coverage` are persisted (they were
+// always computed in mv_scoring), the panel can tell "strong but
+// evidence-limited" apart from "genuinely weak": a proposal whose UNCAPPED tier
+// is MEDIUM+ AND which coverage capped joins the default list under a distinct
+// "Strong (evidence-limited)" badge; a plain LOW (uncapped LOW, or not capped)
+// stays behind the disclosure. Legacy rows carry NULL for both fields and fall
+// back to the tier-only split unchanged.
+const TIER_RANK: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 }
+
+function tierRank(tier: string | null | undefined): number {
+  return TIER_RANK[(tier ?? "").toUpperCase()] ?? 0
+}
+
+/** The badge a coverage-capped-strong proposal wears in the default list. */
+export const MV_CAPPED_STRONG_LABEL = "Strong (evidence-limited)"
+
+// A proposal whose score earned MEDIUM+ but which MV-D15 coverage held below
+// that. `tier_capped_by_coverage === true` is the engine's own flag; the
+// uncapped-tier MEDIUM+ guard makes this the "strong, just evidence-limited"
+// case rather than any capping (a HIGH capped to MEDIUM is still primary anyway,
+// but it too is honestly evidence-limited, so it earns the badge). Legacy rows
+// (flag NULL) are never capped-strong.
+export function isCappedStrong(proposal: MvProposal): boolean {
+  return proposal.tier_capped_by_coverage === true && tierRank(proposal.uncapped_tier) >= TIER_RANK.MEDIUM
+}
+
+// The tier used for ORDERING and for the recommended-reason phrasing: a
+// capped-strong proposal ranks by the strength its evidence earned (its uncapped
+// tier), with the caption carrying the honesty that coverage limited it. Every
+// other proposal ranks by its served tier.
+function effectiveTier(proposal: MvProposal): string | null {
+  return isCappedStrong(proposal) ? proposal.uncapped_tier : proposal.tier
+}
+
 export interface SplitProposals {
-  /** MEDIUM+ (and unlabeled) renderable proposals — surfaced by default. */
+  /** MEDIUM+ (and unlabeled) + coverage-capped-strong renderable proposals — surfaced by default. */
   primary: MvProposal[]
-  /** LOW-confidence renderable proposals — behind the disclosure. */
+  /** Plain LOW-confidence renderable proposals — behind the disclosure. */
   low: MvProposal[]
 }
 
 export function splitProposalsByConfidence(proposals: MvProposal[]): SplitProposals {
   const renderable = proposals.filter(hasProposedObject)
+  // A capped-strong proposal joins the default list even when its SERVED tier is
+  // LOW; a plain LOW (not capped-strong) stays behind the disclosure.
+  const inPrimary = (p: MvProposal) => !isLowConfidence(p.tier) || isCappedStrong(p)
   return {
-    primary: renderable.filter((p) => !isLowConfidence(p.tier)),
-    low: renderable.filter((p) => isLowConfidence(p.tier)),
+    primary: renderable.filter(inPrimary),
+    low: renderable.filter((p) => !inPrimary(p)),
   }
 }
 
@@ -153,16 +197,12 @@ export function evidenceSummary(proposal: MvProposal): EvidenceSummary {
 // "Recommended" and the default list shows only the strongest few. Order:
 // tier (HIGH > MEDIUM > LOW/other), then measures governed (coverage), then
 // distinct curated-query count, then suggestion_id for a stable tiebreak. Pure
-// assembly — never an LLM call.
-const TIER_RANK: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 }
-
-function tierRank(tier: string | null | undefined): number {
-  return TIER_RANK[(tier ?? "").toUpperCase()] ?? 0
-}
-
+// assembly — never an LLM call. (MV-D32/15.7b) a capped-strong proposal is
+// ranked by its UNCAPPED tier via `effectiveTier`, so a cold-start proposal that
+// coverage held at LOW still orders among the strong candidates it belongs with.
 export function rankProposals(proposals: MvProposal[]): MvProposal[] {
   return [...proposals].sort((a, b) => {
-    const tier = tierRank(b.tier) - tierRank(a.tier)
+    const tier = tierRank(effectiveTier(b)) - tierRank(effectiveTier(a))
     if (tier !== 0) return tier
     const cover = (b.measures?.length ?? 0) - (a.measures?.length ?? 0)
     if (cover !== 0) return cover
@@ -178,9 +218,16 @@ export function rankProposals(proposals: MvProposal[]): MvProposal[] {
 export function recommendedReason(proposal: MvProposal): string {
   const n = proposal.measures?.length ?? 0
   const q = distinctQuestionCount(proposal)
-  const tier = (proposal.tier ?? "").toUpperCase()
+  // (MV-D32/15.7b) phrase the confidence by the EFFECTIVE tier, so a
+  // capped-strong pick reads "medium confidence (evidence-limited)" rather than
+  // the bare "low" its served tier would give — the honesty rides the parens,
+  // and the §2 caption on the card carries the full evidence basis.
+  const tier = (effectiveTier(proposal) ?? "").toUpperCase()
+  const capped = isCappedStrong(proposal)
   const parts: string[] = []
-  if (tier === "HIGH" || tier === "MEDIUM") parts.push(`${tier.toLowerCase()} confidence`)
+  if (tier === "HIGH" || tier === "MEDIUM") {
+    parts.push(`${tier.toLowerCase()} confidence${capped ? " (evidence-limited)" : ""}`)
+  }
   if (n > 0) parts.push(`governs ${n} ${n === 1 ? "measure" : "measures"}`)
   if (q > 0) parts.push(`recurs across ${q} ${q === 1 ? "curated query" : "curated queries"}`)
   return parts.length > 0

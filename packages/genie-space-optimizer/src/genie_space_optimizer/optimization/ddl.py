@@ -204,7 +204,9 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_candidates (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id — the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)',
     candidate_type      STRING        NOT NULL COMMENT 'NEW_METRIC_VIEW|REPLACE_RAW_TABLE|ADD_MEASURE|CONFLICT (POV Part 4 proposal `type`)',
     confidence_score    DOUBLE                 COMMENT 'Weighted L/Y/S/D score, 0-100',
-    tier                STRING                 COMMENT 'HIGH|MEDIUM|LOW confidence tier',
+    tier                STRING                 COMMENT 'HIGH|MEDIUM|LOW confidence tier — the SERVED tier after MV-D15 coverage capping',
+    uncapped_tier       STRING                 COMMENT 'MV-D32 as-implemented (Prompt 15.7b): the tier the score alone earned, BEFORE MV-D15''s coverage cap (HIGH|MEDIUM|LOW|NULL). Equals tier when coverage did not bind; differs when it did. Persisted so the panel can promote a coverage-capped-strong proposal (uncapped MEDIUM+ but tier LOW) into the default list under a "Strong (evidence-limited)" badge instead of burying it. Computed in mv_scoring.to_payload, not re-derived here',
+    tier_capped_by_coverage BOOLEAN            COMMENT 'MV-D32 as-implemented (Prompt 15.7b): true when MV-D15 coverage held the tier below what the score earned (uncapped_tier != tier). The split-on-surface flag: uncapped MEDIUM+ AND this true = capped-strong (default list + badge); false or uncapped LOW = plain, stays behind the MV-D30 disclosure',
     proposed_object     STRING                 COMMENT 'Fully-qualified target name for the metric view (catalog.schema.name)',
     score_components_json STRING               COMMENT 'JSON: POV Part 4 `score_components` — per-signal scores plus the weights used',
     evidence_json       STRING                 COMMENT 'JSON: POV Part 4 `evidence` — fingerprint recurrence, benchmark question ids, statement ids, lineage source tables, semantic top match',
@@ -385,4 +387,15 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # this measure. Proposal reads exclude non-NULL; the suppression reader does
     # not, so a superseded+rejected row still suppresses.
     (TABLE_MV_CANDIDATES, "superseded_by", "STRING COMMENT 'MV-D30 as-implemented (Prompt 15.6): dedup_fingerprint of the bundle that superseded this legacy per-measure row. NULL = live. Proposal reads exclude non-NULL rows; the suppression reader still sees them so a rejection survives supersession.'"),
+    # MV-D32 as-implemented (Prompt 15.7b): the score-only tier and the
+    # coverage-cap flag, both already computed in mv_scoring.to_payload, now
+    # persisted so the panel can promote a coverage-capped-strong proposal
+    # (uncapped MEDIUM+ but SERVED tier LOW) into the default list under a
+    # "Strong (evidence-limited)" badge instead of burying it behind the MV-D30
+    # disclosure. Additive so existing candidate tables gain them in place; NULL
+    # on legacy rows falls back to the pre-15.7b tier-only split. This is
+    # persistence, not new scoring — the LYDS blend and MV-D15 coverage are
+    # byte-untouched.
+    (TABLE_MV_CANDIDATES, "uncapped_tier", "STRING COMMENT 'MV-D32 as-implemented (Prompt 15.7b): the tier the score alone earned before MV-D15 coverage capping (HIGH|MEDIUM|LOW|NULL). Equals tier when coverage did not bind. Persisted from mv_scoring so the panel can split coverage-capped-strong proposals into the default list.'"),
+    (TABLE_MV_CANDIDATES, "tier_capped_by_coverage", "BOOLEAN COMMENT 'MV-D32 as-implemented (Prompt 15.7b): true when MV-D15 coverage held the tier below what the score earned. uncapped MEDIUM+ AND this true = capped-strong (default list + Strong (evidence-limited) badge); otherwise plain (LOW stays behind the MV-D30 disclosure).'"),
 )

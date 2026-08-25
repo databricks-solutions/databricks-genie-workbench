@@ -1411,6 +1411,14 @@ def test_persist_proposal_maps_the_payload_onto_the_prompt_1_accessor(monkeypatc
     # HIGH rather than MEDIUM because this proposal has no embedding client, so S
     # is UNAVAILABLE and the remaining 0.80 of weight renormalizes (MV-D15).
     assert kwargs["tier"] == proposal.tier == mv_scoring.TIER_HIGH
+    # MV-D32 as-implemented (Prompt 15.7b): the score-only tier and coverage-cap
+    # flag reach Delta too, so the panel can split coverage-capped-strong
+    # proposals without re-deriving them. Here S is UNAVAILABLE but the remaining
+    # weight renormalizes to HIGH, so coverage did not bind: uncapped == tier and
+    # the flag is False. The capped case is pinned in the frontend split tests.
+    assert kwargs["uncapped_tier"] == proposal.uncapped_tier == mv_scoring.TIER_HIGH
+    assert proposal.tier_capped_by_coverage is False
+    assert kwargs["tier_capped_by_coverage"] is False
     assert kwargs["score_components"] == proposal.components.to_dict()
     # Coverage and statuses reach Delta, not just the in-memory payload — a
     # persisted score without its divisor is the unauditable case MV-D15 forbids.

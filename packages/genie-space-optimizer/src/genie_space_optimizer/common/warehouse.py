@@ -1194,6 +1194,8 @@ def wh_upsert_mv_candidate(
     candidate_type: str,
     confidence_score: float | None = None,
     tier: str | None = None,
+    uncapped_tier: str | None = None,
+    tier_capped_by_coverage: bool | None = None,
     proposed_object: str | None = None,
     score_components: dict | None = None,
     evidence: dict | None = None,
@@ -1240,6 +1242,12 @@ def wh_upsert_mv_candidate(
         if confidence_score is not None
         else "NULL",
         "tier": _wh_literal(tier),
+        # MV-D32 as-implemented (Prompt 15.7b): score-only tier + coverage-cap
+        # flag, mirroring the Spark writer so both persist paths agree (MV-D21).
+        "uncapped_tier": _wh_literal(uncapped_tier),
+        "tier_capped_by_coverage": _wh_literal(bool(tier_capped_by_coverage))
+        if tier_capped_by_coverage is not None
+        else "NULL",
         "proposed_object": _wh_literal(proposed_object),
         "score_components_json": _json_lit(score_components),
         "evidence_json": _json_lit(evidence),

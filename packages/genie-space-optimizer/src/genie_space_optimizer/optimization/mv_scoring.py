@@ -1483,6 +1483,8 @@ def persist_proposal(
         candidate_type=proposal.candidate_type,
         confidence_score=proposal.confidence_score,
         tier=proposal.tier,
+        uncapped_tier=proposal.uncapped_tier,
+        tier_capped_by_coverage=proposal.tier_capped_by_coverage,
         proposed_object=proposal.proposed_object,
         score_components=proposal.components.to_dict(),
         evidence=dict(proposal.evidence),

@@ -303,6 +303,13 @@ class MvProposal(BaseModel):
     candidate_type: str
     confidence_score: float | None = None
     tier: str | None = None
+    # MV-D32 as-implemented (Prompt 15.7b): the tier the score alone earned and
+    # whether MV-D15 coverage capped it. Both computed in mv_scoring, persisted
+    # additively. The panel promotes a coverage-capped-strong proposal (uncapped
+    # MEDIUM+ AND tier_capped_by_coverage) into the default list under a
+    # "Strong (evidence-limited)" badge. None on legacy rows → tier-only split.
+    uncapped_tier: str | None = None
+    tier_capped_by_coverage: bool | None = None
     proposed_object: str | None = None
     measures: list[MvProposalMeasure] = []
     score_components: dict[str, Any] | None = None

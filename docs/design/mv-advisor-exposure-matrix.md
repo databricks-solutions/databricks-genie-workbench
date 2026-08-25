@@ -58,7 +58,9 @@ included in `backend/main.py`). The ten MV routes:
 | genie_opt_mv_candidates | run_id | SERVED | routes 2/3/4/6 |
 | genie_opt_mv_candidates | candidate_type | SERVED | routes 2/3/4/6 |
 | genie_opt_mv_candidates | confidence_score | SERVED | routes 2/3/4/6 |
-| genie_opt_mv_candidates | tier | SERVED | routes 2/3/4/6 |
+| genie_opt_mv_candidates | tier | SERVED | routes 2/3/4/6 (the SERVED tier, after MV-D15 coverage capping) |
+| genie_opt_mv_candidates | uncapped_tier | SERVED | MV-D32 as-implemented (Prompt 15.7b). Routes 2/3/4/6 (`MvProposal.uncapped_tier`). The tier the score alone earned before MV-D15 coverage capping — the panel reads it to promote a coverage-capped-strong proposal (uncapped MEDIUM+ but `tier` LOW) into the default list under a "Strong (evidence-limited)" badge instead of burying it behind the MV-D30 disclosure. NULL on legacy rows → the panel falls back to the tier-only split. |
+| genie_opt_mv_candidates | tier_capped_by_coverage | SERVED | MV-D32 as-implemented (Prompt 15.7b). Routes 2/3/4/6 (`MvProposal.tier_capped_by_coverage`). The split flag: `uncapped_tier` MEDIUM+ AND this true = capped-strong (default list + badge); false or uncapped LOW = plain (LOW stays behind the disclosure). NULL on legacy rows → tier-only split. |
 | genie_opt_mv_candidates | proposed_object | SERVED | routes 2/3/4/6 |
 | genie_opt_mv_candidates | score_components_json | SERVED | routes 2/3/4/6 (`score_components`) |
 | genie_opt_mv_candidates | evidence_json | SERVED | routes 2/3/4/6 (`evidence`) |

@@ -18,9 +18,11 @@ import { ChevronDown, ChevronRight, FlaskConical, GitBranch, Layers, Star, Trend
 import { Badge } from "@/components/ui/badge"
 import { SqlCodeBlock } from "@/components/SqlCodeBlock"
 import {
+  MV_CAPPED_STRONG_LABEL,
   confidenceDisplay,
   evidenceGrowth,
   evidenceSummary,
+  isCappedStrong,
   joinStrategyLabel,
   proposalGainSentence,
   tierVariant,
@@ -138,6 +140,11 @@ export function MvProposalCard({
   // Prompt 15.7 — coverage-aware confidence caption + cross-surface enrichment.
   const confidence = confidenceDisplay(proposal)
   const growth = evidenceGrowth(proposal)
+  // Prompt 15.7b / MV-D32 — a coverage-capped-strong proposal wears the
+  // "Strong (evidence-limited)" badge instead of a bare LOW, and its % badge is
+  // colored by the tier its evidence earned (uncapped) rather than the capped one.
+  const cappedStrong = isCappedStrong(proposal)
+  const confidenceTier = cappedStrong ? proposal.uncapped_tier : proposal.tier
 
   return (
     <div
@@ -169,11 +176,15 @@ export function MvProposalCard({
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {proposal.confidence_score !== null && (
-            <Badge variant={tierVariant(proposal.tier)}>
+            <Badge variant={tierVariant(confidenceTier)}>
               {Math.round(proposal.confidence_score)}% confidence
             </Badge>
           )}
-          {proposal.tier && <Badge variant="secondary">{proposal.tier}</Badge>}
+          {cappedStrong ? (
+            <Badge variant={tierVariant(proposal.uncapped_tier)}>{MV_CAPPED_STRONG_LABEL}</Badge>
+          ) : (
+            proposal.tier && <Badge variant="secondary">{proposal.tier}</Badge>
+          )}
           {joinLabel && (
             <Badge variant="secondary">
               <GitBranch className="mr-1 h-3 w-3" />

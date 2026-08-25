@@ -1712,6 +1712,15 @@ def _mv_proposal_from_row(row: dict) -> MvProposal:
         candidate_type=str(row.get("candidate_type") or ""),
         confidence_score=_safe_float(row.get("confidence_score")),
         tier=_mv_str(row.get("tier")),
+        # MV-D32 as-implemented (Prompt 15.7b): score-only tier + coverage-cap
+        # flag. NULL on legacy rows stays None so the panel falls back to the
+        # pre-15.7b tier-only split rather than treating them as "not capped".
+        uncapped_tier=_mv_str(row.get("uncapped_tier")),
+        tier_capped_by_coverage=(
+            bool(row.get("tier_capped_by_coverage"))
+            if row.get("tier_capped_by_coverage") is not None
+            else None
+        ),
         proposed_object=_mv_str(row.get("proposed_object")),
         measures=_mv_measures_from_row(row),
         score_components=row.get("score_components") if isinstance(row.get("score_components"), dict) else None,

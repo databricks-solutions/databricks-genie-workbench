@@ -202,6 +202,8 @@ def upsert_mv_candidate(
     candidate_type: str,
     confidence_score: float | None = None,
     tier: str | None = None,
+    uncapped_tier: str | None = None,
+    tier_capped_by_coverage: bool | None = None,
     proposed_object: str | None = None,
     score_components: dict | None = None,
     evidence: dict | None = None,
@@ -235,6 +237,13 @@ def upsert_mv_candidate(
         "candidate_type": candidate_type,
         "confidence_score": float(confidence_score) if confidence_score is not None else None,
         "tier": tier,
+        # MV-D32 as-implemented (Prompt 15.7b): the score-only tier and the
+        # coverage-cap flag, carried from mv_scoring so the panel can split
+        # coverage-capped-strong proposals. Persistence, not scoring.
+        "uncapped_tier": uncapped_tier,
+        "tier_capped_by_coverage": (
+            bool(tier_capped_by_coverage) if tier_capped_by_coverage is not None else None
+        ),
         "proposed_object": proposed_object,
         "score_components_json": _opt_json(score_components),
         "evidence_json": _opt_json(evidence),

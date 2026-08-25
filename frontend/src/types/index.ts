@@ -972,6 +972,11 @@ export interface MvProposal {
   candidate_type: string
   confidence_score: number | null
   tier: string | null
+  // MV-D32 as-implemented (Prompt 15.7b): score-only tier + coverage-cap flag,
+  // persisted so the panel can promote coverage-capped-strong proposals into the
+  // default list. null on legacy rows → fall back to the tier-only split.
+  uncapped_tier: string | null
+  tier_capped_by_coverage: boolean | null
   proposed_object: string | null
   measures: MvProposalMeasure[]
   score_components: Record<string, unknown> | null

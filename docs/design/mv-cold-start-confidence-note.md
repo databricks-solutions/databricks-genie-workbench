@@ -1,14 +1,14 @@
 # Confidence for evidence-poor spaces, and the cold-start quality question — research + design note (Prompt 15.7, decides MV-D32)
 
-**Status: CHECKPOINT — awaiting reviewer sign-off. The research and the position
-on MV-D32(2) below are docs-only; no cold-start scoring signal lands until this
-note is approved.** The two shippable parts of Prompt 15.7 — the coverage-aware
-confidence *display* (MV-D32(1)) and the cross-surface enrichment *surfacing*
-(MV-D32(3)) — ship in the same commit as this note, because both are display/
-assembly changes that leave the LYDS blend arithmetic and MV-D15's availability
-honesty byte-untouched. What this note decides and deliberately does **not**
-build is MV-D32(2): whether an LLM-grounded quality judgment joins the score as
-a new signal for fresh-table spaces.
+**Status: APPROVED — reviewer sign-off recorded; MV-D32 is DECIDED in the
+playbook.** The research and the position on MV-D32(2) below stand as the
+decision: **(1)** coverage-aware display and **(3)** cross-surface enrichment
+shipped as-implemented; **(2)** the cold-start LLM-judgment signal is **deferred
+per §5** (does not ship on this branch; a separately-labeled schema-validated
+axis if it ever does). Both shipped parts leave the LYDS blend arithmetic and
+MV-D15's availability honesty byte-untouched. The pre-planned follow-up that §2
+item 2 noted — persist `uncapped_tier`/`tier_capped_by_coverage` and split
+surfacing on them — is **now built as Prompt 15.7b** (see §2's updated note).
 
 Read `MV-D32` in the playbook first. The one-line frame: the 34%-on-a-strong-
 proposal defect is a **display conflation** before it is a scoring problem, and
@@ -91,18 +91,32 @@ weighed and **rejected**:
    display problem in one place.
 2. *Promote coverage-capped-high proposals into the primary list.* A proposal
    whose *uncapped* tier is MEDIUM+ but which coverage capped to LOW is exactly
-   the "strong candidate buried" case. Rejected **for now** because
-   `uncapped_tier`/`tier_capped_by_coverage` are computed in `mv_scoring`
-   (`to_payload`) but are **not persisted as candidate columns**, so the panel
-   cannot see them without an additive migration + exposure-matrix
-   classification — out of scope for a display-only prompt, and the caption
-   already closes the *honesty* gap the user hit (they saw the proposal; the
-   number just lied about it).
+   the "strong candidate buried" case. Rejected **for the display-only prompt
+   (15.7)** because `uncapped_tier`/`tier_capped_by_coverage` are computed in
+   `mv_scoring` (`to_payload`) but were **not persisted as candidate columns**,
+   so the panel could not see them without an additive migration + exposure-
+   matrix classification — out of scope for a display-only prompt, and the
+   caption already closes the *honesty* gap the user hit (they saw the proposal;
+   the number just lied about it).
 
-Conclusion: thresholds and MV-D30 surfacing stand unchanged; the caption is the
-fix. If a future prompt wants coverage-capped-high proposals promoted, the
-clean move is to persist `uncapped_tier` + `tier_capped_by_coverage` additively
-and split on them — noted as a pre-planned follow-up, not built here.
+Conclusion (15.7): thresholds and MV-D30 surfacing stand unchanged; the caption
+is the fix.
+
+> **Update — Prompt 15.7b (built).** The pre-planned follow-up below is now
+> shipped, because the coverage-cap × MEDIUM+-default composition makes it
+> load-bearing rather than optional: a genuinely-strong cold-start proposal
+> (strong Y, L/D UNAVAILABLE) is capped to LOW and, under the 15.7 split, would
+> sit behind the MV-D30 disclosure — reintroducing the "strong candidate
+> buried" defect the caption only half-closed. 15.7b persists `uncapped_tier` +
+> `tier_capped_by_coverage` additively (CREATE DDL + `ADDITIVE_COLUMN_MIGRATIONS`,
+> both `wh_*`/Spark writers, exposure-matrix SERVED rows, MV-D21 written-column
+> pin extended) and splits on them: a coverage-capped MEDIUM+ proposal joins the
+> **default** list wearing a distinct **"Strong (evidence-limited)"** badge with
+> the §2 caption — never a bare LOW, never behind the disclosure. Plain LOW
+> (uncapped LOW included) stays behind the disclosure per MV-D30. The
+> Recommended-badge ranking (15.6) orders a capped-strong proposal by its
+> *uncapped* tier; the caption carries the honesty. Legacy rows (no persisted
+> uncapped fields) fall back to the 15.7 tier-only split unchanged.
 
 ---
 
@@ -227,7 +241,15 @@ validated, never scale-shared with recurrence.**
 
 This note ends here, per the Prompt 15.7 body. Shipped alongside it (display +
 assembly only, blend untouched): the coverage-aware confidence caption and the
-cross-surface enrichment line, with tests. **Not built, pending sign-off on
-§5:** the cold-start LLM-judgment signal. On approval, MV-D32 is recorded
-DECIDED with (1) and (3) as-implemented and (2) as *deferred to the create-agent
-branch under the separately-labeled-signal rule*.
+cross-surface enrichment line, with tests. **Deferred per §5 (approved):** the
+cold-start LLM-judgment signal — MV-D32(2) does not ship on this branch and, if
+ever, only as a separately-labeled schema-validated axis under the
+scale-sharing rule. On sign-off MV-D32 was recorded **DECIDED** in the playbook
+with (1) and (3) as-implemented and (2) deferred.
+
+The one follow-up this note pre-planned (§2 item 2) — persisting
+`uncapped_tier`/`tier_capped_by_coverage` and splitting surfacing on them — is
+built as **Prompt 15.7b**, whose scope is persistence + presentation only
+(still no blend change, still no new scoring signal): the two fields already
+exist on `ScoredProposal.to_payload`; 15.7b only carries them to the candidate
+row and the panel.

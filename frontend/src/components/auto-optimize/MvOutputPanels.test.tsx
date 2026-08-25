@@ -26,6 +26,8 @@ const proposal: MvProposal = {
   candidate_type: "NEW_METRIC_VIEW",
   confidence_score: 82,
   tier: "HIGH",
+  uncapped_tier: "HIGH",
+  tier_capped_by_coverage: false,
   proposed_object: "finance.sales.order_revenue",
   score_components: null,
   evidence: {
