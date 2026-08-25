@@ -8,7 +8,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D28 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D29 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -204,8 +204,8 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 638 backend + 1452 GSO,
-     measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 638 backend + 1461 GSO,
+     measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -314,7 +314,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D28)
+## Decisions register (MV-D1–MV-D29)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -571,6 +571,16 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 **MV-D27 — The instruction-augmentation write path (OPEN — decided at Prompt 17c).** Accepting a Page suggestion may write `text_instructions[0]` — the first workbench surface where an LLM-drafted artifact lands in live space config outside an optimization run's eval-gated loop. Constraints that are NOT open: the GSL instruction schema (`docs/docs/platform/gsl-instruction-schema.md`) is authoritative and CLAUDE.md mandates reading it before touching instruction handling; the single-text_instruction cap (`genie_creator._enforce_constraints`) and the IQ-scan length warning (~2000 chars, check 4) bound the budget; the write is OBO with diff preview and explicit consent, never auto-applied (MV-D1's invariants transpose: identity, recorded consent, downgrade-never-upgrade, and the consented TARGET here is the instruction block, nowhere else); benchmark text never lands verbatim (firewall). What 17c decides: direct OBO `update_space` versus the patch machinery, undo semantics (snapshot the prior block on the decision row), and how an augmentation marks its provenance inside the block so a later suggestion can find and supersede its own section rather than append forever.
 
 **MV-D28 — Web enrichment mechanics (OPEN — decided at Prompt 17b).** The Page standard's "Recent context" section is enriched from public sources when possible. Non-negotiable regardless of mechanics: enrichment is BEST-EFFORT — a failed or unavailable search degrades to workspace-evidence-only and still yields a complete, useful draft (the user's stated requirement, and the frame-7b honesty rule transposed); every enriched section is labeled "informational, as of DATE — not certified operational data" with sources listed (the demonstrator Pages' own convention); enrichment status reports in MV-D15 vocabulary (COMPUTED / EMPTY / UNAVAILABLE with a reason). What 17b decides: the mechanism (tool-capable serving endpoint via the workbench's model selection, versus direct egress from the Databricks App, versus skip-only in v1), and its timeout/failure contract — the suggest route must degrade, never hang, the same rule the MV suggest route's embedding path follows.
+
+**MV-D29 — The render source for a measure body is not the canonical form (DECIDED at Prompt 15.2).** Found live by Scenario D's BYO leg after Prompt 15.1 unblocked it: the served DDL is not executable for any literal-bearing measure. `expr: sum(l_extendedprice * (?n - l_discount))` fails creation with `INVALID_IDENTIFIER`. **This is not a rendering leak and must not be diagnosed as one.** Literal erasure in `mv_fingerprint` is deliberate, load-bearing, and firewall-motivated — its module docstring says so at `:25-40`: "a literal that reaches shipped metric-view metadata is a firewall violation", and, decisively, "**A generator must recover concrete predicate values from profiling, never by reading them back out of a canonical form — there is nothing left there to read.**" The defect is the consumer violating that documented contract: `candidate_from_measure` sets `measure_expr=measure.canonical_expr` (`mv_advisor.py`), i.e. it renders the identity form as the body. `FingerprintRecurrence` carries no concrete expression at all, so the generator had nothing else to reach for — a design gap, not a typo.
+
+*Two literal classes the current canonicalizer conflates, which is where the resolution lives.* **Predicate/filter literals** (`status = 'F'`, dates, thresholds) can carry benchmark values, sample values, or PII — erasure is correct and the firewall depends on it. **Structural arithmetic constants** (`1` in `1 - l_discount`, `100` in a percentage) carry no data content; they are part of the formula, and erasing them destroys the measure. Both become `?n` today.
+
+*Resolution shape for 15.2 to accept or overturn with reasons.* Add a `representative_expr` to `FingerprintRecurrence` — the verbatim source expression from one recorded occurrence — used ONLY as the render source, never as identity, never in scoring, never in dedup. `canonicalize_expr` and every MV-D10 invariant stay byte-untouched (the register forbids re-deriving them, and changing what merges would silently reshape recurrence). The firewall moves from erasure-by-construction to an actual gate: the representative expression passes `LeakageOracle` before it can reach a rendered body, and a representative that fails the scan drops the candidate rather than shipping a masked one. Rejected alternative, recorded so it is not relitigated: preserving numerics in arithmetic contexts but erasing them in predicate contexts — surgical, but it changes fingerprint identity (`* 100` and `* 1000` would stop merging, arguably correctly) and that is an MV-D10 change, out of scope for a defect fix.
+
+*Why this survived to a live workspace, which is the more useful finding.* Every offline fixture was literal-free, and nothing in the offline suite executes DDL. `mv_yaml.validate` — the MV-D8 sole gate whose whole purpose is that emitted YAML is never "invalid or silently wrong" — has no check for placeholder tokens (`?n`, `?s`) in an emitted expression, so it passed a body that cannot be created. **The POV's own worked example is the exact expression that fails**: `SUM(l_extendedprice * (1 - l_discount))` appears at `metric-view-suggestion-engine-pov.md:114` as the headline candidate and at `:176` as the sample YAML body. A defect that makes the design document's canonical example unrenderable is not an edge case.
+
+*Decision (Prompt 15.2), taking the resolution shape as stated.* `FingerprintRecurrence` and `MeasureRef` gain a `representative_expr`: a **literal-preserving** render form of one recorded occurrence — the same normalization `canonicalize_expr` runs (qualifiers stripped so it references the metric view's `source:` columns, identifiers and temporal units normalized) **minus the `_erase_literals` pass**, so `1 - l_discount` survives verbatim. It is a NEW field used ONLY as the render source: identity, scoring and dedup keep reading `canonical_expr` / `MetricViewCandidate.canonical_measure_expr` (which prefers `recurrence.canonical_expr`), and a test pins that two measures differing only in a literal still share one `fingerprint` while their `representative_expr` differs. `canonicalize_expr` output is byte-identical to before (the new form is a separate `erase_literals=False` code path). `candidate_from_measure` renders `measure_expr=representative_expr`. The firewall becomes an actual gate: before a candidate is scored or persisted, `LeakageOracle.contains_sql(representative_expr)` runs, and a representative that matches the benchmark corpus DROPS the candidate (`candidates_dropped_for_leakage` on the outcome) rather than shipping either a masked body or a leaked literal — the existing oracle, no second scanner. `mv_yaml.validate` (and `validate_registered`) reject `?n` / `?s` anywhere in an emitted `expr`, the cheap MV-D8 static guard that would have caught this at Prompt 5.5. `representative_expr` is NOT persisted as a Delta column (it flows through in-memory to the emitted `yaml_text`, which the artifact already carries), so the exposure matrix gains no row; the `yaml_text` SERVED classification now legitimately covers oracle-passed literals. The rejected alternative (context-sensitive erasure) stays rejected: it is an MV-D10 change to fingerprint identity, out of scope for a defect fix.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -1889,6 +1899,86 @@ Scenario D — suggest with no run at all (Prompt 13.5, MV-D23):
 Also include a manual smoke checklist for the UI (10 items max) covering the
 consent panel, denial banner, output panels, the semantic model graph, and the
 IQ Scan panel in both its populated and empty states.
+```
+
+### Prompt 15.1 — Serve the advice-run DDL (Tier 1 finding; small, single commit)
+
+*Found by Scenario D's BYO leg in the Tier 1 live run: GET /runs/{id}/mv-ddl
+404s for a suggest-only sentinel run. Root cause: MV-D23 severed the replay
+body from the run-partitioned artifact (candidates carry `yaml_text`), and the
+CREATE path learned the fallback (`mv_create._load_ddl_artifact`) but the READ
+route never did — it reads only `genie_opt_artifacts` (route body:
+`_load_latest_artifact(run_id, "mv_candidate_ddl")`). The exposure matrix's
+`yaml_text` row (:77) is mislabeled by the same blind spot: "DELIBERATELY
+INTERNAL — the rendered form is served by route 7" is FALSE for advice runs,
+so this was a GAP wearing an INTERNAL label. Product impact, not just test:
+the IQ Scan advisory panel — the standalone surface whose contract is
+copy-ready DDL and the BYO invitation — has no DDL to render (MvSuggestResponse
+carries none and the card gets no ddl prop).*
+
+```
+1. Backend: get_mv_ddl falls back to the candidate rows' yaml_text when no
+   artifact exists for the run — the read-side twin of
+   mv_create._load_ddl_artifact's fallback, wrapped via mv_yaml.create_ddl
+   for the proposed_object. Design note the implementer must resolve and
+   record: the route is run-keyed and returns ONE artifact, but an advice run
+   can hold several candidates — either accept an optional suggestion_id
+   query param (preferred; the artifact path keeps its latest-wins behavior)
+   or define and document a deterministic pick. GRANT synthesis unchanged.
+2. Suggest surface: the IQ Scan advisory panel renders the DDL panel per
+   proposal (frame 4's card already has the slot) — fetch via the fixed
+   route with suggestion_id, or extend MvSuggestResponse with the rendered
+   ddl per proposal if the round-trip is unreasonable; whichever is chosen,
+   the response addition is additive and gets an exposure-matrix
+   classification in the same commit.
+3. Bookkeeping, same commit: matrix yaml_text row rationale corrected (it is
+   SERVED-via-fallback now, and the old rationale was false for advice
+   runs); the Tier 1 gap-report row resolved (MV-D9, self-dated); baseline
+   lockstep if counts move.
+4. Rerun the Scenario D leg (Tier 1 config, no eval spend):
+   uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v
+   — all three legs green is the exit criterion, and the run record gains
+   the rerun entry.
+```
+
+### Prompt 15.2 — Make the rendered measure body executable (decides MV-D29; blocks Tier 2)
+
+*The Scenario D BYO leg's second failure, after 15.1 unblocked the first. Read
+the MV-D29 entry in full before planning — in particular, do NOT "fix the
+literal masking": erasure is deliberate and firewall-motivated, and the fix is
+to give the renderer a different source, not to weaken canonicalization.
+Blocks Tier 2 because the benchmark corpus's measures must be authored knowing
+whether literal-bearing expressions render.*
+
+```
+DECIDE MV-D29 first and record it in the register.
+
+1. FingerprintRecurrence gains a representative_expr: the verbatim source
+   expression from one recorded occurrence, captured during corpus_scan
+   alongside the canonical form. Identity, scoring, and dedup keep using
+   canonical_expr ONLY — assert that in a test, because the whole defect is a
+   consumer reaching for the wrong field.
+2. candidate_from_measure renders from representative_expr (mv_advisor.py),
+   not canonical_expr.
+3. Firewall: the representative expression passes LeakageOracle before it can
+   reach a rendered body — erasure-by-construction is replaced by an actual
+   gate. A representative that fails the scan DROPS the candidate; it never
+   ships masked and never ships unscanned. Extend the existing oracle, do not
+   add a second scanner.
+4. mv_yaml.validate rejects placeholder tokens (NUMERIC_PLACEHOLDER,
+   the string twin) anywhere in an emitted expr — the cheap static guard that
+   would have caught this at Prompt 5.5. This is an MV-D8 gate addition:
+   an emitted body containing ?n is invalid YAML output, full stop.
+5. Fixtures: the offline suite is literal-free, which is why this survived.
+   Add literal-bearing fixtures across mv_fingerprint, mv_advisor, mv_yaml —
+   including the POV's own worked example SUM(l_extendedprice * (1 -
+   l_discount)) as a golden case, since a defect that makes the design doc's
+   canonical example unrenderable earns a permanent test.
+6. Bookkeeping: exposure-matrix classification if a persisted column is added
+   (representative_expr on the candidate row, if MV-D29 decides to persist it
+   rather than recompute); gap row resolved; baseline lockstep.
+7. Exit: rerun -k scenario_d — three-for-three green, with the BYO leg's
+   CREATE VIEW executing a literal-bearing measure.
 ```
 
 ### Prompt 16 — Docs, changelog, PR

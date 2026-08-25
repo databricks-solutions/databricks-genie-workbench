@@ -66,9 +66,11 @@ from genie_space_optimizer.common.config import (
     MV_YAML_VERSION,
 )
 from genie_space_optimizer.optimization.mv_fingerprint import (
+    NUMERIC_PLACEHOLDER,
     SHAPE_CONDITIONAL_COUNT,
     SHAPE_PCT_OF_TOTAL,
     SHAPE_RATIO,
+    STRING_PLACEHOLDER,
     ShapeMatch,
     extract_measures,
 )
@@ -1584,6 +1586,17 @@ def _validate_comment(definition: Mapping[str, Any]) -> list[str]:
     return []
 
 
+# MV-D29 / MV-D8 gate: an emitted expr must never contain a canonicalizer
+# placeholder. `?n` / `?s` are `mv_fingerprint`'s literal stand-ins — a body
+# carrying one was rendered from the erased canonical form instead of the
+# literal-preserving representative, and it cannot be created (`?n - l_discount`
+# parses as the identifier `n-l_discount`). Matched as a whole token so a
+# genuine `?` parameter marker followed by other text is not caught by accident.
+_PLACEHOLDER_TOKEN_RE = re.compile(
+    r"(?<![\w?])(" + "|".join(re.escape(p) for p in (NUMERIC_PLACEHOLDER, STRING_PLACEHOLDER)) + r")(?![\w])"
+)
+
+
 def _validate_fields(definition: Mapping[str, Any]) -> list[str]:
     """Format-type and synonym lints over dimensions and measures."""
     errors: list[str] = []
@@ -1595,8 +1608,18 @@ def _validate_fields(definition: Mapping[str, Any]) -> list[str]:
             if not isinstance(entry, Mapping):
                 continue
             name = str(entry.get("name") or "<unnamed>")
-            if not entry.get("expr"):
+            expr = entry.get("expr")
+            if not expr:
                 errors.append(f"{key[:-1]} '{name}' has no expr")
+            else:
+                leaked = sorted(set(_PLACEHOLDER_TOKEN_RE.findall(str(expr))))
+                if leaked:
+                    errors.append(
+                        f"{key[:-1]} '{name}': expr contains canonicalizer "
+                        f"placeholder(s) {leaked} — the body was rendered from the "
+                        "literal-erased canonical form and cannot be created "
+                        "(MV-D29); render from the representative expression"
+                    )
 
             format_block = entry.get("format")
             if isinstance(format_block, Mapping):

@@ -180,6 +180,7 @@ class AdvisorOutcome:
     parse_failures: int = 0
     measures_found: int = 0
     candidates_scored: int = 0
+    candidates_dropped_for_leakage: int = 0
     proposals_persisted: int = 0
     artifacts_written: int = 0
     echo_checks: tuple[str, ...] = ()
@@ -200,6 +201,7 @@ class AdvisorOutcome:
             "parse_failures": self.parse_failures,
             "measures_found": self.measures_found,
             "candidates_scored": self.candidates_scored,
+            "candidates_dropped_for_leakage": self.candidates_dropped_for_leakage,
             "proposals_persisted": self.proposals_persisted,
             "artifacts_written": self.artifacts_written,
             "echo_checks": sorted(set(self.echo_checks)),
@@ -687,10 +689,18 @@ def candidate_from_measure(
     has no reference set and legitimately reports ``EMPTY``.
     """
     concept = _concept_for(measure)
+    # MV-D29: the RENDER source is the literal-preserving representative, not the
+    # canonical form — the canonical erases `1 - l_discount` to `?n - l_discount`,
+    # which cannot be created. Identity/scoring/dedup are unaffected:
+    # `recurrence.canonical_expr` below (and `canonical_measure_expr`, which
+    # prefers it) still carries the canonical form. The fallback to canonical
+    # only fires for a degenerate measure whose representative failed to render,
+    # and the placeholder guard in `mv_yaml.validate` catches that body anyway.
+    render_source = measure.representative_expr or measure.canonical_expr
     return MetricViewCandidate(
         space_id=space_id,
         candidate_type="NEW_METRIC_VIEW",
-        measure_expr=measure.canonical_expr,
+        measure_expr=render_source,
         source_tables=tuple(measure.source_tables),
         concept=concept,
         proposed_object=_proposed_object(measure, concept),
@@ -1094,6 +1104,7 @@ def advise_from_corpus(
 
     persisted = 0
     artifacts = 0
+    dropped_for_leakage = 0
     echo_checks: list[str] = []
     proposals: list[ScoredProposal] = []
 
@@ -1108,6 +1119,20 @@ def advise_from_corpus(
             lineage=lineage_result.payload,
             demand=demand_result.payload,
         )
+        # MV-D29 firewall gate. The render source is now literal-preserving, so a
+        # predicate literal that carries a benchmark/PII value could reach a
+        # shipped body. Erasure-by-construction no longer protects us here, so the
+        # representative must clear the SAME leakage oracle the comment echo check
+        # uses before it can be scored, rendered, or persisted. A match DROPS the
+        # candidate — it never ships masked and never ships leaked.
+        if candidate.measure_expr and oracle.contains_sql(candidate.measure_expr):
+            dropped_for_leakage += 1
+            logger.info(
+                "mv_advisor: dropped candidate %s — representative measure "
+                "expression matched the benchmark corpus (MV-D29 leakage gate)",
+                measure.fingerprint,
+            )
+            continue
         proposal = score_candidate(
             candidate,
             run_id=run_id,
@@ -1143,7 +1168,8 @@ def advise_from_corpus(
         statements_scanned=scan.statements_scanned,
         parse_failures=scan.parse_failures,
         measures_found=len(scan.measures),
-        candidates_scored=len(measures),
+        candidates_scored=len(measures) - dropped_for_leakage,
+        candidates_dropped_for_leakage=dropped_for_leakage,
         proposals_persisted=persisted,
         artifacts_written=artifacts,
         echo_checks=tuple(echo_checks),

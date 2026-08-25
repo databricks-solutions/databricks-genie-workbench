@@ -7,7 +7,7 @@ A–D (including D's BYO leg).
 - **Suite:** `tests/e2e/test_mv_advisor_e2e.py` (fixtures in `tests/e2e/conftest.py`).
 - **Marker:** `e2e` (also `slow`). Registered in root `pyproject.toml`.
 - **Not** in the offline testpaths — `./scripts/test.sh` never collects it, so the
-  638 + 1452 offline baseline is untouched. It is opt-in only.
+  638 + 1461 offline baseline is untouched. It is opt-in only.
 
 ## Invocation model (why there is no server here)
 

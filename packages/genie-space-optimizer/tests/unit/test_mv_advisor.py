@@ -638,6 +638,58 @@ def test_the_ddl_comes_from_mv_yaml_not_from_this_module(monkeypatch) -> None:
     assert "LANGUAGE YAML" in ddl
 
 
+def test_the_rendered_body_carries_the_literal_not_a_placeholder(monkeypatch) -> None:
+    """MV-D29 golden case: the POV's headline measure
+    ``SUM(l_extendedprice * (1 - l_discount))`` — the exact expression Scenario
+    D's BYO leg could not create — now renders an executable body. The
+    structural constant ``1`` survives; the ``?n`` placeholder that made the
+    canonical form unrenderable is gone."""
+    _stages, artifacts, _upserts = patch_writes(monkeypatch)
+    advise(
+        monkeypatch,
+        [iteration(recurring())],
+        wide_schema_inventory=INVENTORY,
+    )
+
+    ddl = artifacts[0]["payload"]["ddl"]
+    # Source columns are `source.`-qualified by the renderer; the structural
+    # constant `1` is what MV-D29 had to preserve.
+    assert "SUM(source.l_extendedprice * (1 - source.l_discount))" in ddl
+    assert "?n" not in ddl
+    assert "?s" not in ddl
+
+
+def test_a_leaking_representative_drops_the_candidate(monkeypatch) -> None:
+    """MV-D29's firewall gate. Because the render source now preserves literals,
+    a representative carrying a benchmark/PII value could reach a shipped body —
+    so it must clear the leakage oracle first, and a match DROPS the candidate
+    rather than shipping it. Erasure-by-construction no longer stands in for the
+    gate. Modelled with an oracle that flags every expression, so the single
+    recurring measure is dropped and nothing is scored or persisted."""
+
+    class LeakyOracle:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def contains_sql(self, sql, *, w=None) -> bool:
+            return True
+
+        def contains_question(self, *a, **k) -> bool:
+            return False
+
+    monkeypatch.setattr(mv_advisor, "LeakageOracle", LeakyOracle)
+    _stages, _artifacts, upserts = patch_writes(monkeypatch)
+
+    outcome = advise(monkeypatch, [iteration(recurring())])
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert outcome.candidates_dropped_for_leakage >= 1
+    assert outcome.candidates_scored == 0
+    assert outcome.proposals_persisted == 0
+    assert not upserts
+    assert outcome.detail()["candidates_dropped_for_leakage"] >= 1
+
+
 def test_join_strategy_and_its_evidence_are_persisted_per_candidate(monkeypatch) -> None:
     """``genie_opt_mv_candidates`` has no column for either, so they ride in evidence."""
     _stages, _artifacts, upserts = patch_writes(monkeypatch)

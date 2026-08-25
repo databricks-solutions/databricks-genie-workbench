@@ -498,8 +498,8 @@ src/genie_space_optimizer/
                   preflight.py (3461 L), state.py (1871 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
-                  mv_fingerprint.py (1368 L), mv_scoring.py (1558 L),
-                  mv_state.py (654 L), mv_yaml.py (1812 L), ...
+                  mv_fingerprint.py (1446 L), mv_scoring.py (1558 L),
+                  mv_state.py (654 L), mv_yaml.py (1835 L), ...
 ```
 <!-- END GENERATED: package-layout -->
 
@@ -512,7 +512,7 @@ src/genie_space_optimizer/
 | `optimization/preflight.py` | `_profile_metric_view`, reclassification into `_metric_view_yaml` |
 | `optimization/benchmarking.py` | MV join precheck/repair, `MEASURE()` wrapping, `build_metric_view_measures` |
 | `optimization/wide_schema_history.py` | `system.query.history` mining (`:248`), warehouse-history fallback (`:357`) |
-| `optimization/mv_yaml.py` (1812 L) | `generate` / `validate` / `validate_registered` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment, echo and capability checks) and its MV-D24 bring-your-own twin `validate_registered` (the safety subset only — generation conventions become warnings, not errors). `CapabilityRow` is the Protocol the backend's `MvCapabilityRow` satisfies structurally |
+| `optimization/mv_yaml.py` (1835 L) | `generate` / `validate` / `validate_registered` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment, echo and capability checks) and its MV-D24 bring-your-own twin `validate_registered` (the safety subset only — generation conventions become warnings, not errors). `CapabilityRow` is the Protocol the backend's `MvCapabilityRow` satisfies structurally |
 
 Note the last row: **query-history demand signal (the POV's **D** component) already
 exists**, including the CMK/unavailable fallback path.
@@ -2096,7 +2096,7 @@ CREATE), recorded as its own finding below. So this gap is resolved; the rerun i
 **2/3** (curated-COMPLETE and empty-SKIPPED still pass), not three-for-three, for
 a reason orthogonal to this fix.
 
-### 2026-08-24 — Tier 1 rerun (Scenario D), rendered measure expr masks numeric literals
+### 2026-08-24 — Tier 1 rerun (Scenario D), rendered measure expr masks numeric literals — RESOLVED (Prompt 15.2, MV-D29, 2026-08-24)
 
 **Observed.** With the 404 resolved, the BYO leg now fetches the advisor's
 rendered DDL (HTTP 200) and executes `CREATE VIEW … WITH METRICS LANGUAGE YAML`
@@ -2143,3 +2143,43 @@ fixed. Root-cause pointer: search the candidate/measure expr construction for
 where a normalized/parameterized expression (`?`-placeholders) is used in place
 of the literal source expression. Verbatim failure and the dumped `yaml_text`
 are in `scripts/e2e/mv_advisor_e2e.md` → Run record → 2026-08-24 Tier 1 rerun.
+
+**Diagnosis correction (do not treat as a rendering leak).** The `?n` is not
+masking that "leaked" — it is `mv_fingerprint`'s *deliberate, firewall-motivated*
+literal erasure, whose module docstring (`:24-42`) states the contract: "a
+literal that reaches shipped metric-view metadata is a firewall violation", and
+"a generator must recover concrete predicate values from profiling, never by
+reading them back out of a canonical form — there is nothing left there to
+read." The defect is a **consumer violating that contract**:
+`candidate_from_measure` set `measure_expr=measure.canonical_expr` (the erased
+identity form), and `FingerprintRecurrence` carried *no* concrete expression, so
+the generator had nothing else to reach for. A design gap, not a leak.
+Weakening erasure would break the firewall property and reshape what merges (an
+MV-D10 change the register forbids re-deriving).
+
+**Resolution (Prompt 15.2, decides MV-D29).**
+1. `MeasureRef` / `FingerprintRecurrence` gain `representative_expr`
+   (`mv_fingerprint.render_expr`): the same normalization as `canonicalize_expr`
+   **minus `_erase_literals`**, captured from the first occurrence of a
+   fingerprint. Identity/scoring/dedup keep reading `canonical_expr` only —
+   pinned by `test_representative_expr_is_never_an_identity` (two measures
+   differing only in a literal share one `fingerprint` while their
+   `representative_expr` differs). `canonicalize_expr` output is byte-identical.
+2. `candidate_from_measure` renders `measure_expr=representative_expr`, so the
+   POV's `SUM(l_extendedprice * (1 - l_discount))` reaches the body as
+   `SUM(source.l_extendedprice * (1 - source.l_discount))` — executable.
+3. The firewall becomes an actual gate, not erasure-by-construction: before a
+   candidate is scored/persisted, `LeakageOracle.contains_sql(representative)`
+   runs and a match DROPS the candidate (`candidates_dropped_for_leakage`). The
+   existing oracle, no second scanner.
+4. `mv_yaml.validate` / `validate_registered` reject `?n` / `?s` in any emitted
+   `expr` — the cheap MV-D8 static guard that would have caught this at Prompt
+   5.5. This is why the class of defect can no longer pass offline.
+5. Fixtures: the POV golden case renders to executable DDL
+   (`test_the_rendered_body_carries_the_literal_not_a_placeholder`), the gate
+   drops a leaking representative
+   (`test_a_leaking_representative_drops_the_candidate`), and `mv_yaml` rejects
+   placeholder-bearing bodies. +9 GSO; no persisted column added, so the
+   exposure matrix is unchanged (the render source flows in-memory into the
+   already-SERVED `yaml_text`). Exit: Scenario D BYO leg's `CREATE VIEW`
+   executes a literal-bearing measure — recorded in the runbook's rerun entry.

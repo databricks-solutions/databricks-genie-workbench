@@ -117,11 +117,19 @@ class MeasureRef:
     table identity travels in ``source_tables``, which is also what the MV-D7
     key hashes as its sorted source set, so an alias-qualified and an
     unqualified spelling of the same measure land on one candidate row.
+
+    ``representative_expr`` is the literal-preserving render form of the same
+    node (MV-D29): the source a generator emits into an executable body, where
+    ``canonical_expr`` has erased ``1 - l_discount`` to ``?n - l_discount``. It
+    is *never* an identity: ``fingerprint`` and every dedup/scoring key read
+    ``canonical_expr`` only, so two measures differing only in a literal still
+    share one fingerprint while their ``representative_expr`` differs.
     """
 
     canonical_expr: str
     fingerprint: str
     aggregate: str
+    representative_expr: str = ""
     source_columns: tuple[str, ...] = ()
     source_tables: tuple[str, ...] = ()
     is_windowed: bool = False
@@ -278,6 +286,11 @@ class FingerprintRecurrence:
     source_columns: tuple[str, ...] = ()
     source_tables: tuple[str, ...] = ()
     shapes: tuple[str, ...] = ()
+    representative_expr: str = ""
+    """MV-D29: the literal-preserving render source, captured from the FIRST
+    occurrence of this fingerprint in the scan (deterministic — corpus order is
+    fixed). Populated for measures; the other kinds leave it ``""``. It is a
+    render source only — ``canonical_expr`` remains the sole identity."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -576,9 +589,20 @@ def _sort_conjunctions(tree: exp.Expression) -> None:
             chain.replace(exp.and_(*conjuncts, copy=False))
 
 
-def _canonicalize_tree(tree: exp.Expression, *, strip_qualifiers: bool) -> exp.Expression:
+def _canonicalize_tree(
+    tree: exp.Expression, *, strip_qualifiers: bool, erase_literals: bool = True
+) -> exp.Expression:
     """The full pass order. Ordinal resolution must precede literal erasure and
-    conjunct sorting must follow everything else; the rest is independent."""
+    conjunct sorting must follow everything else; the rest is independent.
+
+    ``erase_literals`` defaults to ``True`` — the firewall default that every
+    canonical form (fingerprint identity, dedup key) depends on. It is turned
+    off for exactly one consumer, :func:`render_expr` (MV-D29): the render
+    source needs a *literal-preserving* form so a structural constant such as
+    the ``1`` in ``1 - l_discount`` survives into an executable body. That form
+    never feeds identity, scoring, or dedup, and it is gated by ``LeakageOracle``
+    before it can reach shipped YAML.
+    """
     tree = tree.copy()
     _resolve_projection_refs(tree)
     _strip_output_aliases(tree)
@@ -591,7 +615,8 @@ def _canonicalize_tree(tree: exp.Expression, *, strip_qualifiers: bool) -> exp.E
         _rename_relations(tree)
     _normalize_identifiers(tree)
     tree = _normalize_temporal_units(tree)
-    tree = _erase_literals(tree)
+    if erase_literals:
+        tree = _erase_literals(tree)
     _flatten_boolean_parens(tree)
     _sort_conjunctions(tree)
     return tree
@@ -641,6 +666,40 @@ def canonicalize_expr(expr: str | exp.Expression, *, strip_qualifiers: bool = Tr
         return _render(_canonicalize_tree(tree, strip_qualifiers=strip_qualifiers))
     except Exception as exc:  # noqa: BLE001
         logger.debug("mv_fingerprint: expression canonicalization failed (%s)", exc)
+        return ""
+
+
+def render_expr(expr: str | exp.Expression, *, strip_qualifiers: bool = True) -> str:
+    """Return a *literal-preserving* render form of a single expression (MV-D29).
+
+    Same normalization as :func:`canonicalize_expr` — qualifiers stripped by
+    default so the result references the metric view's ``source:`` columns,
+    identifiers and temporal units normalized, conjunctions flattened and
+    sorted — **except that literals are kept**. So ``SUM(l.l_extendedprice *
+    (1 - l.l_discount))`` renders as ``SUM(l_extendedprice * (1 - l_discount))``,
+    an expression that a ``CREATE VIEW`` can actually execute, where
+    :func:`canonicalize_expr` would emit ``SUM(l_extendedprice * (?n -
+    l_discount))``.
+
+    **This is not a canonical form and must never be treated as one.** It is
+    only a render source: it never feeds :func:`expr_fingerprint`, the MV-D7
+    dedup key, or scoring. Because it can carry a benchmark/PII predicate
+    literal, a consumer MUST pass it through ``LeakageOracle`` before it reaches
+    a shipped body and drop the candidate if it matches — the firewall moves
+    from erasure-by-construction to an actual gate (MV-D29). Returns ``""`` when
+    the expression does not parse, exactly like :func:`canonicalize_expr`.
+    """
+    tree = _parse_expression(expr) if isinstance(expr, str) else expr
+    if tree is None:
+        return ""
+    try:
+        return _render(
+            _canonicalize_tree(
+                tree, strip_qualifiers=strip_qualifiers, erase_literals=False
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mv_fingerprint: expression render failed (%s)", exc)
         return ""
 
 
@@ -790,6 +849,7 @@ def extract_measures(sql: str) -> tuple[MeasureRef, ...]:
                 canonical_expr=canonical,
                 fingerprint=expr_fingerprint(node),
                 aggregate=aggregate.sql_name(),
+                representative_expr=render_expr(node),
                 source_columns=columns,
                 source_tables=sources,
                 is_windowed=isinstance(aggregate.parent, exp.Window),
@@ -1126,14 +1186,25 @@ class _Bucket:
         "last_ts",
         "provenance_ids",
         "recurrence",
+        "representative_expr",
         "shapes",
         "tables",
     )
 
-    def __init__(self, fingerprint: str, canonical_expr: str, kind: str) -> None:
+    def __init__(
+        self,
+        fingerprint: str,
+        canonical_expr: str,
+        kind: str,
+        representative_expr: str = "",
+    ) -> None:
         self.fingerprint = fingerprint
         self.canonical_expr = canonical_expr
         self.kind = kind
+        # MV-D29: captured once, from the first occurrence that created this
+        # bucket — a later occurrence with the same fingerprint (hence the same
+        # shape) does not overwrite it, so the representative is stable.
+        self.representative_expr = representative_expr
         self.recurrence = 0
         self.provenance_ids: set[str] = set()
         self.curated_provenance_ids: set[str] = set()
@@ -1188,6 +1259,7 @@ class _Bucket:
             source_columns=tuple(sorted(self.columns)),
             source_tables=tuple(sorted(self.tables)),
             shapes=tuple(sorted(self.shapes)),
+            representative_expr=self.representative_expr,
         )
 
 
@@ -1283,7 +1355,12 @@ def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
         for measure in extract_measures(sql):
             bucket = measures.setdefault(
                 measure.fingerprint,
-                _Bucket(measure.fingerprint, measure.canonical_expr, "measure"),
+                _Bucket(
+                    measure.fingerprint,
+                    measure.canonical_expr,
+                    "measure",
+                    measure.representative_expr,
+                ),
             )
             bucket.observe(provenance, measure.source_columns, measure.source_tables)
             bucket.shapes.update(shape_kinds_by_expr.get(measure.canonical_expr, ()))
@@ -1363,6 +1440,7 @@ __all__ = [
     "extract_join_keys",
     "extract_measures",
     "parse_statement",
+    "render_expr",
     "shapes_in_statement",
     "statement_grain",
 ]

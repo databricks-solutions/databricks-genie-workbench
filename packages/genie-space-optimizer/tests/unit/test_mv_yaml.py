@@ -967,6 +967,50 @@ def test_the_path_base_document_is_valid_before_anything_is_planted():
     assert report.ok, report.errors
 
 
+def test_validate_rejects_a_numeric_placeholder_in_an_emitted_expr():
+    """MV-D29 / MV-D8 gate: the exact defect Scenario D's BYO leg hit live. A
+    body rendered from the erased canonical form carries ``?n``, parses as the
+    identifier ``n - l_discount`` inside a CREATE VIEW, and fails with
+    INVALID_IDENTIFIER. ``validate`` must catch it statically, before any
+    warehouse round-trip."""
+    planted = PATH_BASE_YAML.replace(
+        "expr: SUM(source.net_revenue)",
+        "expr: SUM(source.l_extendedprice * (?n - source.l_discount))",
+    )
+    report = validate(planted, capabilities=_NESTED_GRANTED)
+
+    assert not report.ok
+    joined = " ".join(report.errors)
+    assert "placeholder" in joined
+    assert "?n" in joined
+    assert "MV-D29" in joined
+
+
+def test_validate_rejects_a_string_placeholder_in_an_emitted_expr():
+    planted = PATH_BASE_YAML.replace(
+        "expr: SUM(source.net_revenue)",
+        "expr: SUM(CASE WHEN source.status = ?s THEN 1 END)",
+    )
+    report = validate(planted, capabilities=_NESTED_GRANTED)
+
+    assert not report.ok
+    assert any("?s" in e for e in report.errors)
+
+
+def test_validate_accepts_a_literal_bearing_measure_expr():
+    """The complement: a real numeric literal (the POV's ``1 - l_discount``) is
+    not a placeholder and must pass. The gate rejects ``?n``/``?s`` tokens, not
+    honest constants — otherwise MV-D29's fix would trade one false gate for
+    another."""
+    planted = PATH_BASE_YAML.replace(
+        "expr: SUM(source.net_revenue)",
+        "expr: SUM(source.l_extendedprice * (1 - source.l_discount))",
+    )
+    report = validate(planted, capabilities=_NESTED_GRANTED)
+
+    assert report.ok, report.errors
+
+
 def test_window_measures_is_rejected_at_the_top_level_and_ignored_below_it():
     """The unsupported *array* form is a top-level key; ``window:`` per measure is not.
 

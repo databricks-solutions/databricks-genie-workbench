@@ -22,6 +22,7 @@ import sqlglot
 
 from genie_space_optimizer.optimization import mv_fingerprint as mf
 from genie_space_optimizer.optimization.mv_fingerprint import (
+    NUMERIC_PLACEHOLDER,
     SHAPE_CONDITIONAL_COUNT,
     SHAPE_PCT_OF_TOTAL,
     SHAPE_RATIO,
@@ -35,6 +36,7 @@ from genie_space_optimizer.optimization.mv_fingerprint import (
     extract_filters,
     extract_join_keys,
     extract_measures,
+    render_expr,
     shapes_in_statement,
     statement_grain,
 )
@@ -210,6 +212,18 @@ def test_canonical_measure_expr_is_alias_free_and_literal_free() -> None:
     assert measure.source_tables == (LINEITEM,)
 
 
+def test_representative_expr_preserves_literals_and_strips_qualifiers() -> None:
+    """MV-D29: the render source keeps ``1 - l_discount`` verbatim (so the body
+    is executable) but is still alias-free, so it references the metric view's
+    ``source:`` columns rather than a query alias. This is the POV's headline
+    expression — the exact one whose canonical form was unrenderable."""
+    measure = extract_measures(DISCOUNTED_REVENUE_VARIANTS["alias_li"])[0]
+    assert measure.representative_expr == "sum(l_extendedprice * (1 - l_discount))"
+    assert NUMERIC_PLACEHOLDER not in measure.representative_expr
+    # The canonical form — the identity — still erases the literal.
+    assert measure.canonical_expr == "sum(l_extendedprice * (?n - l_discount))"
+
+
 # ── Near misses ──────────────────────────────────────────────────────────
 
 
@@ -243,6 +257,36 @@ def test_literal_only_difference_collapses_by_design() -> None:
     assert expr_fingerprint("SUM(l_extendedprice * (2 - l_discount))") == expr_fingerprint(
         DISCOUNTED_REVENUE
     )
+
+
+def test_representative_expr_is_never_an_identity() -> None:
+    """MV-D29's core invariant: the render source (``representative_expr``) is a
+    parallel channel to the identity (``fingerprint`` / ``canonical_expr``).
+
+    Two measures differing ONLY in a literal MUST share one fingerprint — that
+    is the firewall's shape-merge — while their ``representative_expr`` differs,
+    because the whole defect was a consumer reaching for the wrong field. If a
+    future change ever routed the representative into the fingerprint, these two
+    would stop merging and this assertion would catch it.
+    """
+    one = extract_measures("SELECT SUM(l_extendedprice * (1 - l_discount)) FROM t")[0]
+    two = extract_measures("SELECT SUM(l_extendedprice * (2 - l_discount)) FROM t")[0]
+
+    assert one.fingerprint == two.fingerprint
+    assert one.canonical_expr == two.canonical_expr
+    assert one.representative_expr != two.representative_expr
+    assert one.representative_expr == "sum(l_extendedprice * (1 - l_discount))"
+    assert two.representative_expr == "sum(l_extendedprice * (2 - l_discount))"
+
+
+def test_render_expr_matches_canonical_shape_minus_literal_erasure() -> None:
+    """``render_expr`` and ``canonicalize_expr`` are the same normalization but
+    for literals: strip the literals from the render form and the two agree."""
+    src = "SUM(li.l_extendedprice * (1 - li.l_discount))"
+    assert render_expr(src) == "sum(l_extendedprice * (1 - l_discount))"
+    assert canonicalize_expr(src) == "sum(l_extendedprice * (?n - l_discount))"
+    # Unparseable input degrades to "" for both, identically.
+    assert render_expr("((( not sql") == ""
 
 
 # ── Statement-level canonicalization ─────────────────────────────────────
@@ -606,7 +650,26 @@ def test_fingerprint_recurrence_to_dict_key_set_is_pinned() -> None:
         "source_columns",
         "source_tables",
         "shapes",
+        "representative_expr",
     }
+
+
+def test_corpus_scan_carries_representative_expr_on_measures_only() -> None:
+    """MV-D29: the render source rides through ``corpus_scan`` on the measure
+    recurrence (captured from the first occurrence), preserving the literal,
+    while the identity ``canonical_expr`` still erases it. Non-measure kinds
+    leave it empty — nothing renders a filter or a join key into a body."""
+    scan = corpus_scan(
+        [
+            (DISCOUNTED_REVENUE_VARIANTS["bare"], "bmk_0"),
+            (DISCOUNTED_REVENUE_VARIANTS["alias_li"], "bmk_1"),
+        ]
+    )
+    top = scan.measures[0]
+    assert top.representative_expr == "sum(l_extendedprice * (1 - l_discount))"
+    assert top.canonical_expr == "sum(l_extendedprice * (?n - l_discount))"
+    for bucket in (*scan.dimensions, *scan.filters, *scan.join_keys):
+        assert bucket.representative_expr == ""
 
 
 @pytest.mark.parametrize("sql", CORPUS)
