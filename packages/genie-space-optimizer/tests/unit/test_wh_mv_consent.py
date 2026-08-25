@@ -147,6 +147,75 @@ def test_empty_probe_id_is_rejected(executed):
     assert executed == []
 
 
+# ── Re-verification stamp (Prompt 15.5, Scenario B) ──────────────────────
+
+
+def _reverify(executed, **overrides):
+    kwargs = {
+        "catalog": "main",
+        "schema": "genie_space_optimizer",
+        "probe_id": "p1",
+    }
+    kwargs.update(overrides)
+    warehouse.wh_mark_mv_consent_reverified(_FakeWorkspaceClient(), "wh1", **kwargs)
+    return executed[-1]
+
+
+def test_reverify_is_update_only_and_stamps_the_trigger_time(executed):
+    """A stale authorization must never masquerade as a fresh consent, so this
+    only UPDATEs a row the probe already wrote — never INSERTs one."""
+    sql = _reverify(executed)
+
+    assert sql.startswith("MERGE INTO main.genie_space_optimizer.genie_opt_mv_consents")
+    assert "ON t.probe_id = s.probe_id" in sql
+    assert "WHEN MATCHED THEN UPDATE SET" in sql
+    assert "WHEN NOT MATCHED THEN INSERT" not in sql
+    assert "t.reverified_at_trigger = current_timestamp()" in sql
+    assert "t.updated_at = current_timestamp()" in sql
+
+
+def test_reverify_closes_the_consent_to_run_loop(executed):
+    """Scenario B's fix: the downgraded run's id, verdict and reason are stamped
+    so /mv-created (which reads the consent by run) stops surfacing NULL."""
+    sql = _reverify(
+        executed,
+        run_id="r1",
+        verdict="INSUFFICIENT",
+        downgrade_reason="grant revoked before trigger",
+    )
+
+    assert "t.run_id = 'r1'" in sql
+    assert "t.verdict = 'INSUFFICIENT'" in sql
+    assert "t.downgrade_reason = 'grant revoked before trigger'" in sql
+
+
+def test_reverify_omits_columns_left_unset(executed):
+    """The success path stamps a verdict but no downgrade_reason; an omitted
+    field is left untouched rather than nulled, so a prior value survives."""
+    sql = _reverify(executed, verdict="SUFFICIENT")
+
+    assert "t.verdict = 'SUFFICIENT'" in sql
+    assert "downgrade_reason" not in sql
+    assert "t.run_id" not in sql
+
+
+def test_reverify_rejects_an_undeclared_verdict(executed):
+    with pytest.raises(ValueError, match="verdict must be one of"):
+        _reverify(executed, verdict="MAYBE")
+    assert executed == []
+
+
+def test_reverify_requires_a_probe_id(executed):
+    with pytest.raises(ValueError, match="probe_id is required"):
+        _reverify(executed, probe_id="")
+    assert executed == []
+
+
+def test_reverify_quotes_cannot_break_out_of_the_literal(executed):
+    sql = _reverify(executed, downgrade_reason="user's grant was revoked")
+    assert "t.downgrade_reason = 'user''s grant was revoked'" in sql
+
+
 # ── Reads ────────────────────────────────────────────────────────────────
 
 

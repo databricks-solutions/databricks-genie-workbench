@@ -921,7 +921,11 @@ def _shape_measures(
     measures: list[dict[str, Any]] = []
 
     for shape in shapes:
-        components = dict(shape.components)
+        # MV-D29: render from the literal-preserving component forms so the body
+        # a CREATE VIEW executes never carries a ``?n``/``?s`` canonicalizer
+        # placeholder. ``components`` (literal-erased) stays the identity form and
+        # is only the fallback for a shape built before render forms existed.
+        components = dict(shape.render_components) or dict(shape.components)
         if shape.kind == SHAPE_RATIO:
             numerator = components.get("numerator") or ""
             denominator = components.get("denominator") or ""

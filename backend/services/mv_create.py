@@ -247,11 +247,48 @@ def create_and_attach_for_run(
         catalog=catalog, schema=schema, warehouse_id=warehouse_id,
     )
     if consent is None or verification is None:
+        # No consent row exists, so there is nothing to stamp — the run is
+        # suggest_only by absence, and /mv-created has no consent to read.
         return MvAttachHandoff(
             action_mode="suggest_only",
             downgrade_reason="no consent record was found for this probe",
         )
+
+    def _stamp_consent(
+        *, verdict: str | None = None, downgrade_reason: str | None = None
+    ) -> None:
+        """Close the consent→run loop on the row the probe already wrote.
+
+        The Spark twin ``mark_mv_consent_reverified`` had no warehouse peer and
+        no caller, so the backend trigger flow left ``run_id`` /
+        ``downgrade_reason`` NULL on every consent — and ``/mv-created`` (which
+        reads the consent by run) surfaced ``downgrade_reason`` as ``None`` even
+        when a run auto-downgraded (Tier-2 Scenario B). Stamping here, as the SP
+        that owns the table, records which run the consent bound to and why it
+        downgraded, on both the downgrade and success paths. Best-effort: a
+        stamp failure must not abort a create that already succeeded.
+        """
+        from genie_space_optimizer.common.warehouse import (
+            wh_mark_mv_consent_reverified,
+        )
+
+        try:
+            wh_mark_mv_consent_reverified(
+                get_service_principal_client(), warehouse_id,
+                catalog=catalog, schema=schema, probe_id=probe_id,
+                run_id=run_id, verdict=verdict, downgrade_reason=downgrade_reason,
+            )
+        except Exception:
+            logger.warning(
+                "Could not stamp consent %s for run %s", probe_id, run_id,
+                exc_info=True,
+            )
+
     if verification.effective_mode != "create_and_attach":
+        _stamp_consent(
+            verdict=verification.verdict,
+            downgrade_reason=verification.downgrade_reason,
+        )
         return MvAttachHandoff(
             action_mode="suggest_only",
             consent_id=probe_id,
@@ -372,11 +409,18 @@ def create_and_attach_for_run(
             continue
 
     if not attach_views:
+        # Consent survived re-verification but nothing built (revalidation drops,
+        # collisions). The verdict stays SUFFICIENT — this is a create-time
+        # outcome, not a consent downgrade — but the run and its reason are still
+        # stamped so /mv-created can explain the empty result.
+        downgrade_reason = "no metric view could be created for the approved candidates"
+        _stamp_consent(verdict=verification.verdict, downgrade_reason=downgrade_reason)
         return MvAttachHandoff(
             action_mode="suggest_only",
             consent_id=probe_id,
-            downgrade_reason="no metric view could be created for the approved candidates",
+            downgrade_reason=downgrade_reason,
         )
+    _stamp_consent(verdict=verification.verdict)
     return MvAttachHandoff(
         attach_views=attach_views,
         consent_id=probe_id,

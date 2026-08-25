@@ -81,7 +81,7 @@ included in `backend/main.py`). The ten MV routes:
 | Table | Column | Exposure | Route / Reason |
 |---|---|---|---|
 | genie_opt_mv_consents | probe_id | SERVED | route 1 (`MvProbeResult.probe_id`) |
-| genie_opt_mv_consents | run_id | DELIBERATELY INTERNAL | consent→run linkage; the audit answer to "which run used this consent", not a client field |
+| genie_opt_mv_consents | run_id | DELIBERATELY INTERNAL | consent→run linkage; the audit answer to "which run used this consent", not a client field. Stamped by the create/attach path (Prompt 15.5) so route 10's `wh_load_mv_consent_by_run` can find the downgraded run's consent — it is the join key, not a surfaced value |
 | genie_opt_mv_consents | granted_by | DELIBERATELY INTERNAL | consent audit ledger (the OBO identity every write ran under) |
 | genie_opt_mv_consents | granted_at | DELIBERATELY INTERNAL | consent audit ledger |
 | genie_opt_mv_consents | target_catalog | DELIBERATELY INTERNAL | consent record; route 1 echoes the *requested* target, not a read of this stored column |
@@ -89,7 +89,7 @@ included in `backend/main.py`). The ten MV routes:
 | genie_opt_mv_consents | materialize_consented | SERVED | route 1 (echoed on `MvProbeResult`) |
 | genie_opt_mv_consents | probe_results_json | DELIBERATELY INTERNAL | audit copy of the probe verdict; route 1 returns the live probe payload, not this stored blob |
 | genie_opt_mv_consents | verdict | SERVED | route 1 (`MvProbeResult.verdict`) |
-| genie_opt_mv_consents | reverified_at_trigger | DELIBERATELY INTERNAL | consent-verification plumbing: the job refuses to attach without a fresh re-verify; never a client field |
+| genie_opt_mv_consents | reverified_at_trigger | DELIBERATELY INTERNAL | consent-verification plumbing stamped by the create/attach path immediately before an OBO write (Prompt 15.5, via `wh_mark_mv_consent_reverified`), so a stale authorization cannot pass as fresh; never a client field |
 | genie_opt_mv_consents | downgrade_reason | SERVED | route 10 (surfaced alongside created objects) |
 | genie_opt_mv_consents | updated_at | DELIBERATELY INTERNAL | consent audit-ledger timestamp |
 

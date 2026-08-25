@@ -177,6 +177,14 @@ class AdvisorOutcome:
     always carries a ``skip_reason``; a ``FAILED`` one always carries an ``error``
     — the phase is isolated, so a caller reading only the return value must still
     be able to tell a clean skip from a swallowed exception.
+
+    ``candidates_render_failed`` / ``render_failures`` carry the MV-D30
+    as-implemented (Prompt 15.5) invariant loudly: a suggestion whose body did
+    not render is *not persisted* (persist-variant a — the row's existence
+    implies a servable body), and the drop rides the run outcome as a count plus
+    an operator-facing ``(suggestion_id, verdict)`` pair rather than vanishing
+    into a bodyless card that 404s at ``/mv-ddl``. The pair is ids/codes only, so
+    the stage row stays a non-exemption.
     """
 
     status: str
@@ -188,9 +196,11 @@ class AdvisorOutcome:
     candidates_scored: int = 0
     candidates_dropped_for_leakage: int = 0
     candidates_dropped_suppressed: int = 0
+    candidates_render_failed: int = 0
     proposals_persisted: int = 0
     artifacts_written: int = 0
     echo_checks: tuple[str, ...] = ()
+    render_failures: tuple[tuple[str, str], ...] = field(default=(), repr=False)
     proposals: tuple[ScoredProposal, ...] = field(default=(), repr=False)
 
     def detail(self) -> dict[str, Any]:
@@ -210,9 +220,14 @@ class AdvisorOutcome:
             "candidates_scored": self.candidates_scored,
             "candidates_dropped_for_leakage": self.candidates_dropped_for_leakage,
             "candidates_dropped_suppressed": self.candidates_dropped_suppressed,
+            "candidates_render_failed": self.candidates_render_failed,
             "proposals_persisted": self.proposals_persisted,
             "artifacts_written": self.artifacts_written,
             "echo_checks": sorted(set(self.echo_checks)),
+            "render_failures": [
+                {"suggestion_id": sid, "verdict": verdict}
+                for sid, verdict in self.render_failures
+            ],
             "suggestion_ids": [p.suggestion_id for p in self.proposals],
         }
 
@@ -1244,10 +1259,39 @@ def advise_from_corpus(
     # "rejected" means; None means a caller that opted out of suppression (tests).
     suppressed = read_suppressed_fingerprints() if read_suppressed_fingerprints else set()
 
+    # MV-D29 shape firewall (Prompt 15.5): a recurring shape's components now
+    # render literal-preserving (mv_fingerprint.render_components), so a
+    # predicate/arithmetic literal inside a shape could reach a shipped body
+    # exactly like a primary measure — and the generator's only leakage check is
+    # the BEST FOR comment echo, which never inspects the measure body. So gate
+    # the shapes through the SAME oracle here, at the assembly site, before any
+    # generation: a shape with any leaking render fragment is DROPPED (the base
+    # bundle still renders from its non-shape measures). This mirrors the
+    # per-measure gate below and keeps "erasure-by-construction no longer
+    # protects us" honest.
+    shape_leak = 0
+    safe_shapes: list[Any] = []
+    for shape in scan.shapes:
+        fragments = [frag for _, frag in shape.render_components] or [
+            frag for _, frag in shape.components
+        ]
+        if any(oracle.contains_sql(frag) for frag in fragments):
+            shape_leak += 1
+            logger.info(
+                "mv_advisor: dropped recurring shape %s — a render component "
+                "matched the benchmark corpus (MV-D29 shape leakage gate)",
+                shape.fingerprint,
+            )
+            continue
+        safe_shapes.append(shape)
+    safe_shapes = tuple(safe_shapes)
+
     persisted = 0
     artifacts = 0
     dropped_for_leakage = 0
     dropped_suppressed = 0
+    render_failed = 0
+    render_failures: list[tuple[str, str]] = []
     echo_checks: list[str] = []
     proposals: list[ScoredProposal] = []
     # PROPOSE suggestions collected for view-grained consolidation, keyed by
@@ -1315,7 +1359,7 @@ def advise_from_corpus(
         rendered = generate(
             candidate,
             profiling_for(candidate, table_columns=table_columns, domain=domain),
-            shapes=scan.shapes,
+            shapes=safe_shapes,
             oracle=oracle,
         )
         echo_checks.append(rendered.echo_check)
@@ -1334,7 +1378,7 @@ def advise_from_corpus(
             members=members,
             table_columns=table_columns,
             domain=domain,
-            shapes=scan.shapes,
+            shapes=safe_shapes,
             oracle=oracle,
         )
         if built is None:
@@ -1342,10 +1386,31 @@ def advise_from_corpus(
             continue
         bundle_proposal, rendered = built
         echo_checks.append(rendered.echo_check)
+        # MV-D30 as-implemented (Prompt 15.5), persist-variant a: a suggestion
+        # card surfaces ONLY when its body renders. A bundle whose YAML did not
+        # render (``not rendered.ok`` — e.g. a shape that still resolves to a
+        # canonicalizer placeholder, or an additive conflict) is DROPPED, not
+        # persisted, so the panel never shows a card that 404s at ``/mv-ddl`` and
+        # ``mv_create`` never resolves a body-less suggestion to nothing. The drop
+        # rides the run outcome loudly rather than silently: a count plus an
+        # operator-facing (id, verdict) pair, and the verdict/rejections at INFO.
+        if not rendered.ok:
+            render_failed += 1
+            render_failures.append((bundle_proposal.suggestion_id, rendered.verdict))
+            logger.warning(
+                "mv_advisor: dropped bundle %s over %s — body did not render "
+                "(verdict=%s, rejections=%s); a suggestion without a servable DDL "
+                "body never surfaces (MV-D30 as-implemented 15.5)",
+                bundle_proposal.suggestion_id,
+                tuple(source_key),
+                rendered.verdict,
+                rendered.rejections,
+            )
+            continue
         proposals.append(bundle_proposal)
         if persist_proposal(bundle_proposal, rendered):
             persisted += 1
-        if rendered.ok and write_ddl_artifact(bundle_proposal, rendered):
+        if write_ddl_artifact(bundle_proposal, rendered):
             artifacts += 1
 
     return AdvisorOutcome(
@@ -1354,11 +1419,13 @@ def advise_from_corpus(
         parse_failures=scan.parse_failures,
         measures_found=len(scan.measures),
         candidates_scored=len(measures) - dropped_for_leakage - dropped_suppressed,
-        candidates_dropped_for_leakage=dropped_for_leakage,
+        candidates_dropped_for_leakage=dropped_for_leakage + shape_leak,
         candidates_dropped_suppressed=dropped_suppressed,
+        candidates_render_failed=render_failed,
         proposals_persisted=persisted,
         artifacts_written=artifacts,
         echo_checks=tuple(echo_checks),
+        render_failures=tuple(render_failures),
         proposals=tuple(proposals),
     )
 

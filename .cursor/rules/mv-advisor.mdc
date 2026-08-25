@@ -115,7 +115,9 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
 - SUGGEST-SURFACE CONTRACT (from the first human smoke run): a proposal is a
   metric VIEW bundling the measures of one grain, never one card per measure;
   MEDIUM+ surfaces by default, LOW behind explicit disclosure, and a proposal
-  with no proposed_object never renders; every surfaced card carries its
+  with no proposed_object never renders; no proposal surfaces without a
+  servable DDL body (a render failure is loud in the run outcome, never a
+  silent gate); every surfaced card carries its
   justification (measures, evidence counts, gain); EMPTY states are variant-
   specific (already-governed / nothing-recurring / no-corpus), never one
   generic shrug; results hydrate from persisted candidates on mount and are

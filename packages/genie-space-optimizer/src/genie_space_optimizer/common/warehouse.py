@@ -610,6 +610,65 @@ def wh_upsert_mv_consent(
     return probe_id
 
 
+def wh_mark_mv_consent_reverified(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    probe_id: str,
+    run_id: str | None = None,
+    verdict: str | None = None,
+    downgrade_reason: str | None = None,
+) -> None:
+    """SQL-warehouse twin of :func:`mv_state.mark_mv_consent_reverified`.
+
+    Stamps ``reverified_at_trigger`` on an existing consent immediately before
+    the backend's OBO create/attach write, and records the run the consent was
+    bound to (``run_id``), the re-verified ``verdict``, and — when the run was
+    auto-downgraded to ``suggest_only`` — the ``downgrade_reason``. Without this
+    twin the backend (which has no SparkSession) had no way to close the
+    consent→run loop, so ``/mv-created`` read ``run_id``/``downgrade_reason`` as
+    ``NULL`` on a downgraded run (Tier-2 Scenario B). ``UPDATE``-only by
+    construction: reverification stamps a consent the probe already wrote, never
+    inserts one, so a stale authorization can never masquerade as a fresh row.
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CONSENTS
+    from genie_space_optimizer.optimization.mv_state import MV_CONSENT_VERDICTS
+
+    if not probe_id:
+        raise ValueError("probe_id is required")
+    if verdict is not None and verdict not in MV_CONSENT_VERDICTS:
+        raise ValueError(
+            f"verdict must be one of {MV_CONSENT_VERDICTS}, got {verdict!r}"
+        )
+
+    updates: dict[str, str] = {
+        "reverified_at_trigger": "current_timestamp()",
+        "updated_at": "current_timestamp()",
+    }
+    if run_id is not None:
+        updates["run_id"] = _wh_literal(run_id)
+    if verdict is not None:
+        updates["verdict"] = _wh_literal(verdict)
+    if downgrade_reason is not None:
+        updates["downgrade_reason"] = _wh_literal(downgrade_reason)
+
+    fqn = f"{catalog}.{schema}.{TABLE_MV_CONSENTS}"
+    set_clause = ", ".join(f"t.{col} = {val}" for col, val in updates.items())
+    sql = (
+        f"MERGE INTO {fqn} AS t "
+        f"USING (SELECT {_wh_literal(probe_id)} AS probe_id) AS s "
+        f"ON t.probe_id = s.probe_id "
+        f"WHEN MATCHED THEN UPDATE SET {set_clause}"
+    )
+    sql_warehouse_execute(ws, warehouse_id, sql)
+    logger.info(
+        "Re-verified metric view consent %s (run_id=%s, verdict=%s, downgrade=%s) "
+        "via SQL warehouse", probe_id, run_id, verdict, downgrade_reason,
+    )
+
+
 def wh_load_mv_consent(
     ws: WorkspaceClient,
     warehouse_id: str,

@@ -1440,3 +1440,206 @@ def test_the_in_job_advisor_injects_the_suppression_reader(monkeypatch) -> None:
     advise(monkeypatch, [iteration(recurring())])
 
     assert callable(captured.get("read_suppressed_fingerprints"))
+
+
+# ── Prompt 15.5: servable-body invariant (Tier-2 Scenario A) ─────────────
+
+RATIO_SQL = (
+    "SELECT SUM(CASE WHEN o_orderstatus = 'F' THEN o_totalprice ELSE 0 END) "
+    "/ SUM(o_totalprice) AS finished_share, o_orderpriority "
+    "FROM samples.tpch.orders GROUP BY o_orderpriority"
+)
+
+
+def _advise_from_corpus_directly(*, persist_proposal, write_ddl_artifact, **overrides):
+    """Drive ``advise_from_corpus`` the way the backend suggest route does —
+    SparkSession-free, with injected persistence — over a recurring lineitem
+    corpus that bundles into one view."""
+    corpus = [(REVENUE_SQL, f"b{i}") for i in range(8)] + [
+        (COUNT_SQL, f"c{i}") for i in range(8)
+    ]
+    kwargs = dict(
+        space_id=SPACE_ID,
+        run_id="run_backend",
+        corpus_entries=corpus,
+        applied_config=None,
+        benchmarks=(),
+        wide_schema_inventory=None,
+        metric_view_reader=lambda tables: [],
+        embedding_client=None,
+        signal_reader=None,
+        intent_texts=(),
+        domain="",
+        max_candidates=None,
+        persist_proposal=persist_proposal,
+        write_ddl_artifact=write_ddl_artifact,
+        read_suppressed_fingerprints=None,
+    )
+    kwargs.update(overrides)
+    return mv_advisor.advise_from_corpus(**kwargs)
+
+
+def assert_every_surfaced_proposal_is_servable(outcome, *, has_body) -> None:
+    """OUTCOME INVARIANT (Prompt 15.5 §4b), for ANY persistence writer.
+
+    Walks every proposal a scenario surfaces and asserts the FULL serving
+    contract — a resolvable DDL body (``has_body(proposal)``, which the caller
+    binds to its writer's evidence: the run artifact for the in-job writer, the
+    ``rendered.ok`` ``yaml_text`` for the backend writer), a ``proposed_object``,
+    a tier, and the evidence the justification is assembled from — and that no
+    render-failed suggestion appears at all. The guard lives in the shared
+    ``advise_from_corpus`` body, so both writer suites call this same helper;
+    a third writer added later inherits the pin by construction. A proposal that
+    persists but cannot be served fails offline from here on.
+    """
+    failed_ids = {sid for sid, _verdict in outcome.render_failures}
+    surfaced = {p.suggestion_id for p in outcome.proposals}
+    assert failed_ids.isdisjoint(surfaced), "a render-failed suggestion surfaced"
+    assert outcome.candidates_render_failed == len(failed_ids)
+    for proposal in outcome.proposals:
+        assert has_body(proposal), f"{proposal.suggestion_id} surfaced with no servable body"
+        assert proposal.proposed_object, "surfaced proposal has no proposed_object"
+        assert proposal.tier is not None, "surfaced proposal has no tier"
+        assert proposal.evidence, "surfaced proposal carries no justification evidence"
+
+
+def test_a_recurring_ratio_shape_renders_a_servable_body(monkeypatch) -> None:
+    """Scenario A, named and pinned. A recurring RATIO shape stored its numerator
+    and denominator in canonical (``?n``/``?s``) form, so the metric-view body
+    rendered a placeholder, MV-D29 validation rejected it, and the bundle
+    persisted with no servable body — /mv-ddl then 404'd. With
+    ``ShapeMatch.render_components`` the shape renders literal-preserving, so the
+    bundle carries an artifact again (``artifacts_written`` was 0 pre-fix)."""
+    _stages, artifacts, upserts = patch_writes(monkeypatch)
+    outcome = advise(monkeypatch, [iteration(_rows((RATIO_SQL, "ratio", 8)))])
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert outcome.candidates_render_failed == 0
+    assert outcome.proposals_persisted >= 1
+    assert outcome.artifacts_written >= 1
+    assert artifacts, "the ratio bundle rendered no servable DDL body"
+    assert upserts, "the ratio bundle was not persisted"
+    served = {a["content_hash"] for a in artifacts}
+    assert_every_surfaced_proposal_is_servable(
+        outcome, has_body=lambda p: p.dedup_fingerprint in served
+    )
+
+
+def test_a_bundle_that_fails_to_render_never_persists_and_rides_the_outcome(
+    monkeypatch,
+) -> None:
+    """The structural guard, cause-independent: force the generator to fail on a
+    bundle and it is DROPPED, not persisted as a bodyless card — the drop is
+    loud (a count + an ``(id, verdict)`` pair on the outcome), never silent."""
+    from genie_space_optimizer.optimization.mv_scoring import VERDICT_CONFLICT
+    from genie_space_optimizer.optimization.mv_yaml import GeneratedMetricView
+
+    _stages, artifacts, upserts = patch_writes(monkeypatch)
+    monkeypatch.setattr(
+        mv_advisor, "generate",
+        lambda *a, **k: GeneratedMetricView(
+            verdict=VERDICT_CONFLICT, rejections=("forced render failure",)
+        ),
+    )
+    outcome = advise(
+        monkeypatch, [iteration(_rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8)))]
+    )
+
+    assert outcome.proposals == ()
+    assert outcome.proposals_persisted == 0
+    assert outcome.artifacts_written == 0
+    assert upserts == []
+    assert artifacts == []
+    assert outcome.candidates_render_failed == 1
+    assert len(outcome.render_failures) == 1
+    _sid, verdict = outcome.render_failures[0]
+    assert verdict == VERDICT_CONFLICT
+    # No surfaced proposals to serve, and the render-failed id is disjoint.
+    assert_every_surfaced_proposal_is_servable(outcome, has_body=lambda p: False)
+
+
+def test_the_backend_writer_also_never_persists_a_bodyless_bundle(monkeypatch) -> None:
+    """The invariant on the SECOND writer. Driven directly (as the suggest route
+    drives it), a render-failed bundle is never handed to ``persist_proposal`` or
+    ``write_ddl_artifact`` — the backend warehouse writer inherits the guard from
+    the shared body, so a re-scan cannot leave a bodyless candidate row."""
+    from genie_space_optimizer.optimization.mv_scoring import VERDICT_CONFLICT
+    from genie_space_optimizer.optimization.mv_yaml import GeneratedMetricView
+
+    monkeypatch.setattr(
+        mv_advisor, "generate",
+        lambda *a, **k: GeneratedMetricView(
+            verdict=VERDICT_CONFLICT, rejections=("forced render failure",)
+        ),
+    )
+    persisted: list = []
+    artifacts: list = []
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: persisted.append(proposal) or True,
+        write_ddl_artifact=lambda proposal, rendered: artifacts.append(proposal) or True,
+    )
+
+    assert persisted == []
+    assert artifacts == []
+    assert outcome.candidates_render_failed >= 1
+    assert_every_surfaced_proposal_is_servable(outcome, has_body=lambda p: False)
+
+
+def test_the_backend_writer_serves_every_surfaced_bundle(monkeypatch) -> None:
+    """The backend warehouse writer's positive serving contract. Driven directly
+    with the real generator, every surfaced bundle carries a ``rendered.ok``
+    body the candidate row would persist as ``yaml_text`` — the same shared
+    invariant the in-job writer satisfies, so a re-scan hydrates a servable
+    card."""
+    persisted: list = []
+
+    def _persist(proposal, rendered) -> bool:
+        # Mirrors mv_suggest._persist: the body rides the row only when ok.
+        persisted.append((proposal, bool(getattr(rendered, "ok", False) and rendered.yaml_text)))
+        return True
+
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_persist,
+        write_ddl_artifact=lambda proposal, rendered: False,  # MV-D23: no artifact
+    )
+
+    assert outcome.proposals, "the backend writer surfaced no bundle to serve"
+    served = {p.dedup_fingerprint for p, has_yaml in persisted if has_yaml}
+    assert_every_surfaced_proposal_is_servable(
+        outcome, has_body=lambda p: p.dedup_fingerprint in served
+    )
+
+
+def test_a_shape_whose_render_form_matches_the_benchmark_is_dropped(monkeypatch) -> None:
+    """MV-D29 shape firewall. A shape's components now render literal-preserving,
+    so a predicate/arithmetic literal could reach a shipped body just like a
+    primary measure — and the generator's only leakage check is the BEST FOR
+    comment echo, which never inspects the body. The caller gates the shapes
+    through the SAME oracle: a shape with a leaking render fragment is dropped,
+    the clean base measure on another grain still surfaces."""
+
+    class _CaseFlaggingOracle:
+        """A stand-in oracle that flags any SQL carrying a CASE predicate — the
+        RATIO numerator here — and nothing else, so the arithmetic revenue
+        measure on the other table passes untouched."""
+
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def contains_sql(self, sql, *, w=None) -> bool:
+            return "case when" in (sql or "").lower()
+
+    monkeypatch.setattr(mv_advisor, "LeakageOracle", _CaseFlaggingOracle)
+    _stages, _artifacts, _upserts = patch_writes(monkeypatch)
+    outcome = advise(
+        monkeypatch, [iteration(_rows((REVENUE_SQL, "rev", 8), (RATIO_SQL, "ratio", 8)))]
+    )
+
+    # The CASE-bearing ratio shape (and the CASE primary measure) were dropped;
+    # the clean arithmetic measures — lineitem revenue and the plain
+    # SUM(o_totalprice) denominator — still surface.
+    assert outcome.candidates_dropped_for_leakage >= 1
+    assert any(p.proposed_object.endswith("lineitem_metrics") for p in outcome.proposals)
+    for proposal in outcome.proposals:
+        for member in proposal.evidence.get("measures", []):
+            assert "case when" not in (member.get("expr") or "").lower()

@@ -31,11 +31,12 @@ from genie_space_optimizer.optimization import mv_yaml
 # ── Service: create_and_attach_for_run ─────────────────────────────────────
 
 
-def _verification(effective_mode="create_and_attach", downgrade_reason=None):
+def _verification(effective_mode="create_and_attach", downgrade_reason=None, verdict="SUFFICIENT"):
     fresh = SimpleNamespace(capabilities=[], checked_as="analyst@example.com")
     return SimpleNamespace(
         effective_mode=effective_mode,
         downgrade_reason=downgrade_reason,
+        verdict=verdict,
         fresh_probe=fresh,
     )
 
@@ -211,6 +212,64 @@ def test_verify_downgrade_returns_suggest_only(monkeypatch):
 
     assert handoff.action_mode == "suggest_only"
     assert handoff.downgrade_reason == "revoked"
+
+
+def test_downgrade_stamps_the_consent_with_run_and_reason(create_env, monkeypatch):
+    """Prompt 15.5 / Scenario B: an auto-downgraded run stamps ``run_id`` +
+    ``downgrade_reason`` (and the re-verified verdict) onto the consent, so
+    ``/mv-created`` — which reads the consent BY run — stops surfacing NULL. The
+    stamp is the missing warehouse twin of ``mark_mv_consent_reverified``."""
+    _executed, _upserts = create_env
+    stamps: list[dict] = []
+    monkeypatch.setattr(
+        warehouse, "wh_mark_mv_consent_reverified",
+        lambda ws, warehouse_id, **kw: stamps.append(kw),
+    )
+    monkeypatch.setattr(
+        mv_create, "verify_consent",
+        lambda **kw: (
+            _verification(
+                effective_mode="suggest_only",
+                downgrade_reason="grant revoked before trigger",
+                verdict="INSUFFICIENT",
+            ),
+            dict(_CONSENT),
+        ),
+    )
+
+    handoff = _run_create()
+
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == "grant revoked before trigger"
+    assert len(stamps) == 1
+    assert stamps[0]["probe_id"] == "p1"
+    assert stamps[0]["run_id"] == "run-1"
+    assert stamps[0]["verdict"] == "INSUFFICIENT"
+    assert stamps[0]["downgrade_reason"] == "grant revoked before trigger"
+
+
+def test_success_stamps_the_consent_run_without_a_downgrade_reason(create_env, monkeypatch):
+    """The success path binds the run to the consent (so ``/mv-created`` can find
+    it) and records the re-verified verdict, but leaves ``downgrade_reason``
+    unset — a create-and-attach is not a downgrade."""
+    _executed, _upserts = create_env
+    stamps: list[dict] = []
+    monkeypatch.setattr(
+        warehouse, "wh_mark_mv_consent_reverified",
+        lambda ws, warehouse_id, **kw: stamps.append(kw),
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+
+    handoff = _run_create()
+
+    assert handoff.action_mode == "create_and_attach"
+    assert len(stamps) == 1
+    assert stamps[0]["run_id"] == "run-1"
+    assert stamps[0]["verdict"] == "SUFFICIENT"
+    assert stamps[0].get("downgrade_reason") is None
 
 
 def test_existing_object_is_not_clobbered(create_env, monkeypatch):

@@ -138,7 +138,9 @@
    - SUGGEST-SURFACE CONTRACT (from the first human smoke run): a proposal is a
      metric VIEW bundling the measures of one grain, never one card per measure;
      MEDIUM+ surfaces by default, LOW behind explicit disclosure, and a proposal
-     with no proposed_object never renders; every surfaced card carries its
+     with no proposed_object never renders; no proposal surfaces without a
+     servable DDL body (a render failure is loud in the run outcome, never a
+     silent gate); every surfaced card carries its
      justification (measures, evidence counts, gain); EMPTY states are variant-
      specific (already-governed / nothing-recurring / no-corpus), never one
      generic shrug; results hydrate from persisted candidates on mount and are
@@ -597,6 +599,8 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 *Decision (Prompt 15.3), taking the preferred generation-time shape.* Consolidation happens at GENERATION time, not presentation time — the ledger, the create path and the screen must agree on what one suggestion is, so the persisted grain IS the surfaced grain (the two-readers hazard is closed, not deferred to every reader). Mechanics: per-measure scoring is unchanged — each recurring measure is still individually gated, leakage-checked (MV-D29) and scored, so `canonicalize_expr`/MV-D10 identity and the dedup/suppression grain stay per-measure and a rejected or suppressed measure never resurfaces inside a bundle. AFTER scoring, the persistable proposals are grouped by their **source-table set** (the frozenset of `source_tables`, the natural grain key) into one bundle each; a bundle carries multiple `MeasureRequest`s and renders through the single existing `mv_yaml.generate` (which already accepts multiple measures) into one multi-measure YAML/DDL. The bundle's `dedup_fingerprint` becomes view-grained — `sha256(space_id | sorted member dedup_fingerprints | sorted source set)` — so `genie_opt_mv_candidates` now holds **one row per view** (the schema comment's per-measure key semantics are updated in the same change; the column and table are otherwise unchanged, no migration). The bundle's `confidence_score`/`tier` are taken from the strongest member (max confidence), `evidence` is the union (member measures with their `expr`/recurrence/distinct-source/question-id provenance, the total distinct-source count, and the contributing benchmark question ids), and the member per-measure fingerprints are retained in `evidence.measures[*].dedup_fingerprint` so suppression cross-references survive bundling. A bundle whose `proposed_object` cannot be resolved (no source refs) is a VALIDATION FAILURE dropped before persistence — it never reaches the screen as a blank card. Surfacing: MEDIUM+ by default, LOW behind an explicit "show N low-confidence" disclosure. Justification is pure assembly from the carried evidence (no LLM): the measures the view would govern, recurrence + distinct-source counts, contributing benchmark question ids, and a one-line gain statement. The `MvProposal` model/type gains an additive `measures: list[MvProposalMeasure]` (name, expr, recurrence, distinct_sources, question_ids, dedup_fingerprint) — older single-measure rows read back as a one-element bundle, so nothing pre-15.3 breaks. Rejected alternative (presentation-time grouping) stays rejected: it would leave the create path keyed on per-measure rows while the screen shows views, the exact disagreement MV-D30 names.
 
 *As implemented (Prompt 15.3) — bundle rejection fans out to per-measure suppression.* The Decision above kept per-measure identity as the suppression grain, but the persisted row is now view-grained, and that opened a resurrection hole the four-point plan did not name. The decision endpoint records against `(target_space_id, dedup_fingerprint)`, and the bundle key is `sha256(space_id | sorted member fingerprints | sorted source set)` — **membership-sensitive**. So: reject a 4-measure bundle today; next scan finds a 5th recurring measure on the same grain; the bundle key changes; there is no decision row for the new key; the rejected members resurface wearing one new measure. That is `test_re_proposing_does_not_resurrect_a_rejected_candidate`'s exact defect reborn at the view grain, and the consolidation's decisions-reader cannot catch it because nothing wrote per-measure state on the reject. The fix, implemented here: **a bundle rejection writes the bundle-row decision AND a suppression entry per member fingerprint.** Member fingerprints ride in the row's `evidence.measures[*].dedup_fingerprint` (retained by the Decision above), so the reject route fans them out. Home for the fan-out is a dedicated `genie_opt_mv_suppressions` table (`target_space_id`, `measure_fingerprint`, `suppressed_until`, `originating_suggestion_id`, `reason`, timestamps) — **not** synthetic per-measure rows in `genie_opt_mv_candidates`, which would put two grains back in one table and recreate the two-readers hazard MV-D30 just paid to remove. The consolidation's decisions-reader (`load_mv_suppressed_fingerprints` / `wh_load_mv_suppressed_fingerprints`) unions the fan-out ledger with legacy per-measure `rejected` candidate rows, so both the historical per-measure grain and the new view grain are covered by one read. New table → `_ALL_DDL` entry, `wh_*` twins (MV-D21 Spark/warehouse parity), exposure-matrix classification (all columns DELIBERATELY INTERNAL — consumed only by the advisor's consolidation), all in this commit. Semantics pinned by tests: reject bundle → members suppressed → next scan with an extra recurring measure on the same grain surfaces a bundle of only the unsuppressed members (or nothing, if none remain) — never the rejected members back. The decisions-reader is injected in **both** callers — the Spark in-job advisor and the backend IQ-Scan path — asserted by test in each, so the two surfaces cannot disagree about what "rejected" means. Approval stays bundle-grained; **per-measure partial approval is explicitly out of scope** (future work, not built here — approving a bundle approves it whole).
+
+*As implemented (Prompt 15.5) — a suggestion never persists without a servable body, and shapes render literal-preserving.* Tier 2 Scenario A caught the bundling refactor's blind spot: `advise_from_corpus` persisted every PROPOSE bundle unconditionally while gating only the DDL artifact on `rendered.ok`, so a bundle whose body failed to render surfaced as a card with no body and 404'd at `/mv-ddl` — and because Scenario C's create resolves the body via artifact-then-`yaml_text`, that bundle would have been silently dropped from every approved run. **Persistence variant chosen: variant (a) — a suggestion card surfaces ONLY when its body renders.** The bundle path now gates `persist_proposal` on `rendered.ok` (not just the artifact); a non-rendering bundle is dropped and the drop rides the run outcome loudly — `AdvisorOutcome.candidates_render_failed` (count) plus `render_failures` (an operator-facing `(suggestion_id, verdict)` list in the stage `detail_json`, ids/codes only), with the verdict and rejections logged at WARNING. The guard lives in the shared `advise_from_corpus` body, so **both** persistence writers inherit it — the Spark in-job writer (`persist_proposal` + run-partitioned artifact) and the backend warehouse writer (`yaml_text` on the candidate row) — pinned by one shared test helper asserting no render-failed id ever appears in the persisted or surfaced sets. The CONFLICT per-measure path is untouched: a CONFLICT is body-less by construction and is an adjudication record, never a suggestion card, so it is out of the contract's scope. **Root cause of the render failure**: the recurring-shape expander (`mv_yaml._shape_measures`) rendered ratio / conditional-count / pct-of-total components from `ShapeMatch.components`, which are canonical (literal-erased, `?n`/`?s`-bearing) forms — so `*_rate_numerator`-style measures emitted a canonicalizer placeholder into the metric-view body and MV-D29 validation correctly rejected the whole view. `ShapeMatch` now carries a `render_components` twin (built via `render_expr`, literal-preserving) that the expander renders from, keeping `components` as the identity form the shape correlation/fingerprint still use. Because a render form can now carry a benchmark/PII literal, the shapes are gated through the SAME `LeakageOracle` the primary measure clears — at the assembly site in `advise_from_corpus`, before any generation, since the generator's only leakage check is the BEST FOR comment echo and never inspects the measure body — and a shape with any leaking render fragment is dropped (folded into `candidates_dropped_for_leakage`). The Suggest-Surface Contract now carries the clause "no proposal surfaces without a servable DDL body — a render failure is loud in the run outcome, never a silent gate" in both rule copies.
 
 **MV-D31 — The scan is a lifecycle, not a request (OPEN — decided at Prompt 15.4).** Three smoke findings compose into one defect: the scan leaves the user with a bare spinner for minutes (no staged progress); navigating away destroys the result and forces a full re-scan (the panel never hydrates — it imports `suggestSpaceMv` only, though candidates are PERSISTED in `genie_opt_mv_candidates` and the space-scoped read has existed since Prompt 11); and the entry affordance is a small easy-to-miss control. The fix shape 15.4 decides: on mount the panel HYDRATES from `GET /spaces/{id}/mv-proposals` and shows "last scanned <when> — N proposals" with Re-scan as the explicit refresh (the advice run row carries the timestamp); the scan itself reports staged progress — either SSE per the create-agent precedent (`create.py:288`, `StreamingResponse` + typed events) or polling the advice run's stage rows, whichever the implementer defends — with honest stage names (reading curated SQL → scanning for recurring measures → scoring → rendering DDL); and the affordance becomes a first-class action with an explanation of what a scan reads and roughly how long it takes. Constraint not open: a scan that fails or times out reports WHERE it stopped, never a spinner that resolves to nothing (the frame-7b rule, transposed to progress).
 
@@ -2107,6 +2111,70 @@ Tests: fixture spaces at 3, 10, 30 tables render legibly (structural
 assertions on grouping/fit), crash-race regression test, boundary test.
 ```
 
+### Prompt 15.5 — Run read-back integrity: the bundle body and the downgrade reason (Tier 2 findings; blocks Tier 3)
+
+*From the first clean post-redeploy Tier 2 run (record `5e8fe1ac`). Two failures,
+both "the run's read-back does not tell the truth" class. Scenario A is a real
+15.3 regression: for a view-grained bundle, BOTH the run artifact write and the
+`yaml_text` persist are gated on `rendered.ok` (`mv_advisor.py:1346-1348` and
+the backend persist twin) — so a bundle whose multi-measure YAML fails
+render/validate persists as a candidate with NO servable body anywhere:
+`/mv-ddl` 404s (the 15.1 signature reborn in-job at the view grain), the 15.1
+fallback has nothing to fall back to, the IQ Scan card would render without a
+DDL panel, and — decisively — `mv_create` would DROP the suggestion at create
+time, so **Tier 3 cannot pass until this lands**. The offline suite stayed
+green because it covers the standalone persist writer, not the in-job bundle
+render — exactly the gap a live tier exists to catch. Scenario B: a downgraded
+run's `/mv-created` read-back has `downgrade_reason: None` — hypothesis: the
+downgrade path never stamps the consent row with the run (the `run_id` fill
+documented at `ddl.py:236` happens on the create path), so
+`wh_load_mv_consent_by_run` finds nothing. Verify, don't assume.*
+
+```
+Investigation FIRST, fixes second, both findings in one commit:
+1. Reproduce Scenario A's bundle render failure OFFLINE: pull the Tier-2
+   fixture space's measures into a fixture and run the in-job bundle path
+   (advise -> consolidate -> generate -> persist). Name WHY rendered.ok was
+   false for this bundle (multi-measure generate defect? validation lint?
+   measure-name collision?) before touching anything — the fix differs by
+   cause, and a fix without the cause named is a guess.
+2. Fix A structurally, not just for this fixture:
+   - A render failure is LOUD: it rides the AdvisorOutcome detail and the
+     stage row (candidates_render_failed + reasons), never a silent gate.
+   - A candidate without a servable body NEVER surfaces: either it does not
+     persist as a proposal, or it persists in a render-failed state that no
+     read serves as a suggestion — decide which, record it in the register
+     as an "as implemented" addendum on MV-D30, and classify any new
+     column/status in the exposure matrix. The Suggest-Surface Contract
+     gains the clause: no proposal surfaces without a servable DDL body.
+   - Whatever the root cause of the render failure is, fix it too — the
+     structural guard is the net, not the repair.
+3. Fix B: the downgrade path stamps the consent row (run_id +
+   downgrade_reason) so the read-back tells the truth — or, if investigation
+   shows the reason should live elsewhere for downgraded runs, name where
+   and serve it; the invariant is the E2E assertion as written: a downgraded
+   run's /mv-created read carries a non-empty downgrade_reason.
+4. Offline tests for BOTH paths the live tier exposed as untested: the
+   in-job bundle render-and-persist path (green and render-failed variants),
+   and the downgraded-run read-back.
+4b. The OUTCOME INVARIANT, pinned generally — not just this instance. This
+   is the second live-tier catch in the same seam (engine produces X, no
+   surface can serve X: first the ?n body, now the render-gated bundle),
+   and the exposure matrix guards columns, not outcomes. Add an invariant
+   test that walks EVERY persisted surfaceable proposal a scenario produces
+   (both writers: in-job persist and backend suggest persist) and asserts
+   the full serving contract: a resolvable DDL body (artifact or yaml_text
+   fallback), a proposed_object, a tier, and justification fields present.
+   Wire it as a shared assertion helper both writer test suites call, so a
+   third writer added later inherits the pin by construction rather than by
+   memory. A proposal that persists but cannot be served fails offline from
+   now on — that class of defect never reaches a live tier again.
+5. Bookkeeping: gap-report rows flipped to RESOLVED (MV-D9, self-dated);
+   baseline lockstep; matrix if columns/status added.
+6. Exit: redeploy, rerun -k scenario_d (3/3) AND Tier 2 (A green, B's
+   run-half green), record the rerun. Tier 3 stays gated on this exit.
+```
+
 ### Prompt 16 — Docs, changelog, PR
 
 ```
@@ -2118,10 +2186,13 @@ Finish the branch:
   surface for a space that has not been optimized, and the optimization-run
   surface for one that has — and say plainly which evidence each rests on, so a
   reader does not expect history-grade confidence from a space with no history.
-  If the Ontology Pages track (Prompt 17.x) has landed, document it as its own
-  feature page: the eight archetypes, the dual output (instruction
-  augmentation is API-applied under consent; Pages are pasted into Discover
-  manually because no Pages API exists), and the enrichment labeling contract.
+  The Ontology Pages track (Prompt 17.x) lands on this branch BEFORE this
+  prompt (the combined-PR decision, recorded in the Prompt 17 preamble) —
+  document it as its own feature page: the eight archetypes, the dual output
+  (instruction augmentation is API-applied under consent; Pages are pasted
+  into Discover manually because no Pages API exists), and the enrichment
+  labeling contract. The PR description covers BOTH tracks, organized by
+  track, with each track's E2E results cited from its own run record.
 - Add an entry to the changelog/release notes per repo convention.
 - Update docs/design/metric-view-suggestion-engine-pov.md status flags for
   anything the implementation resolved or contradicted, with a short
@@ -2156,9 +2227,18 @@ a copy-ready Page draft in the standardized format for paste into Discover,
 the DDL-panel pattern. Evidence comes from the space context this branch
 already assembles: the semantic graph and its governance ladder and coverage
 lens (12/12b), fingerprint shapes and CONFLICT candidates, curated snippets and
-example SQL, profiling, and join topology. SEQUENCING: runs after Prompt 15 and
-before Prompt 16 — 14/15 predate this track, so 17d carries the track's OWN
-hardening and E2E, and Prompt 16 closes the whole branch including it.
+example SQL, profiling, and join topology. SEQUENCING (settled at the pre-16
+review after considering and REJECTING a split): the track runs on THIS
+branch, BEFORE Prompt 16, and Prompt 16 ships ONE combined PR covering both
+tracks. A separate MV-only PR was considered (reviewability of a ~30-commit
+branch) and rejected by the owner: the feature set is session-scoped, the
+owner is the reviewer, and the one-prompt-one-commit history is the review
+unit — the PR is the packaging, not the review. Two disciplines carry the
+cost of the longer-lived branch: (1) the working-rhythm drift check is now
+MANDATORY before 17.0 starts and again before 16 — rebase on main and re-run
+Prompt 0 in diff mode over any moved surfaces; (2) 17d still carries the
+track's OWN hardening and E2E (Prompts 14/15 predate it), so Prompt 16
+inherits two independently-verified tracks, not one verified and one hoped.
 Decisions MV-D26 (persistence, 17a), MV-D27 (instruction write path, 17c),
 MV-D28 (web enrichment, 17b) are OPEN in the register; each sub-prompt decides
 its own and records it BEFORE writing code, the 13.5 discipline.*
@@ -2346,7 +2426,8 @@ before touching anything near instructions — CLAUDE.md mandates it. Then:
 ### Prompt 17d — Ontology track hardening + E2E
 
 ```
-The track's own Phase 4, because Prompts 14/15 predate it:
+The track's own hardening and E2E, because Prompts 14/15 predate it — docs,
+changelog, and the combined PR are Prompt 16's job (the combined-PR decision):
 - Extend the exposure matrix + its pin to the new tables/routes; extend the
   dry-run harness with suggest -> synthesize -> approve -> apply -> undo.
 - Mutation-test the new pins (format validator, identifier gate, firewall
@@ -2356,8 +2437,9 @@ The track's own Phase 4, because Prompts 14/15 predate it:
   sections intact, budget respected), then undone; one Page draft manually
   pasted into Discover and the manual-steps checklist validated by doing it.
   Enrichment-off leg proves the degraded draft is still complete.
-- Baseline lockstep both rule copies, self-dated; MV-D9 sweep; then Prompt 16
-  closes the branch with BOTH tracks documented.
+- Baseline lockstep both rule copies, self-dated; MV-D9 sweep. Docs,
+  changelog, and the combined PR follow in Prompt 16, which cites this
+  prompt's E2E record for the track's results.
 ```
 
 ### Prompt 18 — Create Agent semantic-model step (separate branch, after Prompt 16; owns MV-D25)

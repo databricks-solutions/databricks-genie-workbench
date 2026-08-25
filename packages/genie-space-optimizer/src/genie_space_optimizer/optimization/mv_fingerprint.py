@@ -201,6 +201,17 @@ class ShapeMatch:
     they ask for the same ``COUNT(1) FILTER`` measure, and counting them
     separately would halve the recurrence of the thing being proposed.
 
+    ``components`` is the identity form of each part — literal-erased via
+    :func:`canonicalize_expr`, so it feeds the shape/measure correlation and the
+    fingerprint without a literal ever entering an identity key.
+    ``render_components`` is its MV-D29 render twin: the same parts kept
+    literal-preserving via :func:`render_expr`, so the generator emits a body a
+    ``CREATE VIEW`` can execute rather than one carrying ``?n``/``?s``
+    placeholders. Like every render form it is not a canonical form and must be
+    passed through ``LeakageOracle`` before it reaches a shipped body — the
+    generator's caller gates it exactly as it gates the primary measure
+    (mv_advisor drops a shape whose render form matches the benchmark corpus).
+
     Statement-level detection yields ``recurrence == 1``;
     :func:`classify_shapes` merges matches across a corpus and fills the
     recurrence and provenance fields.
@@ -212,6 +223,7 @@ class ShapeMatch:
     guidance: str
     target_form: str = ""
     components: tuple[tuple[str, str], ...] = ()
+    render_components: tuple[tuple[str, str], ...] = ()
     source_columns: tuple[str, ...] = ()
     source_tables: tuple[str, ...] = ()
     recurrence: int = 1
@@ -222,6 +234,7 @@ class ShapeMatch:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["components"] = dict(self.components)
+        payload["render_components"] = dict(self.render_components)
         return payload
 
 
@@ -1082,6 +1095,7 @@ def shapes_in_statement(sql: str) -> tuple[ShapeMatch, ...]:
         node: exp.Expression,
         components: dict[str, str],
         target_form: str | None = None,
+        render_components: dict[str, str] | None = None,
     ) -> None:
         canonical = canonicalize_expr(node)
         if not canonical:
@@ -1096,6 +1110,7 @@ def shapes_in_statement(sql: str) -> tuple[ShapeMatch, ...]:
                 guidance=SHAPE_GUIDANCE[kind],
                 target_form=form,
                 components=tuple(sorted(components.items())),
+                render_components=tuple(sorted((render_components or {}).items())),
                 source_columns=columns,
                 source_tables=sources,
             )
@@ -1114,6 +1129,10 @@ def shapes_in_statement(sql: str) -> tuple[ShapeMatch, ...]:
                     "numerator": canonicalize_expr(numerator),
                     "windowed_total": canonicalize_expr(window),
                 },
+                render_components={
+                    "numerator": render_expr(numerator),
+                    "windowed_total": render_expr(window),
+                },
             )
             continue
         if _windowed_aggregate(numerator) is not None:
@@ -1129,6 +1148,10 @@ def shapes_in_statement(sql: str) -> tuple[ShapeMatch, ...]:
                 "numerator": canonicalize_expr(numerator),
                 "denominator": canonicalize_expr(denominator),
             },
+            render_components={
+                "numerator": render_expr(numerator),
+                "denominator": render_expr(denominator),
+            },
         )
 
     for aggregate in _outermost_aggregates(resolved):
@@ -1137,11 +1160,16 @@ def shapes_in_statement(sql: str) -> tuple[ShapeMatch, ...]:
             continue
         canonical_condition = canonicalize_expr(condition)
         rewrite = f"count(1) filter (where {canonical_condition})"
+        render_condition = render_expr(condition)
         add(
             SHAPE_CONDITIONAL_COUNT,
             aggregate,
             {"condition": canonical_condition, "rewrite": rewrite},
             target_form=rewrite,
+            render_components={
+                "condition": render_condition,
+                "rewrite": f"count(1) filter (where {render_condition})",
+            },
         )
 
     return tuple(matches)
