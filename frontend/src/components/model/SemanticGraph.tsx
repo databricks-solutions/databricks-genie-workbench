@@ -81,6 +81,24 @@ const CARD_PAD_B = 8
 const TABLE_H = 44
 const CONCEPTS_ID = "__concepts__"
 
+// ── Label hygiene (12d finding 1) ────────────────────────────────────────────
+// The smoke run leaked INTERNAL TOKENS into measure-concept labels: canonical
+// exprs (count(?n), sum(count(?n)) — the MV-D29 placeholder form, which is the
+// identity shape, not a label) and a raw suggestion id (sug_f07l2262f800). A
+// label is human-usable only when it is neither. A concept with no human-usable
+// name is DROPPED from the card as a chip and counted ("+N unnamed"), never
+// rendered as internals — MV-D29's expr/display separation applied to the graph.
+const CANONICAL_PLACEHOLDER = /\?[a-z]/i // ?n, ?s … the MV-D29 placeholder tell
+const SUGGESTION_ID = /^sug_/i
+
+export function isDisplayableMeasureLabel(label: string | null | undefined): boolean {
+  const t = (label ?? "").trim()
+  if (!t) return false
+  if (SUGGESTION_ID.test(t)) return false
+  if (CANONICAL_PLACEHOLDER.test(t)) return false
+  return true
+}
+
 // The synthetic "measure concepts" card holds ungoverned/curated concepts that
 // belong to no metric view; it has no backing node (node === null).
 export interface GraphCard {
@@ -92,7 +110,12 @@ export interface GraphCard {
   node: SemanticGraphNode | null
   proposed: boolean
   coverage: number | null
+  /** Displayable measures (human-usable labels) — rendered as chips. */
   measures: SemanticGraphNode[]
+  /** Measures whose only label is an internal token (canonical_expr / sug_ id).
+      Counted as "+N unnamed", never chipped (12d finding 1). Kept so the
+      governance roll-up still reflects them (the count is real). */
+  unnamedMeasures: SemanticGraphNode[]
 }
 
 // buildCards folds the measure nodes into their owning cards. A membership edge
@@ -120,6 +143,13 @@ export function buildCards(nodes: SemanticGraphNode[], edges: SemanticGraphEdge[
     }
   }
 
+  // Split a card's measures into displayable chips and counted-but-unnamed ones
+  // (12d finding 1): a canonical_expr or sug_ id is not a label.
+  const splitMeasures = (ms: SemanticGraphNode[]) => ({
+    measures: ms.filter((m) => isDisplayableMeasureLabel(m.label)),
+    unnamedMeasures: ms.filter((m) => !isDisplayableMeasureLabel(m.label)),
+  })
+
   const cards: GraphCard[] = []
   for (const n of nodes) {
     if (n.kind === "table") {
@@ -133,6 +163,7 @@ export function buildCards(nodes: SemanticGraphNode[], edges: SemanticGraphEdge[
         proposed: false,
         coverage: n.coverage ?? null,
         measures: [],
+        unnamedMeasures: [],
       })
     } else if (n.kind === "metric_view") {
       cards.push({
@@ -144,7 +175,7 @@ export function buildCards(nodes: SemanticGraphNode[], edges: SemanticGraphEdge[
         node: n,
         proposed: !!n.proposed,
         coverage: n.coverage ?? null,
-        measures: measuresByMv.get(n.id) ?? [],
+        ...splitMeasures(measuresByMv.get(n.id) ?? []),
       })
     }
   }
@@ -158,7 +189,7 @@ export function buildCards(nodes: SemanticGraphNode[], edges: SemanticGraphEdge[
       node: null,
       proposed: false,
       coverage: null,
-      measures: standalone,
+      ...splitMeasures(standalone),
     })
   }
   return cards
@@ -169,7 +200,10 @@ export function buildCards(nodes: SemanticGraphNode[], edges: SemanticGraphEdge[
 // nothing rather than inventing zeros.
 export function rollup(card: GraphCard): { rung: MvGovernance; count: number }[] {
   const counts: Record<MvGovernance, number> = { governed: 0, curated: 0, ungoverned: 0 }
-  for (const m of card.measures) {
+  // Count BOTH chipped and unnamed measures — dropping a measure's chip for
+  // lacking a human label (12d finding 1) must not erase it from the governance
+  // story; the roll-up count is the real total.
+  for (const m of [...card.measures, ...card.unnamedMeasures]) {
     if (m.governance) counts[m.governance] += 1
   }
   return LADDER_ORDER.filter((r) => counts[r] > 0).map((rung) => ({ rung, count: counts[rung] }))
@@ -189,8 +223,11 @@ export interface PlacedCard {
 
 function cardHeight(card: GraphCard, collapsed: boolean): number {
   if (card.kind === "table") return TABLE_H
-  if (collapsed || card.measures.length === 0) return CARD_HDR
-  return CARD_HDR + card.measures.length * CHIP_STEP + CARD_PAD_B
+  // An "+N unnamed" summary occupies one chip row when there are dropped
+  // measures (12d finding 1), so a card that is all-unnamed still has body.
+  const rows = card.measures.length + (card.unnamedMeasures.length > 0 ? 1 : 0)
+  if (collapsed || rows === 0) return CARD_HDR
+  return CARD_HDR + rows * CHIP_STEP + CARD_PAD_B
 }
 
 // Deterministic layered placement: cards stack top-to-bottom within their
@@ -225,6 +262,89 @@ export function layoutCards(
 export function cardPorts(box: CardBox): { left: { x: number; y: number }; right: { x: number; y: number } } {
   const midY = box.y + box.h / 2
   return { left: { x: box.x, y: midY }, right: { x: box.x + box.w, y: midY } }
+}
+
+// ── Edge label glyphs (12d finding 3) ────────────────────────────────────────
+// Relationship text truncated into ambiguity at rest ("many-to-o…"). At rest
+// we show a compact glyph (N:1, 1:1) that never truncates; the full text rides
+// on hover (the labels-on-demand rule). Case/format tolerant. Unknown values
+// return null so an unexpected relationship renders no glyph rather than a wrong
+// one.
+const RELATIONSHIP_GLYPH: Record<string, string> = {
+  "many-to-one": "N:1",
+  "one-to-many": "1:N",
+  "one-to-one": "1:1",
+  "many-to-many": "N:N",
+}
+
+export function relationshipGlyph(relationship: string | null | undefined): string | null {
+  if (!relationship) return null
+  const key = relationship.trim().toLowerCase().replace(/[_\s]+/g, "-")
+  return RELATIONSHIP_GLYPH[key] ?? null
+}
+
+// ── Fan-out port distribution (12d finding 4) ────────────────────────────────
+// At the fact column many dimension→fact edges all landed on the fact card's
+// single left-midpoint, so the fan-in overlapped into spaghetti. Distribute the
+// attachment points along each card's used side: edges sharing a (card, side)
+// are sorted by the OTHER endpoint's mid-y (to minimize crossings) and spread
+// across the card height at (i+1)/(n+1). A lone edge lands at the midpoint, so
+// the single-edge case is byte-identical to cardPorts. Pure function of the
+// resolved edge boxes — testable without a DOM.
+export interface RenderedEdge {
+  index: number
+  fromCardId: string
+  toCardId: string
+  fromBox: CardBox
+  toBox: CardBox
+}
+
+const PORT_PAD = 8
+
+function portY(box: CardBox, slot: number, count: number): number {
+  const raw = box.y + (box.h * (slot + 1)) / (count + 1)
+  const lo = box.y + PORT_PAD
+  const hi = box.y + box.h - PORT_PAD
+  return Math.max(lo, Math.min(hi, raw))
+}
+
+export function distributeEdgePorts(
+  items: RenderedEdge[],
+): Map<number, { src: { x: number; y: number }; dst: { x: number; y: number } }> {
+  // side used by each endpoint, and the sort key (other endpoint's mid-y).
+  interface Endpoint { index: number; box: CardBox; side: "left" | "right"; sortY: number; role: "src" | "dst" }
+  const groups = new Map<string, Endpoint[]>()
+  const push = (key: string, e: Endpoint) => {
+    const list = groups.get(key) ?? []
+    list.push(e)
+    groups.set(key, list)
+  }
+  for (const it of items) {
+    const leftToRight = it.fromBox.x <= it.toBox.x
+    const fromSide = leftToRight ? "right" : "left"
+    const toSide = leftToRight ? "left" : "right"
+    const fromMidY = it.fromBox.y + it.fromBox.h / 2
+    const toMidY = it.toBox.y + it.toBox.h / 2
+    push(`${it.fromCardId}:${fromSide}`, { index: it.index, box: it.fromBox, side: fromSide, sortY: toMidY, role: "src" })
+    push(`${it.toCardId}:${toSide}`, { index: it.index, box: it.toBox, side: toSide, sortY: fromMidY, role: "dst" })
+  }
+  const out = new Map<number, { src: { x: number; y: number }; dst: { x: number; y: number } }>()
+  const ensure = (index: number) => {
+    const cur = out.get(index) ?? { src: { x: 0, y: 0 }, dst: { x: 0, y: 0 } }
+    out.set(index, cur)
+    return cur
+  }
+  for (const list of groups.values()) {
+    // Stable sort by the facing endpoint's y, then edge index for determinism.
+    list.sort((a, b) => a.sortY - b.sortY || a.index - b.index)
+    list.forEach((e, i) => {
+      const x = e.side === "right" ? e.box.x + e.box.w : e.box.x
+      const y = portY(e.box, i, list.length)
+      const rec = ensure(e.index)
+      rec[e.role] = { x, y }
+    })
+  }
+  return out
 }
 
 // The collapse threshold is a DERIVATION (§9), not a magic number: the largest
@@ -284,7 +404,7 @@ export function focusSet(
   const nodeToCard = new Map<string, string>()
   for (const c of cards) {
     if (c.node) nodeToCard.set(c.id, c.id)
-    for (const m of c.measures) nodeToCard.set(m.id, c.id)
+    for (const m of [...c.measures, ...c.unnamedMeasures]) nodeToCard.set(m.id, c.id)
   }
   const anchor = nodeToCard.get(selectedId)
   if (!anchor) return null
@@ -341,24 +461,19 @@ function CoverageBadge({ x, y, w, coverage }: { x: number; y: number; w: number;
 
 function EdgeView({
   edge,
-  from,
-  to,
+  src,
+  dst,
   active,
   onHover,
 }: {
   edge: SemanticGraphEdge
-  from: CardBox
-  to: CardBox
+  // Distributed endpoints (12d finding 4): each edge attaches at its own slot on
+  // the card's facing side, so a fan-in does not collapse onto one midpoint.
+  src: { x: number; y: number }
+  dst: { x: number; y: number }
   active: boolean
   onHover: (on: boolean) => void
 }) {
-  // Anchor at edge ports (§5): pick the facing sides so the curve lives in the
-  // gutter between the two cards, never crossing a card's chip rows.
-  const fromPorts = cardPorts(from)
-  const toPorts = cardPorts(to)
-  const leftToRight = from.x <= to.x
-  const src = leftToRight ? fromPorts.right : fromPorts.left
-  const dst = leftToRight ? toPorts.left : toPorts.right
   // Column-aware cubic curve: control points offset horizontally so edges bend
   // in the gutter (the §5 "orthogonal elbows or column-aware curves" call).
   const cx = (src.x + dst.x) / 2
@@ -378,10 +493,14 @@ function EdgeView({
     return <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="1.5" />
   }
 
-  // join — declutter: relationship + SCD2 at rest, full ON predicate on hover or
-  // when an endpoint card is selected. Prompt 12b coverage weight rides "×N".
+  // join — declutter: a compact relationship GLYPH (12d finding 3) + SCD2 at
+  // rest so nothing truncates into ambiguity; the full ON predicate and the full
+  // relationship text ride hover / an endpoint selection. A relationship with no
+  // known glyph is omitted at rest rather than shown truncated. Prompt 12b
+  // coverage weight rides "×N".
   const weightLabel = typeof edge.weight === "number" && edge.weight > 0 ? `×${edge.weight}` : null
-  const restLabel = [edge.relationship, edge.scd2 ? "SCD2" : null, weightLabel].filter(Boolean).join(" · ")
+  const glyph = relationshipGlyph(edge.relationship)
+  const restLabel = [glyph, edge.scd2 ? "SCD2" : null, weightLabel].filter(Boolean).join(" · ")
   return (
     <g onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)} style={{ cursor: "default" }}>
       <path d={path} fill="none" stroke="var(--border-color-strong)" strokeWidth={active ? 2 : 1.5} markerEnd="url(#mv-arrow)" />
@@ -491,9 +610,16 @@ function CardView({
   // when expanded. Collapsed keeps the roll-up (governance story survives, §8)
   // and drops the chips.
   const isMv = card.kind === "metric_view"
-  const subtitle = isMv ? (card.proposed ? "proposed metric view" : "metric view") : `${card.measures.length} concept${card.measures.length === 1 ? "" : "s"}`
+  // The concept count is the TOTAL (chipped + unnamed) so the subtitle never
+  // understates the card by the measures we declined to chip (12d finding 1).
+  const conceptCount = card.measures.length + card.unnamedMeasures.length
+  const subtitle = isMv
+    ? card.proposed
+      ? "proposed metric view"
+      : "metric view"
+    : `${conceptCount} concept${conceptCount === 1 ? "" : "s"}`
   const clickableHeader = card.node
-  const hidden = collapsed && card.measures.length > 0
+  const hidden = collapsed
   return (
     <g opacity={opacity}>
       <g onClick={() => clickableHeader && onSelect(clickableHeader)} style={{ cursor: clickableHeader ? "pointer" : "default" }}>
@@ -507,19 +633,35 @@ function CardView({
         <RollUp x={x + 10} y={y + 40} card={card} />
         <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} />
       </g>
-      {!hidden &&
-        card.measures.map((m, i) => (
-          <MeasureChip
-            key={m.id}
-            m={m}
-            x={x + 8}
-            y={y + CARD_HDR + i * CHIP_STEP}
-            w={w - 16}
-            selected={m.id === selectedId}
-            dim={!matchesSearch(m.label, searchTerm)}
-            onSelect={onSelect}
-          />
-        ))}
+      {!hidden && (
+        <>
+          {card.measures.map((m, i) => (
+            <MeasureChip
+              key={m.id}
+              m={m}
+              x={x + 8}
+              y={y + CARD_HDR + i * CHIP_STEP}
+              w={w - 16}
+              selected={m.id === selectedId}
+              dim={!matchesSearch(m.label, searchTerm)}
+              onSelect={onSelect}
+            />
+          ))}
+          {/* 12d finding 1: measures with no human-usable name are summarized,
+              never rendered as canonical_expr / sug_ internals. */}
+          {card.unnamedMeasures.length > 0 && (
+            <text
+              x={x + 8}
+              y={y + CARD_HDR + card.measures.length * CHIP_STEP + 12}
+              className="fill-[var(--text-muted)]"
+              fontSize="9"
+              fontStyle="italic"
+            >
+              +{card.unnamedMeasures.length} unnamed
+            </text>
+          )}
+        </>
+      )}
     </g>
   )
 }
@@ -559,6 +701,33 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const { placed, width, height } = useMemo(() => layoutCards(cards, collapsed), [cards, collapsed])
 
   const highlight = useMemo(() => focusSet(cards, edges, selectedId), [cards, edges, selectedId])
+
+  // Resolve each edge's endpoint cards (a measure endpoint anchors on its owning
+  // card), then distribute the fan-out across each card's side (12d finding 4).
+  const cardIdOfNode = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of cards) {
+      if (placed.has(c.id)) m.set(c.id, c.id)
+      for (const mm of [...c.measures, ...c.unnamedMeasures]) m.set(mm.id, c.id)
+    }
+    return m
+  }, [cards, placed])
+
+  const renderedEdges = useMemo(() => {
+    const items: (RenderedEdge & { edge: SemanticGraphEdge })[] = []
+    edges.forEach((edge, index) => {
+      const fromCardId = cardIdOfNode.get(edge.from)
+      const toCardId = cardIdOfNode.get(edge.to)
+      if (!fromCardId || !toCardId || fromCardId === toCardId) return
+      const from = placed.get(fromCardId)
+      const to = placed.get(toCardId)
+      if (!from || !to) return
+      items.push({ index, edge, fromCardId, toCardId, fromBox: from.box, toBox: to.box })
+    })
+    return items
+  }, [edges, cardIdOfNode, placed])
+
+  const edgePorts = useMemo(() => distributeEdgePorts(renderedEdges), [renderedEdges])
 
   const clampScale = (s: number) => Math.min(2.5, Math.max(0.4, s))
   const zoomBy = (f: number) => setView((v) => ({ ...v, scale: clampScale(v.scale * f) }))
@@ -674,19 +843,24 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
           {COL_HEADERS.map((h, i) => (
             <text key={h} x={COL_X[i] + COL_W[i] / 2} y={20} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="9" fontWeight="600">{h}</text>
           ))}
-          {edges.map((edge, i) => {
-            const fromCardId = placed.has(edge.from) ? edge.from : cards.find((c) => c.measures.some((m) => m.id === edge.from))?.id
-            const toCardId = placed.has(edge.to) ? edge.to : cards.find((c) => c.measures.some((m) => m.id === edge.to))?.id
-            if (!fromCardId || !toCardId || fromCardId === toCardId) return null
-            const from = placed.get(fromCardId)
-            const to = placed.get(toCardId)
-            if (!from || !to) return null
+          {renderedEdges.map(({ index, edge, fromCardId, toCardId }) => {
+            const ports = edgePorts.get(index)
+            if (!ports) return null
             const active =
-              hoverEdge === i ||
+              hoverEdge === index ||
               fromCardId === selectedId ||
               toCardId === selectedId ||
               (highlight != null && highlight.has(fromCardId) && highlight.has(toCardId))
-            return <EdgeView key={i} edge={edge} from={from.box} to={to.box} active={active} onHover={(on) => setHoverEdge(on ? i : null)} />
+            return (
+              <EdgeView
+                key={index}
+                edge={edge}
+                src={ports.src}
+                dst={ports.dst}
+                active={active}
+                onHover={(on) => setHoverEdge(on ? index : null)}
+              />
+            )
           })}
           {[...placed.values()].map((p) => (
             <CardView

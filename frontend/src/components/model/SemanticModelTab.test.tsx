@@ -118,10 +118,13 @@ describe("SemanticModelView — states", () => {
     expect(html).toContain("Try again")
   })
 
-  it("joins + snippets: curated rung, join labeled with relationship + SCD2 at rest", () => {
+  it("joins + snippets: curated rung, join labeled with cardinality glyph + SCD2 at rest", () => {
     const html = render(<SemanticModelView graph={JOINS_AND_SNIPPETS} isLoading={false} error={null} onRefresh={() => {}} />)
     expect(html).toContain("Curated")
-    expect(html).toContain("many-to-one")
+    // 12d finding 3: the compact glyph shows at rest (full 'many-to-one' rides
+    // hover), so nothing truncates into ambiguity.
+    expect(html).toContain("N:1")
+    expect(html).not.toContain("many-to-one")
     expect(html).toContain("SCD2")
     expect(html).toContain("gross_margin")
     // No proposals here either.
@@ -145,10 +148,11 @@ describe("SemanticModelView — states", () => {
     expect(html).not.toContain("replaces")
   })
 
-  it("multi-join: both join edges render their relationships", () => {
+  it("multi-join: both join edges render their cardinality glyphs at rest", () => {
     const html = render(<SemanticModelView graph={MULTI_JOIN} isLoading={false} error={null} onRefresh={() => {}} />)
-    expect(html).toContain("many-to-one")
-    expect(html).toContain("one-to-one")
+    // 12d finding 3: N:1 and 1:1 glyphs at rest, full text on hover.
+    expect(html).toContain("N:1")
+    expect(html).toContain("1:1")
   })
 })
 

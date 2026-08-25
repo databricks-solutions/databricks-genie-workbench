@@ -24,9 +24,12 @@ import {
   cardPorts,
   collapseThreshold,
   computeFit,
+  distributeEdgePorts,
   focusSet,
+  isDisplayableMeasureLabel,
   layoutCards,
   matchesSearch,
+  relationshipGlyph,
   rollup,
 } from "./SemanticGraph"
 
@@ -197,6 +200,122 @@ describe("focusSet — selection dims all but the 1-hop neighborhood (§4)", () 
   it("returns null when nothing is selected (no dimming)", () => {
     const { nodes, edges } = starSchema(3)
     expect(focusSet(buildCards(nodes, edges), edges, null)).toBeNull()
+  })
+})
+
+// ── 12d finding 1: data hygiene — internal tokens never render as labels ──────
+describe("isDisplayableMeasureLabel — canonical_expr / sug_ ids are not labels", () => {
+  it("rejects MV-D29 canonical placeholders and suggestion ids, keeps real names", () => {
+    expect(isDisplayableMeasureLabel("count(?n)")).toBe(false)
+    expect(isDisplayableMeasureLabel("sum(count(?n))")).toBe(false)
+    expect(isDisplayableMeasureLabel("sug_f07l2262f800")).toBe(false)
+    expect(isDisplayableMeasureLabel("   ")).toBe(false)
+    expect(isDisplayableMeasureLabel(null)).toBe(false)
+    expect(isDisplayableMeasureLabel("total_booking_value")).toBe(true)
+    expect(isDisplayableMeasureLabel("Net Revenue")).toBe(true)
+  })
+})
+
+describe("buildCards — internal-token measures are counted, not chipped (12d.1)", () => {
+  it("splits displayable chips from unnamed, and the roll-up counts both", () => {
+    const nodes: SemanticGraphNode[] = [
+      { id: "cat.sch.mv", kind: "metric_view", label: "orders_metrics", col: 2, row: 0 },
+      { id: "m_named", kind: "measure", label: "total_bookings", col: 3, row: 0, governance: "governed" },
+      { id: "m_expr", kind: "measure", label: "sum(count(?n))", col: 3, row: 1, governance: "governed" },
+      { id: "m_sug", kind: "measure", label: "sug_f07l2262f800", col: 3, row: 2, governance: "curated" },
+    ]
+    const edges: SemanticGraphEdge[] = [
+      { from: "m_named", to: "cat.sch.mv", kind: "membership" },
+      { from: "m_expr", to: "cat.sch.mv", kind: "membership" },
+      { from: "m_sug", to: "cat.sch.mv", kind: "membership" },
+    ]
+    const mv = buildCards(nodes, edges).find((c) => c.kind === "metric_view")!
+    expect(mv.measures.map((m) => m.label)).toEqual(["total_bookings"])
+    expect(mv.unnamedMeasures).toHaveLength(2)
+    // The governance roll-up still reflects the dropped measures (2 gov + 1 cur).
+    expect(rollup(mv)).toEqual([
+      { rung: "governed", count: 2 },
+      { rung: "curated", count: 1 },
+    ])
+  })
+})
+
+describe("SemanticGraph render — no internal token ever reaches a rendered label (12d.1)", () => {
+  it("shows '+N unnamed' and never the canonical_expr or sug_ id", () => {
+    const nodes: SemanticGraphNode[] = [
+      { id: "cat.sch.mv", kind: "metric_view", label: "orders_metrics", col: 2, row: 0 },
+      { id: "m_named", kind: "measure", label: "total_bookings", col: 3, row: 0, governance: "governed" },
+      { id: "m_expr", kind: "measure", label: "sum(count(?n))", col: 3, row: 1, governance: "governed" },
+      { id: "m_sug", kind: "measure", label: "sug_f07l2262f800", col: 3, row: 2, governance: "curated" },
+    ]
+    const edges: SemanticGraphEdge[] = [
+      { from: "m_named", to: "cat.sch.mv", kind: "membership" },
+      { from: "m_expr", to: "cat.sch.mv", kind: "membership" },
+      { from: "m_sug", to: "cat.sch.mv", kind: "membership" },
+    ]
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain("total_bookings")
+    expect(html).toContain("+2 unnamed")
+    // The validator-style assertion: no ?n/?s placeholder, no sug_ id, anywhere.
+    expect(html).not.toContain("?n")
+    expect(html).not.toContain("sug_")
+  })
+})
+
+// ── 12d finding 3: relationship glyphs, full text on hover ────────────────────
+describe("relationshipGlyph — compact at rest, never truncated ambiguity", () => {
+  it("maps the cardinality vocabulary, format-tolerant", () => {
+    expect(relationshipGlyph("many-to-one")).toBe("N:1")
+    expect(relationshipGlyph("MANY_TO_ONE")).toBe("N:1")
+    expect(relationshipGlyph("one to one")).toBe("1:1")
+    expect(relationshipGlyph("one-to-many")).toBe("1:N")
+    expect(relationshipGlyph("many-to-many")).toBe("N:N")
+  })
+
+  it("returns null for unknown/absent relationships (no wrong glyph)", () => {
+    expect(relationshipGlyph("weird")).toBeNull()
+    expect(relationshipGlyph(null)).toBeNull()
+    expect(relationshipGlyph(undefined)).toBeNull()
+  })
+
+  it("the rendered rest label uses the glyph, never the truncated word", () => {
+    const { nodes, edges } = starSchema(3)
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // The at-rest join label is the glyph; the full 'many-to-one' text (which
+    // truncated to 'many-to-o…') does not appear at rest.
+    expect(html).toContain("N:1")
+    expect(html).not.toContain("many-to-o")
+  })
+})
+
+// ── 12d finding 4: fan-out port distribution at the fact column ────────────────
+describe("distributeEdgePorts — a fan-in spreads across the fact card's side", () => {
+  it("gives each edge in a fan-in a distinct attachment y (no overlap)", () => {
+    const factBox = { x: 32, y: 44, w: 176, h: 44 }
+    const dim = (row: number) => ({ x: 236, y: 44 + row * 120, w: 188, h: 60 })
+    // Three dims → one fact: all three land on the fact's LEFT side.
+    const items = [
+      { index: 0, fromCardId: "d0", toCardId: "fact", fromBox: dim(0), toBox: factBox },
+      { index: 1, fromCardId: "d1", toCardId: "fact", fromBox: dim(1), toBox: factBox },
+      { index: 2, fromCardId: "d2", toCardId: "fact", fromBox: dim(2), toBox: factBox },
+    ]
+    const ports = distributeEdgePorts(items)
+    const factYs = [0, 1, 2].map((i) => ports.get(i)!.dst.y)
+    // Distinct attachment points, all on the fact card's facing (right) side —
+    // the fact sits in col 0 to the LEFT of the dims, so its right edge faces
+    // them (x === factBox.x + factBox.w).
+    expect(new Set(factYs).size).toBe(3)
+    for (const i of [0, 1, 2]) expect(ports.get(i)!.dst.x).toBe(factBox.x + factBox.w)
+  })
+
+  it("a lone edge lands on the midpoint — identical to cardPorts (backward compat)", () => {
+    const fromBox = { x: 32, y: 44, w: 176, h: 44 }
+    const toBox = { x: 236, y: 44, w: 188, h: 60 }
+    const ports = distributeEdgePorts([
+      { index: 0, fromCardId: "a", toCardId: "b", fromBox, toBox },
+    ])
+    expect(ports.get(0)!.src).toEqual(cardPorts(fromBox).right)
+    expect(ports.get(0)!.dst).toEqual(cardPorts(toBox).left)
   })
 })
 
