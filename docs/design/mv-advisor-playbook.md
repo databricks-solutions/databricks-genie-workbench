@@ -1836,7 +1836,9 @@ will 403.
 ```
 Write scripts/e2e/mv_advisor_e2e.md plus a runnable pytest -m e2e suite
 (env-gated on DATABRICKS_HOST/TOKEN + config for space_id and scratch schema)
-that executes the three scenarios end to end against my dev workspace:
+that executes the four scenarios (A-D, including D's BYO leg) end to end
+against my dev workspace — "three" predated Scenario D and was corrected at
+the Prompt 15 PLAN review:
 
 Scenario A — suggest_only:
   Start a run with the toggle on, mode suggest_only. Assert: run completes;
@@ -1908,7 +1910,7 @@ Finish the branch:
 - Update docs/design/metric-view-suggestion-engine-pov.md status flags for
   anything the implementation resolved or contradicted, with a short
   "implementation deltas" appendix.
-- Write the PR description: problem, design link, screenshots, the three E2E
+- Write the PR description: problem, design link, screenshots, the four E2E
   scenarios and their results, rollout guidance (feature defaults to off;
   suggest_only is the safe first mode), and explicit reviewer callouts:
   (1) the CREATE TABLE privilege assumption for metric views needs runtime
