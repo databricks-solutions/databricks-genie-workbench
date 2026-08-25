@@ -768,3 +768,65 @@ never dropped it). Fixture spaces and scratch schema left in place for reuse.
 **Manual UI smoke / 12d before-after screenshots:** pending the reviewer — a human
 browser step against the deployed app (Databricks OAuth SSO cannot be established
 from a headless test client), tracked as the 12d item-5 owe.
+
+### 2026-08-25 — `scenario_d` against redeployed 15.6 / 15.7 / 15.7b / 12d / 12e — 3/3 GREEN
+
+**Code under test.** Five feature commits now live in the app: `ced7a2fa` (15.6),
+`a05583ab` (15.7), `c9fd9f6c` (15.7b), `d77ae7bd` (12d), and `563e8a86`
+(**Prompt 12e — the metric view drawn as a semantic model, MV-D33**), plus the
+docs-only `2cda0c81` (v3 note + MV-D33 + Prompt 12e body). 12e is frontend +
+one reader extension only: the semantic-graph route now derives BOTH the governed
+measure chips and each MV's internal structure (source / joins / on) from a SINGLE
+batched `DESCRIBE … AS JSON` read (`_read_metric_view_yamls`), emits proof-only
+`uses` edges + `definition_available`, and the graph draws on-demand MV boundaries,
+Lineage/Impact focus, an unmodeled region, and session-only drag. No scoring or
+persistence change — so the backend contract Scenario D exercises is unchanged; the
+run confirms 12e did not regress the suggest / BYO paths.
+
+**Deploy record.** `./scripts/deploy.sh --update`, `fevm-serverless` profile.
+App `genie-workbench` (`genie-workbench-7474656657532371.aws.databricksapps.com`),
+deployment `01f1a0bc3b3b1005845e11d0fe987860` (SNAPSHOT), job `1102443228792203`,
+SP `a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`, deployer
+`prashanth.subrahmanyam@databricks.com`. App deployment **SUCCEEDED**, app
+**RUNNING**.
+
+**Workspace / identity.** `fevm-serverless-stable-6t92c3.cloud.databricks.com`,
+primary identity `prashanth.subrahmanyam@databricks.com` (OAuth bearer minted from
+the `fevm-serverless` profile; gate passed). GSO
+`serverless_stable_6t92c3_catalog.genie_space_optimizer`, warehouse
+`41cfe645e10807a4`. D fixtures unchanged (`MV_E2E_SUGGEST_SPACE_ID`,
+`MV_E2E_EMPTY_SPACE_ID`, scratch `serverless_stable_6t92c3_catalog.mv_advisor_e2e`).
+
+**Command:** `uv run --frozen --extra dev pytest -m e2e tests/e2e -k scenario_d -v`
+(227.66s = 3m48s; serialized; xdist refused). `uv.lock` registry-URL rewrite from
+`uv run` reverted afterward (environment artifact, hashes identical).
+
+**Results — `scenario_d` (3 passed — 3/3, exit criterion held):**
+
+| Scenario D leg | Test | Result |
+|---|---|---|
+| suggest COMPLETE on curated SQL | `test_scenario_d_suggest_with_curated_sql` | **PASS** — status `COMPLETE`, ≥1 proposal each carrying `evidence`; the 15.7b additive columns still read back cleanly through the SERVED routes on the 12e tree. |
+| suggest EMPTY-with-reason on a bare space | `test_scenario_d_suggest_empty_with_reason` | **PASS** — HTTP 200, `SKIPPED`, non-empty `skip_reason`, `proposals == []`. |
+| BYO register → `USER_CREATED`, drop 409, provenance | `test_scenario_d_byo_register_refuse_and_provenance` | **PASS** — register → `USER_CREATED`, drop refused 409, route-10 provenance all hold. |
+
+**What this proved about 12e.** 12e touches only the semantic-graph read + the
+frontend; the suggest / BYO backend contract is unchanged and non-regressive. The
+new one-batched-read cache posture and the `uses`/`definition_available` additions
+are covered by the offline unit suites (backend `test_semantic_graph.py` — 21
+cases incl. internals parsing, uses edges, unreadable-YAML-no-arrows; frontend
+`SemanticGraph.v3.test.tsx` — hull-is-norm, impact-vs-lineage, drag, unmodeled,
+definition-unavailable). Full suites green pre-deploy: backend 2169, frontend 351.
+
+**Eval budget spent:** none (Scenario D triggers no job / no native eval).
+
+**Teardown.** The BYO leg created a real view and its finalizer dropped it (the app
+never dropped it). Fixture spaces and scratch schema left in place for reuse.
+
+**Retries:** none — a single clean 3/3 run.
+
+**Manual UI smoke / 12d + 12e before-after screenshots:** pending the reviewer — a
+human browser step against the deployed app (Databricks OAuth SSO cannot be
+established from a headless test client). 12e adds visual surface (Model tab: MV
+boundaries on select, `uses` arrows, Lineage/Impact toggle, unmodeled tags, drag +
+Reset layout, definition-unavailable state), so the before/after pair now covers
+both 12d hygiene and the 12e v3 canvas.
