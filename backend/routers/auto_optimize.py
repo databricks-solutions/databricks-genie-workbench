@@ -2311,6 +2311,7 @@ def _build_semantic_graph(
     proposals: list[MvProposal],
     *,
     governed_fields: Any = (),
+    mv_internals: dict[str, dict] | None = None,
 ) -> tuple[list[MvSemanticGraphNode], list[MvSemanticGraphEdge], str | None, str | None]:
     """Assemble the base graph nodes/edges + the SQL-coverage lens (Prompt 12b).
 
@@ -2319,7 +2320,18 @@ def _build_semantic_graph(
     ``mv_fqn`` / ``field_name`` / ``canonical_expr``. Only ``FIELD_MEASURE`` kinds
     reach here; an empty sequence is the honest "no governed chips" fallback the
     deleted ``_is_measure_column`` probe used to produce, now truthful instead of
-    speculative. Returns ``(nodes, edges, coverage_status, coverage_reason)``."""
+    speculative.
+
+    ``mv_internals`` (Prompt 12e, MV-D33) maps a metric view identifier to its
+    parsed YAML structure ``{"available": bool, "source": str|None,
+    "joins": [{"table", "on", "relationship"}]}`` — the source of the ``uses``
+    edges (MV → the tables it sources), the MV-YAML join edges (the ONLY other
+    admissible arrow proof besides ``join_specs``), and the ``definition_available``
+    flag. An MV absent from the map keeps ``definition_available=None`` (no read
+    attempted); one with ``available=False`` draws NO arrows — unreadable is
+    unproven (MV-D33 constraint 2). Returns
+    ``(nodes, edges, coverage_status, coverage_reason)``."""
+    mv_internals = mv_internals or {}
     ds = space_data.get("data_sources")
     ds = ds if isinstance(ds, dict) else {}
     instructions = space_data.get("instructions")
@@ -2368,14 +2380,101 @@ def _build_semantic_graph(
     # Metric view nodes (col 2), indexed by normalized fqn so a governed chip can
     # find its owner.
     mv_id_by_fqn: dict[str, str] = {}
+    mv_node_by_id: dict[str, MvSemanticGraphNode] = {}
     for m in metric_views:
         ident = m.get("identifier", "")
         if not ident:
             continue
         mv_id_by_fqn[_norm_fqn(ident)] = ident
-        nodes.append(MvSemanticGraphNode(
+        mv_node = MvSemanticGraphNode(
             id=ident, kind="metric_view", label=_short_name(ident), col=2, row=0,
-        ))
+        )
+        # Prompt 12e / MV-D33: definition_available reflects whether the MV's YAML
+        # was read + parsed. None (default) when no read was attempted for it.
+        info = mv_internals.get(ident)
+        if info is not None:
+            mv_node.definition_available = bool(info.get("available"))
+        nodes.append(mv_node)
+        mv_node_by_id[ident] = mv_node
+
+    # Prompt 12e / MV-D33: a metric view IS a semantic model. Fold each readable
+    # MV's parsed YAML into the deduplicated table canvas — its source is a fact,
+    # its joined tables are dimensions — and emit the PROVEN arrows: a ``uses``
+    # edge MV → each member table (the at-rest arrow + the select-time boundary's
+    # member set), and a ``join`` edge per MV-YAML join (the only arrow proof
+    # besides join_specs). An MV with ``available=False`` (unreadable/unparsed
+    # YAML) contributes NOTHING here — no member tables, no arrows — because
+    # unreadable is unproven. Tables are deduplicated: a member table already on
+    # the canvas is reused by identity, never copied (MV-D33 constraint 1).
+    norm_to_table_id = {_norm_fqn(tid): tid for tid in table_ids}
+    mv_source_norms: set[str] = set()
+    mv_dim_norms: set[str] = set()
+    existing_join_pairs = {(_norm_fqn(e.from_), _norm_fqn(e.to)) for e in edges if e.kind == "join"}
+    existing_uses_pairs: set[tuple[str, str]] = set()
+
+    def _resolve_or_add_table(raw: str, *, as_dim: bool) -> str | None:
+        """Resolve an MV-referenced table to its canvas node, adding it if the
+        space did not already declare it (the MV definition IS the proof it
+        belongs). Deduplicates by normalized fqn. Returns the node id."""
+        cleaned = (raw or "").replace("`", "").strip()
+        if not cleaned:
+            return None
+        norm = _norm_fqn(cleaned)
+        node_id = norm_to_table_id.get(norm)
+        if node_id is None:
+            node_id = cleaned
+            table_ids.add(node_id)
+            norm_to_table_id[norm] = node_id
+            nodes.append(MvSemanticGraphNode(
+                id=node_id, kind="table", label=_short_name(node_id),
+                col=1 if as_dim else 0, row=0,
+            ))
+        return node_id
+
+    for ident, info in ((i, mv_internals.get(i)) for i in list(mv_node_by_id)):
+        if not info or not info.get("available"):
+            continue
+        source_id = _resolve_or_add_table(info.get("source") or "", as_dim=False)
+        member_ids: list[str] = []
+        if source_id:
+            mv_source_norms.add(_norm_fqn(source_id))
+            member_ids.append(source_id)
+        for j in info.get("joins") or []:
+            if not isinstance(j, dict):
+                continue
+            dim_id = _resolve_or_add_table(j.get("table") or "", as_dim=True)
+            if not dim_id:
+                continue
+            mv_dim_norms.add(_norm_fqn(dim_id))
+            member_ids.append(dim_id)
+            # MV-YAML join edge (proof): source → joined dimension, deduped
+            # against config join_specs so one relationship is one arrow.
+            if source_id:
+                pair = (_norm_fqn(source_id), _norm_fqn(dim_id))
+                if pair not in existing_join_pairs:
+                    existing_join_pairs.add(pair)
+                    edges.append(MvSemanticGraphEdge(
+                        **{"from": source_id, "to": dim_id}, kind="join",
+                        on=j.get("on") or None, relationship=j.get("relationship"),
+                    ))
+        for tid in member_ids:
+            pair = (ident, tid)
+            if pair in existing_uses_pairs:
+                continue
+            existing_uses_pairs.add(pair)
+            edges.append(MvSemanticGraphEdge(**{"from": ident, "to": tid}, kind="uses"))
+
+    # Fact/dim refinement from the MV definitions: a table an MV sources is a
+    # fact (col 0); a table only ever joined is a dimension (col 1). MV-source
+    # wins over the join_specs-derived dim guess so a shared fact is not miscolumned.
+    for n in nodes:
+        if n.kind != "table":
+            continue
+        norm = _norm_fqn(n.id)
+        if norm in mv_source_norms:
+            n.col = 0
+        elif norm in mv_dim_norms:
+            n.col = 1
 
     # Governance ladder, deduped by concept identity (Debt 3): governed wins over
     # curated wins over ungoverned. ``key_by_node`` maps a measure node id to its
@@ -2594,10 +2693,25 @@ async def get_space_semantic_graph(space_id: SpaceId):
             except Exception as exc:
                 logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
 
-    governed_fields = await _offload(_read_governed_measure_fields, graph_data)
+    # Prompt 12e / MV-D33 cache posture: ONE batched estate read per tab load.
+    # ``_read_metric_view_yamls`` issues the single ``DESCRIBE … AS JSON`` batch;
+    # both the governed-measure chips (Prompt 12b) AND the MV internals (source /
+    # joins) are derived from that one dict — never a second DESCRIBE fan-out. The
+    # tab's Refresh affordance re-enters this handler, which is the invalidation
+    # (no stale cache to bust). At attached-MV counts (typically single digits)
+    # one batched read on entry is the right cost.
+    yamls = await _offload(_read_metric_view_yamls, graph_data)
+    governed_fields = _governed_measures_from_yamls(yamls)
+    # Compute internals only when a read was ATTEMPTED (configured + warehouse):
+    # an MV missing from an attempted read is "definition unavailable" (False,
+    # no arrows), but an unconfigured deployment never tried, so its MV nodes
+    # stay definition_available=None (no misleading "unavailable" badge).
+    mv_internals: dict[str, dict] = {}
+    if _is_configured() and _build_gso_config().warehouse_id:
+        mv_internals = _metric_view_internals(yamls, _mv_identifiers(graph_data))
 
     nodes, edges, coverage_status, coverage_reason = _build_semantic_graph(
-        graph_data, proposals, governed_fields=governed_fields
+        graph_data, proposals, governed_fields=governed_fields, mv_internals=mv_internals
     )
     return MvSemanticGraph(
         space_id=space_id,
@@ -2609,43 +2723,103 @@ async def get_space_semantic_graph(space_id: SpaceId):
     )
 
 
-def _read_governed_measure_fields(space_data: dict) -> list[Any]:
-    """The governed measures of a space's attached metric views (Prompt 12b Debt 2).
-
-    Reads each ``data_sources.metric_views[].identifier`` via
-    ``DESCRIBE ... AS JSON`` through ``metric_view_catalog``'s existing parsing
-    (``estate_metric_view_yamls`` → ``metric_view_fields``) under the
-    OBO-tolerant client, so the chips enumerate what the signed-in user is
-    entitled to see. Best-effort by contract: no warehouse, no configuration, or a
-    failed DESCRIBE yields ``[]`` — the honest "no chips" fallback, never a 500 and
-    never a fabricated rung. Only ``FIELD_MEASURE`` fields are returned; dimensions
-    are not measure concepts."""
+def _mv_identifiers(space_data: dict) -> list[str]:
+    """The ``data_sources.metric_views[].identifier`` list, in config order."""
     ds = space_data.get("data_sources") if isinstance(space_data, dict) else None
     metric_views = (ds or {}).get("metric_views") if isinstance(ds, dict) else None
-    identifiers = [
+    return [
         m.get("identifier")
         for m in (metric_views or [])
         if isinstance(m, dict) and m.get("identifier")
     ]
+
+
+def _read_metric_view_yamls(space_data: dict) -> dict[str, dict]:
+    """The ONE batched read of a space's attached metric-view YAMLs (Prompt 12b
+    Debt 2 + Prompt 12e / MV-D33).
+
+    Reads each ``data_sources.metric_views[].identifier`` via ``DESCRIBE … AS
+    JSON`` through ``metric_view_catalog``'s existing parsing
+    (``estate_metric_view_yamls``) under the OBO-tolerant client, so the result
+    reflects what the signed-in user is entitled to see. Returns the
+    ``{fq_lower: parsed_yaml}`` dict (``source`` / ``joins`` / ``dimensions`` /
+    ``measures``). Best-effort by contract: no warehouse, no configuration, or a
+    failed DESCRIBE yields ``{}`` — the honest "nothing readable" fallback, never
+    a 500. This is the single seam the graph route reads through; both governed
+    chips and MV internals are derived from its output, so there is exactly one
+    DESCRIBE batch per load."""
+    identifiers = _mv_identifiers(space_data)
     if not identifiers or not _is_configured():
-        return []
+        return {}
     config = _build_gso_config()
     if not config.warehouse_id:
-        return []
+        return {}
     try:
         from genie_space_optimizer.optimization.mv_advisor import estate_metric_view_yamls
+
+        return estate_metric_view_yamls(
+            None, identifiers, w=get_workspace_client(), warehouse_id=config.warehouse_id
+        )
+    except Exception as exc:
+        logger.warning("Could not read metric-view YAMLs for graph: %s", exc)
+        return {}
+
+
+def _governed_measures_from_yamls(yamls: dict[str, dict]) -> list[Any]:
+    """Flatten the read YAMLs to their ``FIELD_MEASURE`` fields (Prompt 12b Debt 2).
+
+    Pure over the ``_read_metric_view_yamls`` output — dimensions are not measure
+    concepts, and an empty dict yields ``[]`` (the honest "no governed chips")."""
+    if not yamls:
+        return []
+    try:
         from genie_space_optimizer.optimization.mv_scoring import (
             FIELD_MEASURE,
             metric_view_fields,
         )
 
-        yamls = estate_metric_view_yamls(
-            None, identifiers, w=get_workspace_client(), warehouse_id=config.warehouse_id
-        )
         return [f for f in metric_view_fields(yamls) if f.kind == FIELD_MEASURE]
     except Exception as exc:
-        logger.warning("Could not read governed MV measures for graph: %s", exc)
+        logger.warning("Could not flatten governed MV measures for graph: %s", exc)
         return []
+
+
+def _metric_view_internals(
+    yamls: dict[str, dict], identifiers: list[str]
+) -> dict[str, dict]:
+    """Per-MV internal structure — source fact, joined dims, ON predicates —
+    from the already-read YAMLs (Prompt 12e / MV-D33). No DESCRIBE here.
+
+    Returns ``{identifier: {"available": bool, "source": str|None,
+    "joins": [{"table", "on", "relationship"}]}}``. An MV whose YAML is absent
+    from the read, or parsed without a real ``source`` (a synthesized skeleton),
+    is ``available=False`` and contributes NO tables and NO arrows downstream —
+    unreadable is unproven (MV-D33 constraint 2). Keyed by the ORIGINAL config
+    identifier (the graph node id) though the YAMLs are keyed by ``fq_lower``."""
+    out: dict[str, dict] = {}
+    for ident in identifiers:
+        doc = yamls.get(_norm_fqn(ident)) if isinstance(yamls, dict) else None
+        source = doc.get("source") if isinstance(doc, dict) else None
+        source = source.strip() if isinstance(source, str) and source.strip() else None
+        if not source:
+            out[ident] = {"available": False, "source": None, "joins": []}
+            continue
+        joins: list[dict] = []
+        raw_joins = doc.get("joins") if isinstance(doc.get("joins"), list) else []
+        for j in raw_joins:
+            if not isinstance(j, dict):
+                continue
+            table = j.get("source") or j.get("table") or j.get("name")
+            if not isinstance(table, str) or not table.strip():
+                continue
+            on_clause = j.get("on") or j.get("using")
+            joins.append({
+                "table": table.strip(),
+                "on": _clean_predicate(on_clause) if isinstance(on_clause, str) and on_clause.strip() else None,
+                "relationship": None,
+            })
+        out[ident] = {"available": True, "source": source, "joins": joins}
+    return out
 
 
 @router.get("/runs/{run_id}/mv-ddl", response_model=MvDdlArtifact)

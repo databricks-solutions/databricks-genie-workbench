@@ -470,16 +470,28 @@ class MvSemanticGraphNode(BaseModel):
     proposed: bool = False
     coverage: int | None = None
     benchmark_question_ids: list[str] | None = None
+    # Prompt 12e / MV-D33 (metric_view nodes only). ``True`` when the MV's YAML
+    # was read and parsed (a real ``source``), so its member tables and ``uses``
+    # arrows are proven; ``False`` when the DESCRIBE/parse failed — the node
+    # renders "definition unavailable" and draws NO arrows (unreadable is
+    # unproven, MV-D33 constraint 2). ``None`` for non-MV nodes or when no read
+    # was attempted (unconfigured) — additive, older clients ignore it.
+    definition_available: bool | None = None
 
 
 class MvSemanticGraphEdge(BaseModel):
     """One edge in the semantic model graph.
 
-    ``join`` edges come from ``instructions.join_specs`` — ``on`` is the
-    predicate (``sql[0]``), ``relationship`` is decoded from the ``--rt=…--``
-    annotation (``sql[1]``), and ``scd2`` is true when the predicate carries an
-    ``is_current`` guard. ``membership`` links a measure concept to its owning
-    metric view. ``replaces`` is the overlay's dashed edge — client-only.
+    ``join`` edges come from ``instructions.join_specs`` OR from a metric view's
+    own YAML ``joins`` (Prompt 12e, MV-D33) — ``on`` is the predicate, decoded
+    from ``sql[0]`` for config joins or the ``on``/``using`` clause for MV joins;
+    ``relationship`` is decoded from the ``--rt=…--`` annotation (``sql[1]``), and
+    ``scd2`` is true when the predicate carries an ``is_current`` guard.
+    ``membership`` links a measure concept to its owning metric view. ``uses``
+    (Prompt 12e, MV-D33) links a metric view to a table it sources — the proven
+    at-rest arrow and the member set the select-time boundary wraps; emitted ONLY
+    for an MV whose YAML parsed (arrows require proof). ``replaces`` is the
+    overlay's dashed edge — client-only.
 
     ``weight`` (Prompt 12b, SQL-coverage lens) is the number of curated SQL
     statements that traverse a ``join`` edge (touch both endpoints) — an ADDITIVE
@@ -488,7 +500,7 @@ class MvSemanticGraphEdge(BaseModel):
 
     from_: str = Field(..., alias="from")
     to: str
-    kind: Literal["join", "membership", "replaces"]
+    kind: Literal["join", "membership", "replaces", "uses"]
     on: str | None = None
     relationship: str | None = None
     scd2: bool = False

@@ -257,6 +257,111 @@ def test_build_graph_empty_space_has_no_measures_or_edges():
     assert status == "EMPTY"
 
 
+# ── Prompt 12e / MV-D33: the metric view drawn as a semantic model ───────────
+
+
+def test_metric_view_internals_parses_source_and_joins():
+    """A readable MV YAML yields available=True with its source fact and joined
+    dims (the arrow proof). Backticks in the ON clause are cleaned."""
+    yamls = {
+        "finance.sales.orders_metrics": {
+            "source": "finance.sales.orders",
+            "joins": [
+                {"name": "customer", "source": "finance.ref.customer", "on": "`orders`.`cid` = `customer`.`id`"},
+                {"name": "item", "source": "finance.sales.order_items", "using": "order_id"},
+            ],
+            "measures": [{"name": "order_count", "expr": "count(1)"}],
+        }
+    }
+    internals = auto_optimize._metric_view_internals(yamls, ["finance.sales.orders_metrics"])
+    info = internals["finance.sales.orders_metrics"]
+    assert info["available"] is True
+    assert info["source"] == "finance.sales.orders"
+    assert {j["table"] for j in info["joins"]} == {"finance.ref.customer", "finance.sales.order_items"}
+    on_clause = next(j["on"] for j in info["joins"] if j["table"] == "finance.ref.customer")
+    assert "`" not in on_clause and "orders.cid = customer.id" in on_clause
+
+
+def test_metric_view_internals_unreadable_is_unproven():
+    """An MV absent from the read, or parsed without a real source (a skeleton),
+    is available=False — unreadable is unproven (MV-D33 constraint 2)."""
+    yamls = {"finance.sales.skeleton": {"measures": [{"name": "x", "expr": "count(1)"}]}}  # no source
+    internals = auto_optimize._metric_view_internals(
+        yamls, ["finance.sales.skeleton", "finance.sales.absent"]
+    )
+    assert internals["finance.sales.skeleton"]["available"] is False
+    assert internals["finance.sales.skeleton"]["joins"] == []
+    assert internals["finance.sales.absent"]["available"] is False
+
+
+def test_build_graph_emits_uses_edges_and_marks_definition_available():
+    """A readable MV emits a ``uses`` edge to each member table (the at-rest arrow
+    + the select-time boundary member set) and a proven MV-YAML join edge; the MV
+    node is definition_available=True. A member table the space did not declare is
+    ADDED once (deduplicated), never copied."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],  # only the fact is declared
+            "metric_views": [{"identifier": "finance.sales.orders_metrics"}],
+        }
+    }
+    internals = {
+        "finance.sales.orders_metrics": {
+            "available": True,
+            "source": "finance.sales.orders",
+            "joins": [{"table": "finance.ref.customer", "on": "orders.cid = customer.id", "relationship": None}],
+        }
+    }
+    nodes, edges, _s, _r = _build(space, [], mv_internals=internals)
+    node_by_id = {n.id: n for n in nodes}
+
+    assert node_by_id["finance.sales.orders_metrics"].definition_available is True
+    # The un-declared join table is added once as a dimension (col 1); the source
+    # is a fact (col 0).
+    assert node_by_id["finance.ref.customer"].kind == "table"
+    assert node_by_id["finance.ref.customer"].col == 1
+    assert node_by_id["finance.sales.orders"].col == 0
+    # uses edges MV → each member table.
+    uses = {(e.from_, e.to) for e in edges if e.kind == "uses"}
+    assert uses == {
+        ("finance.sales.orders_metrics", "finance.sales.orders"),
+        ("finance.sales.orders_metrics", "finance.ref.customer"),
+    }
+    # A proven MV-YAML join edge (source → dim), carrying the ON clause.
+    join = next(e for e in edges if e.kind == "join")
+    assert (join.from_, join.to) == ("finance.sales.orders", "finance.ref.customer")
+    assert "customer.id" in (join.on or "")
+    # No duplicate customer node.
+    assert sum(1 for n in nodes if n.id == "finance.ref.customer") == 1
+
+
+def test_build_graph_unavailable_mv_draws_no_arrows():
+    """definition_available=False (unreadable YAML) contributes NO uses edges and
+    NO added tables — arrows require proof (MV-D33 constraint 2)."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],
+            "metric_views": [{"identifier": "finance.sales.orders_metrics"}],
+        }
+    }
+    internals = {"finance.sales.orders_metrics": {"available": False, "source": None, "joins": []}}
+    nodes, edges, _s, _r = _build(space, [], mv_internals=internals)
+    node_by_id = {n.id: n for n in nodes}
+    assert node_by_id["finance.sales.orders_metrics"].definition_available is False
+    assert not any(e.kind == "uses" for e in edges)
+    # No phantom join table was invented.
+    assert not any(n.id == "finance.ref.customer" for n in nodes)
+
+
+def test_build_graph_no_internals_leaves_definition_available_none():
+    """With no internals passed (no read attempted), an MV node's
+    definition_available stays None — no "unavailable" badge, no arrows."""
+    nodes, edges, _s, _r = _build(_SPACE, [])
+    mv = next(n for n in nodes if n.kind == "metric_view")
+    assert mv.definition_available is None
+    assert not any(e.kind == "uses" for e in edges)
+
+
 # ── Coverage lens ────────────────────────────────────────────────────────────
 
 
@@ -314,10 +419,12 @@ def client(monkeypatch) -> TestClient:
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
     monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: MagicMock())
-    # The governed DESCRIBE read is best-effort and Databricks-bound; default it
-    # to the honest empty in the offline route tests, overridden where a chip is
-    # asserted.
-    monkeypatch.setattr(auto_optimize, "_read_governed_measure_fields", lambda space_data: [])
+    # The metric-view YAML read is best-effort and Databricks-bound; default it
+    # to the honest empty dict in the offline route tests (no governed chips, no
+    # MV internals), overridden where a chip or internal is asserted. This is the
+    # ONE batched read the route derives both governed measures and MV internals
+    # from (Prompt 12e cache posture).
+    monkeypatch.setattr(auto_optimize, "_read_metric_view_yamls", lambda space_data: {})
     app = FastAPI()
     app.include_router(auto_optimize.router)
     return TestClient(app)
@@ -334,9 +441,16 @@ def test_semantic_graph_reads_base_from_the_obo_tolerant_config_path(client, mon
         return dict(_SPACE)
 
     monkeypatch.setattr(auto_optimize, "get_serialized_space", fake_serialized)
+    # The batched YAML read returns the MV's parsed definition; the route derives
+    # both the governed chip (a measure) AND the internals (source/joins) from it.
     monkeypatch.setattr(
-        auto_optimize, "_read_governed_measure_fields",
-        lambda space_data: [_governed("order_count", "count(1)")],
+        auto_optimize, "_read_metric_view_yamls",
+        lambda space_data: {
+            "finance.sales.orders_metrics": {
+                "source": "finance.sales.orders",
+                "measures": [{"name": "order_count", "expr": "count(1)"}],
+            }
+        },
     )
     monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
 

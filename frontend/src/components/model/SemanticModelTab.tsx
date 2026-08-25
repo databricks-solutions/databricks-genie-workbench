@@ -108,7 +108,22 @@ function GovernanceLadder({ counts }: { counts: Record<MvGovernance, number> }) 
   )
 }
 
-export function NodeDetail({ node, proposals }: { node: SemanticGraphNode; proposals: MvProposal[] }) {
+// Curator inset (Prompt 12e / MV-D33): the interesting facts about the selected
+// artifact the graph itself can't carry. For a metric view: the tables in its
+// definition (the `uses`-edge members) or, when its YAML could not be read, the
+// honest "definition unavailable". For a table: which metric views source it
+// (reverse `uses`) — the reuse/impact signal a curator needs before touching it.
+export function NodeDetail({
+  node,
+  proposals,
+  nodes = [],
+  edges = [],
+}: {
+  node: SemanticGraphNode
+  proposals: MvProposal[]
+  nodes?: SemanticGraphNode[]
+  edges?: SemanticGraphEdge[]
+}) {
   const match = proposals.find((p) => p.proposed_object && shortName(p.proposed_object) === node.label)
   const evidence = match?.evidence ?? null
   const recurrence = evidence && typeof evidence.recurrence_count === "number" ? evidence.recurrence_count : null
@@ -116,6 +131,13 @@ export function NodeDetail({ node, proposals }: { node: SemanticGraphNode; propo
   const sourceTables = evidence && Array.isArray(evidence.source_tables) ? (evidence.source_tables as string[]) : []
   const conflicts = Array.isArray(match?.conflicts) ? match!.conflicts! : []
   const g = node.kind === "measure" && node.governance ? GOVERNANCE[node.governance] : null
+
+  const labelOf = (id: string) => nodes.find((n) => n.id === id)?.label ?? shortName(id)
+  // Member tables of a selected MV (uses-edge targets) and, for a table, the MVs
+  // that use it (reverse). Deterministic order (edge order).
+  const memberTables = node.kind === "metric_view" ? edges.filter((e) => e.kind === "uses" && e.from === node.id).map((e) => labelOf(e.to)) : []
+  const usedByMvs = node.kind === "table" ? edges.filter((e) => e.kind === "uses" && e.to === node.id).map((e) => labelOf(e.from)) : []
+  const defUnavailable = node.kind === "metric_view" && !node.proposed && node.definition_available === false
 
   return (
     <div className="space-y-2 rounded-lg border border-default bg-elevated p-3">
@@ -127,6 +149,15 @@ export function NodeDetail({ node, proposals }: { node: SemanticGraphNode; propo
       <dl className="space-y-1 text-xs text-muted">
         {node.origin && (
           <div className="flex gap-2"><dt className="text-secondary">origin</dt><dd>{node.origin}</dd></div>
+        )}
+        {defUnavailable && (
+          <div className="flex items-center gap-2 text-[var(--color-warning)]"><AlertTriangle className="h-3 w-3" />definition unavailable — its YAML could not be read, so no source or joins are shown</div>
+        )}
+        {memberTables.length > 0 && (
+          <div className="flex gap-2"><dt className="text-secondary">tables used</dt><dd className="font-mono">{memberTables.join(", ")}</dd></div>
+        )}
+        {usedByMvs.length > 0 && (
+          <div className="flex gap-2"><dt className="text-secondary">used by</dt><dd className="font-mono">{usedByMvs.join(", ")}{usedByMvs.length > 1 ? " — shared, changes ripple" : ""}</dd></div>
         )}
         {recurrence != null && (
           <div className="flex gap-2"><dt className="text-secondary">recurrence</dt><dd>{recurrence} occurrences</dd></div>
@@ -213,7 +244,7 @@ export function SemanticModelView({
             ) : (
               <>
                 <SemanticGraph nodes={rendered.nodes} edges={rendered.edges} selectedId={selectedId} onSelectNode={(n) => setSelectedId(n.id)} />
-                {selectedNode && <NodeDetail node={selectedNode} proposals={graph.proposals} />}
+                {selectedNode && <NodeDetail node={selectedNode} proposals={graph.proposals} nodes={rendered.nodes} edges={rendered.edges} />}
               </>
             )}
           </>

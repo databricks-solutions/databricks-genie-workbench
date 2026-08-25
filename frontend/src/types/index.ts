@@ -1188,16 +1188,24 @@ export interface SemanticGraphNode {
   proposed?: boolean
   coverage?: number | null
   benchmark_question_ids?: string[] | null
+  // Prompt 12e / MV-D33 (metric_view nodes only). true = the MV's YAML was read
+  // and parsed, so its `uses` arrows and member tables are proven; false = the
+  // read failed, the node renders "definition unavailable" with no arrows;
+  // null/undefined = non-MV or no read attempted. Additive.
+  definition_available?: boolean | null
 }
 
 // join edges carry the decoded ON predicate, relationship, and SCD2 flag;
 // membership ties a measure to its MV; replaces is the client overlay's dashed
 // "tables freed" edge. weight (Prompt 12b) is the curated-SQL traversal count on
 // join edges — ADDITIVE, absent on a lens-free response.
+// uses (Prompt 12e / MV-D33) links a metric view to a table it sources — the
+// proven at-rest arrow and the member set the select-time boundary wraps;
+// emitted ONLY for an MV whose YAML parsed (arrows require proof).
 export interface SemanticGraphEdge {
   from: string
   to: string
-  kind: "join" | "membership" | "replaces"
+  kind: "join" | "membership" | "replaces" | "uses"
   on?: string | null
   relationship?: string | null
   scd2?: boolean

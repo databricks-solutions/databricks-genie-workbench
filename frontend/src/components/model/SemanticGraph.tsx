@@ -419,6 +419,134 @@ export function focusSet(
   return keep
 }
 
+// ── Prompt 12e / MV-D33: the metric view as a semantic model ─────────────────
+// A metric view is not a leaf — it sources a fact and joins dimensions. The
+// server emits a `uses` edge (MV → each member table) for every MV whose YAML
+// parsed; these are the at-rest arrows AND the member set the select-time
+// boundary wraps. An MV with definition_available === false emitted none
+// (unreadable is unproven), so everything below is empty for it and it draws no
+// arrows. All pure functions of (nodes, edges, placed, selection, offsets).
+
+// The member tables an MV uses — the `uses`-edge targets. Deterministic order.
+export function memberTableIds(edges: SemanticGraphEdge[], mvId: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const e of edges) {
+    if (e.kind === "uses" && e.from === mvId && !seen.has(e.to)) {
+      seen.add(e.to)
+      out.push(e.to)
+    }
+  }
+  return out
+}
+
+// Tables in no metric view (no incoming `uses` edge) — the unmodeled region the
+// governance gap is made visible through (MV-D33). Only meaningful when there IS
+// membership to contrast against: with NO `uses` edges anywhere (no MV read /
+// no MV at all) membership is unknown, so we claim nothing rather than tagging
+// every table "no metric view". Pure.
+export function unmodeledTableIds(nodes: SemanticGraphNode[], edges: SemanticGraphEdge[]): Set<string> {
+  const used = new Set<string>()
+  for (const e of edges) if (e.kind === "uses") used.add(e.to)
+  const out = new Set<string>()
+  if (used.size === 0) return out
+  for (const n of nodes) if (n.kind === "table" && !used.has(n.id)) out.add(n.id)
+  return out
+}
+
+const HULL_PAD = 12
+
+function unionBox(boxes: CardBox[]): CardBox {
+  const x = Math.min(...boxes.map((b) => b.x))
+  const y = Math.min(...boxes.map((b) => b.y))
+  const right = Math.max(...boxes.map((b) => b.x + b.w))
+  const bottom = Math.max(...boxes.map((b) => b.y + b.h))
+  return { x, y, w: right - x, h: bottom - y }
+}
+
+function boxesOverlap(a: CardBox, b: CardBox): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+// The select-time boundary around an MV's member tables. HULL IS THE NORM, the
+// clean RECT is the lucky case (reviewer watch-item): a single enclosing
+// rectangle is only honest when it contains ONLY member boxes — a dim shared by
+// several MVs cannot be home-placed adjacent to all their member sets, so a
+// bounding rect routinely swallows a foreign table. When it would, we fall back
+// to a member-hull outline (each member box outlined individually), which never
+// encloses a foreigner. This is a placement/geometry rule, never a runtime
+// solver. Pure function of the placed boxes.
+export function memberBoundary(
+  memberBoxes: CardBox[],
+  otherBoxes: CardBox[],
+): { kind: "rect" | "hull"; rects: CardBox[] } {
+  if (memberBoxes.length === 0) return { kind: "hull", rects: [] }
+  const bounding = unionBox(memberBoxes)
+  const padded = { x: bounding.x - HULL_PAD, y: bounding.y - HULL_PAD, w: bounding.w + 2 * HULL_PAD, h: bounding.h + 2 * HULL_PAD }
+  const swallowsForeigner = otherBoxes.some((o) => boxesOverlap(padded, o))
+  if (!swallowsForeigner) return { kind: "rect", rects: [padded] }
+  // Hull: outline each member box on its own — no foreign table inside.
+  return {
+    kind: "hull",
+    rects: memberBoxes.map((b) => ({ x: b.x - HULL_PAD / 2, y: b.y - HULL_PAD / 2, w: b.w + HULL_PAD, h: b.h + HULL_PAD })),
+  }
+}
+
+// Impact (downstream blast radius, §4): what breaks if the selected TABLE
+// changes — the MVs that source it (`uses`, reversed: table → its MVs) and the
+// measures those MVs own (`membership`, reversed: MV → its measures). Lineage
+// (focusSet) is the both-direction neighborhood; impact is one-directional and
+// transitive. A selected MV/measure anchors on its own card. Pure.
+export function impactSet(
+  cards: GraphCard[],
+  edges: SemanticGraphEdge[],
+  selectedId: string | null | undefined,
+): Set<string> | null {
+  if (!selectedId) return null
+  const nodeToCard = new Map<string, string>()
+  for (const c of cards) {
+    if (c.node) nodeToCard.set(c.id, c.id)
+    for (const m of [...c.measures, ...c.unnamedMeasures]) nodeToCard.set(m.id, c.id)
+  }
+  const anchor = nodeToCard.get(selectedId)
+  if (!anchor) return null
+  // Downstream adjacency: uses (table depends-on ← MV) means MV is downstream of
+  // its tables, so traverse table → MV; membership (measure → MV) means the
+  // measure is downstream of its MV, so traverse MV → measure.
+  const downstream = new Map<string, string[]>()
+  const addEdge = (from: string, to: string) => {
+    const list = downstream.get(from) ?? []
+    list.push(to)
+    downstream.set(from, list)
+  }
+  for (const e of edges) {
+    const from = nodeToCard.get(e.from)
+    const to = nodeToCard.get(e.to)
+    if (from === undefined || to === undefined || from === to) continue
+    if (e.kind === "uses") addEdge(to, from) // table → MV
+    if (e.kind === "membership") addEdge(to, from) // MV → measure
+  }
+  const keep = new Set<string>([anchor])
+  const stack = [anchor]
+  while (stack.length) {
+    const cur = stack.pop()!
+    for (const next of downstream.get(cur) ?? []) {
+      if (!keep.has(next)) {
+        keep.add(next)
+        stack.push(next)
+      }
+    }
+  }
+  return keep
+}
+
+// Session-only drag (§7): a card's offset is added to its placed box. Not
+// persisted, cleared by "Reset layout", never part of the diff seed. Pure.
+export function applyDragOffset(box: CardBox, offset: { dx: number; dy: number } | undefined): CardBox {
+  if (!offset) return box
+  return { ...box, x: box.x + offset.dx, y: box.y + offset.dy }
+}
+
 function abbreviate(text: string, max = 28): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
@@ -491,6 +619,24 @@ function EdgeView({
   }
   if (edge.kind === "membership") {
     return <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="1.5" />
+  }
+
+  // uses (12e / MV-D33): the proven at-rest arrow from a metric view to a table
+  // it sources. Subtle by default (it is at-rest scaffolding, not the join
+  // story); brightens when its MV or table is selected/focused (active).
+  if (edge.kind === "uses") {
+    return (
+      <path
+        d={path}
+        fill="none"
+        stroke="var(--color-accent)"
+        strokeWidth={active ? 1.75 : 1}
+        strokeDasharray="1 4"
+        strokeLinecap="round"
+        opacity={active ? 0.9 : 0.4}
+        markerEnd="url(#mv-uses-arrow)"
+      />
+    )
   }
 
   // join — declutter: a compact relationship GLYPH (12d finding 3) + SCD2 at
@@ -578,14 +724,20 @@ function CardView({
   selectedId,
   dim,
   searchTerm,
+  unmodeled,
+  draggable,
   onSelect,
+  onCardPointerDown,
 }: {
   placed: PlacedCard
   collapsed: boolean
   selectedId: string | null | undefined
   dim: boolean
   searchTerm: string
+  unmodeled: boolean
+  draggable: boolean
   onSelect: (n: SemanticGraphNode) => void
+  onCardPointerDown: (cardId: string, e: React.PointerEvent) => void
 }) {
   const { card, box } = placed
   const { x, y, w, h } = box
@@ -593,14 +745,23 @@ function CardView({
   const stroke = selfSelected ? "var(--color-accent)" : undefined
   const selWidth = selfSelected ? 2 : 1.5
   const opacity = dim ? 0.3 : 1
+  // A selected card is draggable (§7) — spread the canvas to create room. The
+  // grab cursor advertises it; the actual offset is session-only.
+  const pointerDown = (e: React.PointerEvent) => onCardPointerDown(card.id, e)
+  const dragCursor = draggable ? "grab" : undefined
 
   if (card.kind === "table") {
     const clickable = card.node
     return (
-      <g opacity={opacity} onClick={() => clickable && onSelect(clickable)} style={{ cursor: clickable ? "pointer" : "default" }}>
-        <title>{card.label}</title>
+      <g opacity={opacity} onClick={() => clickable && onSelect(clickable)} onPointerDown={pointerDown} style={{ cursor: dragCursor ?? (clickable ? "pointer" : "default") }}>
+        <title>{unmodeled ? `${card.label} — in no metric view` : card.label}</title>
         <rect x={x} y={y} width={w} height={h} rx="6" fill="var(--bg-surface)" stroke={stroke ?? "var(--border-color-strong)"} strokeWidth={selWidth} strokeDasharray={card.coverage === 0 ? "4 3" : undefined} />
-        <text x={x + w / 2} y={y + 27} textAnchor="middle" className="fill-[var(--text-secondary)]" fontSize="10">{abbreviate(card.label, 22)}</text>
+        <text x={x + w / 2} y={y + (unmodeled ? 22 : 27)} textAnchor="middle" className="fill-[var(--text-secondary)]" fontSize="10">{abbreviate(card.label, 22)}</text>
+        {/* Prompt 12e / MV-D33: the unmodeled region — a table in no metric view.
+            The governance gap made visible, in words not just hue. */}
+        {unmodeled && (
+          <text x={x + w / 2} y={y + 34} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="7.5" fontStyle="italic">no metric view</text>
+        )}
         <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} />
       </g>
     )
@@ -613,17 +774,22 @@ function CardView({
   // The concept count is the TOTAL (chipped + unnamed) so the subtitle never
   // understates the card by the measures we declined to chip (12d finding 1).
   const conceptCount = card.measures.length + card.unnamedMeasures.length
+  // Prompt 12e / MV-D33: an MV whose YAML could not be read renders "definition
+  // unavailable" (and drew no arrows) — unreadable is unproven.
+  const defUnavailable = isMv && card.node?.definition_available === false
   const subtitle = isMv
     ? card.proposed
       ? "proposed metric view"
-      : "metric view"
+      : defUnavailable
+        ? "definition unavailable"
+        : "metric view"
     : `${conceptCount} concept${conceptCount === 1 ? "" : "s"}`
   const clickableHeader = card.node
   const hidden = collapsed
   return (
     <g opacity={opacity}>
-      <g onClick={() => clickableHeader && onSelect(clickableHeader)} style={{ cursor: clickableHeader ? "pointer" : "default" }}>
-        <title>{card.proposed ? `${card.label} — proposed metric view` : card.label}</title>
+      <g onClick={() => clickableHeader && onSelect(clickableHeader)} onPointerDown={pointerDown} style={{ cursor: dragCursor ?? (clickableHeader ? "pointer" : "default") }}>
+        <title>{card.proposed ? `${card.label} — proposed metric view` : defUnavailable ? `${card.label} — definition unavailable` : card.label}</title>
         <rect x={x} y={y} width={w} height={h} rx="8"
           fill={isMv ? "var(--color-accent)" : "var(--bg-surface)"} opacity={isMv ? (card.proposed ? 0.1 : 0.15) : 1}
           stroke={stroke ?? (isMv ? "var(--color-accent)" : "var(--border-color-strong)")} strokeWidth={selWidth}
@@ -691,6 +857,12 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 })
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+  // Prompt 12e / MV-D33 interaction state: focus mode (Lineage = both-direction
+  // 1-hop neighborhood; Impact = downstream blast radius) and session-only card
+  // drag offsets (spread the canvas; not persisted, cleared by Reset layout).
+  const [mode, setMode] = useState<"lineage" | "impact">("lineage")
+  const [offsets, setOffsets] = useState<Record<string, { dx: number; dy: number }>>({})
+  const cardDrag = useRef<{ id: string; x: number; y: number; dx0: number; dy0: number; moved: boolean } | null>(null)
 
   // Threshold is derived from the measured viewport (§9); the SSR/first-paint
   // render uses the 12 fallback until the effect below measures the box.
@@ -698,9 +870,41 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const collapsible = tallestColumn > threshold
   const collapsed = collapsible && !expandAll
 
-  const { placed, width, height } = useMemo(() => layoutCards(cards, collapsed), [cards, collapsed])
+  const { placed: placedBase, width, height } = useMemo(() => layoutCards(cards, collapsed), [cards, collapsed])
 
-  const highlight = useMemo(() => focusSet(cards, edges, selectedId), [cards, edges, selectedId])
+  // Session-only drag offsets (§7) applied on top of the deterministic home
+  // layout. With no offsets this is byte-identical to the layout, so the home
+  // layout and the diff seed are untouched — drag is honest interaction state.
+  const placed = useMemo(() => {
+    if (Object.keys(offsets).length === 0) return placedBase
+    const m = new Map<string, PlacedCard>()
+    for (const [id, pc] of placedBase) m.set(id, { card: pc.card, box: applyDragOffset(pc.box, offsets[id]) })
+    return m
+  }, [placedBase, offsets])
+
+  // Focus set depends on the mode: Lineage (both directions) vs Impact
+  // (downstream only). Both are pure functions of the selection.
+  const highlight = useMemo(
+    () => (mode === "impact" ? impactSet(cards, edges, selectedId) : focusSet(cards, edges, selectedId)),
+    [mode, cards, edges, selectedId],
+  )
+
+  // Tables in no metric view — the unmodeled region cue (MV-D33).
+  const unmodeled = useMemo(() => unmodeledTableIds(nodes, edges), [nodes, edges])
+
+  // The select-time boundary: when a metric view is selected, wrap the tables it
+  // uses (its `uses`-edge members). Hull is the norm, rect the lucky case.
+  const boundary = useMemo(() => {
+    if (!selectedId) return null
+    const sel = cards.find((c) => c.id === selectedId && c.kind === "metric_view")
+    if (!sel) return null
+    const memberIds = memberTableIds(edges, selectedId)
+    const memberBoxes = memberIds.map((id) => placed.get(id)?.box).filter((b): b is CardBox => !!b)
+    if (memberBoxes.length === 0) return null
+    const memberSet = new Set(memberIds)
+    const others = [...placed.values()].filter((p) => p.card.id !== selectedId && !memberSet.has(p.card.id)).map((p) => p.box)
+    return { ...memberBoundary(memberBoxes, others), mvLabel: sel.label }
+  }, [selectedId, cards, edges, placed])
 
   // Resolve each edge's endpoint cards (a measure endpoint anchors on its owning
   // card), then distribute the fan-out across each card's side (12d finding 4).
@@ -767,14 +971,35 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
     zoomBy(e.deltaY < 0 ? 1.1 : 0.9)
   }
   const onPointerDown = (e: React.PointerEvent) => {
+    // Empty-background press starts a canvas pan (card presses are handled by
+    // onCardPointerDown, which stops propagation).
     drag.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty }
     setDragging(true)
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
   }
+  // A selected card's press begins a card drag (§7) instead of a pan. Deltas are
+  // divided by the zoom so the card tracks the pointer at any scale.
+  const onCardPointerDown = (cardId: string, e: React.PointerEvent) => {
+    if (cardId !== selectedId) return // only the selected box is draggable
+    e.stopPropagation()
+    const cur = offsets[cardId] ?? { dx: 0, dy: 0 }
+    cardDrag.current = { id: cardId, x: e.clientX, y: e.clientY, dx0: cur.dx, dy0: cur.dy, moved: false }
+    setDragging(true)
+    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+  }
   const onPointerMove = (e: React.PointerEvent) => {
-    // Read the ref ONCE into a local: a pointerup between this guard and the
-    // setView closure would otherwise null drag.current and crash the tab
-    // (the SemanticGraph.tsx:219 non-null-assertion race). No `!` in handlers.
+    // Card drag takes precedence over canvas pan. Read each ref ONCE into a local
+    // so a pointerup between the guard and the setState closure cannot null it
+    // mid-flight (the SemanticGraph.tsx pan null-race — no `!` in handlers).
+    const cd = cardDrag.current
+    if (cd) {
+      const delta = panDelta({ x: cd.x, y: cd.y }, e.clientX, e.clientY)
+      if (!delta) return
+      const s = view.scale || 1
+      cardDrag.current = { ...cd, moved: true }
+      setOffsets((o) => ({ ...o, [cd.id]: { dx: cd.dx0 + delta.dx / s, dy: cd.dy0 + delta.dy / s } }))
+      return
+    }
     const d = drag.current
     const delta = panDelta(d, e.clientX, e.clientY)
     if (!d || !delta) return
@@ -782,8 +1007,10 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   }
   const onPointerUp = () => {
     drag.current = null
+    cardDrag.current = null
     setDragging(false)
   }
+  const resetLayout = () => setOffsets({})
 
   const select = (n: SemanticGraphNode) => onSelectNode?.(n)
   const selectedCardDim = (cardId: string) => (highlight ? !highlight.has(cardId) : false)
@@ -815,6 +1042,17 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
             {expandAll ? "Collapse all" : "Expand all"}
           </button>
         )}
+        {/* Focus mode (§4 / MV-D33): Lineage traces both directions; Impact shows
+            the downstream blast radius of a selected table. */}
+        <div className="flex items-center overflow-hidden rounded border border-default bg-surface text-xs" role="group" aria-label="Focus mode">
+          <button type="button" aria-pressed={mode === "lineage"} onClick={() => setMode("lineage")} className={`px-2 py-1 ${mode === "lineage" ? "bg-[var(--color-accent)] text-white" : "text-muted hover:text-secondary"}`}>Lineage</button>
+          <button type="button" aria-pressed={mode === "impact"} onClick={() => setMode("impact")} className={`px-2 py-1 ${mode === "impact" ? "bg-[var(--color-accent)] text-white" : "text-muted hover:text-secondary"}`}>Impact</button>
+        </div>
+        {Object.keys(offsets).length > 0 && (
+          <button type="button" onClick={resetLayout} className="rounded border border-default bg-surface px-2 py-1 text-xs text-muted hover:text-secondary" title="Restore the default layout (clears your dragging)">
+            Reset layout
+          </button>
+        )}
       </div>
       <div className="absolute right-2 top-2 z-10 flex flex-col gap-1">
         <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.2)} className="rounded border border-default bg-surface p-1 text-muted hover:text-secondary"><Plus className="h-3.5 w-3.5" /></button>
@@ -838,11 +1076,31 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
           <marker id="mv-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
             <path d="M0,0 L6,3 L0,6 Z" className="fill-[var(--text-muted)]" />
           </marker>
+          <marker id="mv-uses-arrow" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto">
+            <path d="M0,0 L5,2.5 L0,5 Z" className="fill-[var(--color-accent)]" />
+          </marker>
         </defs>
         <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
           {COL_HEADERS.map((h, i) => (
             <text key={h} x={COL_X[i] + COL_W[i] / 2} y={20} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="9" fontWeight="600">{h}</text>
           ))}
+          {/* Select-time MV boundary (MV-D33): wraps the tables the selected MV
+              uses. Hull (per-member outlines) is the norm; a single rect is the
+              lucky case where no foreign table sits inside the bounding box. */}
+          {boundary && (
+            <g aria-label={`tables used by ${boundary.mvLabel}`} pointerEvents="none">
+              {boundary.rects.map((r, i) => (
+                <rect key={i} x={r.x} y={r.y} width={r.w} height={r.h} rx="10"
+                  fill="var(--color-accent)" fillOpacity="0.06"
+                  stroke="var(--color-accent)" strokeWidth="1.5" strokeDasharray="6 4" />
+              ))}
+              {boundary.rects[0] && (
+                <text x={boundary.rects[0].x + 10} y={boundary.rects[0].y - 5} className="fill-[var(--color-accent)]" fontSize="9" fontWeight="700">
+                  tables used by {abbreviate(boundary.mvLabel, 22)}
+                </text>
+              )}
+            </g>
+          )}
           {renderedEdges.map(({ index, edge, fromCardId, toCardId }) => {
             const ports = edgePorts.get(index)
             if (!ports) return null
@@ -870,7 +1128,10 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
               selectedId={selectedId}
               dim={selectedCardDim(p.card.id) || (search.trim() !== "" && !cardMatchesSearch(p.card))}
               searchTerm={search}
+              unmodeled={p.card.kind === "table" && unmodeled.has(p.card.id)}
+              draggable={p.card.node != null && p.card.id === selectedId}
               onSelect={select}
+              onCardPointerDown={onCardPointerDown}
             />
           ))}
         </g>
