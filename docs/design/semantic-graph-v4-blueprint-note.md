@@ -372,7 +372,10 @@ can't prove:
 2. **BFS join-distance** from the anchor(s); `rank = maxDist − dist` so the fact
    (dist 0) lands center-right at `maxDist` and dimensions fan **left** (snowflake
    dims further left). Islands sit in the outermost dim band.
-3. **Metric view + config** rank = `maxDist + 1` (one column right of the fact).
+3. **Metric views** rank = `maxDist + 1` (one column right of the fact); the
+   **Space-config** bucket gets its OWN column at `maxDist + 2` (one further
+   right), headed "Space config", so the loose-measure/config surface reads as a
+   distinct governance column rather than another metric view.
 
 **Headers follow the bands** but stay honest: "Dimensions · Fact · source ·
 Metric view · measures" **only when a role was proven**; unknown-role models keep
@@ -385,6 +388,22 @@ rank** and tracks which physical end is the **many** side, so the **crow's-foot
 always lands on the fact** and the single "1" tick on the dimension, regardless of
 which column each ended up in. Port-fanning and channelization key on the physical
 left/right node, so routing (§5.10 hops/bridges) is unchanged.
+
+The **many end is derived from the declared relationship**, not author order:
+`many-to-one → from`, `one-to-many → to` (both render N:1 but the foot belongs on
+opposite ends), `one-to-one → 1:1` (twin bars, no foot). The adapter records this
+as `BlueprintJoin.manyEnd`; the crow's-foot glyph then points **toward the
+connector's midpoint** (`sign(midX − manyX)`) rather than a fixed left/right
+offset, which keeps the foot *on the line* in every orientation.
+
+**Intra-rank joins** (two co-anchor facts land in the *same* column) are the case
+that broke the naive left→right leg: `sx > dx` produced a backwards edge and
+stranded the foot in empty space. Those are detected (`rank[from] === rank[to]`)
+and routed as a **side bracket** — both ends attach to the same facing edge and
+bow into the adjacent gutter (leftmost column bows right, others bow left;
+multiple brackets in a column stagger). The midpoint-relative glyph direction then
+lands the foot on the bracket. Same-rank edges are excluded from gutter
+fanning/channelization/hops and carry their own geometry.
 
 **Shipped status.** The prototype shipped a `Fact-center` / `Source-left` toggle to
 compare the two layouts; **production keeps only Fact-center** — a fact-anchored
@@ -402,6 +421,28 @@ by mean neighbour y) is the natural follow-on to cut crossings (§8).
 (cleaner, one object). Breaking them into their own rightmost column would echo
 the OLAP-editor look and make measures independently scannable, at the cost of
 more nodes/edges — deferred unless the measures column needs to stand alone.
+
+**Viewport pan/zoom.** The scene renders inside a single `<g transform="translate
+(tx ty) scale(k)">`; the toolbar's Overview / Standard / Columns segmented control
+is *semantic* zoom (level of detail), while **scroll-to-zoom** (pivoting on the
+pointer) and **drag-the-background-to-pan** are the *viewport* transform, kept
+distinct. The transform is owned by `SemanticBlueprint` (not the canvas) so
+**Reset view** restores it in one action alongside the manual drag offsets and the
+selection. The default is identity (`translate(0 0) scale(1)`), so a static render
+stays byte-stable (§8). Node drag maps through the scene group's CTM (so a card
+tracks the pointer 1:1 at any zoom); background pan/zoom maps through the SVG's own
+CTM (viewBox space, where the translate/pivot are expressed). A click on empty
+canvas (press+release without movement) still clears the selection — a pan does
+not.
+
+**Classic canvas removed.** The `Classic` / `Blueprint` toggle is gone; the
+Blueprint is the only canvas. The classic-only surfaces it carried — the proposal
+**overlay** (ghost proposed-MV cards + "would govern" links) and the advisory's
+**"View in graph"** deep-link — retired with it: proposals now live only in the
+advisory list, and the Blueprint stays grounded (arrows require proof, §2), so it
+draws no speculative ghosts. `SemanticGraph`, `NodeDetail`, and `withOverlay` stay
+*exported* (their unit tests and the checked-in v7 fidelity frame still build from
+them), just no longer rendered by the live Model tab.
 
 ---
 
@@ -658,16 +699,27 @@ Every item is present in the north-star prototype and must ship (phase noted).
 - [x] Rank/band headers: semantic ("Dimensions · Fact · source · Metric view ·
       measures") only when a role is proven; neutral otherwise (§5.11).
 - [x] Node drag (per-card offsets, applied additively over the deterministic
-      layout) + Reset view (clears drag offsets and selection); light/dark parity.
+      layout) + Reset view (clears drag offsets, viewport pan/zoom, and selection);
+      light/dark parity.
+- [x] Viewport pan/zoom: scroll-to-zoom (pointer pivot) + drag-background-to-pan,
+      distinct from the semantic Overview/Standard/Columns bands; a scene
+      `<g transform>` owned by `SemanticBlueprint`; identity default (byte-stable).
 - [x] One relationship line per table pair — composite / redundant join_specs
       between the same two cards collapse into a single edge (`keyCount`), per
       ERD best practice, instead of stacking overlapping lines/labels.
+- [x] Classic canvas retired — Blueprint is the only Model-tab canvas; the
+      classic proposal overlay + "View in graph" deep-link retired with it
+      (proposals live in the advisory list). `SemanticGraph`/`NodeDetail`/
+      `withOverlay` stay exported for their unit tests + the v7 fidelity frame.
 
 **Linework (P1 → column-accurate in P2)**
 - [x] Orthogonal routing + rounded elbows; one line = one relationship.
 - [x] Crossing bridges (index-stable hop arcs).
-- [x] Crow's-foot cardinality, orientation-aware (foot on the many/fact end); full
-      `ON` predicate on select/hover.
+- [x] Crow's-foot cardinality, orientation-aware (foot on the many/fact end,
+      derived from the declared relationship via `manyEnd`, pointing toward the
+      connector midpoint); intra-rank (same-column) joins route as a side bracket
+      so the foot lands on the line, not stranded; full `ON` predicate on
+      select/hover.
 - [x] Port fanning + channelization for parallel edges.
 - [x] Columns LOD attaches to exact column ports on one `COL_TOP/COL_H/COL_PAD`
       band; join-key row highlight. (P1 uses `ON` leaf names client-side; P2 uses

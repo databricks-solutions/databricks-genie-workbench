@@ -15,6 +15,7 @@ import {
   layoutBoxes,
   measureIndex,
   nodeHeight,
+  rankLabel,
 } from "./blueprint/layout"
 import { computeHops, lineagePaths, resolveEdges, type ResolvedEdge } from "./blueprint/routing"
 import { cardinalityMarkers } from "./blueprint/cardinality"
@@ -187,6 +188,18 @@ describe("layout & zoom bands (§5.5)", () => {
   it("fact-center places dimensions to the left of the fact anchor (§5.12)", () => {
     const p = derivePlacement(m, "fact")
     expect(p.rank["cat.sch.fact_orders"]).toBeGreaterThan(p.rank["cat.sch.dim_user"])
+  })
+
+  it("gives Space config its own column right of the metric view column (§5.12)", () => {
+    const p = derivePlacement(m, "fact")
+    const cfg = m.nodes.find((n) => n.kind === "config")!
+    const mv = m.nodes.find((n) => n.kind === "mv")!
+    // fact < metric view < Space config, each in its own rank.
+    expect(p.rank[mv.id]).toBeGreaterThan(p.rank["cat.sch.fact_orders"])
+    expect(p.rank[cfg.id]).toBeGreaterThan(p.rank[mv.id])
+    // The config column carries its own header, not the metric-view one.
+    expect(rankLabel(m, p, p.rank[cfg.id])).toBe("Space config")
+    expect(rankLabel(m, p, p.rank[mv.id])).toBe("Metric view · measures")
   })
 
   it("node heights resolve per band: far < mid < near for a table with columns", () => {

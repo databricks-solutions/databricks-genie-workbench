@@ -33,7 +33,7 @@ export interface Box {
 export interface Placement {
   rank: Record<string, number>
   order: Record<string, number>
-  band: Record<number, "dim" | "fact" | "mv">
+  band: Record<number, "dim" | "fact" | "mv" | "config">
   rolesKnown: boolean
   mode: BlueprintLayoutMode
 }
@@ -124,9 +124,12 @@ export function derivePlacement(m: BlueprintModel, mode: BlueprintLayoutMode): P
     if (dist[t.id] === undefined) dist[t.id] = maxDist
   })
 
+  // Metric views sit one column right of the fact; the Space-config bucket (loose
+  // measures + config-only artifacts) gets its OWN column one further right, so it
+  // reads as a distinct governance surface rather than another metric view.
   const rank: Record<string, number> = {}
   tables.forEach((t) => (rank[t.id] = maxDist - dist[t.id]))
-  mvs.forEach((mv) => (rank[mv.id] = maxDist + 1))
+  mvs.forEach((mv) => (rank[mv.id] = mv.kind === "config" ? maxDist + 2 : maxDist + 1))
 
   const order: Record<string, number> = {}
   const byRank: Record<number, BlueprintNode[]> = {}
@@ -138,10 +141,11 @@ export function derivePlacement(m: BlueprintModel, mode: BlueprintLayoutMode): P
     list.forEach((n, i) => (order[n.id] = i))
   })
 
-  const band: Record<number, "dim" | "fact" | "mv"> = {}
+  const band: Record<number, "dim" | "fact" | "mv" | "config"> = {}
   for (const r of new Set(Object.values(rank))) {
     const inR = m.nodes.filter((n) => rank[n.id] === r)
-    if (inR.every((n) => n.kind !== "table")) band[r] = "mv"
+    if (inR.every((n) => n.kind === "config")) band[r] = "config"
+    else if (inR.every((n) => n.kind !== "table")) band[r] = "mv"
     else if (inR.some((n) => anchorSet.has(n.id))) band[r] = "fact"
     else band[r] = "dim"
   }
@@ -199,6 +203,7 @@ export function rankLabel(m: BlueprintModel, placement: Placement, r: number): s
     return r === tableRanks[0] ? "Tables" : "Joined tables"
   }
   const band = placement.band[r]
+  if (band === "config") return "Space config"
   if (band === "mv") return "Metric view · measures"
   if (!placement.rolesKnown) return band === "fact" ? "Tables" : "Related tables"
   return band === "fact" ? "Fact · source" : "Dimensions"
