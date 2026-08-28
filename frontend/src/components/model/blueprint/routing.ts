@@ -291,12 +291,30 @@ export function lineagePaths(
   } else {
     const node = byId[selected]
     if (!node || node.kind === "table") return []
-    mode = node.kind === "mv" ? "mv" : "measure"
     destBox = box[selected]
     dRank = placement.rank[selected]
-    const from = node.kind === "mv" ? (m.uses[selected] ?? []) : [...new Set(node.measures.flatMap((mm) => mm.src))]
-    srcs = from.filter((t) => box[t])
-    destYs = srcs.map((_, i) => (destBox as Box).y + (destBox as Box).h * ((i + 1) / (srcs.length + 1)))
+    if (node.kind === "mv") {
+      // A metric view shares ONE join tree, so its lineage is the MV → the member
+      // tables it uses, fanned across the card (dotted).
+      mode = "mv"
+      srcs = (m.uses[selected] ?? []).filter((t) => box[t])
+      destYs = srcs.map((_, i) => (destBox as Box).y + (destBox as Box).h * ((i + 1) / (srcs.length + 1)))
+    } else {
+      // Space config groups INDEPENDENT loose measures — they share no join tree.
+      // Draw one line per (measure, source table), anchored at that measure's own
+      // chip row, so relationships read per measure and never as an aggregate fan
+      // implying every measure touches every table (§5.10). Same table feeding two
+      // measures yields two distinct lines to two distinct rows — that is honest.
+      mode = "measure"
+      const pairs: { tid: string; dy: number }[] = []
+      node.measures.forEach((mm) => {
+        const cp = chipPos[`${node.id}::${mm.name}`]
+        const dy = cp ? cp.y : (destBox as Box).y + (destBox as Box).h / 2
+        mm.src.filter((t) => box[t]).forEach((tid) => pairs.push({ tid, dy }))
+      })
+      srcs = pairs.map((p) => p.tid)
+      destYs = pairs.map((p) => p.dy)
+    }
   }
   if (!srcs.length || !destBox) return []
 

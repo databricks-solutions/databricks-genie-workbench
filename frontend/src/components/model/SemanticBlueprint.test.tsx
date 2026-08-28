@@ -324,6 +324,31 @@ describe("lineage on select (§5.10)", () => {
     expect(paths.map((x) => x.srcId).sort()).toEqual(["cat.sch.dim_user", "cat.sch.fact_orders"])
   })
 
+  it("a selected Space-config CARD draws PER-MEASURE lineage, not an aggregate fan", () => {
+    // aov derives fact_orders; repeat_rate derives dim_user. Selecting the card
+    // must draw one line per measure to that measure's OWN source (each anchored
+    // at its own chip row), never a single fan implying both use both tables.
+    const cfg = m.nodes.find((n) => n.kind === "config")!
+    const chipPos = {
+      [`${cfg.id}::aov`]: { x: box[cfg.id].x, y: 120 },
+      [`${cfg.id}::repeat_rate`]: { x: box[cfg.id].x, y: 150 },
+    }
+    const paths = lineagePaths(m, p, box, edges, cfg.id, chipPos)
+    expect(paths.every((x) => x.mode === "measure")).toBe(true)
+    expect(paths.map((x) => x.srcId).sort()).toEqual(["cat.sch.dim_user", "cat.sch.fact_orders"])
+    // aov's line lands on the aov row (y=120), repeat_rate's on its row (y=150).
+    const byTable = Object.fromEntries(paths.map((pth) => [pth.srcId, pth]))
+    expect(byTable["cat.sch.fact_orders"].d).toContain("120")
+    expect(byTable["cat.sch.dim_user"].d).toContain("150")
+  })
+
+  it("neighbourhood of the Space-config card keeps every measure's source table", () => {
+    const cfg = m.nodes.find((n) => n.kind === "config")!
+    const keep = neighbourhood(m, cfg.id)
+    expect(keep?.has("cat.sch.fact_orders")).toBe(true)
+    expect(keep?.has("cat.sch.dim_user")).toBe(true)
+  })
+
   it("neighbourhood of a measure is its parent + sources (focus+context)", () => {
     const keep = neighbourhood(m, "cat.sch.order_metrics::order_count")
     expect(keep?.has("cat.sch.order_metrics")).toBe(true)

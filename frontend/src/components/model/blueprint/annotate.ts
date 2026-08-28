@@ -6,7 +6,7 @@
  * the worst cold spot, and the palette map. Each callout is drawn iff its
  * backing data is present (§8) — nothing is invented.
  */
-import type { BlueprintGov, BlueprintModel, BlueprintTable } from "./model"
+import { shortName, type BlueprintGov, type BlueprintModel, type BlueprintTable } from "./model"
 import { measureIndex, nodeById, type Box } from "./layout"
 
 export interface HeadlineCounts {
@@ -40,7 +40,12 @@ export function neighbourhood(m: BlueprintModel, selected: string | null): Set<s
     if (j.from === selected) keep.add(j.to)
     if (j.to === selected) keep.add(j.from)
   }
-  if (byId[selected]?.kind === "mv") (m.uses[selected] ?? []).forEach((t) => keep.add(t))
+  const node = byId[selected]
+  if (node?.kind === "mv") (m.uses[selected] ?? []).forEach((t) => keep.add(t))
+  // A metric view or Space-config card keeps every source table its measures
+  // read, so selecting the card lights all its (per-measure) lineage instead of
+  // dimming the whole canvas down to just the card (§5.10).
+  if (node && node.kind !== "table") node.measures.forEach((mm) => mm.src.forEach((t) => keep.add(t)))
   for (const mv in m.uses) if (m.uses[mv].includes(selected)) keep.add(mv)
   return keep
 }
@@ -51,6 +56,16 @@ export function govColor(g: BlueprintGov): string {
 
 export function onStr(j: BlueprintModel["joins"][number]): string {
   return `${j.to}.${j.toCol} = ${j.from}.${j.fromCol}`
+}
+
+/**
+ * `ON` predicate for the detail inset, using SHORT table names
+ * (`dim_user.user_id = fact.user_id`). The fully-qualified form (`onStr`)
+ * overflows the two-column inset grid; the short form fits and, with wrapping,
+ * never bleeds into the adjacent measures column.
+ */
+export function onStrShort(j: BlueprintModel["joins"][number]): string {
+  return `${shortName(j.to)}.${j.toCol} = ${shortName(j.from)}.${j.fromCol}`
 }
 
 /** Bounding rect around every unmodeled table (§5.6), or null when none. */

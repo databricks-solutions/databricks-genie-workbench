@@ -16,6 +16,7 @@ import type { SemanticGraphEdge, SemanticGraphNode } from "@/types"
 import {
   fromSemanticGraph,
   shortName,
+  type BlueprintGov,
   type BlueprintModel,
   type BlueprintMv,
   type BlueprintTable,
@@ -38,7 +39,7 @@ import {
   govColor,
   headlineCounts,
   neighbourhood,
-  onStr,
+  onStrShort,
   rankInsights,
   unmodeledRegion,
   worstColdSpot,
@@ -77,6 +78,12 @@ export interface CanvasView {
 const IDENTITY_VIEW: CanvasView = { tx: 0, ty: 0, scale: 1 }
 const MIN_SCALE = 0.35
 const MAX_SCALE = 4
+// Wheel zoom sensitivity: scale factor per unit of wheel deltaY (before clamping).
+// Small enough that a trackpad feels gentle; the clamp caps a full mouse notch.
+const ZOOM_WHEEL_SENSITIVITY = 0.0012
+// Per-click zoom step for the +/- buttons (eased over ZOOM_BUTTON_MS).
+const ZOOM_BUTTON_STEP = 1.15
+const ZOOM_BUTTON_MS = 180
 
 interface CanvasState {
   model: BlueprintModel
@@ -241,11 +248,15 @@ export function BlueprintCanvas({ model, zoom, selected, layoutMode, onSelect, o
     panRef.current = null
   }
   // Wheel zoom pivots on the pointer: the scene point under the cursor stays put.
+  // The step is PROPORTIONAL to the gesture magnitude and clamped per event, so a
+  // trackpad's many small deltas glide gently and a mouse notch never jumps more
+  // than ~8% — smoother and less aggressive than a fixed 10% step.
   const onWheelZoom = (e: ReactWheelEvent) => {
     if (!onViewChange) return
     e.preventDefault()
     const k = view.scale
-    const k2 = Math.min(MAX_SCALE, Math.max(MIN_SCALE, k * (e.deltaY < 0 ? 1.1 : 0.9)))
+    const factor = Math.min(1.08, Math.max(0.92, Math.exp(-e.deltaY * ZOOM_WHEEL_SENSITIVITY)))
+    const k2 = Math.min(MAX_SCALE, Math.max(MIN_SCALE, k * factor))
     if (k2 === k) return
     const vp = clientToViewBox(e.clientX, e.clientY)
     onViewChange({
@@ -623,10 +634,30 @@ function Legend() {
 
 // ── Detail inset (mirrors NodeDetail — table / MV / measure / Space config) ──
 function InsetSection({ title, children }: { title: string; children: ReactNode }) {
+  // min-w-0 lets this cell shrink inside the two-column grid so long mono content
+  // (e.g. an ON predicate) wraps instead of overflowing into the next column.
   return (
-    <div>
+    <div className="min-w-0">
       <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">{title}</p>
       {children}
+    </div>
+  )
+}
+
+// A measure row for the detail inset: governance dot · name, with the defining
+// expression shown as a small wrapped code inset beneath the name (§4).
+function MeasureRow({ name, gov, expr }: { name: string; gov: BlueprintGov; expr?: string }) {
+  return (
+    <div className="mb-1.5">
+      <div className="flex items-center gap-1.5 font-mono text-[11px] text-secondary">
+        <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: govColor(gov) }} />
+        <span className="break-all">{name}</span>
+      </div>
+      {expr && (
+        <code className="mt-0.5 block break-all rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-muted">
+          {expr}
+        </code>
+      )}
     </div>
   )
 }
@@ -739,7 +770,7 @@ function DetailInset({ model, selected }: { model: BlueprintModel; selected: str
                     {shortName(j.from)} <span className="text-[var(--color-accent-light,var(--color-accent))]">→</span> {shortName(j.to)}
                     <Chip>{j.rel}</Chip>
                   </div>
-                  <div className="font-mono text-[11px] text-muted">ON {onStr(j)}</div>
+                  <div className="break-all font-mono text-[11px] text-muted">ON {onStrShort(j)}</div>
                 </div>
               ))}
             </InsetSection>
@@ -776,17 +807,14 @@ function DetailInset({ model, selected }: { model: BlueprintModel; selected: str
                     <span className="text-[var(--color-accent-light,var(--color-accent))]">└</span> {shortName(j.to)}
                     <Chip>{j.rel}</Chip>
                   </div>
-                  <div className="pl-4 font-mono text-[11px] text-muted">ON {onStr(j)}</div>
+                  <div className="break-all pl-4 font-mono text-[11px] text-muted">ON {onStrShort(j)}</div>
                 </div>
               ))}
             </InsetSection>
           )}
           <InsetSection title={`Measures (${mv.measures.length})`}>
             {mv.measures.map((mm) => (
-              <div key={mm.name} className="flex items-center gap-1.5 font-mono text-[11px] text-secondary">
-                <span className="inline-block h-2 w-2 rounded-full" style={{ background: govColor(mm.gov) }} />
-                {mm.name}
-              </div>
+              <MeasureRow key={mm.name} name={mm.name} gov={mm.gov} expr={mm.expr} />
             ))}
           </InsetSection>
           {(mv.mv_filter || mv.materialization) && (
@@ -819,10 +847,7 @@ function DetailInset({ model, selected }: { model: BlueprintModel; selected: str
         <>
           <InsetSection title={`Measures (${cfg.measures.length})`}>
             {cfg.measures.map((mm) => (
-              <div key={mm.name} className="flex items-center gap-1.5 font-mono text-[11px] text-secondary">
-                <span className="inline-block h-2 w-2 rounded-full" style={{ background: govColor(mm.gov) }} />
-                {mm.name}
-              </div>
+              <MeasureRow key={mm.name} name={mm.name} gov={mm.gov} expr={mm.expr} />
             ))}
           </InsetSection>
           <InsetSection title="Note">
@@ -1009,17 +1034,43 @@ export function SemanticBlueprint({ nodes, edges, label, candidates = [], onSeed
   const [offsets, setOffsets] = useState<Record<string, { dx: number; dy: number }>>({})
   // Viewport pan/zoom, owned here so Reset view can restore it (§5.1).
   const [view, setView] = useState<CanvasView>(IDENTITY_VIEW)
+  // rAF handle + a live mirror of the current scale, so a button zoom can ease
+  // from wherever the scale is now (including mid-tween) without a stale closure.
+  const rafRef = useRef<number | null>(null)
+  const scaleRef = useRef(view.scale)
+  useEffect(() => {
+    scaleRef.current = view.scale
+  }, [view.scale])
 
   const moveNode = (id: string, dx: number, dy: number) =>
     setOffsets((prev) => ({ ...prev, [id]: { dx, dy } }))
 
-  const zoomBy = (factor: number) =>
-    setView((v) => ({ ...v, scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, v.scale * factor)) }))
+  // Eased button zoom: tween the scale to the target over ZOOM_BUTTON_MS so a
+  // click glides instead of snapping. Pans mid-tween are preserved (we spread the
+  // latest view and only drive `scale`). Cancelled/superseded by the next click.
+  const tweenZoom = (factor: number) => {
+    const from = scaleRef.current
+    const target = Math.min(MAX_SCALE, Math.max(MIN_SCALE, from * factor))
+    if (Math.abs(target - from) < 1e-3) return
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+    const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now())
+    const t0 = now()
+    const tick = (t: number) => {
+      const p = Math.min(1, (t - t0) / ZOOM_BUTTON_MS)
+      const eased = 1 - Math.pow(1 - p, 3)
+      setView((v) => ({ ...v, scale: from + (target - from) * eased }))
+      rafRef.current = p < 1 ? requestAnimationFrame(tick) : null
+    }
+    rafRef.current = requestAnimationFrame(tick)
+  }
+
+  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current) }, [])
 
   // Reset view returns to the deterministic layout: drop every manual nudge,
   // recenter/zoom to the initial framing, and clear the selection / focus so the
   // canvas is exactly as first rendered.
   const resetView = () => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
     setOffsets({})
     setSelected(null)
     setView(IDENTITY_VIEW)
@@ -1076,7 +1127,7 @@ export function SemanticBlueprint({ nodes, edges, label, candidates = [], onSeed
             <button
               type="button"
               aria-label="Zoom out"
-              onClick={() => zoomBy(0.9)}
+              onClick={() => tweenZoom(1 / ZOOM_BUTTON_STEP)}
               className="px-2 py-1 text-secondary hover:bg-elevated"
             >
               −
@@ -1087,7 +1138,7 @@ export function SemanticBlueprint({ nodes, edges, label, candidates = [], onSeed
             <button
               type="button"
               aria-label="Zoom in"
-              onClick={() => zoomBy(1.1)}
+              onClick={() => tweenZoom(ZOOM_BUTTON_STEP)}
               className="px-2 py-1 text-secondary hover:bg-elevated"
             >
               +
