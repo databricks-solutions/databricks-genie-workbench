@@ -35,7 +35,7 @@ sync:
 artifacts:
   default:
     build: |
-      rm -f .build/genie_space_optimizer-*.whl && cd packages/genie-space-optimizer && uv run --with build python -m build --wheel -o ../../.build/ && cd ../.. && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl
+      rm -f .build/genie_space_optimizer-*.whl && cd packages/genie-space-optimizer && uv build --wheel -o ../../.build/ && cd ../.. && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl
 
 # ---------------------------------------------------------------------------
 # Resources
