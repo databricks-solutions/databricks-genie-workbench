@@ -127,6 +127,23 @@ describe("fromSemanticGraph adapter", () => {
     expect(fact && fact.kind === "table" && fact.cols.sort()).toEqual(["host_id", "is_current"])
   })
 
+  it("preserves the many side of a one-to-many join so the foot lands on the right end", () => {
+    // `many-to-one` and `one-to-many` both render N:1 but the crow's-foot belongs
+    // on OPPOSITE ends — the adapter must record which end is many.
+    const oneToMany: SemanticGraphResponse = {
+      space_id: "s",
+      proposals: [],
+      nodes: [
+        { id: "t.one", kind: "table", label: "one", col: 0, row: 0, role: "dim", coverage: 1 },
+        { id: "t.many", kind: "table", label: "many", col: 1, row: 0, role: "fact", coverage: 2 },
+      ],
+      edges: [{ from: "t.one", to: "t.many", kind: "join", on: "one.id = many.one_id", relationship: "one-to-many" }],
+    }
+    const mm = fromSemanticGraph(oneToMany)
+    expect(mm.joins[0].rel).toBe("N:1")
+    expect(mm.joins[0].manyEnd).toBe("to")
+  })
+
   it("dedupes an exact duplicate join_spec without inflating keyCount", () => {
     const dup: SemanticGraphResponse = {
       space_id: "s",
@@ -229,6 +246,36 @@ describe("linework: crow's-foot + crossing bridges (§5.3/§5.4)", () => {
     expect(markers.oneTick).not.toBe("")
   })
 
+  it("routes a same-rank (fact↔fact) join as a bracket with the foot ON the line", () => {
+    // Two facts are co-anchors → same rank → same column. A left→right gutter leg
+    // is degenerate here (sx>dx, foot stranded in empty space); it must route as a
+    // side bracket with both ends on the same facing edge and the crow's-foot
+    // pointing toward the connector's midpoint.
+    const twoFacts: SemanticGraphResponse = {
+      space_id: "s",
+      proposals: [],
+      nodes: [
+        { id: "t.f1", kind: "table", label: "f1", col: 0, row: 0, role: "fact", coverage: 2 },
+        { id: "t.f2", kind: "table", label: "f2", col: 0, row: 1, role: "fact", coverage: 2 },
+      ],
+      edges: [{ from: "t.f1", to: "t.f2", kind: "join", on: "f1.k = f2.k", relationship: "many-to-one" }],
+    }
+    const mm = fromSemanticGraph(twoFacts)
+    const p = derivePlacement(mm, "fact")
+    expect(p.rank["t.f1"]).toBe(p.rank["t.f2"]) // co-anchors share a column
+    const box = layoutBoxes(mm, p, "mid")
+    const edges = resolveEdges(mm, p, box, "mid")
+    expect(edges.length).toBe(1)
+    const e = edges[0]
+    expect(e.intra).toBe(true)
+    expect(e.sx).toBe(e.dx) // bracket: both ends on the same facing edge
+    // Foot apex points the same way as the connector's midpoint, so it lands ON
+    // the line rather than out beside the card.
+    const manyX = e.manyOnLeft ? e.sx : e.dx
+    const apexX = Number(cardinalityMarkers(e).crowfoot.split(" ")[1])
+    expect(Math.sign(apexX - manyX)).toBe(Math.sign(e.midX - manyX))
+  })
+
   it("computes an index-stable hop where one edge's trunk crosses another's leg", () => {
     // A has a long horizontal leg at y=50; B's vertical trunk (x=60, y 0→100)
     // crosses it in the interior → A hops over B.
@@ -296,6 +343,26 @@ describe("component render: determinism + arrows require proof (§2/§8)", () =>
   it("renders neutral TABLE for a role-less table, never a guessed FACT/DIM", () => {
     const html = renderToStaticMarkup(<Mid />)
     expect(html).toContain(">TABLE<")
+  })
+
+  it("wraps the scene in the pan/zoom transform; identity is the byte-stable default", () => {
+    const m = fromSemanticGraph(star)
+    const identity = renderToStaticMarkup(
+      <BlueprintCanvas model={m} zoom="mid" selected={null} layoutMode="fact" onSelect={() => {}} />,
+    )
+    expect(identity).toContain("translate(0 0) scale(1)")
+    const zoomed = renderToStaticMarkup(
+      <BlueprintCanvas
+        model={m}
+        zoom="mid"
+        selected={null}
+        layoutMode="fact"
+        onSelect={() => {}}
+        view={{ tx: 12, ty: -8, scale: 1.5 }}
+      />,
+    )
+    expect(zoomed).toContain("translate(12 -8) scale(1.5)")
+    expect(zoomed).not.toBe(identity)
   })
 
   it("additivity: an unknown future field on the response does not change the render", () => {

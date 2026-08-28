@@ -11,7 +11,7 @@
  * interactive band/layout/selection state. Consumes the live
  * `SemanticGraphResponse` through `fromSemanticGraph` — no new payload (§5.8).
  */
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from "react"
 import type { SemanticGraphEdge, SemanticGraphNode } from "@/types"
 import {
   fromSemanticGraph,
@@ -67,6 +67,17 @@ export interface SemanticBlueprintProps {
   initialSeededCount?: number
 }
 
+/** Viewport transform (pan + zoom) applied to the whole scene group. */
+export interface CanvasView {
+  tx: number
+  ty: number
+  scale: number
+}
+
+const IDENTITY_VIEW: CanvasView = { tx: 0, ty: 0, scale: 1 }
+const MIN_SCALE = 0.35
+const MAX_SCALE = 4
+
 interface CanvasState {
   model: BlueprintModel
   zoom: BlueprintZoom
@@ -83,6 +94,13 @@ interface CanvasState {
   offsets?: Record<string, { dx: number; dy: number }>
   /** Report a node's new absolute offset while dragging (identity → no drag). */
   onNodeMove?: (id: string, dx: number, dy: number) => void
+  /**
+   * Viewport pan/zoom transform. Absent → identity (byte-stable static render,
+   * §8); the interactive parent owns it so Reset view can restore it.
+   */
+  view?: CanvasView
+  /** Report a new viewport transform (absent → pan/zoom disabled). */
+  onViewChange?: (v: CanvasView) => void
 }
 
 // ── Toolbar: zoom bands · layout toggle · Reset view ─────────────────────────
@@ -140,17 +158,32 @@ function Headline({ model }: { model: BlueprintModel }) {
 }
 
 // ── SVG canvas — PURE given CanvasState ──────────────────────────────────────
-export function BlueprintCanvas({ model, zoom, selected, layoutMode, onSelect, overlay, offsets, onNodeMove }: CanvasState) {
+export function BlueprintCanvas({ model, zoom, selected, layoutMode, onSelect, overlay, offsets, onNodeMove, view: viewProp, onViewChange }: CanvasState) {
   const m = model
+  const view = viewProp ?? IDENTITY_VIEW
   const svgRef = useRef<SVGSVGElement | null>(null)
-  // Live drag bookkeeping — refs (not state) so a drag never re-renders per move
-  // beyond the offset update the parent owns.
+  const sceneRef = useRef<SVGGElement | null>(null)
+  // Live interaction bookkeeping — refs (not state) so a drag/pan never
+  // re-renders per move beyond the offset/view update the parent owns.
   const dragRef = useRef<{ id: string; startX: number; startY: number; baseDx: number; baseDy: number; moved: boolean } | null>(null)
+  const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+  const bgPressRef = useRef(false)
+  const panMovedRef = useRef(false)
   const suppressClickRef = useRef(false)
 
-  // Map a client point into SVG user space through the live screen CTM, so drag
-  // deltas are correct regardless of the responsive scale of the viewBox.
-  const clientToSvg = (cx: number, cy: number): { x: number; y: number } => {
+  // Client point → scene-group local coords (through the group's CTM, which
+  // already folds in the pan/zoom transform), so a node drag tracks the pointer
+  // 1:1 at any zoom.
+  const clientToScene = (cx: number, cy: number): { x: number; y: number } => {
+    const g = sceneRef.current
+    const ctm = g?.getScreenCTM?.()
+    if (!g || !ctm || typeof DOMPoint === "undefined") return { x: cx, y: cy }
+    const p = new DOMPoint(cx, cy).matrixTransform(ctm.inverse())
+    return { x: p.x, y: p.y }
+  }
+  // Client point → viewBox user space (the SVG's own CTM, independent of the
+  // pan/zoom transform), where the pan translation and zoom pivot are expressed.
+  const clientToViewBox = (cx: number, cy: number): { x: number; y: number } => {
     const svg = svgRef.current
     const ctm = svg?.getScreenCTM?.()
     if (!svg || !ctm || typeof DOMPoint === "undefined") return { x: cx, y: cy }
@@ -160,27 +193,70 @@ export function BlueprintCanvas({ model, zoom, selected, layoutMode, onSelect, o
 
   const beginDrag = (id: string) => (e: ReactPointerEvent) => {
     if (!onNodeMove) return
-    e.stopPropagation()
-    const p = clientToSvg(e.clientX, e.clientY)
+    e.stopPropagation() // a card press is a drag, never a canvas pan
+    const p = clientToScene(e.clientX, e.clientY)
     const cur = offsets?.[id] ?? { dx: 0, dy: 0 }
     dragRef.current = { id, startX: p.x, startY: p.y, baseDx: cur.dx, baseDy: cur.dy, moved: false }
     ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
   }
-  const onDragMove = (e: ReactPointerEvent) => {
-    const d = dragRef.current
-    if (!d || !onNodeMove) return
-    const p = clientToSvg(e.clientX, e.clientY)
-    if (Math.abs(p.x - d.startX) > 2 || Math.abs(p.y - d.startY) > 2) d.moved = true
-    onNodeMove(d.id, d.baseDx + (p.x - d.startX), d.baseDy + (p.y - d.startY))
+  // A background press starts a canvas pan; a release without movement clears the
+  // selection (the reference's "click empty canvas: reset").
+  const beginPan = (e: ReactPointerEvent) => {
+    if (!onViewChange) return
+    bgPressRef.current = e.target === svgRef.current
+    panMovedRef.current = false
+    const p = clientToViewBox(e.clientX, e.clientY)
+    panRef.current = { x: p.x, y: p.y, tx: view.tx, ty: view.ty }
+    svgRef.current?.setPointerCapture?.(e.pointerId)
   }
-  const endDrag = () => {
+  // Move/up are owned by the SVG so a pointer that leaves the card mid-drag (or
+  // pans past the edge) keeps tracking. Node drag takes precedence over pan.
+  const onSurfaceMove = (e: ReactPointerEvent) => {
     const d = dragRef.current
-    if (d?.moved) suppressClickRef.current = true
-    dragRef.current = null
+    if (d && onNodeMove) {
+      const p = clientToScene(e.clientX, e.clientY)
+      if (Math.abs(p.x - d.startX) > 2 || Math.abs(p.y - d.startY) > 2) d.moved = true
+      onNodeMove(d.id, d.baseDx + (p.x - d.startX), d.baseDy + (p.y - d.startY))
+      return
+    }
+    const pan = panRef.current
+    if (!pan || !onViewChange) return
+    const p = clientToViewBox(e.clientX, e.clientY)
+    const dx = p.x - pan.x
+    const dy = p.y - pan.y
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) panMovedRef.current = true
+    onViewChange({ tx: pan.tx + dx, ty: pan.ty + dy, scale: view.scale })
+  }
+  const onSurfaceUp = () => {
+    const d = dragRef.current
+    if (d) {
+      if (d.moved) suppressClickRef.current = true
+      dragRef.current = null
+      return
+    }
+    // Empty-canvas click (no pan) clears selection; a pan does not.
+    if (bgPressRef.current && !panMovedRef.current && selected) onSelect(null)
+    bgPressRef.current = false
+    panMovedRef.current = false
+    panRef.current = null
+  }
+  // Wheel zoom pivots on the pointer: the scene point under the cursor stays put.
+  const onWheelZoom = (e: ReactWheelEvent) => {
+    if (!onViewChange) return
+    e.preventDefault()
+    const k = view.scale
+    const k2 = Math.min(MAX_SCALE, Math.max(MIN_SCALE, k * (e.deltaY < 0 ? 1.1 : 0.9)))
+    if (k2 === k) return
+    const vp = clientToViewBox(e.clientX, e.clientY)
+    onViewChange({
+      scale: k2,
+      tx: vp.x - (vp.x - view.tx) * (k2 / k),
+      ty: vp.y - (vp.y - view.ty) * (k2 / k),
+    })
   }
   const dragProps = (id: string) =>
     onNodeMove
-      ? { onPointerDown: beginDrag(id), onPointerMove: onDragMove, onPointerUp: endDrag, style: { cursor: "grab", touchAction: "none" as const } }
+      ? { onPointerDown: beginDrag(id), style: { cursor: "grab", touchAction: "none" as const } }
       : { style: { cursor: "pointer" } }
 
   if (!m.nodes.length) {
@@ -486,21 +562,34 @@ export function BlueprintCanvas({ model, zoom, selected, layoutMode, onSelect, o
     )
   }
 
-  const maxX = Math.max(...m.nodes.map((n) => box[n.id].x + box[n.id].w)) + 40
-  const maxY = Math.max(...m.nodes.map((n) => box[n.id].y + box[n.id].h)) + 96
+  // Content extent includes the edge geometry, not just the cards: an intra-rank
+  // bracket bows into the gutter beside its column, so framing on boxes alone
+  // would clip it. Allow a negative left edge for left-bowing brackets.
+  const nodeBoxes = m.nodes.map((n) => box[n.id])
+  const edgeXs = resolved.flatMap((e) => [e.sx, e.dx, e.midX])
+  const minX = Math.min(0, ...nodeBoxes.map((b) => b.x), ...edgeXs) - 16
+  const maxX = Math.max(...nodeBoxes.map((b) => b.x + b.w), ...edgeXs) + 40
+  const maxY = Math.max(...nodeBoxes.map((b) => b.y + b.h)) + 96
+  const vbW = Math.max(720, maxX - minX)
+  const vbH = Math.max(360, maxY)
+  const interactive = !!onViewChange || !!onNodeMove
   return (
     <svg
       ref={svgRef}
-      viewBox={`0 0 ${Math.max(720, maxX)} ${Math.max(360, maxY)}`}
+      viewBox={`${minX} 0 ${vbW} ${vbH}`}
       className="w-full rounded-lg border border-default bg-sunken"
       role="img"
       aria-label="Semantic model blueprint"
-      onClick={() => onSelect(null)}
-      onPointerMove={onNodeMove ? onDragMove : undefined}
-      onPointerUp={onNodeMove ? endDrag : undefined}
-      onPointerLeave={onNodeMove ? endDrag : undefined}
+      onWheel={onViewChange ? onWheelZoom : undefined}
+      onPointerDown={onViewChange ? beginPan : undefined}
+      onPointerMove={interactive ? onSurfaceMove : undefined}
+      onPointerUp={interactive ? onSurfaceUp : undefined}
+      onPointerLeave={interactive ? onSurfaceUp : undefined}
+      style={interactive ? { touchAction: "none" } : undefined}
     >
-      {parts}
+      <g ref={sceneRef} transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
+        {parts}
+      </g>
     </svg>
   )
 }
@@ -918,15 +1007,22 @@ export function SemanticBlueprint({ nodes, edges, label, candidates = [], onSeed
   const [seededCount, setSeededCount] = useState(initialSeededCount)
   // Manual drag nudges (SVG units) keyed by node id; Reset view clears them.
   const [offsets, setOffsets] = useState<Record<string, { dx: number; dy: number }>>({})
+  // Viewport pan/zoom, owned here so Reset view can restore it (§5.1).
+  const [view, setView] = useState<CanvasView>(IDENTITY_VIEW)
 
   const moveNode = (id: string, dx: number, dy: number) =>
     setOffsets((prev) => ({ ...prev, [id]: { dx, dy } }))
 
-  // Reset view returns to the deterministic layout: drop every manual nudge and
-  // clear the selection / focus so the canvas is exactly as first rendered.
+  const zoomBy = (factor: number) =>
+    setView((v) => ({ ...v, scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, v.scale * factor)) }))
+
+  // Reset view returns to the deterministic layout: drop every manual nudge,
+  // recenter/zoom to the initial framing, and clear the selection / focus so the
+  // canvas is exactly as first rendered.
   const resetView = () => {
     setOffsets({})
     setSelected(null)
+    setView(IDENTITY_VIEW)
   }
 
   // Persisted advice can arrive after mount (async read in the container) —
@@ -976,6 +1072,27 @@ export function SemanticBlueprint({ nodes, edges, label, candidates = [], onSeed
         </h3>
         <div className="flex flex-wrap items-center gap-2">
           <Seg options={ZOOM_OPTIONS} value={zoom} onChange={setZoom} />
+          <span className="inline-flex items-center overflow-hidden rounded-md border border-default text-xs">
+            <button
+              type="button"
+              aria-label="Zoom out"
+              onClick={() => zoomBy(0.9)}
+              className="px-2 py-1 text-secondary hover:bg-elevated"
+            >
+              −
+            </button>
+            <span className="min-w-[3rem] border-x border-default px-1 py-1 text-center tabular-nums text-muted">
+              {Math.round(view.scale * 100)}%
+            </span>
+            <button
+              type="button"
+              aria-label="Zoom in"
+              onClick={() => zoomBy(1.1)}
+              className="px-2 py-1 text-secondary hover:bg-elevated"
+            >
+              +
+            </button>
+          </span>
           <button
             type="button"
             onClick={resetView}
@@ -995,12 +1112,14 @@ export function SemanticBlueprint({ nodes, edges, label, candidates = [], onSeed
         overlay={overlay}
         offsets={offsets}
         onNodeMove={moveNode}
+        view={view}
+        onViewChange={setView}
       />
       <Legend />
       <p className="text-xs text-muted">
-        Click any card or measure to trace it and open its detail below · drag a card to declutter, then Reset view to
-        restore the layout · switch Overview / Standard / Columns to resolve detail · one line per relationship, crossings
-        hop so they stay separable.
+        Click any card or measure to trace it and open its detail below · scroll to zoom, drag the background to pan, drag
+        a card to declutter — then Reset view to restore the framing · switch Overview / Standard / Columns to resolve
+        detail · one line per relationship, crossings hop so they stay separable.
       </p>
       <DetailInset model={model} selected={selected} />
       <InsightsInset model={model} onFocus={focusInsight} />

@@ -25,7 +25,7 @@
  */
 import type { MvProposal, SemanticGraphEdge, SemanticGraphNode, SemanticGraphResponse } from "@/types"
 import { SemanticGraph } from "@/components/model/SemanticGraph"
-import { SemanticModelView, withOverlay } from "@/components/model/SemanticModelTab"
+import { NodeDetail, withOverlay } from "@/components/model/SemanticModelTab"
 
 // ── The 9e scenario as real graph data ───────────────────────────────────────
 // Mirrors MvSemanticV7ContractFrame's model: two facts, three dims (one
@@ -93,20 +93,27 @@ const V7_EDGES: SemanticGraphEdge[] = [
   { from: "measure:gross_margin", to: "sales.mv.margin_mv", kind: "membership" },
 ]
 
-// 12f round 2: this frame renders the REAL FULL SURFACE (SemanticModelView —
-// panel header, governance ladder, canvas, curator inset), not the bare canvas.
-// The bare-canvas version made the comparison against 9e unfair in reality's
-// favour-of-doubt: 9e depicts the whole panel including the inset, so exporting
-// only the graph hid the surface where most of the polish gap actually lived.
+// 12f round 2: this frame renders the classic SemanticGraph canvas + curator
+// inset (NodeDetail) for the selected Revenue MV — the historical v7 surface the
+// gate compares against 9e. (The live Model tab is now blueprint-only; this
+// frame keeps a checked-in picture of the classic selected-state surface, built
+// from its exported building blocks rather than the retired canvas toggle.)
 export function RealModelV7Frame() {
+  const graph: SemanticGraphResponse = {
+    space_id: "space-v7",
+    nodes: V7_NODES,
+    edges: V7_EDGES,
+    proposals: [],
+    coverage_status: "ok",
+    coverage_reason: null,
+  }
+  const selected = graph.nodes.find((n) => n.id === "sales.mv.revenue_mv")
   return (
-    <SemanticModelView
-      graph={{ space_id: "space-v7", nodes: V7_NODES, edges: V7_EDGES, proposals: [], coverage_status: "ok", coverage_reason: null }}
-      isLoading={false}
-      error={null}
-      onRefresh={() => {}}
-      initialSelectedId="sales.mv.revenue_mv"
-    />
+    <div className="space-y-3 rounded-xl border border-default bg-surface p-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-secondary">Semantic model · Revenue selected</h3>
+      <SemanticGraph nodes={graph.nodes} edges={graph.edges} selectedId="sales.mv.revenue_mv" label="Semantic model — v7 scenario" />
+      {selected && <NodeDetail node={selected} proposals={[]} nodes={graph.nodes} edges={graph.edges} />}
+    </div>
   )
 }
 

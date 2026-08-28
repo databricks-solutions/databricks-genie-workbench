@@ -143,32 +143,17 @@ describe("SemanticModelView — states", () => {
     expect(html).toContain("order_count")
   })
 
-  it("with proposals: overlay defaults ON, drawing the ghost MV + would-govern link", () => {
+  it("blueprint-only: proposals are NOT ghosted onto the canvas (arrows require proof)", () => {
+    // Classic's proposal overlay was removed with the classic canvas — proposals
+    // now live only in the advisory list below. The blueprint stays grounded: it
+    // draws the ungoverned loose measure it can prove, but no ghost proposed MV
+    // and no overlay toggle.
     const html = render(<SemanticModelView graph={WITH_PROPOSAL} isLoading={false} error={null} onRefresh={() => {}} />)
-    expect(html).toContain("Show proposal overlay")
     expect(html).toContain("Ungoverned")
-    // Model-tab move: the overlay now follows the proposals by default (on when
-    // any exist), so the ghost card and the "would govern" link are drawn without
-    // the user toggling. The checkbox stays as a manual override.
-    expect(html).toContain("proposed metric view")
-    expect(html).toContain("would govern")
-  })
-
-  it("proposalsOverride drives the overlay even when the graph carries none", () => {
-    // Model-tab sync: the advisory's live-scanned proposals ghost onto the
-    // canvas via proposalsOverride, without a graph refetch. ATTACHED_MV has no
-    // proposals of its own, so only the override supplies the ghost.
-    const html = render(
-      <SemanticModelView
-        graph={ATTACHED_MV}
-        isLoading={false}
-        error={null}
-        onRefresh={() => {}}
-        proposalsOverride={[proposal()]}
-      />,
-    )
-    expect(html).toContain("Show proposal overlay")
-    expect(html).toContain("proposed metric view")
+    expect(html).toContain("order_revenue")
+    expect(html).not.toContain("Show proposal overlay")
+    expect(html).not.toContain("proposed metric view")
+    expect(html).not.toContain("would govern")
   })
 
   it("multi-join: cardinality glyphs appear on demand, not at rest (round-6)", () => {
@@ -238,11 +223,12 @@ const WITH_COVERAGE: SemanticGraphResponse = {
 }
 
 describe("SQL-coverage lens (Prompt 12b) — additive", () => {
-  it("COMPUTED: renders per-node coverage badges and marks the cold spot", () => {
+  it("COMPUTED: renders the coverage note and marks the cold spot on the blueprint", () => {
     const html = render(<SemanticModelView graph={WITH_COVERAGE} isLoading={false} error={null} onRefresh={() => {}} />)
     expect(html).toContain("Query coverage")
-    expect(html).toContain("2 curated statements")
-    expect(html).toContain("cold spot")
+    // The blueprint calls out the zero-coverage table as a cold spot.
+    expect(html).toContain("Cold spot")
+    expect(html).toContain("no curated SQL touches it")
   })
 
   it("EMPTY: says coverage is not measured (frame-7b honesty), no invented zero", () => {

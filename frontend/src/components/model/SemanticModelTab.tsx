@@ -20,10 +20,8 @@ import { Badge } from "@/components/ui/badge"
 import { fetchJoinAdvice, fetchJoinCandidates, fetchSemanticGraph, saveJoinAdvice } from "@/lib/api"
 import type { JoinCandidate, MvGovernance, MvProposal, SemanticGraphEdge, SemanticGraphNode, SemanticGraphResponse } from "@/types"
 import { MvIqScanAdvisorySection } from "@/components/auto-optimize/MvIqScanAdvisorySection"
-import { GOVERNANCE, LADDER_ORDER, SemanticGraph, countGovernance, isDisplayableMeasureLabel, relationshipGlyph } from "./SemanticGraph"
+import { GOVERNANCE, LADDER_ORDER, countGovernance, isDisplayableMeasureLabel, relationshipGlyph } from "./SemanticGraph"
 import { SemanticBlueprint } from "./SemanticBlueprint"
-
-type CanvasMode = "classic" | "blueprint"
 
 function shortName(identifier: string): string {
   const cleaned = (identifier || "").replace(/`/g, "").trim()
@@ -495,10 +493,6 @@ export function SemanticModelView({
   isLoading,
   error,
   onRefresh,
-  initialSelectedId = null,
-  proposalsOverride,
-  onSelectionChange,
-  selectRequest,
   joinCandidates,
   onSeedJoins,
   seededJoinCount,
@@ -508,111 +502,40 @@ export function SemanticModelView({
   isLoading: boolean
   error: string | null
   onRefresh: () => void
-  // Seeds the selection. Selection is otherwise internal state, which means a
-  // static render (the fidelity-gate export) could never show the selected-state
-  // surface — the boundary, the focus dimming, the curator inset — and that is
-  // exactly the state the v7 contract frame depicts.
-  initialSelectedId?: string | null
-  // Model-tab sync: the advisory's live proposal set drives the ghost overlay
-  // instead of the graph's own (single source of truth). Falls back to the
-  // graph's proposals when absent (standalone / tests).
-  proposalsOverride?: MvProposal[]
-  // Model-tab sync: reports the selected node id up so the advisory can
-  // highlight/scroll to the matching card.
-  onSelectionChange?: (nodeId: string | null) => void
-  // Model-tab sync: an imperative "select this node" from the advisory's "View
-  // in graph". A bumped nonce re-triggers even for a repeated id.
-  selectRequest?: { id: string; nonce: number } | null
   // Join Advisor (§7): data-grounded candidate joins for the Blueprint canvas,
   // and the seed callback that persists the checked set as ADVICE for the next
   // Auto-Optimize run. These are ADVICE to the optimizer, never a Genie Agent
-  // config edit — the Workbench makes no ad-hoc serialized_space edits. Absent
-  // in the classic canvas / static-render tests, so the view stays pure.
+  // config edit — the Workbench makes no ad-hoc serialized_space edits.
   joinCandidates?: JoinCandidate[]
   onSeedJoins?: (seeds: JoinCandidate[]) => void
   seededJoinCount?: number
-  // Fired when the user first switches to the Blueprint canvas, so the container
-  // can lazily discover candidates (warehouse probes) instead of on every open.
+  // Fired once a non-empty model is shown, so the container can lazily discover
+  // candidates (warehouse probes) instead of on every render.
   onBlueprintActive?: () => void
 }) {
-  const proposals = useMemo(() => proposalsOverride ?? graph?.proposals ?? [], [proposalsOverride, graph])
-  const hasProposals = proposals.length > 0
-  // Overlay follows the proposals by default (on when any exist); a manual
-  // toggle wins once the user touches the checkbox. Derived at render time so a
-  // static render reflects the default without an effect.
-  const [manualOverlay, setManualOverlay] = useState<boolean | null>(null)
-  const showOverlay = manualOverlay ?? hasProposals
-  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId)
-  // v4 canvas swap (docs/design/semantic-graph-v4-blueprint-note.md §5): the new
-  // Semantic Blueprint canvas ships beside the classic graph behind this toggle,
-  // Classic default until it reaches full parity. Blueprint renders the base
-  // graph only (the proposal overlay / Join Advisor is Phase 3), so it stays
-  // grounded — arrows require proof (§2).
-  const [canvas, setCanvas] = useState<CanvasMode>("classic")
+  const ladderCounts = useMemo(() => countGovernance(graph?.nodes ?? []), [graph])
+  const isEmpty = !!graph && graph.nodes.length === 0
 
-  // Report selection changes upward. The callback is held in a ref so a parent
-  // passing a fresh function each render does not re-fire this effect.
-  const onSelectionChangeRef = useRef(onSelectionChange)
+  // The Blueprint is now the only canvas, so kick the (best-effort) Join Advisor
+  // probe once a non-empty model is available. The callback is held in a ref so
+  // a parent passing a fresh function each render does not re-fire; the
+  // container guards against re-running per space.
+  const onBlueprintActiveRef = useRef(onBlueprintActive)
   useEffect(() => {
-    onSelectionChangeRef.current = onSelectionChange
+    onBlueprintActiveRef.current = onBlueprintActive
   })
   useEffect(() => {
-    onSelectionChangeRef.current?.(selectedId)
-  }, [selectedId])
-
-  // Imperative select from "View in graph": select the node and force the
-  // overlay on so its ghost card is drawn.
-  useEffect(() => {
-    if (!selectRequest) return
-    setSelectedId(selectRequest.id)
-    setManualOverlay(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectRequest?.nonce])
-
-  const rendered = useMemo(() => {
-    if (!graph) return { nodes: [], edges: [] }
-    return showOverlay ? withOverlay(graph, proposals) : { nodes: graph.nodes, edges: graph.edges }
-  }, [graph, showOverlay, proposals])
-
-  const ladderCounts = useMemo(() => countGovernance(graph?.nodes ?? []), [graph])
-  const selectedNode = rendered.nodes.find((n) => n.id === selectedId) ?? null
-  const isEmpty = !!graph && graph.nodes.length === 0
+    if (graph && !isEmpty) onBlueprintActiveRef.current?.()
+  }, [graph, isEmpty])
 
   return (
     <div className="rounded-xl border border-default bg-surface">
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-secondary">Semantic model</h3>
-        <div className="flex items-center gap-3">
-          <span className="inline-flex overflow-hidden rounded-md border border-default text-xs" role="group" aria-label="Canvas style">
-            {(["classic", "blueprint"] as CanvasMode[]).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => {
-                  setCanvas(mode)
-                  if (mode === "blueprint") onBlueprintActive?.()
-                }}
-                className={
-                  canvas === mode
-                    ? "bg-accent px-2.5 py-1 font-medium text-white"
-                    : "px-2.5 py-1 text-secondary hover:bg-elevated"
-                }
-              >
-                {mode === "classic" ? "Classic" : "Blueprint"}
-              </button>
-            ))}
-          </span>
-          {hasProposals && canvas === "classic" && (
-            <label className="flex items-center gap-2 text-xs text-secondary">
-              <input type="checkbox" checked={showOverlay} onChange={(e) => setManualOverlay(e.target.checked)} className="accent-[var(--color-accent)]" />
-              Show proposal overlay
-            </label>
-          )}
-          <button type="button" onClick={onRefresh} disabled={isLoading} className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50" title="Reload the semantic model">
-            <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
-            Refresh
-          </button>
-        </div>
+        <button type="button" onClick={onRefresh} disabled={isLoading} className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50" title="Reload the semantic model">
+          <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
+          Refresh
+        </button>
       </div>
 
       <div className="space-y-3 border-t border-default p-4">
@@ -637,7 +560,7 @@ export function SemanticModelView({
                 it is now. Connect it by adding join specs and snippets yourself, or let an optimization run discover and apply
                 them. Metric view suggestions don't require a run.
               </p>
-            ) : canvas === "blueprint" ? (
+            ) : (
               <SemanticBlueprint
                 nodes={graph.nodes}
                 edges={graph.edges}
@@ -645,22 +568,6 @@ export function SemanticModelView({
                 onSeed={onSeedJoins}
                 initialSeededCount={seededJoinCount}
               />
-            ) : (
-              <>
-                <SemanticGraph
-                  // Remount on overlay toggle so the canvas re-fits and frames
-                  // the newly-added proposed MV cards (round-6: proposals were
-                  // rendering below the fold because the view never re-fit).
-                  key={showOverlay ? "graph-overlay" : "graph-base"}
-                  nodes={rendered.nodes}
-                  edges={rendered.edges}
-                  selectedId={selectedId}
-                  // Toggle: re-clicking the selection (or a null from an empty
-                  // -canvas click) clears it — reference parity (BlueprintCanvas).
-                  onSelectNode={(n) => setSelectedId((prev) => (n === null || prev === n.id ? null : n.id))}
-                />
-                {selectedNode && <NodeDetail node={selectedNode} proposals={proposals} nodes={rendered.nodes} edges={rendered.edges} />}
-              </>
             )}
           </>
         )}
@@ -681,13 +588,6 @@ export function SemanticModelTab({
   const [graph, setGraph] = useState<SemanticGraphResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  // The advisory owns the proposal lifecycle (hydrate + scan); it publishes its
-  // set here so the graph overlays the SAME proposals. Null until the advisory
-  // reports, so the graph's own proposals seed the first paint.
-  const [overlayProposals, setOverlayProposals] = useState<MvProposal[] | null>(null)
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const [selectRequest, setSelectRequest] = useState<{ id: string; nonce: number } | null>(null)
-  const nonceRef = useRef(0)
 
   // Join Advisor (§7). Candidates are discovered lazily (warehouse probes are
   // not free) the first time the Blueprint canvas is opened. `seededSeeds` is
@@ -747,26 +647,6 @@ export function SemanticModelTab({
     })
   }
 
-  const proposalsForGraph = useMemo(() => overlayProposals ?? graph?.proposals ?? [], [overlayProposals, graph])
-
-  // A selected proposed node (id `proposed:<full name>`) maps to its
-  // suggestion_id via the same shortName rule the overlay/NodeDetail use, so the
-  // advisory can highlight and scroll to the matching card.
-  const highlightSuggestionId = useMemo(() => {
-    if (!selectedNodeId || !selectedNodeId.startsWith("proposed:")) return null
-    const label = shortName(selectedNodeId.slice("proposed:".length))
-    const match = proposalsForGraph.find(
-      (p) => p.proposed_object && shortName(p.proposed_object) === label,
-    )
-    return match?.suggestion_id ?? null
-  }, [selectedNodeId, proposalsForGraph])
-
-  const locateInGraph = (p: MvProposal) => {
-    if (!p.proposed_object) return
-    nonceRef.current += 1
-    setSelectRequest({ id: `proposed:${p.proposed_object}`, nonce: nonceRef.current })
-  }
-
   return (
     <div className="space-y-6">
       <SemanticModelView
@@ -774,9 +654,6 @@ export function SemanticModelTab({
         isLoading={isLoading}
         error={error}
         onRefresh={load}
-        proposalsOverride={proposalsForGraph}
-        onSelectionChange={setSelectedNodeId}
-        selectRequest={selectRequest}
         joinCandidates={joinCandidates}
         onSeedJoins={onSeedJoins}
         seededJoinCount={seededSeeds.length}
@@ -785,9 +662,6 @@ export function SemanticModelTab({
       <MvIqScanAdvisorySection
         spaceId={spaceId}
         onReviewCreate={onReviewCreate}
-        onProposalsChange={setOverlayProposals}
-        highlightSuggestionId={highlightSuggestionId}
-        onLocateInGraph={locateInGraph}
         onCreated={() => load()}
       />
     </div>
