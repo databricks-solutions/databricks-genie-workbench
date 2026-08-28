@@ -22,6 +22,7 @@ from genie_space_optimizer.common.warehouse import (
     wh_ensure_optimization_tables,
     wh_reconcile_active_runs,
     wh_write_join_advice,
+    wh_write_operator_guidance,
 )
 
 from .config import IntegrationConfig
@@ -109,6 +110,7 @@ def trigger_optimization(
     mv_min_confidence: int | None = None,
     mv_attach_hook: Callable[[str], Any] | None = None,
     proposed_join_seeds: list[dict] | None = None,
+    operator_guidance: str | None = None,
 ) -> TriggerResult:
     """Trigger a GSO optimization run using SQL Warehouse for state management.
 
@@ -149,6 +151,10 @@ def trigger_optimization(
             and hands the LLM as candidate joins to VALIDATE and add itself — never
             a declared join_spec written here. Best-effort; a write failure does
             not fail the run.
+        operator_guidance: free-text guidance the operator typed in the run-config
+            panel for THIS run (§7). Persisted as a run-scoped ``operator_guidance``
+            artifact the optimize loop injects into the LLM prompt as advice (not
+            ground truth). Best-effort; a write failure does not fail the run.
 
     Returns:
         :class:`TriggerResult` with run_id, job_run_id, job_url, and status.
@@ -314,6 +320,27 @@ def trigger_optimization(
         except Exception:
             logger.warning(
                 "Could not persist operator-proposed join seeds for run %s",
+                run_id,
+                exc_info=True,
+            )
+
+    # Operator free-text guidance (§7): persist the per-run advice as a run-scoped
+    # ``operator_guidance`` artifact the optimize loop injects into the LLM prompt.
+    # Advice, not a config edit — best-effort, so a write failure never fails the
+    # run (the loop just sees no operator guidance).
+    if operator_guidance and operator_guidance.strip():
+        try:
+            wh_write_operator_guidance(
+                ws,
+                config.warehouse_id,
+                run_id=run_id,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                text=operator_guidance,
+            )
+        except Exception:
+            logger.warning(
+                "Could not persist operator guidance for run %s",
                 run_id,
                 exc_info=True,
             )

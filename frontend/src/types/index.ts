@@ -302,6 +302,11 @@ export interface GSOTriggerRequest {
   mv_approved_suggestion_ids?: string[]
   mv_consent?: MvConsentPayload | null
   mv_materialize?: boolean
+  // Free-text guidance to the optimizer for THIS run (Semantic Blueprint §7,
+  // sibling to the Join Advisor). Per-run pass-through advice — not a config edit,
+  // not persisted. Omitted when the box is blank. Mirror of `operator_guidance` on
+  // `TriggerRequest` in backend/routers/auto_optimize.py.
+  operator_guidance?: string | null
 }
 
 export interface GSOTriggerResponse {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import type { LucideIcon } from "lucide-react"
-import { AlertTriangle, Database, ListChecks, Rocket, Settings2, Target } from "lucide-react"
+import { AlertTriangle, Database, ListChecks, MessageSquareText, Rocket, Settings2, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { fetchSpaceMvProposals, probeMvEntitlement, triggerAutoOptimize } from "@/lib/api"
@@ -71,6 +71,10 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [maxAttemptsInput, setMaxAttemptsInput] = useState(DEFAULT_MAX_ATTEMPTS)
   const [workloadWarehouseIds, setWorkloadWarehouseIds] = useState<Set<string>>(new Set())
   const [allowBenchmarkRepair, setAllowBenchmarkRepair] = useState(false)
+  // Per-run free-text guidance to the optimizer (Semantic Blueprint §7). Pass-through
+  // advice only — never persisted and never a config edit; the builder omits it when
+  // blank. Capped to 4000 chars to match the backend field and keep the prompt small.
+  const [operatorGuidance, setOperatorGuidance] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -220,6 +224,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           maxAttempts,
           workloadWarehouseIds: Array.from(workloadWarehouseIds).sort(),
           benchmarkPolicy: allowBenchmarkRepair ? "repair_allowed" : "review_only",
+          operatorGuidance,
           mv: mvEnabled
             ? {
                 enabled: true,
@@ -469,6 +474,29 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           probeError={mvProbeError}
           onCopyGrant={handleCopyGrant}
         />
+
+        {/* Operator guidance (Semantic Blueprint §7): optional free-text hints for
+            this run. Advice only — the optimizer honours it within its allowed
+            patches and never over benchmark evidence. Pass-through, not persisted. */}
+        <div className="space-y-2 border-t border-default pt-4">
+          <PillarHeader icon={MessageSquareText}>Guidance to the optimizer</PillarHeader>
+          <p className="text-xs text-muted">
+            Optional plain-English hints for this run (e.g. &ldquo;prefer the orders_v2 table&rdquo;,
+            &ldquo;revenue is net of refunds&rdquo;). Treated as advice, not rules — the optimizer
+            still validates every change against the benchmark. Not saved after the run.
+          </p>
+          <textarea
+            value={operatorGuidance}
+            onChange={(e) => setOperatorGuidance(e.target.value)}
+            disabled={loading || hasActiveRun}
+            maxLength={4000}
+            rows={3}
+            aria-label="Guidance to the optimizer"
+            placeholder="Add any context that would help the optimizer for this run…"
+            className="min-h-20 w-full resize-y rounded-md border border-default bg-surface p-2 text-sm text-primary placeholder:text-muted disabled:opacity-50"
+          />
+          <p className="text-right text-[11px] text-muted">{operatorGuidance.length}/4000</p>
+        </div>
 
         {/* Alerts + launch — a full-width footer separated by a hairline so the
             CTA reads as the form's conclusion. */}

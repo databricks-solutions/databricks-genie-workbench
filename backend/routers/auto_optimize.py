@@ -240,6 +240,11 @@ class TriggerRequest(BaseModel):
     ] = Field(default_factory=list, max_length=50)
     mv_consent: MvConsentPayload | None = None
     mv_materialize: bool = False
+    # Free-text guidance to the optimizer for THIS run (Semantic Blueprint §7,
+    # sibling to Join Advisor). Per-run pass-through advice — never a config edit
+    # and not persisted. Carried into the run as an artifact the loop injects into
+    # the LLM prompt as advice (not ground truth). Capped to keep the prompt small.
+    operator_guidance: str | None = Field(None, max_length=4000)
 
 
 class MvProbeRequest(BaseModel):
@@ -1734,6 +1739,7 @@ async def trigger(body: TriggerRequest, request: Request):
             mv_min_confidence=body.mv_min_confidence,
             mv_attach_hook=mv_attach_hook,
             proposed_join_seeds=proposed_join_seeds,
+            operator_guidance=(body.operator_guidance or "").strip() or None,
         )
         # Echo the resolved knobs (request value or the job default) so the UI
         # can confirm what the run will use without re-reading the job config.

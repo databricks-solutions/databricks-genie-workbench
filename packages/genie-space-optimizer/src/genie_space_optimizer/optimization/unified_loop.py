@@ -1327,6 +1327,31 @@ def _load_operator_proposed_joins(
         return []
 
 
+def _load_operator_guidance(
+    w: Any, *, run_id: str, catalog: str, schema: str
+) -> str:
+    """Read the run's operator free-text guidance (Semantic Blueprint §7), or "".
+
+    Best-effort by contract: no warehouse, no artifact, or any read failure
+    yields "" so the loop degrades to "no operator guidance". This is ADVICE
+    injected into the prompt — never a directive that expands allowed patches."""
+    try:
+        from genie_space_optimizer.common.warehouse import (
+            resolve_warehouse_id,
+            wh_read_operator_guidance,
+        )
+
+        warehouse_id = resolve_warehouse_id()
+        if not warehouse_id:
+            return ""
+        return wh_read_operator_guidance(
+            w, warehouse_id, run_id=run_id, catalog=catalog, schema=schema
+        )
+    except Exception:
+        logger.debug("Could not load operator guidance for run %s", run_id, exc_info=True)
+        return ""
+
+
 def _operator_joins_for_prompt(current_config: dict[str, Any]) -> list[dict[str, Any]]:
     """Shape the attached operator-proposed joins for the optimizer prompt (§7).
 
@@ -1355,6 +1380,15 @@ def _operator_joins_for_prompt(current_config: dict[str, Any]) -> list[dict[str,
             "containment_probe": s.get("probe"),
         })
     return out
+
+
+def _operator_guidance_for_prompt(current_config: dict[str, Any]) -> str:
+    """Return the attached operator free-text guidance for the prompt (§7), or "".
+
+    Reads the advisory ``_operator_guidance`` key (attached at loop start). Pure
+    and deterministic; returns "" when nothing was provided."""
+    guidance = current_config.get("_operator_guidance") if isinstance(current_config, dict) else None
+    return guidance.strip() if isinstance(guidance, str) else ""
 
 
 def _llm_messages(
@@ -1410,6 +1444,19 @@ def _llm_messages(
             "add_join_spec only when the containment_probe and/or grounding "
             "support it; a join that does not hold must be left out (a wrong join "
             "silently produces wrong results and cannot be removed later)."
+        )
+    # Operator free-text guidance (Semantic Blueprint §7): plain-English hints the
+    # human typed in the run-config panel for this run. Advice within the allowed
+    # patch types — never a directive that overrides benchmark evidence or the
+    # leakage rules.
+    operator_guidance = _operator_guidance_for_prompt(current_config)
+    if operator_guidance:
+        user["operator_guidance"] = operator_guidance
+        user["operator_guidance_note"] = (
+            "Free-text guidance from the human who launched this run. Treat it as "
+            "advice, honoured only within allowed_patch_types and never when it "
+            "conflicts with the benchmark evidence or the train-on-test leakage "
+            "rules. It is not ground truth and does not expand what you may emit."
         )
     if banned:
         user["banned_patch_types"] = sorted(banned)
@@ -2976,6 +3023,19 @@ def run_unified_optimization_loop(
             logger.info(
                 "Loaded %d operator-proposed join seed(s) for run %s",
                 len(operator_joins),
+                run_id,
+            )
+
+        # Operator free-text guidance (§7): attach the per-run advice the same way,
+        # as an advisory `_`-prefixed key the prompt builder injects as advice.
+        operator_guidance = _load_operator_guidance(
+            w, run_id=run_id, catalog=catalog, schema=schema
+        )
+        if operator_guidance:
+            current_config["_operator_guidance"] = operator_guidance
+            logger.info(
+                "Loaded operator guidance (%d chars) for run %s",
+                len(operator_guidance),
                 run_id,
             )
 

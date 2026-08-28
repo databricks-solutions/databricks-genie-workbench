@@ -49,6 +49,7 @@ export function buildOptimizationTriggerRequest(args: {
   workloadWarehouseIds?: string[]
   benchmarkPolicy: "review_only" | "repair_allowed"
   mv?: MvTriggerOptions
+  operatorGuidance?: string
 }): GSOTriggerRequest {
   const request: GSOTriggerRequest = {
     space_id: args.spaceId,
@@ -61,6 +62,13 @@ export function buildOptimizationTriggerRequest(args: {
     max_attempts: args.maxAttempts,
     workload_warehouse_ids: args.workloadWarehouseIds ?? [],
     benchmark_policy: args.benchmarkPolicy,
+  }
+
+  // Per-run free-text guidance: only travels when non-blank, matching the panel's
+  // "empty field sends nothing" convention. Trimmed so whitespace-only stays out.
+  const guidance = args.operatorGuidance?.trim()
+  if (guidance) {
+    request.operator_guidance = guidance
   }
 
   // Only when the toggle is on. Otherwise every mv_* field stays absent, so

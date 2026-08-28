@@ -495,7 +495,7 @@ src/genie_space_optimizer/
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
   jobs/           the four notebooks + _helpers.py
-  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3817 L),
+  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3877 L),
                   preflight.py (3461 L), state.py (1871 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,

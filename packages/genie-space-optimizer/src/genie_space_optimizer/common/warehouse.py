@@ -1632,6 +1632,93 @@ def wh_read_join_advice(
     return seeds if isinstance(seeds, list) else []
 
 
+# ── Operator free-text guidance (Semantic Blueprint §7) ──────────────
+#
+# Per-run, free-text advice the human typed in the run-config panel. Like the
+# join seeds above it rides in through the generic ``genie_opt_artifacts`` handoff
+# (kind=operator_guidance), keyed by run_id — never a config edit, never persisted
+# per-space. The optimize loop injects it into the LLM prompt as ADVICE (not ground
+# truth). Absent / unreadable ⇒ the run simply starts with none.
+
+OPERATOR_GUIDANCE_ARTIFACT_KIND = "operator_guidance"
+
+
+def wh_write_operator_guidance(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    text: str | None,
+) -> None:
+    """Persist operator free-text guidance as a run-scoped artifact (§7).
+
+    No-op for empty/blank text. The JSON payload is base64-routed via
+    ``unbase64`` so it survives the warehouse's string-literal escape mode."""
+    guidance = (text or "").strip()
+    if not guidance:
+        return
+    import hashlib
+    import uuid as _uuid
+
+    from genie_space_optimizer.common.config import TABLE_ARTIFACTS
+
+    payload = json.dumps({"text": guidance})
+    artifact_id = str(_uuid.uuid4())
+    content_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    fqn = f"{catalog}.{schema}.{TABLE_ARTIFACTS}"
+    sql = (
+        f"INSERT INTO {fqn} "
+        "(artifact_id, run_id, stage_name, artifact_kind, artifact_json, "
+        "content_hash, source_notebook, created_at) VALUES ("
+        f"{_wh_literal(artifact_id)}, {_wh_literal(run_id)}, 'trigger', "
+        f"{_wh_literal(OPERATOR_GUIDANCE_ARTIFACT_KIND)}, {_wh_literal(payload, encode=True)}, "
+        f"{_wh_literal(content_hash)}, 'integration/trigger.py', current_timestamp())"
+    )
+    sql_warehouse_execute(ws, warehouse_id, sql)
+    logger.info("Wrote operator guidance (%d chars) for run %s", len(guidance), run_id)
+
+
+def wh_read_operator_guidance(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+) -> str:
+    """Read the operator free-text guidance for a run (§7), or ``""``.
+
+    Best-effort: no warehouse row, or any read/parse failure, yields ``""`` so
+    the optimize loop degrades to "no operator guidance" rather than failing."""
+    from genie_space_optimizer.common.config import TABLE_ARTIFACTS
+
+    fqn = f"{catalog}.{schema}.{TABLE_ARTIFACTS}"
+    try:
+        df = sql_warehouse_query(
+            ws,
+            warehouse_id,
+            f"SELECT artifact_json FROM {fqn} WHERE run_id = {_wh_literal(run_id)} "
+            f"AND artifact_kind = {_wh_literal(OPERATOR_GUIDANCE_ARTIFACT_KIND)} "
+            "ORDER BY created_at DESC LIMIT 1",
+        )
+    except Exception:
+        logger.debug("wh_read_operator_guidance: could not read run %s", run_id, exc_info=True)
+        return ""
+    if getattr(df, "empty", True):
+        return ""
+    raw = df.iloc[0].get("artifact_json")
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return ""
+    text = data.get("text") if isinstance(data, dict) else None
+    return text.strip() if isinstance(text, str) else ""
+
+
 # ── Warehouse ID resolution ──────────────────────────────────────────
 #
 # The optimization pipeline historically read only
