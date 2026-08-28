@@ -36,6 +36,8 @@ An earlier LLM-based "Fix" capability (Quick Fix) has been removed. Auto-Optimiz
 | **IQ Score** | A 0–12 score based on 12 binary checks. Each check evaluates one aspect of agent configuration quality. |
 | **Maturity Tier** | One of three labels derived from the IQ Score: **Not Ready**, **Ready to Optimize**, or **Trusted**. |
 | **Finding** | A specific configuration gap identified by the IQ Scanner (e.g., "No join specifications for multi-table agent"), paired with a recommended next step. |
+| **Semantic Blueprint** | The interactive, grounded diagram of an Agent's `serialized_space` (tables, joins, metric views, measures) on the Model tab. It visualizes the model that Score evaluates and Optimize improves. See [Semantic Model](/docs/features/semantic-model). |
+| **Join Advisor** | Data-grounded candidate joins surfaced in the Model tab. Selections persist as *advice* seeded into the next Auto-Optimize run — never a direct edit to the Genie config. See [Join Advisor](/docs/features/join-advisor). |
 | **Benchmark** | A question plus expected SQL, used to measure Genie accuracy. Runs are scored by Genie's native benchmark Eval-Run API. |
 | **Lever** | An optimization strategy category in Auto-Optimize. Six user-selectable levers: tables/columns, metric views, TVFs, join specs, instructions & examples, and SQL expressions. |
 | **Patch** | A targeted change to the `serialized_space` configuration, represented as a `field_path` + `new_value` pair. |
@@ -58,6 +60,7 @@ flowchart LR
 
 - **Create Agent** builds a new agent from scratch (or updates an existing one).
 - **IQ Scanner** evaluates the agent and produces findings with recommended next steps.
+- The **[Model tab](/docs/features/semantic-model)** renders a Semantic Blueprint of the same config — tables, joins, metric views, and measures — with a [Join Advisor](/docs/features/join-advisor) that seeds data-grounded join advice into optimization.
 - **Auto-Optimize** runs a deeper benchmark-driven pipeline for accuracy improvement.
 - **Track** persists all results to Lakebase so you can see progress over time.
 - **GenieWatch** reports how the Agent is used in production: cost, query volume, user feedback, executed tables, and repeated or unsuccessful question families that are not exact matches for existing benchmarks. Candidate gaps require manager review; GenieWatch does not add benchmarks or change the Agent.
