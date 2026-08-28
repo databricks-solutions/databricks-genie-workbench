@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { LucideIcon } from "lucide-react"
 import { AlertTriangle, CheckCircle2, Database, ListChecks, MessageSquareText, Rocket, Settings2, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
@@ -88,6 +88,12 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [mvProposals, setMvProposals] = useState<MvProposal[]>([])
   const [mvProposalsLoaded, setMvProposalsLoaded] = useState(false)
   const [mvProposalsLoading, setMvProposalsLoading] = useState(false)
+  // Re-entry guard for the proposals fetch. It MUST be a ref, not the
+  // mvProposalsLoading state: keeping the loading flag out of the effect's guard
+  // and deps is what stops the effect from setting a dependency it depends on,
+  // re-running, and cancelling its own in-flight request (the finally then never
+  // reset loading → permanent spinner). The state below stays render-only.
+  const mvProposalsInFlight = useRef(false)
   // Prompt 15.6 finding 6 — the check must resolve to found / none /
   // failed-with-reason within a bounded time (fetchSpaceMvProposals already
   // carries the 30s fetch timeout). On failure we surface the reason instead of
@@ -119,8 +125,9 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   // MV-D1 approval at start, so this only pre-populates the setup.
   const prefillSuggestionId = initialMv?.suggestionId ?? null
   useEffect(() => {
-    if (!mvEnabled || mvProposalsLoaded || mvProposalsLoading) return
+    if (!mvEnabled || mvProposalsLoaded || mvProposalsInFlight.current) return
     let cancelled = false
+    mvProposalsInFlight.current = true
     setMvProposalsLoading(true)
     setMvProposalsError(null)
     fetchSpaceMvProposals(spaceId, prefillSuggestionId ? undefined : true)
@@ -142,6 +149,10 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
         )
       })
       .finally(() => {
+        // The in-flight guard always clears — even when cancelled — so a later
+        // spaceId/prefill change can re-fetch. The render flags stay behind the
+        // cancelled guard: on a real cancel a fresh effect run owns them.
+        mvProposalsInFlight.current = false
         if (cancelled) return
         setMvProposalsLoading(false)
         setMvProposalsLoaded(true)
@@ -149,7 +160,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     return () => {
       cancelled = true
     }
-  }, [mvEnabled, mvProposalsLoaded, mvProposalsLoading, spaceId, prefillSuggestionId])
+  }, [mvEnabled, mvProposalsLoaded, spaceId, prefillSuggestionId])
 
   // Probe entitlement once approved proposals with a target are known (re-run).
   // Fires once per target; a failure records an error rather than re-looping.
