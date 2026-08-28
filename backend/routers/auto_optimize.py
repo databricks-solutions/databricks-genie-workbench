@@ -2795,23 +2795,54 @@ def _concept_key(canonical_expr: str, name: str) -> str:
     return (canonical_expr or "").strip() or (name or "").strip().lower()
 
 
-def _curated_sql_measures(space_data: dict) -> list[tuple[str, str]]:
+def _synth_measure_name(
+    aggregate: str, source_columns: tuple[str, ...] | list[str], fallback: str
+) -> str:
+    """Compact, human label for a harvested curated measure that has no author
+    name — only an expression. Uses the aggregate and its primary source column
+    (``sum · net_sales``, ``count · location_number``); when more than one column
+    participates a ``+N`` hint keeps it honest without spilling the whole
+    expression into the card. Falls back to the aggregate alone, then to the
+    caller's readable render form. Pure — never throws."""
+    agg = (aggregate or "").strip().lower()
+    cols = [c for c in (source_columns or ()) if c]
+    if agg and cols:
+        extra = len(cols) - 1
+        return f"{agg} · {cols[0]}" + (f" +{extra}" if extra > 0 else "")
+    if agg:
+        return agg
+    return (fallback or "").strip()
+
+
+def _curated_sql_measures(space_data: dict) -> list[tuple[str, str, str, tuple[str, ...]]]:
     """Curated measure concepts harvested from ``example_question_sqls`` (Debt 1).
 
     Reuses the curated-harvest reader ``mv_scoring.example_question_sql_statements``
     (the single reader ``trusted_asset_definitions`` also uses, so the ladder and
     the advisor cannot drift over what a curated asset is) and
     ``mv_fingerprint.extract_measures`` — the one sanctioned parser. Returns
-    ``(canonical_expr, label)`` pairs; the label is a readable rendering of the
-    aggregate. Best-effort and read-only: a statement that will not parse simply
-    contributes no concept (MV-D16(b): nothing here re-enters the advisor
-    corpus)."""
+    ``(canonical_expr, name, display_expr, source_tables)`` tuples:
+
+    - ``canonical_expr`` is the dedup identity (qualifier-stripped, literals as
+      placeholders) — the same key the fingerprint engine hashes.
+    - ``name`` is a compact synthesized label (``aggregate · column``), because a
+      harvested measure has no author-given name; showing the raw canonical
+      expression as a "name" is what put ``count(case when … = ?s …)`` on the
+      Space-config card instead of a readable measure name.
+    - ``display_expr`` is the literal-preserving ``representative_expr`` (what the
+      detail inset renders), falling back to the canonical form.
+    - ``source_tables`` are the tables the aggregate provably reads, so
+      Space-config lineage can be drawn from real table identities rather than
+      re-parsing a canonical expression that has had its qualifiers stripped.
+
+    Best-effort and read-only: a statement that will not parse simply contributes
+    no concept (MV-D16(b): nothing here re-enters the advisor corpus)."""
     from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
     from genie_space_optimizer.optimization.mv_scoring import (
         example_question_sql_statements,
     )
 
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str, tuple[str, ...]]] = []
     seen: set[str] = set()
     for _identifier, sql in example_question_sql_statements(space_data):
         for measure in extract_measures(sql):
@@ -2819,7 +2850,13 @@ def _curated_sql_measures(space_data: dict) -> list[tuple[str, str]]:
             if not canon or canon in seen:
                 continue
             seen.add(canon)
-            out.append((canon, measure.canonical_expr))
+            name = _synth_measure_name(
+                measure.aggregate,
+                measure.source_columns,
+                measure.representative_expr or measure.canonical_expr,
+            )
+            display_expr = measure.representative_expr or measure.canonical_expr
+            out.append((canon, name, display_expr, tuple(measure.source_tables)))
     return out
 
 
@@ -3141,7 +3178,10 @@ def _build_semantic_graph(
     # from example_question_sqls (Debt 1). Both keyed by canonical expr so two
     # spellings of one measure are one chip and a governed measure absorbs its
     # curated twin.
-    curated_sources: list[tuple[str, str, str | None]] = []
+    # Each entry: (concept_key, label, expr, source_tables). ``source_tables`` is
+    # the parser-proven lineage for a harvested curated measure; snippet measures
+    # carry none here and fall back to the expr-parse lineage below.
+    curated_sources: list[tuple[str, str, str | None, tuple[str, ...]]] = []
     for i, m in enumerate(snippet_measures):
         label = m.get("display_name") or m.get("id") or f"measure_{i}"
         expr = m.get("sql")
@@ -3152,17 +3192,23 @@ def _build_semantic_graph(
         if expr:
             from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
             canonical = canonicalize_expr(expr)
-        curated_sources.append((_concept_key(canonical, label), label, expr))
-    for canonical, label in _curated_sql_measures(space_data):
-        # The harvested measure exposes only its canonicalized expression — still a
-        # real definition worth showing when a curated measure has no snippet SQL.
-        curated_sources.append((_concept_key(canonical, label), label, canonical or None))
+        curated_sources.append((_concept_key(canonical, label), label, expr, ()))
+    for canonical, name, display_expr, src_tables in _curated_sql_measures(space_data):
+        # A harvested curated measure has no author name — show the synthesized
+        # ``aggregate · column`` label, keep the literal-preserving expression for
+        # the detail inset, and carry its proven source tables for lineage. The
+        # dedup key stays ``canonical`` so identity is unchanged.
+        curated_sources.append((_concept_key(canonical, name), name, display_expr, src_tables))
 
-    for key, label, expr in curated_sources:
+    # measure node id → parser-proven source tables, consumed by the lineage pass.
+    curated_src_tables: dict[str, tuple[str, ...]] = {}
+    for key, label, expr, src_tables in curated_sources:
         if key in governed_keys or key in curated_keys:
             continue
         curated_keys.add(key)
-        _measure_node(key=key, label=label, governance="curated", origin="curated SQL", expr=expr)
+        node_id = _measure_node(key=key, label=label, governance="curated", origin="curated SQL", expr=expr)
+        if node_id and src_tables:
+            curated_src_tables[node_id] = src_tables
 
     # Ungoverned concepts: recur only in proposal evidence, deduped by concept
     # identity against the higher rungs. Proposals expose a name, not an expr, so
@@ -3204,29 +3250,44 @@ def _build_semantic_graph(
     # A loose measure belongs to no metric view, so it has no join/uses edge and
     # selecting it lit nothing (focusSet found no neighbourhood; round-6 dimming
     # then hid the rest of the canvas). Its real lineage is the tables its
-    # EXPRESSION reads: we extract those from the expr and emit one ``derives``
-    # edge per referenced table. A table the expr proves but the space never
-    # modeled is ADDED to the canvas (it lands in the unmodeled region — the
-    # honest read that this curated measure depends on an ungoverned table).
-    # Governed measures already wrap their MV on select, so they are skipped;
-    # ungoverned proposals carry no expr, so they naturally contribute nothing.
+    # aggregate reads. A table the definition proves but the space never modeled
+    # is ADDED to the canvas (it lands in the unmodeled region — the honest read
+    # that this curated measure depends on an ungoverned table). Governed measures
+    # already wrap their MV on select, so they are skipped.
     derives_pairs: set[tuple[str, str]] = set()
+
+    def _emit_derives(measure_id: str, fqn: str, *, allow_add: bool) -> None:
+        table_id = norm_to_table_id.get(_norm_fqn(fqn))
+        if table_id is None:
+            if not allow_add:
+                return
+            table_id = _resolve_or_add_table(fqn, as_dim=False)
+        if not table_id:
+            return
+        pair = (measure_id, table_id)
+        if pair in derives_pairs:
+            return
+        derives_pairs.add(pair)
+        edges.append(MvSemanticGraphEdge(**{"from": measure_id, "to": table_id}, kind="derives"))
+
+    # Primary source: the fingerprint parser's proven ``source_tables`` for the
+    # harvested curated measures. These are real table identities the aggregate
+    # reads, so lineage no longer depends on the qualifier-stripped canonical
+    # expr (which carried no dotted table refs — the cause of the "no lineage on
+    # click" regression). A fully-qualified (>= 3-part) fqn the space never
+    # modeled is ADDED; a shorter, ambiguous name is match-only.
+    for measure_id, src_tables in curated_src_tables.items():
+        for fqn in src_tables:
+            parts = [p for p in (fqn or "").split(".") if p]
+            _emit_derives(measure_id, fqn, allow_add=len(parts) >= 3)
+
+    # Fallback: dotted table refs still present in a measure's expr (snippet SQL /
+    # MV-YAML), for any measure without parser-proven sources above.
     for n in list(nodes):
         if n.kind != "measure" or n.governance == "governed" or not n.expr:
             continue
         for fqn, allow_add in _expr_table_refs(n.expr):
-            table_id = norm_to_table_id.get(_norm_fqn(fqn))
-            if table_id is None:
-                if not allow_add:
-                    continue
-                table_id = _resolve_or_add_table(fqn, as_dim=False)
-            if not table_id:
-                continue
-            pair = (n.id, table_id)
-            if pair in derives_pairs:
-                continue
-            derives_pairs.add(pair)
-            edges.append(MvSemanticGraphEdge(**{"from": n.id, "to": table_id}, kind="derives"))
+            _emit_derives(n.id, fqn, allow_add=allow_add)
 
     coverage_status, coverage_reason = _apply_coverage(
         space_data, nodes, edges, table_ids, key_by_node

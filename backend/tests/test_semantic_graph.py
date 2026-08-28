@@ -160,7 +160,10 @@ def test_build_graph_governed_chips_come_from_describe_not_config_markers():
 
 
 def test_build_graph_curated_concept_harvested_from_example_sql():
-    """Debt 1: a measure in example_question_sqls joins the ladder as curated."""
+    """Debt 1: a measure in example_question_sqls joins the ladder as curated. A
+    harvested measure has no author name, so the card shows a synthesized
+    ``aggregate · column`` label (NOT the raw canonical expression), while the
+    literal-preserving expression rides ``expr`` for the detail inset."""
     space = {
         "data_sources": {"tables": [{"identifier": "finance.sales.orders"}]},
         "instructions": {
@@ -172,7 +175,63 @@ def test_build_graph_curated_concept_harvested_from_example_sql():
     nodes, _edges, _s, _r = _build(space, [])
     curated = [n for n in nodes if n.kind == "measure" and n.governance == "curated"]
     assert len(curated) == 1
-    assert "sum(qty)" in curated[0].label.lower()
+    # Readable synthesized name — not the qualifier-stripped canonical expression.
+    assert curated[0].label == "sum · qty"
+    # The expression is still carried for the inset (literal-preserving render).
+    assert "qty" in (curated[0].expr or "").lower()
+
+
+def test_build_graph_harvested_curated_measure_draws_lineage_from_source_tables():
+    """The Space-config lineage regression: a harvested curated measure gets a
+    ``derives`` edge to the table its aggregate PROVABLY reads, sourced from the
+    fingerprint parser's ``source_tables`` — not from re-parsing the canonical
+    expression (which has had its table qualifiers stripped, so it carried no
+    dotted refs and lit nothing on click)."""
+    space = {
+        "data_sources": {"tables": [{"identifier": "finance.sales.orders"}]},
+        "instructions": {
+            "example_question_sqls": [
+                {"id": "q1", "sql": ["SELECT SUM(o.qty) FROM finance.sales.orders o"]}
+            ]
+        },
+    }
+    nodes, edges, _s, _r = _build(space, [])
+    measure = next(n for n in nodes if n.kind == "measure" and n.governance == "curated")
+    derives = [e for e in edges if e.kind == "derives" and e.from_ == measure.id]
+    assert len(derives) == 1
+    assert derives[0].to == "finance.sales.orders"
+
+
+def test_build_graph_harvested_measure_adds_unmodeled_source_table():
+    """A curated measure whose fully-qualified source table the space never
+    declared ADDS that table (it lands in the unmodeled region), so selecting the
+    measure always has a source to light — the honest read that this measure
+    depends on an ungoverned table."""
+    space = {
+        "data_sources": {"tables": [{"identifier": "finance.sales.orders"}]},
+        "instructions": {
+            "example_question_sqls": [
+                {"id": "q1", "sql": ["SELECT SUM(ext.raw.events.amount) FROM ext.raw.events"]}
+            ]
+        },
+    }
+    nodes, edges, _s, _r = _build(space, [])
+    by_id = {n.id: n for n in nodes}
+    assert "ext.raw.events" in by_id and by_id["ext.raw.events"].kind == "table"
+    measure = next(n for n in nodes if n.kind == "measure" and n.governance == "curated")
+    assert any(
+        e.kind == "derives" and e.from_ == measure.id and e.to == "ext.raw.events"
+        for e in edges
+    )
+
+
+def test_synth_measure_name_is_readable_and_falls_back():
+    """The synthesized label uses ``aggregate · primary_column`` with a ``+N`` hint
+    for extra columns, degrades to the aggregate alone, then to the render form."""
+    assert auto_optimize._synth_measure_name("SUM", ("qty",), "SUM(x)") == "sum · qty"
+    assert auto_optimize._synth_measure_name("COUNT", ("a", "b", "c"), "x") == "count · a +2"
+    assert auto_optimize._synth_measure_name("AVG", (), "fallback") == "avg"
+    assert auto_optimize._synth_measure_name("", (), "COUNT(DISTINCT x)") == "COUNT(DISTINCT x)"
 
 
 def test_build_graph_expr_identity_merges_two_spellings():
