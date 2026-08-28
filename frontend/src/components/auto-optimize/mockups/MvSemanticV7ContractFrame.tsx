@@ -12,17 +12,46 @@
  * concrete reference and Prompt 12f step 1 can reconcile the deployed
  * SemanticGraph to a checked-in picture instead of a memory.
  *
+ * ROUND-5 SUPERSEDES parts of this static frame. After the reviewer's round-5
+ * feedback the AUTHORITATIVE post-round-5 export is the REAL-component frame
+ * `RealModelV7Frame` (Mv12fFidelityFrames.tsx), which renders the production
+ * SemanticGraph and therefore carries every round-5 change automatically:
+ *   - loose measures live in their OWN "Space config · measures" column to the
+ *     RIGHT of the metric views (not stacked below them);
+ *   - fact/dim captions are shown ONLY when a metric view definition PROVES the
+ *     role (node.role), else a neutral "TABLE";
+ *   - the palette is calmer (near-neutral MV boxes, neutral coverage chips) with
+ *     the accent reserved for selection/lineage;
+ *   - definition (dotted `uses`) edges render only for the selected MV;
+ *   - the legend disambiguates the solid join from the dotted MV-definition line.
+ * This hand-drawn frame is kept as the step-0 layout reference; its geometry is
+ * intentionally not re-hand-drawn for round-5.
+ *
+ * ROUND-6 ALSO SUPERSEDES parts of this frame; the authoritative export stays the
+ * REAL-component frames (Mv12fFidelityFrames.tsx), which carry round-6 for free:
+ *   - joins are a faint at-rest SKELETON; selecting a node lights its neighbours
+ *     and DIMS every other edge to near-invisible (focus+context, reference
+ *     BlueprintEdge) — the fix for "arrows are hodge podge";
+ *   - join labels are ON DEMAND only (hover / an endpoint IS the selection) — no
+ *     "N:1"/"ON …" glyph floats at rest (this frame's DeclaredArrow still hand
+ *     -draws an at-rest "N:1", which the real UI no longer does);
+ *   - wider inter-column gutter + row spacing so curves have room to separate;
+ *   - the proposal overlay KEEPS loose measures in Space config and links them to
+ *     a visible ghost MV with a dashed "would govern →" edge (see 9j).
+ *
  * It is rebuilt from the v3 note's spec (§3 the model, §4 interaction) and the
  * reviewer's approved v7 screenshot recorded in the third-look review. What it
  * encodes, point for point:
  *   - Deduplicated relational canvas: every table appears ONCE (constraint 1).
  *   - Typed table cards (fact vs dim) with a coverage dot (governed if used by
- *     ≥1 MV, gap if unmodeled).
+ *     ≥1 MV, gap if unmodeled). (Round-5: the real UI proves the role or stays
+ *     neutral rather than typing every card.)
  *   - Measures boxed by owner; each box carries an "N measures · <governance>"
  *     chip; unnamed measures collapse to a "+N unnamed" row, never internals
  *     (12d / MV-D29 hygiene, no ?n/?s/sug_ labels).
- *   - A Space-config box for loose measures, with an overlap warning
- *     (avg_daily_rate ≈ ADR) and the "+N unnamed" row.
+ *   - A Space-config box for loose measures. (Round-5: its OWN column to the
+ *     RIGHT of the MV boxes; earlier rounds put it below the canvas (3) or under
+ *     the MV boxes in the same column (4).)
  *   - Arrows only where a join is declared (constraint 2); the unmodeled table
  *     draws ZERO arrows and sits in a neutral "Unmodeled · no MV" region.
  *   - Selection state (Revenue MV selected): a labeled boundary WRAPS exactly
@@ -208,6 +237,70 @@ function MeasureBox({ box, dimmed, active }: { box: MvBox; dimmed: boolean; acti
   )
 }
 
+// The Space-config (loose measures) box — a PEER of the MV boxes, ON the canvas
+// in the metric-view column below them (v3 §3: "measures are grouped into boxes
+// by owner on the right … plus a Space-config box for the loose measures"). It
+// carries the same content the real box carries: the loose measures, the
+// governance pill, an overlap warning on a name a governed MV already exposes,
+// and a "+N unnamed" summary row.
+function SpaceConfigNode() {
+  const x = 620
+  const y = 362
+  const w = 336
+  const h = 100
+  return (
+    <g>
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        rx="10"
+        fill="var(--color-warning)"
+        opacity="0.06"
+        stroke="var(--color-warning)"
+        strokeWidth="1.25"
+        strokeDasharray="5 4"
+      />
+      <text x={x + 16} y={y + 22} className="fill-[var(--text-primary)]" fontSize="13" fontWeight="700">
+        Space config
+      </text>
+      <text x={x + 16} y={y + 37} className="fill-[var(--text-muted)]" fontSize="9.5">
+        loose measures · not in any MV
+      </text>
+      {/* governance pill */}
+      <g>
+        <rect x={x + w - 156} y={y + 10} width="140" height="18" rx="9" fill="var(--color-warning)" opacity="0.16" />
+        <circle cx={x + w - 144} cy={y + 19} r="3.5" fill="var(--color-warning)" />
+        <text x={x + w - 134} y={y + 23} className="fill-[var(--text-secondary)]" fontSize="9.5" fontWeight="600">
+          2 measures · ungoverned
+        </text>
+      </g>
+      {/* loose measure rows */}
+      <text x={x + 24} y={y + 58} className="fill-[var(--text-secondary)]" fontSize="11.5" fontFamily="monospace">
+        • avg_order_value
+      </text>
+      <text x={x + 24} y={y + 78} className="fill-[var(--text-secondary)]" fontSize="11.5" fontFamily="monospace">
+        • avg_daily_rate
+      </text>
+      {/* overlap warning on avg_daily_rate — the name a governed MV already exposes */}
+      <g>
+        <title>name also exposed by Revenue MV — two definitions, one name</title>
+        <path d={`M ${x + 150} ${y + 68} l 5 9 l -10 0 Z`} fill="var(--color-warning)" />
+        <text x={x + 150} y={y + 77} textAnchor="middle" fontSize="7" fontWeight="800" className="fill-[var(--bg-sunken)]">
+          !
+        </text>
+        <text x={x + 162} y={y + 78} className="fill-[var(--color-warning)]" fontSize="9.5" fontWeight="600">
+          also in Revenue MV (≈ ADR)
+        </text>
+      </g>
+      <text x={x + 24} y={y + 95} className="fill-[var(--text-muted)]" fontSize="11" fontStyle="italic">
+        +8 unnamed
+      </text>
+    </g>
+  )
+}
+
 function DeclaredArrow({ box, table, active }: { box: MvBox; table: TableCard; active: boolean }) {
   const to = rightEdge(table)
   const from = leftEdge(box, box.y + box.h / 2)
@@ -251,8 +344,8 @@ function CanvasSvg() {
 
       {/* column headers */}
       {[
-        { h: "Source · facts", cx: 40 + TABLE_W / 2 },
-        { h: "Dimensions", cx: 300 + TABLE_W / 2 },
+        { h: "Source tables", cx: 40 + TABLE_W / 2 },
+        { h: "Joined tables", cx: 300 + TABLE_W / 2 },
         { h: "Metric views · measures", cx: 620 + 336 / 2 },
       ].map((c) => (
         <text key={c.h} x={c.cx} y={40} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="10" fontWeight="700" letterSpacing="0.04em">
@@ -303,6 +396,10 @@ function CanvasSvg() {
       {/* measure boxes */}
       <MeasureBox box={REVENUE} dimmed={false} active />
       <MeasureBox box={MARGIN} dimmed active={false} />
+
+      {/* Space-config (loose measures) box — a peer of the MV boxes, below them
+          in the metric-view column (v3 §3), NOT a panel under the canvas. */}
+      <SpaceConfigNode />
     </svg>
   )
 }
@@ -404,30 +501,6 @@ function CuratorInset() {
   )
 }
 
-// The Space-config box lives in the measures column at rest; rendered here as a
-// panel row under the canvas so its overlap warning + "+N unnamed" row read at
-// mockup width (the SVG column is narrow). Same content the box carries.
-function SpaceConfigBox() {
-  return (
-    <div className="space-y-1.5 rounded-lg border border-dashed border-[var(--color-warning)] bg-[color-mix(in_srgb,var(--color-warning)_7%,transparent)] p-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-primary">Space config · loose measures</span>
-        <Badge variant="warning"><Wrench className="mr-1 h-3 w-3" />curated · ungoverned</Badge>
-      </div>
-      <ul className="space-y-1 text-xs text-secondary">
-        <li className="font-mono">• avg_order_value <span className="not-italic text-muted">(curated)</span></li>
-        <li className="flex items-center gap-1.5 font-mono">
-          • avg_daily_rate
-          <span className="inline-flex items-center gap-1 rounded bg-[color-mix(in_srgb,var(--color-warning)_16%,transparent)] px-1.5 py-0.5 text-[10px] font-medium not-italic text-[var(--color-warning)]">
-            <AlertTriangle className="h-3 w-3" /> overlaps a governed measure (≈ ADR)
-          </span>
-        </li>
-        <li className="italic text-muted">+8 unnamed</li>
-      </ul>
-    </div>
-  )
-}
-
 export function ModelV7ContractFrame() {
   return (
     <div className="space-y-3 rounded-xl border border-default bg-surface p-4">
@@ -442,7 +515,6 @@ export function ModelV7ContractFrame() {
       <ControlRow />
       <CanvasSvg />
       <Legend />
-      <SpaceConfigBox />
       <CuratorInset />
       <p className="text-xs text-muted">
         Tip: click a metric view to wrap the tables in its definition · drag any box to spread the canvas · Reset restores the layout.

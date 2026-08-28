@@ -336,6 +336,14 @@ export function ModelTabEmptyFrame() {
 }
 
 // ── 9c · Proposal overlay ON (frame 6's descendant) ──────────────────────────
+// ROUND-6 SUPERSEDES the overlay DESIGN this hand-drawn frame depicts. The old
+// overlay drew dashed "replaces" edges to the raw tables and MOVED the loose
+// measure into the ghost card; the reviewer found this hid measures and showed no
+// proposals. The shipped overlay now KEEPS the measure in Space config and draws
+// a dashed "would govern →" link to a visible ghost MV card. The AUTHORITATIVE
+// export of that state is the REAL-component frame `RealModelOverlayFrame`
+// (9j, Mv12fFidelityFrames.tsx); this hand-drawn 9a–9d scaffold is kept only as
+// the Prompt-12 design record and is intentionally not re-drawn.
 export function ModelTabProposalOverlayFrame() {
   const merged: MvSemanticGraphFixture = {
     nodes: [...semanticGraphPopulated.nodes, ...semanticGraphProposalOverlay.nodes],

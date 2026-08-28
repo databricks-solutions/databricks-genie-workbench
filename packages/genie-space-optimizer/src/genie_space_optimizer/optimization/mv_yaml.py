@@ -35,8 +35,9 @@ denormalized column, or a subquery source; never by chaining siblings.
 
 from __future__ import annotations
 
+import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -100,6 +101,8 @@ __all__ = [
     "validate",
     "validate_registered",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 # ── Capability input contract ────────────────────────────────────────────
@@ -879,6 +882,38 @@ def _qualify_source_columns(expr: str, source_columns: set[str]) -> str:
     return tree.sql(dialect="databricks")
 
 
+def _referenced_columns(expr: str) -> set[str]:
+    """The lowercased column names an expression reads, best-effort.
+
+    Used to scope a recurring shape to the view it is rendered into: a shape
+    mined from the whole corpus must only be attached to a source that actually
+    has the columns it reads (an unparseable fragment contributes nothing, so it
+    is treated as referencing no columns and is filtered on the caller's side)."""
+    try:
+        tree = sqlglot.parse_one(expr, read="databricks")
+    except Exception:  # noqa: BLE001 - unparseable fragment ⇒ no columns proven
+        return set()
+    return {column.name.lower() for column in tree.find_all(exp.Column) if column.name}
+
+
+def _is_simple_aggregate(expr: str) -> bool:
+    """True when ``expr`` is a single aggregate call with no window clause.
+
+    The fixed-LOD grand total of a share-of-total measure is built as
+    ``<agg> OVER ()`` — valid ONLY when the base is a bare aggregate like
+    ``SUM(x)`` / ``COUNT(*)``. If the base carries trailing arithmetic
+    (``COUNT(*) * 100.0``) or already contains a window (``LAG(...) OVER (...)``),
+    appending ``OVER ()`` binds to the wrong node and produces a PARSE_SYNTAX
+    error — so those bases are rejected rather than rendered."""
+    try:
+        tree = sqlglot.parse_one(expr, read="databricks")
+    except Exception:  # noqa: BLE001 - unparseable ⇒ not a shape we can render safely
+        return False
+    if tree.find(exp.Window) is not None:
+        return False
+    return isinstance(tree, exp.AggFunc)
+
+
 def _measure_entry(
     request: MeasureRequest,
     *,
@@ -909,6 +944,8 @@ def _shape_measures(
     *,
     source_columns: set[str],
     concept: str,
+    reserved_names: Iterable[str] = (),
+    allowed_columns: Iterable[str] = (),
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Expand recurring shapes into (dimensions, measures) entries.
 
@@ -920,18 +957,62 @@ def _shape_measures(
     dimensions: list[dict[str, Any]] = []
     measures: list[dict[str, Any]] = []
 
+    # UC requires every measure and dimension name in a view to be unique, and a
+    # bundle can carry two shapes of the SAME kind (two ratios, two share-of-total
+    # measures) whose names both derive from the concept + kind — so without this
+    # they render identical `<concept>_rate` / `<concept>_pct_of_total` names and
+    # the CREATE fails with METRIC_VIEW_INVALID_VIEW_DEFINITION. Deduping the BASE
+    # is sufficient because every component name (`_numerator`, `_base`, the fixed
+    # LOD dimension, the composed measure) and every `MEASURE()`/`ANY_VALUE()`
+    # reference below is built from it, so they all stay unique and consistent.
+    # Seed with the names the primary measures and dimensions already took, so a
+    # shape base can't collide with those either (not just with a sibling shape).
+    used_bases: dict[str, int] = {str(n): 1 for n in reserved_names if str(n)}
+
+    def _unique_base(raw: str) -> str:
+        count = used_bases.get(raw, 0)
+        used_bases[raw] = count + 1
+        return raw if count == 0 else f"{raw}_{count + 1}"
+
+    # A recurring shape is mined from the WHOLE corpus, so the same global set is
+    # offered to every view. Attaching a shape whose expression reads columns this
+    # source does not have produced a kitchen-sink view over foreign columns
+    # (deployed review). Scope each shape to the columns we can prove belong: the
+    # source columns plus the columns the view's own measures already read. Empty
+    # ⇒ we have no column facts to judge with, so we do not over-drop.
+    scope = {str(c).lower() for c in allowed_columns if str(c)}
+
+    def _shape_in_scope(component_values: Iterable[str]) -> bool:
+        if not scope:
+            return True
+        cols: set[str] = set()
+        for frag in component_values:
+            cols |= _referenced_columns(frag)
+        return cols <= scope
+
     for shape in shapes:
         # MV-D29: render from the literal-preserving component forms so the body
         # a CREATE VIEW executes never carries a ``?n``/``?s`` canonicalizer
         # placeholder. ``components`` (literal-erased) stays the identity form and
         # is only the fallback for a shape built before render forms existed.
         components = dict(shape.render_components) or dict(shape.components)
+        # Scan only the SQL fragments (numerator/denominator/measure/condition),
+        # never the ``name`` label — a label like "fulfilled_orders" parses as a
+        # bare column and would wrongly drop an in-scope shape.
+        if not _shape_in_scope(
+            str(v) for k, v in components.items() if k != "name"
+        ):
+            logger.info(
+                "mv_yaml: dropped shape %s — it reads columns absent from this "
+                "view's source (%s)", shape.kind, sorted(scope),
+            )
+            continue
         if shape.kind == SHAPE_RATIO:
             numerator = components.get("numerator") or ""
             denominator = components.get("denominator") or ""
             if not numerator or not denominator:
                 continue
-            base = _shape_base_name(shape, concept)
+            base = _unique_base(_shape_base_name(shape, concept))
             num_name = f"{base}_numerator"
             den_name = f"{base}_denominator"
             for name, component in ((num_name, numerator), (den_name, denominator)):
@@ -961,7 +1042,7 @@ def _shape_measures(
             condition = components.get("condition") or ""
             if not condition:
                 continue
-            name = _shape_base_name(shape, concept)
+            name = _unique_base(_shape_base_name(shape, concept))
             qualified = _qualify_source_columns(condition, source_columns)
             measures.append(
                 _measure_entry(
@@ -974,10 +1055,23 @@ def _shape_measures(
             base_expr = components.get("measure") or components.get("numerator") or ""
             if not base_expr:
                 continue
-            base = _shape_base_name(shape, concept)
+            qualified = _qualify_source_columns(base_expr, source_columns)
+            # The grand total is rendered as ``<agg> OVER ()``, which is only
+            # valid SQL when the base is a bare aggregate. A base with trailing
+            # arithmetic (``COUNT(*) * 100.0``) or an existing window
+            # (``LAG(...) OVER (...)``) would render ``... OVER ()`` bound to the
+            # wrong node → PARSE_SYNTAX_ERROR at create. Drop such a shape rather
+            # than emit a body that cannot be created (deployed review).
+            if not _is_simple_aggregate(qualified):
+                logger.info(
+                    "mv_yaml: dropped pct-of-total shape %s — base %r is not a "
+                    "simple aggregate, so a fixed-LOD OVER () cannot be built",
+                    shape.fingerprint, base_expr,
+                )
+                continue
+            base = _unique_base(_shape_base_name(shape, concept))
             atomic = f"{base}_base"
             lod = f"{base}_grand_total"
-            qualified = _qualify_source_columns(base_expr, source_columns)
             measures.append(
                 _measure_entry(
                     MeasureRequest(name=atomic, expr=base_expr),
@@ -1204,8 +1298,25 @@ def generate(
             )
             for request in profiling.measures
         ]
+        # Columns we can prove belong to this view: the source's own columns
+        # plus every column the view's primary measures already read. A shape is
+        # scoped to this set so a corpus-wide shape is never attached to a source
+        # that lacks its columns (the foreign-column kitchen-sink, deployed
+        # review). When the source's columns weren't profiled, this degrades to
+        # the measures' columns rather than to nothing.
+        allowed_columns = set(source_columns)
+        for request in profiling.measures:
+            allowed_columns |= _referenced_columns(request.expr)
         shape_dimensions, shape_measures = _shape_measures(
-            shapes, source_columns=source_columns, concept=concept
+            shapes,
+            source_columns=source_columns,
+            concept=concept,
+            reserved_names=[
+                str(e.get("name") or "")
+                for e in (*dimensions, *measures)
+                if isinstance(e, Mapping)
+            ],
+            allowed_columns=allowed_columns,
         )
     except ValueError as exc:
         return GeneratedMetricView(
@@ -1481,6 +1592,7 @@ def validate(
 
     errors.extend(_validate_comment(definition))
     errors.extend(_validate_fields(definition))
+    errors.extend(_validate_unique_names(definition))
     join_errors, join_warnings, needs_nested = _validate_joins(definition)
     errors.extend(join_errors)
     warnings.extend(join_warnings)
@@ -1558,6 +1670,7 @@ def validate_registered(yaml_text: str) -> ValidationReport:
     if not definition.get("source"):
         errors.append("missing required field 'source'")
     errors.extend(_validate_fields(definition))
+    errors.extend(_validate_unique_names(definition))
     join_errors, join_warnings, _needs_nested = _validate_joins(definition)
     errors.extend(join_errors)
     warnings.extend(join_warnings)
@@ -1601,6 +1714,38 @@ _PLACEHOLDER_TOKEN_RE = re.compile(
 )
 
 
+def _validate_unique_names(definition: Mapping[str, Any]) -> list[str]:
+    """Every measure and dimension name must be unique across the whole view.
+
+    UC rejects a create with METRIC_VIEW_INVALID_VIEW_DEFINITION ("Measure and
+    dimension names must be unique") when any name repeats — dimensions, fields
+    and measures share one namespace. Catching it here turns a late UC-create
+    failure into a local rejection with the offending names, and pins the shape
+    de-dup (two same-kind shapes once rendered identical `<concept>_rate` names).
+    """
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for key in ("dimensions", "fields", "measures"):
+        entries = definition.get(key) or []
+        if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            if name in seen and name not in duplicates:
+                duplicates.append(name)
+            seen.add(name)
+    if duplicates:
+        return [
+            "measure and dimension names must be unique; duplicate name(s): "
+            + ", ".join(duplicates)
+        ]
+    return []
+
+
 def _validate_fields(definition: Mapping[str, Any]) -> list[str]:
     """Format-type and synonym lints over dimensions and measures."""
     errors: list[str] = []
@@ -1624,6 +1769,19 @@ def _validate_fields(definition: Mapping[str, Any]) -> list[str]:
                         "literal-erased canonical form and cannot be created "
                         "(MV-D29); render from the representative expression"
                     )
+                else:
+                    # The gate is the gate: an expr that is not parseable SQL must
+                    # be rejected HERE, not at UC create time. A malformed
+                    # ``COUNT(*) * 100.0 OVER ()`` (a fixed-LOD built on a
+                    # non-aggregate base) is the deployed-review PARSE_SYNTAX_ERROR
+                    # this turns into a local rejection with the offending name.
+                    try:
+                        sqlglot.parse_one(str(expr), read="databricks")
+                    except Exception as exc:  # noqa: BLE001 - surfaced as a validation error
+                        errors.append(
+                            f"{key[:-1]} '{name}': expr is not parseable SQL "
+                            f"({str(exc).splitlines()[0]})"
+                        )
 
             format_block = entry.get("format")
             if isinstance(format_block, Mapping):

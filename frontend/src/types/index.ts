@@ -968,6 +968,18 @@ export interface MvProposalMeasure {
   benchmark_question_ids: string[] | null
 }
 
+// Prompt 15.9 item (d): one provenance id resolved to a human thing. `kind` is
+// "sql_snippet" | "trusted_asset" | "gso_patch"; `label` is the display text
+// (snippet name / example-question text / "generated-SQL match"); `detail` is the
+// snippet expression or lever/iteration when present; `id` is the raw provenance
+// id, shown only behind the card's "show raw ids" debug affordance.
+export interface MvProvenanceLabel {
+  id: string
+  kind: string
+  label: string
+  detail: string | null
+}
+
 export interface MvProposal {
   suggestion_id: string
   dedup_fingerprint: string
@@ -991,6 +1003,11 @@ export interface MvProposal {
   checks: Record<string, string> | null
   score_components: Record<string, unknown> | null
   evidence: Record<string, unknown> | null
+  // Prompt 15.9 item (d) — provenance ids resolved to human labels serve-time
+  // (example-question text, snippet name, generated-SQL match). The card renders
+  // these; the raw ids stay behind a "show raw ids" debug affordance. null when
+  // nothing resolved (the card falls back to counts).
+  provenance_labels: MvProvenanceLabel[] | null
   provenance: Record<string, unknown> | null
   alternatives: unknown[] | null
   conflicts: unknown[] | null
@@ -1001,6 +1018,11 @@ export interface MvProposal {
   decided_at: string | null
   suppressed_until: string | null
   approved_for_rerun: boolean
+  // MV-D34 attach-at-approval marker: true when proposed_object is already on the
+  // Agent's data_sources.metric_views (computed serve-time from the live config,
+  // the source of truth). The card badges "Attached" instead of re-offering
+  // [Create this metric view]. Absent/false on run-scoped and suggest responses.
+  attached?: boolean
   created_at: string | null
   updated_at: string | null
 }
@@ -1015,13 +1037,27 @@ export interface MvCreateAtApprovalRequest {
 export interface MvCreateAtApprovalResponse {
   created: boolean
   degraded: boolean
+  // MV-D34 attach-at-approval: whether the view was also shelved on the Agent
+  // config in this call. created && !attached is the created-not-attached seam
+  // (the PATCH failed, e.g. no CAN EDIT) the card explains.
+  attached: boolean
+  // MV-D34 idempotent re-approval: true when the view already existed (as a
+  // metric view) and this call only (re)attached it — the terminal says
+  // "attached an existing view" rather than claiming a fresh create.
+  already_existed: boolean
   full_name: string | null
   run_id: string | null
   suggestion_id: string | null
   provenance: string
   verdict: string | null
   remediation_sql: string | null
+  // Copy-ready GRANT SELECT … TO <optimizer SP>, resolved from the create
+  // response so the terminal no longer depends on the proposal DDL fetch.
+  grant_sql: string | null
   reason: string | null
+  // Workspace URL for the created terminal's Catalog Explorer deep link
+  // (…/explore/data/<catalog>/<schema>/<view>). Null → the link is omitted.
+  workspace_host: string | null
 }
 
 // GET /runs/{run_id}/mv-proposals — the run's proposals, newest first.
@@ -1111,6 +1147,8 @@ export interface MvDdlArtifact {
   dedup_fingerprint: string | null
   proposed_object: string | null
   join_strategy: string | null
+  /** The view's source tables, parsed serve-time from the rendered YAML. */
+  source_tables: string[] | null
   yaml_text: string | null
   ddl: string | null
   validation: Record<string, unknown> | null
@@ -1222,6 +1260,49 @@ export interface SemanticGraphNode {
   // read failed, the node renders "definition unavailable" with no arrows;
   // null/undefined = non-MV or no read attempted. Additive.
   definition_available?: boolean | null
+  // Prompt 12f (measure nodes only). The attached metric view that already
+  // exposes a measure of THIS NAME under a different expression — the collision
+  // canonical-expression dedup cannot merge, and the one worth warning about
+  // (two definitions, one name). Absent means no collision was proven, never
+  // that none exists. Additive.
+  overlaps?: string | null
+  // Round-5 (table nodes only): the PROVEN fact/dim role, never guessed from
+  // column position. "fact" = a metric view's declared source; "dim" = only ever
+  // a join target; null/absent = unproven, so the UI shows a neutral "table"
+  // rather than mislabelling (the fix for dim_* tables captioned FACT).
+  role?: "fact" | "dim" | null
+  // Round-5 (measure nodes only): the defining expression and best-effort
+  // description, so selecting a measure shows WHAT it computes in the detail
+  // panel. expr is null for an ungoverned proposal (name only, no expression).
+  expr?: string | null
+  description?: string | null
+  // Prompt 12f (metric_view nodes only). Read from the MV's YAML alongside the
+  // `uses`/join structure MV-D33 already parses, so the curator inset can show
+  // what governs a measure's result beyond its expression. All additive and all
+  // null when the YAML could not be read (`definition_available === false`) —
+  // unreadable stays unproven.
+  // The node id of the table the view reads FROM — the root of the inset's join
+  // tree. `uses` edges prove membership but not which member is the root, and a
+  // root inferred from join direction is wrong whenever the config declares a
+  // fact→fact join.
+  mv_source?: string | null
+  mv_filter?: string | null
+  materialization?: string | null
+  dimensions?: SemanticGraphDimension[] | null
+  // Phase 2 (v4 §6, table nodes only): PARTICIPATING columns (join keys parsed
+  // server-side from ON predicates) — never the full column list. Drives the
+  // Columns LOD rows and column-accurate ports. Additive: absent → the blueprint
+  // falls back to ON-leaf names client-side (Phase 1 behavior).
+  columns?: string[] | null
+}
+
+// A metric view dimension as declared in its YAML: the name it exposes, the
+// expression behind it, and where that expression's columns come from (the MV's
+// own source, or a joined table). Mirrors MvSemanticGraphDimension.
+export interface SemanticGraphDimension {
+  name: string
+  expr?: string | null
+  binding?: string | null
 }
 
 // join edges carry the decoded ON predicate, relationship, and SCD2 flag;
@@ -1234,11 +1315,25 @@ export interface SemanticGraphNode {
 export interface SemanticGraphEdge {
   from: string
   to: string
-  kind: "join" | "membership" | "replaces" | "uses"
+  // "governs" is a CLIENT-ONLY overlay edge (SemanticModelTab.withOverlay): a
+  // proposed metric view → the loose measure it would govern. The backend never
+  // emits it; it exists so the proposal overlay can draw a "would govern →" link
+  // without moving the measure out of the Space-config box.
+  // "derives" (round-7) links a measure → a table its expression is built from.
+  // The backend emits it for measures with a readable expr; the graph renders it
+  // ONLY when the measure is selected, so clicking a Space-config (loose) measure
+  // lights up its source tables (loose measures otherwise carry no lineage edge).
+  kind: "join" | "membership" | "replaces" | "uses" | "governs" | "derives"
   on?: string | null
   relationship?: string | null
   scd2?: boolean
   weight?: number | null
+  // Phase 2 (v4 §6, join edges only): parsed column endpoints of `on` —
+  // `from_column` on the `from` side, `to_column` on the `to` side — so join
+  // lines terminate at exact column ports. Additive: absent → the blueprint
+  // parses the `on` leaf names client-side (Phase 1 behavior).
+  from_column?: string | null
+  to_column?: string | null
 }
 
 // GET /spaces/{space_id}/semantic-graph — the space's semantic model.
@@ -1251,4 +1346,34 @@ export interface SemanticGraphResponse {
   proposals: MvProposal[]
   coverage_status?: string | null
   coverage_reason?: string | null
+}
+
+// Join Advisor (Semantic Blueprint v4 §7). Mirrors backend/models.py
+// JoinCandidate / JoinCandidatesResponse / JoinAdviceResponse. A candidate is
+// ADVICE to the optimizer — seeding it never edits serialized_space; the next
+// Auto-Optimize run validates and adds it itself. `probe` is the warehouse
+// containment ratio in [0,1], or null when no warehouse could probe it.
+export interface JoinCandidate {
+  id: string
+  from: string
+  fromCol: string
+  to: string
+  toCol: string
+  rel: "N:1" | "1:1"
+  match: "fk" | "name-type" | "probe"
+  probe: number | null
+  note?: string | null
+}
+
+export interface JoinCandidatesResponse {
+  space_id: string
+  status: "ok" | "fully_connected" | "no_candidates" | "no_warehouse"
+  candidates: JoinCandidate[]
+}
+
+export interface JoinAdviceResponse {
+  space_id: string
+  seeds: JoinCandidate[]
+  updated_at?: string | null
+  seeded_by?: string | null
 }

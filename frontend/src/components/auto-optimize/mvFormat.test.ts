@@ -41,6 +41,7 @@ function mk(overrides: Partial<MvProposal>): MvProposal {
     checks: null,
     score_components: null,
     evidence: null,
+    provenance_labels: null,
     provenance: null,
     alternatives: null,
     conflicts: null,

@@ -155,6 +155,22 @@
      Both suggestion surfaces (IQ panel and run-output panels) render through
      SHARED components — one card, one accept flow, one display module — so a
      fix on one surface is a fix on both by construction.
+   - CONTRACT SWEEPS ARE GREP-VERIFIED, NOT TEST-VERIFIED (from the fourth-look
+     autopsy: MV-D35 landed on the card and not the list chrome; the ACL grantee
+     landed in the consent modal and not the card DDL; a contract applied to one
+     call site and not its sibling passed every component test). When a prompt
+     changes a CONTRACT — a forbidden string, a required affordance, a resolved
+     value, a shared component — its VERIFY must include a repo-wide grep whose
+     output is pasted in the report, proving ZERO residual violations across
+     every surface, including list/section/disclosure chrome, empty states, and
+     the sibling surface. "The component is fixed" is not the contract; "no
+     instance of the violation remains in the repo" is. Chrome is surface.
+   - TERMINAL UI STATES MUST BE EARNED. A component that renders a
+     post-action state (approved / created / done) initializes that state ONLY
+     from a persisted record of the user's own action. Deriving a success state
+     from an ambient default, a null decision, or a server field that means
+     something adjacent is a defect of the worst kind: it tells the user they
+     did something they did not, and it MASKS the action it replaces.
    - FIDELITY GATE (from the third-smoke process autopsy — three waves of
      green-tested patches missed the experience): any prompt that changes a
      user-facing surface must, in its VERIFY, export the changed surface states
@@ -234,9 +250,9 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 673 backend + 1512 GSO,
+     `uv run --frozen --extra dev`. Expected baseline: 681 backend + 1512 GSO,
      measured 2026-08-25 (this supersedes the prior 638+1461 floor). Historical
-     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees). A count BELOW this is a regression — investigate. A
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -2527,6 +2543,658 @@ prompt creates the first one.*
    tests unchanged and green; the reviewer accepts on visual comparison,
    not on green tests.
 ```
+
+*Execution note — round 4 (2026-08-25). The round-3 reconciliation moved loose
+measures to a full-width `LooseMeasuresPanel` BELOW the canvas; deploying it, the
+reviewer caught three breaks from the reference and v3 note: (1) loose measures
+belong ON the canvas in the measures column, on the right (§3), not in a panel
+below; (2) selecting a box must LIGHT its edges (§4 / reference `BlueprintEdge`);
+(3) selecting a MEASURE must wrap its owning MV's tables (§4). All three are fixed
+in `SemanticGraph.tsx` — the concepts card rides `(CONCEPTS_COL=2,
+CONCEPTS_ROW)` and renders through `CardView`; active joins switch to the accent
+hue + `mv-arrow-on` over a glow underlay; the boundary resolves a selected
+measure to its owning MV via the `membership` edge. Plus reference-parity
+interactions: empty-canvas click clears the selection and re-clicking a node
+toggles it off (`onSelectNode` accepts `null`). The **9e contract frame was
+corrected to match** (its `SpaceConfigBox` HTML panel became an on-canvas
+`SpaceConfigNode` SVG group), the gap report records the reversal of round-3 item
+1 as round 4, and all 41 mockups were re-emitted. Full detail in
+`docs/design/mv-advisor-gap-report.md` (round 4).*
+
+*Execution note — round 5 (2026-08-25). The reviewer filed nine points on the
+round-4 deploy; each is closed, with the reviewer choosing the direction on the
+design forks. Space config now has its OWN column (`CONCEPTS_COL=3`, header
+"Space config · measures") rather than stacking under the MV boxes where it read
+as "below". Fact/dim is now a PROVEN backend `role` (fact = an MV's declared
+`source`, dim = an MV-joined table) captioned FACT/DIM only when proven, else a
+neutral TABLE — the fix for `dim_*` tables shown as FACT from column position.
+Measures carry `expr` + best-effort `description` on the wire, and `NodeDetail`
+shows a Definition section for a selected measure. Definition (`uses`) edges now
+render only for the selected MV (calm at-rest canvas); the palette is calmer
+(near-neutral MV boxes, neutral coverage badges, accent reserved for selection);
+the legend disambiguates the solid join from the dotted MV-definition line; the
+MV title/pill overlap is fixed (title full width, pill on row 2); Impact is
+disabled+greyed until a table is selected; and the select-time boundary is a
+solid accent container with a filled label chip. The authoritative post-round-5
+export is `RealModelV7Frame` (real component); the hand-drawn 9e frame is kept as
+the step-0 layout reference (headers relabelled, geometry not re-hand-drawn).
+Verified: 394 frontend + 31 backend semantic-graph tests green, `tsc`/lint clean,
+41 mockups re-emitted. Full detail in `docs/design/mv-advisor-gap-report.md`
+(round 5).*
+
+*Execution note — round 6 (2026-08-25). On the round-5 deploy the reviewer said
+the arrows were "still hodge podge and illegible … too many arrows … columns and
+tables too close", that the proposal overlay "hides some measures", and that "I
+don't see any MV proposals when I click on it". Re-reading the reference
+(`7-Eleven … BlueprintEdge`) surfaced the actual missing pattern: FOCUS + CONTEXT.
+The reference keeps every edge faint at rest and, on selection, DIMS all
+non-neighbour edges to near-invisible (`opacity 0.06`); ours kept joins loud at
+rest and never dimmed on select, so a click added clutter. `EdgeView` now takes a
+`dimmed` prop (`dimmed = highlight != null && !active && hoverEdge !== index`);
+join labels are on-demand only (nothing floats at rest); and `COL_GUTTER` 40 → 68
+/ `VGAP` 26 → 34 give the curves room. The overlay is fixed at the root: the old
+membership edge MOVED loose measures into an off-screen ghost card (that's the
+"hidden measures" + "no proposals"), so it now KEEPS the measure in Space config
+and draws a dashed "would govern →" link (client-only edge `kind: "governs"`) to a
+visible ghost proposed-MV card, with a `key`-driven re-fit on toggle so the ghosts
+frame into view. A new real-component frame `RealModelOverlayFrame` (9j) exports
+the overlay-on state; the 9c hand-drawn overlay and the 9e contract frame headers
+record the round-6 supersession. Verified: 395 frontend tests green, `tsc`/lint
+clean, mockups re-emitted (incl. 9j); no backend change (edges are
+client-synthesized). Full detail in `docs/design/mv-advisor-gap-report.md`
+(round 6).*
+
+*Execution note — round 7 (2026-08-25). On the round-6 deploy the reviewer asked
+two questions. (1) "Why are there 2 arrows between 2 tables?" — `dim_property ↔
+dim_host` genuinely declares two `join_specs` (a reciprocal declaration + an SCD2
+`is_current` variant) and the backend emits one edge per spec; a reader sees one
+relationship, so the canvas should draw one arrow. New pure helper
+`collapsePairJoins` keeps ONE `join` per unordered card pair (preferring the
+left→right survivor so the arrowhead points at the dim side); the full predicate
+list still lives in the node-detail "Declared joins" panel. (2) "Why doesn't
+lineage light up for space config measures?" — a loose measure belongs to no MV,
+so it had no edge: `focusSet` found nothing and round-6 dimming then hid the
+canvas. Its real lineage is the tables its EXPRESSION reads, so the backend now
+parses each non-governed measure's `expr` (`_expr_table_refs`: fully-qualified
+`catalog.schema.table.column` → its table) and emits a `derives` edge measure →
+table (new `MvSemanticGraphEdge.kind`). A table the expr proves but the space never
+modeled is ADDED as a neutral source (lands in the unmodeled region — the honest
+read). The client renders `derives` ONLY on-select (dashed, like `uses`), and
+`focusSet` lights the referenced tables. Governed measures already wrap their MV, so
+they're skipped. Verified: 34 backend + 93 frontend model tests green, `tsc`/lint
+clean. Full detail in `docs/design/mv-advisor-gap-report.md` (round 7).*
+
+### Prompt 15.9 — Complete the 15.8 contracts (fourth look; four partial landings, one of them masking the feature)
+
+*15.8's card-level work landed — the facts row is live and correct. But four
+contracts landed PARTIALLY, and the first one hides the feature the prompt
+existed to build. Root causes verified at review, so no re-diagnosis needed:*
+
+*(a) THE MASKING BUG — `MvAcceptFlow` renders its `status === "approved"`
+terminal ("Approved for the next run", `MvAcceptFlow.tsx:238-243`) on first
+paint for proposals the user never acted on, so `[Create this metric view]`
+— which DOES exist in the component, with a working `created` terminal at
+`:207-232` — is never reachable. MV-D34 shipped and is invisible. Find why the
+initial status resolves to approved (a persisted `approved_for_rerun` written
+by something other than the user's click, or an initialization deriving
+success from a null/adjacent field) — then honor the new TERMINAL-STATES-MUST-
+BE-EARNED rule: the state initializes only from a persisted record of the
+user's OWN action.*
+
+*(b) MV-D35 applied to cards, NOT to list chrome: "Show N low-confidence
+suggestions", "(nothing scored MEDIUM or higher)", "Low-confidence
+suggestions — weaker recurrence or thinner evidence"
+(`MvIqScanAdvisorySection.tsx:426-432`). Chrome is surface; the word
+"confidence" is banned there too.*
+
+*(c) The ACL grantee resolution EXISTS (`_space_audience_grantees`,
+`auto_optimize.py:1526`) and feeds the consent modal, but the card's
+`grant_sql` still emits `` `<grantee>` `` (`:1419-1431`). One call site fixed,
+its sibling not.*
+
+*(d) Evidence id resolution was specced and not built: `mvFormat.ts` has count
+labels by prefix only (`:149-161`); the details disclosure still dumps
+`sql_snippet:measures:01f1330…` / `trusted_asset:01f1330…` at the user.*
+
+```
+1. (a) Fix the masking bug FIRST — nothing else matters while the primary
+   action is unreachable. Report the actual cause before fixing. Then: the
+   default state of an un-acted proposal is the ACTION state
+   ([Create this metric view] / [Approve for later]); "Approved for the next
+   run" renders only for a proposal whose ledger says THIS user approved it,
+   and even then the card offers [Create it now] if entitlement allows —
+   approval-for-later is not a dead end.
+2. (b) Sweep MV-D35 across all chrome: rename the disclosure to describe
+   EVIDENCE, not doubt — e.g. "Show N with lighter evidence" / "N more, ranked
+   lower by evidence" — and delete the "weaker recurrence or thinner
+   evidence. Review before creating." framing (every surfaced proposal is
+   already validated, executable and non-overlapping; the disclosure orders,
+   it does not warn). The empty-primary case says what it means: "All N
+   suggestions are ranked lower by demand evidence — each is still validated
+   and executable."
+3. (c) Card `grant_sql` uses the SAME `_space_audience_grantees` resolution as
+   the consent modal — one grantee truth. Multiple principals → the copy-ready
+   statement names them (or one statement per principal); zero resolvable →
+   say so in words rather than emitting a placeholder that cannot run.
+4. (d) Build the evidence resolution: a `trusted_asset:` id resolves to its
+   example-question text (truncated, full on hover), `sql_snippet:` to the
+   snippet's name/expression, `gso_patch:` to its patch type + run. Ids move
+   behind a "show raw ids" affordance for debugging. UI display only — the
+   metadata firewall governs what ships INTO metric-view metadata, not what
+   the space's own owner reads in their own panel.
+5. VERIFY — grep-proofs pasted into the report, per the new CONTRACT-SWEEPS
+   rule: zero occurrences of "confidence"/"low-confidence" in any rendered
+   proposal or chrome string; zero `<grantee>`; zero raw-id rendering outside
+   the debug affordance; and a test that an un-acted proposal renders the
+   action state (the masking-bug regression pin). Plus the fidelity-gate
+   exports for both surfaces, and the adversarial re-grep of items 1-4.
+6. MV-D9 bookkeeping; baseline lockstep; redeploy; -k scenario_d incl. the
+   create-at-approval sub-leg — which is now actually reachable, so this is
+   its first real live exercise.
+```
+
+*Execution note — Prompt 15.9 (2026-08-25). All four landed; local VERIFY green.*
+
+*(a) Masking bug — ROOT CAUSE reported before fixing: warehouse rows arrive
+stringified (Statement Execution `JSON_ARRAY`), so `bool("false")` was `True`
+for EVERY row (`_mv_proposal_from_row` used a raw `bool()`), forcing
+`approved_for_rerun` true → `MvAcceptFlow` opened on its "approved" terminal →
+`[Create this metric view]` unreachable (MV-D34 shipped invisible). Fix: the
+backend coerces via the existing `_safe_bool` (both `approved_for_rerun` and the
+sibling `tier_capped_by_coverage`); the frontend now earns the terminal —
+`status` initializes to `approved` ONLY from `proposal.decision === "approved"`
+(TERMINAL-STATES-MUST-BE-EARNED), never the derived gate — and the approved
+terminal still offers `[Create it now]` (not a dead end). Regression pins:
+`test_proposal_mapping_coerces_stringified_false_boolean` (backend) and
+"an un-acted proposal renders the ACTION state, even when approved_for_rerun is
+set" (frontend).*
+
+*(b) MV-D35 chrome sweep: the low-evidence disclosure in
+`MvIqScanAdvisorySection.tsx` describes EVIDENCE, not doubt — "Show N more,
+ranked lower by evidence" / empty-primary "All N suggestions are ranked lower by
+demand evidence — each is still validated and executable." The word
+"confidence" and the "weaker recurrence or thinner evidence. Review before
+creating." framing are gone from rendered chrome.*
+
+*(c) One grantee truth: `get_mv_ddl` resolves the audience from
+`_space_audience_grantees` (the SAME ACL the consent modal reads) via a new
+`_mv_audience_grant_sql` helper — one `GRANT SELECT ... TO` per resolved
+principal, or a commented "no queryable audience resolved" instruction when the
+ACL yields none. The fallback DDL payload now carries `target_space_id` so the
+advice-run path resolves too. The frontend `grantPreview` mirrors it. Zero
+`<grantee>` in any emitted string.*
+
+*(d) Serve-time provenance resolution: the backend resolves each evidence id to
+a human label from the CURRENT space config (no re-scan) — `sql_snippet:` →
+the snippet's display name (detail = its expression), `trusted_asset:` → its
+example-question text, `gso_patch:` → lever/iteration; a bare benchmark id stays
+the "curated query" count. `_mv_attach_provenance_labels` runs on all three
+proposal reads (run-keyed, space-scoped, and the on-demand suggest/stream, which
+reuse the config already in hand). `MvProposal.provenance_labels` carries them;
+`MvProposalCard`'s EvidenceBlock renders the labels and keeps the raw ids behind
+a renamed "show raw ids" DEBUG affordance — the ONLY place a raw id renders. A
+latent raw-id leak in re-run chrome (`MvSuggestSection` fell back to
+`suggestion_id`) now reads "Proposed metric view". New pins in
+`backend/tests/test_mv_provenance.py` and a frontend "renders resolved
+provenance labels, keeps raw ids behind the affordance" test.*
+
+*VERIFY (local): backend 2208 passed, frontend 401 passed, eslint clean, tsc
+clean. grep-proofs — zero rendered "confidence" on MV production surfaces (only
+identifiers/comments and the graduated hand-drawn scaffold `mockups/
+MvProposalCard.tsx`, unwired from the app, retain the word); zero emitted
+`<grantee>` (all occurrences are comments/tests asserting its absence); raw ids
+render only inside the `showRaw` block. Fidelity exports regenerated (43 frames,
+both themes) — the real-component frames `15.8a`/`15.8b` now show "show raw ids"
+and no percent. REMAINING: MV-D9 bookkeeping, baseline lockstep, live redeploy to
+fevm-serverless, and `-k scenario_d` incl. the create-at-approval sub-leg (first
+reachable now that (a) is fixed).*
+
+*Execution note — deployed review of 15.9 (2026-08-25). Four points on the
+fevm-serverless deploy; two were regressions from (c)/(d), two were design calls.*
+
+*1. "Why so many grants?" — the card emitted one GRANT per space-ACL principal
+(a group UUID, `users`, `admins`, and a self-grant to the app SP). Reviewer's
+call: the ONE grant that matters functionally is SELECT to the GSO service
+principal, so the optimizer can read a view created under the owner's identity on
+a create-and-attach run. `get_mv_ddl` now emits a single `GRANT SELECT ... TO
+\`<sp-uuid>\`` via `_mv_optimizer_grant_sql` + `_gso_sp_application_id` (the same
+resolution `check_permissions` uses); no SP resolvable → a commented instruction.
+The consent modal's audience selector/preview is replaced by a worded
+optimizer-grant note (no SP identity threaded to the modal). `_space_audience_
+grantees` stays only for the probe's `audience_grantees` field.*
+
+*2. "Repeating trusted asset / curated snippet." — REGRESSION from (d):
+`_mv_fetch_space_config` returned the export envelope, but the config lives under
+`_parsed_space`, so the index was empty and every id fell back to its generic
+category label. Fix: `_mv_provenance_index` unwraps `_parsed_space`, AND a label
+is emitted ONLY when it resolves to real config text (snippet name/expr,
+example-question text) — `gso_patch`/unknown/id-less now return `None` and ride
+the count chip. Deduped by text; card caps at 6 with "+N more". Reviewer's
+"count unless meaningful" satisfied literally.*
+
+*3. Metric-view attributes columnar. — `MvProposalCard`'s full-width governed-
+measures list is replaced by `MetricViewAttributes`: a responsive grid, Source +
+Joins on the left, Measures (by formula) on the right; empty sections omitted.
+Source moved out of `EvidenceBlock` (which stays about WHY) to avoid duplication.*
+
+*4. "Review in setup → empty/stuck GSO run gate." — two parts. (i) The stuck
+"checking for approved proposals" was (d) latency: `_mv_attach_provenance_labels`
+ran a serve-time Genie config export on the `approved_for_rerun` GATE query too;
+now skipped when that filter is set. (ii) The pointless jump: the pre-create
+`[Review in run setup]` button (idle + approved terminals) is removed so IQ scan
+stays self-contained; `[Start an optimization run]` remains on the CREATED
+terminal only (the endorsed create→optimize flow). `MvOutputPanels` pin flipped
+to assert the button's absence.*
+
+*VERIFY (local): backend `-k "mv_create or provenance or mv_ddl or
+auto_optimize_router"` 176 passed; frontend auto-optimize+model 330 passed; tsc
+clean; eslint clean. Not yet redeployed.*
+
+*Execution note — deployed review round 2 (2026-08-26). Six points on the full
+fevm-serverless deploy; #3 (grants) confirmed good. One was a real create-path
+bug verified against the live workspace; the rest were surface polish + a feature.*
+
+*4a. "Create failed — no access, but I DO have access." — VERIFIED false negative.
+Against fevm-serverless the signed-in user OWNS the target schema
+(`serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold`) and holds
+`ALL_PRIVILEGES`+`MANAGE` on the catalog (a full-token CLI read as the same
+identity returns them). The probe (`mv_entitlement.probe`) nonetheless denied all
+three of USE CATALOG / USE SCHEMA / CREATE TABLE: it relied solely on
+`grants.get_effective`, which the OBO app token is not scoped to call (the
+documented OBO-scope gap), and it mapped that READ FAILURE to DENIED — a false
+"ask an admin to GRANT." Two fixes, both OBO-only (the probe still never falls
+back to the SP): (1) ownership is authoritative — `_securable_owner`
+(catalogs/schemas/tables `.get().owner`, metadata the user can always read) short-
+circuits a check to GRANTED when the user or a group owns the securable or an
+ancestor; owning the schema also satisfies the parent USE CATALOG. (2) a failed
+effective-read is now UNKNOWN, not DENIED. Regression pin
+`test_schema_owner_is_sufficient_without_any_grant_read`; two prior "read failure
+⇒ DENIED" tests re-pinned to UNKNOWN. Verified: 42 entitlement tests pass.*
+
+*2. "Measures still bland — no Source/Joins/Measures columns." — the columns
+existed but the Source column never populated: `evidence.source_tables` was never
+written by the advisor, and member `expr`s are short-form (not FQ), so the left
+column was always empty and the grid collapsed to Measures-only. Fix: serve-time
+`MvDdlArtifact.source_tables`, parsed from the rendered `yaml_text` (`source:` of
+base + each join, per-segment backticks normalized) — the authority, works for
+existing rows with no re-scan (`_mv_source_tables_from_yaml`). The advisor also
+now stamps `evidence["source_tables"]` for forward rows / the run-output surface.
+`MetricViewAttributes` reads `ddl.source_tables ?? evidence.source_tables` and
+labels a one-source view "Single-source view" when the DDL is loaded. Pin
+`test_get_mv_ddl_parses_source_tables_from_yaml`.*
+
+*4b. "After expanding, no way to collapse." — the card's "Hide detail" toggle sits
+ABOVE the detail; once measures + evidence + two SQL blocks open, it scrolls out
+of reach. Added a second "Hide detail" affordance at the foot of the expanded
+detail.*
+
+*5. "No summary of what's proposed." — new `MvProposalsSummary` above the cards on
+BOTH surfaces (IQ-scan advisory + run-output): "Suggesting N metric views to
+govern M recurring measures", the view names each with their measure count, and
+one line on what they help. Pure assembly from the same `MvProposal[]`; renders
+nothing when no proposal carries a name.*
+
+*1. Evidence formatting. — counts rendered as quiet pills (not a run-on sentence);
+label list given a bullet + tighter spacing; raw ids stay behind "show raw ids".*
+
+*VERIFY (local): backend 195 passed (entitlement/create/provenance/semantic-graph
++ GSO advisor); frontend auto-optimize suites 76 passed; `npm run build` (tsc -b +
+vite) clean; 43 fidelity mockups re-emitted. Not yet redeployed.*
+
+*Execution note — deployed review round 3 (2026-08-26). Three points after the
+round-2 deploy; #4a's ownership fix WORKED — create now reaches UC execution
+(access is no longer the blocker), which surfaced the real generator bug below.*
+
+*1. "Text overflow on the confirmation screen." — the consent modal rendered the
+FQN as an inline `font-mono` span, and a long `catalog.schema.name` has no spaces
+to wrap on, so it ran past the dialog edge. Fixed in `MvAcceptFlow`: the sentence
+no longer inlines the name; the FQN renders on its own `break-all` block below it,
+so any length wraps inside the modal.*
+
+*2. "Error when I actually tried to create it." — VERIFIED, and it's a real
+generator defect (not access): UC returned `METRIC_VIEW_INVALID_VIEW_DEFINITION —
+Measure and dimension names must be unique` for a bundle whose duplicated names
+(`…_rate`, `…_rate_numerator/_denominator`, `…_pct_of_total`, `…_pct_of_total_base`,
+`…_grand_total`, `…_matching_count`) were ALL shape-derived. Root cause in
+`mv_yaml._shape_measures`: a shape's name comes from `concept` + kind, so two
+shapes of the SAME kind in one bundle (two ratios, two share-of-totals) render
+identical names. Fix: de-dup the shape BASE (every component name and every
+`MEASURE()`/`ANY_VALUE()` reference is built from it, so deduping the base keeps
+the whole family unique and self-consistent) — a repeated base becomes
+`<base>_2`, `_3`, …; the dedup is seeded with the primary measure/dimension names
+too, so a shape can't collide with those either. Belt-and-suspenders: the local
+validator now rejects any residual duplicate name (`_validate_unique_names`),
+turning this class into a local rejection with the offending name rather than a
+late UC-create failure. Pins `test_two_same_kind_shapes_get_unique_names_and_validate`
+and `test_validate_rejects_duplicate_measure_or_dimension_names`.*
+
+*3. "Still don't see the option to expand/collapse the suggestion." — the round-2
+control was a faint gray text link ("› Show detail") buried between the evidence
+line and the Create button; users didn't read it as the accordion. Replaced with
+an always-visible, labeled/bordered chevron toggle in the card HEADER (the
+standard accordion affordance), so expand/collapse of the whole suggestion is
+obvious at a glance; the foot-of-detail "Hide detail" from round-2 stays.*
+
+*VERIFY (local): GSO `test_mv_yaml.py` 43 passed (incl. 2 new pins); frontend
+tsc-app clean; MV suites (`MvOutputPanels` / `MvIqScanAdvisorySection` /
+`MvSharedAcceptFlow`) 37 passed; 43 fidelity mockups re-emitted; `uv.lock`
+untouched. Not yet redeployed.*
+
+*Execution note — deployed review round 4 (2026-08-26). One point after the
+round-3 deploy; the dedup fix WORKED (the rendered body carried `…_rate_2`…`_8`,
+`…_pct_of_total_2`, all unique), which surfaced a deeper generator bug — and it
+confirmed the user's instinct that "robust suggestion+validation+creation" was
+overstated.*
+
+*1. "PARSE_SYNTAX_ERROR at or near '(' " on a share-of-total dimension. — VERIFIED
+as a compound generator defect, backend AND job (one shared `advise_from_corpus`
+→ `generate` → `validate` path). Two causes. (a) The fixed-LOD grand-total
+dimension was built as `f"{qualified} OVER ()"`, valid ONLY when the base is a
+bare aggregate; the base here was `COUNT(*) * 100.0`, so `OVER ()` bound to the
+literal `100.0` → parse error (a second one stapled `OVER ()` onto an
+already-windowed `LAG(...) OVER (...)`). (b) The bigger cause: recurring shapes
+are mined from the WHOLE corpus into one global `safe_shapes`, and that same set
+was handed to EVERY bundle regardless of table — so a view over
+`fact_booking_daily` got 8 ratios / 2 share-of-totals / 2 conditional-counts
+whose expressions read columns the source doesn't have (`total_revenue`, `month`,
+`total_amount`, `property_id`, …), a 34-item kitchen sink. Nothing rejected it
+because `_qualify_source_columns` silently leaves an unknown column bare and
+`validate()` never SQL-parsed the expressions.*
+
+*Fix (three layers, defense in depth, all in `mv_yaml`): (1) SCOPE — a shape is
+dropped unless every column its expression reads is in the columns we can prove
+belong (source columns ∪ the columns the view's own measures read; the `name`
+label is never scanned). This kills the foreign-column kitchen sink even when the
+source's columns weren't profiled (the observed case: primary measures rendered
+unqualified, i.e. `source_columns` was empty — it degrades to the measures'
+columns rather than to nothing). (2) GUARD — the share-of-total shape is dropped
+unless its base `_is_simple_aggregate` (single aggregate, no window), so
+`… OVER ()` is only ever built where it is valid. (3) GATE — `validate()` now
+SQL-parses every measure/dimension `expr` (databricks dialect) and rejects an
+unparseable one with the offending name, turning this whole class into a local
+rejection instead of a UC-create failure. Confirmed sqlglot rejects both
+malformed `… OVER ()` forms and accepts every form we actually emit
+(`MEASURE()`, `ANY_VALUE()`, `FILTER (WHERE …)`, `SUM(…) OVER ()`, `NULLIF`).
+Pins: `test_shape_reading_a_foreign_column_is_dropped`,
+`test_pct_of_total_with_a_non_aggregate_base_is_dropped_not_broken`,
+`test_validate_rejects_an_unparseable_expression`. NOTE (replay): the create path
+replays the STORED artifact, so an already-persisted bad proposal still fails
+gracefully — a re-scan regenerates a clean one.*
+
+*VERIFY (local): GSO full unit suite 1517 passed (incl. 3 new pins); backend
+suite 2216 passed; gap-report line counts refreshed (`gap_report_counts.py
+--write`); `uv.lock` untouched. Backend/engine-only — no frontend surface changed,
+so the Fidelity Gate needs no new mockups this round.*
+
+*Execution note — deployed review round 5 (2026-08-26). One point after the
+round-4 deploy, and the one that reframed the whole create CUJ. The user created
+a metric view successfully, then reported: "I continue seeing proposals for 3
+metric views, I don't see the semantic model updated, and I'm not sure the Genie
+Agent config was updated." The instinct was right — and it exposed a design gap,
+not just a UI staleness bug.*
+
+*1. "Created, but the config/semantic model didn't change and the proposals still
+list it." — VERIFIED against the code (loaders confirmed run_id-scoped in
+`warehouse.py:1413/1445/1483`; attach phase reads its own run's `CREATED` rows in
+`mv_attach.py:384-398,469-472`). Root cause: create-at-approval only issued an OBO
+`CREATE VIEW` + an `OBO_CREATED` ledger row under a **sentinel advice run_id**;
+the documented "attach on the next run" was NOT wired — the optimize job's attach
+phase requires `mv_attach_views`/`mv_consent_id` job params set ONLY by the
+create-at-**trigger** hook, and loads `CREATED` rows keyed to the optimization
+run's own id, never the advice run's. So a view made via "Create this metric view"
+was never attached by any later run: no `serialized_space` change, and the
+candidate list (which never cross-referenced created state) kept re-offering it.*
+
+*Decision (user-directed): the Genie config is the source of truth, so approving a
+create should ATTACH the view immediately — not defer it to some later run.
+Reshaped create-at-approval into **create-AND-attach-at-approval**, DECOUPLED from
+measurement: `create_at_approval` now, after the confirmed OBO `CREATE VIEW`, reads
+`serialized_space` (OBO), appends the view to `data_sources.metric_views`, and
+PATCHes it back via the same validated write path the job uses
+(`_attach_metric_view_to_space` → `fetch_space_config`/`patch_space_config`). The
+job-side `mv_attach` phase still measures lift and auto-detaches on regression for
+views IT attaches autonomously (MV-D16 intact); a user-approved create is a manual
+config edit, not a gated optimization step. Failure is a clean seam: a failed PATCH
+(e.g. no CAN EDIT) leaves a created-not-attached view — result `attached=False`,
+ledger `CREATED` — the card explains, never a silent no-op. The ledger status now
+mirrors the attach outcome (`ATTACHED`/`CREATED`).*
+
+*2. Consequences that fall out of "config is the source of truth": the semantic
+model and IQ re-scan read `serialized_space`, so they reflect the view once it is
+shelved (re-scan then drops the now-governed measure per `mv_advisor.py:1278-1288`);
+optimization reads the live config as baseline, so it picks it up with no special
+wiring. To make the list truthful immediately (before a re-scan), `MvProposal`
+gains an `attached` marker computed serve-time from the live config's
+`_metric_views` identifiers (`_mv_mark_attached`, reusing the one config read the
+provenance-label step already does) — NOT from a ledger, so a detach in Genie
+un-marks it. The one manual step left is the SP `GRANT SELECT` (the optimizer is a
+different principal), now returned on the create response (`grant_sql`) and shown
+in the created terminal.*
+
+*3. UI (fidelity gate): the consent modal is now "Create and attach this metric
+view?" (attach happens now, not on a later run); the created terminal shows
+"Created & attached to your Agent" + the SP grant (or a created-not-attached
+degrade with how to attach it in Genie); an already-attached proposal opens the
+shared accept flow on an "Attached to your Agent" terminal and the card carries an
+"Attached" header badge instead of re-offering create. New fidelity frame
+`15.10-attached-proposal` renders the REAL card from an `attached` payload; all 45
+mockups re-emitted in both themes.*
+
+*VERIFY (local): backend `mv_create`/`mv_create_at_approval` suites green (incl.
+new pins `test_happy_path_creates_and_attaches_at_the_consented_name`,
+`test_attach_failure_records_created_not_attached`,
+`test_attach_helper_is_idempotent_and_never_raises`,
+`test_mark_attached_flags_only_proposals_on_the_config`,
+`test_create_route_returns_created_attached_and_grant`); frontend `tsc` + ESLint
+clean; `MvSharedAcceptFlow`/`MvOutputPanels`/`mockups` vitest green (incl. the
+attached-terminal pin). Deploying to fevm-serverless for the deployed eyeball.*
+
+*Execution note — deployed review round 6 (2026-08-26). The round-5 deploy left
+one dead end the user hit immediately: a proposal for a view that ALREADY EXISTS
+(created in a prior round, before attach-at-approval was wired) was still listed
+with a live "Create this metric view" button, and clicking it failed with
+"`… already exists; refusing to clobber it`". Two symptoms, ONE root cause
+(traced with `systematic-debugging`): `create_at_approval` treated any existing UC
+object as a terminal refusal, so it never attached the pre-existing view; and
+because `_mv_mark_attached` only badges proposals present on `serialized_space`,
+an existing-but-unattached view was never marked → stayed listed → re-hit the
+clobber guard. The refusal was written to protect an unrelated same-named object,
+but it also stranded the user's own view forever.*
+
+*Fix (root cause, not symptom): make create-at-approval IDEMPOTENT. When the
+consented object already exists AND is a usable metric view (`_confirm_metric_view`
+on the existing object), skip the `CREATE` and fall through to the SAME attach
+path — the config is the source of truth, so attaching is exactly what clears it
+from the list. Only a same-named object that is NOT a metric view stays a genuine
+collision we refuse to touch (never dropped — it is not ours). A new
+`already_existed` flag rides `MvCreateAtApprovalResult` → response → the frontend
+type, so the created terminal is honest ("Attached to your Agent (view already
+existed)") rather than claiming a fresh create; `grant_sql` still resolves so the
+SP `SELECT` is one copy away even for a view made in a prior round. This also
+retires the round-5 "attach on next run" framing left in the `/mv/create`
+docstring.*
+
+*VERIFY (local): backend `mv_create_at_approval` suite green — the old
+`test_existing_object_is_not_clobbered` (which pinned the dead end) is replaced by
+`test_existing_metric_view_is_attached_not_clobbered` (created+attached+
+`already_existed`, no `CREATE VIEW`/`DROP VIEW`, ledger `ATTACHED`) and
+`test_existing_non_metric_object_is_refused` (genuine collision still refused,
+nothing created/dropped), plus route pin
+`test_create_route_reports_already_existed_and_still_grants`; full backend suite
+2222 passed. Frontend `tsc` + ESLint clean; full vitest 404 passed. The changed
+copy lives in the interaction-only created terminal (reached only after the async
+create), so — per the round-5 precedent for that terminal — it is proven by the
+component/backend tests, not a new static frame. Deploying to fevm-serverless.*
+
+*Execution note — deployed review round 7 (2026-08-26). Three polish points on the
+round-6 create-and-attach terminal + consent modal.*
+
+*1. Created terminal overflowed its card. The SP `GRANT SELECT … TO <sp>` is one
+long, space-free line; the `SqlCodeBlock` already has `overflow-x-auto`, but it
+sat inside `MvProposalCard`'s `actions` row (`flex flex-wrap`), and a flex item's
+default `min-width:auto` refuses to shrink below its content — so the block grew
+to the GRANT's width and pushed the whole card past its right edge instead of
+scrolling. Fix: the accept-flow terminals now carry `w-full min-w-0`, so the
+terminal fills the row and the long GRANT scrolls WITHIN the SQL block. Root cause
+(the flex min-width trap), not a symptom patch on `SqlCodeBlock` (left shared and
+unchanged).*
+
+*2. "I created this myself" showed even after "Created & attached". The tertiary
+MV-D24 claim was a SIBLING of `MvAcceptFlow` in `ScanProposalCard`, so it rendered
+regardless of the flow's state — including the created/attached terminals, where a
+view demonstrably exists and there is nothing left to claim. Fix: the claim is now
+a `claimAffordance` prop the flow owns and renders only in its pre-create states
+(action / degraded / approved), and HIDES in the created and attached terminals
+(the early returns simply don't render it). One state machine, one truth. The
+run-output surface never passed a claim, so it is unaffected.*
+
+*3. Consent modal was wordy and lax. Rewrote the run-on paragraph as a short lead
+("Runs under your identity. This will:") plus three bullets — create in UC (owned
+by you), attach to the Agent config (source of truth, updates immediately), and
+return one GRANT to run afterward. The `<ul>` is a sibling of `AlertDialogDescription`
+(a list nested in the description's `<p>` is invalid markup), and the long FQN keeps
+its `break-all` block.*
+
+*VERIFY (local): frontend `tsc` + ESLint clean; full vitest 406 passed (+2 pins in
+`MvSharedAcceptFlow`: the claim renders in the action state and is hidden in the
+attached terminal). All three are interaction-only states (consent modal, created
+terminal) or the statically-pinned attached terminal, so — per the round-5/6
+precedent — they are proven by component tests, not new static frames. Deploying to
+fevm-serverless.*
+
+*Execution note — deployed review round 8 (2026-08-26). Two points: attached views
+kept re-appearing as suggestions, and there was no link to the new view.*
+
+*1. Attached views still surfaced as "create this" suggestions — even after a
+Re-scan. Two seams (found by tracing the IQ pipeline end to end): (a) the Re-scan
+path `POST /spaces/{id}/mv/suggest/stream` (and its blocking twin `…/mv/suggest`)
+reloaded ALL space-scoped warehouse candidate rows and NEVER called
+`_mv_mark_attached` — so a created-and-attached view came back un-badged, with a
+fresh Create CTA, the moment the user re-scanned; and (b) even where marking DID
+run (`GET …/mv-proposals` on hydrate), nothing FILTERED attached out of the cards
+or counts — the marker only badged them. Root of the "config is the source of
+truth, so it should just drop out" expectation was unmet on both axes. Note the
+advisor's own governed-measure exclusion is UC-DESCRIBE-derived over corpus tables,
+NOT `serialized_space.metric_views`, so attach alone never retires a candidate row
+— the fix has to be at the list/marker layer, which is where it now lives.*
+
+*Fix (backend): both `suggest_space_mv` and the stream `done` branch now call
+`_mv_mark_attached(proposals, raw)` — `raw` (the full `fetch_space_config` result),
+not `applied_config` (`_parsed_space`, which has no `_metric_views` key), so the
+identifiers actually match. `_mv_mark_attached` also strips backticks on both sides
+now (Genie can export `` `cat`.`sch`.`view` ``; the warehouse `proposed_object` is
+bare), so a truly-attached view is never left looking un-attached. Fix (frontend):
+`MvIqScanAdvisorySection` partitions `proposal.attached` OUT of the active set —
+the open set feeds the summary callout, the primary/low cards, and the header count
+(now "N suggestions" = open only), while the attached set renders in a compact
+`MvAttachedSummary` ("Already attached to your Agent (N)" + names) that states they
+are no longer suggested. An all-attached space shows this positive terminal instead
+of the "nothing found" empty.*
+
+*2. No link to the created view. The created terminal already had a "View in Catalog
+Explorer" affordance, but it was gated on a `databricksHost` prop NO caller ever
+passed (so `catalogExplorerUrl` always returned null — the link never rendered). Fix:
+`MvCreateAtApprovalResponse` now carries `workspace_host` (resolved server-side from
+the client config, best-effort — a missing host just omits the link, never fails the
+create), and the created terminal prefers that host over the prop. The link now
+appears right after a create, deep-linking `…/explore/data/<catalog>/<schema>/<view>`.*
+
+*VERIFY (local): backend `test_mv_create_at_approval` 24 passed (+`workspace_host`
+assertion on the create route, +a backtick-normalization pin on `_mv_mark_attached`;
+the `client` fixture stubs `get_workspace_client` so the host resolves
+deterministically); MV/auto-optimize suite 848 passed. Frontend `tsc` + ESLint clean;
+`MvAttachedSummary` exported and pinned (attached views are confirmed by name, the
+all-attached terminal is positive, empty renders nothing). Deploying to fevm-serverless.*
+
+*Execution note — deployed review round 9 (2026-08-26). Round 8 STILL showed
+attached views as suggestions after a re-scan — so I stopped guessing and read the
+deployed state directly (fevm-serverless, via the SQL Statement Execution API +
+the Genie export).*
+
+*Root cause (found in the field, not the code): the `genie_opt_mv_created_objects`
+ledger showed `fact_booking_daily_metrics` and `fact_booking_detail_metrics` at
+status `ATTACHED` (OBO_CREATED) — the PATCH succeeded — yet the live
+`serialized_space` for the space (`01f1330752b119a392aa7b725aec6251`) had
+`data_sources.metric_views` EMPTY and every `*_metrics` view listed under
+`data_sources.tables` instead (including `dim_property_metrics`, which we never
+created). So this Genie space represents its metric views as `tables` data sources.
+`_mv_mark_attached` matched ONLY `_metric_views`, so it saw nothing attached and the
+list re-offered all of them as "create". The schema does define a separate
+`data_sources.metric_views` (confirmed via the conversation-API reference — it has
+its own sorting rule), but empirically a metric view added to this space round-trips
+under `tables`; matching only one list was the bug.*
+
+*Fix (point 1): `_mv_mark_attached` now matches `proposed_object` against the UNION
+of `_metric_views` AND `_tables` — presence in EITHER data-source list means the
+view is on the Agent, so it drops out of the suggestions (and into the "Already
+attached" summary). Exact 3-part-name match, so a base table (`fact_booking_daily`)
+never masks its `*_metrics` proposal. This is a READ/marker change only; the attach
+write is unchanged (the object is already a data source, so re-approval stays an
+idempotent no-op). Pinned by a new test that a metric view filed under `tables` is
+recognized while a same-stem base table is not.*
+
+*Fix (point 2 — "prepend proposed"): `MvProposalCard` now renders an amber
+"Proposed" tag before the 3-part name whenever the proposal is NOT attached, so a
+view that does not exist yet is never mistaken for a real object. Attached views
+drop the tag (they show the existing "Attached" badge instead). Pinned both ways.*
+
+*Fix (point 3 — Evidence + Source/Joins/Measures readability): the SQL an evidence
+id stood for, each source identifier, and each measure expression now render as
+distinct bordered mono code chips set off from their human labels (with more
+line spacing and a pill for the join strategy), instead of running together on one
+muted line. Layout unchanged; the visual hierarchy is clearer.*
+
+*VERIFY (local): backend MV/marking/suggest 39 passed (+a tables-referenced marker
+pin); full frontend vitest 411 passed (+`Proposed`-tag pins, both attached and not);
+`tsc` + ESLint clean. Deploying to fevm-serverless.*
+
+*Execution note — deployed review round 10 (2026-08-26). Round 9 left an open
+question flagged in review: because this space keeps metric views under `tables`,
+was the attach a no-op because Genie COLLAPSES `metric_views`→`tables` on write, or
+because the `metric_views` bucket is simply never used here? The distinction
+matters — if the server honors `metric_views`, we were writing to the wrong list;
+if it collapses, the bucket is cosmetic. So I stopped inferring and ran a
+controlled round-trip.*
+
+*Evidence 1 — corpus scan (read-only). Downloaded all 16 `serialized_space` configs
+in fevm-serverless. EVERY one is version 2 with `data_sources` keys = `['tables']`
+only; NOT ONE emits a `metric_views` key. Genuine UC `METRIC_VIEW` objects added via
+the Genie UI (e.g. `customer_/property_/revenue_analytics_metrics` in the Wanderbricks
+and Vacation Rental spaces) sit under `tables` WITH full `column_configs` — so even
+the product UI files metric views as `tables`. The string `"metric_view"` appears
+nowhere in any raw config: there is no per-entry type discriminator, so a metric
+view is indistinguishable from a table in `serialized_space` (you must resolve
+`table_type` from UC — which the marker already does).*
+
+*Evidence 2 — controlled round-trip (write, throwaway space `mv-e2e-empty-bare`
+/ `01f1a02f90151e9abc8b8a8914707dab`). PATCHed a real `METRIC_VIEW`
+(`…prashanth_wanderbricks_gold.host_analytics_metrics`) EXPLICITLY under
+`data_sources.metric_views`. The PATCH was accepted (fresh `etag`, no error). The
+immediate read-back returned it under `data_sources.tables` with `metric_views`
+empty/absent. VERDICT: `COLLAPSED into tables`. Restored the space to its original
+single-table state afterward. This is definitive: Genie v2 accepts a `metric_views`
+write and server-side relocates it into `tables`.*
+
+*Conclusion: the round-9 "collapse" reading was correct and is NOT an artifact of our
+code — sending under `metric_views` vs `tables` yields identical persisted state
+(everything lands in `tables`). The attach was always genuinely effective (the view
+IS a governed data source; PATCH succeeded, etag advanced); it just never populated
+the documented bucket because this Genie build does not use it. The public schema
+does define a separate `data_sources.metric_views` (own sorting rule) — so this is a
+deployment/version characteristic of this serverless Genie, not a schema violation.*
+
+*Fix: `_attach_metric_view_to_space` now appends to `data_sources.tables` instead of
+`data_sources.metric_views`, so our SENT payload matches what Genie PERSISTS and
+returns (no more silent relocation, no confusion when re-reading our own writes).
+Idempotency is now cross-bucket: a view already present under EITHER `tables` OR a
+legacy `metric_views` entry is an idempotent no-op, so configs written before this
+change still de-dupe. The round-9 READ marker (`_mv_mark_attached` over
+`_tables ∪ _metric_views`) is unchanged and remains correct. Pinned by two tests:
+the attach lands in `tables` and never creates a `metric_views` bucket, and the
+cross-bucket idempotency (legacy `metric_views` entry ⇒ no-op).*
+
+*VERIFY (local): backend MV suite green (idempotency rewritten for tables +
+new write-target pin). Deploying to fevm-serverless.*
 
 ### Prompt 16 — Docs, changelog, PR
 

@@ -51,6 +51,9 @@ import type {
   MvRegisterRequest,
   MvRegisterResponse,
   SemanticGraphResponse,
+  JoinCandidate,
+  JoinCandidatesResponse,
+  JoinAdviceResponse,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -618,6 +621,41 @@ export async function fetchSemanticGraph(
 ): Promise<SemanticGraphResponse> {
   return fetchWithTimeout<SemanticGraphResponse>(
     `${API_BASE}/auto-optimize/spaces/${spaceId}/semantic-graph`,
+  )
+}
+
+// ── Join Advisor (Semantic Blueprint §7): candidates + advice ───────────────
+// Candidates are data-grounded suggestions; seeding persists them as ADVICE the
+// next Auto-Optimize run validates and adds itself. Nothing here edits the
+// Genie Agent config — the Workbench makes no ad-hoc serialized_space edits.
+
+export async function fetchJoinCandidates(
+  spaceId: string,
+): Promise<JoinCandidatesResponse> {
+  return fetchWithTimeout<JoinCandidatesResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/join-candidates`,
+  )
+}
+
+export async function fetchJoinAdvice(
+  spaceId: string,
+): Promise<JoinAdviceResponse> {
+  return fetchWithTimeout<JoinAdviceResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/join-advice`,
+  )
+}
+
+export async function saveJoinAdvice(
+  spaceId: string,
+  seeds: JoinCandidate[],
+): Promise<JoinAdviceResponse> {
+  return fetchWithTimeout<JoinAdviceResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/join-advice`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seeds }),
+    },
   )
 }
 

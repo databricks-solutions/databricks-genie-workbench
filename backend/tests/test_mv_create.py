@@ -417,10 +417,18 @@ def test_list_space_mv_proposals_rerun_gate_skips_last_scan(client, monkeypatch)
 
 
 def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
+    # Deployed-review fix: the card GRANT names the GSO service principal (the one
+    # grant that matters functionally — the optimizer must read the view on a
+    # create-and-attach run), not the broad space audience. Never a `<grantee>`.
+    monkeypatch.setattr(
+        auto_optimize, "_gso_sp_application_id",
+        lambda: "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e",
+    )
     monkeypatch.setattr(
         auto_optimize, "_load_latest_artifact",
         lambda run_id, kind: {
             "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "target_space_id": "space-1",
             "proposed_object": "finance.sales.revenue_metrics",
             "join_strategy": "subquery_source",
             "yaml_text": "version: 0.1\n",
@@ -432,7 +440,72 @@ def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["yaml_text"] == "version: 0.1\n"
-    assert data["grant_sql"] == "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO `<grantee>`;"
+    assert (
+        "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO "
+        "`a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`;" in data["grant_sql"]
+    )
+    assert "<grantee>" not in data["grant_sql"]
+    # Exactly one GRANT statement now — the "why so many grants?" noise is gone.
+    assert data["grant_sql"].count("GRANT SELECT") == 1
+
+
+def test_get_mv_ddl_parses_source_tables_from_yaml(client, monkeypatch):
+    """Deployed review #2/#3: the card's Source column is fed serve-time from the
+    rendered YAML's ``source:`` (base + each join), so an existing candidate shows
+    its sources with no re-scan and no extra column on the row."""
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_latest_artifact",
+        lambda run_id, kind: {
+            "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "target_space_id": "space-1",
+            "proposed_object": "finance.sales.revenue_metrics",
+            "join_strategy": "denormalized",
+            "yaml_text": (
+                "version: '1.1'\n"
+                "source: finance.sales.fact_orders\n"
+                "joins:\n"
+                "  - name: customer\n"
+                "    source: `finance`.`sales`.`dim_customer`\n"
+                "    on: fact_orders.customer_id = dim_customer.id\n"
+            ),
+            "ddl": "CREATE VIEW finance.sales.revenue_metrics ...",
+            "validation": {"ok": True},
+        },
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 200
+    assert resp.json()["source_tables"] == [
+        "finance.sales.fact_orders",
+        "finance.sales.dim_customer",
+    ]
+
+
+def test_get_mv_ddl_grant_says_so_in_words_when_no_sp_resolves(client, monkeypatch):
+    """No resolvable optimizer SP → the GRANT says so in words rather than emitting
+    a placeholder that cannot run (a commented instruction, no runnable statement
+    with a fake principal)."""
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_latest_artifact",
+        lambda run_id, kind: {
+            "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "target_space_id": "space-1",
+            "proposed_object": "finance.sales.revenue_metrics",
+            "yaml_text": "version: 0.1\n",
+            "ddl": "CREATE VIEW finance.sales.revenue_metrics ...",
+            "validation": {"ok": True},
+        },
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 200
+    grant = resp.json()["grant_sql"]
+    assert "<grantee>" not in grant
+    assert "Could not resolve the optimizer service principal" in grant
+    # Nothing executable with an invented principal — every SQL line is commented.
+    assert not any(
+        line.strip() and not line.strip().startswith("--") for line in grant.splitlines()
+    )
 
 
 def test_get_mv_ddl_404_when_absent(client, monkeypatch):
@@ -453,10 +526,16 @@ def test_get_mv_ddl_falls_back_to_candidate_yaml_text(client, monkeypatch):
     wh_load_mv_candidates ordering — so a never-optimized space serves copy-ready
     DDL instead of 404ing. validation is None on this preview path (documented)."""
     monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda run_id, kind: None)
+    # Deployed-review fix: the advice-run fallback GRANT also names the GSO SP.
+    monkeypatch.setattr(
+        auto_optimize, "_gso_sp_application_id",
+        lambda: "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e",
+    )
     monkeypatch.setattr(
         warehouse, "wh_load_mv_candidates",
         lambda *a, **k: [{
             "suggestion_id": "sugA", "dedup_fingerprint": "fpA",
+            "target_space_id": "space-1",
             "proposed_object": "finance.sales.revenue_metrics",
             "yaml_text": "version: 0.1\n",
             "evidence": {"join_strategy": "subquery_source"},
@@ -469,7 +548,10 @@ def test_get_mv_ddl_falls_back_to_candidate_yaml_text(client, monkeypatch):
     assert data["yaml_text"] == "version: 0.1\n"
     assert data["join_strategy"] == "subquery_source"
     assert "CREATE VIEW finance.sales.revenue_metrics" in data["ddl"]
-    assert data["grant_sql"] == "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO `<grantee>`;"
+    assert (
+        "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO "
+        "`a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`;" in data["grant_sql"]
+    )
     assert data["validation"] is None
 
 

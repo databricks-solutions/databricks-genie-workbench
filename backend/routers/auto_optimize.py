@@ -33,13 +33,19 @@ from backend.models import (
     MvProposalDecisionResponse,
     MvProposalMeasure,
     MvProposalsResponse,
+    MvProvenanceLabel,
     MvRegisterRequest,
     MvRegisterResponse,
     MvSemanticGraph,
+    MvSemanticGraphDimension,
     MvSemanticGraphEdge,
     MvSemanticGraphNode,
     MvSpaceProposalsResponse,
     MvSuggestResponse,
+    JoinAdvicePayload,
+    JoinAdviceResponse,
+    JoinCandidate,
+    JoinCandidatesResponse,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
     QueryUsageSignal,
@@ -541,6 +547,10 @@ def _load_candidate_ddl_fallback(run_id: str, suggestion_id: str | None) -> dict
     return {
         "suggestion_id": row.get("suggestion_id"),
         "dedup_fingerprint": row.get("dedup_fingerprint"),
+        # Prompt 15.9 item (c): carry the space id so the DDL endpoint can resolve
+        # the audience GRANT from the same ACL the consent modal reads (the in-job
+        # ``mv_candidate_ddl`` artifact already carries it — mv_advisor.py:1561).
+        "target_space_id": row.get("target_space_id"),
         "proposed_object": proposed,
         "join_strategy": evidence.get("join_strategy"),
         "yaml_text": yaml_text,
@@ -1564,6 +1574,49 @@ def _space_audience_grantees(space_id: str) -> list[str]:
         return []
 
 
+def _gso_sp_application_id() -> str:
+    """The GSO service principal's application id (UUID), best-effort.
+
+    The same resolution ``check_permissions`` uses: ``config.client_id`` (set on
+    the app SP), else ``DATABRICKS_CLIENT_ID``, else ``current_user.me()
+    .application_id``. UC SQL grants name the SP by this UUID. Returns "" if it
+    cannot be resolved, so the caller degrades to a worded instruction."""
+    sp_ws = get_service_principal_client()
+    sp_app_id = sp_ws.config.client_id or os.getenv("DATABRICKS_CLIENT_ID", "")
+    if not sp_app_id:
+        try:
+            sp_app_id = getattr(sp_ws.current_user.me(), "application_id", "") or ""
+        except Exception:
+            logger.info("Could not resolve GSO SP application_id for grant", exc_info=True)
+            sp_app_id = ""
+    return sp_app_id if re.match(r"^[a-f0-9-]{36}$", sp_app_id or "") else ""
+
+
+def _mv_optimizer_grant_sql(proposed: str | None, sp_app_id: str) -> str | None:
+    """The copy-ready GRANT a created view needs — SELECT to the GSO service
+    principal, so create-and-attach optimization runs can read it.
+
+    Deployed-review decision: a view created under the owner's identity is not
+    readable by the optimizer (a different principal), so the ONE grant that
+    matters functionally is SELECT to the GSO SP — not the broad space audience
+    (which listed built-in groups and even a self-grant, the noise the reviewer
+    flagged). The app never executes it; the owner copies it after creating the
+    view. With no resolvable SP it says so in words rather than emitting a
+    placeholder that cannot run."""
+    if not proposed:
+        return None
+    if not sp_app_id:
+        return (
+            "-- Could not resolve the optimizer service principal. Grant SELECT on\n"
+            f"-- {proposed} to the GSO service principal so optimization runs can read it."
+        )
+    return (
+        "-- The optimizer (GSO job) reads this view as its service principal;\n"
+        "-- grant SELECT so create-and-attach optimization runs succeed.\n"
+        f"GRANT SELECT ON VIEW {proposed} TO `{sp_app_id}`;"
+    )
+
+
 @router.post("/mv/probe", response_model=MvProbeResult)
 async def probe_mv_entitlement(body: MvProbeRequest):
     """Probe the signed-in user's entitlement to create a metric view.
@@ -1649,6 +1702,19 @@ async def trigger(body: TriggerRequest, request: Request):
                 warehouse_id=config.warehouse_id,
             )
 
+    # Join Advisor advice (Semantic Blueprint §7): carry the operator's seeded
+    # candidate joins into the run as input the optimizer re-validates and adds
+    # itself (add_join_spec). This is advice, NOT a config edit — the Workbench
+    # never writes join_specs into serialized_space. Best-effort: no advice, or a
+    # read failure, simply means the run starts with none.
+    proposed_join_seeds: list[dict] = []
+    try:
+        advice = await workbench_lakebase.get_join_advice(body.space_id)
+        if advice and advice.get("seeds"):
+            proposed_join_seeds = list(advice["seeds"])
+    except Exception:
+        logger.warning("Could not read join advice for space %s", body.space_id, exc_info=True)
+
     try:
         result = trigger_optimization(
             space_id=body.space_id,
@@ -1667,6 +1733,7 @@ async def trigger(body: TriggerRequest, request: Request):
             mv_action_mode=body.mv_action_mode,
             mv_min_confidence=body.mv_min_confidence,
             mv_attach_hook=mv_attach_hook,
+            proposed_join_seeds=proposed_join_seeds,
         )
         # Echo the resolved knobs (request value or the job default) so the UI
         # can confirm what the run will use without re-reading the job config.
@@ -1793,7 +1860,7 @@ def _mv_proposal_from_row(row: dict) -> MvProposal:
         # pre-15.7b tier-only split rather than treating them as "not capped".
         uncapped_tier=_mv_str(row.get("uncapped_tier")),
         tier_capped_by_coverage=(
-            bool(row.get("tier_capped_by_coverage"))
+            _safe_bool(row.get("tier_capped_by_coverage"))
             if row.get("tier_capped_by_coverage") is not None
             else None
         ),
@@ -1811,10 +1878,191 @@ def _mv_proposal_from_row(row: dict) -> MvProposal:
         decided_by=_mv_str(row.get("decided_by")),
         decided_at=_mv_str(row.get("decided_at")),
         suppressed_until=_mv_str(row.get("suppressed_until")),
-        approved_for_rerun=bool(row.get("approved_for_rerun")),
+        # Prompt 15.9 masking-bug root cause: warehouse rows arrive stringified
+        # (Statement Execution JSON_ARRAY), so raw ``bool("false")`` is True for
+        # EVERY row — which forced ``approved_for_rerun`` true and made the accept
+        # flow open on its "approved" terminal, hiding [Create this metric view].
+        # ``_safe_bool`` coerces "false" honestly (the sibling of the three sites
+        # that already used it — this one and ``tier_capped_by_coverage`` below
+        # were the missed call sites).
+        approved_for_rerun=_safe_bool(row.get("approved_for_rerun")),
         created_at=_mv_str(row.get("created_at")),
         updated_at=_mv_str(row.get("updated_at")),
     )
+
+
+def _mv_proposal_provenance_ids(proposal: MvProposal) -> list[str]:
+    """The provenance ids this proposal carries, ordered and de-duplicated.
+
+    Mirrors the client's ``evidenceSummary`` gather (Prompt 15.9 item d): the
+    member measures' ``benchmark_question_ids``, falling back to the bundle-level
+    ``evidence.benchmark_question_ids`` for a legacy one-element row, so the labels
+    the card renders line up one-to-one with the raw ids behind "show raw ids"."""
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            ids.append(text)
+
+    for measure in proposal.measures or []:
+        for qid in measure.benchmark_question_ids or []:
+            _add(qid)
+    if not ids and isinstance(proposal.evidence, dict):
+        ev = proposal.evidence.get("benchmark_question_ids")
+        if isinstance(ev, list):
+            for qid in ev:
+                _add(qid)
+    return ids
+
+
+def _mv_provenance_index(config: Any) -> dict[str, dict[str, dict]]:
+    """Build ``{snippets: {id: snippet}, examples: {id: eq}}`` from a space config.
+
+    The serve-time lookup for Prompt 15.9 item (d): resolves ``sql_snippet:`` ids
+    against ``instructions.sql_snippets`` (all three collections) and
+    ``trusted_asset:`` ids against ``instructions.example_question_sqls``. Tolerant
+    of a missing/partial config — an absent section yields an empty map, so
+    resolution degrades to generic labels rather than raising."""
+    snippets: dict[str, dict] = {}
+    examples: dict[str, dict] = {}
+    # ``fetch_space_config`` returns the export envelope with the real config
+    # nested under ``_parsed_space``; the on-demand suggest path passes the parsed
+    # body directly. Accept EITHER shape — reading ``config.instructions`` off the
+    # envelope was the bug that left every id resolving to its generic category.
+    if isinstance(config, dict) and isinstance(config.get("_parsed_space"), dict):
+        config = config["_parsed_space"]
+    instructions = config.get("instructions") if isinstance(config, dict) else None
+    if isinstance(instructions, dict):
+        snippet_block = instructions.get("sql_snippets")
+        if isinstance(snippet_block, dict):
+            for collection in ("measures", "filters", "expressions"):
+                for snippet in snippet_block.get(collection) or []:
+                    if isinstance(snippet, dict) and snippet.get("id"):
+                        snippets.setdefault(str(snippet["id"]), snippet)
+        for eq in instructions.get("example_question_sqls") or []:
+            if isinstance(eq, dict) and eq.get("id"):
+                examples.setdefault(str(eq["id"]), eq)
+    return {"snippets": snippets, "examples": examples}
+
+
+def _mv_coerce_list_text(value: Any, *, joiner: str = " ") -> str:
+    """One string whether the field held a ``str`` or the schema's ``list[str]``."""
+    if isinstance(value, list):
+        return joiner.join(str(v) for v in value if v is not None).strip()
+    return str(value or "").strip()
+
+
+def _resolve_provenance_label(raw: str, index: dict[str, dict[str, dict]]) -> MvProvenanceLabel | None:
+    """Resolve ONE provenance id to a human label, or ``None`` (Prompt 15.9 item d).
+
+    ``sql_snippet:<collection>:<id>`` → the snippet's display name (detail = its
+    expression); ``trusted_asset:<id>`` → its example-question text. Returns
+    ``None`` for anything that does NOT resolve to real, config-derived text — an
+    id-less/unknown snippet or asset, a ``gso_patch`` (no config text), or a bare
+    benchmark id. This is the deployed-review fix: a generic "trusted asset" /
+    "curated snippet" repeated per occurrence is noise, so a label is emitted ONLY
+    when it says something specific; the card's count chip carries everything else."""
+    if raw.startswith("sql_snippet:"):
+        rest = raw[len("sql_snippet:"):]
+        parts = rest.split(":", 1)
+        snippet_id = parts[1] if len(parts) == 2 else parts[0]
+        snippet = index["snippets"].get(snippet_id)
+        if not snippet:
+            return None
+        name = _mv_coerce_list_text(snippet.get("display_name"))
+        expr = _mv_coerce_list_text(snippet.get("sql"))
+        label = name or (expr[:80] if expr else "")
+        if not label:
+            return None
+        return MvProvenanceLabel(id=raw, kind="sql_snippet", label=label, detail=expr or None)
+    if raw.startswith("trusted_asset:"):
+        asset_id = raw[len("trusted_asset:"):]
+        eq = index["examples"].get(asset_id)
+        if not eq:
+            return None
+        question = _mv_coerce_list_text(eq.get("question"), joiner=" ")
+        if not question:
+            return None
+        return MvProvenanceLabel(id=raw, kind="trusted_asset", label=question, detail=None)
+    return None
+
+
+def _mv_attach_provenance_labels(proposals: list[MvProposal], config: Any) -> None:
+    """Resolve every proposal's provenance ids in place from ONE config read.
+
+    Serve-time payoff (Prompt 15.9 item d): existing proposals gain human labels
+    without a re-scan. Best-effort — an id that resolves to nothing simply carries
+    no label, and the card falls back to counts + the raw-id affordance."""
+    index = _mv_provenance_index(config)
+    for proposal in proposals:
+        labels: list[MvProvenanceLabel] = []
+        seen: set[tuple[str, str | None]] = set()
+        for raw in _mv_proposal_provenance_ids(proposal):
+            label = _resolve_provenance_label(raw, index)
+            if label is None:
+                continue
+            key = (label.label, label.detail)
+            if key in seen:  # two ids can resolve to the same text — show it once
+                continue
+            seen.add(key)
+            labels.append(label)
+        proposal.provenance_labels = labels or None
+
+
+def _mv_fetch_space_config(space_id: str) -> Any:
+    """Best-effort space-config read for serve-time provenance resolution.
+
+    OBO first (the caller's identity), SP fallback (mirrors the permission-check
+    path). Any failure returns ``None`` so label resolution degrades quietly."""
+    try:
+        from genie_space_optimizer.common.genie_client import fetch_space_config
+
+        try:
+            return fetch_space_config(get_workspace_client(), space_id)
+        except Exception:
+            return fetch_space_config(get_service_principal_client(), space_id)
+    except Exception:
+        logger.info("Could not fetch config for %s provenance labels", space_id, exc_info=True)
+        return None
+
+
+def _mv_mark_attached(proposals: list[MvProposal], space_config: Any) -> None:
+    """Flag proposals already present on the Agent config (MV-D34 marker).
+
+    A proposal is "attached" when its ``proposed_object`` already appears among
+    the Agent's data sources — the source of truth. We match against BOTH
+    ``data_sources.metric_views`` AND ``data_sources.tables`` (the ``_metric_views``
+    and ``_tables`` identifiers ``fetch_space_config`` extracts): a Genie space
+    commonly files an added metric view under ``data_sources.tables`` (verified in
+    the field — a created-and-attached view round-trips there, with
+    ``metric_views`` empty), so a metric-views-only check left every such view
+    looking un-attached and re-offered as "create" forever. The exact 3-part name
+    is matched, so a base table never masks its ``*_metrics`` proposal. Degrades
+    quietly: a config we could not read marks nothing, so the list is never wrongly
+    badged."""
+    if not proposals or not isinstance(space_config, dict):
+        return
+
+    # Normalize both sides: Genie may export identifiers backticked
+    # (``` `cat`.`sch`.`view` ```), while the warehouse ``proposed_object`` is
+    # bare — stripping backticks + case makes the match robust so a truly
+    # present view is never left looking un-attached (and re-offered forever).
+    def _norm(value: str) -> str:
+        return value.replace("`", "").strip().lower()
+
+    identifiers = list(space_config.get("_metric_views") or []) + list(
+        space_config.get("_tables") or []
+    )
+    present = {_norm(str(ident)) for ident in identifiers if _norm(str(ident or ""))}
+    if not present:
+        return
+    for proposal in proposals:
+        obj = _norm(str(proposal.proposed_object or ""))
+        if obj and obj in present:
+            proposal.attached = True
 
 
 @router.get("/runs/{run_id}/mv-proposals", response_model=MvProposalsResponse)
@@ -1840,9 +2088,13 @@ async def list_mv_proposals(run_id: RunId):
     except Exception as exc:
         logger.warning("Could not load MV proposals for run %s: %s", run_id, exc)
         rows = []
-    return MvProposalsResponse(
-        run_id=run_id, proposals=[_mv_proposal_from_row(r) for r in rows]
-    )
+    proposals = [_mv_proposal_from_row(r) for r in rows]
+    # Prompt 15.9 item (d): resolve provenance ids to human labels from the space
+    # config (run rows carry target_space_id). One config read for the whole list.
+    space_id = next((str(r.get("target_space_id") or "") for r in rows if r.get("target_space_id")), "")
+    if proposals and space_id:
+        _mv_attach_provenance_labels(proposals, await _offload(_mv_fetch_space_config, space_id))
+    return MvProposalsResponse(run_id=run_id, proposals=proposals)
 
 
 @router.get("/spaces/{space_id}/mv-proposals", response_model=MvSpaceProposalsResponse)
@@ -1893,6 +2145,18 @@ async def list_space_mv_proposals(
         rows = []
 
     proposals = [_mv_proposal_from_row(r) for r in rows]
+
+    # Prompt 15.9 item (d): resolve provenance ids to human labels serve-time, so
+    # existing proposals gain example-question / snippet text without a re-scan.
+    # Skipped on the ``approved_for_rerun`` GATE query — that path feeds the run-
+    # config "checking for approved proposals" check, renders no evidence, and must
+    # stay fast (a serve-time Genie config export there stalled the run setup).
+    if proposals and approved_for_rerun is None:
+        space_config = await _offload(_mv_fetch_space_config, space_id)
+        _mv_attach_provenance_labels(proposals, space_config)
+        # MV-D34: the SAME config read badges proposals already on the Agent, so a
+        # created-and-attached view stops being re-offered as "create this".
+        _mv_mark_attached(proposals, space_config)
 
     # MV-D31 hydrate-on-mount: the newest advice scan's timestamp, real duration,
     # and empty/skip state — derived from the advice run's terminal stage row, so
@@ -2012,6 +2276,16 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
         logger.warning("mv/suggest: could not reload proposals for %s: %s", space_id, exc)
         rows = []
 
+    proposals = [_mv_proposal_from_row(r) for r in rows]
+    # Prompt 15.9 item (d): resolve provenance ids to labels from the config we
+    # already fetched for this scan — no extra read on the on-demand path.
+    if proposals:
+        _mv_attach_provenance_labels(proposals, applied_config)
+        # MV-D34: badge proposals already on the Agent config so the IQ surface
+        # can drop them from the "to create" set. ``raw`` (not ``applied_config``)
+        # carries the ``_metric_views`` identifiers _mv_mark_attached matches on.
+        _mv_mark_attached(proposals, raw)
+
     return MvSuggestResponse(
         space_id=space_id,
         run_id=run_id,
@@ -2019,7 +2293,7 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
         skip_reason=getattr(outcome, "skip_reason", None),
         measures_found=getattr(outcome, "measures_found", None),
         error=getattr(outcome, "error", None),
-        proposals=[_mv_proposal_from_row(r) for r in rows],
+        proposals=proposals,
     )
 
 
@@ -2176,6 +2450,15 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
                         space_id, exc,
                     )
                     rows = []
+                proposals = [_mv_proposal_from_row(r) for r in rows]
+                # Prompt 15.9 item (d): label provenance ids from the config this
+                # stream already read (applied_config), same as the blocking route.
+                if proposals:
+                    _mv_attach_provenance_labels(proposals, applied_config)
+                    # MV-D34: Re-scan must badge already-attached views too, or a
+                    # created-and-attached view reappears as a fresh suggestion
+                    # after a re-scan. ``raw`` holds the _metric_views identifiers.
+                    _mv_mark_attached(proposals, raw)
                 response = MvSuggestResponse(
                     space_id=space_id,
                     run_id=run_id,
@@ -2183,7 +2466,7 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
                     skip_reason=getattr(outcome, "skip_reason", None),
                     measures_found=getattr(outcome, "measures_found", None),
                     error=getattr(outcome, "error", None),
-                    proposals=[_mv_proposal_from_row(r) for r in rows],
+                    proposals=proposals,
                 )
                 yield _mv_sse_event("result", response.model_dump())
                 return
@@ -2272,14 +2555,19 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
 
     The user accepted a suggestion on the surface where they meet it, with a
     fresh consent recorded at click. This creates the ONE proposal in the
-    consented schema under the user's identity and records an ``OBO_CREATED``
-    ledger row on a sentinel advice run — the BYO-register rails, so
-    attach-and-lift run on the next optimization run unchanged (MV-D24/MV-D16).
+    consented schema under the user's identity, ATTACHES it to the Agent config
+    in the same call (the config is the source of truth, so the semantic model
+    and these suggestions then reflect it), and records an ``OBO_CREATED`` ledger
+    row on a sentinel advice run. Idempotent: if the view already exists as a
+    metric view (a prior round, or a create-not-attached left by a failed PATCH)
+    it skips the CREATE and only re-attaches — never a "refusing to clobber" dead
+    end (``already_existed`` reports which happened).
 
-    Three outcomes, all normal 200s the card renders from one shape: created,
-    degraded (fresh probe below SUFFICIENT → [Approve for later] + remediation
-    GRANT, nothing created), and a create-time failure with a reason. Missing
-    OBO is a 401 (MV-D20) — a create never falls back to the SP.
+    Three outcomes, all normal 200s the card renders from one shape: created (with
+    ``attached`` + ``grant_sql``), degraded (fresh probe below SUFFICIENT →
+    [Approve for later] + remediation GRANT, nothing created), and a create-time
+    failure with a reason. Missing OBO is a 401 (MV-D20) — a create never falls
+    back to the SP.
     """
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
@@ -2315,16 +2603,37 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
             detail="Create failed; please retry or approve for the next run.",
         )
 
+    # Option A grant: the copy-ready SELECT the created view needs so a later
+    # optimization run (the GSO SP, a different principal) can read it. Resolved
+    # from the create response so the card no longer depends on the proposal's
+    # best-effort DDL fetch having landed. Only meaningful once a view exists.
+    grant_sql: str | None = None
+    workspace_host: str | None = None
+    if result.created and result.full_name:
+        sp_app_id = await _offload(_gso_sp_application_id)
+        grant_sql = _mv_optimizer_grant_sql(result.full_name, sp_app_id)
+        # #2 (post-create link): the workspace URL so the created terminal can
+        # deep-link the new view in Catalog Explorer. Best-effort — a missing
+        # host just omits the link, it never fails an otherwise-good create.
+        try:
+            workspace_host = (get_workspace_client().config.host or "").rstrip("/") or None
+        except Exception:
+            workspace_host = None
+
     return MvCreateAtApprovalResponse(
         created=result.created,
         degraded=result.degraded,
+        attached=result.attached,
+        already_existed=result.already_existed,
         full_name=result.full_name,
         run_id=result.run_id,
         suggestion_id=result.suggestion_id,
         provenance=result.provenance,
         verdict=result.verdict,
         remediation_sql=result.remediation_sql,
+        grant_sql=grant_sql,
         reason=result.reason,
+        workspace_host=workspace_host,
     )
 
 
@@ -2370,6 +2679,35 @@ def _clean_predicate(predicate: str) -> str:
     return re.sub(r"\s+", " ", (predicate or "").replace("`", "")).strip()
 
 
+_EQ_COLS_RE = re.compile(
+    r"([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)"
+)
+
+
+def _parse_join_columns(
+    predicate: str, left_id: str, right_id: str
+) -> tuple[str | None, str | None]:
+    r"""The participating column on each side of a join's ON predicate (Phase 2).
+
+    Genie authors one join spec per column pair with a backtick-quoted, alias-
+    qualified equality (`orders`.`customer_id` = `customers`.`customer_id`); the
+    alias is the table's short name (serialized_space join-specs format).
+    Returns ``(left_column, right_column)`` — matched to ``left_id``/``right_id``
+    by short-name — from the FIRST equality whose two qualifiers resolve to the
+    two join sides, so an ``is_current`` guard (a column = literal comparison, not
+    a column = column) is ignored. Deterministic, pure string parse; returns
+    ``(None, None)`` when nothing resolves so the field simply stays absent."""
+    left_short = _short_name(left_id).lower()
+    right_short = _short_name(right_id).lower()
+    for q1, c1, q2, c2 in _EQ_COLS_RE.findall(_clean_predicate(predicate)):
+        a, b = q1.lower(), q2.lower()
+        if a == left_short and b == right_short:
+            return c1, c2
+        if a == right_short and b == left_short:
+            return c2, c1
+    return None, None
+
+
 def _join_side_identifier(side: Any) -> str:
     return side.get("identifier", "") if isinstance(side, dict) else ""
 
@@ -2379,6 +2717,65 @@ def _norm_fqn(identifier: str) -> str:
     node and the DESCRIBE-derived ``MetricViewField.mv_fqn`` normalize to, so a
     governed chip can find its owning metric view node."""
     return (identifier or "").replace("`", "").strip().lower()
+
+
+_DOTTED_REF = re.compile(
+    r"(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)(?:\.(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))+"
+)
+
+
+def _expr_table_refs(expr: str) -> list[tuple[str, bool]]:
+    """Candidate table references inside a measure expression (round-7 lineage).
+
+    Returns ``(fqn, allow_add)`` pairs. A dotted run with >= 4 segments is an
+    unambiguous ``catalog.schema.table.column`` — its first three segments are a
+    real table we may ADD to the canvas if unseen (the expression proves it
+    belongs, mirroring the "MV definition is proof" rule). A 3-segment run is
+    ambiguous (``catalog.schema.table`` vs ``schema.table.column``), so it is
+    match-only: emitted only when it already resolves to a known table, never
+    added. Deterministic, de-duplicated, order-preserving; a pure string parse."""
+    out: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for m in _DOTTED_REF.finditer(expr or ""):
+        parts = [p.strip("`") for p in m.group(0).split(".")]
+        parts = [p for p in parts if p]
+        if len(parts) >= 4:
+            fqn, allow_add = ".".join(parts[:3]), True
+        elif len(parts) == 3:
+            fqn, allow_add = ".".join(parts), False
+        else:
+            continue
+        if fqn not in seen:
+            seen.add(fqn)
+            out.append((fqn, allow_add))
+    return out
+
+
+_MV_YAML_SOURCE_LINE_RE = re.compile(r"(?mi)^\s*source:\s*(.+?)\s*(?:#.*)?$")
+_MV_TABLE_FQN_RE = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+){1,2}$")
+
+
+def _mv_source_tables_from_yaml(yaml_text: str | None) -> list[str] | None:
+    """The tables a rendered metric-view body reads, in first-seen order.
+
+    Parsed from the ``source:`` of the base plus each join in the immutable
+    ``yaml_text`` (MV-D22) — the authority for what the view is over, so the card
+    can show a Source attribute for an existing candidate without a re-scan. Each
+    identifier is normalized (surrounding quotes and per-segment backticks
+    stripped) and kept only when it reads as a 2- or 3-part table name, so a
+    block scalar (``source: |``) never leaks in. De-duplicated; returns ``None``
+    when nothing parses so the field stays absent rather than an empty list."""
+    if not yaml_text:
+        return None
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in _MV_YAML_SOURCE_LINE_RE.finditer(yaml_text):
+        cleaned = match.group(1).strip().strip("'\"").replace("`", "").strip()
+        if not _MV_TABLE_FQN_RE.match(cleaned) or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out or None
 
 
 def _concept_key(canonical_expr: str, name: str) -> str:
@@ -2487,6 +2884,18 @@ def _build_semantic_graph(
 
     # A table on the RIGHT ("one") side of a join is a joined dimension (col 1);
     # everything else the space uses is a source/fact table (col 0).
+    # Phase 2 (§6): participating columns per table, accumulated from the parsed
+    # ON endpoints (join keys only — never the full column list). Order-preserving
+    # and de-duplicated; a table with no parsed join key simply gets no `columns`.
+    participating: dict[str, list[str]] = {}
+
+    def _note_column(table_id: str, column: str | None) -> None:
+        if not column:
+            return
+        cols = participating.setdefault(table_id, [])
+        if column not in cols:
+            cols.append(column)
+
     dim_ids: set[str] = set()
     edges: list[MvSemanticGraphEdge] = []
     for j in join_specs:
@@ -2498,12 +2907,17 @@ def _build_semantic_graph(
         sql = j.get("sql") if isinstance(j.get("sql"), list) else []
         predicate = _clean_predicate(sql[0]) if len(sql) >= 1 else ""
         relationship = _decode_relationship(sql[1]) if len(sql) >= 2 else None
+        from_col, to_col = _parse_join_columns(predicate, left_id, right_id)
+        _note_column(left_id, from_col)
+        _note_column(right_id, to_col)
         edges.append(MvSemanticGraphEdge(
             **{"from": left_id, "to": right_id},
             kind="join",
             on=predicate or None,
             relationship=relationship,
             scd2=bool(predicate and "is_current" in predicate.lower()),
+            from_column=from_col,
+            to_column=to_col,
         ))
 
     nodes: list[MvSemanticGraphNode] = []
@@ -2535,6 +2949,22 @@ def _build_semantic_graph(
         info = mv_internals.get(ident)
         if info is not None:
             mv_node.definition_available = bool(info.get("available"))
+            # Prompt 12f: the rest of the parsed definition rides the node so the
+            # curator inset needs no second read. Only for a readable YAML —
+            # an unavailable definition proves nothing to report.
+            if info.get("available"):
+                mv_node.mv_filter = info.get("filter") or None
+                mv_node.materialization = info.get("materialization") or None
+                dims = [
+                    MvSemanticGraphDimension(
+                        name=str(d.get("name")),
+                        expr=d.get("expr"),
+                        binding=d.get("binding"),
+                    )
+                    for d in (info.get("dimensions") or [])
+                    if isinstance(d, dict) and d.get("name")
+                ]
+                mv_node.dimensions = dims or None
         nodes.append(mv_node)
         mv_node_by_id[ident] = mv_node
 
@@ -2580,6 +3010,10 @@ def _build_semantic_graph(
         if source_id:
             mv_source_norms.add(_norm_fqn(source_id))
             member_ids.append(source_id)
+            # Prompt 12f: the RESOLVED canvas node id (set here, after dedup,
+            # rather than the raw YAML string) so the inset's join tree can be
+            # rooted by identity.
+            mv_node_by_id[ident].mv_source = source_id
         for j in info.get("joins") or []:
             if not isinstance(j, dict):
                 continue
@@ -2594,9 +3028,14 @@ def _build_semantic_graph(
                 pair = (_norm_fqn(source_id), _norm_fqn(dim_id))
                 if pair not in existing_join_pairs:
                     existing_join_pairs.add(pair)
+                    mv_on = _clean_predicate(j.get("on") or "")
+                    mv_from_col, mv_to_col = _parse_join_columns(mv_on, source_id, dim_id)
+                    _note_column(source_id, mv_from_col)
+                    _note_column(dim_id, mv_to_col)
                     edges.append(MvSemanticGraphEdge(
                         **{"from": source_id, "to": dim_id}, kind="join",
-                        on=j.get("on") or None, relationship=j.get("relationship"),
+                        on=mv_on or None, relationship=j.get("relationship"),
+                        from_column=mv_from_col, to_column=mv_to_col,
                     ))
         for tid in member_ids:
             pair = (ident, tid)
@@ -2608,14 +3047,29 @@ def _build_semantic_graph(
     # Fact/dim refinement from the MV definitions: a table an MV sources is a
     # fact (col 0); a table only ever joined is a dimension (col 1). MV-source
     # wins over the join_specs-derived dim guess so a shared fact is not miscolumned.
+    #
+    # Round-5: also record the PROVEN role on the node — only where a metric view
+    # DEFINITION proves it. A fact is a metric view's declared ``source``; a dim is
+    # a table an MV YAML joins in. A table known only from ``join_specs`` (which do
+    # not reliably distinguish the fact from the dim — the same table can sit on
+    # either side across two joins) stays ``role=None``, so the UI labels it a
+    # neutral "table" rather than guessing fact/dim from column position. This is
+    # the fix for `dim_*` tables shown as FACT purely because they sat left of a
+    # join, and it matches the reviewer's "prove it or stay neutral" choice.
     for n in nodes:
         if n.kind != "table":
             continue
         norm = _norm_fqn(n.id)
         if norm in mv_source_norms:
             n.col = 0
+            n.role = "fact"
         elif norm in mv_dim_norms:
             n.col = 1
+            n.role = "dim"
+        # Phase 2 (§6): participating (join-key) columns for the Columns LOD.
+        # Additive — absent when nothing referenced the table in a parsed ON.
+        if participating.get(n.id):
+            n.columns = participating[n.id]
 
     # Governance ladder, deduped by concept identity (Debt 3): governed wins over
     # curated wins over ungoverned. ``key_by_node`` maps a measure node id to its
@@ -2629,6 +3083,7 @@ def _build_semantic_graph(
     def _measure_node(
         *, key: str, label: str, governance: str, origin: str,
         benchmark_ids: list[str] | None = None,
+        expr: str | None = None, description: str | None = None,
     ) -> str | None:
         node_id = f"measure:{label}"
         # Distinct concepts that render the same label get a keyed suffix so one
@@ -2643,11 +3098,13 @@ def _build_semantic_graph(
             id=node_id, kind="measure", label=label, col=3, row=0,
             governance=governance, origin=origin,
             benchmark_question_ids=benchmark_ids or None,
+            expr=(expr or None), description=(description or None),
         ))
         return node_id
 
     # Governed chips: the DESCRIBE-enumerated MV measures (Debt 2). Identity is
     # the canonicalized expr; membership ties each to its owning MV node.
+    governed_owner_by_label: dict[str, str] = {}
     for field_ in governed_fields:
         fqn = _field_attr(field_, "mv_fqn")
         name = _field_attr(field_, "field_name") or _field_attr(field_, "name")
@@ -2660,33 +3117,46 @@ def _build_semantic_graph(
         governed_keys.add(key)
         owner = mv_id_by_fqn.get(_norm_fqn(fqn))
         origin = f"{_short_name(fqn)} (attached MV)" if fqn else "attached MV"
-        node_id = _measure_node(key=key, label=name, governance="governed", origin=origin)
+        # The canonical expression is what the DESCRIBE read proves this governed
+        # measure computes; a comment/description rides along when the field has one.
+        gov_desc = _field_attr(field_, "description") or _field_attr(field_, "comment")
+        node_id = _measure_node(
+            key=key, label=name, governance="governed", origin=origin,
+            expr=canonical or None, description=gov_desc or None,
+        )
         if node_id and owner:
             edges.append(MvSemanticGraphEdge(**{"from": node_id, "to": owner}, kind="membership"))
+        # Prompt 12f: remember who governs each NAME, so a loose measure that
+        # reuses the name under a different expression can be flagged as an
+        # overlap below rather than sitting silently beside its governed twin.
+        governed_owner_by_label.setdefault(name.lower(), owner or fqn or "an attached metric view")
 
     # Curated concepts: structured sql_snippets.measures, plus measures harvested
     # from example_question_sqls (Debt 1). Both keyed by canonical expr so two
     # spellings of one measure are one chip and a governed measure absorbs its
     # curated twin.
-    curated_sources: list[tuple[str, str]] = []
+    curated_sources: list[tuple[str, str, str | None]] = []
     for i, m in enumerate(snippet_measures):
         label = m.get("display_name") or m.get("id") or f"measure_{i}"
         expr = m.get("sql")
         if isinstance(expr, list):
             expr = " ".join(str(part) for part in expr if part).strip()
+        expr = str(expr).strip() if expr else None
         canonical = ""
         if expr:
             from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
-            canonical = canonicalize_expr(str(expr))
-        curated_sources.append((_concept_key(canonical, label), label))
+            canonical = canonicalize_expr(expr)
+        curated_sources.append((_concept_key(canonical, label), label, expr))
     for canonical, label in _curated_sql_measures(space_data):
-        curated_sources.append((_concept_key(canonical, label), label))
+        # The harvested measure exposes only its canonicalized expression — still a
+        # real definition worth showing when a curated measure has no snippet SQL.
+        curated_sources.append((_concept_key(canonical, label), label, canonical or None))
 
-    for key, label in curated_sources:
+    for key, label, expr in curated_sources:
         if key in governed_keys or key in curated_keys:
             continue
         curated_keys.add(key)
-        _measure_node(key=key, label=label, governance="curated", origin="curated SQL")
+        _measure_node(key=key, label=label, governance="curated", origin="curated SQL", expr=expr)
 
     # Ungoverned concepts: recur only in proposal evidence, deduped by concept
     # identity against the higher rungs. Proposals expose a name, not an expr, so
@@ -2712,6 +3182,45 @@ def _build_semantic_graph(
             key=key, label=name, governance="ungoverned", origin=origin,
             benchmark_ids=bench_ids,
         )
+
+    # Prompt 12f: name collisions between a loose measure and a governed one.
+    # Identity dedup above already merged the concepts that share an EXPRESSION;
+    # what survives here is the dangerous case — same name, different definition —
+    # which the Space-config panel raises as an overlap warning.
+    for n in nodes:
+        if n.kind != "measure" or n.governance == "governed":
+            continue
+        owner = governed_owner_by_label.get(n.label.lower())
+        if owner:
+            n.overlaps = owner
+
+    # Round-7: measure → source-table lineage for LOOSE (Space-config) measures.
+    # A loose measure belongs to no metric view, so it has no join/uses edge and
+    # selecting it lit nothing (focusSet found no neighbourhood; round-6 dimming
+    # then hid the rest of the canvas). Its real lineage is the tables its
+    # EXPRESSION reads: we extract those from the expr and emit one ``derives``
+    # edge per referenced table. A table the expr proves but the space never
+    # modeled is ADDED to the canvas (it lands in the unmodeled region — the
+    # honest read that this curated measure depends on an ungoverned table).
+    # Governed measures already wrap their MV on select, so they are skipped;
+    # ungoverned proposals carry no expr, so they naturally contribute nothing.
+    derives_pairs: set[tuple[str, str]] = set()
+    for n in list(nodes):
+        if n.kind != "measure" or n.governance == "governed" or not n.expr:
+            continue
+        for fqn, allow_add in _expr_table_refs(n.expr):
+            table_id = norm_to_table_id.get(_norm_fqn(fqn))
+            if table_id is None:
+                if not allow_add:
+                    continue
+                table_id = _resolve_or_add_table(fqn, as_dim=False)
+            if not table_id:
+                continue
+            pair = (n.id, table_id)
+            if pair in derives_pairs:
+                continue
+            derives_pairs.add(pair)
+            edges.append(MvSemanticGraphEdge(**{"from": n.id, "to": table_id}, kind="derives"))
 
     coverage_status, coverage_reason = _apply_coverage(
         space_data, nodes, edges, table_ids, key_by_node
@@ -2864,6 +3373,78 @@ async def get_space_semantic_graph(space_id: SpaceId):
     )
 
 
+# ---------------------------------------------------------------------------
+# Join Advisor — candidate discovery + advice persistence (Semantic Blueprint §7)
+#
+# The Join Advisor is ADVICE to the optimizer, never a Genie Agent config edit.
+# The Workbench does not make ad-hoc edits to serialized_space (that is the Genie
+# product UI's job). `/join-candidates` discovers data-grounded candidate joins;
+# `/join-advice` persists the operator's seeded set, which `trigger` carries into
+# the run as input the optimizer re-validates and adds itself (add_join_spec).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/spaces/{space_id}/join-candidates", response_model=JoinCandidatesResponse)
+async def get_join_candidates(space_id: SpaceId):
+    """Discover data-grounded Join Advisor candidates for a space (§7).
+
+    Reads the LIVE ``serialized_space`` (OBO-tolerant, like the semantic-graph
+    route), then discovers candidate joins from name+type matching and declared
+    UC foreign keys, scored by a warehouse containment probe. Never mutates the
+    space. Honest-empty on no warehouse / no candidates via ``status``."""
+    from backend.services import join_advisor
+
+    try:
+        space_data = await _offload(get_serialized_space, space_id)
+    except Exception as exc:
+        logger.warning("Join candidates: could not read serialized_space for %s: %s", space_id, exc)
+        raise HTTPException(status_code=502, detail="Unable to read this Agent's configuration.")
+
+    graph_data = space_data if isinstance(space_data, dict) else {}
+    result = await _offload(join_advisor.discover_candidates, graph_data)
+    return JoinCandidatesResponse(
+        space_id=space_id,
+        status=result["status"],
+        candidates=[JoinCandidate.model_validate(c) for c in result["candidates"]],
+    )
+
+
+@router.get("/spaces/{space_id}/join-advice", response_model=JoinAdviceResponse)
+async def get_join_advice(space_id: SpaceId):
+    """Read the pending Join Advisor advice seeded for a space (§7)."""
+    record = await workbench_lakebase.get_join_advice(space_id)
+    if not record:
+        return JoinAdviceResponse(space_id=space_id, seeds=[])
+    return JoinAdviceResponse(
+        space_id=space_id,
+        seeds=[JoinCandidate.model_validate(s) for s in record.get("seeds", [])],
+        updated_at=record.get("updated_at"),
+        seeded_by=record.get("seeded_by"),
+    )
+
+
+@router.post("/spaces/{space_id}/join-advice", response_model=JoinAdviceResponse)
+async def save_join_advice(space_id: SpaceId, body: JoinAdvicePayload, request: Request):
+    """Seed (or clear) the Join Advisor advice for a space (§7).
+
+    Persists the checked candidates as ADVICE — the next Auto-Optimize run
+    re-validates each seed against data and adds only the ones that hold (via
+    ``add_join_spec``). This never writes a declared ``join_spec``; the optimizer
+    can add/update joins but cannot remove them, so a locked wrong join would be a
+    foot-gun (the §7 asymmetry). An empty ``seeds`` clears the pending advice."""
+    seeded_by = request.headers.get("x-forwarded-email") or request.headers.get(
+        "x-forwarded-preferred-username"
+    )
+    seeds = [s.model_dump(by_alias=True) for s in body.seeds]
+    record = await workbench_lakebase.save_join_advice(space_id, seeds, seeded_by=seeded_by)
+    return JoinAdviceResponse(
+        space_id=space_id,
+        seeds=[JoinCandidate.model_validate(s) for s in record.get("seeds", [])],
+        updated_at=record.get("updated_at"),
+        seeded_by=record.get("seeded_by"),
+    )
+
+
 def _mv_identifiers(space_data: dict) -> list[str]:
     """The ``data_sources.metric_views[].identifier`` list, in config order."""
     ds = space_data.get("data_sources") if isinstance(space_data, dict) else None
@@ -2928,38 +3509,137 @@ def _governed_measures_from_yamls(yamls: dict[str, dict]) -> list[Any]:
 def _metric_view_internals(
     yamls: dict[str, dict], identifiers: list[str]
 ) -> dict[str, dict]:
-    """Per-MV internal structure — source fact, joined dims, ON predicates —
-    from the already-read YAMLs (Prompt 12e / MV-D33). No DESCRIBE here.
+    """Per-MV internal structure — source fact, joined dims, ON predicates, and
+    (Prompt 12f) the filter / materialization / dimensions the same document
+    already carries — from the already-read YAMLs (Prompt 12e / MV-D33). No
+    DESCRIBE here.
 
     Returns ``{identifier: {"available": bool, "source": str|None,
-    "joins": [{"table", "on", "relationship"}]}}``. An MV whose YAML is absent
-    from the read, or parsed without a real ``source`` (a synthesized skeleton),
-    is ``available=False`` and contributes NO tables and NO arrows downstream —
-    unreadable is unproven (MV-D33 constraint 2). Keyed by the ORIGINAL config
-    identifier (the graph node id) though the YAMLs are keyed by ``fq_lower``."""
+    "joins": [{"table", "alias", "on", "relationship"}], "filter": str|None,
+    "materialization": str|None, "dimensions": [{"name", "expr", "binding"}]}}``.
+    An MV whose YAML is absent from the read, or parsed without a real ``source``
+    (a synthesized skeleton), is ``available=False`` and contributes NO tables,
+    NO arrows and NO detail downstream — unreadable is unproven (MV-D33
+    constraint 2). Keyed by the ORIGINAL config identifier (the graph node id)
+    though the YAMLs are keyed by ``fq_lower``.
+
+    Field names follow the metric view YAML reference: a join's ``name`` is its
+    ALIAS and ``source`` is the joined table, ``fields`` is the current spelling
+    of ``dimensions``, and ``materialization`` is an object (``mode`` /
+    ``schedule`` / ``materialized_views``), never a scalar."""
     out: dict[str, dict] = {}
     for ident in identifiers:
         doc = yamls.get(_norm_fqn(ident)) if isinstance(yamls, dict) else None
         source = doc.get("source") if isinstance(doc, dict) else None
         source = source.strip() if isinstance(source, str) and source.strip() else None
         if not source:
-            out[ident] = {"available": False, "source": None, "joins": []}
+            out[ident] = {
+                "available": False, "source": None, "joins": [],
+                "filter": None, "materialization": None, "dimensions": [],
+            }
             continue
         joins: list[dict] = []
+        # alias (the join's ``name``) → joined table, so a dimension expression
+        # qualified by that alias can be bound to a real relation.
+        alias_to_table: dict[str, str] = {}
         raw_joins = doc.get("joins") if isinstance(doc.get("joins"), list) else []
         for j in raw_joins:
             if not isinstance(j, dict):
                 continue
+            # ``source`` is the joined table; ``name`` is the alias. The
+            # ``table`` spelling and the name-as-table fallback stay for
+            # hand-written / legacy documents.
             table = j.get("source") or j.get("table") or j.get("name")
             if not isinstance(table, str) or not table.strip():
                 continue
+            alias = j.get("name") if isinstance(j.get("name"), str) else None
+            alias = alias.strip() if alias and alias.strip() else None
             on_clause = j.get("on") or j.get("using")
+            if isinstance(on_clause, list):
+                cols = [str(c).strip() for c in on_clause if str(c).strip()]
+                on_clause = f"USING ({', '.join(cols)})" if cols else None
+            if alias:
+                alias_to_table[alias.lower()] = table.strip()
             joins.append({
                 "table": table.strip(),
+                "alias": alias,
                 "on": _clean_predicate(on_clause) if isinstance(on_clause, str) and on_clause.strip() else None,
                 "relationship": None,
             })
-        out[ident] = {"available": True, "source": source, "joins": joins}
+        out[ident] = {
+            "available": True,
+            "source": source,
+            "joins": joins,
+            "filter": _mv_yaml_filter(doc),
+            "materialization": _materialization_summary(doc.get("materialization")),
+            "dimensions": _mv_yaml_dimensions(doc, source=source, aliases=alias_to_table),
+        }
+    return out
+
+
+def _mv_yaml_filter(doc: dict) -> str | None:
+    """The top-level ``filter`` verbatim, whitespace-collapsed (Prompt 12f).
+
+    A row filter applies to EVERY query against the view, so it is reported as
+    written rather than summarized — a paraphrased predicate is a wrong one."""
+    raw = doc.get("filter")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return " ".join(raw.split())
+
+
+def _materialization_summary(raw: Any) -> str | None:
+    """One line of materialization POSTURE from the ``materialization`` object.
+
+    Prompt 12f. Reports how many materializations the view declares and the
+    refresh cadence, e.g. ``2 materializations · SCHEDULE EVERY 1 DAY`` or
+    ``1 materialization · manual refresh`` (the spec's own default when
+    ``schedule`` is omitted). ``None`` when the view declares none — a view with
+    no materialization must not read as one with an unknown schedule."""
+    if not isinstance(raw, dict):
+        return None
+    views = raw.get("materialized_views")
+    count = len([v for v in views if isinstance(v, dict)]) if isinstance(views, list) else 0
+    if count == 0:
+        return None
+    schedule = raw.get("schedule")
+    cadence = " ".join(str(schedule).split()) if isinstance(schedule, str) and schedule.strip() else "manual refresh"
+    noun = "materialization" if count == 1 else "materializations"
+    return f"{count} {noun} · {cadence}"
+
+
+def _mv_yaml_dimensions(
+    doc: dict, *, source: str, aliases: dict[str, str]
+) -> list[dict]:
+    """The declared dimensions with each one's resolved binding (Prompt 12f).
+
+    Reads ``fields`` (the current spelling) or ``dimensions`` (the accepted
+    synonym). ``binding`` is the joined table when the expression's qualifier
+    matches a join ALIAS declared in the same document, else the MV's own
+    ``source``: the YAML is the only evidence, so a qualifier that matches no
+    declared alias binds to the source rather than inventing a table."""
+    raw = doc.get("fields")
+    if not isinstance(raw, list):
+        raw = doc.get("dimensions")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for d in raw:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        expr = d.get("expr")
+        expr = " ".join(expr.split()) if isinstance(expr, str) and expr.strip() else None
+        binding = source
+        if expr and aliases:
+            # First qualifier in the expression, e.g. `customer` in
+            # `customer.region` or `lower(customer.region)`.
+            match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*[A-Za-z_`]", expr)
+            if match:
+                binding = aliases.get(match.group(1).lower(), source)
+        out.append({"name": name.strip(), "expr": expr, "binding": binding})
     return out
 
 
@@ -2994,15 +3674,20 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
         raise HTTPException(status_code=404, detail="No metric view DDL artifact for this run.")
 
     proposed = payload.get("proposed_object")
-    grant_sql = (
-        f"GRANT SELECT ON VIEW {proposed} TO `<grantee>`;" if proposed else None
-    )
+    # Deployed-review fix: the copy-ready GRANT names the GSO service principal —
+    # the ONE grant that matters functionally (a view created under the owner's
+    # identity is unreadable by the optimizer until the SP has SELECT). This
+    # replaces the broad space-audience list, whose built-in groups and self-grant
+    # were the "why so many grants?" noise.
+    sp_app_id = await _offload(_gso_sp_application_id)
+    grant_sql = _mv_optimizer_grant_sql(proposed, sp_app_id)
     validation = payload.get("validation")
     return MvDdlArtifact(
         suggestion_id=payload.get("suggestion_id"),
         dedup_fingerprint=payload.get("dedup_fingerprint"),
         proposed_object=proposed,
         join_strategy=payload.get("join_strategy"),
+        source_tables=_mv_source_tables_from_yaml(payload.get("yaml_text")),
         yaml_text=payload.get("yaml_text"),
         ddl=payload.get("ddl"),
         validation=validation if isinstance(validation, dict) else None,

@@ -335,6 +335,162 @@ def test_build_graph_emits_uses_edges_and_marks_definition_available():
     assert sum(1 for n in nodes if n.id == "finance.ref.customer") == 1
 
 
+def test_build_graph_marks_proven_fact_dim_role_and_leaves_join_only_neutral():
+    """Round-5: ``role`` is set ONLY where a metric view DEFINITION proves it — the
+    MV source is a fact, an MV-joined table is a dim. A table known only from
+    ``join_specs`` stays ``role=None`` so the UI labels it a neutral "table" rather
+    than guessing fact/dim from column position (the mislabel fix)."""
+    space = {
+        "data_sources": {
+            "tables": [
+                {"identifier": "finance.sales.orders"},
+                {"identifier": "finance.ref.customer"},
+                {"identifier": "finance.ref.region"},
+            ],
+            "metric_views": [{"identifier": "finance.sales.orders_metrics"}],
+        },
+        "instructions": {
+            "join_specs": [
+                {
+                    "id": "a" * 32,
+                    "left": {"identifier": "finance.ref.customer"},
+                    "right": {"identifier": "finance.ref.region"},
+                    "sql": ["`customer`.`region_id` = `region`.`id`"],
+                }
+            ]
+        },
+    }
+    internals = {
+        "finance.sales.orders_metrics": {
+            "available": True,
+            "source": "finance.sales.orders",
+            "joins": [{"table": "finance.ref.customer", "on": "orders.cid = customer.id"}],
+        }
+    }
+    nodes, _e, _s, _r = _build(space, [], mv_internals=internals)
+    by_id = {n.id: n for n in nodes}
+    assert by_id["finance.sales.orders"].role == "fact"  # the MV's declared source
+    assert by_id["finance.ref.customer"].role == "dim"  # an MV-joined table
+    # region is proven by NO metric view — only a join_spec — so it stays neutral.
+    assert by_id["finance.ref.region"].role is None
+
+
+def test_build_graph_measure_nodes_carry_expression_and_description():
+    """Round-5: a governed measure rides its canonical expression (and a
+    description when the field carries one); a curated snippet measure rides its
+    snippet SQL; an ungoverned proposal exposes a name only, so ``expr`` is None."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],
+            "metric_views": [{"identifier": "finance.sales.orders_metrics"}],
+        },
+        "instructions": {
+            "sql_snippets": {
+                "measures": [
+                    {"id": "c" * 32, "display_name": "gross_margin", "sql": ["SUM(o.rev - o.cost)"]}
+                ]
+            }
+        },
+    }
+    governed = [
+        {
+            "mv_fqn": "finance.sales.orders_metrics",
+            "field_name": "order_count",
+            "kind": "measure",
+            "canonical_expr": "count(1)",
+            "description": "rows per order",
+        }
+    ]
+    nodes, _e, _s, _r = _build(
+        space, [_proposal("finance.sales.new_measure")], governed_fields=governed
+    )
+    by_id = {n.id: n for n in nodes}
+    assert by_id["measure:order_count"].expr == "count(1)"
+    assert by_id["measure:order_count"].description == "rows per order"
+    assert by_id["measure:gross_margin"].expr == "SUM(o.rev - o.cost)"
+    prop = by_id.get("measure:new_measure")
+    assert prop is not None and prop.governance == "ungoverned"
+    assert prop.expr is None
+
+
+# ── Round-7: measure→table lineage (`derives`) for loose measures ────────────
+
+
+def test_expr_table_refs_extracts_fully_qualified_tables():
+    """A 4-part ``catalog.schema.table.column`` yields its table (first 3), marked
+    add-eligible and de-duplicated; bare functions and columns yield nothing."""
+    refs = auto_optimize._expr_table_refs(
+        "ROUND(SUM(cat.sch.fact.is_biz) / NULLIF(COUNT(cat.sch.fact.id), 0), 2)"
+    )
+    assert ("cat.sch.fact", True) in refs
+    assert len([r for r in refs if r[0] == "cat.sch.fact"]) == 1  # deduped
+
+    # 3-part run is ambiguous → match-only (never added blindly).
+    assert ("a.b.c", False) in auto_optimize._expr_table_refs("SUM(a.b.c)")
+    # A 2-part column ref and a bare function reference nothing.
+    assert auto_optimize._expr_table_refs("SUM(t.col) + COUNT(x)") == []
+
+
+def test_build_graph_loose_measure_derives_edge_adds_referenced_table():
+    """A curated (loose) measure whose expression reads a fully-qualified table
+    gets a ``derives`` edge to that table; a table the expr proves but the space
+    never modeled is ADDED (it lands in the unmodeled region), so selecting the
+    measure has a source to light."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "cat.sch.orders"}],
+            "metric_views": [],
+        },
+        "instructions": {
+            "sql_snippets": {
+                "measures": [
+                    {
+                        "id": "d" * 32,
+                        "display_name": "biz_rate",
+                        "sql": [
+                            "ROUND(SUM(cat.sch.fact_detail.is_biz) / "
+                            "NULLIF(COUNT(cat.sch.fact_detail.id), 0), 2)"
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+    nodes, edges, _s, _r = _build(space, [])
+    by_id = {n.id: n for n in nodes}
+    # The referenced table was added as a neutral (unproven) source table.
+    assert "cat.sch.fact_detail" in by_id
+    assert by_id["cat.sch.fact_detail"].kind == "table"
+    assert by_id["cat.sch.fact_detail"].role is None
+    # And a derives edge links the loose measure to it (one, deduped).
+    derives = [e for e in edges if e.kind == "derives" and e.from_ == "measure:biz_rate"]
+    assert len(derives) == 1
+    assert derives[0].to == "cat.sch.fact_detail"
+
+
+def test_build_graph_governed_measure_gets_no_derives_edge():
+    """Governed measures already wrap their MV on select, so they are skipped by
+    the loose-measure lineage pass — no ``derives`` edge even if the (canonical)
+    expression carries a fully-qualified reference."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "cat.sch.orders"}],
+            "metric_views": [{"identifier": "cat.sch.orders_metrics"}],
+        },
+        "instructions": {},
+    }
+    governed = [
+        {
+            "mv_fqn": "cat.sch.orders_metrics",
+            "field_name": "order_count",
+            "kind": "measure",
+            "canonical_expr": "SUM(cat.sch.fact_detail.amount)",
+        }
+    ]
+    _nodes, edges, _s, _r = _build(space, [], governed_fields=governed)
+    assert not any(e.kind == "derives" for e in edges)
+
+
 def test_build_graph_unavailable_mv_draws_no_arrows():
     """definition_available=False (unreadable YAML) contributes NO uses edges and
     NO added tables — arrows require proof (MV-D33 constraint 2)."""
@@ -360,6 +516,187 @@ def test_build_graph_no_internals_leaves_definition_available_none():
     mv = next(n for n in nodes if n.kind == "metric_view")
     assert mv.definition_available is None
     assert not any(e.kind == "uses" for e in edges)
+
+
+# ── Prompt 12f: the rest of the definition the curator inset reports ─────────
+
+
+def test_metric_view_internals_carries_filter_materialization_and_dimensions():
+    """The same parsed YAML already proves the filter, the materialization posture
+    and the declared dimensions — the reader now carries all three so the inset
+    needs no second read. A dimension qualified by a join ALIAS binds to that
+    join's table; an unqualified one binds to the source."""
+    yamls = {
+        "finance.sales.orders_metrics": {
+            "source": "finance.sales.orders",
+            "filter": "order_status  !=  'CANCELLED'",
+            "joins": [
+                {"name": "customer", "source": "finance.ref.customer", "on": "orders.cid = customer.id"},
+            ],
+            "fields": [
+                {"name": "region", "expr": "customer.region"},
+                {"name": "order_day", "expr": "date_trunc('DAY', order_ts)"},
+            ],
+            "materialization": {
+                "mode": "relaxed",
+                "schedule": "EVERY 1 DAY",
+                "materialized_views": [
+                    {"name": "daily", "type": "aggregated", "dimensions": ["order_day"]},
+                    {"name": "raw", "type": "unaggregated"},
+                ],
+            },
+            "measures": [{"name": "order_count", "expr": "count(1)"}],
+        }
+    }
+    info = auto_optimize._metric_view_internals(
+        yamls, ["finance.sales.orders_metrics"]
+    )["finance.sales.orders_metrics"]
+
+    # Verbatim predicate, whitespace collapsed — never paraphrased.
+    assert info["filter"] == "order_status != 'CANCELLED'"
+    assert info["materialization"] == "2 materializations · EVERY 1 DAY"
+    by_name = {d["name"]: d for d in info["dimensions"]}
+    assert by_name["region"]["binding"] == "finance.ref.customer"
+    assert by_name["order_day"]["binding"] == "finance.sales.orders"
+    # The join's alias is retained (it is what resolved the binding).
+    assert info["joins"][0]["alias"] == "customer"
+
+
+def test_metric_view_internals_omits_what_the_yaml_does_not_declare():
+    """A view with no filter and no materialization reports None for both — an
+    absent materialization must not read as one with an unknown schedule. A
+    ``using`` list renders as a USING clause rather than a bare column name."""
+    yamls = {
+        "finance.sales.plain": {
+            "source": "finance.sales.orders",
+            "joins": [{"name": "item", "source": "finance.sales.order_items", "using": ["order_id"]}],
+            "measures": [{"name": "n", "expr": "count(1)"}],
+        }
+    }
+    info = auto_optimize._metric_view_internals(yamls, ["finance.sales.plain"])["finance.sales.plain"]
+    assert info["filter"] is None
+    assert info["materialization"] is None
+    assert info["dimensions"] == []
+    assert info["joins"][0]["on"] == "USING (order_id)"
+
+
+def test_materialization_with_no_entries_is_none_not_a_false_posture():
+    """An object present but empty declares no materialization."""
+    assert auto_optimize._materialization_summary({"mode": "relaxed", "materialized_views": []}) is None
+    assert auto_optimize._materialization_summary(None) is None
+    # A single entry with no schedule reports the spec's own default.
+    assert auto_optimize._materialization_summary(
+        {"materialized_views": [{"name": "a", "type": "unaggregated"}]}
+    ) == "1 materialization · manual refresh"
+
+
+def test_dimensions_accept_the_legacy_dimensions_keyword():
+    """``fields`` is the current spelling; ``dimensions`` is the accepted synonym."""
+    yamls = {
+        "a.b.c": {
+            "source": "a.b.t",
+            "dimensions": [{"name": "region", "expr": "region"}],
+        }
+    }
+    info = auto_optimize._metric_view_internals(yamls, ["a.b.c"])["a.b.c"]
+    assert [d["name"] for d in info["dimensions"]] == ["region"]
+
+
+def test_unreadable_yaml_reports_no_filter_or_dimensions():
+    """available=False proves nothing, so it carries no detail either."""
+    info = auto_optimize._metric_view_internals({}, ["a.b.absent"])["a.b.absent"]
+    assert info["filter"] is None
+    assert info["materialization"] is None
+    assert info["dimensions"] == []
+
+
+def test_build_graph_puts_the_parsed_definition_on_the_mv_node():
+    """The node carries filter / materialization / dimensions for a READABLE YAML
+    so the inset renders from the graph payload alone."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],
+            "metric_views": [{"identifier": "finance.sales.orders_metrics"}],
+        }
+    }
+    internals = {
+        "finance.sales.orders_metrics": {
+            "available": True,
+            "source": "finance.sales.orders",
+            "joins": [],
+            "filter": "order_status != 'CANCELLED'",
+            "materialization": "1 materialization · EVERY 1 DAY",
+            "dimensions": [
+                {"name": "region", "expr": "customer.region", "binding": "finance.ref.customer"}
+            ],
+        }
+    }
+    nodes, _edges, _s, _r = _build(space, [], mv_internals=internals)
+    mv = next(n for n in nodes if n.kind == "metric_view")
+    # The RESOLVED canvas node id, so the inset's join tree roots by identity.
+    assert mv.mv_source == "finance.sales.orders"
+    assert mv.mv_filter == "order_status != 'CANCELLED'"
+    assert mv.materialization == "1 materialization · EVERY 1 DAY"
+    assert mv.dimensions is not None
+    assert mv.dimensions[0].name == "region"
+    assert mv.dimensions[0].binding == "finance.ref.customer"
+
+
+def test_build_graph_unavailable_mv_node_carries_no_definition_detail():
+    """Unreadable is unproven for the detail too: no filter, no materialization,
+    no dimensions on a definition_available=False node."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],
+            "metric_views": [{"identifier": "finance.sales.orders_metrics"}],
+        }
+    }
+    internals = {
+        "finance.sales.orders_metrics": {
+            "available": False, "source": None, "joins": [],
+            # Even if a caller passed detail, an unavailable definition drops it.
+            "filter": "x = 1", "materialization": "1 materialization · manual refresh",
+            "dimensions": [{"name": "region", "expr": "r", "binding": "t"}],
+        }
+    }
+    nodes, _edges, _s, _r = _build(space, [], mv_internals=internals)
+    mv = next(n for n in nodes if n.kind == "metric_view")
+    assert mv.mv_source is None
+    assert mv.mv_filter is None
+    assert mv.materialization is None
+    assert mv.dimensions is None
+
+
+def test_loose_measure_reusing_a_governed_name_is_flagged_as_an_overlap():
+    """Same name, different expression — the dangerous case identity dedup cannot
+    merge. The loose concept carries the governing MV so the Space-config panel
+    can warn; the governed one itself never claims to overlap."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],
+            "metric_views": [{"identifier": "finance.sales.orders_metrics"}],
+        },
+        "instructions": {
+            "sql_snippets": {
+                "measures": [
+                    # Same NAME as the governed measure, a DIFFERENT expression.
+                    {"id": "revenue", "display_name": "revenue", "sql": ["sum(net_amount)"]},
+                    {"id": "units", "display_name": "units", "sql": ["sum(qty)"]},
+                ]
+            }
+        },
+    }
+    governed = [{
+        "mv_fqn": "finance.sales.orders_metrics",
+        "field_name": "revenue",
+        "canonical_expr": "sum(gross_amount)",
+    }]
+    nodes, _edges, _s, _r = _build(space, [], governed_fields=governed)
+    by_label = {(n.label, n.governance): n for n in nodes if n.kind == "measure"}
+    assert by_label[("revenue", "curated")].overlaps == "finance.sales.orders_metrics"
+    assert by_label[("revenue", "governed")].overlaps is None
+    # A loose measure with no governed twin makes no claim.
+    assert by_label[("units", "curated")].overlaps is None
 
 
 # ── Coverage lens ────────────────────────────────────────────────────────────
@@ -525,3 +862,71 @@ def test_semantic_graph_502_when_config_read_fails(client, monkeypatch):
     monkeypatch.setattr(auto_optimize, "get_serialized_space", boom)
     resp = client.get("/api/auto-optimize/spaces/space-1/semantic-graph")
     assert resp.status_code == 502
+
+
+# ── Phase 2: ON-predicate column parser + column model (v4 §6) ───────────────
+
+
+def test_parse_join_columns_matches_qualifiers_to_sides_by_short_name():
+    """The alias-qualified equality resolves to (left_col, right_col) matched to
+    the two join sides by short name, regardless of authored order."""
+    assert auto_optimize._parse_join_columns(
+        "`order_items`.`order_id` = `orders`.`order_id`",
+        "finance.sales.order_items",
+        "finance.sales.orders",
+    ) == ("order_id", "order_id")
+    # Reversed authored order still maps to the correct physical sides.
+    assert auto_optimize._parse_join_columns(
+        "orders.order_id = order_items.oid",
+        "finance.sales.order_items",
+        "finance.sales.orders",
+    ) == ("oid", "order_id")
+
+
+def test_parse_join_columns_ignores_is_current_guard_and_unparseable():
+    """An is_current guard (column = literal) is skipped for the real column =
+    column equality; a function join that parses to no equality is (None, None)."""
+    assert auto_optimize._parse_join_columns(
+        "`orders`.`customer_id` = `customer`.`id` AND `customer`.`is_current` = true",
+        "finance.sales.orders",
+        "finance.ref.customer",
+    ) == ("customer_id", "id")
+    assert auto_optimize._parse_join_columns(
+        "LOWER(orders.email) = LOWER(customer.email)",
+        "finance.sales.orders",
+        "finance.ref.customer",
+    ) == (None, None)
+
+
+def test_build_graph_emits_join_column_endpoints_and_participating_columns():
+    """Join edges carry from_column/to_column parsed from the ON predicate, and
+    each table node lists the participating (join-key) columns for the Columns
+    LOD — join keys only, deduped and order-preserving."""
+    nodes, edges, _s, _r = _build(_SPACE, [])
+    by_id = {n.id: n for n in nodes}
+
+    join_oi = next(
+        e for e in edges if e.kind == "join" and e.to == "finance.sales.orders"
+    )
+    assert (join_oi.from_column, join_oi.to_column) == ("order_id", "order_id")
+
+    scd2 = next(e for e in edges if e.kind == "join" and e.to == "finance.ref.customer")
+    assert (scd2.from_column, scd2.to_column) == ("customer_id", "id")
+
+    # orders participates in two joins (order_id as the "one" side of one, and
+    # customer_id as the "many" side of the other) — both keys, deduped.
+    assert by_id["finance.sales.orders"].columns == ["order_id", "customer_id"]
+    assert by_id["finance.sales.order_items"].columns == ["order_id"]
+    assert by_id["finance.ref.customer"].columns == ["id"]
+
+
+def test_build_graph_column_model_is_additive_absent_without_joins():
+    """A space with no joins emits no column endpoints and no `columns` — a
+    client predating the column model renders identically (Phase-1 additivity)."""
+    space = {
+        "data_sources": {"tables": [{"identifier": "cat.sch.events_wide"}]},
+        "instructions": {},
+    }
+    nodes, edges, _s, _r = _build(space, [])
+    assert [e for e in edges if e.kind == "join"] == []
+    assert all(n.columns is None for n in nodes if n.kind == "table")

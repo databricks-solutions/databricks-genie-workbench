@@ -34,6 +34,7 @@ const proposal: MvProposal = {
   checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
   score_components: null,
   evidence: { source_tables: ["finance.sales.orders"] },
+  provenance_labels: null,
   provenance: null,
   alternatives: null,
   conflicts: null,
@@ -93,10 +94,53 @@ describe("MvAcceptFlow — the shared flow's resting affordance (MV-D34)", () =>
     expect(html).toContain("Create this metric view")
   })
 
-  it("an already-approved proposal shows the retained approved-for-later state, not the primary", () => {
-    const approved = { ...proposal, approved_for_rerun: true }
+  // TERMINAL-STATES-MUST-BE-EARNED regression pin (Prompt 15.9, item a). The
+  // masking bug: `approved_for_rerun` (the derived re-run gate) was forced true
+  // for EVERY row by a stringified-boolean coercion, so the flow opened on its
+  // "approved" terminal and [Create this metric view] was never reachable. An
+  // un-acted proposal — no recorded `decision`, even with the gate flag set —
+  // MUST render the ACTION state.
+  it("an un-acted proposal renders the ACTION state, even when approved_for_rerun is set (masking-bug pin)", () => {
+    const gated = { ...proposal, approved_for_rerun: true, decision: null }
+    const html = render(<MvAcceptFlow proposal={gated} />)
+    expect(html).toContain("Create this metric view")
+    expect(html).not.toContain("Approved for the next run")
+  })
+
+  it("a proposal the ledger records as approved shows the earned terminal AND still offers to create now (not a dead end)", () => {
+    const approved = { ...proposal, decision: "approved", approved_for_rerun: true }
     const html = render(<MvAcceptFlow proposal={approved} />)
     expect(html).toContain("Approved for the next run")
+    expect(html).toContain("Create it now")
+  })
+
+  // MV-D34 attach-at-approval: a proposal the space-scoped list marked as already
+  // shelved on the Agent config opens on the ATTACHED terminal — it is NOT
+  // re-offered as something to create, which is the whole point of the marker
+  // ("I created it but still see 3 proposals to create").
+  it("an already-attached proposal shows the attached terminal, not [Create this metric view]", () => {
+    const attached = { ...proposal, attached: true }
+    const html = render(<MvAcceptFlow proposal={attached} />)
+    expect(html).toContain("Attached to your Agent")
     expect(html).not.toContain("Create this metric view")
+  })
+
+  // Deployed review: the tertiary "I created this myself" claim is a PRE-CREATE
+  // affordance — a created-and-attached view is not something to still claim. It
+  // now lives inside the flow so it renders in the action state and is HIDDEN in
+  // the attached terminal (and, by the same early-return, the created terminal).
+  const claim = <span>I created this myself</span>
+
+  it("renders the claim affordance in the action state", () => {
+    const html = render(<MvAcceptFlow proposal={proposal} claimAffordance={claim} />)
+    expect(html).toContain("Create this metric view")
+    expect(html).toContain("I created this myself")
+  })
+
+  it("HIDES the claim affordance in the attached terminal", () => {
+    const attached = { ...proposal, attached: true }
+    const html = render(<MvAcceptFlow proposal={attached} claimAffordance={claim} />)
+    expect(html).toContain("Attached to your Agent")
+    expect(html).not.toContain("I created this myself")
   })
 })

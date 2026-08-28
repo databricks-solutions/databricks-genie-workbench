@@ -9,6 +9,8 @@ writes — a fake WorkspaceClient here raises on any DDL-capable surface.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from genie_space_optimizer.optimization.mv_yaml import CapabilityRow, _capability_map
@@ -85,22 +87,51 @@ class _ForbiddenSurface:
         raise AssertionError(f"probe touched {self._label}.{item}")
 
 
+class _OwnerReads:
+    """Read-only owner metadata: ``.get(full_name).owner``.
+
+    The probe reads ownership (OBO-readable metadata) to authorize an owner
+    without a grant read. ``get`` is the only allowed method — every other
+    attribute is a write path and stays forbidden, preserving the "a probe never
+    writes" guarantee.
+    """
+
+    def __init__(self, label: str, owners: dict[str, str], missing: set[str]) -> None:
+        self._label = label
+        self._owners = owners
+        self._missing = missing
+
+    def get(self, full_name):
+        if full_name in self._missing:
+            raise _NotFound(f"'{full_name}' does not exist.")
+        return SimpleNamespace(owner=self._owners.get(full_name))
+
+    def __getattr__(self, item):
+        raise AssertionError(f"probe touched {self._label}.{item}")
+
+
 class _FakeWorkspaceClient:
     def __init__(
         self,
         *,
         granted: dict[tuple[str, str], set[str]] | None = None,
         missing_securables: set[str] | None = None,
+        owners: dict[str, str] | None = None,
     ) -> None:
+        missing = missing_securables or set()
         self.grants = _Grants(
             granted if granted is not None else dict(_ALL_PRIVILEGES),
-            missing_securables or set(),
+            missing,
         )
         self.current_user = _CurrentUser()
-        # A trial CREATE would have to go through one of these.
+        # A trial CREATE would have to go through statement_execution.
         self.statement_execution = _ForbiddenSurface("statement_execution")
-        self.tables = _ForbiddenSurface("tables")
-        self.schemas = _ForbiddenSurface("schemas")
+        # Owner reads are OBO-readable metadata (read-only ``.get``); the probe
+        # uses them to authorize an owner without a grant read.
+        owners = owners or {}
+        self.catalogs = _OwnerReads("catalogs", owners, missing)
+        self.schemas = _OwnerReads("schemas", owners, missing)
+        self.tables = _OwnerReads("tables", owners, missing)
 
 
 @pytest.fixture
@@ -245,22 +276,30 @@ def test_space_check_is_skipped_when_no_space_is_given(obo_client):
 # ── Schema not found ─────────────────────────────────────────────────────
 
 
-def test_schema_not_found_denies_both_schema_checks(obo_client):
-    """UC returns NOT_FOUND for absent and for invisible alike, so this is DENIED."""
+def test_schema_not_found_is_unknown_not_denied(obo_client):
+    """A grant read that fails is UNKNOWN, not a false "insufficient".
+
+    UC returns NOT_FOUND both when a schema is absent and when the OBO token
+    cannot see it — the same NOT_FOUND a missing UC-grants scope produces. Since
+    the user may in fact have access (ownership read is also unavailable here),
+    reporting UNKNOWN is honest where DENIED would wrongly tell them to ask an
+    admin to GRANT.
+    """
     obo_client.grants._missing = {"finance.sales"}
+    obo_client.schemas._missing = {"finance.sales"}
 
     result = _probe()
 
-    assert result.verdict == "INSUFFICIENT"
-    assert result.results["USE SCHEMA on finance.sales"] == "DENIED"
-    assert result.results["CREATE TABLE on finance.sales"] == "DENIED"
+    assert result.verdict == "UNKNOWN"
+    assert result.results["USE SCHEMA on finance.sales"] == "UNKNOWN"
+    assert result.results["CREATE TABLE on finance.sales"] == "UNKNOWN"
     detail = next(
         row.detail for row in result.privileges if row.privilege == "CREATE_TABLE"
     )
     assert "not found or not visible" in (detail or "")
 
 
-def test_unreadable_privileges_are_denied_with_the_error_text(obo_client):
+def test_unreadable_privileges_are_unknown_with_the_error_text(obo_client):
     def _boom(securable_type, full_name, principal=None):
         raise RuntimeError("upstream unavailable")
 
@@ -268,8 +307,37 @@ def test_unreadable_privileges_are_denied_with_the_error_text(obo_client):
 
     result = _probe()
 
-    assert result.verdict == "INSUFFICIENT"
-    assert "upstream unavailable" in (result.privileges[0].detail or "")
+    assert result.verdict == "UNKNOWN"
+    catalog_row = next(
+        row for row in result.privileges if row.privilege == "USE_CATALOG"
+    )
+    assert catalog_row.status == "UNKNOWN"
+    assert "upstream unavailable" in (catalog_row.detail or "")
+
+
+def test_schema_owner_is_sufficient_without_any_grant_read(obo_client):
+    """A schema owner can create in their schema even when no grant read works.
+
+    Regression pin for the deployed-review false negative: the signed-in user
+    owns the target schema, the OBO token cannot read UC grants (get_effective
+    raises), yet the probe must authorize — ownership is the OBO-readable truth,
+    and owning the schema also satisfies the parent USE CATALOG check.
+    """
+    def _boom(securable_type, full_name, principal=None):
+        raise RuntimeError("OBO token not scoped for the UC grants API")
+
+    obo_client.grants.get_effective = _boom
+    obo_client.schemas._owners = {"finance.sales": "analyst@example.com"}
+    obo_client.tables._owners = {"finance.sales": "analyst@example.com"}
+
+    result = _probe()
+
+    assert result.verdict == "SUFFICIENT"
+    assert result.results["USE CATALOG on finance"] == "GRANTED"
+    assert result.results["USE SCHEMA on finance.sales"] == "GRANTED"
+    assert result.results["CREATE TABLE on finance.sales"] == "GRANTED"
+    assert result.results["SELECT on finance.sales.orders"] == "GRANTED"
+    assert result.remediation_sql is None
 
 
 @pytest.mark.parametrize("catalog", ["", "fin ance", "finance;DROP", "fin`ance"])

@@ -41,6 +41,7 @@ const proposalRevenue: MvProposal = {
   // history + lineage", never a percent.
   score_components: { statuses: { L: "COMPUTED", Y: "COMPUTED", S: "COMPUTED", D: "COMPUTED" }, L: 0.42, Y: 0.61, S: 0.5, D: 0.33 },
   evidence: { recurrence_count: 14, source_tables: ["finance.sales.orders", "finance.sales.order_items"], benchmark_question_ids: ["bq_0007", "bq_0019", "bq_0022", "bq_0041"] },
+  provenance_labels: null,
   provenance: null,
   alternatives: null,
   conflicts: null,
@@ -91,6 +92,7 @@ const ddlRevenue: MvDdlArtifact = {
   dedup_fingerprint: "9f2a1c7d4e0b6a83",
   proposed_object: "finance.sales.order_revenue",
   join_strategy: null,
+  source_tables: ["finance.sales.orders", "finance.sales.order_items"],
   yaml_text: REVENUE_YAML,
   ddl: `CREATE VIEW \`finance\`.\`sales\`.\`order_revenue\`\nWITH METRICS\nLANGUAGE YAML\nAS $$\n${REVENUE_YAML}\n$$;`,
   validation: null,

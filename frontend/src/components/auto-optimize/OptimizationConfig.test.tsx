@@ -26,6 +26,7 @@ function proposal(overrides: Partial<MvProposal> = {}): MvProposal {
     proposed_object: "finance.sales.order_revenue",
     score_components: null,
     evidence: { source_tables: ["finance.sales.orders", "finance.sales.order_items"] },
+    provenance_labels: null,
     provenance: null,
     alternatives: null,
     conflicts: null,

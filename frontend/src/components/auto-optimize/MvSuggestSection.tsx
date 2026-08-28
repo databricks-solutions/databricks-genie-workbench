@@ -125,7 +125,10 @@ export function MvSuggestSection(props: MvSuggestSectionProps) {
                       className="mt-0.5"
                     />
                     <span className="font-mono text-sm text-primary">
-                      {proposal.proposed_object ?? proposal.suggestion_id}
+                      {/* Prompt 15.9 raw-id proof: never fall back to the raw
+                          suggestion_id in chrome — a proposal without a proposed
+                          object name reads as words, not an opaque id. */}
+                      {proposal.proposed_object ?? "Proposed metric view"}
                     </span>
                   </label>
                 ))}

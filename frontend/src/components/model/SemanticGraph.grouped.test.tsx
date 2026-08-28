@@ -22,15 +22,20 @@ import {
   SemanticGraph,
   buildCards,
   cardPorts,
+  collapsePairJoins,
   collapseThreshold,
   computeFit,
   distributeEdgePorts,
+  edgeGroupSizes,
+  edgeBundleAnchors,
+  BUNDLE_MIN,
   focusSet,
   isDisplayableMeasureLabel,
   layoutCards,
   matchesSearch,
   relationshipGlyph,
   rollup,
+  type RenderedEdge,
 } from "./SemanticGraph"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
@@ -65,15 +70,17 @@ function starSchema(
 }
 
 describe("buildCards — grouping folds measures into owning cards (§2)", () => {
-  it("column 3 carries no per-measure nodes; measures ride inside cards", () => {
+  it("no measure becomes its own card; the Space-config box gets its own right column", () => {
     const { nodes, edges } = starSchema(3, { mvMeasures: 3, standalone: 2 })
     const cards = buildCards(nodes, edges)
     // No card is a measure — the measure explosion is gone.
     expect(cards.map((c) => c.kind as string)).not.toContain("measure")
-    // The only col-3 card is the synthetic concepts card.
-    const col3 = cards.filter((c) => c.col === 3)
-    expect(col3).toHaveLength(1)
-    expect(col3[0].kind).toBe("concepts")
+    // Round-5: the concepts (Space-config) box lives in its OWN column to the
+    // RIGHT of the metric views (col 3) — the dedicated "Space config · measures"
+    // column the reviewer asked for, not buried under the MV boxes in col 2.
+    const concepts = cards.filter((c) => c.kind === "concepts")
+    expect(concepts).toHaveLength(1)
+    expect(concepts[0].col).toBe(3)
   })
 
   it("membership puts a measure's chip inside its MV card; the rest collect as concepts", () => {
@@ -89,6 +96,132 @@ describe("buildCards — grouping folds measures into owning cards (§2)", () =>
     const { nodes, edges } = starSchema(3, { mvMeasures: 2, standalone: 0 })
     const cards = buildCards(nodes, edges)
     expect(cards.some((c) => c.kind === "concepts")).toBe(false)
+  })
+})
+
+// Round-5: loose measures are a Space-config BOX in their OWN column to the right
+// of the metric views — the dedicated "Space config · measures" column.
+describe("loose measures render in their own Space-config column (round-5)", () => {
+  it("draws the Space-config box with its loose measures, listed as chips", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 3, standalone: 2 })
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain("Space config")
+    // The subtitle is terse now the column header carries "measures".
+    expect(html).toContain("not in any MV")
+    expect(html).toContain("free_measure_0")
+    // The dedicated column header names it.
+    expect(html).toContain("Space config · measures")
+  })
+
+  it("collapses like any card once the model is large (chips drop, box remains)", () => {
+    const { nodes, edges } = starSchema(30, { mvMeasures: 4, standalone: 3 })
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain("Space config")
+    expect(html).toContain("collapsed")
+    expect(html).not.toContain("free_measure_0")
+  })
+
+  it("counts unnamed loose measures without printing their internal tokens", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 1, standalone: 0 })
+    nodes.push({ id: "measure:u1", kind: "measure", label: "sug_f07l2262f800", col: 3, row: 0, governance: "ungoverned" })
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain("+1 unnamed")
+    expect(html).not.toContain("sug_f07l2262f800")
+  })
+
+  it("names the metric view a loose measure's name collides with", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 1, standalone: 0 })
+    nodes.push({
+      id: "measure:dupe",
+      kind: "measure",
+      label: "avg_daily_rate",
+      col: 3,
+      row: 0,
+      governance: "ungoverned",
+      // The server sends the governing metric view's identifier; the chip shows
+      // its leaf so the warning fits beside the measure.
+      overlaps: "finance.sales.orders_metrics",
+    })
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain("also in orders_metrics")
+    expect(html).not.toContain("finance.sales.orders_metrics")
+  })
+})
+
+// ── 12f round 4 — selection lights edges; a measure wraps its owning MV (v3 §4) ─
+describe("selection interactions match the reference (v3 §4)", () => {
+  it("a join edge switches to the accent arrowhead only when an endpoint is selected", () => {
+    const { nodes, edges } = starSchema(3) // t0 is the fact every dim joins to
+    const idle = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // At rest the join terminates in the neutral arrowhead — the canvas is calm.
+    expect(idle).not.toContain("url(#mv-arrow-on)")
+    const selected = render(<SemanticGraph nodes={nodes} edges={edges} selectedId="cat.sch.t0" />)
+    // Clicking the fact lights its join edges: accent arrowhead now in use.
+    expect(selected).toContain("url(#mv-arrow-on)")
+  })
+
+  it("selecting a MEASURE wraps the tables of its owning MV (not only an MV click)", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 2, standalone: 0 })
+    // The MV must declare the tables it uses for a boundary to form.
+    edges.push({ from: "cat.sch.mv", to: "cat.sch.t0", kind: "uses" })
+    edges.push({ from: "cat.sch.mv", to: "cat.sch.t1", kind: "uses" })
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} selectedId="measure:gov_0" />)
+    expect(html).toContain("Tables used by orders_metrics")
+  })
+})
+
+// ── Round-5 — proven roles, calmer edges, disambiguated legend, gated Impact ──
+describe("round-5 clarity fixes", () => {
+  it("captions a table FACT/DIM only when the role is PROVEN, else a neutral TABLE", () => {
+    const nodes: SemanticGraphNode[] = [
+      { id: "c.s.fact", kind: "table", label: "orders", col: 0, row: 0, role: "fact" },
+      { id: "c.s.dim", kind: "table", label: "customer", col: 1, row: 0, role: "dim" },
+      // A table with no proven role must NOT be guessed from its column.
+      { id: "c.s.neutral", kind: "table", label: "dim_property", col: 0, row: 1 },
+    ]
+    const html = render(<SemanticGraph nodes={nodes} edges={[]} />)
+    expect(html).toContain(">FACT<")
+    expect(html).toContain(">DIM<")
+    // The unproven table reads TABLE, not a mislabelled FACT.
+    expect(html).toContain(">TABLE<")
+  })
+
+  it("hides definition (uses) edges at rest and draws them only for the selected MV", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 1, standalone: 0 })
+    edges.push({ from: "cat.sch.mv", to: "cat.sch.t0", kind: "uses" })
+    const idle = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // At rest the canvas shows the join skeleton only — no dotted MV→table arrows.
+    expect(idle).not.toContain("url(#mv-uses-arrow)")
+    const selected = render(<SemanticGraph nodes={nodes} edges={edges} selectedId="cat.sch.mv" />)
+    expect(selected).toContain("url(#mv-uses-arrow)")
+  })
+
+  it("the legend disambiguates the solid join from the dotted MV-definition line", () => {
+    const { nodes, edges } = starSchema(3)
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain("declared join (N:1)")
+    expect(html).toContain("MV definition (on select)")
+  })
+
+  it("disables Impact until a table is selected, then enables it", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 1, standalone: 0 })
+    const idle = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // No selection → Impact is disabled and says why.
+    expect(idle).toContain("Select a source table to see its downstream impact")
+    expect(idle).toContain("disabled")
+    const onTable = render(<SemanticGraph nodes={nodes} edges={edges} selectedId="cat.sch.t0" />)
+    expect(onTable).toContain("Downstream blast radius of the selected table")
+  })
+
+  it("dims non-neighbor join edges once something is selected (focus+context, round-6)", () => {
+    // A 4-table star: selecting one dim leaf leaves two joins that don't touch it.
+    const { nodes, edges } = starSchema(4, { mvMeasures: 1, standalone: 0 })
+    const countDimmed = (h: string) => h.split('opacity="0.06"').length - 1
+    const idle = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // Selecting t1 lights the t1↔t0 join and dims the t2↔t0 / t3↔t0 joins to the
+    // near-invisible 0.06 the reference uses — so a click removes clutter.
+    const selected = render(<SemanticGraph nodes={nodes} edges={edges} selectedId="cat.sch.t1" />)
+    expect(countDimmed(selected)).toBeGreaterThan(countDimmed(idle))
   })
 })
 
@@ -224,6 +357,56 @@ describe("focusSet — selection dims all but the 1-hop neighborhood (§4)", () 
     const { nodes, edges } = starSchema(3)
     expect(focusSet(buildCards(nodes, edges), edges, null)).toBeNull()
   })
+
+  // Round-7: a loose (Space-config) measure belongs to no MV, so it used to have
+  // no edge and lit nothing. A `derives` edge to the table its expression reads
+  // gives it lineage — selecting it lights that table.
+  it("lights a loose measure's `derives` source table on select (round-7)", () => {
+    const nodes: SemanticGraphNode[] = [
+      { id: "cat.sch.fact", kind: "table", label: "fact", col: 0, row: 0 },
+      { id: "cat.sch.other", kind: "table", label: "other", col: 0, row: 1 },
+      { id: "measure:Loose", kind: "measure", label: "Loose", col: 3, row: 0, governance: "curated" },
+    ]
+    const edges: SemanticGraphEdge[] = [
+      { from: "measure:Loose", to: "cat.sch.fact", kind: "derives" },
+    ]
+    const cards = buildCards(nodes, edges)
+    const keep = focusSet(cards, edges, "measure:Loose")!
+    expect(keep.has("cat.sch.fact")).toBe(true) // the table it derives from lights
+    expect(keep.has("cat.sch.other")).toBe(false) // an unrelated table stays dimmed
+  })
+})
+
+// ── Round-7: one relationship = one arrow (collapsePairJoins) ─────────────────
+describe("collapsePairJoins — reciprocal joins render as a single arrow", () => {
+  const box = (x: number) => ({ x, y: 0, w: 100, h: 40 })
+  // Two join edges between the same pair, declared in opposite directions (the
+  // dim_property ↔ dim_host case): a reader sees one relationship.
+  const reciprocal: RenderedEdge[] = [
+    { index: 0, fromCardId: "dim_host", toCardId: "dim_property", fromBox: box(400), toBox: box(0), kind: "join" },
+    { index: 1, fromCardId: "dim_property", toCardId: "dim_host", fromBox: box(0), toBox: box(400), kind: "join" },
+  ]
+
+  it("collapses a reciprocal pair to one join", () => {
+    const kept = collapsePairJoins(reciprocal)
+    expect(kept).toHaveLength(1)
+  })
+
+  it("keeps the left→right edge so the arrowhead points at the dim side", () => {
+    const kept = collapsePairJoins(reciprocal)
+    // The survivor runs source(left) → dim(right): fromBox.x <= toBox.x.
+    expect(kept[0].fromBox.x).toBeLessThanOrEqual(kept[0].toBox.x)
+    expect(kept[0].index).toBe(1)
+  })
+
+  it("leaves distinct pairs and non-join edges alone", () => {
+    const items: RenderedEdge[] = [
+      { index: 0, fromCardId: "a", toCardId: "b", fromBox: box(0), toBox: box(100), kind: "join" },
+      { index: 1, fromCardId: "a", toCardId: "c", fromBox: box(0), toBox: box(100), kind: "join" },
+      { index: 2, fromCardId: "mv", toCardId: "a", fromBox: box(200), toBox: box(0), kind: "uses" },
+    ]
+    expect(collapsePairJoins(items)).toHaveLength(3)
+  })
 })
 
 // ── 12d finding 1: data hygiene — internal tokens never render as labels ──────
@@ -301,13 +484,17 @@ describe("relationshipGlyph — compact at rest, never truncated ambiguity", () 
     expect(relationshipGlyph(undefined)).toBeNull()
   })
 
-  it("the rendered rest label uses the glyph, never the truncated word", () => {
+  it("shows a join predicate only on demand — nothing floats at rest (round-6)", () => {
     const { nodes, edges } = starSchema(3)
-    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
-    // The at-rest join label is the glyph; the full 'many-to-one' text (which
-    // truncated to 'many-to-o…') does not appear at rest.
-    expect(html).toContain("N:1")
-    expect(html).not.toContain("many-to-o")
+    const idle = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // Round-6 labels-on-demand: at rest a join carries NO floating label plate,
+    // so neither its predicate nor the truncated relationship word appears. (The
+    // legend still names the glyph — that's vocabulary, not an edge label.)
+    expect(idle).not.toContain("ON t1.fk")
+    expect(idle).not.toContain("many-to-o")
+    // Selecting an endpoint reveals that edge's full predicate.
+    const selected = render(<SemanticGraph nodes={nodes} edges={edges} selectedId="cat.sch.t0" />)
+    expect(selected).toContain("ON t")
   })
 })
 
@@ -339,6 +526,96 @@ describe("distributeEdgePorts — a fan-in spreads across the fact card's side",
     ])
     expect(ports.get(0)!.src).toEqual(cardPorts(fromBox).right)
     expect(ports.get(0)!.dst).toEqual(cardPorts(toBox).left)
+  })
+})
+
+// ── 12f: the rung letter earns its place only when rungs differ ───────────────
+describe("measure chips — the non-color rung tag is conditional", () => {
+  it("a single-rung metric view drops the repeated letter (the pill already says it)", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 4, standalone: 0 })
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // The card's own pill carries the rung once…
+    expect(html).toContain("4 measures · governed")
+    // …so no chip repeats it as a bare "G". The rung stays in each chip's
+    // accessible label, which is where a screen reader reads it.
+    expect(html).not.toContain('font-weight="700">G</text>')
+    expect(html).toContain("gov_measure_0 — Governed")
+  })
+
+  it("a mixed-rung card keeps the letter, since color alone would carry it", () => {
+    const { nodes, edges } = starSchema(3, { mvMeasures: 1, standalone: 0 })
+    // Same card, two rungs: the membership edge puts both inside the MV.
+    nodes.push({
+      id: "measure:curated_in_mv", kind: "measure", label: "curated_twin",
+      col: 3, row: 1, governance: "curated",
+    })
+    edges.push({ from: "measure:curated_in_mv", to: "cat.sch.mv", kind: "membership" })
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain('font-weight="700">G</text>')
+    expect(html).toContain('font-weight="700">C</text>')
+  })
+})
+
+// ── 12f: a large fan is bundled, so its labels stop forming a band ────────────
+describe("edge bundling — a big fan trades 29 plates for one count", () => {
+  const factBox = { x: 32, y: 44, w: 176, h: 56 }
+  const fan = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      index: i,
+      fromCardId: `d${i}`,
+      toCardId: "fact",
+      fromBox: { x: 236, y: 44 + i * 120, w: 188, h: 60 },
+      toBox: factBox,
+      kind: "join" as const,
+    }))
+
+  it("small fans stay unbundled — every edge keeps its own label", () => {
+    const sizes = edgeGroupSizes(fan(BUNDLE_MIN - 1))
+    for (const size of sizes.values()) expect(size).toBeLessThan(BUNDLE_MIN)
+    expect(edgeBundleAnchors(fan(BUNDLE_MIN - 1))).toEqual([])
+  })
+
+  it("a fan at the threshold bundles, and reports one anchor with the full count", () => {
+    const items = fan(BUNDLE_MIN)
+    for (const size of edgeGroupSizes(items).values()) expect(size).toBe(BUNDLE_MIN)
+    const anchors = edgeBundleAnchors(items)
+    expect(anchors).toHaveLength(1)
+    // The chip sits under the hub card, where there is room for it — the gutter
+    // the trunk runs through is narrower than the label.
+    expect(anchors[0]).toMatchObject({ x: factBox.x, count: BUNDLE_MIN })
+    expect(anchors[0].y).toBeGreaterThan(factBox.y + factBox.h)
+  })
+
+  it("counts joins only — a `uses` edge on the same side is not a declared join", () => {
+    const items = [
+      ...fan(BUNDLE_MIN),
+      // An MV→table edge lands on the SAME side of the hub card.
+      { index: 99, fromCardId: "mv", toCardId: "fact", fromBox: { x: 700, y: 44, w: 200, h: 58 }, toBox: factBox, kind: "uses" as const },
+    ]
+    expect(edgeBundleAnchors(items)[0].count).toBe(BUNDLE_MIN)
+    // …and it is never itself bundled (it carries no label to suppress).
+    expect(edgeGroupSizes(items).get(99)).toBeUndefined()
+  })
+
+  it("29 edges produce ONE summary count, not 29 per-edge labels", () => {
+    const { nodes, edges } = starSchema(30)
+    const html = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    expect(html).toContain("29 declared joins")
+    // Round-6: no edge paints a label at rest (bundled or not), so the only
+    // surviving "N:1" on the canvas is the legend's, never an edge's.
+    expect(html.split("N:1").length - 1).toBe(1)
+  })
+
+  it("a small fan is below the threshold — no summary chip, labels on demand", () => {
+    const { nodes, edges } = starSchema(3)
+    const idle = render(<SemanticGraph nodes={nodes} edges={edges} />)
+    // Not bundled → no "N declared joins" summary chip…
+    expect(idle).not.toContain("declared joins")
+    // …and round-6 gives it no at-rest predicate either.
+    expect(idle).not.toContain("ON t1.fk")
+    // Selecting an endpoint reveals the predicate on demand.
+    const selected = render(<SemanticGraph nodes={nodes} edges={edges} selectedId="cat.sch.t0" />)
+    expect(selected).toContain("ON t")
   })
 })
 

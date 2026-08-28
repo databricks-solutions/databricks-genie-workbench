@@ -1302,6 +1302,61 @@ def _native_eval(
     return eval_output
 
 
+def _load_operator_proposed_joins(
+    w: Any, *, run_id: str, catalog: str, schema: str
+) -> list[dict[str, Any]]:
+    """Read the run's operator-proposed join seeds (Semantic Blueprint §7), or [].
+
+    Best-effort by contract: no warehouse, no artifact, or any read failure
+    yields ``[]`` so the loop degrades to "no operator advice". These are
+    ADVICE the optimizer validates — never applied here as declared joins."""
+    try:
+        from genie_space_optimizer.common.warehouse import (
+            resolve_warehouse_id,
+            wh_read_join_advice,
+        )
+
+        warehouse_id = resolve_warehouse_id()
+        if not warehouse_id:
+            return []
+        return wh_read_join_advice(
+            w, warehouse_id, run_id=run_id, catalog=catalog, schema=schema
+        )
+    except Exception:
+        logger.debug("Could not load operator-proposed joins for run %s", run_id, exc_info=True)
+        return []
+
+
+def _operator_joins_for_prompt(current_config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Shape the attached operator-proposed joins for the optimizer prompt (§7).
+
+    Reads the advisory ``_operator_proposed_joins`` key (attached at loop start)
+    and projects each seed to the fields the LLM needs to VALIDATE it: the two
+    endpoints, the relationship, the match grounding, and the containment probe.
+    Pure and deterministic; returns ``[]`` when nothing was seeded."""
+    seeds = current_config.get("_operator_proposed_joins") if isinstance(current_config, dict) else None
+    if not isinstance(seeds, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for s in seeds:
+        if not isinstance(s, dict):
+            continue
+        frm, to = s.get("from"), s.get("to")
+        from_col, to_col = s.get("fromCol"), s.get("toCol")
+        if not (frm and to and from_col and to_col):
+            continue
+        out.append({
+            "from_table": frm,
+            "from_column": from_col,
+            "to_table": to,
+            "to_column": to_col,
+            "relationship": s.get("rel") or "N:1",
+            "grounding": s.get("match") or "name-type",
+            "containment_probe": s.get("probe"),
+        })
+    return out
+
+
 def _llm_messages(
     *,
     allowed_levers: list[int],
@@ -1339,6 +1394,23 @@ def _llm_messages(
         "patch_rules": UNIFIED_OPTIMIZER_PATCH_RULES,
         "recent_reflections": reflections[-2:],
     }
+    # Join Advisor advice (Semantic Blueprint §7): operator-proposed candidate
+    # joins the human seeded on the Semantic Model tab. These are HYPOTHESES to
+    # validate against the data, NOT ground truth — a wrong join silently
+    # produces wrong numbers. Emit `add_join_spec` only for a seed you can
+    # justify (a high containment probe and/or a name/type or FK match); ignore
+    # the rest. They are advice, never a pre-applied config edit.
+    operator_joins = _operator_joins_for_prompt(current_config)
+    if operator_joins:
+        user["operator_proposed_joins"] = operator_joins
+        user["operator_proposed_joins_guidance"] = (
+            "These candidate joins were proposed by a human via the Semantic "
+            "Blueprint Join Advisor and carried into this run as advice. Treat "
+            "each as a hypothesis to validate, not as ground truth. Add one with "
+            "add_join_spec only when the containment_probe and/or grounding "
+            "support it; a join that does not hold must be left out (a wrong join "
+            "silently produces wrong results and cannot be removed later)."
+        )
     if banned:
         user["banned_patch_types"] = sorted(banned)
         user["banned_patch_types_reason"] = (
@@ -2888,6 +2960,24 @@ def run_unified_optimization_loop(
             exc_info=True,
         )
         current_config = attach_top_level_description(_parsed_space(raw_config), raw_config)
+
+    # Join Advisor advice (Semantic Blueprint §7): attach the operator-proposed
+    # candidate joins (seeded on the Semantic Model tab) as an advisory `_`-prefixed
+    # key on the working config — the same convention as `_prefetched_uc_metadata`.
+    # The optimizer hands these to the LLM as candidate joins to VALIDATE and add
+    # itself (add_join_spec); nothing here writes a declared join_spec. Best-effort
+    # and additive — absent/unreadable ⇒ no operator advice, exactly as before.
+    if isinstance(current_config, dict):
+        operator_joins = _load_operator_proposed_joins(
+            w, run_id=run_id, catalog=catalog, schema=schema
+        )
+        if operator_joins:
+            current_config["_operator_proposed_joins"] = operator_joins
+            logger.info(
+                "Loaded %d operator-proposed join seed(s) for run %s",
+                len(operator_joins),
+                run_id,
+            )
 
     benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
 

@@ -12,6 +12,7 @@
  */
 import { useState } from "react"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
+import { MvProposalsSummary } from "@/components/auto-optimize/MvProposalsSummary"
 import { MvAcceptFlow } from "@/components/auto-optimize/MvAcceptFlow"
 import { MvSpaceConfigDiff } from "@/components/auto-optimize/MvSpaceConfigDiff"
 import {
@@ -73,6 +74,10 @@ export function MvSuggestOnlyPanel({
         </span>
       </div>
 
+      {/* Deployed review #5: lead with what the run is proposing — count, names,
+          and what they govern — so the customer can decide before the detail. */}
+      <MvProposalsSummary proposals={ranked} />
+
       {callout && <p className="text-xs text-secondary">{callout}</p>}
 
       {ranked.map((proposal, i) => {
@@ -91,6 +96,7 @@ export function MvSuggestOnlyPanel({
                   proposal={proposal}
                   runId={runId}
                   onStartRun={onRerun}
+                  grantSql={proposalDdl?.grant_sql}
                   onCreated={(p) =>
                     setCreated((c) => new Set(c).add(p.suggestion_id))
                   }

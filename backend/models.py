@@ -293,6 +293,24 @@ class MvProposalMeasure(BaseModel):
     benchmark_question_ids: list[str] | None = None
 
 
+class MvProvenanceLabel(BaseModel):
+    """A provenance id resolved to a human thing for the card (Prompt 15.9 item d).
+
+    The advisor stamps each occurrence with a prefixed id (``sql_snippet:`` /
+    ``trusted_asset:`` / ``gso_patch:``); rendering those raw at the user is the
+    defect 15.9 item (d) closes. Resolved SERVE-TIME from the current space config
+    so existing proposals gain labels without a re-scan: a ``sql_snippet`` id →
+    the snippet's display name (``detail`` = its expression), a ``trusted_asset``
+    id → its example-question text, a ``gso_patch`` id → its lever/iteration. The
+    raw ``id`` rides along so the card can keep it behind a "show raw ids"
+    debugging affordance. UI display only — the metadata firewall is untouched."""
+
+    id: str
+    kind: str
+    label: str
+    detail: str | None = None
+
+
 class MvProposal(BaseModel):
     """One advisor proposal (a ``genie_opt_mv_candidates`` row) as the UI reads it.
 
@@ -330,6 +348,11 @@ class MvProposal(BaseModel):
     checks: dict[str, str] | None = None
     score_components: dict[str, Any] | None = None
     evidence: dict[str, Any] | None = None
+    # Prompt 15.9 item (d): the evidence provenance ids resolved to human labels
+    # (serve-time, from the current space config). None on the pure row map; the
+    # proposals endpoints populate it. The card renders these and keeps the raw
+    # ids behind a "show raw ids" affordance.
+    provenance_labels: list[MvProvenanceLabel] | None = None
     provenance: dict[str, Any] | None = None
     alternatives: list[Any] | None = None
     conflicts: list[Any] | None = None
@@ -340,6 +363,13 @@ class MvProposal(BaseModel):
     decided_at: str | None = None
     suppressed_until: str | None = None
     approved_for_rerun: bool = False
+    # MV-D34 attach-at-approval marker: true when this proposal's ``proposed_object``
+    # is already shelved on the Agent's ``data_sources.metric_views``. Computed
+    # serve-time from the live config (the source of truth), NOT from a ledger
+    # status, so a user detach in Genie un-marks it on the next load and a view
+    # attached out-of-band is still recognized. Lets the list badge an
+    # already-created proposal instead of re-offering [Create this metric view].
+    attached: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -473,23 +503,54 @@ class MvCreateAtApprovalResponse(BaseModel):
 
     One shape carries the three outcomes the card renders. ``created`` true: the
     metric view exists under OBO — ``full_name`` + the sentinel advice ``run_id``
-    hosting the ``OBO_CREATED`` ledger row, attached-and-measured on the next
-    run. ``created`` false with ``degraded`` true: the fresh probe re-verified
-    below SUFFICIENT (downgrade-never-upgrade, MV-D1/MV-D34), so nothing was
-    created and the card falls back to [Approve for later] with
-    ``remediation_sql`` shown copy-ready. ``created`` false with ``degraded``
-    false: a create-time failure (revalidation drop, collision) with ``reason``,
-    never a silent empty."""
+    hosting the ``OBO_CREATED`` ledger row. ``attached`` then reports whether the
+    view was also shelved on the Agent config in the same call (MV-D34
+    attach-at-approval): true means the semantic model and optimization already
+    reflect it; ``created and not attached`` means the config PATCH failed (e.g.
+    the user lacks CAN EDIT), so the card tells the user to attach it themselves.
+    ``grant_sql`` is the copy-ready ``GRANT SELECT … TO <optimizer SP>`` the view
+    needs so a later optimization run (a different principal) can read it — the
+    one manual step left after attach. ``created`` false with ``degraded`` true:
+    the fresh probe re-verified below SUFFICIENT (downgrade-never-upgrade,
+    MV-D1/MV-D34), so nothing was created and the card falls back to [Approve for
+    later] with ``remediation_sql`` shown copy-ready. ``created`` false with
+    ``degraded`` false: a create-time failure (revalidation drop, collision)
+    with ``reason``, never a silent empty."""
 
     created: bool
     degraded: bool = False
+    attached: bool = False
+    # MV-D34 idempotent re-approval: true when the view already existed (as a
+    # metric view) and this call only (re)attached it — the card then says
+    # "attached an existing view" instead of claiming a fresh create.
+    already_existed: bool = False
     full_name: str | None = None
     run_id: str | None = None
     suggestion_id: str | None = None
     provenance: str = "OBO_CREATED"
     verdict: str | None = None
     remediation_sql: str | None = None
+    grant_sql: str | None = None
     reason: str | None = None
+    # Workspace URL so the created terminal can deep-link the new view in Catalog
+    # Explorer (…/explore/data/<catalog>/<schema>/<view>). Resolved from the
+    # caller's client config; None if unavailable (the link is then omitted).
+    workspace_host: str | None = None
+
+
+class MvSemanticGraphDimension(BaseModel):
+    """One dimension (``fields``/``dimensions`` entry) of a metric view's YAML.
+
+    Prompt 12f. ``binding`` is which relation the expression reads from — the
+    joined table's fqn when ``expr`` is qualified by a join ALIAS declared in the
+    same YAML, else the MV's own ``source``. It is resolved from the parsed
+    document only: an expression whose qualifier matches no declared alias
+    resolves to the source rather than guessing a table, because a binding the
+    YAML does not prove is worse than no binding at all."""
+
+    name: str
+    expr: str | None = None
+    binding: str | None = None
 
 
 class MvSemanticGraphNode(BaseModel):
@@ -532,6 +593,52 @@ class MvSemanticGraphNode(BaseModel):
     # unproven, MV-D33 constraint 2). ``None`` for non-MV nodes or when no read
     # was attempted (unconfigured) — additive, older clients ignore it.
     definition_available: bool | None = None
+    # Prompt 12f (metric_view nodes only, and only when the YAML parsed): the
+    # rest of what the definition already proved, so the curator inset can answer
+    # "what IS this view" without a second read. ``mv_filter`` is the top-level
+    # ``filter`` verbatim (a row filter silently applied to every query is exactly
+    # the thing a curator must see); ``materialization`` is a one-line SUMMARY of
+    # the ``materialization`` object (entry count + refresh cadence), never the
+    # object itself, because the inset states posture, not configuration; and
+    # ``dimensions`` are the declared fields with their resolved binding. All
+    # three are additive and absent (``None``) for a non-MV node, an unreadable
+    # YAML, or a definition that simply does not declare them.
+    # The table the view reads FROM. The ``uses`` edges prove membership but not
+    # which member is the root, and a root guessed from join direction is wrong
+    # whenever the config declares a fact→fact join (detail rows pointing at their
+    # header): the curator inset's join tree must be rooted where the YAML says.
+    mv_source: str | None = None
+    mv_filter: str | None = None
+    materialization: str | None = None
+    dimensions: list[MvSemanticGraphDimension] | None = None
+    # Prompt 12f (measure concepts only): the attached metric view that ALREADY
+    # exposes a measure of this name, set on an ungoverned/curated concept whose
+    # name collides with a governed one. The Space-config panel raises it as an
+    # overlap warning — the duplicate-definition risk the v7 contract puts on the
+    # loose-measure panel. ``None`` when there is no collision.
+    overlaps: str | None = None
+    # Round-5 (table nodes only): the PROVEN fact/dim role, never guessed from
+    # layout. ``fact`` when the table is a metric view's declared ``source``;
+    # ``dim`` when it is only ever a join target (a join_specs "one" side or an
+    # MV-YAML joined table). ``None`` when nothing proves it — the UI then labels
+    # it a neutral "table" rather than asserting a role the data does not support
+    # (the fix for facts/dims mislabelled by raw join direction).
+    role: Literal["fact", "dim"] | None = None
+    # Round-5 (measure concepts only): the measure's defining expression and, when
+    # the source carries one, a human description — so selecting a measure can show
+    # WHAT it computes in the detail panel, not just its governance. ``expr`` is the
+    # canonical expression for a governed measure, the snippet SQL for a curated
+    # one, and ``None`` for an ungoverned proposal (which exposes a name, not an
+    # expression). ``description`` is best-effort and often ``None``.
+    expr: str | None = None
+    description: str | None = None
+    # Phase 2 (v4 §6, table nodes only): the PARTICIPATING columns — join keys
+    # parsed server-side from the join ``ON`` predicates, never the full column
+    # list (which would recreate the wall-of-text the blueprint avoids). Drives
+    # the Columns LOD's per-column rows and column-accurate join ports. ADDITIVE
+    # and ``None`` for a non-table node or a table no parsed join key referenced,
+    # so a client that predates the column model renders exactly as before.
+    columns: list[str] | None = None
 
 
 class MvSemanticGraphEdge(BaseModel):
@@ -546,7 +653,12 @@ class MvSemanticGraphEdge(BaseModel):
     (Prompt 12e, MV-D33) links a metric view to a table it sources — the proven
     at-rest arrow and the member set the select-time boundary wraps; emitted ONLY
     for an MV whose YAML parsed (arrows require proof). ``replaces`` is the
-    overlay's dashed edge — client-only.
+    overlay's dashed edge — client-only. ``derives`` (round-7) links a measure to
+    a table its expression is built from — extracted from the measure's ``expr``
+    (fully-qualified table references). It is the lineage a loose (Space-config)
+    measure has when it belongs to no metric view: the client renders it ONLY when
+    the measure is selected, so clicking a loose measure lights up its source
+    tables. Emitted only where the expr proves a reference (no expr → none).
 
     ``weight`` (Prompt 12b, SQL-coverage lens) is the number of curated SQL
     statements that traverse a ``join`` edge (touch both endpoints) — an ADDITIVE
@@ -555,11 +667,19 @@ class MvSemanticGraphEdge(BaseModel):
 
     from_: str = Field(..., alias="from")
     to: str
-    kind: Literal["join", "membership", "replaces", "uses"]
+    kind: Literal["join", "membership", "replaces", "uses", "derives"]
     on: str | None = None
     relationship: str | None = None
     scd2: bool = False
     weight: int | None = None
+    # Phase 2 (v4 §6, join edges only): the parsed column endpoints of the ``on``
+    # predicate — ``from_column`` on the ``from`` (left) side, ``to_column`` on
+    # the ``to`` (right) side — so the canvas can terminate the join line at the
+    # exact column ports. ADDITIVE and ``None`` when the predicate did not parse
+    # to a column = column equality (e.g. a function join); the ``on`` text is
+    # retained regardless for the detail inset.
+    from_column: str | None = None
+    to_column: str | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -592,6 +712,74 @@ class MvSemanticGraph(BaseModel):
     coverage_reason: str | None = None
 
 
+class JoinCandidate(BaseModel):
+    """A data-grounded candidate join surfaced by the Semantic Blueprint's Join
+    Advisor (v4 §7) — **advice to the optimizer, never a Genie Agent config edit.**
+
+    The Workbench does not make ad-hoc edits to ``serialized_space`` (that is the
+    Genie product UI's job). A candidate is grounded in (a) a declared Unity
+    Catalog foreign key (``match="fk"``), (b) name+type matching of key-like
+    columns (``match="name-type"``), and scored by (c) a warehouse containment
+    probe: the fraction of distinct ``from.from_col`` values present in
+    ``to.to_col`` in ``[0,1]`` (``probe``), or ``None`` when no warehouse could
+    run it (honest-empty — never a silent 0). Field aliases mirror the frontend
+    ``JoinCandidate`` (``from``/``fromCol``/``toCol``) one-to-one.
+    """
+
+    id: str
+    from_: str = Field(..., alias="from")
+    from_col: str = Field(..., alias="fromCol")
+    to: str
+    to_col: str = Field(..., alias="toCol")
+    rel: Literal["N:1", "1:1"] = "N:1"
+    match: Literal["fk", "name-type", "probe"] = "name-type"
+    probe: float | None = None
+    note: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class JoinCandidatesResponse(BaseModel):
+    """``GET /spaces/{space_id}/join-candidates`` — Join Advisor candidate pool.
+
+    ``status`` is the honest-empty discriminator the inset renders:
+    ``ok`` (candidates found), ``fully_connected`` (no unjoined key-like column
+    pairs remain), ``no_candidates`` (nothing name/FK-matched), or
+    ``no_warehouse`` (candidates exist but none could be containment-probed, so
+    every ``probe`` is ``None``). Candidates are never applied — they are seeded
+    as advice via ``POST /join-advice``."""
+
+    space_id: str
+    status: Literal["ok", "fully_connected", "no_candidates", "no_warehouse"] = "ok"
+    candidates: list[JoinCandidate] = Field(default_factory=list)
+
+
+class JoinAdvicePayload(BaseModel):
+    """``POST /spaces/{space_id}/join-advice`` body — the seeded candidate set.
+
+    Persists the operator's checked candidates as **advice the next
+    Auto-Optimize run validates and adds itself** (via ``add_join_spec``), never
+    a declared ``join_spec`` written by the Workbench (the optimizer can add or
+    update joins but cannot remove them — ``unified_loop.py:_ALLOWED_PATCH_TYPES``
+    — so a locked wrong join would be a foot-gun). An empty ``seeds`` clears the
+    space's pending advice."""
+
+    seeds: list[JoinCandidate] = Field(default_factory=list, max_length=50)
+
+
+class JoinAdviceResponse(BaseModel):
+    """``GET``/``POST /spaces/{space_id}/join-advice`` — the persisted advice set.
+
+    ``seeds`` is the pending advice the next run will consume; ``updated_at`` and
+    ``seeded_by`` record who last seeded it. Empty ``seeds`` means no pending
+    advice."""
+
+    space_id: str
+    seeds: list[JoinCandidate] = Field(default_factory=list)
+    updated_at: str | None = None
+    seeded_by: str | None = None
+
+
 class MvDdlArtifact(BaseModel):
     """``GET /runs/{run_id}/mv-ddl`` — the rendered DDL artifact plus GRANT remediation.
 
@@ -603,6 +791,11 @@ class MvDdlArtifact(BaseModel):
     dedup_fingerprint: str | None = None
     proposed_object: str | None = None
     join_strategy: str | None = None
+    # The view's source tables, parsed serve-time from ``yaml_text`` (the ``source:``
+    # of the base plus each join). Lets the card show a "Source" attribute column
+    # (deployed review #3) for existing candidates without a re-scan; the rendered
+    # YAML is the authority, so this is right whether the row is new or legacy.
+    source_tables: list[str] | None = None
     yaml_text: str | None = None
     ddl: str | None = None
     validation: dict[str, Any] | None = None

@@ -348,6 +348,209 @@ export const measureDetail = {
   synonyms: ["revenue", "net sales"],
 }
 
+// ── Semantic Blueprint (v4) fixtures — P1 fidelity frame ─────────────────────
+// Ported verbatim from the north-star prototype's data model
+// (docs/design/mockups/10-blueprint-prototype.html). Three robustness scenarios
+// per blueprint §5.11 — star (roles proven), unknown roles (neutral, never
+// guessed), single wide table (no joins, still valid) — plus a deterministic
+// 30-table snowflake generator for the scale frame. `rank`/`order` are the
+// AUTHORED source-left placement; fact-center re-ranking derives its own
+// (blueprint §5.12) without mutating these fixtures.
+
+export type BlueprintGov = "governed" | "curated" | "ungoverned"
+
+export interface BlueprintMeasureFixture {
+  name: string
+  gov: BlueprintGov
+  expr: string
+  /** Lineage → source tables (already emitted by the backend, §5.10). */
+  src: string[]
+  /** Name collision: the governed MV that already exposes this name. */
+  overlaps?: string
+}
+
+export interface BlueprintTableFixture {
+  kind: "table"
+  id: string
+  /** Proven by a metric view only — absent means neutral "TABLE" (§5.11). */
+  role?: "FACT" | "DIM"
+  rank: number
+  order: number
+  coverage: number
+  columnCount?: number
+  island?: boolean
+  unmodeled?: boolean
+  cold?: boolean
+  /** Participating columns (join keys + bindings) — the Columns-LOD rows. */
+  cols: string[]
+}
+
+export interface BlueprintMvFixture {
+  kind: "mv" | "config"
+  id: string
+  rank: number
+  order: number
+  mv_filter?: string
+  materialization?: string
+  dimensions?: { binding: string; name: string }[]
+  measures: BlueprintMeasureFixture[]
+}
+
+export type BlueprintNodeFixture = BlueprintTableFixture | BlueprintMvFixture
+
+export interface BlueprintJoinFixture {
+  from: string
+  fromCol: string
+  to: string
+  toCol: string
+  rel: "N:1" | "1:1"
+}
+
+export interface BlueprintScenarioFixture {
+  nodes: BlueprintNodeFixture[]
+  joins: BlueprintJoinFixture[]
+  /** MV id → member tables it sources (the proven `uses` set). */
+  uses: Record<string, string[]>
+}
+
+export const blueprintStar: BlueprintScenarioFixture = {
+  nodes: [
+    { kind: "table", id: "fact_booking_detail", role: "FACT", rank: 0, order: 0, coverage: 3, columnCount: 41,
+      cols: ["booking_id", "user_id", "property_id", "booking_date_id", "spend"] },
+    { kind: "table", id: "fact_booking_daily", role: "FACT", rank: 0, order: 1, coverage: 2, columnCount: 9,
+      cols: ["date_id", "property_id", "bookings"] },
+    { kind: "table", id: "dim_property", role: "DIM", rank: 1, order: 0, coverage: 1, columnCount: 12,
+      cols: ["property_id", "destination_id", "host_id"] },
+    { kind: "table", id: "dim_user", role: "DIM", rank: 1, order: 1, coverage: 1, columnCount: 8,
+      cols: ["user_id", "country", "is_business"] },
+    { kind: "table", id: "dim_date", role: "DIM", rank: 1, order: 2, coverage: 1, columnCount: 6,
+      cols: ["date_id", "month"] },
+    { kind: "table", id: "dim_campaign", role: "DIM", rank: 1, order: 3, coverage: 0, columnCount: 7, island: true,
+      cols: ["campaign_id", "channel", "budget"] },
+    { kind: "table", id: "dim_destination", role: "DIM", rank: 2, order: 0, coverage: 1, unmodeled: true,
+      cols: ["destination_id", "region"] },
+    { kind: "table", id: "dim_host", role: "DIM", rank: 2, order: 1, coverage: 0, unmodeled: true, cold: true,
+      cols: ["host_id", "host_type"] },
+    { kind: "mv", id: "customer_analytics_metrics", rank: 3, order: 0,
+      mv_filter: "booking_status != 'CANCELLED'",
+      materialization: "2 materializations · EVERY 1 DAY",
+      dimensions: [
+        { binding: "dim_user", name: "country" },
+        { binding: "dim_user", name: "segment" },
+        { binding: "dim_property", name: "region" },
+      ],
+      measures: [
+        { name: "customer_count", gov: "governed", expr: "COUNT(DISTINCT dim_user.user_id)", src: ["fact_booking_detail", "dim_user"] },
+        { name: "business_count", gov: "governed", expr: "COUNT(DISTINCT CASE WHEN dim_user.is_business THEN dim_user.user_id END)", src: ["dim_user"] },
+        { name: "booking_count", gov: "governed", expr: "COUNT(fact_booking_detail.booking_id)", src: ["fact_booking_detail"] },
+        { name: "total_spend", gov: "governed", expr: "SUM(fact_booking_detail.spend)", src: ["fact_booking_detail"] },
+        { name: "avg_booking_value", gov: "governed", expr: "SUM(fact_booking_detail.spend) / COUNT(fact_booking_detail.booking_id)", src: ["fact_booking_detail"] },
+      ] },
+    { kind: "config", id: "Space config", rank: 3, order: 1,
+      measures: [
+        { name: "bookings_per_customer", gov: "curated", expr: "booking_count / customer_count", src: ["fact_booking_detail", "dim_user"] },
+        { name: "speed_per_customer", gov: "ungoverned", expr: "AVG(fact_booking_detail.response_ms)", src: ["fact_booking_detail"] },
+        { name: "business_rate", gov: "ungoverned", overlaps: "customer_analytics_metrics", expr: "business_count / customer_count", src: ["dim_user"] },
+      ] },
+  ],
+  joins: [
+    { from: "fact_booking_detail", fromCol: "user_id", to: "dim_user", toCol: "user_id", rel: "N:1" },
+    { from: "fact_booking_detail", fromCol: "property_id", to: "dim_property", toCol: "property_id", rel: "N:1" },
+    { from: "fact_booking_daily", fromCol: "date_id", to: "dim_date", toCol: "date_id", rel: "N:1" },
+    { from: "fact_booking_daily", fromCol: "property_id", to: "dim_property", toCol: "property_id", rel: "N:1" },
+    { from: "dim_property", fromCol: "destination_id", to: "dim_destination", toCol: "destination_id", rel: "N:1" },
+    { from: "dim_property", fromCol: "host_id", to: "dim_host", toCol: "host_id", rel: "N:1" },
+  ],
+  uses: { customer_analytics_metrics: ["fact_booking_detail", "dim_user", "dim_property"] },
+}
+
+// Roles deliberately omitted → neutral "TABLE" captions and connectivity-based
+// headers, never a guessed FACT/DIM and never an error (§5.11).
+export const blueprintUnknown: BlueprintScenarioFixture = {
+  nodes: [
+    { kind: "table", id: "orders", rank: 0, order: 0, coverage: 2, columnCount: 14,
+      cols: ["order_id", "customer_id", "region_id", "amount"] },
+    { kind: "table", id: "customers", rank: 1, order: 0, coverage: 1, columnCount: 9,
+      cols: ["customer_id", "region_id", "tier"] },
+    { kind: "table", id: "regions", rank: 2, order: 0, coverage: 1, columnCount: 4,
+      cols: ["region_id", "name"] },
+    { kind: "mv", id: "order_metrics", rank: 3, order: 0,
+      mv_filter: "status = 'PAID'", materialization: "1 materialization · EVERY 6 HOURS",
+      dimensions: [{ binding: "customers", name: "tier" }, { binding: "regions", name: "name" }],
+      measures: [
+        { name: "order_count", gov: "governed", expr: "COUNT(orders.order_id)", src: ["orders"] },
+        { name: "revenue", gov: "governed", expr: "SUM(orders.amount)", src: ["orders"] },
+      ] },
+    { kind: "config", id: "Space config", rank: 3, order: 1,
+      measures: [
+        { name: "aov", gov: "curated", expr: "revenue / order_count", src: ["orders"] },
+        { name: "repeat_rate", gov: "ungoverned", expr: "COUNT(DISTINCT CASE WHEN customers.tier='repeat' THEN customers.customer_id END) / COUNT(DISTINCT customers.customer_id)", src: ["customers"] },
+      ] },
+  ],
+  joins: [
+    { from: "orders", fromCol: "customer_id", to: "customers", toCol: "customer_id", rel: "N:1" },
+    { from: "customers", fromCol: "region_id", to: "regions", toCol: "region_id", rel: "N:1" },
+  ],
+  uses: { order_metrics: ["orders", "customers"] },
+}
+
+// One denormalized wide table, no joins — a VALID model, not an error (§5.11):
+// measures + metric view + config still render, and the table is never flagged
+// "unrelated" (there is nothing to relate it to).
+export const blueprintWide: BlueprintScenarioFixture = {
+  nodes: [
+    { kind: "table", id: "events_wide", rank: 0, order: 0, coverage: 3, columnCount: 62,
+      cols: ["event_id", "user_id", "ts", "country", "device", "revenue"] },
+    { kind: "mv", id: "engagement_metrics", rank: 1, order: 0,
+      mv_filter: "event_type = 'active'", materialization: "1 materialization · EVERY 1 HOUR",
+      dimensions: [{ binding: "events_wide", name: "country" }, { binding: "events_wide", name: "device" }],
+      measures: [
+        { name: "dau", gov: "governed", expr: "COUNT(DISTINCT events_wide.user_id)", src: ["events_wide"] },
+        { name: "revenue", gov: "governed", expr: "SUM(events_wide.revenue)", src: ["events_wide"] },
+      ] },
+    { kind: "config", id: "Space config", rank: 1, order: 1,
+      measures: [
+        { name: "arpu", gov: "curated", expr: "revenue / dau", src: ["events_wide"] },
+        { name: "power_users", gov: "ungoverned", expr: "COUNT(DISTINCT CASE WHEN events_wide.revenue > 100 THEN events_wide.user_id END)", src: ["events_wide"] },
+      ] },
+  ],
+  joins: [],
+  uses: { engagement_metrics: ["events_wide"] },
+}
+
+// Deterministic 30-table snowflake for the scale frame: one hub fact, 14 dims
+// joined to it, 15 sub-dims joined round-robin to the dims (s14 wraps to d0,
+// which guarantees at least one genuine crossing → a hop arc to gate on).
+export function makeBlueprintScale(): BlueprintScenarioFixture {
+  const nodes: BlueprintNodeFixture[] = []
+  const joins: BlueprintJoinFixture[] = []
+  nodes.push({ kind: "table", id: "f_sales", role: "FACT", rank: 0, order: 0, coverage: 4, columnCount: 24,
+    cols: ["sale_id", "amount"] })
+  for (let i = 0; i < 14; i++) {
+    nodes.push({ kind: "table", id: `dim_${i}`, role: "DIM", rank: 1, order: i, coverage: i % 5 === 0 ? 0 : 1,
+      columnCount: 8, cols: [`dim_${i}_id`, "name"] })
+    joins.push({ from: "f_sales", fromCol: `dim_${i}_id`, to: `dim_${i}`, toCol: `dim_${i}_id`, rel: "N:1" })
+  }
+  for (let i = 0; i < 15; i++) {
+    const parent = `dim_${i % 14}`
+    nodes.push({ kind: "table", id: `sub_${i}`, role: "DIM", rank: 2, order: i, coverage: i % 4 === 0 ? 0 : 1,
+      columnCount: 5, cols: [`sub_${i}_id`, "label"] })
+    joins.push({ from: parent, fromCol: `sub_${i}_id`, to: `sub_${i}`, toCol: `sub_${i}_id`, rel: "N:1" })
+  }
+  nodes.push({ kind: "mv", id: "sales_metrics", rank: 3, order: 0,
+    mv_filter: "status = 'COMPLETE'", materialization: "1 materialization · EVERY 1 DAY",
+    dimensions: [{ binding: "dim_0", name: "name" }],
+    measures: [
+      { name: "sales_count", gov: "governed", expr: "COUNT(f_sales.sale_id)", src: ["f_sales"] },
+      { name: "sales_total", gov: "governed", expr: "SUM(f_sales.amount)", src: ["f_sales"] },
+    ] })
+  nodes.push({ kind: "config", id: "Space config", rank: 3, order: 1,
+    measures: [
+      { name: "avg_sale", gov: "curated", expr: "sales_total / sales_count", src: ["f_sales"] },
+    ] })
+  return { nodes, joins, uses: { sales_metrics: ["f_sales", "dim_0", "dim_1"] } }
+}
+
 export const joinDetail = {
   from: "customer",
   to: "orders",

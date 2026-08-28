@@ -132,6 +132,22 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   Both suggestion surfaces (IQ panel and run-output panels) render through
   SHARED components — one card, one accept flow, one display module — so a
   fix on one surface is a fix on both by construction.
+- CONTRACT SWEEPS ARE GREP-VERIFIED, NOT TEST-VERIFIED (from the fourth-look
+  autopsy: MV-D35 landed on the card and not the list chrome; the ACL grantee
+  landed in the consent modal and not the card DDL; a contract applied to one
+  call site and not its sibling passed every component test). When a prompt
+  changes a CONTRACT — a forbidden string, a required affordance, a resolved
+  value, a shared component — its VERIFY must include a repo-wide grep whose
+  output is pasted in the report, proving ZERO residual violations across
+  every surface, including list/section/disclosure chrome, empty states, and
+  the sibling surface. "The component is fixed" is not the contract; "no
+  instance of the violation remains in the repo" is. Chrome is surface.
+- TERMINAL UI STATES MUST BE EARNED. A component that renders a
+  post-action state (approved / created / done) initializes that state ONLY
+  from a persisted record of the user's own action. Deriving a success state
+  from an ambient default, a null decision, or a server field that means
+  something adjacent is a defect of the worst kind: it tells the user they
+  did something they did not, and it MASKS the action it replaces.
 - FIDELITY GATE (from the third-smoke process autopsy — three waves of
   green-tested patches missed the experience): any prompt that changes a
   user-facing surface must, in its VERIFY, export the changed surface states
@@ -211,9 +227,9 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
   every VERIFY section.
 
 - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-  `uv run --frozen --extra dev`. Expected baseline: 673 backend + 1512 GSO,
+  `uv run --frozen --extra dev`. Expected baseline: 681 backend + 1512 GSO,
   measured 2026-08-25 (this supersedes the prior 638+1461 floor). Historical
-  ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees). A count BELOW this is a regression — investigate. A
+  ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag). A count BELOW this is a regression — investigate. A
   count ABOVE it is normal growth: update this line and the playbook's copy in
   the same commit that adds the tests (test_rules_parity.py enforces the two
   copies match, so you cannot update one).

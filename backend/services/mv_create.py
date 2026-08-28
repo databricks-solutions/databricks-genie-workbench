@@ -728,6 +728,18 @@ class MvCreateAtApprovalResult:
 
     created: bool
     degraded: bool = False
+    # MV-D34 attach-at-approval: the create path now also shelves the view on the
+    # Agent config under OBO, so ``attached`` reports whether the config write
+    # landed. ``created and not attached`` is the honest degraded seam — the UC
+    # view exists but the config PATCH failed (e.g. the user lacks CAN EDIT), so
+    # the card tells the user to attach it themselves rather than claiming success.
+    attached: bool = False
+    # MV-D34 idempotent re-approval: True when the UC view already existed (as a
+    # metric view) and this call only (re)attached it, rather than issuing a
+    # CREATE. Lets the card say "attached an existing view" instead of claiming a
+    # fresh create, and is the seam that turns the old "refusing to clobber" dead
+    # end into a truthful attach for a view made in a prior round.
+    already_existed: bool = False
     full_name: str | None = None
     run_id: str | None = None
     suggestion_id: str | None = None
@@ -735,6 +747,83 @@ class MvCreateAtApprovalResult:
     verdict: str | None = None
     remediation_sql: str | None = None
     reason: str | None = None
+
+
+def _attach_metric_view_to_space(obo_ws, *, space_id: str, full_name: str) -> bool:
+    """Shelve ``full_name`` on the Agent's ``data_sources.tables`` under OBO.
+
+    MV-D34 attach-at-approval: approving a create is the user's explicit decision
+    to put this view on their Agent, and the Genie config is the source of truth —
+    once the view is shelved, the semantic model, the IQ re-scan, and every
+    optimization run read it with no further wiring. This is deliberately
+    DECOUPLED from measurement: the job-side ``mv_attach`` phase still measures
+    lift and auto-detaches on regression for views IT attaches autonomously, but a
+    user-approved create is a manual config edit and is not gated behind a run.
+
+    Writes into ``data_sources.tables`` — NOT ``data_sources.metric_views`` —
+    because Genie's serialized_space (v2) collapses ``metric_views[]`` into
+    ``tables[]`` on write: a PATCH under ``metric_views`` is accepted but the
+    server relocates the entry to ``tables`` and never emits a ``metric_views``
+    key. Confirmed by a controlled round-trip on fevm-serverless (2026-08-26): a
+    real ``METRIC_VIEW`` sent under ``metric_views`` came back under ``tables``
+    (see docs/design/mv-advisor-playbook.md, round 10). Writing straight to
+    ``tables`` makes the sent payload match what Genie persists and returns. UC
+    still reports the object's ``table_type`` as ``METRIC_VIEW``, so Genie treats
+    it as a metric view regardless of which data-source list holds it.
+
+    Idempotent — a view already present under EITHER ``tables`` or a legacy
+    ``metric_views`` bucket is a success, not a duplicate. The PATCH runs as the
+    user (``obo_ws``), reusing the same validated write path the job uses
+    (``patch_space_config`` sorts, strips non-exportable fields, and validates
+    strict before sending). Never raises: any failure returns ``False`` so the
+    caller records ``CREATED`` (not ``ATTACHED``) and the card explains the
+    created-not-attached state rather than claiming an attach that did not happen.
+    """
+    try:
+        from genie_space_optimizer.common.genie_client import (
+            fetch_space_config,
+            patch_space_config,
+        )
+
+        config = fetch_space_config(obo_ws, space_id)
+        space = config.get("_parsed_space")
+        if not isinstance(space, dict):
+            logger.warning(
+                "attach-at-approval: space %s config had no parsed serialized_space",
+                space_id,
+            )
+            return False
+        data_sources = space.setdefault("data_sources", {})
+        if not isinstance(data_sources, dict):
+            return False
+        tables = data_sources.setdefault("tables", [])
+        if not isinstance(tables, list):
+            return False
+        target = full_name.strip().lower()
+        # Already on the Agent under EITHER data-source list → idempotent no-op.
+        # Genie collapses metric_views→tables, but a legacy config may still carry
+        # a metric_views entry, so honor both when deciding "already attached".
+        for key in ("tables", "metric_views"):
+            for entry in data_sources.get(key, []) or []:
+                if (
+                    isinstance(entry, dict)
+                    and str(entry.get("identifier") or "").strip().lower() == target
+                ):
+                    logger.info(
+                        "attach-at-approval: %s already shelved on space %s (no-op)",
+                        full_name, space_id,
+                    )
+                    return True
+        tables.append({"identifier": full_name})
+        patch_space_config(obo_ws, space_id, space)
+        logger.info("attach-at-approval: shelved %s on space %s", full_name, space_id)
+        return True
+    except Exception:
+        logger.warning(
+            "attach-at-approval: could not attach %s to space %s; left "
+            "created-not-attached", full_name, space_id, exc_info=True,
+        )
+        return False
 
 
 def create_at_approval(
@@ -746,21 +835,37 @@ def create_at_approval(
     schema: str,
     warehouse_id: str,
 ) -> MvCreateAtApprovalResult:
-    """Create ONE approved proposal now, under OBO (MV-D34).
+    """Create ONE approved proposal now, under OBO, and attach it (MV-D34).
 
     The user is present on the IQ surface with a live OBO token and a fresh
     consent recorded at click. This transposes MV-D1's four invariants to the
-    at-approval moment and REUSES the create-at-trigger machinery rather than
-    forking it: the same ``verify_consent`` (downgrade-never-upgrade), the same
-    MV-D22 replay body (``_load_ddl_artifact`` / candidate ``yaml_text``), the
-    same ``mv_yaml.create_ddl`` under ``require_obo_workspace_client`` (never the
-    SP), the same ``_confirm_metric_view`` gate, and the same BYO-register rails
-    (``wh_create_advice_run`` + a ``CREATED`` ledger row with ``OBO_CREATED``
-    provenance) that attach-on-next-run already picks up (MV-D24). Attach and
-    lift stay the next run's job (MV-D16 isolation intact).
+    at-approval moment and REUSES the create machinery rather than forking it:
+    the same ``verify_consent`` (downgrade-never-upgrade), the same MV-D22 replay
+    body (``_load_ddl_artifact`` / candidate ``yaml_text``), the same
+    ``mv_yaml.create_ddl`` under ``require_obo_workspace_client`` (never the SP),
+    and the same ``_confirm_metric_view`` gate.
+
+    Then it ATTACHES the view to the Agent config under the same OBO identity
+    (``_attach_metric_view_to_space``). Approving a create is the user's explicit
+    decision to put the view on their Agent, and the Genie config is the source
+    of truth, so shelving it there is what makes the semantic model, the IQ
+    re-scan, and every optimization run reflect it — no "attach on some later
+    run" indirection. This is DECOUPLED from measurement: the job-side
+    ``mv_attach`` phase still measures lift and auto-detaches on regression for
+    views it attaches autonomously (MV-D16), but a user-approved create is a
+    manual config edit, not a gated optimization step. A failed PATCH leaves a
+    created-not-attached view (``attached=False``, ledger ``CREATED``) the card
+    explains, never a silent no-op.
+
+    Idempotent on an existing view: if the consented object is ALREADY a usable
+    metric view (created in a prior round, or left created-not-attached by an
+    earlier failed PATCH), it skips the CREATE and only (re)attaches — approving
+    again is never a "refusing to clobber" dead end. Only a same-named object that
+    is NOT a metric view is refused. ``already_existed`` reports which happened so
+    the card can say "attached an existing view" rather than claim a fresh create.
 
     Identity is the hard-fail seam: ``require_obo_workspace_client`` raises if no
-    user token reached us, so a create can never silently run as the SP.
+    user token reached us, so a create/attach can never silently run as the SP.
     """
     from genie_space_optimizer.common.warehouse import (
         sql_warehouse_execute,
@@ -843,28 +948,51 @@ def create_at_approval(
             reason="re-validation demands a join strategy below the rendered one; "
             "not creating (MV-D22)",
         )
-    if _object_exists(obo_ws, warehouse_id, full_name):
-        return MvCreateAtApprovalResult(
-            created=False, degraded=False, suggestion_id=suggestion_id,
-            reason=f"{full_name} already exists; refusing to clobber it",
-        )
-
-    sql_warehouse_execute(obo_ws, warehouse_id, create_ddl(full_name, yaml_text))
-    if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
-        try:
-            sql_warehouse_execute(
-                obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {full_name}"
+    # MV-D34 idempotent re-approval. The old guard refused any existing object
+    # ("refusing to clobber"), which stranded a view created in a prior round (or
+    # left created-not-attached by a failed PATCH): it kept getting suggested but
+    # could never be actioned. Approving is the user's decision to put the view on
+    # their Agent, so if the object is ALREADY a usable metric view we skip the
+    # CREATE and fall through to attach — the config is the source of truth, so
+    # attaching is exactly what clears it from the list. Only a same-named object
+    # that is NOT a metric view is a genuine collision we refuse to touch.
+    already_existed = _object_exists(obo_ws, warehouse_id, full_name)
+    if already_existed:
+        if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
+            return MvCreateAtApprovalResult(
+                created=False, degraded=False, suggestion_id=suggestion_id,
+                reason=f"{full_name} already exists and is not a metric view; "
+                "refusing to clobber it",
             )
-        except Exception:
-            logger.warning("Could not clean up %s after a failed create", full_name)
-        return MvCreateAtApprovalResult(
-            created=False, degraded=False, suggestion_id=suggestion_id,
-            reason=f"{full_name} was created but is not a usable metric view; "
-            "it was removed",
-        )
+    else:
+        sql_warehouse_execute(obo_ws, warehouse_id, create_ddl(full_name, yaml_text))
+        if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
+            try:
+                sql_warehouse_execute(
+                    obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {full_name}"
+                )
+            except Exception:
+                logger.warning("Could not clean up %s after a failed create", full_name)
+            return MvCreateAtApprovalResult(
+                created=False, degraded=False, suggestion_id=suggestion_id,
+                reason=f"{full_name} was created but is not a usable metric view; "
+                "it was removed",
+            )
 
-    # BYO-register rails (MV-D24): the advice run + CREATED ledger row are the
-    # last fallible steps, and attach-on-next-run picks the row up unchanged.
+    # MV-D34 attach-at-approval: the view exists and the user approved putting it
+    # on their Agent, so shelve it on the config NOW under their identity. The
+    # config is the source of truth — once shelved, the semantic model, the IQ
+    # re-scan, and optimization all read it. A failed PATCH (e.g. no CAN EDIT)
+    # leaves a created-not-attached view the ledger and card report honestly,
+    # rather than a silent no-op the user mistakes for a config change.
+    attached = _attach_metric_view_to_space(
+        obo_ws, space_id=space_id, full_name=full_name
+    )
+
+    # BYO-register rails (MV-D24): the advice run + created ledger row are the
+    # last fallible steps. The ledger status mirrors the attach outcome so the
+    # run-output ledger view (/runs/{run_id}/mv-created) shows ATTACHED for a
+    # view now on the config and CREATED for one still awaiting a manual attach.
     created_by = fresh_probe.checked_as
     wh_ensure_optimization_tables(sp_ws, warehouse_id, catalog, schema)
     run_id = str(uuid.uuid4())
@@ -879,14 +1007,18 @@ def create_at_approval(
         catalog=catalog, schema=schema,
         run_id=run_id, suggestion_id=suggestion_id,
         full_name=full_name, created_by=created_by,
-        status="CREATED", provenance=MV_PROVENANCE_OBO_CREATED,
+        status="ATTACHED" if attached else "CREATED",
+        provenance=MV_PROVENANCE_OBO_CREATED,
     )
     logger.info(
-        "Created OBO_CREATED metric view %s for space %s at approval (run %s)",
-        full_name, space_id, run_id,
+        "%s OBO_CREATED metric view %s for space %s at approval "
+        "(run %s, attached=%s)",
+        "Attached pre-existing" if already_existed else "Created",
+        full_name, space_id, run_id, attached,
     )
     return MvCreateAtApprovalResult(
-        created=True, full_name=full_name, run_id=run_id,
+        created=True, attached=attached, already_existed=already_existed,
+        full_name=full_name, run_id=run_id,
         suggestion_id=suggestion_id, verdict=verification.verdict,
     )
 

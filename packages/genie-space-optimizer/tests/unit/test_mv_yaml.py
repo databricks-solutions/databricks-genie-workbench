@@ -656,6 +656,143 @@ def test_ratio_shape_emits_atomic_measures_plus_a_composed_one():
     )
 
 
+def test_two_same_kind_shapes_get_unique_names_and_validate():
+    """Two ratios in one bundle once rendered identical ``<concept>_rate*`` names,
+    so UC rejected the create for duplicate measure names
+    (METRIC_VIEW_INVALID_VIEW_DEFINITION — deployed review). The second shape's
+    base is now de-duplicated, so every measure/dimension name is unique and the
+    body validates."""
+    ratio_a = ShapeMatch(
+        kind=SHAPE_RATIO,
+        canonical_expr="sum(a)/count(1)",
+        fingerprint="fp-ratio-a",
+        guidance=SHAPE_GUIDANCE[SHAPE_RATIO],
+        components=(("numerator", "SUM(net_revenue)"), ("denominator", "COUNT(1)")),
+    )
+    ratio_b = ShapeMatch(
+        kind=SHAPE_RATIO,
+        canonical_expr="sum(b)/count(1)",
+        fingerprint="fp-ratio-b",
+        guidance=SHAPE_GUIDANCE[SHAPE_RATIO],
+        components=(("numerator", "SUM(net_revenue)"), ("denominator", "COUNT(1)")),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[ratio_a, ratio_b],
+    )
+
+    assert result.ok, result.rejections
+    definition = yaml.safe_load(result.yaml_text)
+    names = [m["name"] for m in definition["measures"]] + [
+        d["name"] for d in definition["dimensions"]
+    ]
+    assert len(names) == len(set(names)), names
+    assert "revenue_rate" in names
+    assert "revenue_rate_2" in names
+    assert "revenue_rate_2_numerator" in names
+
+
+def test_shape_reading_a_foreign_column_is_dropped():
+    """A recurring shape is mined from the whole corpus, so it can reference a
+    column this source lacks. Deployed review: that produced a kitchen-sink view
+    over foreign columns. A shape whose expression reads a column not in the
+    source (and not read by any of the view's measures) is now dropped."""
+    foreign = ShapeMatch(
+        kind=SHAPE_RATIO,
+        canonical_expr="sum(a)/sum(b)",
+        fingerprint="fp-foreign",
+        guidance=SHAPE_GUIDANCE[SHAPE_RATIO],
+        # total_amount / property_id are NOT columns of fact_orders.
+        components=(("numerator", "SUM(total_amount)"), ("denominator", "COUNT(DISTINCT property_id)")),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[foreign],
+    )
+
+    assert result.ok, result.rejections
+    definition = yaml.safe_load(result.yaml_text)
+    names = [m["name"] for m in definition["measures"]]
+    # Only the primary measure survives; the foreign-column ratio is gone.
+    assert names == ["total_revenue"], names
+
+
+def test_pct_of_total_with_a_non_aggregate_base_is_dropped_not_broken():
+    """The fixed-LOD grand total is ``<agg> OVER ()`` — valid only for a bare
+    aggregate base. A base with trailing arithmetic once rendered
+    ``COUNT(*) * 100.0 OVER ()`` and failed at UC with PARSE_SYNTAX_ERROR
+    (deployed review). Such a shape is now dropped rather than rendered."""
+    scaled = ShapeMatch(
+        kind=SHAPE_PCT_OF_TOTAL,
+        canonical_expr="count(*) * ?n",
+        fingerprint="fp-scaled",
+        guidance=SHAPE_GUIDANCE[SHAPE_PCT_OF_TOTAL],
+        components=(("measure", "COUNT(*) * 100.0"),),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[scaled],
+    )
+
+    assert result.ok, result.rejections
+    definition = yaml.safe_load(result.yaml_text)
+    names = [m["name"] for m in definition["measures"]] + [
+        d["name"] for d in definition["dimensions"]
+    ]
+    assert not any("pct_of_total" in n for n in names), names
+    # And nothing malformed slipped through: every expr parses.
+    assert validate(result.yaml_text).ok
+
+
+def test_validate_rejects_an_unparseable_expression():
+    """The gate SQL-parses every expr, so a malformed ``... OVER ()`` (the
+    deployed-review parse error) is rejected locally, not at UC create."""
+    bad_yaml = (
+        "version: '1.1'\n"
+        "comment: |\n"
+        "  DOMAIN: sales\n"
+        "  GRAIN: order\n"
+        "  BEST FOR: totals\n"
+        "  NOT FOR: forecasts\n"
+        "source: finance.sales.orders\n"
+        "dimensions:\n"
+        "  - name: grand_total\n"
+        "    expr: COUNT(*) * 100.0 OVER ()\n"
+        "measures:\n"
+        "  - name: total\n"
+        "    expr: SUM(net_revenue)\n"
+    )
+    report = validate(bad_yaml)
+    assert not report.ok
+    assert any("not parseable" in e and "grand_total" in e for e in report.errors), report.errors
+
+
+def test_validate_rejects_duplicate_measure_or_dimension_names():
+    """The local validator is the gate: a body with a repeated name is rejected
+    here rather than at UC create time, and the offending name is named."""
+    dup_yaml = (
+        "version: '1.1'\n"
+        "comment: |\n"
+        "  DOMAIN: sales\n"
+        "  GRAIN: order\n"
+        "  BEST FOR: totals\n"
+        "  NOT FOR: forecasts\n"
+        "source: finance.sales.orders\n"
+        "dimensions:\n"
+        "  - name: region\n"
+        "    expr: region\n"
+        "measures:\n"
+        "  - name: region\n"
+        "    expr: SUM(net_revenue)\n"
+    )
+    report = validate(dup_yaml)
+    assert not report.ok
+    assert any("unique" in e and "region" in e for e in report.errors), report.errors
+
+
 def test_conditional_count_uses_filter_not_case():
     shape = ShapeMatch(
         kind=SHAPE_CONDITIONAL_COUNT,

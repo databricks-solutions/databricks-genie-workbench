@@ -22,10 +22,11 @@
  * action — invariant 1) or refused (the reason, nothing recorded — invariant 2).
  */
 import { useEffect, useRef, useState } from "react"
-import { ArrowUpRight, Check, CheckCircle2, ChevronDown, Circle, Loader2, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
+import { ArrowUpRight, Check, CheckCircle2, ChevronDown, Circle, Link2, Loader2, Network, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
+import { MvProposalsSummary } from "@/components/auto-optimize/MvProposalsSummary"
 import { MvAcceptFlow } from "@/components/auto-optimize/MvAcceptFlow"
 import {
   MV_DEFAULT_VISIBLE,
@@ -67,6 +68,46 @@ function formatRelative(iso: string | null | undefined): string | null {
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs}h ago`
   return `${Math.floor(hrs / 24)}d ago`
+}
+
+// MV-D34: a created-and-attached view is on the Agent config (the source of
+// truth), so it is no longer a suggestion "to create". Rather than re-offer it
+// (the reported confusion), the IQ surface moves it out of the active cards and
+// confirms it here — the semantic model already reflects it; the only thing left
+// is the SP grant surfaced in the create terminal. Deep-links each view in
+// Catalog Explorer when a workspace host is available.
+export function MvAttachedSummary({
+  proposals,
+  allAttached,
+}: {
+  proposals: MvProposal[]
+  allAttached?: boolean
+}) {
+  if (proposals.length === 0) return null
+  return (
+    <div className="rounded-lg border border-default bg-elevated px-3 py-2.5">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
+        <Link2 className="h-3.5 w-3.5 text-success" />
+        Already attached to your Agent ({proposals.length})
+      </div>
+      <ul className="mt-1.5 space-y-1">
+        {proposals.map((p) => (
+          <li
+            key={p.suggestion_id}
+            className="truncate font-mono text-[11px] text-secondary"
+            title={p.proposed_object ?? undefined}
+          >
+            {p.proposed_object}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1.5 text-[11px] text-muted">
+        {allAttached
+          ? "Every suggested metric view is on your Agent\u2019s config, so the semantic model already reflects them \u2014 nothing left to create."
+          : "On your Agent\u2019s config, so the semantic model reflects them \u2014 no longer suggested here."}
+      </p>
+    </div>
+  )
 }
 
 // Finding 8 — per-stage weights for the progress bar are the LAST scan's
@@ -132,9 +173,21 @@ interface MvIqScanAdvisorySectionProps {
   /** Opens the run config in create_and_attach mode (MV-D1). Also the frame-8b
       "Start an optimization run" affordance for a never-optimized user. */
   onReviewCreate?: (proposal: MvProposal | null) => void
+  /** Model-tab sync: publishes the current proposal set (hydrated or freshly
+      scanned) upward so the semantic graph can overlay them as ghost nodes. */
+  onProposalsChange?: (proposals: MvProposal[]) => void
+  /** Model-tab sync: when a proposed node is selected in the graph, its
+      suggestion is highlighted here and scrolled into view. */
+  highlightSuggestionId?: string | null
+  /** Model-tab sync: "View in graph" on a card asks the tab to select and
+      reveal the matching ghost node. */
+  onLocateInGraph?: (proposal: MvProposal) => void
+  /** Model-tab sync: a create/attach succeeded — the tab refetches the graph so
+      the new metric view becomes a real node. */
+  onCreated?: (proposal: MvProposal) => void
 }
 
-export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdvisorySectionProps) {
+export function MvIqScanAdvisorySection({ spaceId, onReviewCreate, onProposalsChange, highlightSuggestionId, onLocateInGraph, onCreated }: MvIqScanAdvisorySectionProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<MvSuggestResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -165,6 +218,28 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
     loadStageWeights(spaceId),
   )
   const stageTimesRef = useRef<Record<number, number>>({})
+
+  // Model-tab sync: per-card DOM refs (keyed by suggestion_id) so a graph
+  // selection can scroll the matching card into view.
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  // Publish proposals upward whenever the result changes (hydrate-on-mount and
+  // live scan both set `result`). The callback is held in a ref so a parent that
+  // passes a fresh function each render does not re-fire this effect.
+  const onProposalsChangeRef = useRef(onProposalsChange)
+  useEffect(() => {
+    onProposalsChangeRef.current = onProposalsChange
+  })
+  useEffect(() => {
+    onProposalsChangeRef.current?.(result?.proposals ?? [])
+  }, [result])
+
+  // When the graph selects a proposed node, scroll its card into view.
+  useEffect(() => {
+    if (!highlightSuggestionId) return
+    const el = cardRefs.current[highlightSuggestionId]
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" })
+  }, [highlightSuggestionId])
 
   // Best-effort per-proposal DDL fetch (route 7 candidate fallback, by run_id).
   // A card whose DDL fetch fails still renders its evidence, so this never
@@ -298,9 +373,16 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
 
   const proposals = result?.proposals ?? []
   const failed = result?.status === "FAILED"
+  // MV-D34: partition attached-to-Agent out of the active suggestion set. A view
+  // already on the Agent config is not something to CREATE again; both the
+  // suggest and Re-scan responses badge attached now, so this holds after a
+  // re-scan too. The open set feeds the cards + counts; the attached set is
+  // confirmed in a compact summary instead of re-offered.
+  const attachedProposals = proposals.filter((p) => p.attached === true)
+  const openProposals = proposals.filter((p) => p.attached !== true)
   // Blank-never-renders + MEDIUM+ floor (MV-D30): a proposal with no
   // proposed_object is dropped, MEDIUM+ surface by default, LOW is disclosed.
-  const { primary, low } = splitProposalsByConfidence(proposals)
+  const { primary, low } = splitProposalsByConfidence(openProposals)
   const hasRenderable = primary.length > 0 || low.length > 0
   // Never-scanned = mount finished, no prior scan recorded, and nothing is
   // running. That state earns a first-class Scan affordance, not a bare result.
@@ -321,8 +403,14 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
           {!loading && !neverScanned && lastScan && (
             <p className="mt-1 text-xs text-muted">
               {scannedAt ? `Last scanned ${scannedAt}` : "Last scanned"}
-              {typeof lastScan.proposal_count === "number" &&
-                ` · ${lastScan.proposal_count} ${lastScan.proposal_count === 1 ? "proposal" : "proposals"}`}
+              {/* Count the OPEN suggestions (attached views are confirmed below,
+                  not re-offered), so the header matches the cards the user sees. */}
+              {(() => {
+                const n = result ? openProposals.length : lastScan.proposal_count
+                return typeof n === "number"
+                  ? ` · ${n} ${n === 1 ? "suggestion" : "suggestions"}`
+                  : null
+              })()}
               {lastDuration && ` · took ${lastDuration}`}
             </p>
           )}
@@ -377,6 +465,11 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
           <MvAdvisoryCouldNotRun reason={result.error} onRetry={runSuggest} />
         ) : hasRenderable ? (
           <div className="space-y-4">
+            {/* Deployed review #5: a decision-framing summary above the cards —
+                how many views, their names, and what they govern. Summarizes the
+                surfaced set (the evidence-ranked primary, or the lower-ranked
+                set when nothing cleared the floor). */}
+            <MvProposalsSummary proposals={primary.length > 0 ? primary : low} />
             {(() => {
               // Finding 4 / MV-D35: rank deterministically and mark the top pick
               // Recommended — UNLESS every surfaced proposal governs a disjoint
@@ -390,18 +483,31 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
               return (
                 <>
                   {callout && <p className="text-xs text-secondary">{callout}</p>}
-                  {visible.map((proposal, i) => (
-                    <ScanProposalCard
-                      key={proposal.suggestion_id}
-                      proposal={proposal}
-                      ddl={ddlById[proposal.suggestion_id]}
-                      onReviewCreate={onReviewCreate}
-                      onClaim={claimFromCard}
-                      recommended={!callout && i === 0}
-                      recommendedReason={!callout && i === 0 ? recommendedReason(proposal) : undefined}
-                      defaultExpanded={i === 0}
-                    />
-                  ))}
+                  {visible.map((proposal, i) => {
+                    const isHi = highlightSuggestionId === proposal.suggestion_id
+                    return (
+                      <div
+                        key={proposal.suggestion_id}
+                        ref={(el) => { cardRefs.current[proposal.suggestion_id] = el }}
+                        className={isHi ? "rounded-xl ring-2 ring-accent ring-offset-2 ring-offset-surface transition-shadow" : undefined}
+                      >
+                        <ScanProposalCard
+                          // Remount when highlighted so the card opens (defaultExpanded
+                          // only seeds initial state) as the graph reveals it.
+                          key={isHi ? "hi" : "base"}
+                          proposal={proposal}
+                          ddl={ddlById[proposal.suggestion_id]}
+                          onReviewCreate={onReviewCreate}
+                          onClaim={claimFromCard}
+                          onLocate={onLocateInGraph}
+                          onCreated={onCreated}
+                          recommended={!callout && i === 0}
+                          recommendedReason={!callout && i === 0 ? recommendedReason(proposal) : undefined}
+                          defaultExpanded={isHi || i === 0}
+                        />
+                      </div>
+                    )
+                  })}
                   {hidden > 0 && (
                     <button
                       onClick={() => setShowAllPrimary(true)}
@@ -423,28 +529,53 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate }: MvIqScanAdv
                     className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-default px-3 py-2 text-xs text-muted transition-colors hover:text-accent"
                   >
                     <ChevronDown className="h-3.5 w-3.5" />
-                    Show {low.length} low-confidence {low.length === 1 ? "suggestion" : "suggestions"}
-                    {primary.length === 0 && " (nothing scored MEDIUM or higher)"}
+                    {/* MV-D35 sweep (Prompt 15.9 item b): the disclosure describes
+                        EVIDENCE, not doubt. Every proposal below is validated,
+                        executable and non-overlapping — the split orders by demand
+                        evidence, it does not warn. Never "low-confidence". */}
+                    {primary.length === 0
+                      ? `Show ${low.length} ${low.length === 1 ? "suggestion" : "suggestions"} ranked lower by evidence`
+                      : `Show ${low.length} more, ranked lower by evidence`}
                   </button>
                 ) : (
                   <>
                     <p className="text-xs text-muted">
-                      Low-confidence suggestions — weaker recurrence or thinner evidence. Review before creating.
+                      {primary.length === 0
+                        ? `All ${low.length} ${low.length === 1 ? "suggestion is" : "suggestions are"} ranked lower by demand evidence — each is still validated and executable.`
+                        : "Ranked lower by demand evidence — each is still validated and executable."}
                     </p>
-                    {low.map((proposal) => (
-                      <ScanProposalCard
-                        key={proposal.suggestion_id}
-                        proposal={proposal}
-                        ddl={ddlById[proposal.suggestion_id]}
-                        onReviewCreate={onReviewCreate}
-                        onClaim={claimFromCard}
-                      />
-                    ))}
+                    {low.map((proposal) => {
+                      const isHi = highlightSuggestionId === proposal.suggestion_id
+                      return (
+                        <div
+                          key={proposal.suggestion_id}
+                          ref={(el) => { cardRefs.current[proposal.suggestion_id] = el }}
+                          className={isHi ? "rounded-xl ring-2 ring-accent ring-offset-2 ring-offset-surface transition-shadow" : undefined}
+                        >
+                          <ScanProposalCard
+                            key={isHi ? "hi" : "base"}
+                            proposal={proposal}
+                            ddl={ddlById[proposal.suggestion_id]}
+                            onReviewCreate={onReviewCreate}
+                            onClaim={claimFromCard}
+                            onLocate={onLocateInGraph}
+                            onCreated={onCreated}
+                            defaultExpanded={isHi}
+                          />
+                        </div>
+                      )
+                    })}
                   </>
                 )}
               </div>
             )}
+            {/* Views already on the Agent config, confirmed (not re-offered). */}
+            <MvAttachedSummary proposals={attachedProposals} />
           </div>
+        ) : attachedProposals.length > 0 ? (
+          // Nothing left to create, but the space DOES have attached views —
+          // a positive terminal, not the "clean result / nothing found" empty.
+          <MvAttachedSummary proposals={attachedProposals} allAttached />
         ) : (
           <MvAdvisoryEmpty skipReason={result.skip_reason} measuresFound={result.measures_found} />
         )
@@ -482,6 +613,8 @@ export function ScanProposalCard({
   ddl,
   onReviewCreate,
   onClaim,
+  onLocate,
+  onCreated,
   recommended,
   recommendedReason,
   defaultExpanded,
@@ -490,6 +623,10 @@ export function ScanProposalCard({
   ddl: MvDdlArtifact | undefined
   onReviewCreate?: (proposal: MvProposal | null) => void
   onClaim: (proposal: MvProposal) => void
+  /** Model-tab sync: reveal this proposal's ghost node in the graph. */
+  onLocate?: (proposal: MvProposal) => void
+  /** Model-tab sync: a create/attach succeeded — bubble up so the tab refetches. */
+  onCreated?: (proposal: MvProposal) => void
   recommended?: boolean
   recommendedReason?: string
   defaultExpanded?: boolean
@@ -502,17 +639,33 @@ export function ScanProposalCard({
       recommendedReason={recommendedReason}
       defaultExpanded={defaultExpanded}
       actions={
+        // MV-D34 — the SAME accept flow the run-output surface renders. The
+        // primary [Create this metric view] now exists on the surface where the
+        // user meets the suggestion (the third-look's structurally-dead
+        // acceptance CUJ); [Review in run setup] is its secondary via onStartRun
+        // (create-at-trigger, unchanged). The tertiary MV-D24 "I created this
+        // myself" claim is handed to the flow so it lives inside the flow's state
+        // machine — shown pre-create, hidden once created/attached.
         <>
-          {/* MV-D34 — the SAME accept flow the run-output surface renders. The
-              primary [Create this metric view] now exists on the surface where
-              the user meets the suggestion (the third-look's structurally-dead
-              acceptance CUJ); [Review in run setup] is its secondary via
-              onStartRun (create-at-trigger, unchanged). */}
-          <MvAcceptFlow proposal={proposal} onStartRun={onReviewCreate} />
-          {/* tertiary — the MV-D24 affordance for the copied-DDL path */}
-          <Button size="sm" variant="ghost" onClick={() => onClaim(proposal)}>
-            I created this myself
-          </Button>
+          <MvAcceptFlow
+            proposal={proposal}
+            onStartRun={onReviewCreate}
+            onCreated={onCreated}
+            grantSql={ddl?.grant_sql}
+            claimAffordance={
+              <Button size="sm" variant="ghost" onClick={() => onClaim(proposal)}>
+                I created this myself
+              </Button>
+            }
+          />
+          {/* Model-tab sync: only a proposal that is drawn as a ghost node (it
+              has a proposed_object) can be located in the graph. */}
+          {onLocate && proposal.proposed_object && (
+            <Button size="sm" variant="ghost" onClick={() => onLocate(proposal)}>
+              <Network className="mr-1 h-3.5 w-3.5" />
+              View in graph
+            </Button>
+          )}
         </>
       }
     />

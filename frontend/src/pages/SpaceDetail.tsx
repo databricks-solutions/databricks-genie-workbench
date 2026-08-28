@@ -309,7 +309,6 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
               spaceId={spaceId}
               {...actionProps}
               onNavigateToOptimize={() => onNavigate("optimize")}
-              onReviewProposal={handleReviewProposal}
             />
 
             {/* Collapsible space configuration */}
@@ -348,7 +347,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
         )}
 
         {activeTab === "model" && (
-          <SemanticModelTab spaceId={spaceId} />
+          <SemanticModelTab spaceId={spaceId} onReviewCreate={handleReviewProposal} />
         )}
 
         {activeTab === "optimize" && (

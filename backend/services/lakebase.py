@@ -23,6 +23,7 @@ _memory_store: dict = {
     "stars": set(),   # set of starred space_ids
     "seen": set(),    # set of seen space_ids
     "optimization_runs": {},  # space_id -> latest optimization run dict
+    "join_advice": {},  # space_id -> {seeds, updated_at, seeded_by} (Join Advisor advice)
     # ── GenieWatch caches (read-only observability surface) ──
     "watch_space_cache": {},        # space_id -> dict
     "watch_conversation_cache": {}, # (space_id, conversation_id) -> dict
@@ -215,6 +216,19 @@ async def _ensure_schema():
                 "CREATE INDEX IF NOT EXISTS idx_hidden_optimization_runs_space_id "
                 "ON genie.hidden_optimization_runs(space_id)"
             )
+            # Join Advisor advice (Semantic Blueprint v4 §7). One row per space:
+            # the pending set of operator-seeded candidate joins carried into the
+            # next Auto-Optimize run as ADVICE (never a declared join_spec — the
+            # Workbench makes no ad-hoc Genie Agent config edits). seeds_json is a
+            # JSON array of JoinCandidate dicts.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.join_advice (
+                    space_id    VARCHAR(128) PRIMARY KEY,
+                    seeds_json  TEXT NOT NULL,
+                    seeded_by   TEXT,
+                    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            """)
 
             # ── GenieWatch tables (read-only observability) ──
             await conn.execute("""
@@ -742,6 +756,82 @@ async def get_hidden_optimization_run_ids(space_id: str) -> set[str]:
             exc_info=True,
         )
         return set()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Join Advisor advice (Semantic Blueprint v4 §7)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def save_join_advice(
+    space_id: str, seeds: list[dict], seeded_by: str | None = None
+) -> dict:
+    """Persist the pending Join Advisor advice for a space (upsert; empty clears).
+
+    ``seeds`` is a list of JoinCandidate dicts. This is ADVICE the next
+    Auto-Optimize run validates and adds itself — the Workbench never writes it
+    into ``serialized_space``. Returns the stored record. Mirrors the write posture
+    of ``save_optimization_run`` (best-effort; falls back to the in-memory store).
+    """
+    updated_at = datetime.utcnow().isoformat()
+    record = {"seeds": seeds, "seeded_by": seeded_by, "updated_at": updated_at}
+
+    if not _lakebase_available or _pool is None:
+        if seeds:
+            _memory_store["join_advice"][space_id] = record
+        else:
+            _memory_store["join_advice"].pop(space_id, None)
+        return record
+
+    async with _pool.acquire() as conn:
+        if not seeds:
+            await conn.execute("DELETE FROM genie.join_advice WHERE space_id = $1", space_id)
+            return record
+        await conn.execute(
+            """
+            INSERT INTO genie.join_advice (space_id, seeds_json, seeded_by, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (space_id) DO UPDATE SET
+                seeds_json = EXCLUDED.seeds_json,
+                seeded_by = EXCLUDED.seeded_by,
+                updated_at = NOW()
+            """,
+            space_id,
+            json.dumps(seeds),
+            seeded_by,
+        )
+    return record
+
+
+async def get_join_advice(space_id: str) -> Optional[dict]:
+    """Read the pending Join Advisor advice for a space, or ``None``.
+
+    Returns ``{"seeds": [...], "seeded_by": str|None, "updated_at": str|None}``.
+    Reads fail open (a transient Lakebase issue yields ``None``, i.e. no advice)
+    so the semantic-model tab and the trigger never break on it."""
+    if not _lakebase_available or _pool is None:
+        return _memory_store["join_advice"].get(space_id)
+
+    try:
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT seeds_json, seeded_by, updated_at FROM genie.join_advice WHERE space_id = $1",
+                space_id,
+            )
+        if not row:
+            return None
+        try:
+            seeds = json.loads(row["seeds_json"]) or []
+        except (ValueError, TypeError):
+            seeds = []
+        return {
+            "seeds": seeds,
+            "seeded_by": row["seeded_by"],
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+    except Exception:
+        logger.warning("Failed to read join advice for space %s", space_id, exc_info=True)
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────

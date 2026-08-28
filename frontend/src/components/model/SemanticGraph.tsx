@@ -78,19 +78,35 @@ const COL_X = [24, 268, 512, 792]
 // measure names), so 12f gives them the width the v7 frame gives them rather
 // than abbreviating harder than the mockup does.
 const COL_W = [204, 208, 272, 272]
-const COL_HEADERS = ["Source · facts", "Dimensions", "Metric views · measures", "Measure concepts"]
+// Round-5: honest column headers. Cols 0/1 describe the JOIN ROLE the layout
+// actually encodes (source side vs joined side); the per-card caption asserts
+// FACT/DIM only when the data proves it (node.role). Col 3 is the dedicated
+// Space-config measures column the reviewer asked for.
+const COL_HEADERS = ["Source tables", "Joined tables", "Metric views · measures", "Space config · measures"]
 const ROW_TOP = 44
 // ROW_GAP is the per-card stride the derived threshold solves against (§9); the
 // grouped table/MV cards stack at ROW_TOP + N · ROW_GAP. (Collapse math only —
 // not the visual VGAP; see the 12f note above.)
 const ROW_GAP = 58
-const VGAP = 26
+// Round-6 (reviewer: "columns and tables are too close for arrows to be
+// legible"): more vertical air between stacked cards so a join's curve has room
+// to separate from its neighbours. VGAP is visual-only (the collapse threshold
+// keys off ROW_GAP), so this does not move the derivation.
+const VGAP = 34
 const CARD_HDR = 58
 const CHIP_STEP = 24
 const CHIP_H = 19
 const CARD_PAD_B = 10
 const TABLE_H = 56
 const CONCEPTS_ID = "__concepts__"
+// Round-5: the Space-config (loose measures) box gets its OWN column to the RIGHT
+// of the metric-view column — a dedicated "Space config · measures" column (col 3)
+// — so the loose measures sit beside the MV boxes, not buried below them. (Round 3
+// put it in a full-width panel below the canvas; round 4 stacked it under the MVs
+// in col 2 where it read as "below"; round 5 gives it its own right column, which
+// is what the reviewer asked for.)
+const CONCEPTS_COL = 3
+const CONCEPTS_ROW = 1_000_000
 
 // ── Label hygiene (12d finding 1) ────────────────────────────────────────────
 // The smoke run leaked INTERNAL TOKENS into measure-concept labels: canonical
@@ -195,8 +211,8 @@ export function buildCards(nodes: SemanticGraphNode[], edges: SemanticGraphEdge[
       id: CONCEPTS_ID,
       kind: "concepts",
       label: "Measure concepts",
-      col: 3,
-      row: 0,
+      col: CONCEPTS_COL,
+      row: CONCEPTS_ROW,
       node: null,
       proposed: false,
       coverage: null,
@@ -253,7 +269,11 @@ function cardHeight(card: GraphCard, collapsed: boolean): number {
 // mockup. Occupied columns now take sequential positions and width follows the
 // real rightmost edge. `columns` is returned so the headers follow the compacted
 // positions rather than the nominal ones.
-const COL_GUTTER = 40
+// Round-6 (reviewer): widen the inter-column gutter so join curves have a wider
+// channel to bend through — the reviewer's own diagnosis was that the columns sat
+// too close for the arrows to read. Pure layout constant (used by layoutCards and
+// the width calc); the fit control rescales to keep the whole canvas framed.
+const COL_GUTTER = 68
 // The visual top of the card stack, kept SEPARATE from ROW_TOP (which is purely
 // the collapse-threshold derivation constant, §9, and stays put). The band above
 // the cards has to hold the column captions AND the select-time boundary caption
@@ -348,9 +368,111 @@ export interface RenderedEdge {
   toCardId: string
   fromBox: CardBox
   toBox: CardBox
+  /** Edge kind, so bundling can count JOINS and ignore the label-less `uses`
+      scaffolding that shares the same card side. Optional for port
+      distribution, which spreads every kind alike. */
+  kind?: SemanticGraphEdge["kind"]
+}
+
+// Round-7: one relationship = one arrow. A table pair can carry several
+// `join` edges — reciprocal declarations, or an SCD2 current-row variant — which
+// the backend emits per join_spec, so a single relationship reads as two
+// near-parallel arrows. Collapse them to ONE join per unordered card pair,
+// preferring the left→right direction so the surviving arrowhead points at the
+// joined (dim) side. Non-join edges pass through untouched. Nothing is lost — the
+// full predicate list still lives in the node-detail "Declared joins" panel.
+// Pure function of the rendered items; order-preserving among survivors.
+export function collapsePairJoins<T extends RenderedEdge>(items: T[]): T[] {
+  const keptJoinByPair = new Map<string, number>()
+  const dropped = new Set<number>()
+  items.forEach((it, pos) => {
+    if (it.kind !== "join") return
+    const key = [it.fromCardId, it.toCardId].sort().join("\u0000")
+    const prevPos = keptJoinByPair.get(key)
+    if (prevPos === undefined) {
+      keptJoinByPair.set(key, pos)
+      return
+    }
+    const prevLtr = items[prevPos].fromBox.x <= items[prevPos].toBox.x
+    const curLtr = it.fromBox.x <= it.toBox.x
+    if (curLtr && !prevLtr) {
+      dropped.add(prevPos)
+      keptJoinByPair.set(key, pos)
+    } else {
+      dropped.add(pos)
+    }
+  })
+  return dropped.size ? items.filter((_, pos) => !dropped.has(pos)) : items
 }
 
 const PORT_PAD = 8
+
+// ── Fan bundling (12f) ───────────────────────────────────────────────────────
+// A 30-table star puts 29 join edges on the fact card's facing side. Port
+// distribution (above) already keeps the CURVES apart, but each edge also drew
+// its own label plate, and 29 plates stacked down the gutter into a solid grey
+// band — the thing that made the 30-table canvas look broken. Above this many
+// edges on one side, the group is a BUNDLE: the members drop their individual
+// labels (they are still hoverable, and a hover/selection still reveals the full
+// predicate) and the group gets one summary count instead.
+export const BUNDLE_MIN = 6
+
+function groupKeys(it: RenderedEdge): [string, string] {
+  const leftToRight = it.fromBox.x <= it.toBox.x
+  return [
+    `${it.fromCardId}:${leftToRight ? "right" : "left"}`,
+    `${it.toCardId}:${leftToRight ? "left" : "right"}`,
+  ]
+}
+
+// Only labelled edges can stack into a band, and only joins carry labels, so a
+// fan is counted over JOINS. Counting `uses` here would both over-report the
+// bundle and mislabel it ("30 declared joins" when one is an MV→table edge).
+const bundleable = (it: RenderedEdge) => it.kind == null || it.kind === "join"
+
+// Per-edge size of the largest (card, side) group it belongs to — the same
+// grouping distributeEdgePorts uses, so bundling and port spreading always agree
+// about what a fan is. Pure.
+export function edgeGroupSizes(items: RenderedEdge[]): Map<number, number> {
+  const joinItems = items.filter(bundleable)
+  const counts = new Map<string, number>()
+  for (const it of joinItems) for (const k of groupKeys(it)) counts.set(k, (counts.get(k) ?? 0) + 1)
+  const out = new Map<number, number>()
+  for (const it of joinItems) {
+    const [a, b] = groupKeys(it)
+    out.set(it.index, Math.max(counts.get(a) ?? 1, counts.get(b) ?? 1))
+  }
+  return out
+}
+
+// One anchor per bundled group, positioned just BELOW the card the fan converges
+// on. The gutter the trunk runs through is only tens of units wide — a
+// "30 declared joins" chip placed there overflows onto both neighbours — while
+// the space under a fan's hub card is empty by construction (that is what makes
+// it a hub). Pure. Returns the chip's left edge and text baseline.
+export function edgeBundleAnchors(
+  items: RenderedEdge[],
+): { x: number; y: number; count: number }[] {
+  const groups = new Map<string, { box: CardBox; side: "left" | "right"; count: number }>()
+  for (const it of items.filter(bundleable)) {
+    const [fromKey, toKey] = groupKeys(it)
+    const leftToRight = it.fromBox.x <= it.toBox.x
+    for (const [key, box, side] of [
+      [fromKey, it.fromBox, leftToRight ? "right" : "left"] as const,
+      [toKey, it.toBox, leftToRight ? "left" : "right"] as const,
+    ]) {
+      const cur = groups.get(key)
+      if (cur) cur.count += 1
+      else groups.set(key, { box, side, count: 1 })
+    }
+  }
+  const out: { x: number; y: number; count: number }[] = []
+  for (const g of groups.values()) {
+    if (g.count < BUNDLE_MIN) continue
+    out.push({ x: g.box.x, y: g.box.y + g.box.h + 16, count: g.count })
+  }
+  return out
+}
 
 function portY(box: CardBox, slot: number, count: number): number {
   const raw = box.y + (box.h * (slot + 1)) / (count + 1)
@@ -621,6 +743,13 @@ function abbreviate(text: string, max = 28): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
+// Leaf of a dotted identifier — the name a reader recognizes, without the
+// catalog/schema prefix a chip has no room for.
+function leafName(identifier: string): string {
+  const parts = identifier.split(".")
+  return parts[parts.length - 1] || identifier
+}
+
 /**
  * Pan delta from a drag anchor to the current pointer. Null-safe by contract:
  * a null anchor (the pointerup-vs-pointermove race that used to crash the tab
@@ -641,16 +770,35 @@ export function panDelta(
 // curated query exercises), rendered plainly with a dashed ring — the lens's
 // point, not an error. Absent (undefined) coverage renders nothing, so a
 // lens-free Prompt 12 response is unchanged.
-function CoverageBadge({ x, y, w, coverage }: { x: number; y: number; w: number; coverage?: number | null }) {
+function CoverageBadge({
+  x,
+  y,
+  w,
+  coverage,
+  inset,
+}: {
+  x: number
+  y: number
+  w: number
+  coverage?: number | null
+  // 12f: a badge centred ON the card's border half-hangs into the gutter and
+  // reads unfinished next to the v7 frame, where it sits inside the card. Table
+  // cards inset it; a measure card keeps the corner, because its own measure
+  // pill already owns the inside of that row.
+  inset?: boolean
+}) {
   if (coverage == null) return null
   const cold = coverage === 0
-  const bx = x + w - 12
-  const by = y - 6
+  const bx = inset ? x + w - 17 : x + w - 12
+  const by = inset ? y + 17 : y - 6
   return (
     <g aria-label={cold ? "no curated SQL coverage" : `curated SQL coverage ${coverage}`}>
       <title>{cold ? "cold spot — no curated SQL touches this" : `${coverage} curated statement${coverage === 1 ? "" : "s"}`}</title>
-      <circle cx={bx} cy={by} r="8" fill={cold ? "var(--bg-surface)" : "var(--color-accent)"} opacity={cold ? 1 : 0.85}
-        stroke={cold ? "var(--color-danger)" : "var(--color-accent)"} strokeWidth="1" strokeDasharray={cold ? "2 2" : undefined} />
+      {/* Round-5: a warm coverage count is a NEUTRAL grey chip, not accent — the
+          accent is reserved for selection/lineage, so the resting canvas is not
+          peppered with indigo dots. A cold spot keeps its dashed danger ring. */}
+      <circle cx={bx} cy={by} r="8" fill={cold ? "var(--bg-surface)" : "var(--text-muted)"} opacity={cold ? 1 : 0.55}
+        stroke={cold ? "var(--color-danger)" : "var(--border-color-strong)"} strokeWidth="1" strokeDasharray={cold ? "2 2" : undefined} />
       <text x={bx} y={by + 3} textAnchor="middle" fontSize="8" fontWeight="700"
         fill={cold ? "var(--color-danger)" : "var(--bg-surface)"}>{coverage}</text>
     </g>
@@ -680,7 +828,9 @@ function EdgeView({
   src,
   dst,
   active,
+  dimmed,
   verbose,
+  bundled,
   onHover,
 }: {
   edge: SemanticGraphEdge
@@ -689,16 +839,35 @@ function EdgeView({
   src: { x: number; y: number }
   dst: { x: number; y: number }
   active: boolean
+  // Round-6 focus+context (reference BlueprintEdge): when SOMETHING is selected,
+  // every edge NOT in the selection's neighborhood is `dimmed` to near-invisible
+  // (opacity ~0.06) so only the handful of edges you care about remain. This — not
+  // routing — is what makes the reference canvas read clean; ours used to keep all
+  // joins at full opacity at rest AND on select, which is the "hodge podge".
+  dimmed: boolean
   // Neighborhood emphasis (`active`) is wide; the label reveal (`verbose`) is the
   // one edge the reader pointed at. Keeping them separate is what stops a single
   // selection from spraying full ON predicates across the canvas.
   verbose: boolean
+  // One of a large fan on a shared side: draw the curve, drop the at-rest label
+  // (the group carries one count instead). Hover still reveals the predicate.
+  bundled: boolean
   onHover: (on: boolean) => void
 }) {
   // Column-aware cubic curve: control points offset horizontally so edges bend
   // in the gutter (the §5 "orthogonal elbows or column-aware curves" call).
+  //
+  // 12f — a BUNDLED edge switches to the §5 orthogonal elbow instead. Thirty
+  // curves spanning 2400px of dim column inside a 40px gutter is a ribbon no
+  // matter how thin each stroke is; routed as elbows they share one vertical
+  // trunk (`cx` is identical for every member of a fan, since they share both
+  // the column x and the root port x) and peel off with a short stub per row. One
+  // line plus stubs, not thirty near-parallel strands — and each edge stays its
+  // own path, so hovering one still reveals its predicate.
   const cx = (src.x + dst.x) / 2
-  const path = `M ${src.x} ${src.y} C ${cx} ${src.y} ${cx} ${dst.y} ${dst.x} ${dst.y}`
+  const path = bundled
+    ? `M ${src.x} ${src.y} L ${cx} ${src.y} L ${cx} ${dst.y} L ${dst.x} ${dst.y}`
+    : `M ${src.x} ${src.y} C ${cx} ${src.y} ${cx} ${dst.y} ${dst.x} ${dst.y}`
   const midX = (src.x + dst.x) / 2
   const midY = (src.y + dst.y) / 2
 
@@ -715,6 +884,25 @@ function EdgeView({
   }
   if (edge.kind === "membership") {
     return <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="1.5" />
+  }
+
+  // governs (round-6 overlay): a proposed metric view → the loose measure it
+  // would govern. A dashed accent link that points from the ghost card toward the
+  // Space-config box, with one small "would govern" tag at its midpoint. Overlay
+  // -only, so it is always drawn when present (never dimmed).
+  if (edge.kind === "governs") {
+    return (
+      <g pointerEvents="none">
+        <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="1.5"
+          strokeDasharray="5 3" strokeLinecap="round" opacity="0.8"
+          markerEnd="url(#mv-arrow-on)" />
+        <g>
+          <rect x={midX - 34} y={midY - 15} width="68" height="15" rx="4"
+            fill="var(--bg-sunken)" stroke="var(--color-accent)" strokeWidth="0.75" opacity="0.95" />
+          <text x={midX} y={midY - 4} textAnchor="middle" className="fill-[var(--color-accent)]" fontSize="8.5" fontWeight="600">would govern</text>
+        </g>
+      </g>
+    )
   }
 
   // uses (12e / MV-D33): the proven at-rest arrow from a metric view to a table
@@ -735,27 +923,64 @@ function EdgeView({
     )
   }
 
-  // join — declutter: a compact relationship GLYPH (12d finding 3) + SCD2 at
-  // rest so nothing truncates into ambiguity; the full ON predicate and the full
-  // relationship text ride hover / an endpoint selection. A relationship with no
-  // known glyph is omitted at rest rather than shown truncated. Prompt 12b
-  // coverage weight rides "×N".
-  const weightLabel = typeof edge.weight === "number" && edge.weight > 0 ? `×${edge.weight}` : null
+  // derives (round-7): a Space-config (loose) measure → a table its expression
+  // is built from. The render loop only emits it when the measure is selected,
+  // so it is the on-select lineage reveal for measures that belong to no metric
+  // view. Dashed accent like `uses`, but rooted at a measure chip; the arrow
+  // points at the source table.
+  if (edge.kind === "derives") {
+    return (
+      <path
+        d={path}
+        fill="none"
+        stroke="var(--color-accent)"
+        strokeWidth={1.75}
+        strokeDasharray="1 4"
+        strokeLinecap="round"
+        opacity={0.9}
+        markerEnd="url(#mv-uses-arrow)"
+      />
+    )
+  }
+
+  // join — the relationship GLYPH (12d finding 3), reserved for the on-demand
+  // reveal. A relationship with no known glyph is omitted rather than shown
+  // truncated.
   const glyph = relationshipGlyph(edge.relationship)
-  const restLabel = [glyph, edge.scd2 ? "SCD2" : null, weightLabel].filter(Boolean).join(" · ")
-  // 12f: ONE label line, on an opaque backing chip, and the verbose reveal is
-  // narrowed to the edge the reader actually pointed at (`verbose` = hovered or
-  // an endpoint IS the selection). `active` stays neighborhood-wide for stroke
-  // emphasis. Before this split, selecting one card turned every edge around it
-  // verbose at once and printed several full predicates across the card borders.
-  // The suffix uses the compact glyph rather than the spelled-out relationship so
-  // the chip cannot outgrow the gap it sits in.
+  // Round-6 labels-on-demand: a join carries a label ONLY when the reader points
+  // at it (`verbose` = hovered, or an endpoint IS the selection and it is not
+  // inside a bundle). At rest — and for the merely-in-neighborhood `active` edges
+  // — no label at all, so the resting canvas has zero floating glyphs. This drops
+  // the scattered "N:1"/"ON …" plates that made the fit read busy even before the
+  // curves crossed. (Before round-6 a compact glyph rode at rest; the reference
+  // canvas the reviewer approved shows nothing until you point at an edge.)
   const label = verbose
     ? [edge.on ? `ON ${abbreviate(edge.on, 34)}` : null, glyph, edge.scd2 ? "SCD2" : null].filter(Boolean).join(" · ")
-    : restLabel
+    : ""
+  // Focus+context strokes (reference BlueprintEdge). Three states:
+  //   active  → accent, thick, full opacity, glow underlay (the selection story)
+  //   dimmed  → near-invisible grey (something else is selected; this is context)
+  //   rest    → a quiet, thin, low-opacity grey skeleton (nothing selected)
+  const strokeColor = active ? "var(--color-accent)" : "var(--border-color-strong)"
+  const strokeW = active ? 2.25 : dimmed ? 0.75 : bundled ? 1 : 1.25
+  const strokeOpacity = active ? 1 : dimmed ? 0.06 : bundled ? 0.32 : 0.4
   return (
     <g onMouseEnter={() => onHover(true)} onMouseLeave={() => onHover(false)} style={{ cursor: "default" }}>
-      <path d={path} fill="none" stroke="var(--border-color-strong)" strokeWidth={active ? 2 : 1.5} markerEnd="url(#mv-arrow)" />
+      {/* Selection/hover "lights up" the line (v3 §4; reference BlueprintEdge): a
+          soft accent glow underlay + the stroke itself switches from neutral grey
+          to the accent hue with an accent arrowhead. At rest it stays a quiet grey
+          join so the canvas reads calm until the reader points at something. */}
+      {active && (
+        <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth={6} strokeLinecap="round" opacity={0.18} />
+      )}
+      <path
+        d={path}
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth={strokeW}
+        opacity={strokeOpacity}
+        markerEnd={active ? "url(#mv-arrow-on)" : dimmed ? undefined : "url(#mv-arrow)"}
+      />
       <EdgeLabel x={midX} y={midY - 6} text={label} emphasis={verbose} />
     </g>
   )
@@ -809,6 +1034,7 @@ function MeasureChip({
   w,
   selected,
   dim,
+  showRung,
   onSelect,
 }: {
   m: SemanticGraphNode
@@ -817,19 +1043,38 @@ function MeasureChip({
   w: number
   selected: boolean
   dim: boolean
+  // 12f: the per-chip rung letter is a NON-COLOR discriminator, so it earns its
+  // place only when the card's measures actually differ in rung. Inside a metric
+  // view they never do — every measure it exposes is governed, and the card's own
+  // "N measures · governed" pill already says so — and 24 copies of the same "G"
+  // is the visual noise that separated reality from the v7 frame's clean rows.
+  showRung: boolean
   onSelect: (n: SemanticGraphNode) => void
 }) {
   const g = m.governance ? GOVERNANCE[m.governance] : null
   const color = g?.color ?? "var(--border-color-strong)"
   const tag = m.governance ? m.governance[0].toUpperCase() : "•"
+  const label = g ? `${m.label} — ${g.label}` : m.label
+  // A loose measure whose NAME a metric view already exposes under a different
+  // expression (server-computed `overlaps`) is two answers to one question — the
+  // v7 contract puts a warning on that chip; here it is a small amber caret so the
+  // gap is visible on the canvas, not only in the inset.
+  const wx = x + w - (g && showRung ? 18 : 8)
   return (
-    <g opacity={dim ? 0.3 : 1} onClick={() => onSelect(m)} style={{ cursor: "pointer" }}>
-      <title>{m.origin ? `${m.label} — ${m.origin}` : m.label}</title>
+    <g opacity={dim ? 0.3 : 1} onClick={() => onSelect(m)} style={{ cursor: "pointer" }} aria-label={m.overlaps ? `${label} — name also in ${leafName(m.overlaps)}` : label}>
+      <title>{m.origin ? `${label} · ${m.origin}` : label}</title>
       <rect x={x} y={y} width={w} height={CHIP_H} rx="4" fill={color} opacity="0.14"
-        stroke={selected ? "var(--color-accent)" : color} strokeWidth={selected ? 2 : 1} />
-      <text x={x + 6} y={y + 13} className="fill-[var(--text-primary)]" fontSize="9.5" fontWeight="600">{abbreviate(m.label, 22)}</text>
-      {g && (
-        <text x={x + w - 6} y={y + 13} textAnchor="end" fill={color} fontSize="8" fontWeight="700" aria-label={g.label}>{tag}</text>
+        stroke={selected ? "var(--color-accent)" : m.overlaps ? "var(--color-warning)" : color} strokeWidth={selected ? 2 : 1} />
+      <text x={x + 6} y={y + 13} className="fill-[var(--text-primary)]" fontSize="9.5" fontWeight="600">{abbreviate(m.label, m.overlaps ? 18 : 22)}</text>
+      {m.overlaps && (
+        <g aria-label={`also in ${leafName(m.overlaps)}`}>
+          <title>{`name also exposed by ${leafName(m.overlaps)} — two definitions, one name`}</title>
+          <path d={`M ${wx} ${y + 4} l 5 9 l -10 0 Z`} fill="var(--color-warning)" />
+          <text x={wx} y={y + 13} textAnchor="middle" fontSize="7" fontWeight="800" className="fill-[var(--bg-surface)]">!</text>
+        </g>
+      )}
+      {g && showRung && !m.overlaps && (
+        <text x={x + w - 6} y={y + 13} textAnchor="end" fill={color} fontSize="8" fontWeight="700">{tag}</text>
       )}
     </g>
   )
@@ -872,22 +1117,22 @@ function CardView({
 
   if (card.kind === "table") {
     const clickable = card.node
-    // 12f: typed card — a FACT (source column 0) vs DIM (joined column 1)
-    // caption above the identifier, matching the v7 contract frame. Left-aligned
-    // with the label so the card reads like the mockup's fact/dim cards.
-    const typeCaption = card.col === 0 ? "FACT" : "DIM"
+    // Round-5: the caption asserts FACT/DIM only when the data PROVES the role
+    // (node.role — fact = a metric view's declared source, dim = a join target).
+    // When nothing proves it we say a neutral "TABLE" instead of guessing from
+    // column position, which is what mislabelled dim_* tables as FACT.
+    const role = card.node?.role
+    const typeCaption = role === "fact" ? "FACT" : role === "dim" ? "DIM" : "TABLE"
     return (
       <g opacity={opacity} onClick={() => clickable && onSelect(clickable)} onPointerDown={pointerDown} style={{ cursor: dragCursor ?? (clickable ? "pointer" : "default") }}>
         <title>{unmodeled ? `${card.label} — in no metric view` : card.label}</title>
         <rect x={x} y={y} width={w} height={h} rx="8" fill="var(--bg-surface)" stroke={stroke ?? "var(--border-color-strong)"} strokeWidth={selWidth} strokeDasharray={card.coverage === 0 ? "4 3" : undefined} />
         <text x={x + 14} y={y + 20} className="fill-[var(--text-muted)]" fontSize="8.5" fontWeight="700" letterSpacing="0.06em">{typeCaption}</text>
         <text x={x + 14} y={y + 39} className="fill-[var(--text-primary)]" fontSize="12.5" fontWeight="600" fontFamily="monospace">{abbreviate(card.label, 20)}</text>
-        {/* Prompt 12e / MV-D33: the unmodeled region — a table in no metric view.
-            The governance gap made visible, in words not just hue. */}
-        {unmodeled && (
-          <text x={x + w - 12} y={y + 20} textAnchor="end" className="fill-[var(--text-muted)]" fontSize="7.5" fontStyle="italic">no metric view</text>
-        )}
-        <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} />
+        {/* The per-card "no metric view" footnote is gone (12f): the labeled
+            UNMODELED region now says it once for the whole group, as the v7
+            contract does, instead of repeating it on every card in 7.5px. */}
+        <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} inset />
       </g>
     )
   }
@@ -912,31 +1157,41 @@ function CardView({
       : defUnavailable
         ? "definition unavailable"
         : "metric view"
-    : "loose measures · not in any MV"
+    : "not in any MV"
   // The frame names the concepts card for what it is: measures the space config
   // declares that no metric view governs. It wears the warning treatment
   // (dashed, amber) because that gap is the thing the curator must act on. The
-  // frame's full title ("Space config · loose measures") is split across title
-  // and subtitle here — in the frame this box spans the panel width, whereas on
-  // the canvas it lives in a column and the one-line title collided with the pill.
-  const displayLabel = isMv ? abbreviate(card.label, 22) : "Space config"
+  // Round-5: the title gets the FULL card width on its own row and the "N measures
+  // · governed" pill drops to a second row, so a long MV name (e.g.
+  // customer_analytics_metrics) can no longer collide with the pill (the reported
+  // text overlap). The concepts box reads "Space config" — the column header
+  // already carries "measures".
+  const displayLabel = isMv ? abbreviate(card.label, 30) : "Space config"
   const rungCount = rollup(card).length
   const clickableHeader = card.node
   const hidden = collapsed
+  // Round-5 palette: an MV box is a calm, near-neutral tint at rest and only wears
+  // the accent when selected — the accent is reserved for selection/lineage so the
+  // resting canvas is quiet. The concepts box keeps the amber "gap" treatment
+  // because a loose-measure gap is the thing a curator must act on.
+  const boxFill = isMv ? "var(--color-accent)" : "var(--color-warning)"
+  const boxFillOpacity = isMv ? (card.proposed ? 0.05 : 0.06) : 0.08
+  const boxStroke = stroke ?? (isMv ? "var(--border-color-default)" : "var(--color-warning)")
   return (
     <g opacity={opacity}>
       <g onClick={() => clickableHeader && onSelect(clickableHeader)} onPointerDown={pointerDown} style={{ cursor: dragCursor ?? (clickableHeader ? "pointer" : "default") }}>
         <title>{card.proposed ? `${card.label} — proposed metric view` : defUnavailable ? `${card.label} — definition unavailable` : isMv ? card.label : `${conceptCount} measure${conceptCount === 1 ? "" : "s"} governed by no metric view`}</title>
         <rect x={x} y={y} width={w} height={h} rx="10"
-          fill={isMv ? "var(--color-accent)" : "var(--color-warning)"} opacity={isMv ? (card.proposed ? 0.1 : 0.15) : 0.08}
-          stroke={stroke ?? (isMv ? "var(--color-accent)" : "var(--color-warning)")} strokeWidth={selWidth}
+          fill={boxFill} opacity={boxFillOpacity}
+          stroke={boxStroke} strokeWidth={selWidth}
           strokeDasharray={card.proposed || !isMv ? "5 3" : undefined} />
         <text x={x + 12} y={y + 21} className="fill-[var(--text-primary)]" fontSize="12.5" fontWeight="700">{displayLabel}</text>
-        <text x={x + 12} y={y + 38} className="fill-[var(--text-muted)]" fontSize="9">{subtitle}{hidden ? " · collapsed" : ""}</text>
-        <MeasurePill x={x} y={y + 9} w={w} card={card} />
+        <text x={x + 12} y={y + 40} className="fill-[var(--text-muted)]" fontSize="9">{subtitle}{hidden ? " · collapsed" : ""}</text>
+        {/* Pill on its own row (top-right of row 2), clear of the full-width title. */}
+        <MeasurePill x={x} y={y + 31} w={w} card={card} />
         {/* The rung breakdown only earns a line when the pill's dominant rung
-            doesn't already tell the whole story. */}
-        {rungCount > 1 && <RollUp x={x + 12} y={y + 51} card={card} />}
+            doesn't already tell the whole story; it sits under the subtitle. */}
+        {rungCount > 1 && <RollUp x={x + 12} y={y + 52} card={card} />}
         <CoverageBadge x={x} y={y} w={w} coverage={card.coverage} />
       </g>
       {!hidden && (
@@ -950,6 +1205,7 @@ function CardView({
               w={w - 16}
               selected={m.id === selectedId}
               dim={!matchesSearch(m.label, searchTerm)}
+              showRung={rungCount > 1}
               onSelect={onSelect}
             />
           ))}
@@ -976,11 +1232,18 @@ interface SemanticGraphProps {
   nodes: SemanticGraphNode[]
   edges: SemanticGraphEdge[]
   selectedId?: string | null
-  onSelectNode?: (node: SemanticGraphNode) => void
+  // `null` is an explicit deselect (click empty canvas / re-click the selection),
+  // so the parent can drive toggle-off and clear-on-background like the reference.
+  onSelectNode?: (node: SemanticGraphNode | null) => void
   label?: string
 }
 
 function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "Semantic model" }: SemanticGraphProps) {
+  // 12f round 4 (v3 §3): the loose-measures ("Space config") card is a peer of the
+  // MV boxes ON THE CANVAS, in the metric-view column below them — NOT a full-width
+  // panel below the canvas (the round-3 regression). buildCards places it at
+  // (CONCEPTS_COL, CONCEPTS_ROW) so it stacks last in that column, and it renders
+  // through the same CardView as every other card.
   const cards = useMemo(() => buildCards(nodes, edges), [nodes, edges])
   const tallestColumn = useMemo(() => {
     const perCol = [0, 0, 0, 0]
@@ -1002,6 +1265,12 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 })
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+  // Reference parity (BlueprintCanvas): a press that begins on the empty
+  // background and releases without a pan is a "click empty → clear selection".
+  // We remember whether the press started on the background and whether the pan
+  // actually moved, so a genuine pan-drag never clears.
+  const bgPress = useRef(false)
+  const panMoved = useRef(false)
   // Prompt 12e / MV-D33 interaction state: focus mode (Lineage = both-direction
   // 1-hop neighborhood; Impact = downstream blast radius) and session-only card
   // drag offsets (spread the canvas; not persisted, cleared by Reset layout).
@@ -1027,29 +1296,68 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
     return m
   }, [placedBase, offsets])
 
+  // Round-5: Impact (downstream blast radius) is only MEANINGFUL for a selected
+  // SOURCE TABLE — that is the thing whose change breaks MVs and measures. For an
+  // MV or measure selection, or no selection, impact and lineage collapse to the
+  // same picture, which is why toggling it looked like it did nothing. So the
+  // toggle is disabled unless a table is selected, and the effective mode falls
+  // back to Lineage otherwise — the button never lies about having an effect.
+  const impactApplicable = useMemo(
+    () => !!selectedId && cards.some((c) => c.id === selectedId && c.kind === "table"),
+    [selectedId, cards],
+  )
+  const effectiveMode = mode === "impact" && impactApplicable ? "impact" : "lineage"
+
   // Focus set depends on the mode: Lineage (both directions) vs Impact
   // (downstream only). Both are pure functions of the selection.
   const highlight = useMemo(
-    () => (mode === "impact" ? impactSet(cards, edges, selectedId) : focusSet(cards, edges, selectedId)),
-    [mode, cards, edges, selectedId],
+    () => (effectiveMode === "impact" ? impactSet(cards, edges, selectedId) : focusSet(cards, edges, selectedId)),
+    [effectiveMode, cards, edges, selectedId],
   )
 
   // Tables in no metric view — the unmodeled region cue (MV-D33).
   const unmodeled = useMemo(() => unmodeledTableIds(nodes, edges), [nodes, edges])
 
-  // The select-time boundary: when a metric view is selected, wrap the tables it
-  // uses (its `uses`-edge members). Hull is the norm, rect the lucky case.
-  const boundary = useMemo(() => {
+  // 12f: the v7 contract draws the unmodeled tables inside a LABELED region, not
+  // just a caption on each card. Per-member outlines (never a bounding box) so
+  // the region can't swallow a governed table that happens to sit between two
+  // unmodeled ones. Members are `uses`-edge non-targets and the select-time
+  // boundary's members are `uses`-edge targets, so the two regions are disjoint
+  // by construction and cannot enclose the same card.
+  const unmodeledRects = useMemo(() => {
+    const rects: CardBox[] = []
+    for (const id of unmodeled) {
+      const p = placed.get(id)
+      if (!p) continue
+      rects.push({ x: p.box.x - HULL_PAD / 2, y: p.box.y - HULL_PAD / 2, w: p.box.w + HULL_PAD, h: p.box.h + HULL_PAD })
+    }
+    return rects
+  }, [unmodeled, placed])
+
+  // The anchor MV of the current selection: the selected MV card itself, or —
+  // when a MEASURE is selected — the MV that owns it (v3 §4). Drives BOTH the
+  // select-time boundary and which definition (`uses`) edges are drawn.
+  const anchorMvId = useMemo<string | null>(() => {
     if (!selectedId) return null
-    const sel = cards.find((c) => c.id === selectedId && c.kind === "metric_view")
+    if (cards.some((c) => c.id === selectedId && c.kind === "metric_view")) return selectedId
+    const owner = edges.find((e) => e.kind === "membership" && e.from === selectedId)?.to
+    if (owner && cards.some((c) => c.id === owner && c.kind === "metric_view")) return owner
+    return null
+  }, [selectedId, cards, edges])
+
+  // The select-time boundary: wrap the tables a metric view uses (its `uses`-edge
+  // members). Hull is the norm, rect the lucky case.
+  const boundary = useMemo(() => {
+    if (!anchorMvId) return null
+    const sel = cards.find((c) => c.id === anchorMvId && c.kind === "metric_view")
     if (!sel) return null
-    const memberIds = memberTableIds(edges, selectedId)
+    const memberIds = memberTableIds(edges, anchorMvId)
     const memberBoxes = memberIds.map((id) => placed.get(id)?.box).filter((b): b is CardBox => !!b)
     if (memberBoxes.length === 0) return null
     const memberSet = new Set(memberIds)
-    const others = [...placed.values()].filter((p) => p.card.id !== selectedId && !memberSet.has(p.card.id)).map((p) => p.box)
+    const others = [...placed.values()].filter((p) => p.card.id !== anchorMvId && !memberSet.has(p.card.id)).map((p) => p.box)
     return { ...memberBoundary(memberBoxes, others), mvLabel: sel.label }
-  }, [selectedId, cards, edges, placed])
+  }, [anchorMvId, cards, edges, placed])
 
   // Resolve each edge's endpoint cards (a measure endpoint anchors on its owning
   // card), then distribute the fan-out across each card's side (12d finding 4).
@@ -1065,18 +1373,34 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   const renderedEdges = useMemo(() => {
     const items: (RenderedEdge & { edge: SemanticGraphEdge })[] = []
     edges.forEach((edge, index) => {
+      // Round-5: definition (`uses`, dotted) edges are drawn ONLY for the selected
+      // metric view — at rest the canvas shows just the join skeleton, so the
+      // dozens of MV→table dotted lines that made it "hodge podge" are gone until
+      // you point at an MV. The data still carries every `uses` edge (the boundary
+      // and the unmodeled region read it); we simply do not RENDER the rest.
+      if (edge.kind === "uses" && edge.from !== anchorMvId) return
+      // Round-7: a measure→table `derives` edge is the ON-SELECT lineage for a
+      // Space-config (loose) measure — the tables its expression is built from.
+      // At rest the canvas shows nothing for it (like `uses`); it appears only
+      // when its measure is the selection, so clicking a loose measure lights up
+      // its source tables + the dashed link, and nothing else.
+      if (edge.kind === "derives" && edge.from !== selectedId) return
       const fromCardId = cardIdOfNode.get(edge.from)
       const toCardId = cardIdOfNode.get(edge.to)
       if (!fromCardId || !toCardId || fromCardId === toCardId) return
       const from = placed.get(fromCardId)
       const to = placed.get(toCardId)
       if (!from || !to) return
-      items.push({ index, edge, fromCardId, toCardId, fromBox: from.box, toBox: to.box })
+      items.push({ index, edge, fromCardId, toCardId, fromBox: from.box, toBox: to.box, kind: edge.kind })
     })
-    return items
-  }, [edges, cardIdOfNode, placed])
+    return collapsePairJoins(items)
+  }, [edges, cardIdOfNode, placed, anchorMvId, selectedId])
 
   const edgePorts = useMemo(() => distributeEdgePorts(renderedEdges), [renderedEdges])
+  // 12f: which edges belong to a large fan, and where each fan's summary count
+  // goes. A 30-table star used to stack 29 label plates down one gutter.
+  const edgeGroups = useMemo(() => edgeGroupSizes(renderedEdges), [renderedEdges])
+  const bundleAnchors = useMemo(() => edgeBundleAnchors(renderedEdges), [renderedEdges])
 
   const clampScale = (s: number) => Math.min(2.5, Math.max(0.4, s))
   const zoomBy = (f: number) => setView((v) => ({ ...v, scale: clampScale(v.scale * f) }))
@@ -1121,7 +1445,11 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
   }
   const onPointerDown = (e: React.PointerEvent) => {
     // Empty-background press starts a canvas pan (card presses are handled by
-    // onCardPointerDown, which stops propagation).
+    // onCardPointerDown, which stops propagation). Record whether this press
+    // landed on the empty background (target IS the svg, not a card child) so a
+    // release without a pan can clear the selection like the reference does.
+    bgPress.current = e.target === svgRef.current
+    panMoved.current = false
     drag.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty }
     setDragging(true)
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
@@ -1152,9 +1480,17 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
     const d = drag.current
     const delta = panDelta(d, e.clientX, e.clientY)
     if (!d || !delta) return
+    // A few pixels of jitter is not a pan; past that, mark it so the release
+    // does not clear the selection.
+    if (Math.abs(delta.dx) > 3 || Math.abs(delta.dy) > 3) panMoved.current = true
     setView((v) => ({ ...v, tx: d.tx + delta.dx, ty: d.ty + delta.dy }))
   }
   const onPointerUp = () => {
+    // Click on empty canvas (background press, no pan) clears the selection —
+    // the reference's "click empty canvas: reset" (BlueprintCanvas).
+    if (bgPress.current && !panMoved.current && selectedId) onSelectNode?.(null)
+    bgPress.current = false
+    panMoved.current = false
     drag.current = null
     cardDrag.current = null
     setDragging(false)
@@ -1212,10 +1548,21 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
           />
         </div>
         {/* Focus mode (§4 / MV-D33): Lineage traces both directions; Impact shows
-            the downstream blast radius of a selected table. */}
+            the downstream blast radius of a selected TABLE. Round-5: Impact is
+            disabled (and visibly greyed) unless a table is selected, so it never
+            appears to do nothing — the effect it has needs a table to act on. */}
         <div className="inline-flex items-center overflow-hidden rounded-md border border-default text-xs" role="group" aria-label="Focus mode">
-          <button type="button" aria-pressed={mode === "lineage"} onClick={() => setMode("lineage")} className={`px-2.5 py-1 ${mode === "lineage" ? "bg-[var(--color-accent)] font-medium text-white" : "text-secondary hover:text-primary"}`}>Lineage</button>
-          <button type="button" aria-pressed={mode === "impact"} onClick={() => setMode("impact")} className={`px-2.5 py-1 ${mode === "impact" ? "bg-[var(--color-accent)] font-medium text-white" : "text-secondary hover:text-primary"}`}>Impact</button>
+          <button type="button" aria-pressed={effectiveMode === "lineage"} onClick={() => setMode("lineage")} className={`px-2.5 py-1 ${effectiveMode === "lineage" ? "bg-[var(--color-accent)] font-medium text-white" : "text-secondary hover:text-primary"}`}>Lineage</button>
+          <button
+            type="button"
+            aria-pressed={effectiveMode === "impact"}
+            disabled={!impactApplicable}
+            onClick={() => setMode("impact")}
+            title={impactApplicable ? "Downstream blast radius of the selected table" : "Select a source table to see its downstream impact"}
+            className={`px-2.5 py-1 ${effectiveMode === "impact" ? "bg-[var(--color-accent)] font-medium text-white" : impactApplicable ? "text-secondary hover:text-primary" : "cursor-not-allowed text-muted opacity-50"}`}
+          >
+            Impact
+          </button>
         </div>
         <button type="button" onClick={fitToContent} className="inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary hover:text-primary" title="Fit the model to the view">
           <Maximize2 className="h-3.5 w-3.5" /> Fit
@@ -1234,11 +1581,18 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
             {expandAll ? "Collapse all" : "Expand all"}
           </button>
         )}
-        {Object.keys(offsets).length > 0 && (
-          <button type="button" onClick={resetLayout} className="inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-muted hover:text-secondary" title="Restore the default layout (clears your dragging)">
-            <RotateCcw className="h-3.5 w-3.5" /> Reset
-          </button>
-        )}
+        {/* Always present (v7 contract 9e), disabled until there is a drag to
+            undo — a control that appears and disappears makes the row jump and
+            leaves the reader unsure the affordance exists at all. */}
+        <button
+          type="button"
+          onClick={resetLayout}
+          disabled={Object.keys(offsets).length === 0}
+          className="inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-muted enabled:hover:text-secondary disabled:opacity-40"
+          title={Object.keys(offsets).length === 0 ? "Nothing to reset — no box has been dragged" : "Restore the default layout (clears your dragging)"}
+        >
+          <RotateCcw className="h-3.5 w-3.5" /> Reset
+        </button>
         {selectedLabel && (
           <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[var(--color-accent)] px-2 py-1 text-xs font-medium text-[var(--color-accent)]">
             <Crosshair className="h-3.5 w-3.5" />
@@ -1258,7 +1612,7 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
         // width MUST stay explicit: with only aspect-ratio set, a binding
         // min-height makes the browser derive the WIDTH from the height, and the
         // canvas blows out past its panel.
-        style={{ width: "100%", aspectRatio: `${width} / ${height}`, minHeight: 220, maxHeight: 520 }}
+        style={{ width: "100%", aspectRatio: `${width} / ${height}`, minHeight: 280, maxHeight: 680 }}
       >
       <svg
         ref={svgRef}
@@ -1278,6 +1632,11 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
           <marker id="mv-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
             <path d="M0,0 L6,3 L0,6 Z" className="fill-[var(--text-muted)]" />
           </marker>
+          {/* Accent arrowhead for a lit (active) join — the reference's highlighted
+              edge terminates in the accent hue, not the resting grey. */}
+          <marker id="mv-arrow-on" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" className="fill-[var(--color-accent)]" />
+          </marker>
           <marker id="mv-uses-arrow" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto">
             <path d="M0,0 L5,2.5 L0,5 Z" className="fill-[var(--color-accent)]" />
           </marker>
@@ -1288,30 +1647,61 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
           {columns.map((c) => (
             <text key={c.col} x={c.x + c.w / 2} y={22} textAnchor="middle" className="fill-[var(--text-muted)]" fontSize="10" fontWeight="700" letterSpacing="0.04em">{COL_HEADERS[c.col]}</text>
           ))}
+          {/* The unmodeled region (v7 contract 9e): the governance gap drawn as a
+              place, not just a per-card footnote. Rendered before the boundary so
+              a selection's accent outline reads on top of it. */}
+          {unmodeledRects.length > 0 && (
+            <g aria-label="unmodeled tables — in no metric view" pointerEvents="none">
+              {unmodeledRects.map((r, i) => (
+                <rect key={i} x={r.x} y={r.y} width={r.w} height={r.h} rx="10"
+                  fill="var(--color-danger)" fillOpacity="0.05"
+                  stroke="var(--color-danger)" strokeWidth="1.25" strokeDasharray="5 4" />
+              ))}
+              {(() => {
+                const top = unmodeledRects.reduce((a, b) => (b.y < a.y ? b : a), unmodeledRects[0])
+                const text = "UNMODELED · in no metric view"
+                const w = text.length * 5.1 + 14
+                const y = Math.max(top.y - 8, CARD_TOP - 18)
+                return (
+                  <>
+                    <rect x={top.x} y={y - 12} width={w} height="16" rx="4"
+                      fill="var(--bg-sunken)" stroke="var(--color-danger)" strokeWidth="0.75" />
+                    <text x={top.x + 7} y={y} className="fill-[var(--color-danger)]" fontSize="9" fontWeight="700">{text}</text>
+                  </>
+                )
+              })()}
+            </g>
+          )}
           {/* Select-time MV boundary (MV-D33): wraps the tables the selected MV
               uses. Hull (per-member outlines) is the norm; a single rect is the
               lucky case where no foreign table sits inside the bounding box. */}
           {boundary && (
             <g aria-label={`tables used by ${boundary.mvLabel}`} pointerEvents="none">
+              {/* Round-5: a clearer container — a solid accent border (dashed only
+                  for the disjoint HULL case, where the dashes signal "these outlined
+                  members, not the space between them") over a light accent wash, so
+                  the boundary reads as one obvious region rather than a faint dotted
+                  rectangle. */}
               {boundary.rects.map((r, i) => (
-                <rect key={i} x={r.x} y={r.y} width={r.w} height={r.h} rx="10"
-                  fill="var(--color-accent)" fillOpacity="0.06"
-                  stroke="var(--color-accent)" strokeWidth="1.5" strokeDasharray="6 4" />
+                <rect key={i} x={r.x} y={r.y} width={r.w} height={r.h} rx="12"
+                  fill="var(--color-accent)" fillOpacity="0.10"
+                  stroke="var(--color-accent)" strokeWidth="2"
+                  strokeDasharray={boundary.kind === "hull" ? "7 4" : undefined} />
               ))}
-              {/* 12f: the caption gets a plate and is anchored to the TOPMOST
-                  member rect, clamped below the column headers — unbacked at
-                  rect[0].y it printed over both the header and the card border. */}
+              {/* The caption is a FILLED accent chip anchored to the TOPMOST member
+                  rect, clamped below the column headers, so the label reads as a
+                  strong title on the region rather than faint text on a plate. */}
               {(() => {
                 const top = boundary.rects.reduce((a, b) => (b.y < a.y ? b : a), boundary.rects[0])
                 if (!top) return null
-                const text = `tables used by ${abbreviate(boundary.mvLabel, 22)}`
-                const w = text.length * 5.1 + 14
+                const text = `Tables used by ${abbreviate(boundary.mvLabel, 22)}`
+                const w = text.length * 5.3 + 16
                 const y = Math.max(top.y - 8, CARD_TOP - 18)
                 return (
                   <g pointerEvents="none">
-                    <rect x={top.x} y={y - 12} width={w} height="16" rx="4"
-                      fill="var(--bg-sunken)" stroke="var(--color-accent)" strokeWidth="0.75" />
-                    <text x={top.x + 7} y={y} className="fill-[var(--color-accent)]" fontSize="9" fontWeight="700">{text}</text>
+                    <rect x={top.x} y={y - 13} width={w} height="18" rx="5"
+                      fill="var(--color-accent)" />
+                    <text x={top.x + 8} y={y} className="fill-white" fontSize="9.5" fontWeight="700">{text}</text>
                   </g>
                 )
               })()}
@@ -1321,9 +1711,26 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
             const ports = edgePorts.get(index)
             if (!ports) return null
             const endpointSelected = fromCardId === selectedId || toCardId === selectedId
-            const verbose = hoverEdge === index || endpointSelected
+            const bundled = (edgeGroups.get(index) ?? 1) >= BUNDLE_MIN
+            // Inside a bundle only a direct hover is verbose: selecting the fact
+            // card of a star would otherwise print 29 ON predicates at once.
+            const verbose = hoverEdge === index || (endpointSelected && !bundled)
             const active =
-              verbose || (highlight != null && highlight.has(fromCardId) && highlight.has(toCardId))
+              // A definition (`uses`) edge only renders for the selected MV now, so
+              // it is always "active" (bright) when shown — it IS the selection's
+              // story. Join edges keep the neighborhood/hover emphasis rules.
+              edge.kind === "uses" ||
+              // A `derives` edge only renders when its loose measure is selected,
+              // so it too is always the selection's story when shown.
+              edge.kind === "derives" ||
+              hoverEdge === index ||
+              endpointSelected ||
+              (highlight != null && highlight.has(fromCardId) && highlight.has(toCardId))
+            // Round-6 focus+context: once there IS a focus (a selection sets
+            // `highlight`), any edge outside the neighborhood is dimmed to near
+            // -invisible — so a click removes clutter instead of adding it. A
+            // hovered edge is never dimmed. Overlay links (governs) ignore this.
+            const dimmed = highlight != null && !active && hoverEdge !== index
             return (
               <EdgeView
                 key={index}
@@ -1331,9 +1738,24 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
                 src={ports.src}
                 dst={ports.dst}
                 active={active}
+                dimmed={dimmed}
                 verbose={verbose}
+                bundled={bundled}
                 onHover={(on) => setHoverEdge(on ? index : null)}
               />
+            )
+          })}
+          {/* One count per bundled fan, under the hub card the trunk converges
+              on — the replacement for the 29 stacked per-edge plates. */}
+          {bundleAnchors.map((b, i) => {
+            const text = `${b.count} declared joins`
+            const w = text.length * 4.9 + 14
+            return (
+              <g key={`bundle-${i}`} pointerEvents="none">
+                <rect x={b.x} y={b.y - 11} width={w} height="15" rx="4"
+                  fill="var(--bg-sunken)" stroke="var(--border-color-default)" strokeWidth="0.75" />
+                <text x={b.x + 7} y={b.y} fontSize="8.5" className="fill-[var(--text-muted)]">{text}</text>
+              </g>
             )
           })}
           {[...placed.values()].map((p) => (
@@ -1355,8 +1777,10 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
       </div>
 
       {/* Legend (v7 contract 9e) — the vocabulary the canvas speaks, so a first
-          reading needs no caption hunting. */}
-      <Legend />
+          reading needs no caption hunting. The Space-config (loose measures) box
+          now lives ON the canvas in the metric-view column (v3 §3), so there is
+          no separate panel below. */}
+      <Legend proposalLink={edges.some((e) => e.kind === "governs")} />
 
       {/* Footer tip (v7 contract 9e) — the two on-demand affordances the at-rest
           canvas can't advertise: the select-time boundary and the spread-drag. */}
@@ -1369,13 +1793,44 @@ function SemanticGraphInner({ nodes, edges, selectedId, onSelectNode, label = "S
 
 // The canvas legend (v7 contract 9e). Static — a pure vocabulary key; kept a
 // component so both the graph and its tests read one source of truth.
-function Legend() {
+//
+// Round-5: the two LINE kinds are now spelled out with real line swatches — a
+// SOLID grey line is a declared join, a DASHED accent line is a metric view's
+// definition (its MV→table edges, drawn only when that MV is selected). This is
+// the "dotted vs solid" disambiguation the reviewer asked for. Governance rides a
+// compact three-dot cluster rather than one-dot-at-a-time entries.
+function LineSwatch({ dashed, color }: { dashed?: boolean; color: string }) {
+  return (
+    <svg width="22" height="8" viewBox="0 0 22 8" aria-hidden="true">
+      <line x1="1" y1="4" x2="17" y2="4" stroke={color} strokeWidth="1.75"
+        strokeDasharray={dashed ? "2 3" : undefined} strokeLinecap="round" />
+      <path d="M16 1 L21 4 L16 7 Z" fill={color} />
+    </svg>
+  )
+}
+
+function Legend({ proposalLink }: { proposalLink?: boolean }) {
   const items: { swatch: ReactNode; label: string }[] = [
-    { swatch: <span className="inline-block h-2.5 w-3.5 rounded-sm border border-[var(--border-color-strong)] bg-[var(--bg-surface)]" />, label: "table (fact / dim)" },
-    { swatch: <span className="inline-block h-2.5 w-3.5 rounded-sm border border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)]" />, label: "metric view (measures)" },
-    { swatch: <span className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--color-success)]" />, label: "governed / in an MV" },
-    { swatch: <span className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--color-danger)]" />, label: "unmodeled (no MV)" },
-    { swatch: <span className="text-[var(--color-accent)]">→</span>, label: "declared join (N:1)" },
+    { swatch: <span className="inline-block h-2.5 w-3.5 rounded-sm border border-[var(--border-color-strong)] bg-[var(--bg-surface)]" />, label: "table" },
+    { swatch: <span className="inline-block h-2.5 w-3.5 rounded-sm border border-[var(--border-color-default)] bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]" />, label: "metric view" },
+    { swatch: <LineSwatch color="var(--border-color-strong)" />, label: "declared join (N:1)" },
+    { swatch: <LineSwatch dashed color="var(--color-accent)" />, label: "MV definition (on select)" },
+    // Only when the proposal overlay is on: the dashed accent link a proposed MV
+    // draws to the loose measure it would govern.
+    ...(proposalLink
+      ? [{ swatch: <LineSwatch dashed color="var(--color-accent)" />, label: "would govern (proposal)" }]
+      : []),
+    {
+      swatch: (
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full bg-[var(--color-success)]" />
+          <span className="inline-block h-2 w-2 rounded-full bg-[var(--color-warning)]" />
+          <span className="inline-block h-2 w-2 rounded-full bg-[var(--color-danger)]" />
+        </span>
+      ),
+      label: "governed · curated · ungoverned",
+    },
+    { swatch: <span className="inline-block h-2.5 w-3.5 rounded-sm border border-dashed border-[var(--color-danger)]" />, label: "unmodeled (no MV)" },
   ]
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted" aria-label="Legend">

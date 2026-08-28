@@ -10,11 +10,16 @@ SP and is deliberately not reused.
 
 Two questions get answered, and they fail in opposite directions:
 
-- **Privileges** — read from ``grants.get_effective``, which resolves group
-  inheritance server-side, so a privilege held through a group reads as held. A
-  missing privilege is actionable, so each denial contributes a GRANT statement
-  to ``remediation_sql``. We never attempt a trial ``CREATE``: a probe that
-  writes is not a probe.
+- **Privileges** — ownership first, then ``grants.get_effective``. Ownership of
+  the target schema/catalog (read from object metadata the OBO user can always
+  see) authorizes create-in-schema directly, so an owner is never blocked by a
+  grant read they cannot perform. Otherwise ``get_effective`` resolves group
+  inheritance server-side. A read that FAILS (commonly the OBO token is not
+  scoped for the UC-grants API) is reported UNKNOWN, not DENIED — a false
+  "insufficient, ask an admin to GRANT" on a user who already has access is the
+  worse error. A genuine missing privilege is actionable, so each denial
+  contributes a GRANT statement to ``remediation_sql``. We never attempt a trial
+  ``CREATE``: a probe that writes is not a probe.
 - **Capabilities** — the runtime floors from MV-D8. These are Databricks Runtime
   versions, and a SQL warehouse reports only a DBSQL version, so they are often
   genuinely undecidable. Undecidable is reported as ``UNKNOWN`` rather than
@@ -135,9 +140,22 @@ def _privilege_row(
     full_name: str,
     principal: str,
     cache: dict[tuple[str, str], set[str] | str],
+    owned: bool = False,
 ) -> MvPrivilegeRow:
-    """Evaluate one privilege check, reusing one read per securable."""
+    """Evaluate one privilege check, reusing one read per securable.
+
+    ``owned`` short-circuits to GRANTED: an owner of this securable (or of an
+    ancestor) holds every privilege on it, and ownership is read from metadata the
+    OBO user can always see — so this resolves the common case (a schema owner
+    creating in their own schema) without depending on the UC-grants read the OBO
+    token may not be scoped for.
+    """
     label = f"{privilege.replace('_', ' ')} on {full_name}"
+    if owned:
+        return MvPrivilegeRow(
+            label=label, privilege=privilege, securable=full_name,
+            status="GRANTED", detail=f"{principal} owns {full_name} (or an ancestor)",
+        )
     key = (securable_type, full_name)
     if key not in cache:
         try:
@@ -147,12 +165,16 @@ def _privilege_row(
     cached = cache[key]
 
     if isinstance(cached, str):
-        # A securable that is absent and one the user simply cannot see are the
-        # same NOT_FOUND from UC, so this is DENIED, not UNKNOWN — either way the
-        # create cannot proceed today, and a GRANT is the actionable next step.
+        # The read itself failed — most often because the OBO token is not scoped
+        # for the UC-grants API (the documented OBO-scope gap), NOT because the
+        # user lacks the privilege. Report UNKNOWN, never DENIED: a false
+        # "insufficient — ask an admin to GRANT" on a user who already has access
+        # (verified deployed-review case: a schema owner) is the worse error.
+        # Ownership above resolves owners affirmatively; this leaves the rest
+        # honestly undecided rather than wrongly blocked.
         return MvPrivilegeRow(
             label=label, privilege=privilege, securable=full_name,
-            status="DENIED", detail=cached,
+            status="UNKNOWN", detail=cached,
         )
 
     granted = privilege in cached or _ALL_PRIVILEGES in cached
@@ -169,6 +191,42 @@ def _read_failure_detail(exc: BaseException, securable_type: str, full_name: str
         return f"{securable_type.lower()} {full_name} not found or not visible to you"
     logger.warning("Effective-privilege read failed for %s: %s", full_name, message)
     return f"could not read privileges on {full_name}: {message}"
+
+
+def _securable_owner(
+    ws: Any, securable_type: str, full_name: str, owner_cache: dict[str, str | None],
+) -> str | None:
+    """The owner of one securable, or None (best-effort, OBO-readable).
+
+    Owner is metadata the user can read whenever they can see the object — unlike
+    ``grants.get_effective``, whose UC-grants API the OBO token is often not scoped
+    for. This is why ownership is consulted for authorization even though the
+    effective-privilege read is preferred: a schema owner can create in their
+    schema regardless of whether the OBO token can read the grant that says so.
+    """
+    if full_name in owner_cache:
+        return owner_cache[full_name]
+    owner: str | None = None
+    try:
+        if securable_type == SecurableType.CATALOG.value:
+            owner = getattr(ws.catalogs.get(full_name), "owner", None)
+        elif securable_type == SecurableType.SCHEMA.value:
+            owner = getattr(ws.schemas.get(full_name), "owner", None)
+        elif securable_type == SecurableType.TABLE.value:
+            owner = getattr(ws.tables.get(full_name), "owner", None)
+    except Exception:  # noqa: BLE001 - owner is one signal; absence just means "no ownership proof"
+        logger.info("Could not read owner of %s %s", securable_type, full_name, exc_info=True)
+        owner = None
+    owner_cache[full_name] = owner
+    return owner
+
+
+def _principal_owns(owner: str | None, principal: str, user_groups: set[str]) -> bool:
+    """Does ``principal`` (or one of their groups) own this securable?"""
+    if not owner:
+        return False
+    normalized = owner.strip().lower()
+    return normalized == principal.lower() or normalized in user_groups
 
 
 # ── Runtime capability reads (MV-D8) ─────────────────────────────────────
@@ -300,21 +358,58 @@ def probe(
 
     schema_fqn = f"{catalog}.{schema}"
     cache: dict[tuple[str, str], set[str] | str] = {}
-    checks: list[tuple[str, str, str]] = [
-        ("USE_CATALOG", SecurableType.CATALOG.value, catalog),
-        ("USE_SCHEMA", SecurableType.SCHEMA.value, schema_fqn),
-        ("CREATE_TABLE", SecurableType.SCHEMA.value, schema_fqn),
+
+    # Ownership is authoritative and OBO-readable. An owner of the target schema
+    # (or catalog) can create a metric view there, so the three-privilege triple
+    # is a decomposition of "can this user create in catalog.schema" that
+    # ownership answers YES to directly. Owning the schema also implies catalog
+    # USE (you cannot own/operate a schema without it), which is why owning the
+    # schema satisfies the USE_CATALOG check too.
+    owner_cache: dict[str, str | None] = {}
+    owns_catalog = _principal_owns(
+        _securable_owner(ws, SecurableType.CATALOG.value, catalog, owner_cache),
+        principal, user_groups,
+    )
+    owns_schema = owns_catalog or _principal_owns(
+        _securable_owner(ws, SecurableType.SCHEMA.value, schema_fqn, owner_cache),
+        principal, user_groups,
+    )
+
+    def _table_owned(table: str) -> bool:
+        """SELECT is satisfied by owning the table or any ancestor of it."""
+        if owns_catalog:
+            return True
+        parts = table.split(".")
+        if len(parts) == 3:
+            tbl_schema = f"{parts[0]}.{parts[1]}"
+            if tbl_schema == schema_fqn and owns_schema:
+                return True
+            if _principal_owns(
+                _securable_owner(ws, SecurableType.SCHEMA.value, tbl_schema, owner_cache),
+                principal, user_groups,
+            ):
+                return True
+        return _principal_owns(
+            _securable_owner(ws, SecurableType.TABLE.value, table, owner_cache),
+            principal, user_groups,
+        )
+
+    checks: list[tuple[str, str, str, bool]] = [
+        ("USE_CATALOG", SecurableType.CATALOG.value, catalog, owns_catalog or owns_schema),
+        ("USE_SCHEMA", SecurableType.SCHEMA.value, schema_fqn, owns_schema),
+        ("CREATE_TABLE", SecurableType.SCHEMA.value, schema_fqn, owns_schema),
     ]
     checks += [
-        ("SELECT", SecurableType.TABLE.value, table) for table in dict.fromkeys(tables)
+        ("SELECT", SecurableType.TABLE.value, table, _table_owned(table))
+        for table in dict.fromkeys(tables)
     ]
 
     privileges = [
         _privilege_row(
             ws, privilege=privilege, securable_type=securable_type,
-            full_name=full_name, principal=principal, cache=cache,
+            full_name=full_name, principal=principal, cache=cache, owned=owned,
         )
-        for privilege, securable_type, full_name in checks
+        for privilege, securable_type, full_name, owned in checks
     ]
 
     space_row = _space_manage_row(ws, space_id, principal, user_groups)

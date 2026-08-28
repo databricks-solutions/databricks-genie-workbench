@@ -37,6 +37,7 @@ const proposal: MvProposal = {
     benchmark_question_ids: ["bq_0007", "bq_0019"],
     source_tables: ["finance.sales.orders"],
   },
+  provenance_labels: null,
   provenance: null,
   alternatives: null,
   conflicts: null,
@@ -56,6 +57,7 @@ const ddl: MvDdlArtifact = {
   dedup_fingerprint: "fp1",
   proposed_object: "finance.sales.order_revenue",
   join_strategy: "subquery_source",
+  source_tables: ["finance.sales.orders", "finance.sales.order_items"],
   yaml_text: "version: 0.1\n",
   ddl: "CREATE VIEW finance.sales.order_revenue WITH METRICS LANGUAGE YAML AS $$ ... $$",
   validation: { ok: true },
@@ -107,10 +109,11 @@ describe("suggest-only panel (frame 4)", () => {
   it("carries the verbatim lift-not-measured label and the shared accept flow's actions (MV-D34)", () => {
     expect(html).toContain(LIFT_NOT_MEASURED)
     expect(html).toContain("was not created or attached during this run")
-    // The run-output surface now renders the SAME accept flow the IQ surface
-    // does: the primary [Create this metric view] plus [Review in run setup].
+    // The run-output surface renders the SAME accept flow the IQ surface does:
+    // the primary [Create this metric view]. The pre-create [Review in run setup]
+    // jump was removed (deployed review) — it led to an empty run gate.
     expect(html).toContain("Create this metric view")
-    expect(html).toContain("Review in run setup")
+    expect(html).not.toContain("Review in run setup")
   })
   it("renders the proposed object, its DDL, and the space-config diff", () => {
     expect(html).toContain("finance.sales.order_revenue")

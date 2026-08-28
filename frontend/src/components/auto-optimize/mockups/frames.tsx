@@ -29,8 +29,19 @@ import {
   ByoVerifiedFrame,
 } from "./MvByoRegistrationMockups"
 import { Iq158CardFrame, RunOutput158Frame } from "./Mv158FidelityFrames"
+import { AttachedProposalCardFrame } from "./MvAttachAtApprovalFidelityFrames"
 import { ModelV7ContractFrame } from "./MvSemanticV7ContractFrame"
-import { RealModel3Frame, RealModel10Frame, RealModel30Frame, RealModelV7Frame } from "./Mv12fFidelityFrames"
+import { RealModel3Frame, RealModel10Frame, RealModel30Frame, RealModelOverlayFrame, RealModelV7Frame } from "./Mv12fFidelityFrames"
+import {
+  BlueprintScale30Frame,
+  BlueprintStarColumnsFrame,
+  BlueprintStarMeasureLineageFrame,
+  BlueprintStarMvSelectedFrame,
+  BlueprintStarOverviewFrame,
+  BlueprintStarStandardFrame,
+  BlueprintUnknownRolesFrame,
+  BlueprintWideTableFrame,
+} from "./SemanticBlueprintFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -64,6 +75,9 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "9g-model-real-3", title: "9g · Model tab — REAL component, 3 tables (expanded)", element: <RealModel3Frame /> },
   { id: "9h-model-real-10", title: "9h · Model tab — REAL component, 10 tables", element: <RealModel10Frame /> },
   { id: "9i-model-real-30", title: "9i · Model tab — REAL component, 30 tables (collapsed)", element: <RealModel30Frame /> },
+  // Round-6 — REAL component with the proposal overlay ON (keep-measures + a
+  // dashed "would govern →" link to a visible ghost proposed-MV card).
+  { id: "9j-model-real-overlay", title: "9j · Model tab — REAL component, proposal overlay ON (keep + link)", element: <RealModelOverlayFrame /> },
   { id: "7a-iqscan-found", title: "7a · IQ Scan — proposals found", element: <IqScanAdvisoryFoundFrame /> },
   { id: "7b-iqscan-empty", title: "7b · IQ Scan — empty (authored copy, needs review)", element: <IqScanAdvisoryEmptyFrame /> },
   { id: "7c-iqscan-not-entitled", title: "7c · IQ Scan — not entitled", element: <IqScanAdvisoryNotEntitledFrame /> },
@@ -74,4 +88,20 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   // one shared [Create this metric view] accept flow, no "%"/"confidence").
   { id: "15.8a-iq-scan-card", title: "15.8a · IQ scan — facts-lead card + accept flow (production)", element: <Iq158CardFrame /> },
   { id: "15.8b-run-output", title: "15.8b · Run output — suggest-only panel, count truth + ranked (production)", element: <RunOutput158Frame /> },
+  // Attach-at-approval (MV-D34) — the REAL card for a proposal already shelved on
+  // the Agent config: the "Attached" header badge + the accept flow's attached
+  // terminal with the SP grant an optimization run needs to read it.
+  { id: "15.10-attached-proposal", title: "15.10 · IQ scan — already attached (create-and-attach-at-approval)", element: <AttachedProposalCardFrame /> },
+  // Semantic Blueprint (v4) Phase-1 fidelity frames — the visual contract for the
+  // blueprint rebuild (semantic-graph-v4-blueprint-note.md §5.9 / §11.4), static
+  // captures of the north-star prototype's states through the pure reference math
+  // in blueprintMath.ts. Gated by mockups.test.tsx before SemanticBlueprint.tsx.
+  { id: "11a-blueprint-star", title: "11a · Blueprint — star, Standard, fact-center (crow's-foot, hops, callouts, headline)", element: <BlueprintStarStandardFrame /> },
+  { id: "11b-blueprint-columns", title: "11b · Blueprint — star, Columns LOD (join-key rows, column-accurate ports)", element: <BlueprintStarColumnsFrame /> },
+  { id: "11c-blueprint-measure-lineage", title: "11c · Blueprint — Space-config measure selected (dashed lineage → sources)", element: <BlueprintStarMeasureLineageFrame /> },
+  { id: "11d-blueprint-mv-selected", title: "11d · Blueprint — metric view selected (member boundary, dotted uses-lineage)", element: <BlueprintStarMvSelectedFrame /> },
+  { id: "11e-blueprint-unknown-roles", title: "11e · Blueprint — unknown roles (neutral TABLE, connectivity headers)", element: <BlueprintUnknownRolesFrame /> },
+  { id: "11f-blueprint-wide-table", title: "11f · Blueprint — single wide table (no joins is a valid model)", element: <BlueprintWideTableFrame /> },
+  { id: "11g-blueprint-30-tables", title: "11g · Blueprint — 30-table snowflake (bridges at density)", element: <BlueprintScale30Frame /> },
+  { id: "11h-blueprint-overview", title: "11h · Blueprint — star, Overview band (no measure chips)", element: <BlueprintStarOverviewFrame /> },
 ]

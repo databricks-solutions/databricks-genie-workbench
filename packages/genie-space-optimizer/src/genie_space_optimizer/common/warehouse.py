@@ -1544,6 +1544,94 @@ def wh_load_mv_consent_by_run(
     return row
 
 
+# ── Join Advisor advice handoff (Semantic Blueprint §7) ──────────────
+#
+# Operator-proposed candidate joins seeded on the Semantic Model tab are ADVICE
+# the optimize loop validates and adds itself (add_join_spec) — never a declared
+# join_spec written by the Workbench. The seeds ride into the run through the
+# generic ``genie_opt_artifacts`` handoff table (kind=operator_proposed_joins),
+# keyed by run_id, so the optimize task reads durable Delta state by run_id (D9)
+# rather than a new job parameter. Absent / unreadable ⇒ the run simply starts
+# with none, exactly as before.
+
+JOIN_ADVICE_ARTIFACT_KIND = "operator_proposed_joins"
+
+
+def wh_write_join_advice(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    seeds: list[dict],
+) -> None:
+    """Persist operator-proposed join seeds as a run-scoped artifact (§7).
+
+    No-op for an empty seed set. The JSON payload is base64-routed via
+    ``unbase64`` so it survives the warehouse's string-literal escape mode."""
+    if not seeds:
+        return
+    import hashlib
+    import uuid as _uuid
+
+    from genie_space_optimizer.common.config import TABLE_ARTIFACTS
+
+    payload = json.dumps({"seeds": seeds})
+    artifact_id = str(_uuid.uuid4())
+    content_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    fqn = f"{catalog}.{schema}.{TABLE_ARTIFACTS}"
+    sql = (
+        f"INSERT INTO {fqn} "
+        "(artifact_id, run_id, stage_name, artifact_kind, artifact_json, "
+        "content_hash, source_notebook, created_at) VALUES ("
+        f"{_wh_literal(artifact_id)}, {_wh_literal(run_id)}, 'trigger', "
+        f"{_wh_literal(JOIN_ADVICE_ARTIFACT_KIND)}, {_wh_literal(payload, encode=True)}, "
+        f"{_wh_literal(content_hash)}, 'integration/trigger.py', current_timestamp())"
+    )
+    sql_warehouse_execute(ws, warehouse_id, sql)
+    logger.info("Wrote %d operator-proposed join seed(s) for run %s", len(seeds), run_id)
+
+
+def wh_read_join_advice(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+) -> list[dict]:
+    """Read the operator-proposed join seeds for a run (§7), or ``[]``.
+
+    Best-effort: no warehouse row, or any read/parse failure, yields ``[]`` so
+    the optimize loop degrades to "no operator advice" rather than failing."""
+    from genie_space_optimizer.common.config import TABLE_ARTIFACTS
+
+    fqn = f"{catalog}.{schema}.{TABLE_ARTIFACTS}"
+    try:
+        df = sql_warehouse_query(
+            ws,
+            warehouse_id,
+            f"SELECT artifact_json FROM {fqn} WHERE run_id = {_wh_literal(run_id)} "
+            f"AND artifact_kind = {_wh_literal(JOIN_ADVICE_ARTIFACT_KIND)} "
+            "ORDER BY created_at DESC LIMIT 1",
+        )
+    except Exception:
+        logger.debug("wh_read_join_advice: could not read run %s", run_id, exc_info=True)
+        return []
+    if getattr(df, "empty", True):
+        return []
+    raw = df.iloc[0].get("artifact_json")
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    seeds = data.get("seeds") if isinstance(data, dict) else None
+    return seeds if isinstance(seeds, list) else []
+
+
 # ── Warehouse ID resolution ──────────────────────────────────────────
 #
 # The optimization pipeline historically read only

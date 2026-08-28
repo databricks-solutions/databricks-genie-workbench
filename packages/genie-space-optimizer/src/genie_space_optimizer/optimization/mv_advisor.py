@@ -1188,6 +1188,10 @@ def _build_bundle(
     evidence["measure_count"] = len(member_evidence)
     evidence["benchmark_question_ids"] = sorted(question_ids)
     evidence["distinct_source_count"] = len(question_ids)
+    # The view's source tables, so the card can show a Source attribute without
+    # re-parsing the rendered DDL (deployed review #3). The rendered YAML stays
+    # the serve-time authority for legacy rows; this carries it forward on new ones.
+    evidence["source_tables"] = list(source_tables)
     bundle_proposal = replace(
         strongest_proposal,
         suggestion_id=suggestion_id_for(bundle_fp),

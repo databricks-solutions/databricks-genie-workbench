@@ -23,9 +23,9 @@
  * viewport-fill is verified on the redeploy (a static export cannot exercise the
  * measured-viewport fit, which is why the drift reached production originally).
  */
-import type { SemanticGraphEdge, SemanticGraphNode } from "@/types"
+import type { MvProposal, SemanticGraphEdge, SemanticGraphNode, SemanticGraphResponse } from "@/types"
 import { SemanticGraph } from "@/components/model/SemanticGraph"
-import { SemanticModelView } from "@/components/model/SemanticModelTab"
+import { SemanticModelView, withOverlay } from "@/components/model/SemanticModelTab"
 
 // ── The 9e scenario as real graph data ───────────────────────────────────────
 // Mirrors MvSemanticV7ContractFrame's model: two facts, three dims (one
@@ -33,20 +33,45 @@ import { SemanticModelView } from "@/components/model/SemanticModelTab"
 // unnamed measures on Revenue to exercise the "+N unnamed" row. Revenue is the
 // selected MV, so its member tables (orders, order_items, customer) wrap.
 const V7_NODES: SemanticGraphNode[] = [
-  { id: "sales.core.orders", kind: "table", label: "orders", col: 0, row: 0, coverage: 2 },
+  // Round-5: `role` is the PROVEN fact/dim tag — orders is Revenue MV's source
+  // (fact), customer is an MV-joined table (dim); the rest stay neutral so the
+  // frame exercises the "TABLE" caption too rather than guessing from the column.
+  { id: "sales.core.orders", kind: "table", label: "orders", col: 0, row: 0, coverage: 2, role: "fact" },
   { id: "sales.core.order_items", kind: "table", label: "order_items", col: 0, row: 1, coverage: 1 },
-  { id: "sales.core.customer", kind: "table", label: "customer", col: 1, row: 0, coverage: 1 },
-  { id: "sales.core.product", kind: "table", label: "product", col: 1, row: 1, coverage: 1 },
+  { id: "sales.core.customer", kind: "table", label: "customer", col: 1, row: 0, coverage: 1, role: "dim" },
+  { id: "sales.core.product", kind: "table", label: "product", col: 1, row: 1, coverage: 1, role: "dim" },
   { id: "sales.core.calendar_date", kind: "table", label: "calendar_date", col: 1, row: 2, coverage: 0 },
-  { id: "sales.mv.revenue_mv", kind: "metric_view", label: "Revenue MV", col: 2, row: 0, definition_available: true },
+  {
+    id: "sales.mv.revenue_mv", kind: "metric_view", label: "Revenue MV", col: 2, row: 0,
+    definition_available: true,
+    mv_source: "sales.core.orders",
+    // 12f: the rest of the parsed YAML the payload now carries, so the exported
+    // inset exercises the join tree / dimensions-by-binding / filter+served rows
+    // the 9e contract draws rather than only the sections that predate them.
+    mv_filter: "order_status != 'CANCELLED'",
+    materialization: "2 materializations · EVERY 1 DAY",
+    dimensions: [
+      { name: "order_day", expr: "date_trunc('DAY', orders.order_ts)", binding: "sales.core.orders" },
+      { name: "channel", expr: "orders.channel", binding: "sales.core.orders" },
+      { name: "region", expr: "customer.region", binding: "sales.core.customer" },
+      { name: "segment", expr: "customer.segment", binding: "sales.core.customer" },
+    ],
+  },
   { id: "sales.mv.margin_mv", kind: "metric_view", label: "Margin MV", col: 2, row: 1, definition_available: true },
-  { id: "measure:total_revenue", kind: "measure", label: "total_revenue", col: 3, row: 0, governance: "governed", origin: "Revenue MV (attached)" },
-  { id: "measure:order_count", kind: "measure", label: "order_count", col: 3, row: 1, governance: "governed", origin: "Revenue MV (attached)" },
+  { id: "measure:total_revenue", kind: "measure", label: "total_revenue", col: 3, row: 0, governance: "governed", origin: "Revenue MV (attached)", expr: "sum(order_items.quantity * order_items.unit_price)", description: "Gross revenue across order lines, pre-refund." },
+  { id: "measure:order_count", kind: "measure", label: "order_count", col: 3, row: 1, governance: "governed", origin: "Revenue MV (attached)", expr: "count(distinct orders.order_id)" },
   // three unnamed (internal-token) measures on Revenue → the "+3 unnamed" row.
   { id: "measure:rev_u1", kind: "measure", label: "sum(count(?n))", col: 3, row: 2, governance: "governed" },
   { id: "measure:rev_u2", kind: "measure", label: "sug_ab12cd34", col: 3, row: 3, governance: "governed" },
   { id: "measure:rev_u3", kind: "measure", label: "avg(?s)", col: 3, row: 4, governance: "governed" },
   { id: "measure:gross_margin", kind: "measure", label: "gross_margin", col: 3, row: 5, governance: "governed", origin: "Margin MV (attached)" },
+  // Loose space-config measures — round-5: their OWN "Space config · measures"
+  // column to the right of the metric views. One reuses a governed name under a
+  // different expression, which is the overlap warning on that column.
+  { id: "measure:aov", kind: "measure", label: "avg_order_value", col: 3, row: 6, governance: "curated", origin: "curated SQL", expr: "sum(orders.amount) / count(distinct orders.order_id)" },
+  { id: "measure:dup_revenue", kind: "measure", label: "total_revenue", col: 3, row: 7, governance: "curated", origin: "curated SQL", overlaps: "sales.mv.revenue_mv", expr: "sum(orders.amount)" },
+  { id: "measure:refund_rate", kind: "measure", label: "refund_rate", col: 3, row: 8, governance: "ungoverned", origin: "proposal evidence · 9×" },
+  { id: "measure:loose_u1", kind: "measure", label: "sum(?n)", col: 3, row: 9, governance: "ungoverned" },
 ]
 
 const V7_EDGES: SemanticGraphEdge[] = [
@@ -82,6 +107,39 @@ export function RealModelV7Frame() {
       onRefresh={() => {}}
       initialSelectedId="sales.mv.revenue_mv"
     />
+  )
+}
+
+// ── Round-6: the proposal overlay ON, through the REAL component ──────────────
+// The reviewer reported the overlay "hid measures" and showed "no proposals":
+// the old overlay added a membership edge that MOVED the loose measure into an
+// off-screen ghost card. Round-6 KEEPS the measure in Space config and draws a
+// dashed "would govern →" link from a visible ghost proposed-MV card instead.
+// This frame exports that state (no selection) so the gate has a checked-in
+// picture of it: the ghost "refund_rate" MV card, the "would govern" link, and
+// the loose measures still chipped in the Space-config column.
+//
+// withOverlay only reads `proposed_object`; the rest of MvProposal is irrelevant
+// to the overlay geometry, so the fixture casts a minimal shape (scaffold only).
+const OVERLAY_PROPOSALS: MvProposal[] = [
+  { proposed_object: "sales.mv.refund_rate" } as unknown as MvProposal,
+]
+
+export function RealModelOverlayFrame() {
+  const base: SemanticGraphResponse = {
+    space_id: "space-v7-overlay",
+    nodes: V7_NODES,
+    edges: V7_EDGES,
+    proposals: OVERLAY_PROPOSALS,
+    coverage_status: "ok",
+    coverage_reason: null,
+  }
+  const { nodes, edges } = withOverlay(base)
+  return (
+    <div className="space-y-3 rounded-xl border border-default bg-surface p-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-secondary">Semantic model · proposal overlay ON</h3>
+      <SemanticGraph nodes={nodes} edges={edges} label="Semantic model — proposal overlay ON" />
+    </div>
   )
 }
 

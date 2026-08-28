@@ -12,10 +12,12 @@ import { renderToStaticMarkup } from "react-dom/server"
 import {
   MvAdvisoryEmpty,
   MvAdvisoryCouldNotRun,
+  MvAttachedSummary,
   MvRegisterInput,
   MvRegisterVerified,
   MvRegisterRefused,
   ScanProgress,
+  ScanProposalCard,
 } from "./MvIqScanAdvisorySection"
 import { MvProposalCard } from "./MvProposalCard"
 import type { MvProposal, MvRegisterResponse, MvDdlArtifact } from "@/types"
@@ -46,6 +48,7 @@ const proposal: MvProposal = {
   checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
   score_components: null,
   evidence: { recurrence_count: 6 },
+  provenance_labels: null,
   provenance: null,
   alternatives: null,
   conflicts: null,
@@ -80,10 +83,11 @@ describe("IQ Scan advisory — found (MV-D23 prop-driven payoff)", () => {
       dedup_fingerprint: "fp1",
       proposed_object: "finance.sales.order_revenue",
       join_strategy: "subquery_source",
+      source_tables: ["finance.sales.orders"],
       yaml_text: "version: 0.1\n",
       ddl: "CREATE VIEW finance.sales.order_revenue\nWITH METRICS\nLANGUAGE YAML\nAS $$\nversion: 0.1\n$$",
       validation: null,
-      grant_sql: "GRANT SELECT ON VIEW finance.sales.order_revenue TO `<grantee>`;",
+      grant_sql: "GRANT SELECT ON VIEW finance.sales.order_revenue TO `analysts`;",
     }
     const html = render(<MvProposalCard proposal={proposal} ddl={ddl} defaultExpanded />)
     // Two SqlCodeBlock panels render — the CREATE VIEW wrapper and the GRANT.
@@ -132,6 +136,21 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
     ],
   }
 
+  it("a not-yet-attached proposal is tagged 'Proposed' so the name doesn't read as existing", () => {
+    // deployed review: prepend a "Proposed" marker to a view that does not exist
+    // yet, so the 3-part name is not mistaken for an already-created object.
+    const html = render(<MvProposalCard proposal={bundle} />)
+    expect(html).toContain("Proposed")
+    expect(html).toContain("finance.sales.order_revenue")
+  })
+
+  it("an attached proposal drops the 'Proposed' tag (it is real) and badges Attached", () => {
+    const html = render(<MvProposalCard proposal={{ ...bundle, attached: true }} />)
+    expect(html).toContain("Attached")
+    // The amber "Proposed" tag must not render for a view that exists.
+    expect(html).not.toMatch(/>Proposed</)
+  })
+
   it("collapsed by default (defaultExpanded=false): skeleton shows, detail hidden", () => {
     const html = render(<MvProposalCard proposal={bundle} defaultExpanded={false} />)
     // Skeleton is always visible.
@@ -149,9 +168,30 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
     // Evidence for humans: counts + labels, never the raw prefixed id.
     expect(html).toContain("Evidence")
     expect(html).toContain("curated snippet")
-    expect(html).toContain("details") // the disclosure control for raw ids
+    expect(html).toContain("show raw ids") // the DEBUG disclosure control
     // Raw ids live behind the closed disclosure — not in the default markup.
     expect(html).not.toContain("sql_snippet:a")
+  })
+
+  // Prompt 15.9 item (d) regression pin: the card renders the SERVE-TIME
+  // provenance labels (example-question text / snippet name), and the raw id
+  // stays behind the "show raw ids" affordance — never rendered at rest.
+  it("renders resolved provenance labels, keeps raw ids behind the affordance", () => {
+    const labeled: MvProposal = {
+      ...bundle,
+      provenance_labels: [
+        { id: "trusted_asset:ex1", kind: "trusted_asset", label: "What is total revenue by region?", detail: null },
+        { id: "sql_snippet:measures:snip1", kind: "sql_snippet", label: "Booking value", detail: "SUM(booking_value)" },
+      ],
+    }
+    const html = render(<MvProposalCard proposal={labeled} defaultExpanded />)
+    // The human labels render...
+    expect(html).toContain("What is total revenue by region?")
+    expect(html).toContain("Booking value")
+    // ...and the raw provenance ids do NOT, at rest (only behind "show raw ids").
+    expect(html).toContain("show raw ids")
+    expect(html).not.toContain("trusted_asset:ex1")
+    expect(html).not.toContain("sql_snippet:measures:snip1")
   })
 
   it("Recommended badge renders with its one-line reason", () => {
@@ -249,6 +289,58 @@ describe("IQ Scan advisory — per-card justification (MV-D30)", () => {
     expect(html).toContain("booking_count")
     // Gain line: 2 measures across 3 distinct curated queries (q1,q2,q3).
     expect(html).toContain("These 2 measures recur across 3 curated queries")
+  })
+})
+
+describe("IQ Scan advisory — already-attached views leave the suggestions (MV-D34)", () => {
+  const attached: MvProposal = { ...proposal, attached: true }
+
+  it("confirms attached views by name instead of re-offering them to create", () => {
+    // A view already on the Agent config is the source of truth — it is NOT a
+    // suggestion to create again, so it appears in this confirmation summary
+    // (not as a ScanProposalCard with a Create CTA).
+    const html = render(<MvAttachedSummary proposals={[attached]} />)
+    expect(html).toContain("Already attached to your Agent")
+    expect(html).toContain("finance.sales.order_revenue")
+    // It states why it is no longer suggested, and offers no create action.
+    expect(html).toContain("no longer suggested")
+    expect(html).not.toContain("Create this metric view")
+  })
+
+  it("the all-attached terminal is a positive state, not the empty 'nothing found'", () => {
+    const html = render(<MvAttachedSummary proposals={[attached]} allAttached />)
+    expect(html).toContain("nothing left to create")
+    expect(html).not.toContain("No recurring measures to propose yet")
+  })
+
+  it("renders nothing when there are no attached views (no empty chrome)", () => {
+    expect(render(<MvAttachedSummary proposals={[]} />)).toBe("")
+  })
+})
+
+describe("Model-tab sync — 'View in graph' affordance", () => {
+  it("offers 'View in graph' when a locate handler and a proposed_object exist", () => {
+    const html = render(
+      <ScanProposalCard proposal={proposal} ddl={undefined} onClaim={() => {}} onLocate={() => {}} />,
+    )
+    expect(html).toContain("View in graph")
+  })
+
+  it("omits 'View in graph' with no locate handler (the run-output surface)", () => {
+    const html = render(<ScanProposalCard proposal={proposal} ddl={undefined} onClaim={() => {}} />)
+    expect(html).not.toContain("View in graph")
+  })
+
+  it("omits 'View in graph' when the proposal has no proposed_object to draw", () => {
+    const html = render(
+      <ScanProposalCard
+        proposal={{ ...proposal, proposed_object: null }}
+        ddl={undefined}
+        onClaim={() => {}}
+        onLocate={() => {}}
+      />,
+    )
+    expect(html).not.toContain("View in graph")
   })
 })
 

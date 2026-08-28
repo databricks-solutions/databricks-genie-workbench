@@ -21,6 +21,7 @@ from genie_space_optimizer.common.warehouse import (
     wh_create_run,
     wh_ensure_optimization_tables,
     wh_reconcile_active_runs,
+    wh_write_join_advice,
 )
 
 from .config import IntegrationConfig
@@ -107,6 +108,7 @@ def trigger_optimization(
     mv_action_mode: str = "suggest_only",
     mv_min_confidence: int | None = None,
     mv_attach_hook: Callable[[str], Any] | None = None,
+    proposed_join_seeds: list[dict] | None = None,
 ) -> TriggerResult:
     """Trigger a GSO optimization run using SQL Warehouse for state management.
 
@@ -141,6 +143,12 @@ def trigger_optimization(
             creates and returns an object exposing ``attach_views`` (list of
             identifiers), ``consent_id`` (probe_id, MV-D16), and ``action_mode``.
             The engine never imports the backend; the hook is the seam (MV-D20).
+        proposed_join_seeds: operator-proposed candidate joins from the Semantic
+            Blueprint's Join Advisor (§7), as JoinCandidate dicts. Persisted as a
+            run-scoped ``operator_proposed_joins`` artifact the optimize loop reads
+            and hands the LLM as candidate joins to VALIDATE and add itself — never
+            a declared join_spec written here. Best-effort; a write failure does
+            not fail the run.
 
     Returns:
         :class:`TriggerResult` with run_id, job_run_id, job_url, and status.
@@ -288,6 +296,27 @@ def trigger_optimization(
         llm_model=config.llm_model or None,
         benchmark_policy=requested_benchmark_policy,
     )
+
+    # Join Advisor advice (§7): persist the operator-proposed candidate joins as a
+    # run-scoped artifact for the optimize loop to validate and add itself. This is
+    # advice, not a config edit — best-effort, so a write failure never fails the
+    # run (the loop just sees no operator advice).
+    if proposed_join_seeds:
+        try:
+            wh_write_join_advice(
+                ws,
+                config.warehouse_id,
+                run_id=run_id,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                seeds=list(proposed_join_seeds),
+            )
+        except Exception:
+            logger.warning(
+                "Could not persist operator-proposed join seeds for run %s",
+                run_id,
+                exc_info=True,
+            )
 
     # Metric view create-and-attach (MV-D1/D20): the object is created under the
     # user's OBO client by the backend hook, after the run row exists (so the

@@ -30,6 +30,17 @@ import {
   ByoRefusedFrame,
   ByoVerifiedFrame,
 } from "./MvByoRegistrationMockups"
+import { AttachedProposalCardFrame } from "./MvAttachAtApprovalFidelityFrames"
+import {
+  BlueprintScale30Frame,
+  BlueprintStarColumnsFrame,
+  BlueprintStarMeasureLineageFrame,
+  BlueprintStarMvSelectedFrame,
+  BlueprintStarOverviewFrame,
+  BlueprintStarStandardFrame,
+  BlueprintUnknownRolesFrame,
+  BlueprintWideTableFrame,
+} from "./SemanticBlueprintFidelityFrames"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 
@@ -167,6 +178,22 @@ describe("frame 7 — IQ Scan advisory (MV-D23)", () => {
   })
 })
 
+describe("frame 15.10 — attach-at-approval (MV-D34)", () => {
+  const html = render(<AttachedProposalCardFrame />)
+  it("badges the card Attached and opens the accept flow on the attached terminal", () => {
+    // Header badge: the scannable signal that replaces "still N to create".
+    expect(html).toContain("Attached")
+    // The shared accept flow's attached terminal, not the create action.
+    expect(html).toContain("Attached to your Agent")
+    expect(html).not.toContain("Create this metric view")
+  })
+  it("surfaces the SP grant an optimization run needs to read the attached view", () => {
+    // The grant renders through SqlCodeBlock (syntax-highlighted spans), so assert
+    // on the plain-text framing that introduces it rather than the tokenized SQL.
+    expect(html).toContain("grant the optimizer service principal")
+  })
+})
+
 describe("frame 8 — BYO registration (MV-D24)", () => {
   it("8a entry points: tertiary self-create action + free-standing register input", () => {
     const html = render(<ByoEntryPointsFrame />)
@@ -205,5 +232,125 @@ describe("frame 8 — BYO registration (MV-D24)", () => {
     expect(html.match(/Nothing was recorded/g)?.length).toBe(2)
     // NOT_FOUND resolves to DENIED (mv_entitlement) — never offer "it may not exist".
     expect(html).not.toContain("it may not exist")
+  })
+})
+
+// ── Frame 11 — Semantic Blueprint (v4) P1 fidelity gate ──────────────────────
+// Pins the P1 vocabulary against the north-star prototype
+// (semantic-graph-v4-blueprint-note.md §5.9 / §11.3 / §9): crow's-foot markers,
+// crossing hops, callouts, the health headline, semantic-zoom bands, lineage on
+// select, neutral-role degradation, and the arrows-require-proof invariant.
+describe("frame 11 — Semantic Blueprint P1 fidelity", () => {
+  it("11a star: deterministic — two renders are byte-identical (§9)", () => {
+    expect(render(<BlueprintStarStandardFrame />)).toBe(render(<BlueprintStarStandardFrame />))
+  })
+
+  it("11a star: crow's-foot + one-tick cardinality glyphs, orientation-aware (§5.4)", () => {
+    const html = render(<BlueprintStarStandardFrame />)
+    expect(html).toContain('data-glyph="crowfoot"')
+    expect(html).toContain('data-glyph="one-tick"')
+  })
+
+  it("11a star: at least one crossing hop is computed (§5.3 bridges)", () => {
+    const html = render(<BlueprintStarStandardFrame />)
+    expect(html).toMatch(/data-hops="[1-9]/)
+  })
+
+  it("11a star: self-annotations — unmodeled region, island tag, cold-spot callout (§5.6)", () => {
+    const html = render(<BlueprintStarStandardFrame />)
+    expect(html).toContain("UNMODELED · in no metric view")
+    expect(html).toContain('data-tag="island"')
+    expect(html).toContain("Cold spot · dim_host")
+    expect(html).toContain("no curated SQL touches it")
+  })
+
+  it("11a star: health headline carries the governance ladder counts (§5.7)", () => {
+    const html = render(<BlueprintStarStandardFrame />)
+    expect(html).toContain("data-headline")
+    expect(html).toContain("governed")
+    expect(html).toContain("curated")
+    expect(html).toContain("ungoverned")
+    expect(html).toContain("cold spot")
+  })
+
+  it("11a star: toolbar exposes zoom bands + the Fact-center/Source-left toggle + Reset (§5.5/§5.12)", () => {
+    const html = render(<BlueprintStarStandardFrame />)
+    for (const label of ["Overview", "Standard", "Columns", "Fact-center", "Source-left", "Reset view"]) {
+      expect(html).toContain(label)
+    }
+  })
+
+  it("11a star: semantic band headers only where a role is proven (§5.12)", () => {
+    const html = render(<BlueprintStarStandardFrame />)
+    expect(html).toContain("FACT · SOURCE")
+    expect(html).toContain("DIMENSIONS")
+    expect(html).toContain("METRIC VIEW · MEASURES")
+  })
+
+  it("11a star: wide-columns pill on the 41-column fact", () => {
+    expect(render(<BlueprintStarStandardFrame />)).toContain("41 cols")
+  })
+
+  it("11a star: arrows require proof — the island table draws zero base edges, nothing proposed (§2)", () => {
+    const html = render(<BlueprintStarStandardFrame />)
+    expect(html).not.toContain('data-edge-from="dim_campaign"')
+    expect(html).not.toContain('data-edge-to="dim_campaign"')
+    expect(html).not.toContain("proposed_join")
+  })
+
+  it("11b columns LOD: join-key rows highlighted, ON leaf columns rendered (§5.5/§6)", () => {
+    const html = render(<BlueprintStarColumnsFrame />)
+    expect(html).toContain('data-joinkey="user_id"')
+    expect(html).toContain('data-joinkey="property_id"')
+    expect(html).toContain("booking_date_id")
+  })
+
+  it("11c measure select: dashed lineage to each source table + inset lineage section (§5.10)", () => {
+    const html = render(<BlueprintStarMeasureLineageFrame />)
+    expect(html).toContain('data-lineage="measure"')
+    expect(html).toContain('data-lineage-src="fact_booking_detail"')
+    expect(html).toContain('data-lineage-src="dim_user"')
+    expect(html).toContain("Lineage → source tables")
+    expect(html).toContain("bookings_per_customer")
+    expect(html).toContain("exposed by")
+  })
+
+  it("11d MV select: member boundary + dotted uses-lineage + join-tree inset (§5.10)", () => {
+    const html = render(<BlueprintStarMvSelectedFrame />)
+    expect(html).toContain('data-boundary="mv-member"')
+    expect(html).toContain('data-lineage="mv"')
+    expect(html).toContain("Join tree")
+    expect(html).toContain("2 materializations · EVERY 1 DAY")
+  })
+
+  it("11e unknown roles: neutral TABLE captions and connectivity headers — never a guessed FACT/DIM (§5.11)", () => {
+    const html = render(<BlueprintUnknownRolesFrame />)
+    expect(html).toContain(">TABLE<")
+    expect(html).toContain("RELATED TABLES")
+    expect(html).not.toContain("FACT")
+    expect(html).not.toContain(">DIM<")
+    expect(html).not.toContain("DIMENSIONS")
+  })
+
+  it("11f wide table: a single joinless table is a valid model — no island flag, no unmodeled region (§5.11)", () => {
+    const html = render(<BlueprintWideTableFrame />)
+    expect(html).toContain("62 cols")
+    expect(html).toContain("engagement_metrics")
+    expect(html).not.toContain('data-tag="island"')
+    expect(html).not.toContain("UNMODELED")
+    expect(html).not.toContain('data-edge="join"')
+  })
+
+  it("11g 30 tables: renders at density with at least one bridge (§5.3 at scale)", () => {
+    const html = render(<BlueprintScale30Frame />)
+    expect(html).toContain('data-node-id="sub_14"')
+    expect(html).toMatch(/data-hops="[1-9]/)
+  })
+
+  it("11h overview band: far zoom renders no measure chips and no role captions (§5.5)", () => {
+    const html = render(<BlueprintStarOverviewFrame />)
+    expect(html).not.toContain('data-chip="measure"')
+    expect(html).not.toContain('data-caption="role"')
+    expect(html).not.toContain("customer_count")
   })
 })

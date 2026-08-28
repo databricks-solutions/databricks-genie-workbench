@@ -495,12 +495,12 @@ src/genie_space_optimizer/
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
   jobs/           the four notebooks + _helpers.py
-  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3727 L),
+  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3817 L),
                   preflight.py (3461 L), state.py (1871 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
                   mv_fingerprint.py (1474 L), mv_scoring.py (1589 L),
-                  mv_state.py (871 L), mv_yaml.py (1839 L), ...
+                  mv_state.py (871 L), mv_yaml.py (1997 L), ...
 ```
 <!-- END GENERATED: package-layout -->
 
@@ -513,7 +513,7 @@ src/genie_space_optimizer/
 | `optimization/preflight.py` | `_profile_metric_view`, reclassification into `_metric_view_yaml` |
 | `optimization/benchmarking.py` | MV join precheck/repair, `MEASURE()` wrapping, `build_metric_view_measures` |
 | `optimization/wide_schema_history.py` | `system.query.history` mining (`:248`), warehouse-history fallback (`:357`) |
-| `optimization/mv_yaml.py` (1839 L) | `generate` / `validate` / `validate_registered` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment, echo and capability checks) and its MV-D24 bring-your-own twin `validate_registered` (the safety subset only — generation conventions become warnings, not errors). `CapabilityRow` is the Protocol the backend's `MvCapabilityRow` satisfies structurally |
+| `optimization/mv_yaml.py` (1997 L) | `generate` / `validate` / `validate_registered` / `create_ddl` — the only renderer of metric view YAML and of its `CREATE VIEW` wrapper, plus the static validator (unsupported-field, format-type, transitive-join, synonym, comment, echo and capability checks) and its MV-D24 bring-your-own twin `validate_registered` (the safety subset only — generation conventions become warnings, not errors). `CapabilityRow` is the Protocol the backend's `MvCapabilityRow` satisfies structurally |
 
 Note the last row: **query-history demand signal (the POV's **D** component) already
 exists**, including the CMK/unavailable fallback path.
@@ -2453,31 +2453,269 @@ reality's favour, and hid the surface where most of the gap lived. A new
 selected state at all (boundary, focus dimming, inset), which is the state the
 contract frame depicts.
 
-**Named deviations that remain (contract vs reality, deliberate).**
-- *Loose measures placement.* 9e draws "Space config · loose measures" as a
-  full-width panel BELOW the canvas; reality keeps it as canvas column 4 (12e's
-  dedup canvas, which Prompt 12f is instructed not to rebuild). The vocabulary,
-  warning treatment and `+N unnamed` row now match the frame; only the placement
-  differs. Consequence: a space WITH loose measures occupies four columns and
-  therefore renders at ~70% rather than ~94%.
-- *Unmodeled region.* 9e wraps `calendar_date` in a labeled `UNMODELED · no MV`
-  container; reality marks the card inline ("no metric view" + dashed zero
-  coverage badge) and explains the vocabulary in the legend. Not fixed: another
-  full-width overlay is another thing that can collide, and the inline treatment
-  already carries the meaning.
-- *YAML-derived inset fields.* 9e shows the metric view's join TREE, dimensions
-  by binding, `filter`, `materialization` and reuse count. The semantic-graph
-  payload carries none of them, and an inset that prints "unknown" for a
-  governance-relevant field is worse than one that omits it. The declared-joins
-  list is the honest form of the tree from the edge set we do have.
-- *Reset control.* 9e always shows it; reality shows it once there is a drag to
-  reset.
-- *Edge bundling at 30 tables.* 29 dimension→fact edges converge into a visible
-  band. Routing/bundling is a new mechanic, not a fidelity fix.
+**Named deviations after round 2 (all subsequently CLOSED — see round 3).** Round
+2 ended with five named deviations: loose-measure placement, the unmodeled
+region, the YAML-derived inset fields, the Reset control, and edge bundling at 30
+tables. The reviewer's instruction was to close **all of them** and treat the
+committed 9e frame as binding, so none of the five stands as an accepted
+deviation. Round 3 below records how each closed.
 
-**Verification.** 366 frontend tests green (three new `computeFit` pins: tall
-graphs fit to width, overflow top-aligns while a fitting graph centers, and the
-floor yields to the width fit), lint clean (also fixed a pre-existing
-`react-refresh/only-export-components` error in `MvAcceptFlow.tsx` from 15.8),
-frames re-emitted in both themes. A static export cannot exercise the
-measured-viewport fit, so the runtime fill is confirmed on the redeploy.
+**Resolution, round 3 (2026-08-25, reviewer: "treat the committed 9e frame as
+binding and match it fully").**
+
+1. **Loose measures moved below the canvas. (SUPERSEDED — see round 4.)** The
+   "concepts" card is filtered out of `layoutCards` and rendered as
+   `LooseMeasuresPanel`, a full-width HTML panel under the legend. This was WRONG:
+   the v3 note §3 places the Space-config box "on the right … plus a Space-config
+   box for the loose measures" — i.e. a peer of the MV boxes on the canvas, not a
+   panel below it. The panel was a mockup-width convenience adopted as the
+   functional design. Round 4 restores §3 (see below).
+2. **Labeled UNMODELED region.** Unmodeled table cards are wrapped in padded
+   dashed danger-tinted rects with one `UNMODELED · in no metric view` caption
+   plate at the topmost rect, clamped below the column headers. The per-card
+   7.5px "no metric view" footnote is gone — the region says it once, as the
+   frame does.
+3. **Reset always visible**, disabled until there is a drag to reset, with a
+   title that says which state it is in.
+4. **The YAML-derived inset fields are now carried by the payload.** This was a
+   *backend* gap, not a display choice, so the reader was extended rather than
+   the omission defended. `_metric_view_internals` now returns `filter`,
+   `materialization` and `dimensions` (with each dimension's resolved binding)
+   from the same parsed document 12e already read — no second DESCRIBE — and the
+   node carries `mv_source`, `mv_filter`, `materialization`, `dimensions`.
+   Field names follow the metric view YAML reference: a join's `name` is its
+   ALIAS and `source` is the joined table, `fields` is the current spelling of
+   `dimensions`, `materialization` is an object (`mode` / `schedule` /
+   `materialized_views`) summarised to one line of posture, never printed raw.
+   An unreadable YAML carries NO detail — unreadable stays unproven.
+   `NodeDetail` renders the join tree rooted at `mv_source` (a root guessed from
+   join direction is wrong whenever the config declares a fact→fact join, which
+   is exactly the frame's shape), dimensions grouped by binding, and a
+   `Definition` section with filter / served / reuse.
+5. **Overlap warnings are real.** A loose measure whose NAME an attached metric
+   view already exposes under a different expression — the collision
+   canonical-expression dedup cannot merge — is flagged server-side (`overlaps`)
+   and raised in both the Space-config panel and the inset. The earlier
+   "overlaps … (≈ ADR)" chip claimed expression-level equivalence the server did
+   not compute; it now says what is true.
+6. **Edge bundling.** Above `BUNDLE_MIN` (6) edges on one card side, the fan is a
+   bundle: members drop their at-rest labels (hover still reveals the predicate)
+   and route as §5 orthogonal elbows through a shared trunk, so 29 strands read
+   as one line plus short per-row stubs instead of a ribbon; the group gets one
+   `N declared joins` chip under its hub card, where there is room for it.
+   Bundling counts JOINS only — a `uses` edge on the same side is neither
+   labelled nor a declared join, and counting it made the chip lie ("30" for 29).
+
+Two polish fixes came out of the round-3 comparison itself:
+
+- The per-chip rung letter is drawn only when a card's measures actually differ
+  in rung. Inside a metric view they never do, and 24 copies of the same "G" was
+  noise; the rung stays in each chip's accessible label.
+- Coverage badges on table cards are inset rather than centred on the border,
+  where they half-hung into the gutter and read unfinished.
+
+**Verification.** 386 frontend tests green and 2193 backend tests green; `tsc`
+and lint clean; frames re-emitted in both themes and compared against 9e. The
+join tree, dimensions-by-binding, filter/served/reuse rows and the bundled
+30-table trunk were each confirmed in the exported screenshots. A static export
+still cannot exercise the measured-viewport fit, so the runtime fill is confirmed
+on the redeploy.
+
+**Resolution, round 4 (2026-08-25, reviewer: "loose measures back on the right
+(v3 §3 / image #2) and correct the 9e contract + gap report to match. Fix 2 and 3
+as well. Also, ensure UI is matching the reference functionally").** Deploying
+round 3 surfaced three real breaks from the reference and the v3 note, each now
+closed and the 9e contract corrected to match rather than the code bent to a
+stale frame:
+
+1. **Loose measures back ON the canvas, on the right (v3 §3).** (Partially
+   SUPERSEDED — round 5 moved this to its OWN column `CONCEPTS_COL=3`, since
+   stacking it under the MV boxes read as "below"; see round 5.) The round-3
+   `LooseMeasuresPanel` is deleted. `buildCards` now places the concepts card at
+   `(CONCEPTS_COL=2, CONCEPTS_ROW=1_000_000)` — the metric-view column, with a
+   sentinel row so it deterministically stacks BELOW the real MV boxes — and it
+   renders through the same `CardView` as every other card ("Space config" title,
+   "loose measures · not in any MV" subtitle, governance pill, measure chips,
+   `+N unnamed`, and an on-canvas amber overlap caret on any colliding name). The
+   **9e contract frame was corrected to match**: its `SpaceConfigBox` HTML panel
+   is replaced by an on-canvas `SpaceConfigNode` SVG group in the measures column
+   below the MV boxes. Item 1 of round 3 is thereby reversed, not merely amended.
+2. **Selection lights the edges (v3 §4 / reference `BlueprintEdge`).** A join
+   edge at rest stays neutral grey; when an endpoint is selected the edge switches
+   to the accent hue with an accent arrowhead (`url(#mv-arrow-on)`) over a soft
+   accent glow underlay, so clicking a box makes its lines "light up" the way the
+   reference does. Previously the active join only thickened — invisible against a
+   busy canvas.
+3. **Selecting a MEASURE wraps its owning MV's tables (v3 §4).** The select-time
+   boundary now resolves a selected measure to its owning metric view via the
+   `membership` edge and anchors the hull/rect on that MV's `uses`-tables — not
+   only on a direct MV-card click. Clicking `total_revenue` inside Revenue MV now
+   draws "Tables used by Revenue MV" around orders / order_items / customer.
+
+**Reference parity (functional).** To match the reference's interaction model,
+`SemanticGraph` now clears the selection on an empty-canvas click (a background
+press that releases without a pan) and `SemanticModelView` toggles the selection
+off when the same node is re-clicked. `onSelectNode` accepts `null` to carry the
+deselect. Hover still surfaces the tooltip (`<title>`); pan/zoom/drag are
+unchanged.
+
+**Verification (round 4).** 388 frontend tests green (new pins: concepts card in
+col 2, accent arrowhead only appears on selection, measure→owning-MV boundary,
+Space-config box on canvas / collapse behaviour); `tsc` and lint clean; all 41
+mockup HTML files re-emitted in both themes (9e now shows the on-canvas
+Space-config box; 9f/9g/9i render the corrected real `SemanticGraph`). Runtime
+fit and the click interactions are confirmed on the redeploy to fevm-serverless.
+
+**Resolution, round 5 (2026-08-25, reviewer, nine points on the deployed
+canvas).** After the round-4 deploy the reviewer filed nine issues; each is now
+closed. Where a change had a design fork the reviewer chose the direction (own
+Space-config column; prove fact/dim or stay neutral; make Impact meaningful and
+gate it; definition edges on-select; calmer palette).
+
+1. **Space config in its OWN column, not below.** Round 4 stacked it under the MV
+   boxes in col 2, where a tall MV column pushed it out of sight and it read as
+   "below". `CONCEPTS_COL` is now `3` — a dedicated **"Space config · measures"**
+   column to the RIGHT of the metric views. Column headers are honest:
+   `["Source tables", "Joined tables", "Metric views · measures", "Space config ·
+   measures"]`.
+2. **Click a measure → its expression + description.** Measure nodes now carry
+   `expr` and (best-effort) `description` on the wire (`MvSemanticGraphNode` /
+   `SemanticGraphNode`). The backend fills `expr` from the canonical expression
+   (governed), the snippet SQL (curated), and leaves it `None` for an ungoverned
+   proposal (name only). `NodeDetail` renders a **Definition** section (expression
+   in a mono block + description) for a selected measure.
+3. **Legend disambiguates the line kinds.** The legend now draws a SOLID grey
+   line = *declared join (N:1)* and a DASHED accent line = *MV definition (on
+   select)*, plus a governed·curated·ungoverned dot cluster and a dashed-danger
+   *unmodeled* chip.
+4. **Text overlap fixed.** The MV title takes the full card width on row 1; the
+   "N measures · governed" pill drops to row 2, so a long MV name
+   (`customer_analytics_metrics`) no longer collides with the pill.
+5. **Arrows cleaned up.** The "hodge podge" was the dotted MV→table (`uses`)
+   edges drawn for EVERY MV at rest. They now render **only for the selected MV**;
+   at rest the canvas shows just the join skeleton. The data still carries every
+   `uses` edge (the boundary + unmodeled region read it) — only the rendering is
+   gated.
+6. **Fact vs dim, honestly.** The caption was `col === 0 ? "FACT" : "DIM"` — a
+   pure layout guess, which is why `dim_property` / `dim_user` showed **FACT**. The
+   backend now sets a PROVEN `role` (`fact` = a metric view's declared `source`,
+   `dim` = an MV-joined table) and the caption reads `FACT` / `DIM` only when
+   proven, else a neutral **`TABLE`**. A table known only from `join_specs` stays
+   neutral rather than being guessed.
+7. **Impact now means something.** Impact (downstream blast radius) is only
+   meaningful for a selected TABLE, so the toggle is **disabled + greyed** (with a
+   tooltip) unless a table is selected, and the effective mode falls back to
+   Lineage otherwise — it never appears to do nothing.
+8. **Calmer palette.** MV boxes are a near-neutral tint at rest (accent only on
+   selection); coverage badges are neutral grey (accent reserved for
+   selection/lineage). Governance stays a small dot vocabulary in the legend.
+9. **Clearer boundary.** The select-time boundary is a solid 2px accent border
+   over a 0.10 accent wash (dashed only for the disjoint HULL case) with a FILLED
+   accent label chip ("Tables used by …"), replacing the faint 0.06 dotted rect.
+
+The authoritative post-round-5 export is `RealModelV7Frame`
+(`Mv12fFidelityFrames.tsx`), which renders the production `SemanticGraph`. The
+hand-drawn 9e frame is kept as the step-0 layout reference (headers relabelled;
+its geometry intentionally not re-hand-drawn) and its header records what
+round-5 supersedes.
+
+**Verification (round 5).** 394 frontend tests green (new pins: role-based
+FACT/DIM/TABLE caption, `uses` edges hidden at rest / shown on MV select, legend
+line disambiguation, Impact disabled until a table is selected, measure
+expression+description in the inset, concepts card in col 3) and 31 backend
+`test_semantic_graph` tests green (new pins: proven `role`, measure
+`expr`/`description` on the wire); `tsc` and lint clean; all 41 mockup HTML files
+re-emitted in both themes with the round-5 fixture (`role` on tables, `expr` on
+measures).
+
+**Resolution, round 6 (2026-08-25, reviewer: "arrows still hodge podge and
+illegible … too many arrows … columns and tables too close"; "Show proposal
+overlay tends to hide some measures"; "I don't see any MV proposals when I click
+on it").** Round 5 gated the dotted `uses` edges but left the SOLID join edges
+loud at rest, so the join skeleton itself still read as spaghetti — and the
+overlay was actively hiding the very measures it was meant to explain. The root
+causes came straight from the reference the reviewer keeps citing
+(`7-Eleven … BlueprintEdge`), read line-by-line this round.
+
+1. **Arrows — focus + context (the real fix).** The reference is clean not because
+   of routing but because of edge STATE: at rest every edge is faint
+   (`opacity 0.4`), and on selection the clicked node's edges light up while
+   **every other edge is dimmed to near-invisible** (`opacity 0.06`,
+   `getEdgeState → 'dimmed'`). Ours did the opposite — joins were full-opacity at
+   rest AND on select we only brightened neighbours, never dimming the rest, so a
+   click *added* clutter. `EdgeView` now takes a `dimmed` prop; the render loop
+   sets `dimmed = highlight != null && !active && hoverEdge !== index`. Result: a
+   quiet faint skeleton at rest; a click leaves only the handful of edges touching
+   the selection, everything else fades out.
+2. **Labels on demand.** The at-rest per-edge glyph (`N:1`/`SCD2`/`ON …`) is gone;
+   a join paints a label ONLY when hovered or when an endpoint IS the selection.
+   The resting canvas has zero floating plates (the legend still names the glyph as
+   vocabulary). This matches the reference, which shows nothing until you point.
+3. **More room.** `COL_GUTTER` 40 → 68 and `VGAP` 26 → 34 so curves have a wider
+   channel and stacked cards more air — the reviewer's own "too close" diagnosis.
+   Both are visual-only (the collapse threshold keys off `ROW_GAP`, untouched).
+4. **Overlay: keep + link (stop hiding measures).** The old `withOverlay` added a
+   `membership` edge from the loose measure to the ghost MV, which made
+   `buildCards` MOVE that measure OUT of the Space-config box and INTO a ghost card
+   placed at `col 2, row mvRows+i` — below the real MVs, off the visible frame. So
+   toggling the overlay looked like it hid measures and showed no proposals (they
+   were below the fold). The overlay now KEEPS every loose measure where it is and
+   draws a dashed **"would govern →"** link (new client-only edge `kind: "governs"`)
+   from a visible ghost proposed-MV card to the measure it would govern. The raw
+   -tables-freed `replaces` spaghetti is dropped from the canvas (it lives in the
+   proposal's detail instead). `SemanticModelView` remounts `SemanticGraph` on
+   overlay toggle (`key`) so the canvas re-fits and frames the new ghost cards.
+5. **Legend gains the link.** When the overlay is on, the legend adds a dashed
+   accent **"would govern (proposal)"** entry.
+
+The authoritative export of the overlay-on state is the new REAL-component frame
+`RealModelOverlayFrame` (**9j**, `Mv12fFidelityFrames.tsx`). The hand-drawn 9c
+overlay frame (Prompt-12 scaffold) is left as historical record with a header note
+pointing at 9j; the 9e contract frame's header records the round-6 supersession.
+
+**Verification (round 6).** 395 frontend tests green (new/updated pins: join
+labels appear on selection not at rest; non-neighbor edges dimmed to `0.06` once
+something is selected; `withOverlay` adds a `governs` link and NO membership move,
+leaving the loose measure in Space config; the overlaid graph renders the ghost MV
++ "would govern" link + keeps the measure chipped). `tsc` and lint clean. No
+backend change this round (edges are client-synthesized). Mockups re-emitted in
+both themes, now including 9j (overlay ON, keep + link).
+
+**Resolution, round 7 (2026-08-25, reviewer: "Why are there 2 arrows between 2
+tables? If it's bi-directional, we should limit to 1 right?" and "Why doesn't
+lineage light up for space config measures?").** Two independent gaps, both real.
+
+1. **Two arrows for one relationship → collapse to one.** `dim_property ↔ dim_host`
+   drew two near-parallel join arrows because the config declares two `join_specs`
+   for that pair (a reciprocal declaration plus an SCD2 `is_current` current-row
+   variant), and `_build_semantic_graph` emits one edge per spec. A reader sees a
+   single relationship, so the canvas should show one arrow. New exported pure
+   helper `collapsePairJoins(items)` (SemanticGraph) keeps ONE `join` per unordered
+   card pair, preferring the left→right direction so the surviving arrowhead points
+   at the joined (dim) side; `renderedEdges` runs it after building items. Nothing is
+   lost — the full predicate list still lives in the node-detail "Declared joins"
+   panel. Non-join edges pass through untouched.
+2. **Loose-measure lineage — the `derives` edge.** A Space-config (loose) measure
+   belongs to no metric view, so it carried NO edge: `focusSet` found an empty
+   neighbourhood and round-6 focus+context then dimmed the whole canvas — selecting
+   it made things *quieter*, not lit. A loose measure's real lineage is the tables
+   its EXPRESSION reads. New backend pass (after the measure ladder, before the
+   coverage lens) parses each non-governed measure's `expr` with `_expr_table_refs`
+   (fully-qualified `catalog.schema.table.column` → its table) and emits a
+   `derives` edge measure → table (new `MvSemanticGraphEdge.kind` literal). A table
+   the expression proves but the space never modeled is ADDED to the canvas as a
+   neutral source table (`role=None`), so it lands in the unmodeled region — the
+   honest read that the curated measure depends on an ungoverned table. The client
+   renders `derives` ONLY when its measure is the selection (like `uses`): a dashed
+   accent link, and `focusSet` (which walks every edge kind) lights the referenced
+   table(s). Governed measures already wrap their MV on select, so they are skipped;
+   ungoverned proposals carry no expr, so they contribute nothing.
+
+**Verification (round 7).** Backend: 34 semantic-graph tests green — new pins:
+`_expr_table_refs` extracts the 4-part table (add-eligible), treats a 3-part run as
+match-only, ignores bare functions/2-part columns; a curated loose measure emits one
+`derives` edge and ADDS the referenced table as a neutral source; a governed measure
+emits none. Frontend: 93 model tests green — new pins: `focusSet` lights a loose
+measure's `derives` source table (and only it); `collapsePairJoins` collapses a
+reciprocal pair to one, keeps the left→right survivor, and leaves distinct pairs +
+non-join edges alone. `tsc` and lint clean.
