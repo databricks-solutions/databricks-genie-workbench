@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import type { LucideIcon } from "lucide-react"
-import { AlertTriangle, Database, ListChecks, MessageSquareText, Rocket, Settings2, Target } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Database, ListChecks, MessageSquareText, Rocket, Settings2, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { fetchSpaceMvProposals, probeMvEntitlement, triggerAutoOptimize } from "@/lib/api"
@@ -391,7 +391,13 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
               Query usage signal
             </div>
             {permissions.query_usage_signal?.system_table_available ? (
-              <p className="text-xs text-muted">System query history available. GSO will use aggregated human-query behavior for column ranking.</p>
+              <div className="flex items-start gap-2 text-xs text-muted">
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                <p>
+                  <span className="font-medium text-success-foreground">Active — no action needed.</span>{" "}
+                  System query history is available; GSO will use aggregated human-query behavior for column ranking.
+                </p>
+              </div>
             ) : permissions.query_usage_signal && permissions.query_usage_signal.warehouses.length > 0 ? (
               <>
                 <p className="text-xs text-muted">
