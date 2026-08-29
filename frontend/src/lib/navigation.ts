@@ -1,5 +1,5 @@
 export type AppView = "list" | "detail" | "admin" | "create" | "how-it-works"
-export type SpaceTab = "score" | "optimize" | "history"
+export type SpaceTab = "score" | "model" | "optimize" | "history"
 
 export interface AppRoute {
   view: AppView
@@ -10,7 +10,7 @@ export interface AppRoute {
 
 const APP_QUERY_KEYS = ["view", "space", "tab", "run"] as const
 const APP_VIEWS = new Set<AppView>(["list", "detail", "admin", "create", "how-it-works"])
-const SPACE_TABS = new Set<SpaceTab>(["score", "optimize", "history"])
+const SPACE_TABS = new Set<SpaceTab>(["score", "model", "optimize", "history"])
 
 export const LIST_ROUTE: AppRoute = { view: "list" }
 

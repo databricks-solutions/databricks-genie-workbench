@@ -4,6 +4,10 @@ from genie_space_optimizer.common.config import (
     TABLE_ARTIFACTS,
     TABLE_BENCHMARK_MUTATIONS,
     TABLE_ITERATIONS,
+    TABLE_MV_CANDIDATES,
+    TABLE_MV_CONSENTS,
+    TABLE_MV_CREATED_OBJECTS,
+    TABLE_MV_SUPPRESSIONS,
     TABLE_PATCHES,
     TABLE_RUNS,
     TABLE_STAGES,
@@ -16,7 +20,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_runs (
     domain              STRING        NOT NULL COMMENT 'Domain name (e.g. revenue_property)',
     catalog             STRING        NOT NULL COMMENT 'Unity Catalog name',
     uc_schema           STRING        NOT NULL COMMENT 'UC schema (catalog.schema format)',
-    status              STRING        NOT NULL COMMENT 'QUEUED|IN_PROGRESS|CONVERGED|STALLED|MAX_ITERATIONS|FAILED|CANCELLED|SKIPPED',
+    status              STRING        NOT NULL COMMENT 'QUEUED|IN_PROGRESS|CONVERGED|STALLED|MAX_ITERATIONS|FAILED|CANCELLED|SKIPPED|MV_ADVICE (MV-D23 terminal-at-birth advice run)',
     started_at          TIMESTAMP     NOT NULL COMMENT 'When the run was created',
     completed_at        TIMESTAMP              COMMENT 'When the run reached a terminal state',
     job_run_id          STRING                 COMMENT 'Databricks Job run ID',
@@ -176,7 +180,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_artifacts (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
     stage_name          STRING                 COMMENT 'Notebook or stage that wrote the artifact (intake_and_snapshot, benchmark_qc_and_repair, ...)',
     iteration           INT                    COMMENT 'Iteration number, when applicable (NULL for run-level artifacts)',
-    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record',
+    artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record | mv_candidate_ddl',
     artifact_json       STRING                 COMMENT 'JSON payload for the artifact (enough to reconstruct the pass without notebook-local state)',
     content_hash        STRING                 COMMENT 'Hash of artifact_json for dedupe / idempotency / replay safety',
     parent_artifact_id  STRING                 COMMENT 'Lineage pointer to the artifact this one derives from',
@@ -192,6 +196,111 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+_GENIE_OPT_MV_CANDIDATES_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_candidates (
+    dedup_fingerprint   STRING        NOT NULL COMMENT 'MV-D7/MV-D30 idempotency key. Legacy (pre-15.3) single-measure rows: sha256(space_id | canonical_measure_expr | sorted_source_set). View-grained bundle rows (MV-D30, Prompt 15.3): sha256(space_id | sorted member dedup_fingerprints | sorted_source_set) — one row per view. Upsert key together with target_space_id; also the content_hash of the rendered-DDL genie_opt_artifacts row for this candidate. Per-measure suppression is tracked separately in genie_opt_mv_suppressions because this key changes when bundle membership changes',
+    target_space_id     STRING        NOT NULL COMMENT 'Genie Agent the candidate is proposed for',
+    suggestion_id       STRING        NOT NULL COMMENT 'Stable proposal id surfaced to the UI and carried on approve/reject decisions',
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id — the run whose advisor phase last proposed or refreshed this candidate. A candidate outlives it (MV-D1)',
+    candidate_type      STRING        NOT NULL COMMENT 'NEW_METRIC_VIEW|REPLACE_RAW_TABLE|ADD_MEASURE|CONFLICT (POV Part 4 proposal `type`)',
+    confidence_score    DOUBLE                 COMMENT 'Weighted L/Y/S/D score, 0-100',
+    tier                STRING                 COMMENT 'HIGH|MEDIUM|LOW confidence tier — the SERVED tier after MV-D15 coverage capping',
+    uncapped_tier       STRING                 COMMENT 'MV-D32 as-implemented (Prompt 15.7b): the tier the score alone earned, BEFORE MV-D15''s coverage cap (HIGH|MEDIUM|LOW|NULL). Equals tier when coverage did not bind; differs when it did. Persisted so the panel can promote a coverage-capped-strong proposal (uncapped MEDIUM+ but tier LOW) into the default list under a "Strong (evidence-limited)" badge instead of burying it. Computed in mv_scoring.to_payload, not re-derived here',
+    tier_capped_by_coverage BOOLEAN            COMMENT 'MV-D32 as-implemented (Prompt 15.7b): true when MV-D15 coverage held the tier below what the score earned (uncapped_tier != tier). The split-on-surface flag: uncapped MEDIUM+ AND this true = capped-strong (default list + badge); false or uncapped LOW = plain, stays behind the MV-D30 disclosure',
+    proposed_object     STRING                 COMMENT 'Fully-qualified target name for the metric view (catalog.schema.name)',
+    score_components_json STRING               COMMENT 'JSON: POV Part 4 `score_components` — per-signal scores plus the weights used',
+    evidence_json       STRING                 COMMENT 'JSON: POV Part 4 `evidence` — fingerprint recurrence, benchmark question ids, statement ids, lineage source tables, semantic top match',
+    provenance_json     STRING                 COMMENT 'JSON: POV Part 4 `provenance` — generated_by, auth_identity, gso_run_id, generated_at',
+    alternatives_json   STRING                 COMMENT 'JSON: POV Part 4 `alternatives` — ranked runner-up shapes for the same fingerprint',
+    conflicts_json      STRING                 COMMENT 'JSON: POV Part 4 `conflicts` — existing instructions or trusted assets defining the same concept differently. Non-empty means human adjudication is required and the candidate is never auto-resolved',
+    requested_mode      STRING                 COMMENT 'mv_action_mode the user asked for on the proposing run: suggest_only|create_and_attach|sandbox',
+    effective_mode      STRING                 COMMENT 'Mode actually in force after entitlement/consent re-verification. Never upgrades relative to requested_mode',
+    decision            STRING                 COMMENT 'Human decision: NULL (undecided) | approved | rejected',
+    decided_by          STRING                 COMMENT 'User email who approved or rejected the candidate',
+    decided_at          TIMESTAMP              COMMENT 'When the decision was recorded',
+    suppressed_until    TIMESTAMP              COMMENT 'Rejection decay window — the advisor must not re-surface this fingerprint before this timestamp',
+    approved_for_rerun  BOOLEAN       DEFAULT false COMMENT 'MV-D1: true only when an approved candidate is eligible to be created under OBO on a subsequent run. create_and_attach is gated on this flag',
+    superseded_by       STRING                 COMMENT 'MV-D30 as-implemented (Prompt 15.6): the dedup_fingerprint of the view-grained bundle that now governs this row''s measure. Set on a LEGACY per-measure row when a bundle covering its fingerprint lands, so proposal reads (hydration/suggest) exclude it and the two grains never surface mixed. NULL for a live row. Decisions on a superseded row are preserved (the suppression reader still sees a superseded+rejected row), so supersession retires the proposal without losing the rejection',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the candidate was first proposed',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp — a later run re-proposing the same fingerprint refreshes this'
+)
+USING DELTA
+PARTITIONED BY (target_space_id)
+COMMENT 'Metric view advisor proposals (MV-D7) - one row per (target_space_id, dedup_fingerprint), upserted so re-runs never duplicate a candidate'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true',
+    'delta.feature.allowColumnDefaults' = 'supported'
+)"""
+
+_GENIE_OPT_MV_CONSENTS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_consents (
+    probe_id            STRING        NOT NULL COMMENT 'Entitlement probe id — the upsert key. Issued by the OBO probe route before any run exists',
+    run_id              STRING                 COMMENT 'FK to genie_opt_runs.run_id, NULL until the consent is carried into a run at trigger time. This is why the table is unpartitioned',
+    granted_by          STRING        NOT NULL COMMENT 'User email who granted consent — the identity every OBO write for this run executes under',
+    granted_at          TIMESTAMP     NOT NULL COMMENT 'When consent was granted',
+    target_catalog      STRING        NOT NULL COMMENT 'Consented Unity Catalog catalog. Writes go here and nowhere else',
+    target_schema       STRING        NOT NULL COMMENT 'Consented UC schema. A failed write is a downgrade, never a retry somewhere more permissive',
+    materialize_consented BOOLEAN     DEFAULT false COMMENT 'Separate consent for materialization (mv_materialize) — never bundled with create or attach',
+    probe_results_json  STRING                 COMMENT 'JSON: probe verdict detail — checked_as, effective privileges, runtime capability rows (MV-D8 DBR floors), missing privileges, remediation GRANT',
+    verdict             STRING                 COMMENT 'SUFFICIENT|INSUFFICIENT|UNKNOWN',
+    reverified_at_trigger TIMESTAMP            COMMENT 'When the probe was last re-verified immediately before an OBO write. NULL means never re-verified; the job refuses to attach without it',
+    downgrade_reason    STRING                 COMMENT 'Why the run was downgraded to suggest_only, if it was. Downgrade never upgrades',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp'
+)
+USING DELTA
+COMMENT 'Metric view entitlement probes and consent decisions (MV-D7) - one row per probe_id; the audit answer to "who authorized this metric view and against what privileges"'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true',
+    'delta.feature.allowColumnDefaults' = 'supported'
+)"""
+
+_GENIE_OPT_MV_CREATED_OBJECTS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_created_objects (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id — the run this object was created for and attached by',
+    suggestion_id       STRING        NOT NULL COMMENT 'FK to genie_opt_mv_candidates.suggestion_id the object was created from. Upsert key together with run_id',
+    full_name           STRING        NOT NULL COMMENT 'Fully-qualified name of the created metric view (catalog.schema.name), in the consented schema only',
+    created_by          STRING        NOT NULL COMMENT 'Identity that executed CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never the service principal',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the UC object was created by the backend, before the job was submitted',
+    attach_patch_id     STRING                 COMMENT 'FK to the genie_opt_patches row that attached this view to data_sources.metric_views',
+    baseline_eval_run_id STRING                COMMENT 'Native eval-run id measured with the view created but NOT yet attached',
+    post_attach_eval_run_id STRING             COMMENT 'Native eval-run id measured immediately after the attach patch, before any lever fires. The delta against baseline_eval_run_id is the isolated metric-view lift',
+    status              STRING        NOT NULL COMMENT 'CREATED|ATTACHED|DETACHED|DROPPED',
+    on_regression_action STRING                COMMENT 'DETACH_ONLY_NEVER_DROP outside sandbox mode; SANDBOX_AUTO_DROP only for a scratch schema that exists solely for the run',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp - moves with every status transition',
+    lift_report_json    STRING                 COMMENT 'JSON: eval_runner.LiftReport.to_dict() verbatim, comparing baseline_eval_run_id against post_attach_eval_run_id. The isolated metric-view lift, and the evidence for a DETACHED verdict'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Metric views created under OBO for a run and their attach/detach lifecycle (MV-D7) - one row per (run_id, suggestion_id). The UC object is never auto-dropped outside sandbox mode'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
+_GENIE_OPT_MV_SUPPRESSIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_mv_suppressions (
+    target_space_id     STRING        NOT NULL COMMENT 'Genie Agent the suppressed measure belongs to. Upsert key together with measure_fingerprint',
+    measure_fingerprint STRING        NOT NULL COMMENT 'Per-measure dedup fingerprint (the MV-D10 identity grain): sha256(space_id | canonical_measure_expr | sorted_source_set) for a single measure. This is the grain suppression is enforced at, independent of which view bundle carried the measure',
+    suppressed_until    TIMESTAMP              COMMENT 'Rejection decay window — the advisor must not re-surface this measure inside any bundle before this timestamp. NULL means suppressed indefinitely (no decay)',
+    originating_suggestion_id STRING           COMMENT 'The bundle suggestion_id whose rejection fanned out to this per-measure suppression — the audit link back to the decision that created the row',
+    reason              STRING                 COMMENT 'Why the measure is suppressed, e.g. bundle_rejected',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the suppression was first written',
+    updated_at          TIMESTAMP     NOT NULL COMMENT 'Last upsert timestamp — a re-rejection refreshes the window'
+)
+USING DELTA
+PARTITIONED BY (target_space_id)
+COMMENT 'Per-measure suppression ledger (MV-D30 as-implemented, Prompt 15.3) - one row per (target_space_id, measure_fingerprint). Bundle rejection fans out here so a rejected measure never resurfaces inside a future view bundle whose key changed with membership'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 _ALL_DDL: dict[str, str] = {
     TABLE_RUNS: _GENIE_OPT_RUNS_DDL,
     TABLE_STAGES: _GENIE_OPT_STAGES_DDL,
@@ -199,6 +308,10 @@ _ALL_DDL: dict[str, str] = {
     TABLE_PATCHES: _GENIE_OPT_PATCHES_DDL,
     TABLE_BENCHMARK_MUTATIONS: _GENIE_OPT_BENCHMARK_MUTATIONS_DDL,
     TABLE_ARTIFACTS: _GENIE_OPT_ARTIFACTS_DDL,
+    TABLE_MV_CANDIDATES: _GENIE_OPT_MV_CANDIDATES_DDL,
+    TABLE_MV_CONSENTS: _GENIE_OPT_MV_CONSENTS_DDL,
+    TABLE_MV_CREATED_OBJECTS: _GENIE_OPT_MV_CREATED_OBJECTS_DDL,
+    TABLE_MV_SUPPRESSIONS: _GENIE_OPT_MV_SUPPRESSIONS_DDL,
 }
 
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
@@ -244,4 +357,45 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_ITERATIONS, "next_hypothesis", "STRING COMMENT 'GSO v2 Phase 8 (loop-state): JSON of the next patch idea chosen by the controller from residual failures.'"),
     (TABLE_ITERATIONS, "target_accuracy", "DOUBLE COMMENT 'GSO v2 Phase 8 (loop-state): stop-early target accuracy in force (0-100 scale; default 90.0).'"),
     (TABLE_ITERATIONS, "max_attempts", "INT COMMENT 'GSO v2 Phase 8 (loop-state): patch/eval attempt budget in force (default 3).'"),
+    # MV-D7 deferred this column to the prompt that produces a lift report; it
+    # lands with the attach/lift phase (MV-D16) so existing tables gain it in
+    # place rather than needing a recreate.
+    (TABLE_MV_CREATED_OBJECTS, "lift_report_json", "STRING COMMENT 'JSON: eval_runner.LiftReport.to_dict() verbatim for the isolated metric-view lift.'"),
+    # MV-D23: the sentinel advice-run discriminator. Added WITHOUT a DEFAULT
+    # because genie_opt_runs does not enable allowColumnDefaults; every reader
+    # treats NULL as 'optimization' (COALESCE), and the exclusion predicate is
+    # the single pinned MV_ADVICE_RUN_EXCLUSION constant (common/config.py), not
+    # a per-caller convention. Standalone advice runs are born terminal
+    # (status=MV_ADVICE) so active-run reconciliation never picks one up.
+    (TABLE_RUNS, "run_kind", "STRING COMMENT 'MV-D23: optimization (default; NULL is treated as optimization) | mv_advice (a standalone metric-view advice request that never ran an eval). Advice runs are excluded from run-history and accuracy aggregates via the MV_ADVICE_RUN_EXCLUSION predicate.'"),
+    # MV-D23: the rendered replay body on the candidate row, so the MV-D22
+    # create path no longer depends on the run-partitioned mv_candidate_ddl
+    # artifact. The in-job advisor keeps writing the artifact byte-unchanged;
+    # the standalone (no-run) advisor writes yaml_text here, and
+    # mv_create._load_ddl_artifact falls back to it.
+    (TABLE_MV_CANDIDATES, "yaml_text", "STRING COMMENT 'MV-D23: the immutable rendered metric-view YAML body for this candidate (MV-D22 replay source), so a standalone advice candidate is replayable without a run-partitioned genie_opt_artifacts row.'"),
+    # MV-D24: the create-path discriminator. NULL/OBO_CREATED = the backend
+    # created it under OBO; USER_CREATED = a bring-your-own view the user
+    # created and registered. The drop route refuses USER_CREATED on provenance
+    # (before the status check), and mv_attach relaxes its created_by identity
+    # guard only for USER_CREATED rows.
+    (TABLE_MV_CREATED_OBJECTS, "provenance", "STRING COMMENT 'MV-D24: OBO_CREATED (default; NULL treated as OBO_CREATED) | USER_CREATED. The app never drops a USER_CREATED view.'"),
+    # MV-D30 as-implemented (Prompt 15.6): supersession retires a legacy
+    # per-measure candidate row when a view-grained bundle covering its
+    # fingerprint lands. Additive so existing candidate tables gain it in place;
+    # NULL = a live row, non-NULL = the bundle dedup_fingerprint that now governs
+    # this measure. Proposal reads exclude non-NULL; the suppression reader does
+    # not, so a superseded+rejected row still suppresses.
+    (TABLE_MV_CANDIDATES, "superseded_by", "STRING COMMENT 'MV-D30 as-implemented (Prompt 15.6): dedup_fingerprint of the bundle that superseded this legacy per-measure row. NULL = live. Proposal reads exclude non-NULL rows; the suppression reader still sees them so a rejection survives supersession.'"),
+    # MV-D32 as-implemented (Prompt 15.7b): the score-only tier and the
+    # coverage-cap flag, both already computed in mv_scoring.to_payload, now
+    # persisted so the panel can promote a coverage-capped-strong proposal
+    # (uncapped MEDIUM+ but SERVED tier LOW) into the default list under a
+    # "Strong (evidence-limited)" badge instead of burying it behind the MV-D30
+    # disclosure. Additive so existing candidate tables gain them in place; NULL
+    # on legacy rows falls back to the pre-15.7b tier-only split. This is
+    # persistence, not new scoring — the LYDS blend and MV-D15 coverage are
+    # byte-untouched.
+    (TABLE_MV_CANDIDATES, "uncapped_tier", "STRING COMMENT 'MV-D32 as-implemented (Prompt 15.7b): the tier the score alone earned before MV-D15 coverage capping (HIGH|MEDIUM|LOW|NULL). Equals tier when coverage did not bind. Persisted from mv_scoring so the panel can split coverage-capped-strong proposals into the default list.'"),
+    (TABLE_MV_CANDIDATES, "tier_capped_by_coverage", "BOOLEAN COMMENT 'MV-D32 as-implemented (Prompt 15.7b): true when MV-D15 coverage held the tier below what the score earned. uncapped MEDIUM+ AND this true = capped-strong (default list + Strong (evidence-limited) badge); otherwise plain (LOW stays behind the MV-D30 disclosure).'"),
 )

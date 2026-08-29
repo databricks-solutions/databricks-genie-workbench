@@ -12,10 +12,40 @@ import time
 from typing import Annotated, Any, Callable, Literal, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.models import (
     CurrentVersionResponse,
+    MvConsentPayload,
+    MvCreatedObject,
+    MvCreatedObjectsResponse,
+    MvDdlArtifact,
+    MvDropRequest,
+    MvDropResponse,
+    MvLastScan,
+    MvLiftReport,
+    MvCreateAtApprovalRequest,
+    MvCreateAtApprovalResponse,
+    MvProbeResult,
+    MvProposal,
+    MvProposalDecisionRequest,
+    MvProposalDecisionResponse,
+    MvProposalMeasure,
+    MvProposalsResponse,
+    MvProvenanceLabel,
+    MvRegisterRequest,
+    MvRegisterResponse,
+    MvSemanticGraph,
+    MvSemanticGraphDimension,
+    MvSemanticGraphEdge,
+    MvSemanticGraphNode,
+    MvSpaceProposalsResponse,
+    MvSuggestResponse,
+    JoinAdvicePayload,
+    JoinAdviceResponse,
+    JoinCandidate,
+    JoinCandidatesResponse,
     PermissionCheckResponse,
     QueryHistoryWarehouseStatus,
     QueryUsageSignal,
@@ -24,16 +54,27 @@ from backend.models import (
 )
 from backend.routers._validators import RunId, SpaceId
 
-from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
+from backend.services.auth import (
+    get_databricks_host,
+    get_service_principal_client,
+    get_workspace_client,
+    require_obo_workspace_client,
+)
 from backend.services import gso_lakebase
 from backend.services import lakebase as workbench_lakebase
 from backend.services.config_fingerprint import benchmark_fingerprint, config_fingerprint
-from backend.services.genie_client import get_genie_space
+from backend.services.genie_client import get_genie_space, get_serialized_space
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
+from backend.services import mv_create, mv_entitlement
+from backend.services.mv_entitlement import MvProbeError
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
     compute_run_scores,
     derived_accuracy as _canonical_derived_accuracy,
+)
+from genie_space_optimizer.common.config import (
+    MV_PROVENANCE_OBO_CREATED,
+    MV_PROVENANCE_USER_CREATED,
 )
 from genie_space_optimizer.common.genie_client import user_can_edit_space
 from genie_space_optimizer.integration import (
@@ -185,6 +226,46 @@ class TriggerRequest(BaseModel):
     workload_warehouse_ids: list[
         Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
     ] = Field(default_factory=list, max_length=20)
+    # Metric view advisor knobs (Prompt 9, MV-D1/D5). enable_metric_view_suggestions
+    # gates the job's advisor phase; mv_action_mode="create_and_attach" additionally
+    # asks the backend to create the approved candidates under OBO before submit
+    # (MV-D20). create_and_attach requires mv_consent (a re-verifiable probe_id) and
+    # is gated on approved_for_rerun candidates (MV-D1); it silently downgrades to
+    # suggest_only whenever re-verification or every create fails.
+    enable_metric_view_suggestions: bool = False
+    mv_action_mode: Literal["suggest_only", "create_and_attach"] = "suggest_only"
+    mv_min_confidence: int | None = Field(None, ge=0, le=100)
+    mv_approved_suggestion_ids: list[
+        Annotated[str, Field(pattern=r"^[0-9a-zA-Z_-]{1,128}$")]
+    ] = Field(default_factory=list, max_length=50)
+    mv_consent: MvConsentPayload | None = None
+    mv_materialize: bool = False
+    # Free-text guidance to the optimizer for THIS run (Semantic Blueprint §7,
+    # sibling to Join Advisor). Per-run pass-through advice — never a config edit
+    # and not persisted. Carried into the run as an artifact the loop injects into
+    # the LLM prompt as advice (not ground truth). Capped to keep the prompt small.
+    operator_guidance: str | None = Field(None, max_length=4000)
+
+
+class MvProbeRequest(BaseModel):
+    """Body for ``POST /mv/probe`` — where a metric view would be created.
+
+    ``space_id`` is the Genie Agent whose ``data_sources.metric_views`` would be
+    patched, so the probe can ask for CAN MANAGE on it. ``source_tables`` are the
+    three-part names the view would read; the user needs SELECT on each.
+    """
+
+    catalog: str = Field(..., pattern=r"^[A-Za-z0-9_]{1,255}$")
+    schema_name: str = Field(..., alias="schema", pattern=r"^[A-Za-z0-9_]{1,255}$")
+    space_id: str = Field(..., pattern=r"^[0-9a-zA-Z_-]{1,128}$")
+    source_tables: list[
+        Annotated[str, Field(pattern=r"^[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")]
+    ] = Field(default_factory=list, max_length=50)
+    # Consent to materialize is a separate decision from create-and-attach and is
+    # never implied by it (MV-D7).
+    materialize_consented: bool = False
+
+    model_config = {"populate_by_name": True}
 
 
 # PermissionCheckResponse + SchemaAccessStatus now live in `backend.models`
@@ -427,6 +508,90 @@ def _load_latest_artifact(run_id: str, artifact_kind: str) -> dict | None:
         return None
     payload = _safe_json_parse(rows[0].get("artifact_json"))
     return payload if isinstance(payload, dict) else None
+
+
+def _load_candidate_ddl_artifact(run_id: str, suggestion_id: str | None) -> dict | None:
+    """Load the ``mv_candidate_ddl`` artifact, pinned to one suggestion when asked.
+
+    A single in-job run writes ONE ``mv_candidate_ddl`` artifact per view bundle,
+    so blind latest-wins (``_load_latest_artifact``) can only ever surface one
+    proposal's DDL — every other card on a multi-proposal run renders blank. When
+    ``suggestion_id`` is given we match the artifact whose payload carries that id
+    (in Python, so the untrusted query param never touches SQL) and return None if
+    it is not among this run's artifacts, letting the caller fall through to the
+    candidate-row fallback rather than serving the wrong body. With no
+    ``suggestion_id`` the historical latest-wins pick is preserved.
+    """
+    if not suggestion_id:
+        return _load_latest_artifact(run_id, "mv_candidate_ddl")
+    rows = _delta_query(
+        f"SELECT artifact_json, created_at FROM {_delta_table('genie_opt_artifacts')} "
+        f"WHERE run_id = '{run_id}' AND artifact_kind = 'mv_candidate_ddl' "
+        f"ORDER BY created_at DESC"
+    )
+    for row in rows:
+        payload = _safe_json_parse(row.get("artifact_json"))
+        if isinstance(payload, dict) and payload.get("suggestion_id") == suggestion_id:
+            return payload
+    return None
+
+
+def _load_candidate_ddl_fallback(run_id: str, suggestion_id: str | None) -> dict | None:
+    """Render a DDL payload from a candidate row when no artifact exists (MV-D23).
+
+    The read-side twin of ``mv_create._load_ddl_artifact``'s candidate fallback.
+    A standalone advice run writes no run-partitioned ``mv_candidate_ddl``
+    artifact — it carries the rendered body on the candidate row itself
+    (``yaml_text`` + ``evidence.join_strategy``, ddl.py:352). This renders the
+    same ``MvDdlArtifact`` shape from that row so route 7 serves advice runs, not
+    only in-job runs (Prompt 15.1 — the Tier 1 live finding).
+
+    Returns None (→ the caller 404s) when the run has no candidates, the named
+    ``suggestion_id`` is not among them, or the chosen row has no rendered body.
+    """
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return None
+
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+    from genie_space_optimizer.optimization.mv_yaml import create_ddl
+
+    rows = wh_load_mv_candidates(
+        get_service_principal_client(),
+        config.warehouse_id,
+        config.catalog,
+        config.schema_name,
+        run_id=run_id,
+    )
+    if not rows:
+        return None
+    if suggestion_id:
+        row = next((r for r in rows if r.get("suggestion_id") == suggestion_id), None)
+    else:
+        row = rows[0]
+    if row is None or not row.get("yaml_text"):
+        return None
+
+    yaml_text = str(row["yaml_text"])
+    proposed = str(row.get("proposed_object") or "")
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    return {
+        "suggestion_id": row.get("suggestion_id"),
+        "dedup_fingerprint": row.get("dedup_fingerprint"),
+        # Prompt 15.9 item (c): carry the space id so the DDL endpoint can resolve
+        # the audience GRANT from the same ACL the consent modal reads (the in-job
+        # ``mv_candidate_ddl`` artifact already carries it — mv_advisor.py:1561).
+        "target_space_id": row.get("target_space_id"),
+        "proposed_object": proposed,
+        "join_strategy": evidence.get("join_strategy"),
+        "yaml_text": yaml_text,
+        "ddl": create_ddl(proposed, yaml_text) if proposed else None,
+        # A preview: the artifact carries the real validation (echo-check +
+        # capability rung, pinned at render). The candidate row does not, and
+        # re-running validate() at read time would need a fresh capability probe
+        # for no gain — the create path revalidates before it writes. So None.
+        "validation": None,
+    }
 
 
 # target_accuracy lives on TWO native scales across the loop artifacts (B3):
@@ -1398,6 +1563,135 @@ async def check_permissions(space_id: SpaceId):
     )
 
 
+def _space_audience_grantees(space_id: str) -> list[str]:
+    """The space's audience, from its ACL — Prompt 15.8 fix #3.
+
+    The GRANT preview in the consent modal must name a real grantee, not a
+    literal ``<grantee>``. The audience of a metric view built for a space is
+    the principals who can query that space, so we read the space ACL and return
+    the principals with CAN RUN / CAN VIEW / CAN MANAGE (the run/view rung and
+    up). Best-effort and SP-read (the ACL is the space's, not the caller's): any
+    failure returns ``[]`` and the modal falls back to the raw statement. Owners
+    and dedup keep the list stable and duplicate-free.
+    """
+    audience_levels = {"CAN_RUN", "CAN_VIEW", "CAN_MANAGE", "CAN_EDIT"}
+    try:
+        acl = get_service_principal_client().api_client.do(
+            method="GET", path=f"/api/2.0/permissions/genie/{space_id}"
+        )
+        if not isinstance(acl, dict):
+            return []
+        grantees: list[str] = []
+        for entry in acl.get("access_control_list", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            principal = (
+                entry.get("user_name")
+                or entry.get("group_name")
+                or entry.get("service_principal_name")
+            )
+            if not principal:
+                continue
+            levels = {
+                str(p.get("permission_level") or "").upper()
+                for p in entry.get("all_permissions", []) or []
+                if isinstance(p, dict)
+            }
+            if levels & audience_levels and principal not in grantees:
+                grantees.append(str(principal))
+        return grantees
+    except Exception:
+        logger.warning("Could not read ACL for space %s grantees", space_id, exc_info=True)
+        return []
+
+
+def _gso_sp_application_id() -> str:
+    """The GSO service principal's application id (UUID), best-effort.
+
+    The same resolution ``check_permissions`` uses: ``config.client_id`` (set on
+    the app SP), else ``DATABRICKS_CLIENT_ID``, else ``current_user.me()
+    .application_id``. UC SQL grants name the SP by this UUID. Returns "" if it
+    cannot be resolved, so the caller degrades to a worded instruction."""
+    sp_ws = get_service_principal_client()
+    sp_app_id = sp_ws.config.client_id or os.getenv("DATABRICKS_CLIENT_ID", "")
+    if not sp_app_id:
+        try:
+            sp_app_id = getattr(sp_ws.current_user.me(), "application_id", "") or ""
+        except Exception:
+            logger.info("Could not resolve GSO SP application_id for grant", exc_info=True)
+            sp_app_id = ""
+    return sp_app_id if re.match(r"^[a-f0-9-]{36}$", sp_app_id or "") else ""
+
+
+def _mv_optimizer_grant_sql(proposed: str | None, sp_app_id: str) -> str | None:
+    """The copy-ready GRANT a created view needs — SELECT to the GSO service
+    principal, so create-and-attach optimization runs can read it.
+
+    Deployed-review decision: a view created under the owner's identity is not
+    readable by the optimizer (a different principal), so the ONE grant that
+    matters functionally is SELECT to the GSO SP — not the broad space audience
+    (which listed built-in groups and even a self-grant, the noise the reviewer
+    flagged). The app never executes it; the owner copies it after creating the
+    view. With no resolvable SP it says so in words rather than emitting a
+    placeholder that cannot run."""
+    if not proposed:
+        return None
+    if not sp_app_id:
+        return (
+            "-- Could not resolve the optimizer service principal. Grant SELECT on\n"
+            f"-- {proposed} to the GSO service principal so optimization runs can read it."
+        )
+    return (
+        "-- The optimizer (GSO job) reads this view as its service principal;\n"
+        "-- grant SELECT so create-and-attach optimization runs succeed.\n"
+        f"GRANT SELECT ON VIEW {proposed} TO `{sp_app_id}`;"
+    )
+
+
+@router.post("/mv/probe", response_model=MvProbeResult)
+async def probe_mv_entitlement(body: MvProbeRequest):
+    """Probe the signed-in user's entitlement to create a metric view.
+
+    OBO only — the SP probe at ``GET /permissions/{space_id}`` answers a
+    different question (can the *job* read these schemas) and cannot authorize a
+    user's write. Read-only: no DDL and no trial CREATE on any path. The consent
+    record is best-effort, so a Delta write hiccup returns the probe with
+    ``consent_recorded=false`` rather than losing it behind a 500.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+
+    try:
+        # `asyncio.to_thread` copies the current context, so the OBO ContextVar
+        # the middleware set is still visible on the worker thread.
+        result = await _offload(
+            mv_entitlement.probe,
+            catalog=body.catalog,
+            schema=body.schema_name,
+            space_id=body.space_id,
+            source_tables=body.source_tables,
+        )
+    except MvProbeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RuntimeError as exc:
+        # `require_obo_workspace_client` raises this when no user token reached us.
+        raise HTTPException(status_code=401, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Metric view entitlement probe failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Entitlement probe failed.")
+
+    result.materialize_consented = body.materialize_consented
+    result.consent_recorded = await _offload(
+        mv_entitlement.record_consent,
+        result,
+        materialize_consented=body.materialize_consented,
+    )
+    # Fix #3 — prefill the GRANT preview's grantee from the space audience. Best
+    # effort: an unreadable ACL leaves it empty and the modal keeps the raw copy.
+    result.audience_grantees = await _offload(_space_audience_grantees, body.space_id)
+    return result
+
+
 @router.post("/trigger")
 async def trigger(body: TriggerRequest, request: Request):
     """Trigger an optimization run for a Genie Agent."""
@@ -1415,6 +1709,43 @@ async def trigger(body: TriggerRequest, request: Request):
 
     config = _build_gso_config(llm_model_override=selected_llm_model)
 
+    # Build the OBO create-and-attach hook only when the caller both enabled the
+    # advisor and asked for create_and_attach with a consent to re-verify. The
+    # hook runs inside trigger_optimization (same request context, so the OBO
+    # ContextVar is visible) after the run row exists and before submit (MV-D20).
+    mv_attach_hook = None
+    if (
+        body.enable_metric_view_suggestions
+        and body.mv_action_mode == "create_and_attach"
+        and body.mv_consent is not None
+    ):
+        consent = body.mv_consent
+
+        def mv_attach_hook(run_id: str):
+            return mv_create.create_and_attach_for_run(
+                run_id,
+                space_id=body.space_id,
+                probe_id=consent.probe_id,
+                approved_suggestion_ids=body.mv_approved_suggestion_ids,
+                materialize=body.mv_materialize,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                warehouse_id=config.warehouse_id,
+            )
+
+    # Join Advisor advice (Semantic Blueprint §7): carry the operator's seeded
+    # candidate joins into the run as input the optimizer re-validates and adds
+    # itself (add_join_spec). This is advice, NOT a config edit — the Workbench
+    # never writes join_specs into serialized_space. Best-effort: no advice, or a
+    # read failure, simply means the run starts with none.
+    proposed_join_seeds: list[dict] = []
+    try:
+        advice = await workbench_lakebase.get_join_advice(body.space_id)
+        if advice and advice.get("seeds"):
+            proposed_join_seeds = list(advice["seeds"])
+    except Exception:
+        logger.warning("Could not read join advice for space %s", body.space_id, exc_info=True)
+
     try:
         result = trigger_optimization(
             space_id=body.space_id,
@@ -1429,6 +1760,12 @@ async def trigger(body: TriggerRequest, request: Request):
             max_attempts=body.max_attempts,
             workload_warehouse_ids=body.workload_warehouse_ids,
             benchmark_policy=body.benchmark_policy,
+            enable_metric_view_suggestions=body.enable_metric_view_suggestions,
+            mv_action_mode=body.mv_action_mode,
+            mv_min_confidence=body.mv_min_confidence,
+            mv_attach_hook=mv_attach_hook,
+            proposed_join_seeds=proposed_join_seeds,
+            operator_guidance=(body.operator_guidance or "").strip() or None,
         )
         # Echo the resolved knobs (request value or the job default) so the UI
         # can confirm what the run will use without re-reading the job config.
@@ -1456,6 +1793,2308 @@ async def trigger(body: TriggerRequest, request: Request):
     except Exception as e:
         logger.exception("Failed to trigger optimization: %s", e)
         raise HTTPException(status_code=500, detail="Failed to start optimization job.")
+
+
+# ---------------------------------------------------------------------------
+# Metric view proposals / create-and-attach lifecycle (Prompt 9)
+# ---------------------------------------------------------------------------
+
+
+def _mv_str(value: Any) -> str | None:
+    """Coerce a warehouse cell (datetime/NaN/None) to a JSON-safe string or None."""
+    if value is None:
+        return None
+    try:
+        import pandas as pd
+
+        if value is pd.NaT or (isinstance(value, float) and pd.isna(value)):
+            return None
+    except Exception:
+        pass
+    text = str(value)
+    return text if text and text.lower() not in ("nan", "nat", "none") else None
+
+
+def _mv_measures_from_row(row: dict) -> list[MvProposalMeasure]:
+    """The bundle's member measures (MV-D30), read from ``evidence.measures``.
+
+    A pre-15.3 single-measure row carries no ``evidence.measures``; it reads back
+    as a one-element bundle synthesized from the row itself, so the UI can treat
+    every proposal uniformly as a bundle. The per-measure ``dedup_fingerprint``
+    is preserved on each member because that — not the view-grained bundle key —
+    is the identity suppression cross-references."""
+    evidence = row.get("evidence")
+    raw = evidence.get("measures") if isinstance(evidence, dict) else None
+    if isinstance(raw, list) and raw:
+        members: list[MvProposalMeasure] = []
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            qids = m.get("benchmark_question_ids")
+            members.append(MvProposalMeasure(
+                display_name=_mv_str(m.get("display_name")),
+                expr=_mv_str(m.get("expr")),
+                dedup_fingerprint=_mv_str(m.get("dedup_fingerprint")),
+                recurrence=_safe_int(m.get("recurrence")),
+                provenance_count=_safe_int(m.get("provenance_count")),
+                benchmark_question_ids=[str(q) for q in qids] if isinstance(qids, list) else None,
+            ))
+        if members:
+            return members
+    legacy_qids = evidence.get("benchmark_question_ids") if isinstance(evidence, dict) else None
+    return [MvProposalMeasure(
+        dedup_fingerprint=str(row.get("dedup_fingerprint") or "") or None,
+        benchmark_question_ids=[str(q) for q in legacy_qids] if isinstance(legacy_qids, list) else None,
+    )]
+
+
+def _mv_checks_from_row(row: dict) -> dict[str, str] | None:
+    """The MV-D35 facts row: the quality gates this row PROVES ran and passed.
+
+    Not persisted — computed here from proof already on the row, so the shared
+    card can lead with facts instead of a percent. Each key is present ONLY when
+    its gate provably ran for THIS row; a check that did not run is never
+    rendered (MV-D35: "a check that lies is worse than the percent").
+
+    - ``validated`` / ``executable``: a non-empty ``proposed_object`` is the
+      servable-body invariant's proof (Prompt 15.5 / MV-D8 / MV-D29): nothing
+      surfaces without a rendered, validated, placeholder-free, executable body,
+      so the identifier's presence is the gate having run and passed. A blank
+      row (dropped before surfacing) carries neither key.
+    - ``no_overlap``: the dedup gate (MV-D7) runs for every persisted candidate;
+      a partial overlap with a governed measure is recorded in ``conflicts``, so
+      an empty/absent ``conflicts`` is the gate having found no overlap. A row
+      carrying conflicts omits the key (it does NOT claim non-overlap).
+    """
+    checks: dict[str, str] = {}
+    proposed = row.get("proposed_object")
+    if isinstance(proposed, str) and proposed.strip():
+        checks["validated"] = "PASS"
+        checks["executable"] = "PASS"
+    conflicts = row.get("conflicts")
+    if not (isinstance(conflicts, list) and len(conflicts) > 0):
+        checks["no_overlap"] = "PASS"
+    return checks or None
+
+
+def _mv_proposal_from_row(row: dict) -> MvProposal:
+    """Map a decoded ``genie_opt_mv_candidates`` row to the API shape."""
+    return MvProposal(
+        suggestion_id=str(row.get("suggestion_id") or ""),
+        dedup_fingerprint=str(row.get("dedup_fingerprint") or ""),
+        target_space_id=str(row.get("target_space_id") or ""),
+        run_id=_mv_str(row.get("run_id")),
+        candidate_type=str(row.get("candidate_type") or ""),
+        confidence_score=_safe_float(row.get("confidence_score")),
+        tier=_mv_str(row.get("tier")),
+        # MV-D32 as-implemented (Prompt 15.7b): score-only tier + coverage-cap
+        # flag. NULL on legacy rows stays None so the panel falls back to the
+        # pre-15.7b tier-only split rather than treating them as "not capped".
+        uncapped_tier=_mv_str(row.get("uncapped_tier")),
+        tier_capped_by_coverage=(
+            _safe_bool(row.get("tier_capped_by_coverage"))
+            if row.get("tier_capped_by_coverage") is not None
+            else None
+        ),
+        proposed_object=_mv_str(row.get("proposed_object")),
+        measures=_mv_measures_from_row(row),
+        checks=_mv_checks_from_row(row),
+        score_components=row.get("score_components") if isinstance(row.get("score_components"), dict) else None,
+        evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else None,
+        provenance=row.get("provenance") if isinstance(row.get("provenance"), dict) else None,
+        alternatives=row.get("alternatives") if isinstance(row.get("alternatives"), list) else None,
+        conflicts=row.get("conflicts") if isinstance(row.get("conflicts"), list) else None,
+        requested_mode=_mv_str(row.get("requested_mode")),
+        effective_mode=_mv_str(row.get("effective_mode")),
+        decision=_mv_str(row.get("decision")),
+        decided_by=_mv_str(row.get("decided_by")),
+        decided_at=_mv_str(row.get("decided_at")),
+        suppressed_until=_mv_str(row.get("suppressed_until")),
+        # Prompt 15.9 masking-bug root cause: warehouse rows arrive stringified
+        # (Statement Execution JSON_ARRAY), so raw ``bool("false")`` is True for
+        # EVERY row — which forced ``approved_for_rerun`` true and made the accept
+        # flow open on its "approved" terminal, hiding [Create this metric view].
+        # ``_safe_bool`` coerces "false" honestly (the sibling of the three sites
+        # that already used it — this one and ``tier_capped_by_coverage`` below
+        # were the missed call sites).
+        approved_for_rerun=_safe_bool(row.get("approved_for_rerun")),
+        created_at=_mv_str(row.get("created_at")),
+        updated_at=_mv_str(row.get("updated_at")),
+    )
+
+
+def _mv_proposal_provenance_ids(proposal: MvProposal) -> list[str]:
+    """The provenance ids this proposal carries, ordered and de-duplicated.
+
+    Mirrors the client's ``evidenceSummary`` gather (Prompt 15.9 item d): the
+    member measures' ``benchmark_question_ids``, falling back to the bundle-level
+    ``evidence.benchmark_question_ids`` for a legacy one-element row, so the labels
+    the card renders line up one-to-one with the raw ids behind "show raw ids"."""
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            ids.append(text)
+
+    for measure in proposal.measures or []:
+        for qid in measure.benchmark_question_ids or []:
+            _add(qid)
+    if not ids and isinstance(proposal.evidence, dict):
+        ev = proposal.evidence.get("benchmark_question_ids")
+        if isinstance(ev, list):
+            for qid in ev:
+                _add(qid)
+    return ids
+
+
+def _mv_provenance_index(config: Any) -> dict[str, dict[str, dict]]:
+    """Build ``{snippets: {id: snippet}, examples: {id: eq}}`` from a space config.
+
+    The serve-time lookup for Prompt 15.9 item (d): resolves ``sql_snippet:`` ids
+    against ``instructions.sql_snippets`` (all three collections) and
+    ``trusted_asset:`` ids against ``instructions.example_question_sqls``. Tolerant
+    of a missing/partial config — an absent section yields an empty map, so
+    resolution degrades to generic labels rather than raising."""
+    snippets: dict[str, dict] = {}
+    examples: dict[str, dict] = {}
+    # ``fetch_space_config`` returns the export envelope with the real config
+    # nested under ``_parsed_space``; the on-demand suggest path passes the parsed
+    # body directly. Accept EITHER shape — reading ``config.instructions`` off the
+    # envelope was the bug that left every id resolving to its generic category.
+    if isinstance(config, dict) and isinstance(config.get("_parsed_space"), dict):
+        config = config["_parsed_space"]
+    instructions = config.get("instructions") if isinstance(config, dict) else None
+    if isinstance(instructions, dict):
+        snippet_block = instructions.get("sql_snippets")
+        if isinstance(snippet_block, dict):
+            for collection in ("measures", "filters", "expressions"):
+                for snippet in snippet_block.get(collection) or []:
+                    if isinstance(snippet, dict) and snippet.get("id"):
+                        snippets.setdefault(str(snippet["id"]), snippet)
+        for eq in instructions.get("example_question_sqls") or []:
+            if isinstance(eq, dict) and eq.get("id"):
+                examples.setdefault(str(eq["id"]), eq)
+    return {"snippets": snippets, "examples": examples}
+
+
+def _mv_coerce_list_text(value: Any, *, joiner: str = " ") -> str:
+    """One string whether the field held a ``str`` or the schema's ``list[str]``."""
+    if isinstance(value, list):
+        return joiner.join(str(v) for v in value if v is not None).strip()
+    return str(value or "").strip()
+
+
+def _resolve_provenance_label(raw: str, index: dict[str, dict[str, dict]]) -> MvProvenanceLabel | None:
+    """Resolve ONE provenance id to a human label, or ``None`` (Prompt 15.9 item d).
+
+    ``sql_snippet:<collection>:<id>`` → the snippet's display name (detail = its
+    expression); ``trusted_asset:<id>`` → its example-question text. Returns
+    ``None`` for anything that does NOT resolve to real, config-derived text — an
+    id-less/unknown snippet or asset, a ``gso_patch`` (no config text), or a bare
+    benchmark id. This is the deployed-review fix: a generic "trusted asset" /
+    "curated snippet" repeated per occurrence is noise, so a label is emitted ONLY
+    when it says something specific; the card's count chip carries everything else."""
+    if raw.startswith("sql_snippet:"):
+        rest = raw[len("sql_snippet:"):]
+        parts = rest.split(":", 1)
+        snippet_id = parts[1] if len(parts) == 2 else parts[0]
+        snippet = index["snippets"].get(snippet_id)
+        if not snippet:
+            return None
+        name = _mv_coerce_list_text(snippet.get("display_name"))
+        expr = _mv_coerce_list_text(snippet.get("sql"))
+        label = name or (expr[:80] if expr else "")
+        if not label:
+            return None
+        return MvProvenanceLabel(id=raw, kind="sql_snippet", label=label, detail=expr or None)
+    if raw.startswith("trusted_asset:"):
+        asset_id = raw[len("trusted_asset:"):]
+        eq = index["examples"].get(asset_id)
+        if not eq:
+            return None
+        question = _mv_coerce_list_text(eq.get("question"), joiner=" ")
+        if not question:
+            return None
+        return MvProvenanceLabel(id=raw, kind="trusted_asset", label=question, detail=None)
+    return None
+
+
+def _mv_attach_provenance_labels(proposals: list[MvProposal], config: Any) -> None:
+    """Resolve every proposal's provenance ids in place from ONE config read.
+
+    Serve-time payoff (Prompt 15.9 item d): existing proposals gain human labels
+    without a re-scan. Best-effort — an id that resolves to nothing simply carries
+    no label, and the card falls back to counts + the raw-id affordance."""
+    index = _mv_provenance_index(config)
+    for proposal in proposals:
+        labels: list[MvProvenanceLabel] = []
+        seen: set[tuple[str, str | None]] = set()
+        for raw in _mv_proposal_provenance_ids(proposal):
+            label = _resolve_provenance_label(raw, index)
+            if label is None:
+                continue
+            key = (label.label, label.detail)
+            if key in seen:  # two ids can resolve to the same text — show it once
+                continue
+            seen.add(key)
+            labels.append(label)
+        proposal.provenance_labels = labels or None
+
+
+def _mv_fetch_space_config(space_id: str) -> Any:
+    """Best-effort space-config read for serve-time provenance resolution.
+
+    OBO first (the caller's identity), SP fallback (mirrors the permission-check
+    path). Any failure returns ``None`` so label resolution degrades quietly."""
+    try:
+        from genie_space_optimizer.common.genie_client import fetch_space_config
+
+        try:
+            return fetch_space_config(get_workspace_client(), space_id)
+        except Exception:
+            return fetch_space_config(get_service_principal_client(), space_id)
+    except Exception:
+        logger.info("Could not fetch config for %s provenance labels", space_id, exc_info=True)
+        return None
+
+
+def _mv_mark_attached(proposals: list[MvProposal], space_config: Any) -> None:
+    """Flag proposals already present on the Agent config (MV-D34 marker).
+
+    A proposal is "attached" when its ``proposed_object`` already appears among
+    the Agent's data sources — the source of truth. We match against BOTH
+    ``data_sources.metric_views`` AND ``data_sources.tables`` (the ``_metric_views``
+    and ``_tables`` identifiers ``fetch_space_config`` extracts): a Genie space
+    commonly files an added metric view under ``data_sources.tables`` (verified in
+    the field — a created-and-attached view round-trips there, with
+    ``metric_views`` empty), so a metric-views-only check left every such view
+    looking un-attached and re-offered as "create" forever. The exact 3-part name
+    is matched, so a base table never masks its ``*_metrics`` proposal. Degrades
+    quietly: a config we could not read marks nothing, so the list is never wrongly
+    badged."""
+    if not proposals or not isinstance(space_config, dict):
+        return
+
+    # Normalize both sides: Genie may export identifiers backticked
+    # (``` `cat`.`sch`.`view` ```), while the warehouse ``proposed_object`` is
+    # bare — stripping backticks + case makes the match robust so a truly
+    # present view is never left looking un-attached (and re-offered forever).
+    def _norm(value: str) -> str:
+        return value.replace("`", "").strip().lower()
+
+    identifiers = list(space_config.get("_metric_views") or []) + list(
+        space_config.get("_tables") or []
+    )
+    present = {_norm(str(ident)) for ident in identifiers if _norm(str(ident or ""))}
+    if not present:
+        return
+    for proposal in proposals:
+        obj = _norm(str(proposal.proposed_object or ""))
+        if obj and obj in present:
+            proposal.attached = True
+
+
+@router.get("/runs/{run_id}/mv-proposals", response_model=MvProposalsResponse)
+async def list_mv_proposals(run_id: RunId):
+    """List the metric view proposals the advisor recorded for this run (MV-D21)."""
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return MvProposalsResponse(run_id=run_id, proposals=[])
+
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+
+    try:
+        rows = await _offload(
+            wh_load_mv_candidates,
+            get_service_principal_client(),
+            config.warehouse_id,
+            config.catalog,
+            config.schema_name,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        logger.warning("Could not load MV proposals for run %s: %s", run_id, exc)
+        rows = []
+    proposals = [_mv_proposal_from_row(r) for r in rows]
+    # Prompt 15.9 item (d): resolve provenance ids to human labels from the space
+    # config (run rows carry target_space_id). One config read for the whole list.
+    space_id = next((str(r.get("target_space_id") or "") for r in rows if r.get("target_space_id")), "")
+    if proposals and space_id:
+        _mv_attach_provenance_labels(proposals, await _offload(_mv_fetch_space_config, space_id))
+    return MvProposalsResponse(run_id=run_id, proposals=proposals)
+
+
+@router.get("/spaces/{space_id}/mv-proposals", response_model=MvSpaceProposalsResponse)
+async def list_space_mv_proposals(
+    space_id: SpaceId,
+    approved_for_rerun: bool | None = Query(
+        None,
+        description=(
+            "When true, return only proposals approved for a create-and-attach "
+            "re-run — the space-scoped gate the run-config panel reads (MV-D23)."
+        ),
+    ),
+):
+    """List a space's metric view proposals, independent of any run (MV-D23).
+
+    Space-scoped twin of ``/runs/{run_id}/mv-proposals``: the run-config panel's
+    re-run gate is a per-space question ("what has this Agent had approved?"), so
+    it keys on ``target_space_id`` and never borrows a prior ``run_id`` to answer
+    it. ``genie_opt_mv_candidates`` is partitioned by ``target_space_id`` because
+    a candidate outlives the run that proposed it (MV-D7), and
+    ``wh_load_mv_candidates`` already reads by space, so this is a read of
+    existing state — not a new key on the MV tables.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return MvSpaceProposalsResponse(space_id=space_id, proposals=[])
+
+    from genie_space_optimizer.common.warehouse import (
+        wh_load_latest_advice_scan,
+        wh_load_mv_candidates,
+    )
+
+    sp_ws = get_service_principal_client()
+    try:
+        rows = await _offload(
+            wh_load_mv_candidates,
+            sp_ws,
+            config.warehouse_id,
+            config.catalog,
+            config.schema_name,
+            target_space_id=space_id,
+            approved_for_rerun=approved_for_rerun,
+        )
+    except Exception as exc:
+        logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
+        rows = []
+
+    proposals = [_mv_proposal_from_row(r) for r in rows]
+
+    # Prompt 15.9 item (d): resolve provenance ids to human labels serve-time, so
+    # existing proposals gain example-question / snippet text without a re-scan.
+    # Skipped on the ``approved_for_rerun`` GATE query — that path feeds the run-
+    # config "checking for approved proposals" check, renders no evidence, and must
+    # stay fast (a serve-time Genie config export there stalled the run setup).
+    if proposals and approved_for_rerun is None:
+        space_config = await _offload(_mv_fetch_space_config, space_id)
+        _mv_attach_provenance_labels(proposals, space_config)
+        # MV-D34: the SAME config read badges proposals already on the Agent, so a
+        # created-and-attached view stops being re-offered as "create this".
+        _mv_mark_attached(proposals, space_config)
+
+    # MV-D31 hydrate-on-mount: the newest advice scan's timestamp, real duration,
+    # and empty/skip state — derived from the advice run's terminal stage row, so
+    # the panel opens hydrated. The re-run gate query (approved_for_rerun) never
+    # wants this framing, so it is only read on the unfiltered panel load.
+    last_scan: MvLastScan | None = None
+    if approved_for_rerun is None:
+        try:
+            summary = await _offload(
+                wh_load_latest_advice_scan,
+                sp_ws,
+                config.warehouse_id,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                space_id=space_id,
+            )
+        except Exception as exc:
+            logger.warning("Could not load last MV scan for space %s: %s", space_id, exc)
+            summary = None
+        if summary is not None:
+            last_scan = MvLastScan(
+                scanned_at=(
+                    str(summary["scanned_at"]) if summary.get("scanned_at") else None
+                ),
+                duration_seconds=summary.get("duration_seconds"),
+                status=summary.get("status"),
+                skip_reason=summary.get("skip_reason"),
+                measures_found=summary.get("measures_found"),
+                proposal_count=len(proposals),
+            )
+
+    return MvSpaceProposalsResponse(
+        space_id=space_id, proposals=proposals, last_scan=last_scan
+    )
+
+
+@router.post("/spaces/{space_id}/mv/suggest", response_model=MvSuggestResponse)
+async def suggest_space_mv(space_id: SpaceId, request: Request):
+    """Run the metric-view advisor for a space on demand (MV-D23).
+
+    The IQ Scan surface's advice affordance: score this Agent's curated corpus
+    now, with no optimization run. The backend writes a born-terminal sentinel
+    advice run and drives the SparkSession-free advisor over a SQL warehouse,
+    persisting any proposals as space-scoped candidates. Blocking is acceptable
+    here (seconds, not minutes); the embedding path carries a hard timeout so a
+    slow endpoint degrades **S** rather than stalling the request.
+
+    Visibility is bound to the signed-in user (MV-D20): the space config is read
+    under the caller's OBO client. Everything on the GSO side runs as the
+    service principal, exactly as the in-job advisor does — and nothing here
+    creates or drops a UC object, so no OBO write is involved.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    obo_ws = require_obo_workspace_client()
+    sp_ws = get_service_principal_client()
+
+    from genie_space_optimizer.common.genie_client import (
+        MissingSerializedSpaceError,
+        fetch_space_config,
+    )
+
+    try:
+        raw = await _offload(fetch_space_config, obo_ws, space_id)
+    except MissingSerializedSpaceError:
+        # The OBO client could not export the space config (e.g. the request
+        # lacks the genie OAuth scope). Fall back to the SP for this read only —
+        # the same scope-fallback the rest of the GSO surface uses.
+        raw = await _offload(fetch_space_config, sp_ws, space_id)
+    except Exception as exc:
+        logger.warning("mv/suggest: could not fetch space %s config: %s", space_id, exc)
+        raise HTTPException(
+            status_code=502, detail="Could not read the Agent configuration."
+        )
+
+    applied_config = raw.get("_parsed_space") if isinstance(raw, dict) else None
+
+    from backend.services import mv_suggest
+
+    user_email = request.headers.get("x-forwarded-email") or os.environ.get("DEV_USER_EMAIL")
+    try:
+        outcome, run_id = await _offload(
+            mv_suggest.suggest_for_space,
+            sp_ws=sp_ws,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            warehouse_id=config.warehouse_id,
+            llm_model=config.llm_model,
+            space_id=space_id,
+            applied_config=applied_config,
+            triggered_by=user_email,
+        )
+    except Exception:
+        logger.exception("mv/suggest failed for space %s", space_id)
+        raise HTTPException(status_code=500, detail="Metric-view advice failed.")
+
+    # Read the persisted proposals back through the same space-scoped accessor
+    # the list route uses, so MvSuggestOnlyPanel renders from one shape.
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+
+    try:
+        rows = await _offload(
+            wh_load_mv_candidates,
+            sp_ws,
+            config.warehouse_id,
+            config.catalog,
+            config.schema_name,
+            target_space_id=space_id,
+        )
+    except Exception as exc:
+        logger.warning("mv/suggest: could not reload proposals for %s: %s", space_id, exc)
+        rows = []
+
+    proposals = [_mv_proposal_from_row(r) for r in rows]
+    # Prompt 15.9 item (d): resolve provenance ids to labels from the config we
+    # already fetched for this scan — no extra read on the on-demand path.
+    if proposals:
+        _mv_attach_provenance_labels(proposals, applied_config)
+        # MV-D34: badge proposals already on the Agent config so the IQ surface
+        # can drop them from the "to create" set. ``raw`` (not ``applied_config``)
+        # carries the ``_metric_views`` identifiers _mv_mark_attached matches on.
+        _mv_mark_attached(proposals, raw)
+
+    return MvSuggestResponse(
+        space_id=space_id,
+        run_id=run_id,
+        status=getattr(outcome, "status", "FAILED"),
+        skip_reason=getattr(outcome, "skip_reason", None),
+        measures_found=getattr(outcome, "measures_found", None),
+        error=getattr(outcome, "error", None),
+        proposals=proposals,
+    )
+
+
+def _mv_sse_event(event_type: str, data: dict) -> str:
+    """Format a dict as an SSE event frame (buffer-split on ``\\n\\n``)."""
+    return f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+# Seconds between SSE keepalive comments — matches the create-agent stream so a
+# proxy idle timeout can never sever a multi-minute scan mid-flight (MV-D31).
+_MV_STREAM_KEEPALIVE_S = 15
+
+
+@router.post("/spaces/{space_id}/mv/suggest/stream")
+async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
+    """Streaming twin of ``/mv/suggest`` with staged progress (MV-D31).
+
+    Finding 2 was a bare spinner over a multi-minute wait. This runs the same
+    advisor but emits a typed ``stage`` event on ENTRY to each of the four honest
+    phases (``reading curated SQL`` → ``scanning for recurring measures`` →
+    ``scoring candidates (embeddings + usage signals)`` → ``rendering DDL``) so
+    the surface always shows what it is doing *now*, then a final ``result`` event
+    carrying the same ``MvSuggestResponse`` the blocking route returns. A 15s
+    keepalive holds the connection through the long SCORING stage.
+
+    OBO/SSE trap (the repo's documented gotcha): ``call_next`` returns before this
+    generator runs, so the OBO ContextVar does not propagate into it — the token
+    is re-set from ``request.state`` *inside* the generator, exactly as the
+    create-agent route does, and the identity-bound config read runs there under
+    ``_offload`` (which copies the contextvars context into its worker). The
+    advisor itself runs as the SP, unchanged.
+    """
+    from backend.services.auth import clear_obo_user_token, set_obo_user_token
+
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    # Fail fast (before streaming) when no user token reached us: the ContextVar
+    # is still valid in the handler body here, so a missing-OBO request is a clean
+    # 401, not a mid-stream error the client has to parse out of the event frames.
+    try:
+        require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    user_token = getattr(request.state, "user_token", "")
+    sp_ws = get_service_principal_client()
+    user_email = request.headers.get("x-forwarded-email") or os.environ.get(
+        "DEV_USER_EMAIL"
+    )
+
+    from backend.services import mv_suggest
+    from genie_space_optimizer.common.genie_client import (
+        MissingSerializedSpaceError,
+        fetch_space_config,
+    )
+    from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+
+    async def event_stream():
+        # Re-establish OBO inside the generator (ContextVars do not cross the lazy
+        # stream boundary — the create.py precedent).
+        if user_token:
+            set_obo_user_token(user_token)
+        try:
+            yield _mv_sse_event("started", {"space_id": space_id})
+
+            # Identity-bound read: fetch_space_config runs under the OBO client
+            # obtained from the re-set ContextVar. _offload copies the context in,
+            # so the worker thread sees the same user identity. Scope-error falls
+            # back to the SP for this read only, as the blocking route does.
+            obo_ws = require_obo_workspace_client()
+            try:
+                raw = await _offload(fetch_space_config, obo_ws, space_id)
+            except MissingSerializedSpaceError:
+                raw = await _offload(fetch_space_config, sp_ws, space_id)
+            except Exception as exc:
+                logger.warning(
+                    "mv/suggest/stream: could not fetch space %s config: %s",
+                    space_id, exc,
+                )
+                yield _mv_sse_event(
+                    "error", {"detail": "Could not read the Agent configuration."}
+                )
+                return
+            applied_config = raw.get("_parsed_space") if isinstance(raw, dict) else None
+
+            # Bridge the blocking advisor's on_stage (called from a worker thread)
+            # to this async generator via a thread-safe hand-off. The advisor runs
+            # as the SP, so it needs no OBO context in the worker.
+            loop = asyncio.get_running_loop()
+            events: asyncio.Queue = asyncio.Queue()
+
+            def _emit(kind: str, payload: Any) -> None:
+                loop.call_soon_threadsafe(events.put_nowait, (kind, payload))
+
+            def _run() -> None:
+                try:
+                    outcome, run_id = mv_suggest.suggest_for_space(
+                        sp_ws=sp_ws,
+                        catalog=config.catalog,
+                        schema=config.schema_name,
+                        warehouse_id=config.warehouse_id,
+                        llm_model=config.llm_model,
+                        space_id=space_id,
+                        applied_config=applied_config,
+                        triggered_by=user_email,
+                        on_stage=lambda stage: _emit("stage", stage),
+                    )
+                    _emit("done", (outcome, run_id))
+                except Exception as exc:  # noqa: BLE001 — relayed as an SSE error
+                    logger.exception("mv/suggest/stream failed for space %s", space_id)
+                    _emit("error", exc)
+
+            loop.run_in_executor(None, _run)
+
+            while True:
+                try:
+                    kind, payload = await asyncio.wait_for(
+                        events.get(), timeout=_MV_STREAM_KEEPALIVE_S
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+
+                if kind == "stage":
+                    yield _mv_sse_event("stage", {"stage": payload})
+                    continue
+                if kind == "error":
+                    yield _mv_sse_event(
+                        "error", {"detail": "Metric-view advice failed."}
+                    )
+                    return
+
+                # kind == "done": reload the persisted proposals (SP) and emit the
+                # same MvSuggestResponse shape the blocking route returns.
+                outcome, run_id = payload
+                try:
+                    rows = await _offload(
+                        wh_load_mv_candidates,
+                        sp_ws,
+                        config.warehouse_id,
+                        config.catalog,
+                        config.schema_name,
+                        target_space_id=space_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "mv/suggest/stream: could not reload proposals for %s: %s",
+                        space_id, exc,
+                    )
+                    rows = []
+                proposals = [_mv_proposal_from_row(r) for r in rows]
+                # Prompt 15.9 item (d): label provenance ids from the config this
+                # stream already read (applied_config), same as the blocking route.
+                if proposals:
+                    _mv_attach_provenance_labels(proposals, applied_config)
+                    # MV-D34: Re-scan must badge already-attached views too, or a
+                    # created-and-attached view reappears as a fresh suggestion
+                    # after a re-scan. ``raw`` holds the _metric_views identifiers.
+                    _mv_mark_attached(proposals, raw)
+                response = MvSuggestResponse(
+                    space_id=space_id,
+                    run_id=run_id,
+                    status=getattr(outcome, "status", "FAILED"),
+                    skip_reason=getattr(outcome, "skip_reason", None),
+                    measures_found=getattr(outcome, "measures_found", None),
+                    error=getattr(outcome, "error", None),
+                    proposals=proposals,
+                )
+                yield _mv_sse_event("result", response.model_dump())
+                return
+        finally:
+            clear_obo_user_token()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/spaces/{space_id}/mv/register", response_model=MvRegisterResponse)
+async def register_space_mv(space_id: SpaceId, body: MvRegisterRequest):
+    """Register a user-created metric view so the app can attach it (MV-D24).
+
+    The return trip for the copied-DDL path: a user who created the suggested
+    view themselves reports its identifier here, the backend verifies it under
+    OBO (it is a metric view, its YAML is recoverable and passes the safety
+    lint, and — when claimed — its fingerprint matches the proposal), and on
+    success records a ``USER_CREATED`` ledger row under a sentinel advice run so
+    the normal attach-and-lift path runs next time.
+
+    Verified and refused are both normal 200 responses the panel renders from
+    one shape (``registered`` + ``reason``). Missing OBO is a 401 (MV-D20); a
+    write that fails after verification is a 500 the user retries — never a
+    verified-but-recorded-anyway view (invariant 2).
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    # MV-D20: a create-adjacent write is bound to the signed-in user and never
+    # falls back to the SP. Refuse up front when no OBO token reached us.
+    try:
+        require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    from backend.services import mv_create
+
+    try:
+        result = await _offload(
+            mv_create.register_user_created_view,
+            space_id=space_id,
+            full_name=body.full_name,
+            claimed_suggestion_id=body.suggestion_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            warehouse_id=config.warehouse_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except Exception:
+        logger.exception("mv/register failed for space %s", space_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Registration failed after verification; please retry.",
+        )
+
+    return MvRegisterResponse(
+        registered=result.registered,
+        full_name=result.full_name,
+        provenance=result.provenance,
+        run_id=result.run_id,
+        suggestion_id=result.suggestion_id,
+        reason=result.reason,
+        warnings=result.warnings,
+    )
+
+
+@router.post(
+    "/spaces/{space_id}/mv/create", response_model=MvCreateAtApprovalResponse
+)
+async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprovalRequest):
+    """Create an approved proposal now, under OBO (MV-D34 — create-at-approval).
+
+    The user accepted a suggestion on the surface where they meet it, with a
+    fresh consent recorded at click. This creates the ONE proposal in the
+    consented schema under the user's identity, ATTACHES it to the Agent config
+    in the same call (the config is the source of truth, so the semantic model
+    and these suggestions then reflect it), and records an ``OBO_CREATED`` ledger
+    row on a sentinel advice run. Idempotent: if the view already exists as a
+    metric view (a prior round, or a create-not-attached left by a failed PATCH)
+    it skips the CREATE and only re-attaches — never a "refusing to clobber" dead
+    end (``already_existed`` reports which happened).
+
+    Three outcomes, all normal 200s the card renders from one shape: created (with
+    ``attached`` + ``grant_sql``), degraded (fresh probe below SUFFICIENT →
+    [Approve for later] + remediation GRANT, nothing created), and a create-time
+    failure with a reason. Missing OBO is a 401 (MV-D20) — a create never falls
+    back to the SP.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(
+            status_code=503, detail="No SQL warehouse configured for Auto-Optimize."
+        )
+
+    # MV-D20/MV-D34 identity invariant: refuse up front when no OBO token reached
+    # us, so the create can never silently run as the service principal.
+    try:
+        require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    try:
+        result = await _offload(
+            mv_create.create_at_approval,
+            space_id=space_id,
+            suggestion_id=body.suggestion_id,
+            probe_id=body.probe_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            warehouse_id=config.warehouse_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except Exception:
+        logger.exception("mv/create (at approval) failed for space %s", space_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Create failed; please retry or approve for the next run.",
+        )
+
+    # Option A grant: the copy-ready SELECT the created view needs so a later
+    # optimization run (the GSO SP, a different principal) can read it. Resolved
+    # from the create response so the card no longer depends on the proposal's
+    # best-effort DDL fetch having landed. Only meaningful once a view exists.
+    grant_sql: str | None = None
+    workspace_host: str | None = None
+    if result.created and result.full_name:
+        sp_app_id = await _offload(_gso_sp_application_id)
+        grant_sql = _mv_optimizer_grant_sql(result.full_name, sp_app_id)
+        # #2 (post-create link): the workspace URL so the created terminal can
+        # deep-link the new view in Catalog Explorer. Best-effort — a missing
+        # host just omits the link, it never fails an otherwise-good create.
+        try:
+            workspace_host = (get_workspace_client().config.host or "").rstrip("/") or None
+        except Exception:
+            workspace_host = None
+
+    return MvCreateAtApprovalResponse(
+        created=result.created,
+        degraded=result.degraded,
+        attached=result.attached,
+        already_existed=result.already_existed,
+        full_name=result.full_name,
+        run_id=result.run_id,
+        suggestion_id=result.suggestion_id,
+        provenance=result.provenance,
+        verdict=result.verdict,
+        remediation_sql=result.remediation_sql,
+        grant_sql=grant_sql,
+        reason=result.reason,
+        workspace_host=workspace_host,
+    )
+
+
+# ── Semantic model graph (Prompt 12 + 12b, MV-D23) ──────────────────────────
+# Deterministic assembly of a space's semantic model from serialized_space config
+# fields plus the space-scoped proposals read. Prompt 12b adds server-side SQL
+# parsing, always through the ONE parser the advisor already trusts
+# (optimization/mv_fingerprint, sqlglot==30.0.3 — never a second parser, never in
+# the browser):
+#   - governed measure chips read from the real MV definition
+#     (DESCRIBE ... AS JSON view_text, parsed by metric_view_catalog's existing
+#     parsing and flattened by mv_scoring.metric_view_fields) — the speculative
+#     five-key column probe is deleted, not extended;
+#   - curated measure concepts harvested from example_question_sqls via the
+#     curated-harvest reader mv_scoring.example_question_sql_statements and
+#     mv_fingerprint.extract_measures;
+#   - concept identity keyed on mv_fingerprint.canonicalize_expr, the same
+#     canonicalization the fingerprint engine hashes, so the ladder and the
+#     advisor cannot disagree about what one measure is (MV-D21, for concepts).
+# MV-D16(b) binds: nothing extracted here re-enters the advisor corpus as
+# recurrence evidence — this is a read-only view assembler.
+
+_RT_PREFIX = "--rt=FROM_RELATIONSHIP_TYPE_"
+
+
+def _short_name(identifier: str) -> str:
+    """Last dotted segment of a UC identifier, backticks stripped."""
+    cleaned = (identifier or "").replace("`", "").strip()
+    return cleaned.split(".")[-1] if cleaned else cleaned
+
+
+def _decode_relationship(rt_annotation: str) -> str | None:
+    """Decode a join_specs ``--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--`` token."""
+    token = (rt_annotation or "").strip()
+    if _RT_PREFIX not in token:
+        return None
+    body = token.split(_RT_PREFIX, 1)[1].rstrip("-").strip()
+    return body.lower().replace("_", "-") if body else None
+
+
+def _clean_predicate(predicate: str) -> str:
+    """Human-readable ON predicate — backticks stripped, whitespace collapsed."""
+    return re.sub(r"\s+", " ", (predicate or "").replace("`", "")).strip()
+
+
+_EQ_COLS_RE = re.compile(
+    r"([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)"
+)
+
+
+def _parse_join_columns(
+    predicate: str, left_id: str, right_id: str
+) -> tuple[str | None, str | None]:
+    r"""The participating column on each side of a join's ON predicate (Phase 2).
+
+    Genie authors one join spec per column pair with a backtick-quoted, alias-
+    qualified equality (`orders`.`customer_id` = `customers`.`customer_id`); the
+    alias is the table's short name (serialized_space join-specs format).
+    Returns ``(left_column, right_column)`` — matched to ``left_id``/``right_id``
+    by short-name — from the FIRST equality whose two qualifiers resolve to the
+    two join sides, so an ``is_current`` guard (a column = literal comparison, not
+    a column = column) is ignored. Deterministic, pure string parse; returns
+    ``(None, None)`` when nothing resolves so the field simply stays absent."""
+    left_short = _short_name(left_id).lower()
+    right_short = _short_name(right_id).lower()
+    for q1, c1, q2, c2 in _EQ_COLS_RE.findall(_clean_predicate(predicate)):
+        a, b = q1.lower(), q2.lower()
+        if a == left_short and b == right_short:
+            return c1, c2
+        if a == right_short and b == left_short:
+            return c2, c1
+    return None, None
+
+
+def _join_side_identifier(side: Any) -> str:
+    return side.get("identifier", "") if isinstance(side, dict) else ""
+
+
+def _norm_fqn(identifier: str) -> str:
+    """Lower-cased, backtick-stripped UC identifier — the key both the config MV
+    node and the DESCRIBE-derived ``MetricViewField.mv_fqn`` normalize to, so a
+    governed chip can find its owning metric view node."""
+    return (identifier or "").replace("`", "").strip().lower()
+
+
+_DOTTED_REF = re.compile(
+    r"(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)(?:\.(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))+"
+)
+
+
+def _expr_table_refs(expr: str) -> list[tuple[str, bool]]:
+    """Candidate table references inside a measure expression (round-7 lineage).
+
+    Returns ``(fqn, allow_add)`` pairs. A dotted run with >= 4 segments is an
+    unambiguous ``catalog.schema.table.column`` — its first three segments are a
+    real table we may ADD to the canvas if unseen (the expression proves it
+    belongs, mirroring the "MV definition is proof" rule). A 3-segment run is
+    ambiguous (``catalog.schema.table`` vs ``schema.table.column``), so it is
+    match-only: emitted only when it already resolves to a known table, never
+    added. Deterministic, de-duplicated, order-preserving; a pure string parse."""
+    out: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for m in _DOTTED_REF.finditer(expr or ""):
+        parts = [p.strip("`") for p in m.group(0).split(".")]
+        parts = [p for p in parts if p]
+        if len(parts) >= 4:
+            fqn, allow_add = ".".join(parts[:3]), True
+        elif len(parts) == 3:
+            fqn, allow_add = ".".join(parts), False
+        else:
+            continue
+        if fqn not in seen:
+            seen.add(fqn)
+            out.append((fqn, allow_add))
+    return out
+
+
+_MV_YAML_SOURCE_LINE_RE = re.compile(r"(?mi)^\s*source:\s*(.+?)\s*(?:#.*)?$")
+_MV_TABLE_FQN_RE = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+){1,2}$")
+
+
+def _mv_source_tables_from_yaml(yaml_text: str | None) -> list[str] | None:
+    """The tables a rendered metric-view body reads, in first-seen order.
+
+    Parsed from the ``source:`` of the base plus each join in the immutable
+    ``yaml_text`` (MV-D22) — the authority for what the view is over, so the card
+    can show a Source attribute for an existing candidate without a re-scan. Each
+    identifier is normalized (surrounding quotes and per-segment backticks
+    stripped) and kept only when it reads as a 2- or 3-part table name, so a
+    block scalar (``source: |``) never leaks in. De-duplicated; returns ``None``
+    when nothing parses so the field stays absent rather than an empty list."""
+    if not yaml_text:
+        return None
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in _MV_YAML_SOURCE_LINE_RE.finditer(yaml_text):
+        cleaned = match.group(1).strip().strip("'\"").replace("`", "").strip()
+        if not _MV_TABLE_FQN_RE.match(cleaned) or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out or None
+
+
+def _concept_key(canonical_expr: str, name: str) -> str:
+    """Concept identity (Prompt 12b Debt 3, MV-D21 for concepts).
+
+    The canonicalized measure expression when it parses — ``canonicalize_expr``
+    strips table qualifiers and literals, so ``SUM(o.rev - o.cost)`` and
+    ``SUM(ord.rev - ord.cost)`` are ONE concept, the same identity the
+    fingerprint engine hashes. An expression that will not parse falls back to
+    the lower-cased display name so a name-only curated snippet still dedups."""
+    return (canonical_expr or "").strip() or (name or "").strip().lower()
+
+
+def _synth_measure_name(
+    aggregate: str, source_columns: tuple[str, ...] | list[str], fallback: str
+) -> str:
+    """Compact, human label for a harvested curated measure that has no author
+    name — only an expression. Uses the aggregate and its primary source column
+    (``sum · net_sales``, ``count · location_number``); when more than one column
+    participates a ``+N`` hint keeps it honest without spilling the whole
+    expression into the card. Falls back to the aggregate alone, then to the
+    caller's readable render form. Pure — never throws."""
+    agg = (aggregate or "").strip().lower()
+    cols = [c for c in (source_columns or ()) if c]
+    if agg and cols:
+        extra = len(cols) - 1
+        return f"{agg} · {cols[0]}" + (f" +{extra}" if extra > 0 else "")
+    if agg:
+        return agg
+    return (fallback or "").strip()
+
+
+def _curated_sql_measures(space_data: dict) -> list[tuple[str, str, str, tuple[str, ...]]]:
+    """Curated measure concepts harvested from ``example_question_sqls`` (Debt 1).
+
+    Reuses the curated-harvest reader ``mv_scoring.example_question_sql_statements``
+    (the single reader ``trusted_asset_definitions`` also uses, so the ladder and
+    the advisor cannot drift over what a curated asset is) and
+    ``mv_fingerprint.extract_measures`` — the one sanctioned parser. Returns
+    ``(canonical_expr, name, display_expr, source_tables)`` tuples:
+
+    - ``canonical_expr`` is the dedup identity (qualifier-stripped, literals as
+      placeholders) — the same key the fingerprint engine hashes.
+    - ``name`` is a compact synthesized label (``aggregate · column``), because a
+      harvested measure has no author-given name; showing the raw canonical
+      expression as a "name" is what put ``count(case when … = ?s …)`` on the
+      Space-config card instead of a readable measure name.
+    - ``display_expr`` is the literal-preserving ``representative_expr`` (what the
+      detail inset renders), falling back to the canonical form.
+    - ``source_tables`` are the tables the aggregate provably reads, so
+      Space-config lineage can be drawn from real table identities rather than
+      re-parsing a canonical expression that has had its qualifiers stripped.
+
+    Best-effort and read-only: a statement that will not parse simply contributes
+    no concept (MV-D16(b): nothing here re-enters the advisor corpus)."""
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+    from genie_space_optimizer.optimization.mv_scoring import (
+        example_question_sql_statements,
+    )
+
+    out: list[tuple[str, str, str, tuple[str, ...]]] = []
+    seen: set[str] = set()
+    for _identifier, sql in example_question_sql_statements(space_data):
+        for measure in extract_measures(sql):
+            canon = measure.canonical_expr
+            if not canon or canon in seen:
+                continue
+            seen.add(canon)
+            name = _synth_measure_name(
+                measure.aggregate,
+                measure.source_columns,
+                measure.representative_expr or measure.canonical_expr,
+            )
+            display_expr = measure.representative_expr or measure.canonical_expr
+            out.append((canon, name, display_expr, tuple(measure.source_tables)))
+    return out
+
+
+def _statement_footprint(sql: str) -> tuple[frozenset[str], frozenset[str]] | None:
+    """``(table_fqns, measure_canonicals)`` one curated statement touches, or None.
+
+    ``None`` marks a parse failure so the coverage lens can report it in the
+    MV-D15 vocabulary rather than silently counting a dropped statement as zero
+    coverage. Tables come from the sqlglot tree the advisor's own parser produced
+    (``parse_statement``); measure identities from ``extract_measures`` — one
+    parser, server-side, never the browser."""
+    from sqlglot import exp
+
+    from genie_space_optimizer.optimization.mv_fingerprint import (
+        extract_measures,
+        parse_statement,
+    )
+
+    tree = parse_statement(sql)
+    if tree is None:
+        return None
+    tables: set[str] = set()
+    for table in tree.find_all(exp.Table):
+        parts = [p for p in (table.catalog, table.db, table.name) if p]
+        if parts:
+            tables.add(".".join(p.lower() for p in parts))
+    measures = {m.canonical_expr for m in extract_measures(sql) if m.canonical_expr}
+    return frozenset(tables), frozenset(measures)
+
+
+def _build_semantic_graph(
+    space_data: dict,
+    proposals: list[MvProposal],
+    *,
+    governed_fields: Any = (),
+    mv_internals: dict[str, dict] | None = None,
+) -> tuple[list[MvSemanticGraphNode], list[MvSemanticGraphEdge], str | None, str | None]:
+    """Assemble the base graph nodes/edges + the SQL-coverage lens (Prompt 12b).
+
+    ``governed_fields`` is the DESCRIBE-derived measure read — a sequence of
+    ``mv_scoring.MetricViewField`` (or field-shaped mappings for tests) with
+    ``mv_fqn`` / ``field_name`` / ``canonical_expr``. Only ``FIELD_MEASURE`` kinds
+    reach here; an empty sequence is the honest "no governed chips" fallback the
+    deleted ``_is_measure_column`` probe used to produce, now truthful instead of
+    speculative.
+
+    ``mv_internals`` (Prompt 12e, MV-D33) maps a metric view identifier to its
+    parsed YAML structure ``{"available": bool, "source": str|None,
+    "joins": [{"table", "on", "relationship"}]}`` — the source of the ``uses``
+    edges (MV → the tables it sources), the MV-YAML join edges (the ONLY other
+    admissible arrow proof besides ``join_specs``), and the ``definition_available``
+    flag. An MV absent from the map keeps ``definition_available=None`` (no read
+    attempted); one with ``available=False`` draws NO arrows — unreadable is
+    unproven (MV-D33 constraint 2). Returns
+    ``(nodes, edges, coverage_status, coverage_reason)``."""
+    mv_internals = mv_internals or {}
+    ds = space_data.get("data_sources")
+    ds = ds if isinstance(ds, dict) else {}
+    instructions = space_data.get("instructions")
+    instructions = instructions if isinstance(instructions, dict) else {}
+
+    tables = [t for t in ds.get("tables", []) if isinstance(t, dict)]
+    metric_views = [m for m in ds.get("metric_views", []) if isinstance(m, dict)]
+    join_specs = [j for j in instructions.get("join_specs", []) if isinstance(j, dict)]
+    snippets = instructions.get("sql_snippets")
+    snippets = snippets if isinstance(snippets, dict) else {}
+    snippet_measures = [m for m in snippets.get("measures", []) if isinstance(m, dict)]
+
+    # A table on the RIGHT ("one") side of a join is a joined dimension (col 1);
+    # everything else the space uses is a source/fact table (col 0).
+    # Phase 2 (§6): participating columns per table, accumulated from the parsed
+    # ON endpoints (join keys only — never the full column list). Order-preserving
+    # and de-duplicated; a table with no parsed join key simply gets no `columns`.
+    participating: dict[str, list[str]] = {}
+
+    def _note_column(table_id: str, column: str | None) -> None:
+        if not column:
+            return
+        cols = participating.setdefault(table_id, [])
+        if column not in cols:
+            cols.append(column)
+
+    dim_ids: set[str] = set()
+    edges: list[MvSemanticGraphEdge] = []
+    for j in join_specs:
+        left_id = _join_side_identifier(j.get("left"))
+        right_id = _join_side_identifier(j.get("right"))
+        if not left_id or not right_id:
+            continue
+        dim_ids.add(right_id)
+        sql = j.get("sql") if isinstance(j.get("sql"), list) else []
+        predicate = _clean_predicate(sql[0]) if len(sql) >= 1 else ""
+        relationship = _decode_relationship(sql[1]) if len(sql) >= 2 else None
+        from_col, to_col = _parse_join_columns(predicate, left_id, right_id)
+        _note_column(left_id, from_col)
+        _note_column(right_id, to_col)
+        edges.append(MvSemanticGraphEdge(
+            **{"from": left_id, "to": right_id},
+            kind="join",
+            on=predicate or None,
+            relationship=relationship,
+            scd2=bool(predicate and "is_current" in predicate.lower()),
+            from_column=from_col,
+            to_column=to_col,
+        ))
+
+    nodes: list[MvSemanticGraphNode] = []
+    table_ids: set[str] = set()
+    for t in tables:
+        ident = t.get("identifier", "")
+        if not ident:
+            continue
+        table_ids.add(ident)
+        nodes.append(MvSemanticGraphNode(
+            id=ident, kind="table", label=_short_name(ident),
+            col=1 if ident in dim_ids else 0, row=0,
+        ))
+
+    # Metric view nodes (col 2), indexed by normalized fqn so a governed chip can
+    # find its owner.
+    mv_id_by_fqn: dict[str, str] = {}
+    mv_node_by_id: dict[str, MvSemanticGraphNode] = {}
+    for m in metric_views:
+        ident = m.get("identifier", "")
+        if not ident:
+            continue
+        mv_id_by_fqn[_norm_fqn(ident)] = ident
+        mv_node = MvSemanticGraphNode(
+            id=ident, kind="metric_view", label=_short_name(ident), col=2, row=0,
+        )
+        # Prompt 12e / MV-D33: definition_available reflects whether the MV's YAML
+        # was read + parsed. None (default) when no read was attempted for it.
+        info = mv_internals.get(ident)
+        if info is not None:
+            mv_node.definition_available = bool(info.get("available"))
+            # Prompt 12f: the rest of the parsed definition rides the node so the
+            # curator inset needs no second read. Only for a readable YAML —
+            # an unavailable definition proves nothing to report.
+            if info.get("available"):
+                mv_node.mv_filter = info.get("filter") or None
+                mv_node.materialization = info.get("materialization") or None
+                dims = [
+                    MvSemanticGraphDimension(
+                        name=str(d.get("name")),
+                        expr=d.get("expr"),
+                        binding=d.get("binding"),
+                    )
+                    for d in (info.get("dimensions") or [])
+                    if isinstance(d, dict) and d.get("name")
+                ]
+                mv_node.dimensions = dims or None
+        nodes.append(mv_node)
+        mv_node_by_id[ident] = mv_node
+
+    # Prompt 12e / MV-D33: a metric view IS a semantic model. Fold each readable
+    # MV's parsed YAML into the deduplicated table canvas — its source is a fact,
+    # its joined tables are dimensions — and emit the PROVEN arrows: a ``uses``
+    # edge MV → each member table (the at-rest arrow + the select-time boundary's
+    # member set), and a ``join`` edge per MV-YAML join (the only arrow proof
+    # besides join_specs). An MV with ``available=False`` (unreadable/unparsed
+    # YAML) contributes NOTHING here — no member tables, no arrows — because
+    # unreadable is unproven. Tables are deduplicated: a member table already on
+    # the canvas is reused by identity, never copied (MV-D33 constraint 1).
+    norm_to_table_id = {_norm_fqn(tid): tid for tid in table_ids}
+    mv_source_norms: set[str] = set()
+    mv_dim_norms: set[str] = set()
+    existing_join_pairs = {(_norm_fqn(e.from_), _norm_fqn(e.to)) for e in edges if e.kind == "join"}
+    existing_uses_pairs: set[tuple[str, str]] = set()
+
+    def _resolve_or_add_table(raw: str, *, as_dim: bool) -> str | None:
+        """Resolve an MV-referenced table to its canvas node, adding it if the
+        space did not already declare it (the MV definition IS the proof it
+        belongs). Deduplicates by normalized fqn. Returns the node id."""
+        cleaned = (raw or "").replace("`", "").strip()
+        if not cleaned:
+            return None
+        norm = _norm_fqn(cleaned)
+        node_id = norm_to_table_id.get(norm)
+        if node_id is None:
+            node_id = cleaned
+            table_ids.add(node_id)
+            norm_to_table_id[norm] = node_id
+            nodes.append(MvSemanticGraphNode(
+                id=node_id, kind="table", label=_short_name(node_id),
+                col=1 if as_dim else 0, row=0,
+            ))
+        return node_id
+
+    for ident, info in ((i, mv_internals.get(i)) for i in list(mv_node_by_id)):
+        if not info or not info.get("available"):
+            continue
+        source_id = _resolve_or_add_table(info.get("source") or "", as_dim=False)
+        member_ids: list[str] = []
+        if source_id:
+            mv_source_norms.add(_norm_fqn(source_id))
+            member_ids.append(source_id)
+            # Prompt 12f: the RESOLVED canvas node id (set here, after dedup,
+            # rather than the raw YAML string) so the inset's join tree can be
+            # rooted by identity.
+            mv_node_by_id[ident].mv_source = source_id
+        for j in info.get("joins") or []:
+            if not isinstance(j, dict):
+                continue
+            dim_id = _resolve_or_add_table(j.get("table") or "", as_dim=True)
+            if not dim_id:
+                continue
+            mv_dim_norms.add(_norm_fqn(dim_id))
+            member_ids.append(dim_id)
+            # MV-YAML join edge (proof): source → joined dimension, deduped
+            # against config join_specs so one relationship is one arrow.
+            if source_id:
+                pair = (_norm_fqn(source_id), _norm_fqn(dim_id))
+                if pair not in existing_join_pairs:
+                    existing_join_pairs.add(pair)
+                    mv_on = _clean_predicate(j.get("on") or "")
+                    mv_from_col, mv_to_col = _parse_join_columns(mv_on, source_id, dim_id)
+                    _note_column(source_id, mv_from_col)
+                    _note_column(dim_id, mv_to_col)
+                    edges.append(MvSemanticGraphEdge(
+                        **{"from": source_id, "to": dim_id}, kind="join",
+                        on=mv_on or None, relationship=j.get("relationship"),
+                        from_column=mv_from_col, to_column=mv_to_col,
+                    ))
+        for tid in member_ids:
+            pair = (ident, tid)
+            if pair in existing_uses_pairs:
+                continue
+            existing_uses_pairs.add(pair)
+            edges.append(MvSemanticGraphEdge(**{"from": ident, "to": tid}, kind="uses"))
+
+    # Fact/dim refinement from the MV definitions: a table an MV sources is a
+    # fact (col 0); a table only ever joined is a dimension (col 1). MV-source
+    # wins over the join_specs-derived dim guess so a shared fact is not miscolumned.
+    #
+    # Round-5: also record the PROVEN role on the node — only where a metric view
+    # DEFINITION proves it. A fact is a metric view's declared ``source``; a dim is
+    # a table an MV YAML joins in. A table known only from ``join_specs`` (which do
+    # not reliably distinguish the fact from the dim — the same table can sit on
+    # either side across two joins) stays ``role=None``, so the UI labels it a
+    # neutral "table" rather than guessing fact/dim from column position. This is
+    # the fix for `dim_*` tables shown as FACT purely because they sat left of a
+    # join, and it matches the reviewer's "prove it or stay neutral" choice.
+    for n in nodes:
+        if n.kind != "table":
+            continue
+        norm = _norm_fqn(n.id)
+        if norm in mv_source_norms:
+            n.col = 0
+            n.role = "fact"
+        elif norm in mv_dim_norms:
+            n.col = 1
+            n.role = "dim"
+        # Phase 2 (§6): participating (join-key) columns for the Columns LOD.
+        # Additive — absent when nothing referenced the table in a parsed ON.
+        if participating.get(n.id):
+            n.columns = participating[n.id]
+
+    # Governance ladder, deduped by concept identity (Debt 3): governed wins over
+    # curated wins over ungoverned. ``key_by_node`` maps a measure node id to its
+    # concept key so the coverage lens can match statements to measures.
+    governed_keys: set[str] = set()
+    curated_keys: set[str] = set()
+    ungoverned_keys: set[str] = set()
+    key_by_node: dict[str, str] = {}
+    used_ids: set[str] = set()
+
+    def _measure_node(
+        *, key: str, label: str, governance: str, origin: str,
+        benchmark_ids: list[str] | None = None,
+        expr: str | None = None, description: str | None = None,
+    ) -> str | None:
+        node_id = f"measure:{label}"
+        # Distinct concepts that render the same label get a keyed suffix so one
+        # does not silently swallow the other.
+        if node_id in used_ids:
+            node_id = f"measure:{label}#{key}"
+        if node_id in used_ids:
+            return None
+        used_ids.add(node_id)
+        key_by_node[node_id] = key
+        nodes.append(MvSemanticGraphNode(
+            id=node_id, kind="measure", label=label, col=3, row=0,
+            governance=governance, origin=origin,
+            benchmark_question_ids=benchmark_ids or None,
+            expr=(expr or None), description=(description or None),
+        ))
+        return node_id
+
+    # Governed chips: the DESCRIBE-enumerated MV measures (Debt 2). Identity is
+    # the canonicalized expr; membership ties each to its owning MV node.
+    governed_owner_by_label: dict[str, str] = {}
+    for field_ in governed_fields:
+        fqn = _field_attr(field_, "mv_fqn")
+        name = _field_attr(field_, "field_name") or _field_attr(field_, "name")
+        canonical = _field_attr(field_, "canonical_expr")
+        if not name:
+            continue
+        key = _concept_key(canonical, name)
+        if key in governed_keys:
+            continue
+        governed_keys.add(key)
+        owner = mv_id_by_fqn.get(_norm_fqn(fqn))
+        origin = f"{_short_name(fqn)} (attached MV)" if fqn else "attached MV"
+        # The canonical expression is what the DESCRIBE read proves this governed
+        # measure computes; a comment/description rides along when the field has one.
+        gov_desc = _field_attr(field_, "description") or _field_attr(field_, "comment")
+        node_id = _measure_node(
+            key=key, label=name, governance="governed", origin=origin,
+            expr=canonical or None, description=gov_desc or None,
+        )
+        if node_id and owner:
+            edges.append(MvSemanticGraphEdge(**{"from": node_id, "to": owner}, kind="membership"))
+        # Prompt 12f: remember who governs each NAME, so a loose measure that
+        # reuses the name under a different expression can be flagged as an
+        # overlap below rather than sitting silently beside its governed twin.
+        governed_owner_by_label.setdefault(name.lower(), owner or fqn or "an attached metric view")
+
+    # Curated concepts: structured sql_snippets.measures, plus measures harvested
+    # from example_question_sqls (Debt 1). Both keyed by canonical expr so two
+    # spellings of one measure are one chip and a governed measure absorbs its
+    # curated twin.
+    # Each entry: (concept_key, label, expr, source_tables). ``source_tables`` is
+    # the parser-proven lineage for a harvested curated measure; snippet measures
+    # carry none here and fall back to the expr-parse lineage below.
+    curated_sources: list[tuple[str, str, str | None, tuple[str, ...]]] = []
+    for i, m in enumerate(snippet_measures):
+        label = m.get("display_name") or m.get("id") or f"measure_{i}"
+        expr = m.get("sql")
+        if isinstance(expr, list):
+            expr = " ".join(str(part) for part in expr if part).strip()
+        expr = str(expr).strip() if expr else None
+        canonical = ""
+        if expr:
+            from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
+            canonical = canonicalize_expr(expr)
+        curated_sources.append((_concept_key(canonical, label), label, expr, ()))
+    for canonical, name, display_expr, src_tables in _curated_sql_measures(space_data):
+        # A harvested curated measure has no author name — show the synthesized
+        # ``aggregate · column`` label, keep the literal-preserving expression for
+        # the detail inset, and carry its proven source tables for lineage. The
+        # dedup key stays ``canonical`` so identity is unchanged.
+        curated_sources.append((_concept_key(canonical, name), name, display_expr, src_tables))
+
+    # measure node id → parser-proven source tables, consumed by the lineage pass.
+    curated_src_tables: dict[str, tuple[str, ...]] = {}
+    for key, label, expr, src_tables in curated_sources:
+        if key in governed_keys or key in curated_keys:
+            continue
+        curated_keys.add(key)
+        node_id = _measure_node(key=key, label=label, governance="curated", origin="curated SQL", expr=expr)
+        if node_id and src_tables:
+            curated_src_tables[node_id] = src_tables
+
+    # Ungoverned concepts: recur only in proposal evidence, deduped by concept
+    # identity against the higher rungs. Proposals expose a name, not an expr, so
+    # a name-derived key is used and cross-checked against the label of any
+    # higher-rung chip (preserving the highest-rung-wins rule).
+    higher_labels = {n.label for n in nodes if n.kind == "measure"}
+    for p in proposals:
+        name = _short_name(p.proposed_object or "") or (p.suggestion_id or "")
+        if not name:
+            continue
+        key = _concept_key("", name)
+        if key in governed_keys or key in curated_keys or key in ungoverned_keys:
+            continue
+        if name in higher_labels:
+            continue
+        ungoverned_keys.add(key)
+        evidence = p.evidence if isinstance(p.evidence, dict) else {}
+        recurrence = evidence.get("recurrence_count")
+        origin = f"proposal evidence · {recurrence}×" if recurrence else "proposal evidence"
+        bench = evidence.get("benchmark_question_ids")
+        bench_ids = [str(b) for b in bench] if isinstance(bench, list) and bench else None
+        _measure_node(
+            key=key, label=name, governance="ungoverned", origin=origin,
+            benchmark_ids=bench_ids,
+        )
+
+    # Prompt 12f: name collisions between a loose measure and a governed one.
+    # Identity dedup above already merged the concepts that share an EXPRESSION;
+    # what survives here is the dangerous case — same name, different definition —
+    # which the Space-config panel raises as an overlap warning.
+    for n in nodes:
+        if n.kind != "measure" or n.governance == "governed":
+            continue
+        owner = governed_owner_by_label.get(n.label.lower())
+        if owner:
+            n.overlaps = owner
+
+    # Round-7: measure → source-table lineage for LOOSE (Space-config) measures.
+    # A loose measure belongs to no metric view, so it has no join/uses edge and
+    # selecting it lit nothing (focusSet found no neighbourhood; round-6 dimming
+    # then hid the rest of the canvas). Its real lineage is the tables its
+    # aggregate reads. A table the definition proves but the space never modeled
+    # is ADDED to the canvas (it lands in the unmodeled region — the honest read
+    # that this curated measure depends on an ungoverned table). Governed measures
+    # already wrap their MV on select, so they are skipped.
+    derives_pairs: set[tuple[str, str]] = set()
+
+    def _emit_derives(measure_id: str, fqn: str, *, allow_add: bool) -> None:
+        table_id = norm_to_table_id.get(_norm_fqn(fqn))
+        if table_id is None:
+            if not allow_add:
+                return
+            table_id = _resolve_or_add_table(fqn, as_dim=False)
+        if not table_id:
+            return
+        pair = (measure_id, table_id)
+        if pair in derives_pairs:
+            return
+        derives_pairs.add(pair)
+        edges.append(MvSemanticGraphEdge(**{"from": measure_id, "to": table_id}, kind="derives"))
+
+    # Primary source: the fingerprint parser's proven ``source_tables`` for the
+    # harvested curated measures. These are real table identities the aggregate
+    # reads, so lineage no longer depends on the qualifier-stripped canonical
+    # expr (which carried no dotted table refs — the cause of the "no lineage on
+    # click" regression). A fully-qualified (>= 3-part) fqn the space never
+    # modeled is ADDED; a shorter, ambiguous name is match-only.
+    for measure_id, src_tables in curated_src_tables.items():
+        for fqn in src_tables:
+            parts = [p for p in (fqn or "").split(".") if p]
+            _emit_derives(measure_id, fqn, allow_add=len(parts) >= 3)
+
+    # Fallback: dotted table refs still present in a measure's expr (snippet SQL /
+    # MV-YAML), for any measure without parser-proven sources above.
+    for n in list(nodes):
+        if n.kind != "measure" or n.governance == "governed" or not n.expr:
+            continue
+        for fqn, allow_add in _expr_table_refs(n.expr):
+            _emit_derives(n.id, fqn, allow_add=allow_add)
+
+    coverage_status, coverage_reason = _apply_coverage(
+        space_data, nodes, edges, table_ids, key_by_node
+    )
+
+    # Deterministic rows: stable sort within each column by label.
+    by_col: dict[int, list[MvSemanticGraphNode]] = {}
+    for n in nodes:
+        by_col.setdefault(n.col, []).append(n)
+    for col_nodes in by_col.values():
+        col_nodes.sort(key=lambda n: n.label)
+        for row, n in enumerate(col_nodes):
+            n.row = row
+
+    return nodes, edges, coverage_status, coverage_reason
+
+
+def _field_attr(field_: Any, name: str) -> str:
+    """Read a MetricViewField attribute whether it is an object or a mapping."""
+    if isinstance(field_, dict):
+        return str(field_.get(name) or "")
+    return str(getattr(field_, name, "") or "")
+
+
+def _apply_coverage(
+    space_data: dict,
+    nodes: list[MvSemanticGraphNode],
+    edges: list[MvSemanticGraphEdge],
+    table_ids: set[str],
+    key_by_node: dict[str, str],
+) -> tuple[str | None, str | None]:
+    """The SQL-coverage lens (Prompt 12b): how many curated statements touch each
+    table / measure, and per-join edge weight. Mutates ``node.coverage`` and
+    ``edge.weight`` in place; returns ``(status, reason)`` in the MV-D15
+    vocabulary — ``EMPTY`` when the space has no curated SQL (frame-7b honesty),
+    ``UNAVAILABLE`` with a reason when every curated statement failed to parse
+    (never a silently-zero coverage), ``COMPUTED`` otherwise."""
+    from genie_space_optimizer.optimization.mv_scoring import (
+        example_question_sql_statements,
+    )
+
+    statements = [sql for _identifier, sql in example_question_sql_statements(space_data)]
+    if not statements:
+        return "EMPTY", None
+
+    footprints: list[tuple[frozenset[str], frozenset[str]]] = []
+    parse_failures = 0
+    for sql in statements:
+        footprint = _statement_footprint(sql)
+        if footprint is None:
+            parse_failures += 1
+            continue
+        footprints.append(footprint)
+
+    if not footprints:
+        return "UNAVAILABLE", f"all {parse_failures} curated statement(s) failed to parse"
+
+    table_norm = {ident: _norm_fqn(ident) for ident in table_ids}
+    for node in nodes:
+        if node.kind == "table":
+            norm = table_norm.get(node.id, _norm_fqn(node.id))
+            node.coverage = sum(1 for tables, _m in footprints if norm in tables)
+        elif node.kind == "measure":
+            key = key_by_node.get(node.id)
+            if key:
+                node.coverage = sum(1 for _t, measures in footprints if key in measures)
+
+    for edge in edges:
+        if edge.kind != "join":
+            continue
+        left = _norm_fqn(edge.from_)
+        right = _norm_fqn(edge.to)
+        edge.weight = sum(
+            1 for tables, _m in footprints if left in tables and right in tables
+        )
+
+    return "COMPUTED", None
+
+
+@router.get("/spaces/{space_id}/semantic-graph", response_model=MvSemanticGraph)
+async def get_space_semantic_graph(space_id: SpaceId):
+    """Assemble a space's semantic model graph, live and space-scoped (MV-D23).
+
+    The base graph (tables, joins, metric views, curated/governed/ungoverned
+    measure concepts) is assembled from a LIVE ``serialized_space`` read via
+    ``get_serialized_space`` — the SAME OBO-tolerant path ``/space/fetch`` uses,
+    so the graph reflects what the signed-in user is entitled to see, never a run
+    artifact or cache. ``proposals`` is the Prompt 11 space-scoped read (SP-side,
+    like every Delta read) carried so the client can synthesize the ghosted
+    proposal overlay from the same MvProposal shape — no new proposal payload.
+    Renders for a never-optimized space: proposals stay empty, the config-derived
+    base graph still returns. The governed measure chips (Prompt 12b) read the
+    real MV definition (DESCRIBE ... AS JSON view_text) under the same
+    OBO-tolerant client, best-effort — a DESCRIBE that cannot run yields no chips,
+    the honest fallback the deleted config-marker probe used to produce.
+    """
+    try:
+        space_data = await _offload(get_serialized_space, space_id)
+    except Exception as exc:
+        logger.warning("Could not fetch serialized_space for space %s: %s", space_id, exc)
+        raise HTTPException(status_code=502, detail="Unable to read this Agent's configuration.")
+
+    graph_data = space_data if isinstance(space_data, dict) else {}
+
+    proposals: list[MvProposal] = []
+    if _is_configured():
+        config = _build_gso_config()
+        if config.warehouse_id:
+            from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
+            try:
+                rows = await _offload(
+                    wh_load_mv_candidates,
+                    get_service_principal_client(),
+                    config.warehouse_id,
+                    config.catalog,
+                    config.schema_name,
+                    target_space_id=space_id,
+                )
+                proposals = [_mv_proposal_from_row(r) for r in rows]
+            except Exception as exc:
+                logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
+
+    # Prompt 12e / MV-D33 cache posture: ONE batched estate read per tab load.
+    # ``_read_metric_view_yamls`` issues the single ``DESCRIBE … AS JSON`` batch;
+    # both the governed-measure chips (Prompt 12b) AND the MV internals (source /
+    # joins) are derived from that one dict — never a second DESCRIBE fan-out. The
+    # tab's Refresh affordance re-enters this handler, which is the invalidation
+    # (no stale cache to bust). At attached-MV counts (typically single digits)
+    # one batched read on entry is the right cost.
+    yamls = await _offload(_read_metric_view_yamls, graph_data)
+    governed_fields = _governed_measures_from_yamls(yamls)
+    # Compute internals only when a read was ATTEMPTED (configured + warehouse):
+    # an MV missing from an attempted read is "definition unavailable" (False,
+    # no arrows), but an unconfigured deployment never tried, so its MV nodes
+    # stay definition_available=None (no misleading "unavailable" badge).
+    mv_internals: dict[str, dict] = {}
+    if _is_configured() and _build_gso_config().warehouse_id:
+        mv_internals = _metric_view_internals(yamls, _mv_identifiers(graph_data))
+
+    nodes, edges, coverage_status, coverage_reason = _build_semantic_graph(
+        graph_data, proposals, governed_fields=governed_fields, mv_internals=mv_internals
+    )
+    return MvSemanticGraph(
+        space_id=space_id,
+        nodes=nodes,
+        edges=edges,
+        proposals=proposals,
+        coverage_status=coverage_status,
+        coverage_reason=coverage_reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Join Advisor — candidate discovery + advice persistence (Semantic Blueprint §7)
+#
+# The Join Advisor is ADVICE to the optimizer, never a Genie Agent config edit.
+# The Workbench does not make ad-hoc edits to serialized_space (that is the Genie
+# product UI's job). `/join-candidates` discovers data-grounded candidate joins;
+# `/join-advice` persists the operator's seeded set, which `trigger` carries into
+# the run as input the optimizer re-validates and adds itself (add_join_spec).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/spaces/{space_id}/join-candidates", response_model=JoinCandidatesResponse)
+async def get_join_candidates(space_id: SpaceId):
+    """Discover data-grounded Join Advisor candidates for a space (§7).
+
+    Reads the LIVE ``serialized_space`` (OBO-tolerant, like the semantic-graph
+    route), then discovers candidate joins from name+type matching and declared
+    UC foreign keys, scored by a warehouse containment probe. Never mutates the
+    space. Honest-empty on no warehouse / no candidates via ``status``."""
+    from backend.services import join_advisor
+
+    try:
+        space_data = await _offload(get_serialized_space, space_id)
+    except Exception as exc:
+        logger.warning("Join candidates: could not read serialized_space for %s: %s", space_id, exc)
+        raise HTTPException(status_code=502, detail="Unable to read this Agent's configuration.")
+
+    graph_data = space_data if isinstance(space_data, dict) else {}
+    result = await _offload(join_advisor.discover_candidates, graph_data)
+    return JoinCandidatesResponse(
+        space_id=space_id,
+        status=result["status"],
+        candidates=[JoinCandidate.model_validate(c) for c in result["candidates"]],
+    )
+
+
+@router.get("/spaces/{space_id}/join-advice", response_model=JoinAdviceResponse)
+async def get_join_advice(space_id: SpaceId):
+    """Read the pending Join Advisor advice seeded for a space (§7)."""
+    record = await workbench_lakebase.get_join_advice(space_id)
+    if not record:
+        return JoinAdviceResponse(space_id=space_id, seeds=[])
+    return JoinAdviceResponse(
+        space_id=space_id,
+        seeds=[JoinCandidate.model_validate(s) for s in record.get("seeds", [])],
+        updated_at=record.get("updated_at"),
+        seeded_by=record.get("seeded_by"),
+    )
+
+
+@router.post("/spaces/{space_id}/join-advice", response_model=JoinAdviceResponse)
+async def save_join_advice(space_id: SpaceId, body: JoinAdvicePayload, request: Request):
+    """Seed (or clear) the Join Advisor advice for a space (§7).
+
+    Persists the checked candidates as ADVICE — the next Auto-Optimize run
+    re-validates each seed against data and adds only the ones that hold (via
+    ``add_join_spec``). This never writes a declared ``join_spec``; the optimizer
+    can add/update joins but cannot remove them, so a locked wrong join would be a
+    foot-gun (the §7 asymmetry). An empty ``seeds`` clears the pending advice."""
+    seeded_by = request.headers.get("x-forwarded-email") or request.headers.get(
+        "x-forwarded-preferred-username"
+    )
+    seeds = [s.model_dump(by_alias=True) for s in body.seeds]
+    record = await workbench_lakebase.save_join_advice(space_id, seeds, seeded_by=seeded_by)
+    return JoinAdviceResponse(
+        space_id=space_id,
+        seeds=[JoinCandidate.model_validate(s) for s in record.get("seeds", [])],
+        updated_at=record.get("updated_at"),
+        seeded_by=record.get("seeded_by"),
+    )
+
+
+def _mv_identifiers(space_data: dict) -> list[str]:
+    """The ``data_sources.metric_views[].identifier`` list, in config order."""
+    ds = space_data.get("data_sources") if isinstance(space_data, dict) else None
+    metric_views = (ds or {}).get("metric_views") if isinstance(ds, dict) else None
+    return [
+        m.get("identifier")
+        for m in (metric_views or [])
+        if isinstance(m, dict) and m.get("identifier")
+    ]
+
+
+def _read_metric_view_yamls(space_data: dict) -> dict[str, dict]:
+    """The ONE batched read of a space's attached metric-view YAMLs (Prompt 12b
+    Debt 2 + Prompt 12e / MV-D33).
+
+    Reads each ``data_sources.metric_views[].identifier`` via ``DESCRIBE … AS
+    JSON`` through ``metric_view_catalog``'s existing parsing
+    (``estate_metric_view_yamls``) under the OBO-tolerant client, so the result
+    reflects what the signed-in user is entitled to see. Returns the
+    ``{fq_lower: parsed_yaml}`` dict (``source`` / ``joins`` / ``dimensions`` /
+    ``measures``). Best-effort by contract: no warehouse, no configuration, or a
+    failed DESCRIBE yields ``{}`` — the honest "nothing readable" fallback, never
+    a 500. This is the single seam the graph route reads through; both governed
+    chips and MV internals are derived from its output, so there is exactly one
+    DESCRIBE batch per load."""
+    identifiers = _mv_identifiers(space_data)
+    if not identifiers or not _is_configured():
+        return {}
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return {}
+    try:
+        from genie_space_optimizer.optimization.mv_advisor import estate_metric_view_yamls
+
+        return estate_metric_view_yamls(
+            None, identifiers, w=get_workspace_client(), warehouse_id=config.warehouse_id
+        )
+    except Exception as exc:
+        logger.warning("Could not read metric-view YAMLs for graph: %s", exc)
+        return {}
+
+
+def _governed_measures_from_yamls(yamls: dict[str, dict]) -> list[Any]:
+    """Flatten the read YAMLs to their ``FIELD_MEASURE`` fields (Prompt 12b Debt 2).
+
+    Pure over the ``_read_metric_view_yamls`` output — dimensions are not measure
+    concepts, and an empty dict yields ``[]`` (the honest "no governed chips")."""
+    if not yamls:
+        return []
+    try:
+        from genie_space_optimizer.optimization.mv_scoring import (
+            FIELD_MEASURE,
+            metric_view_fields,
+        )
+
+        return [f for f in metric_view_fields(yamls) if f.kind == FIELD_MEASURE]
+    except Exception as exc:
+        logger.warning("Could not flatten governed MV measures for graph: %s", exc)
+        return []
+
+
+def _metric_view_internals(
+    yamls: dict[str, dict], identifiers: list[str]
+) -> dict[str, dict]:
+    """Per-MV internal structure — source fact, joined dims, ON predicates, and
+    (Prompt 12f) the filter / materialization / dimensions the same document
+    already carries — from the already-read YAMLs (Prompt 12e / MV-D33). No
+    DESCRIBE here.
+
+    Returns ``{identifier: {"available": bool, "source": str|None,
+    "joins": [{"table", "alias", "on", "relationship"}], "filter": str|None,
+    "materialization": str|None, "dimensions": [{"name", "expr", "binding"}]}}``.
+    An MV whose YAML is absent from the read, or parsed without a real ``source``
+    (a synthesized skeleton), is ``available=False`` and contributes NO tables,
+    NO arrows and NO detail downstream — unreadable is unproven (MV-D33
+    constraint 2). Keyed by the ORIGINAL config identifier (the graph node id)
+    though the YAMLs are keyed by ``fq_lower``.
+
+    Field names follow the metric view YAML reference: a join's ``name`` is its
+    ALIAS and ``source`` is the joined table, ``fields`` is the current spelling
+    of ``dimensions``, and ``materialization`` is an object (``mode`` /
+    ``schedule`` / ``materialized_views``), never a scalar."""
+    out: dict[str, dict] = {}
+    for ident in identifiers:
+        doc = yamls.get(_norm_fqn(ident)) if isinstance(yamls, dict) else None
+        source = doc.get("source") if isinstance(doc, dict) else None
+        source = source.strip() if isinstance(source, str) and source.strip() else None
+        if not source:
+            out[ident] = {
+                "available": False, "source": None, "joins": [],
+                "filter": None, "materialization": None, "dimensions": [],
+            }
+            continue
+        joins: list[dict] = []
+        # alias (the join's ``name``) → joined table, so a dimension expression
+        # qualified by that alias can be bound to a real relation.
+        alias_to_table: dict[str, str] = {}
+        raw_joins = doc.get("joins") if isinstance(doc.get("joins"), list) else []
+        for j in raw_joins:
+            if not isinstance(j, dict):
+                continue
+            # ``source`` is the joined table; ``name`` is the alias. The
+            # ``table`` spelling and the name-as-table fallback stay for
+            # hand-written / legacy documents.
+            table = j.get("source") or j.get("table") or j.get("name")
+            if not isinstance(table, str) or not table.strip():
+                continue
+            alias = j.get("name") if isinstance(j.get("name"), str) else None
+            alias = alias.strip() if alias and alias.strip() else None
+            on_clause = j.get("on") or j.get("using")
+            if isinstance(on_clause, list):
+                cols = [str(c).strip() for c in on_clause if str(c).strip()]
+                on_clause = f"USING ({', '.join(cols)})" if cols else None
+            if alias:
+                alias_to_table[alias.lower()] = table.strip()
+            joins.append({
+                "table": table.strip(),
+                "alias": alias,
+                "on": _clean_predicate(on_clause) if isinstance(on_clause, str) and on_clause.strip() else None,
+                "relationship": None,
+            })
+        out[ident] = {
+            "available": True,
+            "source": source,
+            "joins": joins,
+            "filter": _mv_yaml_filter(doc),
+            "materialization": _materialization_summary(doc.get("materialization")),
+            "dimensions": _mv_yaml_dimensions(doc, source=source, aliases=alias_to_table),
+        }
+    return out
+
+
+def _mv_yaml_filter(doc: dict) -> str | None:
+    """The top-level ``filter`` verbatim, whitespace-collapsed (Prompt 12f).
+
+    A row filter applies to EVERY query against the view, so it is reported as
+    written rather than summarized — a paraphrased predicate is a wrong one."""
+    raw = doc.get("filter")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return " ".join(raw.split())
+
+
+def _materialization_summary(raw: Any) -> str | None:
+    """One line of materialization POSTURE from the ``materialization`` object.
+
+    Prompt 12f. Reports how many materializations the view declares and the
+    refresh cadence, e.g. ``2 materializations · SCHEDULE EVERY 1 DAY`` or
+    ``1 materialization · manual refresh`` (the spec's own default when
+    ``schedule`` is omitted). ``None`` when the view declares none — a view with
+    no materialization must not read as one with an unknown schedule."""
+    if not isinstance(raw, dict):
+        return None
+    views = raw.get("materialized_views")
+    count = len([v for v in views if isinstance(v, dict)]) if isinstance(views, list) else 0
+    if count == 0:
+        return None
+    schedule = raw.get("schedule")
+    cadence = " ".join(str(schedule).split()) if isinstance(schedule, str) and schedule.strip() else "manual refresh"
+    noun = "materialization" if count == 1 else "materializations"
+    return f"{count} {noun} · {cadence}"
+
+
+def _mv_yaml_dimensions(
+    doc: dict, *, source: str, aliases: dict[str, str]
+) -> list[dict]:
+    """The declared dimensions with each one's resolved binding (Prompt 12f).
+
+    Reads ``fields`` (the current spelling) or ``dimensions`` (the accepted
+    synonym). ``binding`` is the joined table when the expression's qualifier
+    matches a join ALIAS declared in the same document, else the MV's own
+    ``source``: the YAML is the only evidence, so a qualifier that matches no
+    declared alias binds to the source rather than inventing a table."""
+    raw = doc.get("fields")
+    if not isinstance(raw, list):
+        raw = doc.get("dimensions")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for d in raw:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        expr = d.get("expr")
+        expr = " ".join(expr.split()) if isinstance(expr, str) and expr.strip() else None
+        binding = source
+        if expr and aliases:
+            # First qualifier in the expression, e.g. `customer` in
+            # `customer.region` or `lower(customer.region)`.
+            match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*[A-Za-z_`]", expr)
+            if match:
+                binding = aliases.get(match.group(1).lower(), source)
+        out.append({"name": name.strip(), "expr": expr, "binding": binding})
+    return out
+
+
+@router.get("/runs/{run_id}/mv-ddl", response_model=MvDdlArtifact)
+async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=None)):
+    """Return the rendered metric view DDL artifact plus a copy-ready GRANT (MV-D22).
+
+    ``yaml_text`` is the immutable rendered body the create path replays; ``ddl``
+    is the render-time wrapper. ``grant_sql`` is a template the operator edits with
+    the audience — the app never grants on the user's behalf.
+
+    Two sources, one shape (Prompt 15.1). An in-job run writes a run-partitioned
+    ``mv_candidate_ddl`` artifact and that is served first; a standalone advice
+    run (MV-D23) writes none and carries the body on the candidate row, so the
+    fallback renders the same shape from there. An optional ``suggestion_id`` pins
+    one candidate exactly on BOTH paths: on the artifact path it selects the
+    artifact whose payload carries that id (a multi-bundle run writes one artifact
+    per view, so an unpinned read is **latest-wins** and can only surface one of
+    them — the pin is what lets every card fetch its own DDL); on the candidate
+    fallback it selects that row, else the **best-wins** highest-confidence one.
+    On that fallback path ``validation`` is ``None`` — it is a preview of an
+    unexecuted body; the real validation (echo-check + capability rung) lives on
+    the artifact and is re-run by the create path before any write.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+
+    payload = await _offload(_load_candidate_ddl_artifact, run_id, suggestion_id)
+    if not payload:
+        payload = await _offload(_load_candidate_ddl_fallback, run_id, suggestion_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="No metric view DDL artifact for this run.")
+
+    proposed = payload.get("proposed_object")
+    # Deployed-review fix: the copy-ready GRANT names the GSO service principal —
+    # the ONE grant that matters functionally (a view created under the owner's
+    # identity is unreadable by the optimizer until the SP has SELECT). This
+    # replaces the broad space-audience list, whose built-in groups and self-grant
+    # were the "why so many grants?" noise.
+    sp_app_id = await _offload(_gso_sp_application_id)
+    grant_sql = _mv_optimizer_grant_sql(proposed, sp_app_id)
+    validation = payload.get("validation")
+    return MvDdlArtifact(
+        suggestion_id=payload.get("suggestion_id"),
+        dedup_fingerprint=payload.get("dedup_fingerprint"),
+        proposed_object=proposed,
+        join_strategy=payload.get("join_strategy"),
+        source_tables=_mv_source_tables_from_yaml(payload.get("yaml_text")),
+        yaml_text=payload.get("yaml_text"),
+        ddl=payload.get("ddl"),
+        validation=validation if isinstance(validation, dict) else None,
+        grant_sql=grant_sql,
+    )
+
+
+@router.post("/mv/proposals/{suggestion_id}/decision", response_model=MvProposalDecisionResponse)
+async def decide_mv_proposal(
+    suggestion_id: str, body: MvProposalDecisionRequest, request: Request
+):
+    """Record an approve/reject on a proposal (MV-D1).
+
+    Approve sets ``approved_for_rerun`` so a later ``create_and_attach`` run may
+    create the view; reject writes the suppression window so the advisor does not
+    re-surface the fingerprint. Keyed on ``(space_id, dedup_fingerprint)``, which
+    the suggestion is resolved to via the space's candidate rows.
+    """
+    if not re.fullmatch(r"[0-9a-zA-Z_-]{1,128}", suggestion_id or ""):
+        raise HTTPException(status_code=422, detail="Invalid suggestion_id.")
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(status_code=503, detail="No SQL warehouse configured.")
+
+    from genie_space_optimizer.common.warehouse import (
+        wh_load_mv_candidates,
+        wh_record_mv_candidate_decision,
+        wh_suppress_mv_measures,
+    )
+
+    rows = await _offload(
+        wh_load_mv_candidates,
+        get_service_principal_client(),
+        config.warehouse_id,
+        config.catalog,
+        config.schema_name,
+        target_space_id=body.space_id,
+    )
+    match = next((r for r in rows if r.get("suggestion_id") == suggestion_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Proposal not found for this space.")
+
+    decided_by = (request.headers.get("x-forwarded-email") or "").strip() or "unknown"
+    approved_for_rerun = body.decision == "approved"
+    try:
+        await _offload(
+            wh_record_mv_candidate_decision,
+            get_service_principal_client(),
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            target_space_id=body.space_id,
+            dedup_fingerprint=str(match.get("dedup_fingerprint") or ""),
+            decision=body.decision,
+            decided_by=decided_by,
+            suppressed_until=body.suppressed_until,
+            approved_for_rerun=approved_for_rerun,
+        )
+        # MV-D30 as-implemented: a rejection FANS OUT to per-measure suppression.
+        # The bundle row's dedup_fingerprint is view-grained and changes when
+        # membership changes, so recording the bundle decision alone cannot stop
+        # a rejected measure resurfacing inside a differently-membered bundle.
+        # Writing each member's per-measure fingerprint into the suppression
+        # ledger is what makes the rejection stick to the measures. Legacy
+        # one-element rows carry no measures[] and are covered by the reader's
+        # rejected-candidate union, so no fan-out is needed for them.
+        if body.decision == "rejected":
+            evidence = match.get("evidence")
+            member_fps = [
+                str(m.get("dedup_fingerprint"))
+                for m in (evidence.get("measures") if isinstance(evidence, dict) else None) or []
+                if isinstance(m, dict) and m.get("dedup_fingerprint")
+            ]
+            if member_fps:
+                await _offload(
+                    wh_suppress_mv_measures,
+                    get_service_principal_client(),
+                    config.warehouse_id,
+                    catalog=config.catalog,
+                    schema=config.schema_name,
+                    target_space_id=body.space_id,
+                    measure_fingerprints=member_fps,
+                    originating_suggestion_id=suggestion_id,
+                    suppressed_until=body.suppressed_until,
+                )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to record MV decision for %s: %s", suggestion_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to record the decision.")
+
+    return MvProposalDecisionResponse(
+        suggestion_id=suggestion_id,
+        decision=body.decision,
+        approved_for_rerun=approved_for_rerun,
+    )
+
+
+@router.post("/mv/created/{suggestion_id}/drop", response_model=MvDropResponse)
+async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
+    """Drop a metric view the backend created under OBO (MV-D6).
+
+    OBO only and destructive: it refuses unless ``confirm`` is set, the caller is
+    the ``created_by`` owner, and the object is already ``DETACHED`` — the run's
+    detach-never-drop invariant means a live/attached view is never dropped here.
+    """
+    if not re.fullmatch(r"[0-9a-zA-Z_-]{1,128}", suggestion_id or ""):
+        raise HTTPException(status_code=422, detail="Invalid suggestion_id.")
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="Set confirm=true to drop a metric view.")
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        raise HTTPException(status_code=503, detail="No SQL warehouse configured.")
+
+    try:
+        obo_ws = require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    try:
+        caller = (obo_ws.current_user.me().user_name or "").strip()
+    except Exception:
+        raise HTTPException(status_code=401, detail="Could not resolve the signed-in user.")
+
+    from genie_space_optimizer.common.warehouse import (
+        sql_warehouse_execute,
+        wh_load_mv_created_object,
+        wh_update_mv_created_object_status,
+    )
+
+    obj = await _offload(
+        wh_load_mv_created_object,
+        get_service_principal_client(),
+        config.warehouse_id,
+        catalog=config.catalog,
+        schema=config.schema_name,
+        run_id=body.run_id,
+        suggestion_id=suggestion_id,
+    )
+    if obj is None:
+        raise HTTPException(status_code=404, detail="No created metric view for this run/suggestion.")
+
+    created_by = (str(obj.get("created_by") or "")).strip()
+    if created_by.lower() != caller.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="Only the user who created this metric view may drop it.",
+        )
+    # MV-D24 invariant 1, placed BEFORE the status check: the app never drops a
+    # USER_CREATED (bring-your-own) view — we did not create it and do not own
+    # its lifecycle — so it is refused on provenance even when status=DETACHED.
+    provenance = str(obj.get("provenance") or "").strip().upper()
+    if provenance == MV_PROVENANCE_USER_CREATED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This metric view was created by you outside the app "
+                "(bring-your-own); the app never drops a user-created view. "
+                "Drop it yourself in a SQL editor if you no longer need it."
+            ),
+        )
+    status = str(obj.get("status") or "").upper()
+    if status != "DETACHED":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Metric view is {status or 'in an unknown state'}; only a DETACHED view can be dropped.",
+        )
+
+    full_name = str(obj.get("full_name") or "")
+    try:
+        await _offload(
+            sql_warehouse_execute,
+            obo_ws,
+            config.warehouse_id,
+            f"DROP VIEW IF EXISTS {full_name}",
+        )
+    except Exception as exc:
+        logger.exception("OBO drop of %s failed: %s", full_name, exc)
+        raise HTTPException(status_code=500, detail="Failed to drop the metric view.")
+
+    try:
+        await _offload(
+            wh_update_mv_created_object_status,
+            get_service_principal_client(),
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            run_id=body.run_id,
+            suggestion_id=suggestion_id,
+            status="DROPPED",
+        )
+    except Exception:
+        logger.warning("Dropped %s but could not record DROPPED status", full_name, exc_info=True)
+
+    return MvDropResponse(
+        suggestion_id=suggestion_id, full_name=full_name, status="DROPPED", dropped=True,
+    )
+
+
+def _mv_lift_from_row(value: Any) -> MvLiftReport | None:
+    """Build ``MvLiftReport`` from a decoded ``lift_report`` dict, or ``None``.
+
+    The dict is ``LiftReport.to_dict()`` verbatim (MV-D21), so keys line up; this
+    only coerces cell types and tolerates a partial row rather than 500-ing the
+    whole results screen on one malformed report.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        return MvLiftReport(
+            delta_affected=_safe_float(value.get("delta_affected")) or 0.0,
+            delta_suite=_safe_float(value.get("delta_suite")) or 0.0,
+            regressed_question_ids=list(value.get("regressed_question_ids") or []),
+            needs_review_count=safe_int(value.get("needs_review_count")) or 0,
+            pre_eval_run_id=str(value.get("pre_eval_run_id") or ""),
+            post_eval_run_id=str(value.get("post_eval_run_id") or ""),
+            question_subset=list(value.get("question_subset") or []),
+            pre_accuracy_affected=_safe_float(value.get("pre_accuracy_affected")) or 0.0,
+            post_accuracy_affected=_safe_float(value.get("post_accuracy_affected")) or 0.0,
+            pre_accuracy_suite=_safe_float(value.get("pre_accuracy_suite")) or 0.0,
+            post_accuracy_suite=_safe_float(value.get("post_accuracy_suite")) or 0.0,
+            needs_review_question_ids=list(value.get("needs_review_question_ids") or []),
+            graded_affected_count=safe_int(value.get("graded_affected_count")) or 0,
+            graded_suite_count=safe_int(value.get("graded_suite_count")) or 0,
+        )
+    except Exception:
+        logger.debug("Could not coerce lift_report row: %r", value, exc_info=True)
+        return None
+
+
+def _mv_created_object_from_row(row: dict) -> MvCreatedObject:
+    """Map a decoded ``genie_opt_mv_created_objects`` row to the API shape."""
+    status = str(row.get("status") or "CREATED").upper()
+    # MV-D24: NULL/legacy/anything-else reads as OBO_CREATED; only an explicit
+    # USER_CREATED marks a bring-your-own view. Mirrors the drop route's read at
+    # ``:2483`` so the UI hides the Drop affordance on exactly the rows the server
+    # refuses to drop.
+    prov = str(row.get("provenance") or "").strip().upper()
+    provenance = (
+        MV_PROVENANCE_USER_CREATED if prov == MV_PROVENANCE_USER_CREATED else MV_PROVENANCE_OBO_CREATED
+    )
+    return MvCreatedObject(
+        run_id=str(row.get("run_id") or ""),
+        suggestion_id=str(row.get("suggestion_id") or ""),
+        full_name=str(row.get("full_name") or ""),
+        created_by=_mv_str(row.get("created_by")),
+        provenance=provenance,
+        status=status if status in ("CREATED", "ATTACHED", "DETACHED", "DROPPED") else "CREATED",
+        attach_patch_id=_mv_str(row.get("attach_patch_id")),
+        baseline_eval_run_id=_mv_str(row.get("baseline_eval_run_id")),
+        post_attach_eval_run_id=_mv_str(row.get("post_attach_eval_run_id")),
+        on_regression_action=_mv_str(row.get("on_regression_action")),
+        created_at=_mv_str(row.get("created_at")),
+        lift_report=_mv_lift_from_row(row.get("lift_report")),
+    )
+
+
+@router.get("/runs/{run_id}/mv-created", response_model=MvCreatedObjectsResponse)
+async def list_mv_created(run_id: RunId):
+    """List the metric views the backend created under OBO for this run (MV-D21).
+
+    The create-and-attach output panel reads this: each created object with its
+    isolated-lift report (baseline vs post-attach accuracy, needs-review, both
+    eval-run ids) plus the run-level ``downgrade_reason`` from the consent row.
+    Read-only, so the SP-tolerant client is correct here (MV-D20) — only writes
+    that create or drop a UC object require the hard-fail OBO client.
+    """
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+    config = _build_gso_config()
+    if not config.warehouse_id:
+        return MvCreatedObjectsResponse(run_id=run_id, created=[], downgrade_reason=None)
+
+    from genie_space_optimizer.common.warehouse import (
+        wh_load_mv_consent_by_run,
+        wh_load_mv_created_objects,
+    )
+
+    sp = get_service_principal_client()
+    try:
+        rows = await _offload(
+            wh_load_mv_created_objects,
+            sp,
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        logger.warning("Could not load MV created objects for run %s: %s", run_id, exc)
+        rows = []
+
+    downgrade_reason: str | None = None
+    try:
+        consent = await _offload(
+            wh_load_mv_consent_by_run,
+            sp,
+            config.warehouse_id,
+            catalog=config.catalog,
+            schema=config.schema_name,
+            run_id=run_id,
+        )
+        downgrade_reason = _mv_str((consent or {}).get("downgrade_reason"))
+    except Exception as exc:
+        logger.warning("Could not load MV consent for run %s: %s", run_id, exc)
+
+    return MvCreatedObjectsResponse(
+        run_id=run_id,
+        created=[_mv_created_object_from_row(r) for r in rows],
+        downgrade_reason=downgrade_reason,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2708,16 +5347,25 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
             "AS has_config_snapshot"
         )
         table = _delta_table("genie_opt_runs")
+        # MV-D23 guardrail (ii): exclude sentinel advice runs from history through
+        # the single pinned predicate. The COALESCE tolerates legacy NULL
+        # run_kind; on a table that predates the column the strict query raises
+        # and the fallback below drops the predicate — correct, because a table
+        # without run_kind definitionally holds no advice runs.
+        from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
+
         try:
             runs = _delta_query(
                 f"SELECT {base_cols}, benchmark_policy, benchmark_mutation_count, "
                 f"{suffix} FROM {table} WHERE space_id = '{space_id}' "
+                f"AND {MV_ADVICE_RUN_EXCLUSION} "
                 "ORDER BY started_at DESC",
                 strict=True,
             )
         except Exception:
             # History remains readable before the next run executes the additive
-            # migration. Legacy rows surface their benchmark handling as unknown.
+            # migration. Legacy rows surface their benchmark handling as unknown,
+            # and a table without run_kind holds no advice runs to exclude.
             runs = _delta_query(
                 f"SELECT {base_cols}, {suffix} FROM {table} "
                 f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"

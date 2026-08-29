@@ -1,23 +1,39 @@
 #!/usr/bin/env bash
-# Run the backend test suite.
+# Run the offline unit suites: backend/tests + packages/genie-space-optimizer/tests.
 # Usage: ./scripts/test.sh [pytest args...]
-#   ./scripts/test.sh            # run all tests
-#   ./scripts/test.sh -v         # verbose
-#   ./scripts/test.sh -k scanner # run only scanner tests
+#   ./scripts/test.sh                          # run both suites
+#   ./scripts/test.sh -v                       # verbose
+#   ./scripts/test.sh -k scanner               # run only scanner tests
+#   ./scripts/test.sh backend/tests            # run one suite
+#
+# Runs through `uv run --frozen --extra dev` so the lockfile is enforced and the
+# dev extra is present. The `--extra dev` is NOT optional: the root pytest config
+# sets `asyncio_mode = "auto"`, which needs pytest-asyncio. Without the extra,
+# pytest warns "Unknown config option: asyncio_mode" and every async backend test
+# fails on an uncollectable coroutine — 12 failures that look like code defects
+# and are not. Invoke the suites through this script rather than calling pytest
+# directly, so that flag cannot be forgotten.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Install dev deps if pytest is not available
-PYTHON="${PYTHON:-python3}"
+# Root pyproject pins testpaths to backend/tests only, so name both suites unless
+# the caller chose paths of their own. Keyed on "did an argument name something
+# that exists on disk", not on "were there any arguments" — otherwise a bare flag
+# like -q suppresses the defaults and silently runs the backend suite alone.
+caller_chose_paths=0
+for arg in "$@"; do
+    if [ -e "$arg" ]; then
+        caller_chose_paths=1
+        break
+    fi
+done
 
-if ! "$PYTHON" -c "import pytest, genie_space_optimizer" 2>/dev/null; then
-    echo "Installing dev dependencies..."
-    # Root package pulls in genie-space-optimizer via [tool.uv.sources] when
-    # resolved through `uv sync`, but `uv pip install -e .` can't see the
-    # workspace mapping — install the workspace member explicitly so
-    # `from genie_space_optimizer...` imports resolve under --system.
-    uv pip install -e ".[dev]" -e packages/genie-space-optimizer --system --quiet
+# Expanded as two separate branches rather than an array that may be empty:
+# bash 3.2 (still the /bin/bash on macOS) treats "${empty[@]}" as an unbound
+# variable under `set -u`.
+if [ "$caller_chose_paths" -eq 1 ]; then
+    exec uv run --frozen --extra dev python -m pytest "$@"
 fi
-
-"$PYTHON" -m pytest "$@"
+exec uv run --frozen --extra dev python -m pytest \
+    backend/tests packages/genie-space-optimizer/tests "$@"

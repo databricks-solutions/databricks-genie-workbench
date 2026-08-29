@@ -35,6 +35,25 @@ import type {
   GSOPublishRecordResponse,
   CurrentVersionResponse,
   GSORevertOptions,
+  MvCreateAtApprovalRequest,
+  MvCreateAtApprovalResponse,
+  MvProbeRequest,
+  MvProbeResult,
+  MvSpaceProposalsResponse,
+  MvProposalsResponse,
+  MvDdlArtifact,
+  MvCreatedObjectsResponse,
+  MvProposalDecisionRequest,
+  MvProposalDecisionResponse,
+  MvDropRequest,
+  MvDropResponse,
+  MvSuggestResponse,
+  MvRegisterRequest,
+  MvRegisterResponse,
+  SemanticGraphResponse,
+  JoinCandidate,
+  JoinCandidatesResponse,
+  JoinAdviceResponse,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -438,6 +457,269 @@ export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<G
       body: JSON.stringify(request),
     },
     LONG_TIMEOUT
+  )
+}
+
+// Probe the signed-in user's entitlement to create a metric view in a schema
+// (OBO). Fired when the run-config MV section expands in the re-run state.
+export async function probeMvEntitlement(request: MvProbeRequest): Promise<MvProbeResult> {
+  return fetchWithTimeout<MvProbeResult>(
+    `${API_BASE}/auto-optimize/mv/probe`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
+  )
+}
+
+// Space-scoped proposals for the run-config re-run gate (MV-D23). Passing
+// approvedForRerun=true returns only proposals cleared for a create-and-attach
+// re-run; it never borrows a prior run_id to answer this per-space question.
+export async function fetchSpaceMvProposals(
+  spaceId: string,
+  approvedForRerun?: boolean,
+): Promise<MvSpaceProposalsResponse> {
+  const query =
+    approvedForRerun === undefined ? "" : `?approved_for_rerun=${approvedForRerun}`
+  return fetchWithTimeout<MvSpaceProposalsResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv-proposals${query}`,
+  )
+}
+
+// POST /spaces/{space_id}/mv/suggest — an on-demand advice run (MV-D23). The IQ
+// Scan surface asks the advisor to score a space right now, with no optimization
+// run; the backend writes a born-terminal sentinel advice run and returns its
+// outcome plus the persisted proposals. Runs corpus scan + scoring + the S-signal
+// embedding synchronously (seconds), so it takes the long timeout — the embedding
+// path has its own hard cap server-side that degrades S rather than hanging.
+export async function suggestSpaceMv(spaceId: string): Promise<MvSuggestResponse> {
+  return fetchWithTimeout<MvSuggestResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv/suggest`,
+    { method: "POST", headers: { "Content-Type": "application/json" } },
+    LONG_TIMEOUT,
+  )
+}
+
+// POST /spaces/{space_id}/mv/suggest/stream — staged-progress twin of
+// suggestSpaceMv (MV-D31). Emits a `stage` event on ENTRY to each of the four
+// honest phases (reading → scanning → scoring → rendering) so the surface shows
+// what it is doing *now* over a multi-minute scan, then a final `result` event
+// carrying the same MvSuggestResponse. Consumed with fetch + ReadableStream
+// (not EventSource), buffer-split on \n\n, exactly like streamAgentChat.
+// Returns an abort function so the caller can cancel an in-flight scan.
+export interface MvSuggestStreamCallbacks {
+  onStage: (stage: string) => void
+  onResult: (result: MvSuggestResponse) => void
+  onError: (message: string) => void
+}
+
+export function streamSpaceMvSuggest(
+  spaceId: string,
+  callbacks: MvSuggestStreamCallbacks,
+): () => void {
+  const abortController = new AbortController()
+
+  fetch(`${API_BASE}/auto-optimize/spaces/${spaceId}/mv/suggest/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: abortController.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new ApiError("Metric-view scan request failed", response.status)
+      }
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error("No response body")
+      const decoder = new TextDecoder()
+      let buffer = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split("\n\n")
+        buffer = chunks.pop() || ""
+
+        for (const chunk of chunks) {
+          let eventType = ""
+          let dataStr = ""
+          for (const line of chunk.split("\n")) {
+            if (line.startsWith("event: ")) eventType = line.slice(7)
+            else if (line.startsWith("data: ")) dataStr = line.slice(6)
+          }
+          if (!eventType || !dataStr) continue
+          try {
+            const data = JSON.parse(dataStr)
+            switch (eventType) {
+              case "stage": callbacks.onStage(data.stage); break
+              case "result": callbacks.onResult(data as MvSuggestResponse); break
+              case "error": callbacks.onError(data.detail || "Metric-view scan failed."); break
+            }
+          } catch { /* ignore parse errors (keepalive comments, partial frames) */ }
+        }
+      }
+    })
+    .catch((error) => {
+      if (error.name !== "AbortError") {
+        callbacks.onError(
+          error instanceof Error ? error.message : "Could not run the metric-view scan.",
+        )
+      }
+    })
+
+  return () => abortController.abort()
+}
+
+// POST /spaces/{space_id}/mv/register — a bring-your-own view (MV-D24). A user
+// who created the suggested view themselves reports its identifier; the backend
+// verifies it under OBO and, on success, records a USER_CREATED ledger row so
+// attach-and-lift picks it up. Verified and refused are both normal 200s the
+// panel renders from one shape (registered + reason).
+export async function registerSpaceMv(
+  spaceId: string,
+  request: MvRegisterRequest,
+): Promise<MvRegisterResponse> {
+  return fetchWithTimeout<MvRegisterResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv/register`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
+  )
+}
+
+// POST /spaces/{space_id}/mv/create — create-at-approval (MV-D34). The user
+// accepted a suggestion where they meet it; a fresh probe already recorded
+// consent. Creates the one proposal now under OBO and returns one of: created,
+// degraded (probe fell below SUFFICIENT → approve-for-later), or a create-time
+// failure with a reason. Attach + lift stay the next run's job.
+export async function createMvAtApproval(
+  spaceId: string,
+  request: MvCreateAtApprovalRequest,
+): Promise<MvCreateAtApprovalResponse> {
+  return fetchWithTimeout<MvCreateAtApprovalResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/mv/create`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
+  )
+}
+
+// Space-scoped semantic model graph for the Model tab (Prompt 12, MV-D23). The
+// server assembles nodes/edges live from serialized_space (the same OBO-tolerant
+// read /space/fetch uses) plus the space-scoped proposals read; the ghosted
+// overlay is synthesized client-side from `proposals`.
+export async function fetchSemanticGraph(
+  spaceId: string,
+): Promise<SemanticGraphResponse> {
+  return fetchWithTimeout<SemanticGraphResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/semantic-graph`,
+  )
+}
+
+// ── Join Advisor (Semantic Blueprint §7): candidates + advice ───────────────
+// Candidates are data-grounded suggestions; seeding persists them as ADVICE the
+// next Auto-Optimize run validates and adds itself. Nothing here edits the
+// Genie Agent config — the Workbench makes no ad-hoc serialized_space edits.
+
+export async function fetchJoinCandidates(
+  spaceId: string,
+): Promise<JoinCandidatesResponse> {
+  return fetchWithTimeout<JoinCandidatesResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/join-candidates`,
+  )
+}
+
+export async function fetchJoinAdvice(
+  spaceId: string,
+): Promise<JoinAdviceResponse> {
+  return fetchWithTimeout<JoinAdviceResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/join-advice`,
+  )
+}
+
+export async function saveJoinAdvice(
+  spaceId: string,
+  seeds: JoinCandidate[],
+): Promise<JoinAdviceResponse> {
+  return fetchWithTimeout<JoinAdviceResponse>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/join-advice`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seeds }),
+    },
+  )
+}
+
+// ── Metric view output-screen reads/actions (Prompt 13, MV-D21/D23) ─────────
+// The run-detail CONTAINER fetches these by run_id — it lives on a run screen —
+// and passes the results to presentational panels as props; nothing downstream
+// keys state, cache, or identity on run_id (MV-D23).
+
+// GET /runs/{run_id}/mv-proposals — the run's advisor proposals (suggest-only).
+export async function getRunMvProposals(runId: string): Promise<MvProposalsResponse> {
+  return fetchWithTimeout<MvProposalsResponse>(
+    `${API_BASE}/auto-optimize/runs/${runId}/mv-proposals`,
+  )
+}
+
+// GET /runs/{run_id}/mv-ddl — the rendered DDL artifact + copy-ready GRANT.
+// suggestionId pins one candidate on the advice-run fallback path (Prompt 15.1);
+// omitted, the route serves the artifact (in-job) or the best candidate (advice).
+export async function getMvDdl(
+  runId: string,
+  suggestionId?: string,
+): Promise<MvDdlArtifact> {
+  const qs = suggestionId ? `?suggestion_id=${encodeURIComponent(suggestionId)}` : ''
+  return fetchWithTimeout<MvDdlArtifact>(
+    `${API_BASE}/auto-optimize/runs/${runId}/mv-ddl${qs}`,
+  )
+}
+
+// GET /runs/{run_id}/mv-created — the create-and-attach ledger + downgrade_reason.
+export async function getMvCreatedObjects(runId: string): Promise<MvCreatedObjectsResponse> {
+  return fetchWithTimeout<MvCreatedObjectsResponse>(
+    `${API_BASE}/auto-optimize/runs/${runId}/mv-created`,
+  )
+}
+
+// POST /mv/proposals/{suggestion_id}/decision — approve/reject (MV-D1).
+export async function decideMvProposal(
+  suggestionId: string,
+  request: MvProposalDecisionRequest,
+): Promise<MvProposalDecisionResponse> {
+  return fetchWithTimeout<MvProposalDecisionResponse>(
+    `${API_BASE}/auto-optimize/mv/proposals/${suggestionId}/decision`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
+  )
+}
+
+// POST /mv/created/{suggestion_id}/drop — explicit OBO drop, DETACHED only (MV-D6).
+export async function dropMvCreated(
+  suggestionId: string,
+  request: MvDropRequest,
+): Promise<MvDropResponse> {
+  return fetchWithTimeout<MvDropResponse>(
+    `${API_BASE}/auto-optimize/mv/created/${suggestionId}/drop`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT,
   )
 }
 

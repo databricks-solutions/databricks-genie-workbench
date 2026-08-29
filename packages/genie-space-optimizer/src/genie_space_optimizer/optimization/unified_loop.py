@@ -43,6 +43,10 @@ from genie_space_optimizer.optimization.leakage import (
     is_benchmark_leak,
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
+from genie_space_optimizer.optimization.mv_attach import (
+    reconcile_attached_objects,
+    run_mv_attach_phase,
+)
 from genie_space_optimizer.optimization.space_quality_enrichment import (
     attach_top_level_description,
     build_prompt_matching_context,
@@ -1298,6 +1302,95 @@ def _native_eval(
     return eval_output
 
 
+def _load_operator_proposed_joins(
+    w: Any, *, run_id: str, catalog: str, schema: str
+) -> list[dict[str, Any]]:
+    """Read the run's operator-proposed join seeds (Semantic Blueprint §7), or [].
+
+    Best-effort by contract: no warehouse, no artifact, or any read failure
+    yields ``[]`` so the loop degrades to "no operator advice". These are
+    ADVICE the optimizer validates — never applied here as declared joins."""
+    try:
+        from genie_space_optimizer.common.warehouse import (
+            resolve_warehouse_id,
+            wh_read_join_advice,
+        )
+
+        warehouse_id = resolve_warehouse_id()
+        if not warehouse_id:
+            return []
+        return wh_read_join_advice(
+            w, warehouse_id, run_id=run_id, catalog=catalog, schema=schema
+        )
+    except Exception:
+        logger.debug("Could not load operator-proposed joins for run %s", run_id, exc_info=True)
+        return []
+
+
+def _load_operator_guidance(
+    w: Any, *, run_id: str, catalog: str, schema: str
+) -> str:
+    """Read the run's operator free-text guidance (Semantic Blueprint §7), or "".
+
+    Best-effort by contract: no warehouse, no artifact, or any read failure
+    yields "" so the loop degrades to "no operator guidance". This is ADVICE
+    injected into the prompt — never a directive that expands allowed patches."""
+    try:
+        from genie_space_optimizer.common.warehouse import (
+            resolve_warehouse_id,
+            wh_read_operator_guidance,
+        )
+
+        warehouse_id = resolve_warehouse_id()
+        if not warehouse_id:
+            return ""
+        return wh_read_operator_guidance(
+            w, warehouse_id, run_id=run_id, catalog=catalog, schema=schema
+        )
+    except Exception:
+        logger.debug("Could not load operator guidance for run %s", run_id, exc_info=True)
+        return ""
+
+
+def _operator_joins_for_prompt(current_config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Shape the attached operator-proposed joins for the optimizer prompt (§7).
+
+    Reads the advisory ``_operator_proposed_joins`` key (attached at loop start)
+    and projects each seed to the fields the LLM needs to VALIDATE it: the two
+    endpoints, the relationship, the match grounding, and the containment probe.
+    Pure and deterministic; returns ``[]`` when nothing was seeded."""
+    seeds = current_config.get("_operator_proposed_joins") if isinstance(current_config, dict) else None
+    if not isinstance(seeds, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for s in seeds:
+        if not isinstance(s, dict):
+            continue
+        frm, to = s.get("from"), s.get("to")
+        from_col, to_col = s.get("fromCol"), s.get("toCol")
+        if not (frm and to and from_col and to_col):
+            continue
+        out.append({
+            "from_table": frm,
+            "from_column": from_col,
+            "to_table": to,
+            "to_column": to_col,
+            "relationship": s.get("rel") or "N:1",
+            "grounding": s.get("match") or "name-type",
+            "containment_probe": s.get("probe"),
+        })
+    return out
+
+
+def _operator_guidance_for_prompt(current_config: dict[str, Any]) -> str:
+    """Return the attached operator free-text guidance for the prompt (§7), or "".
+
+    Reads the advisory ``_operator_guidance`` key (attached at loop start). Pure
+    and deterministic; returns "" when nothing was provided."""
+    guidance = current_config.get("_operator_guidance") if isinstance(current_config, dict) else None
+    return guidance.strip() if isinstance(guidance, str) else ""
+
+
 def _llm_messages(
     *,
     allowed_levers: list[int],
@@ -1335,6 +1428,36 @@ def _llm_messages(
         "patch_rules": UNIFIED_OPTIMIZER_PATCH_RULES,
         "recent_reflections": reflections[-2:],
     }
+    # Join Advisor advice (Semantic Blueprint §7): operator-proposed candidate
+    # joins the human seeded on the Semantic Model tab. These are HYPOTHESES to
+    # validate against the data, NOT ground truth — a wrong join silently
+    # produces wrong numbers. Emit `add_join_spec` only for a seed you can
+    # justify (a high containment probe and/or a name/type or FK match); ignore
+    # the rest. They are advice, never a pre-applied config edit.
+    operator_joins = _operator_joins_for_prompt(current_config)
+    if operator_joins:
+        user["operator_proposed_joins"] = operator_joins
+        user["operator_proposed_joins_guidance"] = (
+            "These candidate joins were proposed by a human via the Semantic "
+            "Blueprint Join Advisor and carried into this run as advice. Treat "
+            "each as a hypothesis to validate, not as ground truth. Add one with "
+            "add_join_spec only when the containment_probe and/or grounding "
+            "support it; a join that does not hold must be left out (a wrong join "
+            "silently produces wrong results and cannot be removed later)."
+        )
+    # Operator free-text guidance (Semantic Blueprint §7): plain-English hints the
+    # human typed in the run-config panel for this run. Advice within the allowed
+    # patch types — never a directive that overrides benchmark evidence or the
+    # leakage rules.
+    operator_guidance = _operator_guidance_for_prompt(current_config)
+    if operator_guidance:
+        user["operator_guidance"] = operator_guidance
+        user["operator_guidance_note"] = (
+            "Free-text guidance from the human who launched this run. Treat it as "
+            "advice, honoured only within allowed_patch_types and never when it "
+            "conflicts with the benchmark evidence or the train-on-test leakage "
+            "rules. It is not ground truth and does not expand what you may emit."
+        )
     if banned:
         user["banned_patch_types"] = sorted(banned)
         user["banned_patch_types_reason"] = (
@@ -2501,6 +2624,35 @@ def _best_persisted_iteration(
     return best_iter, best_acc
 
 
+def _reconcile_mv_attachment(
+    spark: Any,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    config: dict[str, Any] | None,
+    emit: Any,
+) -> None:
+    """Verify every recorded attachment against the config the run ends on.
+
+    Called at each loop exit that can follow the attach phase (MV-D18). Silent
+    unless something was actually checked, so a run with the phase off adds no
+    noise, and it emits only when a row had to be demoted — the interesting case
+    is an attachment the run lost track of, not a routine confirmation.
+    """
+    outcome = reconcile_attached_objects(
+        spark, run_id=run_id, catalog=catalog, schema=schema, config=config,
+    )
+    if outcome.get("demoted"):
+        emit(
+            "Metric view attachment reconciled",
+            checked=outcome.get("checked"),
+            verified=outcome.get("verified"),
+            demoted=outcome.get("demoted"),
+            demoted_identifiers=outcome.get("identifiers"),
+        )
+
+
 def _stamp_terminal(
     spark: Any,
     *,
@@ -2586,8 +2738,15 @@ def run_unified_optimization_loop(
     wide_schema_parent_artifact_id: str | None = None,
     wide_schema_profile_budget: dict[str, Any] | None = None,
     diagnostic_callback: Callable[..., None] | None = None,
+    mv_attach_views: str | list[str] | None = None,
+    mv_consent_id: str = "",
 ) -> dict[str, Any]:
-    """Run baseline eval plus bounded LLM patch attempts."""
+    """Run baseline eval plus bounded LLM patch attempts.
+
+    ``mv_attach_views`` / ``mv_consent_id`` gate the metric view attach phase
+    (MV-D16), which runs between the baseline eval and the first lever patch.
+    Both empty — the default — skips it at zero cost.
+    """
     target_accuracy = target_accuracy_percent(float(target_accuracy))
     allowed_levers = [int(l) for l in levers if int(l) in {1, 2, 3, 4, 5, 6}]
     if not allowed_levers:
@@ -2849,6 +3008,37 @@ def run_unified_optimization_loop(
         )
         current_config = attach_top_level_description(_parsed_space(raw_config), raw_config)
 
+    # Join Advisor advice (Semantic Blueprint §7): attach the operator-proposed
+    # candidate joins (seeded on the Semantic Model tab) as an advisory `_`-prefixed
+    # key on the working config — the same convention as `_prefetched_uc_metadata`.
+    # The optimizer hands these to the LLM as candidate joins to VALIDATE and add
+    # itself (add_join_spec); nothing here writes a declared join_spec. Best-effort
+    # and additive — absent/unreadable ⇒ no operator advice, exactly as before.
+    if isinstance(current_config, dict):
+        operator_joins = _load_operator_proposed_joins(
+            w, run_id=run_id, catalog=catalog, schema=schema
+        )
+        if operator_joins:
+            current_config["_operator_proposed_joins"] = operator_joins
+            logger.info(
+                "Loaded %d operator-proposed join seed(s) for run %s",
+                len(operator_joins),
+                run_id,
+            )
+
+        # Operator free-text guidance (§7): attach the per-run advice the same way,
+        # as an advisory `_`-prefixed key the prompt builder injects as advice.
+        operator_guidance = _load_operator_guidance(
+            w, run_id=run_id, catalog=catalog, schema=schema
+        )
+        if operator_guidance:
+            current_config["_operator_guidance"] = operator_guidance
+            logger.info(
+                "Loaded operator guidance (%d chars) for run %s",
+                len(operator_guidance),
+                run_id,
+            )
+
     benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
 
     baseline_eval = _native_eval(
@@ -2976,8 +3166,54 @@ def run_unified_optimization_loop(
         best_accuracy=best_accuracy,
     )
 
+    # ── Metric view attach + lift (MV-D16) ───────────────────────────
+    # Here, and not before the call: iteration-0 above had to measure the space
+    # WITHOUT the metric view, because that baseline corpus is what the advisor
+    # phase fingerprints when proposing the next one. Before the first lever patch
+    # so the lift eval attributes the delta to the attach alone.
+    #
+    # run_mv_attach_phase never raises; it writes its own stage row and returns the
+    # config to carry forward — the pre-attach one when it skipped, failed, or
+    # detached on regression. So the loop below runs whatever this left behind.
+    mv_attach_outcome = run_mv_attach_phase(
+        spark,
+        run_id=run_id,
+        space_id=space_id,
+        catalog=catalog,
+        schema=schema,
+        attach_views=mv_attach_views,
+        consent_probe_id=mv_consent_id,
+        config=current_config,
+        baseline_eval=baseline_eval,
+        w=w,
+        eval_runner=OfficialBenchmarkRunner(w) if w is not None else None,
+        apply_mode=apply_mode,
+        benchmark_corpus=benchmark_corpus,
+    )
+    if mv_attach_outcome.config is not None:
+        current_config = mv_attach_outcome.config
+    if mv_attach_outcome.verdict:
+        _emit_diagnostic(
+            "Metric view attach measured",
+            verdict=mv_attach_outcome.verdict,
+            attached=list(mv_attach_outcome.attached),
+            detached=list(mv_attach_outcome.detached),
+            delta_affected=mv_attach_outcome.delta_affected,
+            affected_questions=mv_attach_outcome.affected_question_count,
+            baseline_eval_run_id=mv_attach_outcome.baseline_eval_run_id,
+            lift_eval_run_id=mv_attach_outcome.lift_eval_run_id,
+        )
+
     if best_accuracy >= target_accuracy:
         terminal_reason = "TARGET_REACHED"
+        _reconcile_mv_attachment(
+            spark,
+            run_id=run_id,
+            catalog=catalog,
+            schema=schema,
+            config=current_config,
+            emit=_emit_diagnostic,
+        )
         _stamp_terminal(
             spark,
             run_id=run_id,
@@ -3560,6 +3796,19 @@ def run_unified_optimization_loop(
 
     if terminal_reason is None:
         terminal_reason = "MAX_ATTEMPTS"
+
+    # MV-D18. The loop is done mutating the space, so this is the last moment the
+    # in-memory config and the live space are known to agree. Reconcile before
+    # stamping, so a champion is never flagged while a created-object row still
+    # claims an attachment the champion's own config does not carry.
+    _reconcile_mv_attachment(
+        spark,
+        run_id=run_id,
+        catalog=catalog,
+        schema=schema,
+        config=current_config,
+        emit=_emit_diagnostic,
+    )
 
     # Option A-min: on a candidate-eval EVAL_INVALID (the mid-loop transient
     # failure path), preserve a higher-accuracy champion a prior execution

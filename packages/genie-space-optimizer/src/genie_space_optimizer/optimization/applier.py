@@ -3389,9 +3389,42 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
             json.dumps({"op": "add", "section": "mv_dimensions", "mv": target, "dimension": patch.get("previous_dimension", {})}),
         )
     if patch_type == "update_mv_yaml":
+        # Issue #331: this is the one path by which LLM-authored metric view YAML
+        # enters the system, and it used to transport ``new_text`` verbatim while
+        # every engine-generated path was checked by ``mv_yaml.validate``. Gate it
+        # with the same validator. RuntimeError is the established refusal signal
+        # (see the Lever-6 snippet gate above): apply_patch_set records the patch
+        # as dropped_validation and keeps applying the rest of the set.
+        from genie_space_optimizer.optimization import mv_yaml as _mv_yaml
+
+        _report = _mv_yaml.validate(new_text)
+        if not _report.ok:
+            raise RuntimeError(
+                f"Refusing to apply {patch_type} for {target or '?'}: metric view "
+                f"YAML failed validation — {'; '.join(_report.errors)}"
+            )
         return action(
             json.dumps({"op": "update", "section": "mv_yaml", "mv": target, "new_yaml": new_text}),
             json.dumps({"op": "update", "section": "mv_yaml", "mv": target, "new_yaml": old_text}),
+        )
+
+    # ── Metric view attachment (MV-D2 / MV-D16) ───────────────────
+    # A real config mutation, unlike the Lever-2 uc_artifact MV types above:
+    # this shelves an already-created UC metric view onto the space so Genie can
+    # query it. ``asset`` carries the full data-source entry when the caller has
+    # one (description, column_configs); a bare identifier is enough.
+    if patch_type == "mv_attach_data_source":
+        asset = patch.get("asset") or {}
+        identifier = str(asset.get("identifier") or target or new_text or "")
+        if not identifier:
+            raise RuntimeError(
+                "Refusing to apply mv_attach_data_source without an identifier: "
+                "the attach phase must name the metric view the backend created"
+            )
+        asset = {**asset, "identifier": identifier}
+        return action(
+            json.dumps({"op": "add", "section": "metric_views", "asset": asset}),
+            json.dumps({"op": "remove", "section": "metric_views", "identifier": identifier}),
         )
 
     # ── Unknown type ──────────────────────────────────────────────
@@ -3885,6 +3918,33 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                     return True
             return False
 
+    # ── Metric view data sources (MV-D16) ─────────────────────────
+    # The genuine mutation the attach patch needs. ``data_sources.metric_views``
+    # is the second shelf alongside ``tables`` and takes the same entry shape, so
+    # this mirrors the tables branch — including the sort, which the Genie API
+    # enforces on both collections.
+    if section == "metric_views":
+        metric_views = config.setdefault("data_sources", {}).setdefault("metric_views", [])
+        if op == "add":
+            asset = cmd.get("asset", {})
+            identifier = asset.get("identifier", "")
+            if not identifier:
+                return False
+            if any(mv.get("identifier") == identifier for mv in metric_views):
+                # Already shelved. Reported as a no-op rather than a success so
+                # the apply log does not claim an attach that changed nothing.
+                return False
+            metric_views.append(asset)
+            sort_genie_config(config)
+            return True
+        if op == "remove":
+            identifier = cmd.get("identifier", "")
+            for i, mv in enumerate(metric_views):
+                if mv.get("identifier") == identifier:
+                    metric_views.pop(i)
+                    return True
+            return False
+
     # ── Default Filters ───────────────────────────────────────────
     if section == "default_filters":
         filters = config.setdefault("default_filters", [])
@@ -4020,6 +4080,12 @@ def _apply_action_to_uc(w: WorkspaceClient, action: dict) -> bool:
 
 
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+# MV-D16: patch types whose only expression is a space-config edit, whatever
+# ``apply_mode`` a run was launched with. Attaching a metric view rewrites
+# ``data_sources.metric_views`` and has no UC-side equivalent, so letting
+# ``_resolve_scope`` route it to ``uc_artifact`` would silently apply nothing.
+_ALWAYS_GENIE_CONFIG_PATCH_TYPES: frozenset[str] = frozenset({"mv_attach_data_source"})
 
 
 def apply_patch_set(
@@ -4181,11 +4247,12 @@ def apply_patch_set(
         patch_type = str(patch.get("type", ""))
         risk = classify_risk(patch.get("type", ""))
         lever = patch.get("lever", 5)
-        scope = (
-            "genie_space"
-            if patch_type == "update_space_description"
-            else _resolve_scope(lever, apply_mode)
-        )
+        if patch_type == "update_space_description":
+            scope = "genie_space"
+        elif patch_type in _ALWAYS_GENIE_CONFIG_PATCH_TYPES:
+            scope = "genie_config"
+        else:
+            scope = _resolve_scope(lever, apply_mode)
 
         try:
             rendered = render_patch(patch, space_id, config)

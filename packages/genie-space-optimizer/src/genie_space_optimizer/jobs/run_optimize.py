@@ -46,6 +46,9 @@ from genie_space_optimizer.optimization.benchmarks import (
     benchmark_corpus_for_optimization,
     load_benchmark_corpus,
 )
+from genie_space_optimizer.optimization.mv_advisor import run_mv_advisor_phase
+from genie_space_optimizer.optimization.mv_scoring import FoundationModelEmbeddingClient
+from genie_space_optimizer.optimization.mv_signals import warehouse_reader
 from genie_space_optimizer.optimization.preflight import _resolve_experiment_path
 from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
@@ -91,6 +94,11 @@ dbutils.widgets.text("target_accuracy", "0.90")
 dbutils.widgets.text("benchmark_policy", "repair_allowed")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("llm_model", "")
+dbutils.widgets.text("enable_metric_view_suggestions", "false")
+dbutils.widgets.text("mv_attach_views", "")
+dbutils.widgets.text("mv_consent_id", "")
+dbutils.widgets.text("mv_action_mode", "suggest_only")
+dbutils.widgets.text("mv_min_confidence", "75")
 
 run_id = dbutils.widgets.get("run_id").strip()
 space_id = dbutils.widgets.get("space_id").strip()
@@ -105,6 +113,27 @@ target_accuracy = target_accuracy_percent(
 )
 llm_model = dbutils.widgets.get("llm_model").strip()
 benchmark_policy = dbutils.widgets.get("benchmark_policy").strip() or "repair_allowed"
+# STRING compare, matching the other boolean-ish job parameters: the widget value
+# arrives as text and anything other than "true" leaves the advisor phase off.
+enable_metric_view_suggestions = (
+    dbutils.widgets.get("enable_metric_view_suggestions").strip().lower() == "true"
+)
+# MV-D16: the attach phase's two inputs. ``mv_attach_views`` is a JSON list of
+# fully-qualified metric view names the backend already created under OBO;
+# ``mv_consent_id`` carries the consent's PROBE ID, because genie_opt_mv_consents
+# is keyed on probe_id and has no consent_id column. Either one empty skips the
+# phase. Registering these across databricks.yml / gso_job.py / job_launcher.py
+# is Prompt 8's work, as it was for enable_metric_view_suggestions above.
+mv_attach_views = dbutils.widgets.get("mv_attach_views").strip()
+mv_consent_id = dbutils.widgets.get("mv_consent_id").strip()
+# Declared-but-unconsumed today (MV-D5 / gap report §2.2). Read here so the job
+# parameters registered in Prompt 8 actually flow to this notebook rather than
+# silently resolving to a widget default that nothing set. Consumers land later:
+# mv_action_mode gates suggest_only vs create_and_attach in the advisor/attach
+# phase (Prompt 9 trigger flow), and mv_min_confidence is the advisor's proposal
+# confidence cutoff. Kept as module reads, not passed downstream yet.
+mv_action_mode = dbutils.widgets.get("mv_action_mode").strip() or "suggest_only"
+mv_min_confidence = dbutils.widgets.get("mv_min_confidence").strip() or "75"
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
 
@@ -352,6 +381,8 @@ try:
         wide_schema_parent_artifact_id=plan_record.get("artifact_id"),
         wide_schema_profile_budget=wide_schema_profile_budget,
         diagnostic_callback=_diagnostic,
+        mv_attach_views=mv_attach_views,
+        mv_consent_id=mv_consent_id,
     )
     _log(
         "Optimize loop finished",
@@ -406,6 +437,48 @@ if _prompt_telemetry:
         stage_name=_TASK_KEY,
         source_notebook="run_optimize.py",
     )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Metric View Advisor Phase (gated, proposal-only)
+
+# COMMAND ----------
+
+# A phase, not a task (MV-D3). It runs after the loop because it consumes
+# iteration-0 generated SQL from Delta and has no reason to block optimization,
+# and it only ever proposes — object creation is a backend/OBO surface under
+# MV-D1, and this notebook runs as the service principal.
+#
+# run_mv_advisor_phase never raises: it writes its own stage row and returns an
+# outcome either way, so nothing below this point can be reached differently
+# because the advisor failed.
+_mv_outcome = run_mv_advisor_phase(
+    spark,
+    run_id=run_id,
+    space_id=space_id,
+    catalog=catalog,
+    schema=schema,
+    enabled=enable_metric_view_suggestions,
+    benchmarks=benchmarks,
+    wide_schema_inventory=wide_schema_inventory,
+    w=w,
+    warehouse_id=warehouse_id,
+    embedding_client=FoundationModelEmbeddingClient(w),
+    # L and D read the system tables as the SP through the same warehouse seam
+    # every other in-job system read uses (MV-D1). Constructed here beside the
+    # embedding client so the advisor takes both as injected inputs and its tests
+    # can drive fixture rows through the same seam.
+    signal_reader=warehouse_reader(w, warehouse_id) if (w is not None and warehouse_id) else None,
+    # Benchmark question text is S's intent side. Passing it here is the one
+    # sanctioned route for that text: it is consumed as vectors and never stored,
+    # while the proposal's evidence carries question *ids* only.
+    intent_texts=[
+        str(b.get("question") or "") for b in (benchmarks or ()) if isinstance(b, dict)
+    ],
+    domain=domain,
+)
+_log("Metric view advisor", **_mv_outcome.detail())
 
 write_stage(
     spark,

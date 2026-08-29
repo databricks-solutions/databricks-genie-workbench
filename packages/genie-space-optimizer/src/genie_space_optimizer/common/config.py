@@ -1483,6 +1483,10 @@ HIGH_RISK_PATCHES = {
     "add_tvf",
     "remove_tvf",
     "update_mv_yaml",
+    # MV-D16: attaching a data source changes what Genie may query. High risk
+    # means apply_patch_set queues it unless force_apply=True, which the attach
+    # phase sets because the consent record already authorizes this exact object.
+    "mv_attach_data_source",
 }
 
 # ── 11. Lever Descriptions ─────────────────────────────────────────────
@@ -1852,6 +1856,45 @@ for the fat JSON stage-level blobs that don't fit a per-attempt scored row:
 Backed by ``ddl._GENIE_OPT_ARTIFACTS_DDL`` and written via
 ``state.write_artifact``."""
 
+TABLE_MV_CANDIDATES = "genie_opt_mv_candidates"
+"""Metric view advisor proposals (MV-D7). One row per
+``(target_space_id, dedup_fingerprint)`` — a candidate deliberately outlives
+the run that proposed it, because ``create_and_attach`` acts on proposals a
+user approved from an *earlier* run (MV-D1's two-run consent model). Partitioned
+by ``target_space_id`` rather than ``run_id`` for that reason. Backed by
+``ddl._GENIE_OPT_MV_CANDIDATES_DDL``; upserted via
+``mv_state.upsert_mv_candidate``. The rendered DDL *text* for a candidate is a
+separate ``genie_opt_artifacts`` row whose ``content_hash`` is this table's
+``dedup_fingerprint``, so the two stores cross-reference."""
+TABLE_MV_CONSENTS = "genie_opt_mv_consents"
+"""Metric view entitlement probes and the consent decisions taken against them
+(MV-D7). One row per ``probe_id``. Unpartitioned: the probe writes the row
+before any run exists, so ``run_id`` is NULL at insert and filled at trigger
+time, which rules it out as a partition key. Backed by
+``ddl._GENIE_OPT_MV_CONSENTS_DDL``; upserted via
+``mv_state.upsert_mv_consent``."""
+TABLE_MV_CREATED_OBJECTS = "genie_opt_mv_created_objects"
+"""Unity Catalog metric views the backend created under OBO for a run, and
+their attach/detach lifecycle (MV-D7). One row per
+``(run_id, suggestion_id)``; ``status`` mutates CREATED → ATTACHED →
+DETACHED → DROPPED over the life of the object. Backed by
+``ddl._GENIE_OPT_MV_CREATED_OBJECTS_DDL``; upserted via
+``mv_state.upsert_mv_created_object``."""
+TABLE_MV_SUPPRESSIONS = "genie_opt_mv_suppressions"
+"""Per-measure suppression ledger (MV-D30 as-implemented, Prompt 15.3). When a
+user rejects a view-grained bundle, the rejection FANS OUT to one row per member
+measure fingerprint here — because under MV-D30 the persisted proposal grain is
+the *view* and its ``dedup_fingerprint`` changes when membership changes, so a
+bundle-row rejection alone cannot stop a bundle from resurfacing wearing one new
+measure. Keyed on ``(target_space_id, measure_fingerprint)``. The advisor's
+consolidation reads this (unioned with legacy per-measure ``rejected`` candidate
+rows) and drops suppressed members BEFORE bundling, so a rejected measure never
+resurfaces inside any future bundle. Kept as a dedicated table rather than
+synthetic per-measure rows in ``genie_opt_mv_candidates`` so the two grains do
+not share one table and reintroduce the two-readers hazard MV-D30 removed.
+Backed by ``ddl._GENIE_OPT_MV_SUPPRESSIONS_DDL``; written via
+``mv_state.suppress_mv_measures`` / ``warehouse.wh_suppress_mv_measures``."""
+
 # ── 13. Trace Destination Convention ──────────────────────────────────
 
 EXPERIMENT_PATH_TEMPLATE = "/Shared/genie-space-optimizer/{{ space_id }}/{{ domain }}"
@@ -1975,7 +2018,7 @@ UNIFIED_OPTIMIZER_PATCH_RULES = [
 
 # ── 15. Assessment Sources ─────────────────────────────────────────────
 
-# ── 17. Patch Types (35 entries) ───────────────────────────────────────
+# ── 17. Patch Types (51 entries) ───────────────────────────────────────
 
 PATCH_TYPES = {
     # Lever 1: Tables & Columns — descriptions, visibility, aliases
@@ -2075,6 +2118,17 @@ PATCH_TYPES = {
         "scope": "uc_artifact",
         "risk_level": "high",
         "affects": ["metric_view", "mv_yaml"],
+    },
+    # MV-D16: attaching a metric view the backend already created under OBO is a
+    # ``genie_config`` edit, not a ``uc_artifact`` one — it rewrites
+    # ``data_sources.metric_views`` and touches no UC object. Deliberately absent
+    # from unified_loop._ALLOWED_PATCH_TYPES: that frozenset is the LLM-proposal
+    # surface, and an LLM-proposed attach would carry no consent row.
+    "mv_attach_data_source": {
+        "type": "mv_attach_data_source",
+        "scope": "genie_config",
+        "risk_level": "high",
+        "affects": ["data_sources", "metric_views"],
     },
     # Lever 3: Table-Valued Functions
     "add_tvf_parameter": {
@@ -2393,3 +2447,448 @@ _LEVER_TO_PATCH_TYPE: dict[tuple[str, int], str] = {
 # Expanded patch identities remain lever-qualified in the active applier.
 def lever_qualified_patch_ids_enabled() -> bool:
     return True
+
+
+# ── 23. Metric View Advisor Scoring (MV-D11) ───────────────────────────
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a float override, falling back to ``default`` on anything unparseable.
+
+    Deliberately not a generalization of :func:`_int_env`, which clamps with
+    ``max(1, value)``. That clamp is right for counts and wrong for every value
+    below: a weight of ``0.35`` would clamp to ``1`` and a suppression floor of
+    ``0.0`` is legitimate.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+MV_SCORE_WEIGHT_L = _float_env("GSO_MV_SCORE_WEIGHT_L", 0.35)
+MV_SCORE_WEIGHT_Y = _float_env("GSO_MV_SCORE_WEIGHT_Y", 0.30)
+MV_SCORE_WEIGHT_S = _float_env("GSO_MV_SCORE_WEIGHT_S", 0.20)
+MV_SCORE_WEIGHT_D = _float_env("GSO_MV_SCORE_WEIGHT_D", 0.15)
+
+MV_SCORE_WEIGHTS: dict[str, float] = {
+    "L": MV_SCORE_WEIGHT_L,
+    "Y": MV_SCORE_WEIGHT_Y,
+    "S": MV_SCORE_WEIGHT_S,
+    "D": MV_SCORE_WEIGHT_D,
+}
+"""POV Part 3 blend weights: ``100 * (0.35L + 0.30Y + 0.20S + 0.15D)``.
+
+Read as a dict rather than inlined at the call site because the same dict
+travels in every proposal's ``score_components.weights``, so a workspace that
+retunes a weight ships the tuning it actually used alongside the scores it
+produced. A retuned deployment that stored bare scores would leave no way to
+tell a high-confidence candidate from a generously-weighted one.
+"""
+
+MV_TIER_HIGH_MIN = _float_env("GSO_MV_TIER_HIGH_MIN", 75.0)
+"""Lower bound of the HIGH tier. POV Part 3: High >= 75."""
+
+MV_TIER_MEDIUM_MIN = _float_env("GSO_MV_TIER_MEDIUM_MIN", 50.0)
+"""Lower bound of MEDIUM (50-74). Nothing is auto-applied below HIGH."""
+
+MV_TIER_LOW_MIN = _float_env("GSO_MV_TIER_LOW_MIN", 25.0)
+"""Lower bound of LOW (25-49). Below this a candidate is suppressed: it is
+reported for diagnostics and never persisted as a proposal."""
+
+MV_ADVISOR_PHASE_NAME = "mv_advisor"
+"""Stage name for the advisor phase's ``genie_opt_stages`` rows.
+
+The phase runs inside the ``optimize`` task (MV-D3 forbids new job tasks), so
+the stage name is what separates its rows from the loop's.
+"""
+
+MV_ATTACH_PHASE_NAME = "mv_attach"
+"""Stage name for the attach + lift phase's ``genie_opt_stages`` rows.
+
+One phase, one stage name, even though it performs two steps: the lift eval is
+not separable from the attach it measures — a recorded attach with no lift would
+be an attach nobody checked. MV-D16 places both after iteration-0 and before the
+first lever patch, inside the optimize task.
+"""
+
+# ── Sentinel advice runs (MV-D23) ────────────────────────────────────────
+
+MV_RUN_KIND_OPTIMIZATION = "optimization"
+"""Default ``genie_opt_runs.run_kind`` — a real optimization run. NULL (legacy
+rows written before the column existed) is treated as this value everywhere."""
+
+MV_RUN_KIND_ADVICE = "mv_advice"
+"""``run_kind`` for a standalone metric-view advice request (MV-D23).
+
+An advice run writes candidates/artifacts/stage rows against a genuine
+``run_id`` so every FK, partition and ``wh_*`` helper works untouched, but it
+never ran an eval — so it is excluded from run-history and accuracy aggregates
+by :data:`MV_ADVICE_RUN_EXCLUSION`, and it is *born terminal*
+(:data:`MV_ADVICE_RUN_STATUS`) so active-run reconciliation never adopts it."""
+
+MV_ADVICE_RUN_STATUS = "MV_ADVICE"
+"""Terminal-at-birth ``status`` for an advice run (guardrail i, MV-D23).
+
+Not ``QUEUED``/``IN_PROGRESS``, so ``wh_reconcile_active_runs`` (whose active
+set is ``{QUEUED, IN_PROGRESS}``) can never pick one up. Closing the
+reconciliation half of the forgotten-filter risk structurally rather than by
+predicate."""
+
+
+def mv_advice_run_exclusion(alias: str = "") -> str:
+    """The single canonical predicate that excludes advice runs (guardrail ii).
+
+    Every run-listing and accuracy-aggregating query over ``genie_opt_runs``
+    routes through this rather than inlining a filter — the register's stated
+    failure mode is a filter forgotten in one place, so the predicate lives in
+    exactly one place and ``test_mv_advice_run_exclusion.py`` asserts the query
+    sites use it. ``COALESCE`` treats legacy NULL ``run_kind`` as an
+    optimization run, so pre-migration rows are never hidden.
+    """
+    col = f"{alias}.run_kind" if alias else "run_kind"
+    return f"COALESCE({col}, '{MV_RUN_KIND_OPTIMIZATION}') <> '{MV_RUN_KIND_ADVICE}'"
+
+
+MV_ADVICE_RUN_EXCLUSION = mv_advice_run_exclusion()
+"""Unqualified form of :func:`mv_advice_run_exclusion` for the common case."""
+
+
+# ── Created-object provenance (MV-D24) ───────────────────────────────────
+
+MV_PROVENANCE_OBO_CREATED = "OBO_CREATED"
+"""Default ``genie_opt_mv_created_objects.provenance`` — a view the backend
+create-and-attach path built under OBO. NULL (legacy rows written before the
+column existed) is treated as this value everywhere."""
+
+MV_PROVENANCE_USER_CREATED = "USER_CREATED"
+"""A view the *user* created in their own SQL editor and then registered
+(MV-D24 bring-your-own). Two invariants ride on this discriminator: the app
+never drops a ``USER_CREATED`` view (drop refuses on provenance, not merely on
+status), and ``mv_attach``'s ``created_by != granted_by`` identity guard is
+relaxed for ``USER_CREATED`` rows only — a verified registration is the consent
+coverage that guard exists to require."""
+
+
+MV_ADVISOR_MAX_CANDIDATES = _int_env("GSO_MV_ADVISOR_MAX_CANDIDATES", 10)
+"""How many recurrence-ranked measures the advisor considers per run.
+
+Bounded because generation runs per candidate and the corpus scan's tail is
+long: the hundredth-ranked measure recurred once and will not clear the
+suppression floor, so scoring it spends embedding calls to produce a row nobody
+reads. ``corpus_scan`` already ranks by recurrence, so the cut takes the top.
+"""
+
+MV_SIGNAL_COMPUTED = "COMPUTED"
+"""A producer ran and returned a value. The signal scores what it measured."""
+
+MV_SIGNAL_EMPTY = "EMPTY"
+"""A producer ran and found nothing to compare — a real measurement of zero.
+
+Scores 0.0 and **keeps its weight** (MV-D15). Two disjoint column sets and a
+reference set with no positive cosine are findings, not gaps, and a blend that
+excused them would reward a candidate for having no evidence against it.
+"""
+
+MV_SIGNAL_UNAVAILABLE = "UNAVAILABLE"
+"""No producer exists — nothing looked.
+
+Leaves the blend entirely rather than scoring 0.0 (MV-D15): its weight is
+removed from the divisor, so the remaining signals are renormalized over what
+was actually measured. Distinct from :data:`MV_SIGNAL_EMPTY` because "nobody
+checked" and "checked, found none" are different facts that a bare 0.0 conflates.
+"""
+
+MV_SIGNAL_STATUSES: tuple[str, ...] = (
+    MV_SIGNAL_COMPUTED,
+    MV_SIGNAL_EMPTY,
+    MV_SIGNAL_UNAVAILABLE,
+)
+"""The closed set of per-signal availability statuses."""
+
+MV_COVERAGE_HIGH_MIN = _float_env("GSO_MV_COVERAGE_HIGH_MIN", 0.80)
+"""Minimum ``evidence_coverage`` for a candidate to be HIGH-eligible (MV-D15).
+
+Set at 0.80 rather than 1.0 so one missing signal does not veto the top tier,
+and above 0.65 so a candidate missing **L** — the heaviest single weight, and
+the signal with no producer today — cannot reach HIGH on the strength of the
+other three. Renormalization keeps such a score on a 0-100 scale; this keeps the
+scale from implying corroboration it does not have.
+"""
+
+MV_COVERAGE_MEDIUM_MIN = _float_env("GSO_MV_COVERAGE_MEDIUM_MIN", 0.50)
+"""Minimum ``evidence_coverage`` for a MEDIUM ceiling; below it the ceiling is
+LOW (MV-D15). At 0.50 a majority of the weight was measured, which is the least
+that can support a mid-tier claim."""
+
+MV_RECURRENCE_SATURATION = _int_env("GSO_MV_RECURRENCE_SATURATION", 75)
+"""Occurrence count at which the **Y** recurrence curve reaches 1.0.
+
+Log-scaled (`log1p(r) / log1p(saturation)`) because evidence accumulates with
+diminishing returns — the 60th re-derivation of a measure says little the 6th
+did not. At the POV's worked-example recurrence of 60 this yields 0.9492, which
+is the 0.95 that example asserts.
+"""
+
+MV_CURATED_OCCURRENCE_EQUIVALENT = _int_env("GSO_MV_CURATED_OCCURRENCE_EQUIVALENT", 20)
+"""How many generated occurrences one curated source is worth in **Y** (MV-D17).
+
+The credit is added to the occurrence count *inside* the log-saturating curve —
+``Y = normalized_recurrence(r + k * curated_provenance_count)`` — not multiplied
+onto its output. Multiplying a log-saturated base by a linear factor was the
+original shape error: it under-credited the modal case (one human curates a
+measure the generator derived once: ``0.115 * 2 = 0.23``, still buried) and
+walled at the 1.0 clamp for anything already recurring, so Y stopped
+discriminating among curated candidates almost immediately. Adding inside the log
+is monotone throughout and clamps only at genuinely saturating effective counts.
+
+Neutral at zero *by construction*: ``k * 0 == 0`` returns the identical float, so
+generated-only candidates — the two IEEE-exact POV worked examples included — and
+the MV-D15 coverage divisor keep exactly the guarantee they had before the credit
+existed. That neutrality is why MV-D17 puts the credit inside Y rather than in a
+fifth blend weight.
+
+``k`` is an authored judgment about the POV evidence hierarchy, not a free knob.
+At the default ``k = 20`` (with ``MV_RECURRENCE_SATURATION = 75``): a single
+curated source with ``r = 1`` scores ``normalized_recurrence(21) = 0.714`` — worth
+~21 generated derivations, decisively above a lightly-recurring generated measure
+and below a heavily-recurring one (``r = 60 -> 0.949``); the MV-D17 named example
+of 3 curated occurrences scores ``normalized_recurrence(63) = 0.960`` and clears
+60 generated.
+
+Do **not** raise ``k`` toward 60 to "make one curated source outrank sixty": at
+``k = 60`` the single-curated case scores 0.953 against generated-sixty's 0.949 —
+both saturated, so Y stops ordering (the clamp cliff, reintroduced through the env
+var). Y is recurrence evidence only; a measure's *authority* rides other channels
+(the ``trusted_asset_definitions`` conflict path, the dedup gate), so sixty
+independent re-derivations should outrank a never-re-derived curated measure on Y
+while it still surfaces. A curated candidate landing in the LOW tier under partial
+signal coverage (``evidence_coverage = 0.50`` when L and D are unavailable and S
+is empty) is a signal-availability problem for the L/D producers to fix, not a
+reason to raise ``k``.
+
+This credit is *only* about provenance; damping raw recurrence by distinct-source
+breadth is a separate, deferred fix (MV-D17)."""
+
+MV_DEMAND_FREQUENCY_SATURATION = _int_env("GSO_MV_DEMAND_FREQUENCY_SATURATION", 100)
+"""Query count at which the **D** frequency factor saturates."""
+
+MV_DEMAND_COST_SATURATION_MS = _int_env("GSO_MV_DEMAND_COST_SATURATION_MS", 3_600_000)
+"""Total execution time (ms) at which the **D** cost factor saturates: one
+warehouse-hour of cumulative work attributable to one measure."""
+
+MV_DEMAND_BREADTH_SATURATION = _int_env("GSO_MV_DEMAND_BREADTH_SATURATION", 10)
+"""Distinct-user count at which the **D** breadth factor saturates. Breadth is
+what separates a measure the organization depends on from one analyst's habit."""
+
+MV_DEMAND_HALF_LIFE_DAYS = _float_env("GSO_MV_DEMAND_HALF_LIFE_DAYS", 30.0)
+"""Half-life `H` in `D_eff = D * 0.5^(age_days / H)`. POV Part 3: `H ~ 30 days`."""
+
+MV_DEMAND_HISTORY_LOOKBACK_DAYS = _int_env("GSO_MV_DEMAND_HISTORY_LOOKBACK_DAYS", 90)
+"""Bounded window (days) the **D** producer reads from ``system.query.history``.
+
+The demand producer (``optimization/mv_signals.demand_signal``) fingerprints the
+space's real query-history traffic and joins candidate fingerprints against it,
+so the read must be windowed — an unbounded scan of ``system.query.history``
+is both expensive and pointless, since the ``age_days`` decay
+(:data:`MV_DEMAND_HALF_LIFE_DAYS`) has already reduced anything older than a few
+half-lives to noise. Ninety days is three 30-day half-lives (a matched measure
+last seen at the window edge contributes ``0.5**3 ≈ 0.125`` of its undecayed
+demand), wide enough that a quarterly-cadence measure still registers and narrow
+enough to keep the per-run read cheap. A window that finds no matching traffic
+is a real measurement of zero — the producer reports ``EMPTY``, not
+``UNAVAILABLE`` (MV-D15)."""
+
+MV_EMBEDDING_ENDPOINT = os.environ.get(
+    "GSO_MV_EMBEDDING_ENDPOINT",
+    "databricks-gte-large-en",
+)
+"""Foundation Model endpoint for the advisor's **S** signal (POV Part 2:
+1024-dim, 8192-token window). Distinct from the firewall's
+``leakage.EMBEDDING_ENDPOINT`` — GTE does not normalize its vectors and BGE
+does, so the advisor L2-normalizes in our code rather than trusting either."""
+
+MV_ADVISOR_GENERATED_BY = "gwb-mv-advisor@1.0"
+"""``provenance.generated_by`` stamped on every proposal (POV Part 4)."""
+
+
+# ── 24. Metric View Advisor runtime capability floors (MV-D8) ───────────
+
+MV_CAPABILITY_CREATE_EDIT = "mv_create_edit"
+MV_CAPABILITY_NESTED_JOINS = "mv_nested_joins"
+MV_CAPABILITY_FIELDS_AGG_WINDOW_OFFSET = "mv_fields_agg_window_offset"
+
+MV_CAPABILITY_FLOORS: tuple[tuple[str, str, str], ...] = (
+    (MV_CAPABILITY_CREATE_EDIT, "17.3", "Create or edit a metric view"),
+    (MV_CAPABILITY_NESTED_JOINS, "17.1", "Nested (snowflake) joins — the ladder's middle rung"),
+    (MV_CAPABILITY_FIELDS_AGG_WINDOW_OFFSET, "18.1", "fields:, agg(), and window offset"),
+)
+"""``(capability, minimum DBR version, label)`` per MV-D8 and POV §7.3.1.
+
+The floors are Databricks Runtime versions because that is how the metric view
+documentation states them, and they are only *decidable* when the probed compute
+reports one. On a SQL warehouse ``current_version().dbr_version`` is NULL —
+only ``dbsql_version`` is populated, and there is no published DBSQL-to-DBR
+mapping — so those rows come back ``UNKNOWN`` rather than guessing a mapping the
+platform does not document.
+
+``UNKNOWN`` resolves in two different directions on purpose:
+
+- For the **optional** capabilities below, unknown means unavailable. The
+  generator drops to the next ladder rung (nested joins → subquery-source)
+  instead of emitting YAML the runtime may not be able to plan, which is the
+  silent-wrong-answer failure MV-D8 exists to prevent.
+- For ``mv_create_edit`` it means *undetermined*, and it never blocks
+  authorization. Blocking on it would deny every SQL-warehouse user, since the
+  row can never be GRANTED there. Only the write itself can prove that floor,
+  and a failed create is already handled as a downgrade.
+"""
+
+MV_OPTIONAL_CAPABILITIES: frozenset[str] = frozenset({
+    MV_CAPABILITY_NESTED_JOINS,
+    MV_CAPABILITY_FIELDS_AGG_WINDOW_OFFSET,
+})
+"""Capabilities whose absence downgrades generated YAML rather than the run."""
+
+
+# ── 25. Metric View Advisor YAML vocabulary (MV-D8) ─────────────────────
+
+MV_YAML_VERSION = "1.1"
+"""Emitted quoted. The one schema version this engine writes and validates.
+
+**This pins the dialect this generator emits. It is not an assertion about what
+a workspace supports.** Two jobs could hide behind one constant, and only the
+first belongs here: the renderer emits exactly the field vocabulary of metric
+view YAML 1.1 — the version the MV-D8 generation standard was written against,
+and the version whose unsupported-field and format-type lints in this section
+were derived from — and :func:`mv_yaml.validate` requires that same literal so
+a document from anywhere else cannot claim a schema the lints do not describe.
+Whether a *workspace* can plan a given construct is the second job, and capability
+rows already do it: ``MV_CAPABILITY_FLOORS`` states runtime floors and MV-D13
+resolves the undecidable case by stepping down the join ladder.
+
+So a workspace reporting a different metric view schema version is **not** a
+signal to widen or bump this constant at runtime. Emitting 1.2 fields because a
+runtime advertises 1.2 would ship YAML this module's lints have never checked,
+which is the unvalidated-construct failure MV-D8 exists to prevent. A version
+bump is a deliberate code change — new vocabulary in this section, the lints
+updated with it, goldens re-baselined — and until that change lands, YAML at any
+other version is refused by ``validate`` rather than passed through."""
+
+MV_FORMAT_TYPES: frozenset[str] = frozenset({
+    "byte", "currency", "date", "date_time", "number", "percentage",
+})
+"""The closed set of ``format.type`` values a metric view accepts.
+
+Closed on purpose: an out-of-set type is a create-time error, so accepting one
+at generation time only moves the failure to the slowest possible place."""
+
+MV_FORMAT_TYPE_CORRECTIONS: dict[str, str] = {
+    "percent": "percentage",
+    "pct": "percentage",
+    "decimal": "number",
+    "integer": "number",
+    "int": "number",
+    "float": "number",
+    "double": "number",
+    "money": "currency",
+    "timestamp": "date_time",
+    "datetime": "date_time",
+}
+"""Near-miss spellings mapped to the legal type they were reaching for.
+
+Used only to make the rejection message actionable. The generator never
+silently substitutes — a wrong type is rejected and named, because a format
+quietly rewritten from ``percent`` to ``percentage`` is a number displayed as
+something the author did not ask for."""
+
+MV_UNSUPPORTED_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({
+    "name", "time_dimension", "window_measures",
+})
+"""Top-level keys that make a metric view fail to create.
+
+``name`` belongs to the ``CREATE VIEW`` statement, ``time_dimension`` was never
+a v1.1 field, and top-level ``window_measures`` is the unsupported *array* form
+— the per-measure ``window:`` property is supported and is not listed here."""
+
+MV_UNSUPPORTED_JOIN_FIELDS: frozenset[str] = frozenset({"join_type", "table"})
+"""Join-level keys that fail. ``join_type`` is unsupported (joins are always
+LEFT OUTER) and the relation key is ``source``, not ``table``."""
+
+MV_JOIN_STRATEGY_DIRECT = "direct"
+MV_JOIN_STRATEGY_DENORMALIZED = "denormalized"
+MV_JOIN_STRATEGY_NESTED = "nested"
+MV_JOIN_STRATEGY_SUBQUERY = "subquery_source"
+
+MV_JOIN_STRATEGIES: tuple[str, ...] = (
+    MV_JOIN_STRATEGY_DIRECT,
+    MV_JOIN_STRATEGY_DENORMALIZED,
+    MV_JOIN_STRATEGY_NESTED,
+    MV_JOIN_STRATEGY_SUBQUERY,
+)
+"""The multi-hop ladder's rungs, in preference order after ``direct``.
+
+``direct`` is not a rung — it is the single-hop case where no ladder applies.
+The rung chosen and the reason are recorded on the proposal (``join_strategy``
+plus evidence) so a reviewer can see why a shape was reachable or was not."""
+
+MV_COMMENT_SECTIONS: tuple[str, ...] = (
+    "PURPOSE", "BEST FOR", "NOT FOR", "DIMENSIONS",
+    "MEASURES", "SOURCE", "JOINS", "NOTE",
+)
+"""Required structured-comment sections, in emission order. All eight are
+required: the comment is the only description Genie reads at selection time, so
+a missing section is missing retrieval signal rather than missing prose."""
+
+MV_SYNONYMS_MIN = 3
+MV_SYNONYMS_MAX = 10
+MV_SYNONYM_MAX_CHARS = 255
+"""Per-field synonym bounds. Too few starves matching; too many dilute it."""
+
+MV_COMMENT_ECHO_THRESHOLD = _float_env("GSO_MV_COMMENT_ECHO_THRESHOLD", 0.90)
+"""Normalized-similarity ceiling for one shipped comment line against one
+benchmark question, checked through ``leakage.LeakageOracle.contains_question``.
+
+**The comparison is ``>=``, so a line landing on exactly this value is
+rejected.** That is `contains_question`'s operator, not a second convention
+adopted here, and MV-D8's prose was corrected to match it rather than the
+reverse: the function is shared with the example-SQL firewall at 0.85, so
+changing the operator for one caller would move another path's boundary in the
+permissive direction. Ties belong to rejection in a firewall.
+
+Higher than the example-SQL threshold (0.85) and deliberately so: a comment's
+BEST FOR line is a *paraphrase of an intent*, so it is supposed to share topic
+vocabulary with questions about that intent. Only near-verbatim echo is
+leakage. This is defense in depth rather than the primary guarantee —
+``MetricViewCandidate`` carries ``benchmark_question_ids`` and no benchmark
+text, so verbatim text has no route into a comment to begin with."""
+
+MV_ECHO_CHECK_COMPARED = "COMPARED"
+MV_ECHO_CHECK_NOT_COMPARED = "NOT_COMPARED"
+
+MV_SEMANTIC_STATUS_COMPARED = MV_SIGNAL_COMPUTED
+"""**S** ran against a real reference set. Alias of :data:`MV_SIGNAL_COMPUTED` so
+the signal-status vocabulary is one namespace rather than two that drift."""
+
+MV_SEMANTIC_STATUS_NOTHING_TO_COMPARE = MV_SIGNAL_EMPTY
+"""**S** ran but had no intent text or no reference text — a measured zero."""
+
+MV_SEMANTIC_STATUS_NO_CLIENT = MV_SIGNAL_UNAVAILABLE
+"""**S** could not run: no embedding client, or the endpoint failed.
+
+Mirrors the :data:`MV_ECHO_CHECK_NOT_COMPARED` marker B4 established for the
+comment-echo check, for the same reason — the recon found that a dead endpoint
+and an absent reference set produced byte-identical payloads, so an operator
+could not tell a missing dependency from a negative finding.
+"""
+"""Whether the BEST FOR echo check actually compared anything.
+
+The leakage oracle is an optional input, so "no echo found" and "no corpus was
+supplied, nothing was compared" are different facts that a boolean pass would
+render identical. A check that cannot run reports ``NOT_COMPARED`` on the result
+rather than logging and returning clean, because the reader of a stored
+validation payload is not reading the logs. ``NOT_COMPARED`` is the default:
+absent evidence of a comparison, none is claimed."""

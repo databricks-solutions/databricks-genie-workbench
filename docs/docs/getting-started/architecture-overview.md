@@ -138,7 +138,7 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 | View | Component | Description |
 |------|-----------|-------------|
 | `list` | `SpaceList` | Browse and search Genie Agents with IQ scores |
-| `detail` | `SpaceDetail` | Space detail with tabs: Score, Optimize, History |
+| `detail` | `SpaceDetail` | Space detail with tabs: Score, Model, Optimize, History |
 | `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts, plus lazy-loaded GenieWatch sub-tabs |
 | `create` | `CreateAgentChat` | Conversational agent for building new Genie Agents |
 | `how-it-works` | `HowItWorks` | In-app explanation of the Workbench workflow |
@@ -147,6 +147,7 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 
 - `components/ui/` — design system primitives (button, card, badge, etc.) using `class-variance-authority`
 - `components/auto-optimize/` — components for the GSO optimization UI
+- `components/model/` — the Model tab: `SemanticModelTab` and `SemanticBlueprint` (the interactive Semantic Blueprint canvas), plus the pure `blueprint/` modules (`model` adapter, `layout`, `routing`, `cardinality`, `annotate`, `advisor`). `SemanticBlueprint` replaced the earlier classic node-graph canvas as the only Model-tab view
 - `pages/` — `SpaceList`, `SpaceDetail`, `AdminDashboard`, `HowItWorks`, `HistoryTab`, `IQScoreTab`
 - `watch/` — GenieWatch UI with its own `api.ts` (base `/api/watch`), types, components, and pages; namespaced to avoid colliding with the workbench API surface, and lazy-loaded as `AdminDashboard` sub-tabs
 - `hooks/` — `useAnalysis`, `useTheme`

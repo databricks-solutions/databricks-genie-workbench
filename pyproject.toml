@@ -39,3 +39,11 @@ genie-space-optimizer = { workspace = true }
 testpaths = ["backend/tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# `e2e`/`slow` mark the opt-in live suite under tests/e2e (NOT in testpaths, so
+# neither the default run nor ./scripts/test.sh collects it — the 638+1461
+# offline baseline is untouched). Registered here only so an explicit
+# `pytest -m e2e tests/e2e` emits no PytestUnknownMarkWarning.
+markers = [
+    "e2e: live test against a real Databricks workspace (env-gated; opt-in)",
+    "slow: spends real workspace/eval budget; serialized, never parallelized",
+]

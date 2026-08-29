@@ -289,6 +289,24 @@ export interface GSOTriggerRequest {
   max_attempts?: number | null
   workload_warehouse_ids?: string[]
   benchmark_policy: "review_only" | "repair_allowed"
+  // Metric view advisor knobs (Prompt 11, MV-D1). Mirror of the `mv_*` fields on
+  // `TriggerRequest` in backend/routers/auto_optimize.py. All optional; the run
+  // config only sends them when the "Suggest metric views" toggle is on, and
+  // `buildOptimizationTriggerRequest` clears every one when it is off.
+  // `mv_materialize` is plumbed but has no UI control yet — the materialization
+  // path is unbuilt (mv-advisor-gap-report.md:1526); a later prompt adds the
+  // control and nothing else here changes.
+  enable_metric_view_suggestions?: boolean
+  mv_action_mode?: "suggest_only" | "create_and_attach"
+  mv_min_confidence?: number | null
+  mv_approved_suggestion_ids?: string[]
+  mv_consent?: MvConsentPayload | null
+  mv_materialize?: boolean
+  // Free-text guidance to the optimizer for THIS run (Semantic Blueprint §7,
+  // sibling to the Join Advisor). Per-run pass-through advice — not a config edit,
+  // not persisted. Omitted when the box is blank. Mirror of `operator_guidance` on
+  // `TriggerRequest` in backend/routers/auto_optimize.py.
+  operator_guidance?: string | null
 }
 
 export interface GSOTriggerResponse {
@@ -858,4 +876,509 @@ export interface GSOQueryUsageSignal {
   warehouses: { warehouse_id: string; name: string; accessible: boolean }[]
   inaccessible_warehouses: string[]
   system_grant_sql: string | null
+}
+
+// Metric view entitlement probe — POST /api/auto-optimize/mv/probe.
+// Mirrors MvProbeResult and friends in backend/models.py; update together.
+// Distinct from GSOPermissionCheck above, which probes the service principal:
+// this one runs under the signed-in user's OBO token.
+export type MvCheckStatus = "GRANTED" | "DENIED" | "UNKNOWN"
+
+export interface MvPrivilegeRow {
+  label: string
+  privilege: string
+  securable: string
+  status: MvCheckStatus
+  detail: string | null
+}
+
+// UNKNOWN is the honest answer on a SQL warehouse, which reports only a DBSQL
+// version against a floor stated in DBR. For an optional capability the
+// generator withholds the feature; for mv_create_edit it does not block (MV-D13).
+// observed_warehouse_id is the compute the row was read on — a row observed
+// elsewhere does not carry over.
+export interface MvCapabilityRow {
+  capability: string
+  label: string
+  required_dbr: string
+  observed_version: string | null
+  runtime_kind: "DBR" | "DBSQL" | "UNAVAILABLE"
+  observed_warehouse_id: string | null
+  status: MvCheckStatus
+  optional: boolean
+  detail: string | null
+}
+
+export interface MvProbeResult {
+  probe_id: string
+  checked_as: string
+  auth_identity: "OBO"
+  target: string
+  checked_at: string
+  results: Record<string, MvCheckStatus>
+  privileges: MvPrivilegeRow[]
+  capabilities: MvCapabilityRow[]
+  verdict: "SUFFICIENT" | "INSUFFICIENT" | "UNKNOWN"
+  missing: string[]
+  // Copy-ready GRANT text. The app never executes it.
+  remediation_sql: string | null
+  fallback_mode: "suggest_only"
+  materialize_consented: boolean
+  consent_recorded: boolean
+  errors: string[]
+  // Prompt 15.8 fix #3 — the space audience (ACL principals with CAN RUN/VIEW/
+  // MANAGE), so the consent modal's GRANT preview names a real grantee instead
+  // of `<grantee>`. Empty when the ACL was unreadable (modal keeps raw copy).
+  audience_grantees: string[]
+}
+
+// Body for POST /api/auto-optimize/mv/probe. Mirrors MvProbeRequest in
+// backend/routers/auto_optimize.py; the backend accepts the wire key `schema`
+// (a Pydantic alias for `schema_name`). source_tables are three-part names.
+export interface MvProbeRequest {
+  catalog: string
+  schema: string
+  space_id: string
+  source_tables: string[]
+  materialize_consented?: boolean
+}
+
+// ── Metric view proposals / consent (Prompt 11, MV-D1/D23) ──────────────────
+// Mirrors MvConsentPayload / MvProposal / MvProposalsResponse /
+// MvSpaceProposalsResponse in backend/models.py; update together. The output-
+// screen shapes (MvDdlArtifact, MvLiftReport, MvCreatedObject,
+// MvCreatedObjectsResponse, decision/drop) are mirrored below now that Prompt 13
+// wires the run output/results panels to them.
+
+// The scoped, recorded authorization carried on a create_and_attach run. Built
+// from a SUFFICIENT probe: probe_id keys the consent, checked_as/checked_at are
+// the audit pair. Re-verified under OBO at trigger time before any write.
+export interface MvConsentPayload {
+  granted_by: string
+  granted_at: string
+  probe_id: string
+}
+
+// One advisor proposal (a genie_opt_mv_candidates row). JSON columns arrive
+// decoded; confidence_score is 0–100; approved_for_rerun gates create_and_attach
+// (MV-D1). run_id is presentational only — never a state/fetch key (MV-D23).
+// One member measure of a view-grained bundle (MV-D30). A pre-15.3 single-measure
+// proposal reads back as a one-element `measures`, so every proposal is a bundle.
+export interface MvProposalMeasure {
+  display_name: string | null
+  expr: string | null
+  dedup_fingerprint: string | null
+  recurrence: number | null
+  provenance_count: number | null
+  benchmark_question_ids: string[] | null
+}
+
+// Prompt 15.9 item (d): one provenance id resolved to a human thing. `kind` is
+// "sql_snippet" | "trusted_asset" | "gso_patch"; `label` is the display text
+// (snippet name / example-question text / "generated-SQL match"); `detail` is the
+// snippet expression or lever/iteration when present; `id` is the raw provenance
+// id, shown only behind the card's "show raw ids" debug affordance.
+export interface MvProvenanceLabel {
+  id: string
+  kind: string
+  label: string
+  detail: string | null
+}
+
+export interface MvProposal {
+  suggestion_id: string
+  dedup_fingerprint: string
+  target_space_id: string
+  run_id: string | null
+  candidate_type: string
+  confidence_score: number | null
+  tier: string | null
+  // MV-D32 as-implemented (Prompt 15.7b): score-only tier + coverage-cap flag,
+  // persisted so the panel can promote coverage-capped-strong proposals into the
+  // default list. null on legacy rows → fall back to the tier-only split.
+  uncapped_tier: string | null
+  tier_capped_by_coverage: boolean | null
+  proposed_object: string | null
+  measures: MvProposalMeasure[]
+  // MV-D35 (Prompt 15.8) — the facts row: quality gates this row PROVES ran and
+  // passed, computed server-side from per-row proof (never persisted). A key is
+  // present ONLY when its gate ran ("validated"/"executable" from the servable-
+  // body invariant; "no_overlap" from the dedup gate finding no conflicts), so a
+  // check that did not run is never rendered. null/absent on rows lacking proof.
+  checks: Record<string, string> | null
+  score_components: Record<string, unknown> | null
+  evidence: Record<string, unknown> | null
+  // Prompt 15.9 item (d) — provenance ids resolved to human labels serve-time
+  // (example-question text, snippet name, generated-SQL match). The card renders
+  // these; the raw ids stay behind a "show raw ids" debug affordance. null when
+  // nothing resolved (the card falls back to counts).
+  provenance_labels: MvProvenanceLabel[] | null
+  provenance: Record<string, unknown> | null
+  alternatives: unknown[] | null
+  conflicts: unknown[] | null
+  requested_mode: string | null
+  effective_mode: string | null
+  decision: string | null
+  decided_by: string | null
+  decided_at: string | null
+  suppressed_until: string | null
+  approved_for_rerun: boolean
+  // MV-D34 attach-at-approval marker: true when proposed_object is already on the
+  // Agent's data_sources.metric_views (computed serve-time from the live config,
+  // the source of truth). The card badges "Attached" instead of re-offering
+  // [Create this metric view]. Absent/false on run-scoped and suggest responses.
+  attached?: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+// POST /api/auto-optimize/spaces/{space_id}/mv/create — create-at-approval
+// (MV-D34). Mirrors MvCreateAtApprovalRequest/Response in backend/models.py.
+export interface MvCreateAtApprovalRequest {
+  suggestion_id: string
+  probe_id: string
+}
+
+export interface MvCreateAtApprovalResponse {
+  created: boolean
+  degraded: boolean
+  // MV-D34 attach-at-approval: whether the view was also shelved on the Agent
+  // config in this call. created && !attached is the created-not-attached seam
+  // (the PATCH failed, e.g. no CAN EDIT) the card explains.
+  attached: boolean
+  // MV-D34 idempotent re-approval: true when the view already existed (as a
+  // metric view) and this call only (re)attached it — the terminal says
+  // "attached an existing view" rather than claiming a fresh create.
+  already_existed: boolean
+  full_name: string | null
+  run_id: string | null
+  suggestion_id: string | null
+  provenance: string
+  verdict: string | null
+  remediation_sql: string | null
+  // Copy-ready GRANT SELECT … TO <optimizer SP>, resolved from the create
+  // response so the terminal no longer depends on the proposal DDL fetch.
+  grant_sql: string | null
+  reason: string | null
+  // Workspace URL for the created terminal's Catalog Explorer deep link
+  // (…/explore/data/<catalog>/<schema>/<view>). Null → the link is omitted.
+  workspace_host: string | null
+}
+
+// GET /runs/{run_id}/mv-proposals — the run's proposals, newest first.
+export interface MvProposalsResponse {
+  run_id: string
+  proposals: MvProposal[]
+}
+
+// Summary of a space's most recent advice scan, for MV-D31 hydrate-on-mount.
+// Every field is DERIVED from the advice run's terminal genie_opt_stages row
+// (skip_reason / measures_found from its detail_json), never a new column — the
+// panel opens showing "last scanned … — N proposals" instead of a bare button.
+// null at the response level ⇒ the space has never been scanned.
+export interface MvLastScan {
+  scanned_at: string | null
+  duration_seconds: number | null
+  status: string | null
+  skip_reason: string | null
+  measures_found: number | null
+  proposal_count: number
+}
+
+// GET /spaces/{space_id}/mv-proposals — a space's proposals (MV-D23). Same
+// MvProposal element type as the run-keyed response so one card renders both.
+export interface MvSpaceProposalsResponse {
+  space_id: string
+  proposals: MvProposal[]
+  // MV-D31: present on the unfiltered panel load; null on the re-run gate query.
+  last_scan?: MvLastScan | null
+}
+
+// POST /spaces/{space_id}/mv/suggest — an on-demand advice run (MV-D23). The IQ
+// Scan surface asks the advisor to score a space now, with no optimization run.
+// status is the advisor's COMPLETE | SKIPPED | FAILED; skip_reason distinguishes
+// the honest empties (no SQL, no candidates, an already-governed estate) from a
+// failure, so the panel renders found vs EMPTY vs denial without inferring
+// intent from an empty list. proposals is the SAME MvProposal shape the
+// space-scoped and run-keyed lists return.
+export interface MvSuggestResponse {
+  space_id: string
+  run_id: string
+  status: string
+  skip_reason: string | null
+  // Prompt 15.3 governance ladder: disambiguates the two NO_CANDIDATES empties.
+  // 0 ⇒ nothing recurring found; > 0 with NO_CANDIDATES ⇒ every recurring
+  // measure is already governed (the "you're in good shape" confidence empty).
+  measures_found: number | null
+  error: string | null
+  proposals: MvProposal[]
+}
+
+// POST /spaces/{space_id}/mv/register — a bring-your-own view (MV-D24).
+// full_name is the three-part UC identifier of a metric view the user created
+// themselves. suggestion_id is optional: when the user claims the view
+// implements a specific proposal, the backend checks the claim by comparing
+// dedup fingerprints rather than trusting it.
+export interface MvRegisterRequest {
+  full_name: string
+  suggestion_id?: string | null
+}
+
+// One shape carries both the verified and refused states the panel renders:
+// registered is the verdict and reason explains a refusal (not a metric view,
+// not visible, failed validation, claim mismatch). On success run_id is the
+// sentinel advice run hosting the USER_CREATED ledger row and warnings are
+// advisory lints that did not block.
+export interface MvRegisterResponse {
+  registered: boolean
+  full_name: string
+  provenance: string
+  run_id: string | null
+  suggestion_id: string | null
+  reason: string | null
+  warnings: string[]
+}
+
+// ── Metric view output-screen shapes (Prompt 13, MV-D21) ────────────────────
+// Mirror MvDdlArtifact / MvLiftReport / MvCreatedObject /
+// MvCreatedObjectsResponse / decision + drop req-resp in backend/models.py and
+// backend/routers/auto_optimize.py; update together.
+
+// GET /runs/{run_id}/mv-ddl — the rendered DDL artifact plus GRANT remediation.
+// yaml_text is the immutable rendered body (MV-D22); ddl is the CREATE VIEW
+// wrapper; grant_sql is the copy-ready GRANT SELECT, never auto-applied.
+export interface MvDdlArtifact {
+  suggestion_id: string | null
+  dedup_fingerprint: string | null
+  proposed_object: string | null
+  join_strategy: string | null
+  /** The view's source tables, parsed serve-time from the rendered YAML. */
+  source_tables: string[] | null
+  yaml_text: string | null
+  ddl: string | null
+  validation: Record<string, unknown> | null
+  grant_sql: string | null
+}
+
+// Verbatim mirror of the engine's frozen 14-key LiftReport (never reshaped).
+// Accuracies/deltas are 0–1 fractions; needs-review is counted separately and
+// excluded from both sides of the comparison.
+export interface MvLiftReport {
+  delta_affected: number
+  delta_suite: number
+  regressed_question_ids: string[]
+  needs_review_count: number
+  pre_eval_run_id: string
+  post_eval_run_id: string
+  question_subset: string[]
+  pre_accuracy_affected: number
+  post_accuracy_affected: number
+  pre_accuracy_suite: number
+  post_accuracy_suite: number
+  needs_review_question_ids: string[]
+  graded_affected_count: number
+  graded_suite_count: number
+}
+
+// A metric view created under OBO for a run (a genie_opt_mv_created_objects row).
+// lift_report is present once the isolated attach eval ran.
+export interface MvCreatedObject {
+  run_id: string
+  suggestion_id: string
+  full_name: string
+  created_by: string | null
+  // MV-D24 create-path discriminator (NULL reads as OBO_CREATED server-side).
+  // USER_CREATED = a bring-your-own view the app never drops (frame 8b).
+  provenance: "OBO_CREATED" | "USER_CREATED"
+  status: "CREATED" | "ATTACHED" | "DETACHED" | "DROPPED"
+  attach_patch_id: string | null
+  baseline_eval_run_id: string | null
+  post_attach_eval_run_id: string | null
+  on_regression_action: string | null
+  created_at: string | null
+  lift_report: MvLiftReport | null
+}
+
+// GET /runs/{run_id}/mv-created — the run's created-object ledger. downgrade_reason
+// is run-level (why a create_and_attach run was downgraded to suggest_only), and
+// is distinct from a per-object DETACHED status (a post-attach regression revert).
+export interface MvCreatedObjectsResponse {
+  run_id: string
+  created: MvCreatedObject[]
+  downgrade_reason: string | null
+}
+
+// POST /mv/proposals/{suggestion_id}/decision — approve/reject a proposal (MV-D1).
+export interface MvProposalDecisionRequest {
+  space_id: string
+  run_id?: string | null
+  decision: "approved" | "rejected"
+  suppressed_until?: string | null
+}
+
+export interface MvProposalDecisionResponse {
+  suggestion_id: string
+  decision: "approved" | "rejected"
+  approved_for_rerun: boolean
+}
+
+// POST /mv/created/{suggestion_id}/drop — explicit OBO drop, DETACHED only (MV-D6).
+export interface MvDropRequest {
+  run_id: string
+  confirm: boolean
+}
+
+export interface MvDropResponse {
+  suggestion_id: string
+  full_name: string
+  status: "CREATED" | "ATTACHED" | "DETACHED" | "DROPPED"
+  dropped: boolean
+}
+
+// ── Semantic model graph (Prompt 12, MV-D23) ────────────────────────────────
+// Mirrors MvSemanticGraphNode / MvSemanticGraphEdge / MvSemanticGraph in
+// backend/models.py; update together. The base graph is assembled server-side
+// from serialized_space + the space-scoped proposals read; the ghosted proposal
+// overlay is synthesized client-side from `proposals` (no new payload).
+
+export type MvGovernance = "governed" | "curated" | "ungoverned"
+
+// col: 0 = source/fact tables, 1 = joined dimension tables, 2 = metric views,
+// 3 = measure concepts. governance/origin are measure-concept only; proposed is
+// set on the client-synthesized ghost MV overlay node. coverage (Prompt 12b
+// SQL-coverage lens) is the curated-SQL touch count — 0 is a cold spot, not an
+// error; benchmark_question_ids is the evidence-lens question overlay. Both are
+// ADDITIVE (optional): a lens-free response omits them and renders unchanged.
+export interface SemanticGraphNode {
+  id: string
+  kind: "table" | "metric_view" | "measure"
+  label: string
+  col: number
+  row: number
+  governance?: MvGovernance | null
+  origin?: string | null
+  proposed?: boolean
+  coverage?: number | null
+  benchmark_question_ids?: string[] | null
+  // Prompt 12e / MV-D33 (metric_view nodes only). true = the MV's YAML was read
+  // and parsed, so its `uses` arrows and member tables are proven; false = the
+  // read failed, the node renders "definition unavailable" with no arrows;
+  // null/undefined = non-MV or no read attempted. Additive.
+  definition_available?: boolean | null
+  // Prompt 12f (measure nodes only). The attached metric view that already
+  // exposes a measure of THIS NAME under a different expression — the collision
+  // canonical-expression dedup cannot merge, and the one worth warning about
+  // (two definitions, one name). Absent means no collision was proven, never
+  // that none exists. Additive.
+  overlaps?: string | null
+  // Round-5 (table nodes only): the PROVEN fact/dim role, never guessed from
+  // column position. "fact" = a metric view's declared source; "dim" = only ever
+  // a join target; null/absent = unproven, so the UI shows a neutral "table"
+  // rather than mislabelling (the fix for dim_* tables captioned FACT).
+  role?: "fact" | "dim" | null
+  // Round-5 (measure nodes only): the defining expression and best-effort
+  // description, so selecting a measure shows WHAT it computes in the detail
+  // panel. expr is null for an ungoverned proposal (name only, no expression).
+  expr?: string | null
+  description?: string | null
+  // Prompt 12f (metric_view nodes only). Read from the MV's YAML alongside the
+  // `uses`/join structure MV-D33 already parses, so the curator inset can show
+  // what governs a measure's result beyond its expression. All additive and all
+  // null when the YAML could not be read (`definition_available === false`) —
+  // unreadable stays unproven.
+  // The node id of the table the view reads FROM — the root of the inset's join
+  // tree. `uses` edges prove membership but not which member is the root, and a
+  // root inferred from join direction is wrong whenever the config declares a
+  // fact→fact join.
+  mv_source?: string | null
+  mv_filter?: string | null
+  materialization?: string | null
+  dimensions?: SemanticGraphDimension[] | null
+  // Phase 2 (v4 §6, table nodes only): PARTICIPATING columns (join keys parsed
+  // server-side from ON predicates) — never the full column list. Drives the
+  // Columns LOD rows and column-accurate ports. Additive: absent → the blueprint
+  // falls back to ON-leaf names client-side (Phase 1 behavior).
+  columns?: string[] | null
+}
+
+// A metric view dimension as declared in its YAML: the name it exposes, the
+// expression behind it, and where that expression's columns come from (the MV's
+// own source, or a joined table). Mirrors MvSemanticGraphDimension.
+export interface SemanticGraphDimension {
+  name: string
+  expr?: string | null
+  binding?: string | null
+}
+
+// join edges carry the decoded ON predicate, relationship, and SCD2 flag;
+// membership ties a measure to its MV; replaces is the client overlay's dashed
+// "tables freed" edge. weight (Prompt 12b) is the curated-SQL traversal count on
+// join edges — ADDITIVE, absent on a lens-free response.
+// uses (Prompt 12e / MV-D33) links a metric view to a table it sources — the
+// proven at-rest arrow and the member set the select-time boundary wraps;
+// emitted ONLY for an MV whose YAML parsed (arrows require proof).
+export interface SemanticGraphEdge {
+  from: string
+  to: string
+  // "governs" is a CLIENT-ONLY overlay edge (SemanticModelTab.withOverlay): a
+  // proposed metric view → the loose measure it would govern. The backend never
+  // emits it; it exists so the proposal overlay can draw a "would govern →" link
+  // without moving the measure out of the Space-config box.
+  // "derives" (round-7) links a measure → a table its expression is built from.
+  // The backend emits it for measures with a readable expr; the graph renders it
+  // ONLY when the measure is selected, so clicking a Space-config (loose) measure
+  // lights up its source tables (loose measures otherwise carry no lineage edge).
+  kind: "join" | "membership" | "replaces" | "uses" | "governs" | "derives"
+  on?: string | null
+  relationship?: string | null
+  scd2?: boolean
+  weight?: number | null
+  // Phase 2 (v4 §6, join edges only): parsed column endpoints of `on` —
+  // `from_column` on the `from` side, `to_column` on the `to` side — so join
+  // lines terminate at exact column ports. Additive: absent → the blueprint
+  // parses the `on` leaf names client-side (Phase 1 behavior).
+  from_column?: string | null
+  to_column?: string | null
+}
+
+// GET /spaces/{space_id}/semantic-graph — the space's semantic model.
+// coverage_status/coverage_reason (Prompt 12b) report the SQL-coverage lens in
+// the MV-D15 vocabulary (COMPUTED | EMPTY | UNAVAILABLE) — ADDITIVE, optional.
+export interface SemanticGraphResponse {
+  space_id: string
+  nodes: SemanticGraphNode[]
+  edges: SemanticGraphEdge[]
+  proposals: MvProposal[]
+  coverage_status?: string | null
+  coverage_reason?: string | null
+}
+
+// Join Advisor (Semantic Blueprint v4 §7). Mirrors backend/models.py
+// JoinCandidate / JoinCandidatesResponse / JoinAdviceResponse. A candidate is
+// ADVICE to the optimizer — seeding it never edits serialized_space; the next
+// Auto-Optimize run validates and adds it itself. `probe` is the warehouse
+// containment ratio in [0,1], or null when no warehouse could probe it.
+export interface JoinCandidate {
+  id: string
+  from: string
+  fromCol: string
+  to: string
+  toCol: string
+  rel: "N:1" | "1:1"
+  match: "fk" | "name-type" | "probe"
+  probe: number | null
+  note?: string | null
+}
+
+export interface JoinCandidatesResponse {
+  space_id: string
+  status: "ok" | "fully_connected" | "no_candidates" | "no_warehouse"
+  candidates: JoinCandidate[]
+}
+
+export interface JoinAdviceResponse {
+  space_id: string
+  seeds: JoinCandidate[]
+  updated_at?: string | null
+  seeded_by?: string | null
 }
