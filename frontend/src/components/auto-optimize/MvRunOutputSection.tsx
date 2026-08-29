@@ -49,7 +49,11 @@ export function MvRunOutputSection({
   onRerunWithMv,
 }: MvRunOutputSectionProps) {
   const [proposals, setProposals] = useState<MvProposal[]>([])
-  const [ddl, setDdl] = useState<MvDdlArtifact | null>(null)
+  // MV-D23: one rendered DDL per view bundle, keyed by suggestion_id. The run
+  // writes one artifact per bundle, so a single shared artifact could only feed
+  // one card — every other proposal/created object rendered blank. Fetch each
+  // card's DDL by its own suggestion_id (getMvDdl(runId, id)) and index them here.
+  const [ddlBySuggestion, setDdlBySuggestion] = useState<Record<string, MvDdlArtifact>>({})
   const [created, setCreated] = useState<MvCreatedObject[]>([])
   const [downgradeReason, setDowngradeReason] = useState<string | null>(null)
   const [currentIdentifiers, setCurrentIdentifiers] = useState<string[]>([])
@@ -68,23 +72,42 @@ export function MvRunOutputSection({
   useEffect(() => {
     let cancelled = false
     async function load() {
-      const [proposalsRes, ddlRes, createdRes, spaceRes] = await Promise.allSettled([
+      const [proposalsRes, createdRes, spaceRes] = await Promise.allSettled([
         getRunMvProposals(runId),
-        getMvDdl(runId),
         getMvCreatedObjects(runId),
         fetchSpace(spaceId),
       ])
       if (cancelled) return
-      if (proposalsRes.status === "fulfilled") setProposals(proposalsRes.value.proposals)
-      // mv-ddl 404s when no artifact was rendered — that is the suggest-nothing case.
-      if (ddlRes.status === "fulfilled") setDdl(ddlRes.value)
+      const proposalsList =
+        proposalsRes.status === "fulfilled" ? proposalsRes.value.proposals : []
+      const createdList =
+        createdRes.status === "fulfilled" ? createdRes.value.created : []
+      if (proposalsRes.status === "fulfilled") setProposals(proposalsList)
       if (createdRes.status === "fulfilled") {
-        setCreated(createdRes.value.created)
+        setCreated(createdList)
         setDowngradeReason(createdRes.value.downgrade_reason)
       }
       if (spaceRes.status === "fulfilled") {
         setCurrentIdentifiers(metricViewIdentifiers(spaceRes.value.space_data))
       }
+
+      // Fetch each card's DDL by its own suggestion_id so a multi-bundle run
+      // shows DDL on every card, not just whichever artifact was written last.
+      // mv-ddl 404s when no body was rendered — that card simply gets no DDL.
+      const ids = Array.from(
+        new Set(
+          [...proposalsList, ...createdList]
+            .map((x) => x.suggestion_id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      )
+      const ddlResults = await Promise.allSettled(ids.map((id) => getMvDdl(runId, id)))
+      if (cancelled) return
+      const nextDdl: Record<string, MvDdlArtifact> = {}
+      ddlResults.forEach((res, i) => {
+        if (res.status === "fulfilled" && res.value) nextDdl[ids[i]] = res.value
+      })
+      setDdlBySuggestion(nextDdl)
       setLoaded(true)
     }
     void load()
@@ -120,7 +143,9 @@ export function MvRunOutputSection({
       {hasCreated ? (
         <div className="space-y-4">
           {created.map((obj) => {
-            const objDdl = ddl && ddl.suggestion_id === obj.suggestion_id ? ddl : null
+            const objDdl = obj.suggestion_id
+              ? ddlBySuggestion[obj.suggestion_id] ?? null
+              : null
             return (
               <MvCreateAttachPanel
                 key={obj.suggestion_id}
@@ -137,7 +162,7 @@ export function MvRunOutputSection({
           <MvSuggestOnlyPanel
             runId={runId}
             proposals={proposals}
-            ddl={ddl}
+            ddlBySuggestion={ddlBySuggestion}
             currentIdentifiers={currentIdentifiers}
             onRerun={onRerunWithMv}
           />

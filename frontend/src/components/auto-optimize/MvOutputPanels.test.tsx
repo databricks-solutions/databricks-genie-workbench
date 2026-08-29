@@ -101,7 +101,7 @@ describe("suggest-only panel (frame 4)", () => {
     <MvSuggestOnlyPanel
       runId="run-1"
       proposals={[proposal]}
-      ddl={ddl}
+      ddlBySuggestion={{ [proposal.suggestion_id]: ddl }}
       currentIdentifiers={["finance.sales.customer_ltv"]}
       onRerun={() => {}}
     />,

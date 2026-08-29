@@ -510,6 +510,32 @@ def _load_latest_artifact(run_id: str, artifact_kind: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _load_candidate_ddl_artifact(run_id: str, suggestion_id: str | None) -> dict | None:
+    """Load the ``mv_candidate_ddl`` artifact, pinned to one suggestion when asked.
+
+    A single in-job run writes ONE ``mv_candidate_ddl`` artifact per view bundle,
+    so blind latest-wins (``_load_latest_artifact``) can only ever surface one
+    proposal's DDL — every other card on a multi-proposal run renders blank. When
+    ``suggestion_id`` is given we match the artifact whose payload carries that id
+    (in Python, so the untrusted query param never touches SQL) and return None if
+    it is not among this run's artifacts, letting the caller fall through to the
+    candidate-row fallback rather than serving the wrong body. With no
+    ``suggestion_id`` the historical latest-wins pick is preserved.
+    """
+    if not suggestion_id:
+        return _load_latest_artifact(run_id, "mv_candidate_ddl")
+    rows = _delta_query(
+        f"SELECT artifact_json, created_at FROM {_delta_table('genie_opt_artifacts')} "
+        f"WHERE run_id = '{run_id}' AND artifact_kind = 'mv_candidate_ddl' "
+        f"ORDER BY created_at DESC"
+    )
+    for row in rows:
+        payload = _safe_json_parse(row.get("artifact_json"))
+        if isinstance(payload, dict) and payload.get("suggestion_id") == suggestion_id:
+            return payload
+    return None
+
+
 def _load_candidate_ddl_fallback(run_id: str, suggestion_id: str | None) -> dict | None:
     """Render a DDL payload from a candidate row when no artifact exists (MV-D23).
 
@@ -3721,12 +3747,12 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
     Two sources, one shape (Prompt 15.1). An in-job run writes a run-partitioned
     ``mv_candidate_ddl`` artifact and that is served first; a standalone advice
     run (MV-D23) writes none and carries the body on the candidate row, so the
-    fallback renders the same shape from there. The two picks differ on purpose
-    and it is documented here so the difference is not read as a bug: the artifact
-    path is **latest-wins** (``created_at DESC LIMIT 1``), while the candidate
-    fallback is **best-wins** (``wh_load_mv_candidates`` orders confidence DESC),
-    so a run with several advice candidates serves the highest-confidence one.
-    An optional ``suggestion_id`` pins one candidate exactly on the fallback path.
+    fallback renders the same shape from there. An optional ``suggestion_id`` pins
+    one candidate exactly on BOTH paths: on the artifact path it selects the
+    artifact whose payload carries that id (a multi-bundle run writes one artifact
+    per view, so an unpinned read is **latest-wins** and can only surface one of
+    them — the pin is what lets every card fetch its own DDL); on the candidate
+    fallback it selects that row, else the **best-wins** highest-confidence one.
     On that fallback path ``validation`` is ``None`` — it is a preview of an
     unexecuted body; the real validation (echo-check + capability rung) lives on
     the artifact and is re-run by the create path before any write.
@@ -3734,7 +3760,7 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
-    payload = await _offload(_load_latest_artifact, run_id, "mv_candidate_ddl")
+    payload = await _offload(_load_candidate_ddl_artifact, run_id, suggestion_id)
     if not payload:
         payload = await _offload(_load_candidate_ddl_fallback, run_id, suggestion_id)
     if not payload:

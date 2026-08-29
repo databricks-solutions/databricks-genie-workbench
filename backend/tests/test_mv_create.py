@@ -520,6 +520,43 @@ def test_get_mv_ddl_404_when_absent(client, monkeypatch):
     assert resp.status_code == 404
 
 
+def test_get_mv_ddl_pins_artifact_by_suggestion_id(client, monkeypatch):
+    """A multi-bundle run writes one mv_candidate_ddl artifact per view, so blind
+    latest-wins can only surface one card's DDL. When ``suggestion_id`` is given,
+    the route must return THAT bundle's artifact — not whichever was written last —
+    so every card fetches its own body."""
+    import json as _json
+
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+
+    def _artifact(sug: str, obj: str) -> dict:
+        return {
+            "suggestion_id": sug, "dedup_fingerprint": f"fp_{sug}",
+            "target_space_id": "space-1", "proposed_object": obj,
+            "join_strategy": "direct", "yaml_text": f"version: 0.1  # {sug}\n",
+            "ddl": f"CREATE VIEW {obj} ...", "validation": {"ok": True},
+        }
+
+    # Rows come back created_at DESC — sugB (franchises) is the LATEST artifact,
+    # sugA (transactions) the earlier one. Asking for sugA must still get sugA.
+    rows = [
+        {"artifact_json": _json.dumps(_artifact("sugB", "cat.sch.sales_franchises_metrics"))},
+        {"artifact_json": _json.dumps(_artifact("sugA", "cat.sch.sales_transactions_metrics"))},
+    ]
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: rows)
+    # If suggestion pinning silently missed, the route would fall through here.
+    monkeypatch.setattr(
+        auto_optimize, "_load_candidate_ddl_fallback",
+        lambda run_id, suggestion_id: None,
+    )
+
+    run = "11111111-1111-4111-8111-111111111111"
+    resp = client.get(f"/api/auto-optimize/runs/{run}/mv-ddl?suggestion_id=sugA")
+    assert resp.status_code == 200
+    assert resp.json()["suggestion_id"] == "sugA"
+    assert resp.json()["proposed_object"] == "cat.sch.sales_transactions_metrics"
+
+
 def test_get_mv_ddl_falls_back_to_candidate_yaml_text(client, monkeypatch):
     """MV-D23 / Prompt 15.1: with no run-partitioned artifact (an advice run),
     route 7 renders the DDL from the candidate row's yaml_text — best-wins on the

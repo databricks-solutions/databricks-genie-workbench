@@ -61,7 +61,7 @@ describe("Prompt 15.8 architecture constraint — one card, one accept flow, bot
     <MvSuggestOnlyPanel
       runId="run-1"
       proposals={[proposal]}
-      ddl={null}
+      ddlBySuggestion={{}}
       currentIdentifiers={[]}
       onRerun={() => {}}
     />,

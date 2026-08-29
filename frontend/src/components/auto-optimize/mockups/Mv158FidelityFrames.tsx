@@ -126,7 +126,7 @@ export function RunOutput158Frame() {
     <MvSuggestOnlyPanel
       runId="run_5c1e"
       proposals={[proposalRevenue, proposalMargin]}
-      ddl={ddlRevenue}
+      ddlBySuggestion={{ [proposalRevenue.suggestion_id]: ddlRevenue }}
       currentIdentifiers={[]}
       onRerun={() => {}}
     />

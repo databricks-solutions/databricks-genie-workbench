@@ -26,8 +26,9 @@ import type { MvDdlArtifact, MvProposal } from "@/types"
 interface MvSuggestOnlyPanelProps {
   runId: string
   proposals: MvProposal[]
-  /** The single rendered DDL artifact for this run, matched by suggestion_id. */
-  ddl: MvDdlArtifact | null
+  /** Rendered DDL per view bundle, keyed by suggestion_id — one artifact per
+   *  bundle, so each card resolves its own (not one shared run-level artifact). */
+  ddlBySuggestion: Record<string, MvDdlArtifact>
   /** Current data_sources.metric_views[] identifiers, for the config diff. */
   currentIdentifiers: string[]
   /** Opens the run config pre-filled in create_and_attach mode (MV-D1 flow). */
@@ -45,7 +46,7 @@ function LiftNotMeasuredLabel() {
 export function MvSuggestOnlyPanel({
   runId,
   proposals,
-  ddl,
+  ddlBySuggestion,
   currentIdentifiers,
   onRerun,
 }: MvSuggestOnlyPanelProps) {
@@ -81,7 +82,7 @@ export function MvSuggestOnlyPanel({
       {callout && <p className="text-xs text-secondary">{callout}</p>}
 
       {ranked.map((proposal, i) => {
-        const proposalDdl = ddl && ddl.suggestion_id === proposal.suggestion_id ? ddl : null
+        const proposalDdl = ddlBySuggestion[proposal.suggestion_id] ?? null
         return (
           <div key={proposal.suggestion_id} className="space-y-2">
             <MvProposalCard
