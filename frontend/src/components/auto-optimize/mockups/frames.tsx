@@ -42,6 +42,15 @@ import {
   BlueprintUnknownRolesFrame,
   BlueprintWideTableFrame,
 } from "./SemanticBlueprintFidelityFrames"
+import {
+  OntologyDomainDraftFrame,
+  OntologyEmptyFrame,
+  OntologyEnrichmentFailedFrame,
+  OntologyGrantGateFrame,
+  OntologyPageDraftFrame,
+  OntologyTagsLensFrame,
+  OntologyTaxonomyFrame,
+} from "./OntologyPageMockups"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -104,4 +113,16 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "11f-blueprint-wide-table", title: "11f · Blueprint — single wide table (no joins is a valid model)", element: <BlueprintWideTableFrame /> },
   { id: "11g-blueprint-30-tables", title: "11g · Blueprint — 30-table snowflake (bridges at density)", element: <BlueprintScale30Frame /> },
   { id: "11h-blueprint-overview", title: "11h · Blueprint — star, Overview band (no measure chips)", element: <BlueprintStarOverviewFrame /> },
+  // Ontology track (Prompt 17.0, RE-SCOPED by MV-D36 + MV-D37) — the STANDALONE,
+  // admin-gated, workspace/account-level page (NOT a SpaceDetail tab). Domains/
+  // Sub-Domains ARE governed tags (MV-D37): a tiered permission banner, a Tags/
+  // dedupe lens, and a Domain draft with an optional consented SET TAG apply.
+  // Pages + Discover card stay copy-ready. Concept→Agent link is a Page Related asset.
+  { id: "17.0a-ontology-permission-banner", title: "17.0a · Ontology — tiered permission banner (capability→permission matrix, 5 tiers incl. external enrichment)", element: <OntologyGrantGateFrame /> },
+  { id: "17.0b-ontology-taxonomy", title: "17.0b · Ontology — proposed Domain → Sub-Domain → Page taxonomy (estate-wide)", element: <OntologyTaxonomyFrame /> },
+  { id: "17.0c-ontology-tags-lens", title: "17.0c · Ontology — Governed-Tags / dedupe lens (reuse-vs-create, collisions, orphans)", element: <OntologyTagsLensFrame /> },
+  { id: "17.0d-ontology-domain-draft", title: "17.0d · Ontology — Domain draft (plain new-vs-reuse, why, Apply-for-me + do-it-yourself; zero-burden)", element: <OntologyDomainDraftFrame /> },
+  { id: "17.0e-ontology-page-draft", title: "17.0e · Ontology — Page draft (why we're suggesting this, synonyms, Related/Sources, certify, copy)", element: <OntologyPageDraftFrame /> },
+  { id: "17.0f-ontology-enrichment-failed", title: "17.0f · Ontology — enrichment failed (draft complete, Recent-context left out not failed)", element: <OntologyEnrichmentFailedFrame /> },
+  { id: "17.0g-ontology-empty", title: "17.0g · Ontology — empty (plain clean result, no system-table names)", element: <OntologyEmptyFrame /> },
 ]

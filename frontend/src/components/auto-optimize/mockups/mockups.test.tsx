@@ -41,6 +41,15 @@ import {
   BlueprintUnknownRolesFrame,
   BlueprintWideTableFrame,
 } from "./SemanticBlueprintFidelityFrames"
+import {
+  OntologyDomainDraftFrame,
+  OntologyEmptyFrame,
+  OntologyEnrichmentFailedFrame,
+  OntologyGrantGateFrame,
+  OntologyPageDraftFrame,
+  OntologyTagsLensFrame,
+  OntologyTaxonomyFrame,
+} from "./OntologyPageMockups"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 
@@ -352,5 +361,145 @@ describe("frame 11 — Semantic Blueprint P1 fidelity", () => {
     expect(html).not.toContain('data-chip="measure"')
     expect(html).not.toContain('data-caption="role"')
     expect(html).not.toContain("customer_count")
+  })
+})
+
+// ── Frame 17.0 — Ontology page (standalone, estate-wide, MV-D36) ─────────────
+// Pins the MV-D36 contract: a STANDALONE admin-gated page (NOT a SpaceDetail tab),
+// estate-wide inputs (workspace Agents + account metric views via
+// information_schema), a copy-ready Domain→Sub-Domain→Page taxonomy, a grant
+// preflight for the SP system-table signals, and NO API writes anywhere.
+describe("frame 17.0 — Ontology page (standalone, estate-wide, MV-D36)", () => {
+  it("17.0: NOT a SpaceDetail tab — no Score/Model/Optimize/History tab strip", () => {
+    const html = render(<OntologyTaxonomyFrame />)
+    // The page has its own chrome; the 5-tab SpaceDetail strip must be gone.
+    expect(html).not.toContain('aria-label="Agent detail tabs"')
+    expect(html).toContain("Ontology")
+    expect(html).toContain("Northwind Trading Co.") // company context in the header
+  })
+
+  it("17.0a permission banner: five capability tiers incl. external enrichment, degrade-not-block (MV-D37 + MV-D38)", () => {
+    const html = render(<OntologyGrantGateFrame />)
+    expect(html).toContain("Tier 2 of 5")
+    // All five capability tiers are named.
+    expect(html).toContain("Metric-view + tag inventory")
+    expect(html).toContain("Usage / lineage / cost ranking")
+    expect(html).toContain("Governed-tag graph")
+    expect(html).toContain("Membership write")
+    expect(html).toContain("Context sources (external enrichment)")
+    // The governed-tag read, the write, and the enrichment permissions are spelled out.
+    expect(html).toContain("system.tags.governed_tags")
+    expect(html).toContain("MANAGE DISCOVERY")
+    // Enrichment is EXECUTE on AI Gateway MCP context sources (MV-D46/D47), not raw egress.
+    expect(html).toContain("EXECUTE on the enabled Unity AI Gateway MCP services")
+    // The Context Sources panel lists the lead registry MCPs classified by class + tier (MV-D47).
+    expect(html).toContain("Context sources — Unity AI Gateway MCP")
+    expect(html).toContain("system.ai.web_search")
+    expect(html).toContain("You.com")
+    expect(html).toContain("Genie One · Databricks SQL")
+    expect(html).toContain("Copy GRANT EXECUTE")
+    // Toggle disables (never blocks) when no source is available.
+    expect(html).toContain("disabled when no source is available")
+    // External enrichment is naming-only, never structural (MV-D38).
+    expect(html).toContain("never structural")
+    expect(html).toContain("never structure (MV-D38)")
+    // Inventory tier needs no grant; read tiers degrade (write never required to view).
+    expect(html).toContain("no explicit grant")
+    expect(html).toContain("never required to view")
+  })
+
+  it("17.0b taxonomy: proposes Domain → Sub-Domain → Page, names the estate read via information_schema", () => {
+    const html = render(<OntologyTaxonomyFrame />)
+    expect(html).toContain("Proposed taxonomy")
+    expect(html).toContain("Domain")
+    expect(html).toContain("Sub-Domain")
+    expect(html).toContain("Pages")
+    expect(html).toContain("system.information_schema")
+    expect(html).toContain("Genie Agents (workspace)")
+    // archetype-prefixed Page chips still sit under the sub-domains
+    expect(html).toContain("[Routing]")
+    expect(html).toContain("[Taxonomy]")
+  })
+
+  it("17.0c tags-lens: reads governed tags, flags collisions (reuse-not-duplicate) and orphans (MV-D37)", () => {
+    const html = render(<OntologyTagsLensFrame />)
+    expect(html).toContain("Governed tags")
+    expect(html).toContain("system.tags.governed_tags")
+    // reuse-vs-create collisions are surfaced
+    expect(html).toContain("Collisions")
+    expect(html).toContain("Commercial/Sales")
+    expect(html).toContain("REUSE")
+    // cleanup of orphans / near-empty
+    expect(html).toContain("Cleanup")
+    expect(html).toContain("near-empty")
+  })
+
+  it("17.0d domain-draft: recommendation + plain reason + apply-for-me/do-it-yourself, NO backend jargon (zero-burden)", () => {
+    const html = render(<OntologyDomainDraftFrame />)
+    expect(html).toContain("Copy Domain for Discover")
+    expect(html).toContain("Proposed Sub-Domains")
+    expect(html).toContain("Member assets")
+    expect(html).toContain("finance.sales.order_revenue")
+    // Recommendation + reason in plain language.
+    expect(html).toContain("New domain")
+    expect(html).toContain("Why we\u2019re suggesting this")
+    // A simple choice: we do it (with a preview) or you do it — no DDL, no grants.
+    expect(html).toContain("Apply for me")
+    expect(html).toContain("Preview first")
+    expect(html).toContain("Prefer to do it yourself?")
+    // Zero-burden: the governed-tag/DDL/permission machinery is NOT surfaced to the curator.
+    expect(html).not.toContain("CREATE GOVERNED TAG")
+    expect(html).not.toContain("SET TAG")
+    expect(html).not.toContain("MANAGE DISCOVERY")
+    expect(html).not.toContain("governed tag")
+  })
+
+  it("17.0e page-draft: 'why' reason + Related/Sources + synonyms + certify + copy; no API-plumbing language", () => {
+    const html = render(<OntologyPageDraftFrame />)
+    // The reason for the recommendation leads.
+    expect(html).toContain("Why we\u2019re suggesting this")
+    expect(html).toContain("Related assets")
+    expect(html).toContain("Sources")
+    // The concept→Agent link is a Related ASSET (identifier), not body prose.
+    expect(html).toContain("Genie Agent")
+    expect(html).toContain("01ef9a2b3c4d5e6f")
+    expect(html).toContain("finance.sales.order_revenue")
+    expect(html).toContain("Synonyms")
+    expect(html).toContain("Certify: Yes")
+    expect(html).toContain("Copy Page for Discover")
+    expect(html).toContain("Recent context (informational, as of 2026-08-28)")
+    expect(html).toContain("Not certified operational data")
+    // Zero-burden: no API-plumbing language surfaced to the curator.
+    expect(html).not.toContain("there is no API")
+    expect(html).not.toContain("information_schema")
+  })
+
+  it("17.0e page-draft: NO API writes anywhere — no instructions, no domain/page write actions (MV-D36)", () => {
+    const html = render(<OntologyPageDraftFrame />)
+    expect(html).not.toContain("Apply to instructions")
+    expect(html).not.toContain("text_instructions")
+    expect(html.toLowerCase()).not.toContain("instruction diff")
+  })
+
+  it("17.0f enrichment-failed: draft complete, Recent-context absent, shown as left-out not failed", () => {
+    const html = render(<OntologyEnrichmentFailedFrame />)
+    expect(html).toContain("couldn\u2019t add public context")
+    expect(html).toContain("left out, not failed")
+    expect(html).toContain("Related assets")
+    expect(html).toContain("finance.sales.order_revenue")
+    expect(html).not.toContain("Recent context (informational")
+    expect(html).not.toContain("Not certified operational data")
+  })
+
+  it("17.0g empty: clean result in plain language, no system-table names, never an error", () => {
+    const html = render(<OntologyEmptyFrame />)
+    expect(html).toContain("Nothing to suggest yet")
+    expect(html).toContain("clean result")
+    expect(html).toContain("metric views")
+    // Zero-burden: the empty state names no system tables.
+    expect(html).not.toContain("system.information_schema")
+    expect(html).not.toContain("system.tags.governed_tags")
+    expect(html.toLowerCase()).not.toContain("failed to")
+    expect(html.toLowerCase()).not.toContain("error")
   })
 })
