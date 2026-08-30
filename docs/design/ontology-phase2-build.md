@@ -266,17 +266,80 @@ CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_taxonomy_snaps
   as_of             TIMESTAMP
 ) USING DELTA;
 
--- Phase-3 tables — created EMPTY here, populated later (do NOT write in Phase 2)
-CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_domains       (...) USING DELTA;
-CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_members       (...) USING DELTA;
-CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_pages         (...) USING DELTA;
-CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_consents      (...) USING DELTA;
-CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_suppressions  (...) USING DELTA;
+-- Phase-3 tables — created EMPTY here, populated later (do NOT write in Phase 2).
+-- Columns drawn from architecture §7 + the L7 subsection so Phase 3 never re-DDLs.
+
+-- Proposed domains / sub-domains (a sub-domain is a row whose parent_id is set) --
+CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_domains (
+  domain_id      STRING,              -- derived id (sug_<fingerprint>); PK with workspace_id
+  workspace_id   STRING,
+  parent_id      STRING,              -- NULL = domain; set = sub-domain (self-ref to domain_id)
+  name           STRING,
+  description    STRING,
+  tag_decision   STRING,              -- 'reuse' | 'create' (reuse Finance/Tax vs mint a new tag)
+  tag_key        STRING,              -- the governed tag this maps to (reuse) or proposes (create)
+  tag_value      STRING,              -- sub-domain value in the Domain/Sub `/` convention
+  evidence       STRING,             -- JSON: signals behind the proposal (usage/lineage/co-query)
+  score          DOUBLE,              -- L6 rank (usage x centrality x governance)
+  run_id         STRING,
+  as_of          TIMESTAMP
+) USING DELTA;
+
+-- Membership — the SET TAG targets (one row per asset placed under a domain) -----
+CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_members (
+  domain_id      STRING,              -- FK -> genie_ont_domains.domain_id
+  asset_fqn      STRING,              -- (domain_id, asset_fqn) is the derived PK
+  asset_type     STRING,              -- 'table' | 'metric_view' | 'dashboard' | 'genie_agent'
+  workspace_id   STRING,
+  run_id         STRING,
+  as_of          TIMESTAMP
+) USING DELTA;
+
+-- Proposed Pages (Discover business-concept definitions) ------------------------
+CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_pages (
+  page_id        STRING,              -- derived id; PK with workspace_id
+  workspace_id   STRING,
+  domain_id      STRING,              -- the sub-domain this Page elevates a concept for
+  archetype      STRING,              -- 'Routing' | 'Disambiguation' | 'Guardrail' | 'Taxonomy'
+  title          STRING,
+  body           STRING,              -- the draft Page body (zero-burden, curator-facing)
+  synonyms       ARRAY<STRING>,
+  related_fqns   ARRAY<STRING>,       -- Discover 'Related assets'
+  source_fqns    ARRAY<STRING>,       -- Discover 'Sources' (incl. the originating Genie Agent)
+  certify        BOOLEAN,             -- certify-recommendation flag
+  evidence       STRING,             -- JSON
+  score          DOUBLE,
+  run_id         STRING,
+  as_of          TIMESTAMP
+) USING DELTA;
+
+-- Consent / suppression ledger — durable 'applied' / 'dismissed' (MV-D26) --------
+-- (proposal_kind, proposal_id) points at a domains/members/pages row; the ledger
+-- is what makes re-runs idempotent — a resolved proposal is never re-surfaced.
+CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_consents (
+  workspace_id   STRING,
+  proposal_kind  STRING,              -- 'domain' | 'member' | 'page'
+  proposal_id    STRING,              -- (workspace_id, proposal_kind, proposal_id) is the PK
+  state          STRING,              -- 'applied'
+  decided_by     STRING,              -- consenting user email (OBO)
+  decided_at     TIMESTAMP
+) USING DELTA;
+
+CREATE TABLE IF NOT EXISTS ${GSO_CATALOG}.${GSO_SCHEMA}.genie_ont_suppressions (
+  workspace_id   STRING,
+  proposal_kind  STRING,              -- 'domain' | 'member' | 'page'
+  proposal_id    STRING,              -- (workspace_id, proposal_kind, proposal_id) is the PK
+  reason         STRING,              -- optional dismissal note
+  dismissed_by   STRING,
+  dismissed_at   TIMESTAMP
+) USING DELTA;
 ```
 
-(The empty Phase-3 tables follow architecture §7 column intent; give them their
-final columns now so the synced-table + grant walk never has to re-DDL. They stay
-empty until Phase 3.)
+These columns follow architecture §7 + the L7 subsection so the synced-table + grant
+walk never has to re-DDL. Two architecture §7 tables are intentionally **NOT** created
+here — `genie_ont_context_pack` (external Context Pack, Phase 4) and `genie_ont_applied`
+(the `SET TAG` audit, Phase 5) — they arrive with the phases that first write them.
+All the tables above stay **empty** until Phase 3.
 
 ### 7.2 Idempotency (the load-bearing rule)
 
