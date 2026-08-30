@@ -24,10 +24,24 @@ async def get_current_user(request: Request) -> dict:
 
     if email:
         is_admin = "admins" in groups.lower() or os.environ.get("DEV_ADMIN", "").lower() == "true"
+        resolved_groups = groups.split(",") if groups else []
+        # Databricks Apps injects X-Forwarded-User/-Email but does NOT forward group
+        # membership via X-Forwarded-Groups, so the header alone can never establish
+        # workspace-admin. Resolve it via the OBO SDK identity (current_user.me()
+        # returns the caller's groups) when the header did not already prove admin.
+        if not is_admin:
+            try:
+                me = get_workspace_client().current_user.me()
+                sdk_groups = [g.display for g in (me.groups or []) if g.display]
+                if sdk_groups:
+                    resolved_groups = sdk_groups
+                    is_admin = any(g.lower() == "admins" for g in sdk_groups)
+            except Exception as e:
+                logger.warning(f"Admin resolution via SDK failed: {e}")
         return {
             "email": email,
             "is_admin": is_admin,
-            "groups": groups.split(",") if groups else [],
+            "groups": resolved_groups,
             "auth_source": "obo_headers",
         }
 
