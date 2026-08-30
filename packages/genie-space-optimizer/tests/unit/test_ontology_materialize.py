@@ -145,13 +145,17 @@ def test_not_matched_by_source_delete_and_add_once():
     assert ops_keys == [("ws1", "Ops")]
 
 
-def test_phase3_tables_never_written():
+def test_pages_consents_suppressions_never_written():
     catalog_rows, assign_rows = _fixture_rows()
     writer = _FakeWriter()
     _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
     written = set(writer.tables)
-    # Phase 3a also writes the identity map; the proposal tables stay empty.
-    assert written == {"genie_ont_tag_graph", "genie_ont_taxonomy_snapshot", "genie_ont_identity"}
+    # Phase 3b now writes the Domain/Member proposal tables too; only the 17f/17g
+    # tables (pages/consents/suppressions) stay empty.
+    assert written == {
+        "genie_ont_tag_graph", "genie_ont_taxonomy_snapshot", "genie_ont_identity",
+        "genie_ont_domains", "genie_ont_members",
+    }
     for t in ddl.PHASE3_TABLES:
         assert t not in written
 
@@ -210,6 +214,69 @@ def test_identity_member_removed_is_deleted():
     assert any(k[2] == "Finance" for k in writer.tables["genie_ont_identity"])
 
 
+def test_domain_member_proposals_idempotent_no_dups():
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    d1 = set(writer.tables["genie_ont_domains"])
+    m1 = set(writer.tables["genie_ont_members"])
+    assert d1  # the fixture yields at least one Domain proposal
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r2")
+    # Stable domain_id (fingerprint of sorted members) -> identical rows, no dups.
+    assert set(writer.tables["genie_ont_domains"]) == d1
+    assert set(writer.tables["genie_ont_members"]) == m1
+    # Every domain row's evidence is JSON and tag_decision is in the frozen vocabulary.
+    for row in writer.tables["genie_ont_domains"].values():
+        assert row["tag_decision"] in ("reuse", "create", "reassign")
+        json.loads(row["evidence"])
+        assert row["score"] == 0.0  # L6 ranking is 17g
+
+
+def test_stale_domains_deleted_when_graph_changes():
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    before = set(writer.tables["genie_ont_domains"])
+
+    # Add a disjoint tagged asset -> the community set changes, so old fingerprints
+    # vanish; NOT MATCHED BY SOURCE deletes the stale domain rows (no orphans).
+    added = catalog_rows + [{"tag_name": "Ops"}]
+    added_assign = assign_rows + [
+        {"tag_name": "Ops", "catalog_name": "ops", "schema_name": "core", "table_name": "events"},
+    ]
+    _run(_FakeReader(added, added_assign, [], []), writer, run_id="r2")
+    after = set(writer.tables["genie_ont_domains"])
+    # No stale domain_id survives that is not in the new run's output.
+    r2_ids = {k for k, v in writer.tables["genie_ont_domains"].items() if v["run_id"] == "r2"}
+    assert after == r2_ids
+    assert after != before  # the graph changed
+
+
+def test_clustering_error_records_failed_but_keeps_snapshots(monkeypatch):
+    import pytest
+
+    from genie_space_optimizer.ontology import cluster as cluster_mod
+
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+
+    def _boom(*a, **k):
+        raise RuntimeError("leiden boom")
+
+    monkeypatch.setattr(cluster_mod, "cluster", _boom)
+    with pytest.raises(RuntimeError):
+        _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="rC")
+
+    # Additive-LAST (§8): the snapshots written BEFORE clustering survive intact.
+    assert writer.tables.get("genie_ont_tag_graph")
+    assert writer.tables.get("genie_ont_taxonomy_snapshot")
+    assert writer.tables.get("genie_ont_identity")
+    # No partial proposal rows, and the run is recorded failed.
+    assert "genie_ont_domains" not in writer.tables
+    assert writer.runs["rC"]["state"] == "failed"
+    assert "leiden boom" in (writer.runs["rC"]["error"] or "")
+
+
 def test_merge_sql_shape_not_matched_by_source_scoped():
     sql = ddl.build_snapshot_merge_sql(
         catalog="c", schema="s", table="genie_ont_tag_graph", source_view="v",
@@ -233,8 +300,8 @@ def test_merge_sql_empty_update_cols_omits_matched_clause():
 
 def test_ddl_shape_exactly_nine_tables_no_deferred_tokens():
     rendered = ddl.all_ddl("maincat", "gso_schema")
-    assert set(rendered) == set(ddl.SNAPSHOT_TABLES) | set(ddl.PHASE3_TABLES)
-    # Phase 3a adds genie_ont_identity to the 4 snapshot tables (+ 5 empty Phase-3).
+    assert set(rendered) == set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES) | set(ddl.PHASE3_TABLES)
+    # 4 snapshot tables + 2 written proposal tables + 3 still-empty (pages/consents/suppressions).
     assert len(rendered) == 9
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():

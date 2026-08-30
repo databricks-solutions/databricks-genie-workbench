@@ -5,11 +5,12 @@ template per table (``{catalog}.{schema}`` substituted), CDF enabled so the tabl
 can later become Lakebase synced tables. The job calls
 :func:`ensure_ontology_tables` at startup.
 
-Phase 2 WRITES only the three snapshot tables (``genie_ont_runs``,
-``genie_ont_tag_graph``, ``genie_ont_taxonomy_snapshot``). The five Phase-3 tables
-(``genie_ont_domains`` / ``_members`` / ``_pages`` / ``_consents`` /
-``_suppressions``) are created EMPTY here so Phase 3 never re-DDLs — nothing
-writes them in Phase 2.
+The materializer writes the snapshot tables (``genie_ont_runs`` /
+``genie_ont_tag_graph`` / ``genie_ont_taxonomy_snapshot`` / ``genie_ont_identity``)
+and — starting Phase 3b — the Domain/Member PROPOSAL tables (``genie_ont_domains`` /
+``genie_ont_members``). The remaining Phase-3 tables (``genie_ont_pages`` /
+``_consents`` / ``_suppressions``) are created EMPTY here so later phases never
+re-DDL — nothing writes them yet (17f/17g own them).
 
 The ONLY UC writes anywhere in this package are the ``genie_ont_*`` Delta MERGEs
 (:func:`build_snapshot_merge_sql`). There is no governed-tag DDL of any kind.
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_domains (
     parent_id     STRING     COMMENT 'NULL = domain; set = sub-domain (self-ref to domain_id)',
     name          STRING,
     description   STRING,
-    tag_decision  STRING     COMMENT 'reuse | create',
+    tag_decision  STRING     COMMENT 'reuse | create | reassign',
     tag_key       STRING     COMMENT 'Governed tag mapped (reuse) or proposed (create)',
     tag_value     STRING     COMMENT 'Sub-domain value in the Domain/Sub convention',
     evidence      STRING     COMMENT 'JSON: signals behind the proposal',
@@ -164,10 +165,19 @@ SNAPSHOT_TABLES: tuple[str, ...] = (
     TABLE_ONT_IDENTITY,
 )
 
-# Tables created EMPTY for Phase 3 (never written in Phase 2).
+# Proposal tables — WRITTEN starting Phase 3b (17e): the clustering engine MERGEs
+# Domain/Sub-Domain rows + their asset membership here.
+TABLE_ONT_DOMAINS = "genie_ont_domains"
+TABLE_ONT_MEMBERS = "genie_ont_members"
+
+PROPOSAL_TABLES: tuple[str, ...] = (
+    TABLE_ONT_DOMAINS,
+    TABLE_ONT_MEMBERS,
+)
+
+# Tables still created EMPTY and NEVER written in this phase (Page miners = 17f;
+# consent/suppression ledger = 17g). The firewall test asserts these stay empty.
 PHASE3_TABLES: tuple[str, ...] = (
-    "genie_ont_domains",
-    "genie_ont_members",
     "genie_ont_pages",
     "genie_ont_consents",
     "genie_ont_suppressions",

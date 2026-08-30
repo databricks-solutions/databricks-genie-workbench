@@ -6,8 +6,8 @@
 # MAGIC |---|---|
 # MAGIC | **Task** | `ontology_materialize` |
 # MAGIC | **Reads** | job params, `system.tags.governed_tags` + `information_schema.*_tags` + lineage (SP, allowlist-scoped) |
-# MAGIC | **Writes** | `genie_ont_runs`, `genie_ont_tag_graph`, `genie_ont_taxonomy_snapshot` (idempotent MERGE) |
-# MAGIC | **Never writes** | any governed-tag DDL; the empty Phase-3 tables |
+# MAGIC | **Writes** | `genie_ont_runs`, `genie_ont_tag_graph`, `genie_ont_taxonomy_snapshot`, `genie_ont_identity`, `genie_ont_domains`, `genie_ont_members` (idempotent MERGE) |
+# MAGIC | **Never writes** | any governed-tag DDL; `genie_ont_pages` / `_consents` / `_suppressions` (17f/17g) |
 # MAGIC | **Log label** | `[TASK ONTOLOGY]` |
 # MAGIC
 # MAGIC ## 🎯 Purpose (Phase-2 §8)
@@ -145,7 +145,9 @@ class SparkSystemTableReader:
 # L3 ER wiring: the in-process similarity backend by default (Lakebase Search stays
 # OFF — enabling it is the §12 human gate), GTE embeddings via the shared FMAPI
 # client, and the near-tie LLM adjudicator (degrades if the endpoint is down).
-from genie_space_optimizer.ontology import er, similarity  # noqa: E402
+# L4 clustering (Phase 3b) uses the same LLM path for cluster NAMING only (degrades
+# to anchor-derived names — MV-D43).
+from genie_space_optimizer.ontology import cluster, er, similarity  # noqa: E402
 
 try:
     from genie_space_optimizer.optimization.mv_scoring import FoundationModelEmbeddingClient
@@ -165,6 +167,7 @@ run = materialize.run_materialize(
     similarity_backend=similarity.get_similarity_backend(None),  # in-process (Lakebase Search off)
     embedder=_embedder,
     adjudicator=er.default_adjudicator(),
+    namer=cluster.default_namer(),  # LLM cluster naming; degrades to anchor names
 )
 _log("Materialize complete", state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"))

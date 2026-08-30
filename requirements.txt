@@ -103,7 +103,6 @@ docker==7.1.0
     # via mlflow
 fastapi==0.135.2
     # via
-    #   genie-space-optimizer
     #   genie-workbench
     #   mlflow-skinny
 fastuuid==0.14.0
@@ -192,6 +191,10 @@ idna==3.11
     #   httpx
     #   requests
     #   yarl
+igraph==1.0.0
+    # via
+    #   genie-space-optimizer
+    #   leidenalg
 importlib-metadata==8.7.1
     # via
     #   litellm
@@ -232,6 +235,8 @@ langchain-openai==1.1.12
     # via databricks-sdk
 langsmith==0.7.22
     # via langchain-core
+leidenalg==0.12.0
+    # via genie-space-optimizer
 litellm==1.82.6
     # via
     #   databricks-agents
@@ -347,12 +352,6 @@ protobuf==6.33.6
     #   mlflow-tracing
     #   opentelemetry-proto
     #   proto-plus
-psycopg==3.3.3
-    # via genie-space-optimizer
-psycopg-binary==3.3.3 ; implementation_name != 'pypy'
-    # via psycopg
-psycopg-pool==3.3.0
-    # via psycopg
 pyarrow==23.0.1
     # via mlflow
 pyasn1==0.6.3
@@ -373,12 +372,8 @@ pydantic==2.12.5
     #   mlflow-skinny
     #   mlflow-tracing
     #   openai
-    #   pydantic-settings
-    #   sqlmodel
 pydantic-core==2.41.5
     # via pydantic
-pydantic-settings==2.13.1
-    # via genie-space-optimizer
 pygments==2.19.2
     # via rich
 pyparsing==3.3.2
@@ -394,7 +389,6 @@ python-dotenv==1.2.2
     #   genie-workbench
     #   litellm
     #   mlflow-skinny
-    #   pydantic-settings
     #   uvicorn
 pytz==2026.1.post1
     # via pandas
@@ -458,10 +452,7 @@ sqlalchemy==2.0.48
     # via
     #   alembic
     #   mlflow
-    #   sqlmodel
 sqlglot==30.0.3
-    # via genie-space-optimizer
-sqlmodel==0.0.37
     # via genie-space-optimizer
 sqlparse==0.5.5
     # via mlflow-skinny
@@ -471,6 +462,8 @@ tenacity==9.1.4
     # via
     #   databricks-agents
     #   langchain-core
+texttable==1.7.0
+    # via igraph
 threadpoolctl==3.6.0
     # via scikit-learn
 tiktoken==0.12.0
@@ -504,8 +497,6 @@ typing-extensions==4.15.0
     #   opentelemetry-api
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-    #   psycopg
-    #   psycopg-pool
     #   pydantic
     #   pydantic-core
     #   referencing
@@ -519,11 +510,9 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-    #   pydantic-settings
 tzdata==2025.3
     # via
     #   pandas
-    #   psycopg
     #   whenever
 urllib3==2.6.3
     # via
@@ -538,7 +527,6 @@ uuid-utils==0.14.1
     #   langsmith
 uvicorn==0.42.0
     # via
-    #   genie-space-optimizer
     #   genie-workbench
     #   mlflow-skinny
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'

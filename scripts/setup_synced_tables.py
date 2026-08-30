@@ -51,6 +51,11 @@ TABLES = [
     ("genie_ont_taxonomy_snapshot",  ["workspace_id"]),
     # Phase-3a identity map (canonical entity -> members). Derived PK.
     ("genie_ont_identity",           ["workspace_id", "canonical_id", "member_ref"]),
+    # Phase-3b Domain / Sub-Domain proposals + their asset membership. Derived PKs
+    # per §7: domain on (workspace_id, domain_id); member on (workspace_id,
+    # domain_id, asset_fqn). Unserved until 17g (mirror carries proposal rows).
+    ("genie_ont_domains",            ["workspace_id", "domain_id"]),
+    ("genie_ont_members",            ["workspace_id", "domain_id", "asset_fqn"]),
 ]
 
 SYNCED_SUFFIX = "_synced"

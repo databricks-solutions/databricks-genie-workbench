@@ -12,6 +12,8 @@ dependencies = [
     "pydantic==2.12.5",
     "pandas==2.3.3",
     "sqlglot==30.0.3",
+    "leidenalg==0.12.0",
+    "igraph==1.0.0",
 ]
 
 [project.optional-dependencies]

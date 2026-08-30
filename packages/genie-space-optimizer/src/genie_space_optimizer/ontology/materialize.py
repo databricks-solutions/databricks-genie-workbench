@@ -15,11 +15,14 @@ and the run ledger; the empty Phase-3 tables are never written.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from genie_space_optimizer.ontology import ddl, er, graph, similarity, transforms
+from genie_space_optimizer.ontology import cluster, ddl, er, graph, similarity, transforms
+
+logger = logging.getLogger(__name__)
 
 # Derived keys / update columns for the snapshot MERGEs (§7.2).
 TAG_GRAPH_KEYS = ["workspace_id", "tag_key"]
@@ -32,6 +35,9 @@ TAXONOMY_UPDATE_COLS = ["tree", "run_id", "as_of"]
 # Identity map (Phase 3a) — derived PK per §7.2.
 IDENTITY_KEYS = ["workspace_id", "canonical_id", "member_ref"]
 IDENTITY_UPDATE_COLS = ["member_kind", "verdict", "method", "score", "reason", "run_id", "as_of"]
+# Domain / member proposals (Phase 3b) — derived PKs per §7.
+DOMAIN_KEYS = ["workspace_id", "domain_id"]
+MEMBER_KEYS = ["workspace_id", "domain_id", "asset_fqn"]
 
 
 class MaterializeReader(Protocol):
@@ -108,6 +114,48 @@ def build_snapshot(
     return {"tag_graph_rows": tag_graph_rows, "taxonomy_rows": taxonomy_rows, "counts": counts}
 
 
+def build_domain_rows(
+    proposals: list[cluster.DomainProposal],
+    *,
+    workspace_id: str,
+    run_id: str,
+    as_of: str,
+    asset_type_by_fqn: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Expand L4 :class:`~cluster.DomainProposal`s into ``genie_ont_domains`` +
+    ``genie_ont_members`` rows (§7). ``score`` is ``0.0`` — L6 ranking is 17g. Sub-
+    domain CREATE keys are qualified into the ``Domain/Sub`` convention first."""
+    proposals = cluster.qualify_subdomain_keys(proposals)
+    types = asset_type_by_fqn or {}
+    domain_rows: list[dict[str, Any]] = []
+    member_rows: list[dict[str, Any]] = []
+    for p in proposals:
+        domain_rows.append({
+            "domain_id": p.domain_id,
+            "workspace_id": workspace_id,
+            "parent_id": p.parent_id,
+            "name": p.name,
+            "description": p.description,
+            "tag_decision": p.tag_decision,
+            "tag_key": p.tag_key,
+            "tag_value": p.tag_value,
+            "evidence": json.dumps(p.evidence, sort_keys=True),
+            "score": 0.0,
+            "run_id": run_id,
+            "as_of": as_of,
+        })
+        for fqn in p.members:
+            member_rows.append({
+                "domain_id": p.domain_id,
+                "asset_fqn": fqn,
+                "asset_type": types.get(fqn, "table"),
+                "workspace_id": workspace_id,
+                "run_id": run_id,
+                "as_of": as_of,
+            })
+    return {"domain_rows": domain_rows, "member_rows": member_rows}
+
+
 def run_materialize(
     reader: MaterializeReader,
     writer: SnapshotWriter,
@@ -120,6 +168,8 @@ def run_materialize(
     similarity_backend: Any | None = None,
     embedder: Any | None = None,
     adjudicator: Any | None = None,
+    namer: Any | None = None,
+    company: str | None = None,
 ) -> dict[str, Any]:
     """Materialize the governed-tag graph + taxonomy snapshots for one workspace,
     then resolve identity (L3 ER) and MERGE the identity map + embedding-backed
@@ -160,8 +210,8 @@ def run_materialize(
         agents = reader.agents()
         tree = transforms.build_taxonomy_dict(graph_struct, metric_views, agents)
 
-        # L2 fused-graph scaffold — built as a Phase-3 dependency, not persisted.
-        graph.build_signal_graph(graph_struct, reader.lineage_edges(allowlist))
+        # L2 fused signal graph — the clustering input (17d builds it; 17e consumes it).
+        signal_graph = graph.build_signal_graph(graph_struct, reader.lineage_edges(allowlist))
 
         # L3 ER / dedupe over the (tag) candidate inventory. Similarity is behind
         # the one interface (in-process cosine default); embeddings + LLM are
@@ -191,11 +241,24 @@ def run_materialize(
         writer.merge("genie_ont_taxonomy_snapshot", snap["taxonomy_rows"], TAXONOMY_KEYS, workspace_id)
         writer.merge("genie_ont_identity", identity_rows, IDENTITY_KEYS, workspace_id)
 
+        # L4 clustering (Phase 3b) — the ADDITIVE FINAL step (§8). Runs over the fused
+        # graph mapped to 17d's CANONICAL entities; MERGEs Domain/Sub-Domain proposals
+        # + membership. Deterministic + offline; naming degrades (MV-D43). The snapshot
+        # writes above are already committed, so a clustering error records `failed`
+        # without corrupting them.
+        proposals = cluster.cluster(signal_graph, identity=er_verdicts, namer=namer, company=company)
+        expanded = build_domain_rows(
+            proposals, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
+        )
+        writer.merge(ddl.TABLE_ONT_DOMAINS, expanded["domain_rows"], DOMAIN_KEYS, workspace_id)
+        writer.merge(ddl.TABLE_ONT_MEMBERS, expanded["member_rows"], MEMBER_KEYS, workspace_id)
+
+        counts = {**snap["counts"], "domain_count": len(proposals)}
         run_row = {
             **run_row,
             "state": "succeeded",
             "finished_at": datetime.now(timezone.utc).isoformat(),
-            **snap["counts"],
+            **counts,
             "identity_count": len({r["canonical_id"] for r in identity_rows}),
         }
         writer.upsert_run(run_row)

@@ -91,14 +91,20 @@ def test_backend_router_verbs_are_read_only_plus_settings_put_and_refresh_post()
     assert post_files == ["refresh.py"], f"unexpected POST routes: {post_files}"
 
 
-def test_wheel_writes_only_snapshot_tables_never_phase3():
-    """The materializer's MERGE targets are exactly the three snapshot tables;
-    the empty Phase-3 tables are created (DDL) but never written."""
-    from genie_space_optimizer.ontology import ddl, materialize
+def test_wheel_writes_snapshots_plus_proposals_never_pages_consents_suppressions():
+    """Phase 3b: the materializer MERGEs the snapshot tables AND the Domain/Member
+    PROPOSAL tables; the Page/consent/suppression tables are created (DDL) but still
+    never written (17f/17g own them)."""
+    from genie_space_optimizer.ontology import ddl, materialize  # noqa: F401
 
     src = (_WHEEL_ONTOLOGY / "materialize.py").read_text()
-    # Every Phase-3 table name must be absent from the materializer (never written).
+    # The still-forbidden Phase-3 tables must be absent from the materializer.
+    assert ddl.PHASE3_TABLES == ("genie_ont_pages", "genie_ont_consents", "genie_ont_suppressions")
     for t in ddl.PHASE3_TABLES:
-        assert t not in src, f"materialize.py references Phase-3 table {t} (must not write it)"
-    # The snapshot tables it does write.
+        assert t not in src, f"materialize.py references unwritten table {t} (must not write it)"
+    # The snapshot tables it writes.
     assert "genie_ont_tag_graph" in src and "genie_ont_taxonomy_snapshot" in src
+    # The proposal tables it now writes (referenced via the ddl constants).
+    assert ddl.PROPOSAL_TABLES == ("genie_ont_domains", "genie_ont_members")
+    assert "TABLE_ONT_DOMAINS" in src and "TABLE_ONT_MEMBERS" in src
+    assert "DOMAIN_KEYS" in src and "MEMBER_KEYS" in src
