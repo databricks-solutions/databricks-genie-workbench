@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>17.0h · Ontology — Estate Graph "Ontology Map" (bakeoff 1/3: Sigma.js v3)</title>
+    <link rel="stylesheet" href="./mockups.css" />
+    <style>
+      .g-label { font: 600 10px var(--font-sans); fill: #cbd5e1; }
+      .g-anchor-label { font: 700 11px var(--font-sans); fill: #f8fafc; }
+      .g-edge { stroke: #64748b; stroke-width: 1.4; opacity: .55; }
+      .g-scope { stroke: #475569; stroke-width: 1; opacity: .5; }
+      .g-coquery { stroke: #818cf8; stroke-width: 1.6; opacity: .75; stroke-dasharray: 5 4; }
+      .g-sim { stroke: #64748b; stroke-width: 1; opacity: .35; stroke-dasharray: 2 5; }
+      .seg { cursor: default; }
+      .seg-on { background: linear-gradient(135deg, #4f46e5, #818cf8); color: #fff; }
+    </style>
+  </head>
+  <body class="bg-pattern">
+    <div style="max-width: 72rem; margin: 0 auto; padding: 2rem;">
+      <p class="text-xs text-muted" style="margin-bottom: 0.75rem;">MV-advisor mockup · bakeoff scaffold · <span class="font-mono text-secondary">Sigma.js v3 + graphology</span> (1 of 3)</p>
+      <h1 class="text-primary font-display" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem;">17.0h · Ontology — Estate Graph "Ontology Map"</h1>
+
+      <div class="rounded-xl border border-default bg-surface">
+        <!-- header -->
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-default px-5 py-4">
+          <div class="flex items-center gap-2.5">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide h-5 w-5 text-accent" aria-hidden="true"><circle cx="12" cy="5" r="3"></circle><circle cx="5" cy="19" r="3"></circle><circle cx="19" cy="19" r="3"></circle><path d="M10.5 7.3 6.8 16.2"></path><path d="M13.5 7.3l3.7 8.9"></path><path d="M8 19h8"></path></svg>
+            <div>
+              <h2 class="text-base font-semibold text-primary">Ontology Map</h2>
+              <p class="text-xs text-muted">The estate as a graph — domains as clusters, lineage &amp; co-query as edges</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="inline-flex items-center gap-1.5 rounded-full border border-default bg-elevated px-2.5 py-1 text-xs text-secondary"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide h-3.5 w-3.5 text-accent" aria-hidden="true"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"></path><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"></path><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"></path></svg>Northwind Trading Co.</span>
+            <div class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold bg-elevated text-muted border border-default">Admin</div>
+          </div>
+        </div>
+
+        <div class="space-y-4 p-5">
+          <!-- toolbar -->
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="inline-flex overflow-hidden rounded-lg border border-default text-xs">
+                <span class="seg px-2.5 py-1 text-secondary">Domains</span>
+                <span class="seg border-l border-default px-2.5 py-1 text-secondary">Sub-domains</span>
+                <span class="seg seg-on border-l border-default px-2.5 py-1 font-semibold">Assets</span>
+              </div>
+              <span class="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs text-accent">Lineage</span>
+              <span class="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs text-accent">Co-query</span>
+              <span class="inline-flex items-center gap-1 rounded-full border border-default bg-elevated px-2.5 py-1 text-xs text-muted">Agent scope</span>
+              <span class="inline-flex items-center gap-1 rounded-full border border-default bg-elevated px-2.5 py-1 text-xs text-muted">Semantic</span>
+              <span class="inline-flex items-center gap-1 rounded-full border border-default bg-elevated px-2.5 py-1 text-xs text-muted">Top 2,000 · centrality</span>
+            </div>
+            <span class="inline-flex items-center gap-1.5 rounded-full border border-default bg-elevated px-2.5 py-1 text-xs text-secondary"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide h-3.5 w-3.5 text-success-foreground" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg>Updated 3h ago</span>
+          </div>
+
+          <!-- graph canvas -->
+          <div class="relative overflow-hidden rounded-xl border border-default bg-sunken">
+            <svg viewBox="0 0 920 470" width="100%" role="img" aria-label="Estate graph (Sigma.js v3 flat WebGL style)">
+              <!-- edges -->
+              <g>
+                <line class="g-sim" x1="110" y1="120" x2="700" y2="120"></line>
+                <line class="g-coquery" x1="210" y1="180" x2="700" y2="120"></line>
+                <line class="g-coquery" x1="210" y1="180" x2="470" y2="380"></line>
+                <line class="g-edge" x1="210" y1="180" x2="110" y2="120"></line>
+                <line class="g-edge" x1="210" y1="180" x2="110" y2="250"></line>
+                <line class="g-edge" x1="700" y1="120" x2="795" y2="175"></line>
+                <line class="g-edge" x1="470" y1="380" x2="565" y2="415"></line>
+                <line class="g-scope" x1="300" y1="115" x2="210" y2="180"></line>
+                <line class="g-scope" x1="300" y1="245" x2="110" y2="250"></line>
+                <line class="g-scope" x1="700" y1="225" x2="700" y2="120"></line>
+                <line class="g-scope" x1="395" y1="330" x2="470" y2="380"></line>
+              </g>
+              <!-- Commercial (indigo) -->
+              <g>
+                <circle cx="210" cy="180" r="18" fill="#818cf8" stroke="#c7d2fe" stroke-width="1.5"></circle>
+                <text class="g-anchor-label" x="210" y="212" text-anchor="middle">orders</text>
+                <circle cx="110" cy="120" r="9" fill="#818cf8" stroke="#4f46e5" stroke-width="1"></circle>
+                <text class="g-label" x="110" y="103" text-anchor="middle">order_revenue</text>
+                <circle cx="110" cy="250" r="9" fill="#818cf8" stroke="#4f46e5" stroke-width="1"></circle>
+                <text class="g-label" x="110" y="272" text-anchor="middle">channel_perf</text>
+                <circle cx="300" cy="115" r="10" fill="#0d1321" stroke="#818cf8" stroke-width="2.2"></circle>
+                <text class="g-label" x="300" y="99" text-anchor="middle">Sales agent</text>
+                <circle cx="300" cy="245" r="10" fill="#0d1321" stroke="#818cf8" stroke-width="2.2"></circle>
+                <text class="g-label" x="300" y="267" text-anchor="middle">Marketing agent</text>
+              </g>
+              <!-- Finance (emerald) -->
+              <g>
+                <circle cx="700" cy="120" r="12" fill="#6ee7b7" stroke="#a7f3d0" stroke-width="1.2"></circle>
+                <text class="g-label" x="700" y="101" text-anchor="middle">billing.usage</text>
+                <circle cx="795" cy="175" r="9" fill="#6ee7b7" stroke="#059669" stroke-width="1"></circle>
+                <text class="g-label" x="795" y="197" text-anchor="middle">gl_entries</text>
+                <circle cx="700" cy="225" r="10" fill="#0d1321" stroke="#6ee7b7" stroke-width="2.2"></circle>
+                <text class="g-label" x="700" y="247" text-anchor="middle">Revenue agent</text>
+              </g>
+              <!-- Operations (amber) -->
+              <g>
+                <circle cx="470" cy="380" r="12" fill="#fcd34d" stroke="#fde68a" stroke-width="1.2"></circle>
+                <text class="g-label" x="470" y="405" text-anchor="middle">orders.status</text>
+                <circle cx="565" cy="415" r="9" fill="#fcd34d" stroke="#d97706" stroke-width="1"></circle>
+                <text class="g-label" x="565" y="437" text-anchor="middle">shipments</text>
+                <circle cx="395" cy="330" r="10" fill="#0d1321" stroke="#fcd34d" stroke-width="2.2"></circle>
+                <text class="g-label" x="395" y="314" text-anchor="middle">Fulfillment agent</text>
+              </g>
+            </svg>
+
+            <!-- hover evidence card (static) -->
+            <div class="absolute rounded-lg border border-default bg-elevated p-3 shadow-lg" style="left: 236px; top: 150px; width: 15rem;">
+              <div class="flex items-center justify-between">
+                <p class="font-mono text-sm font-semibold text-primary">orders</p>
+                <span class="rounded-full bg-accent/15 px-2 py-0.5 text-xs text-accent">anchor · Commercial</span>
+              </div>
+              <div class="mt-2 space-y-1 text-xs text-secondary">
+                <p><span class="text-muted">41%</span> of Genie query volume (30d)</p>
+                <p>lineage spine <span class="font-mono text-muted">finance.sales</span></p>
+                <p>centrality <span class="text-muted">0.82</span> · <span class="text-muted">$2.4k</span>/mo</p>
+              </div>
+              <p class="mt-2 border-t border-default pt-2 text-xs text-muted">Click the cluster → open the <span class="text-secondary">Commercial</span> domain draft (17.0d)</p>
+            </div>
+          </div>
+
+          <!-- legend -->
+          <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
+            <span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full" style="background:#818cf8"></span>Commercial</span>
+            <span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full" style="background:#6ee7b7"></span>Finance</span>
+            <span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-full" style="background:#fcd34d"></span>Operations</span>
+            <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0 w-6 border-t" style="border-color:#64748b"></span>lineage</span>
+            <span class="inline-flex items-center gap-1.5"><span class="inline-block h-0 w-6 border-t border-dashed" style="border-color:#818cf8"></span>co-query</span>
+            <span class="inline-flex items-center gap-1.5"><span class="inline-flex h-4 w-4 items-center justify-center rounded-full border-2" style="border-color:#94a3b8"></span>Agent (hollow)</span>
+          </div>
+
+          <!-- bakeoff strip -->
+          <div class="rounded-xl border border-accent/40 bg-accent/5 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p class="text-sm font-semibold text-primary">Bakeoff candidate 1 of 3 · Sigma.js v3 + graphology</p>
+                <ul class="mt-1.5 space-y-1 text-xs text-secondary">
+                  <li>+ WebGL; purpose-built to render <span class="text-primary">precomputed (x,y)</span> at scale — lightest bundle.</li>
+                  <li>+ React-19 clean · <span class="text-primary">MIT</span> license.</li>
+                  <li>− Lower-level API; "domains as containers" need faux hulls (not native).</li>
+                </ul>
+              </div>
+              <div class="flex items-center gap-2">
+                <button class="inline-flex items-center justify-center rounded-lg gradient-accent px-3 py-1.5 text-xs font-semibold text-white">Pick this</button>
+                <span class="text-xs text-muted">then eyeball 17.0i · 17.0j</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
