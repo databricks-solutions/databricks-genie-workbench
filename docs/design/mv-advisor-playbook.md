@@ -3627,16 +3627,29 @@ on-demand), MV-D39 (in-job igraph — dependency only, no Louvain yet), MV-D42
 
 ### Prompt 17d — Phase 3a: full signal graph + ER/dedupe (L2 + L3; MV-D40 embeddings)
 
+> **Build-ready (mirrors the Phase-1/2 pairs).** The full section-by-section spec is
+> `docs/design/ontology-phase3a-build.md` (§1 scope → §12 DoD) and the Goal-Mode
+> launcher is `docs/design/ontology-phase3a-driver.md`. The block below is the
+> register summary; the build spec is the source of truth. Acceptance is **offline
+> for the code, deploy-gated for verification** — the agent green-tests the offline
+> slice (blocking recall, string-vs-embedding catch, near-tie adjudication band,
+> degrade parity, PII firewall, identity idempotency, updated firewall) behind the
+> in-process cosine fallback and stops before the **irreversible Lakebase Search
+> enable** + first live materialize (spec §12).
+
 ```
-Architecture §3–4 (signal graph) + the L3 ER/dedupe subsection under §5. Backend
-only. Inherit MV-D39 (igraph) + MV-D40 (Lakebase Search — `lakebase_vector` ANN
-for embedding dedupe + `lakebase_text` BM25 for fuzzy tag-name matching, on the
-EXISTING Lakebase; embeddings from the existing databricks-gte-large-en FMAPI
-endpoint via leakage.get_embedding, L2-normalize GTE per mv_scoring; the
-similarity call sits behind one interface that degrades to in-process cosine when
-Lakebase Search is not enabled — MV-D45). This phase ENABLES Lakebase Search on
-the app's Autoscaling Lakebase (beta, IRREVERSIBLE, restarts computes) — the
-Phase-3 gate. Dedupe runs BEFORE any clustering, so we never grow tag sprawl.
+Architecture §3–4 (signal graph) + the L3 ER/dedupe subsection under §5. Batch-side
+in the GSO wheel (the backend touch is a read-only mirror read; NO new route, NO new
+API model). Inherit MV-D39 (igraph — scaffolded, no Louvain) + MV-D40 (Lakebase
+Search — `lakebase_vector` ANN for embedding dedupe + `lakebase_text` BM25 for fuzzy
+tag-name matching, on the EXISTING Lakebase; embeddings from the existing
+databricks-gte-large-en FMAPI endpoint via leakage.get_embedding, L2-normalize GTE
+per mv_scoring; the similarity call sits behind one interface that DEFAULTS to
+in-process cosine and only uses Lakebase Search once enabled — MV-D45). The offline
+slice builds both backends behind that interface; ENABLING Lakebase Search on the
+app's Autoscaling Lakebase (beta, IRREVERSIBLE, restarts computes) is the human
+Phase-3 deploy gate — the agent never runs it. Dedupe runs BEFORE any clustering, so
+we never grow tag sprawl.
 - L2: fuse the readers into the weighted heterogeneous graph (nodes: table,
   column, measure, MV, agent, tag, page; edges: lineage, join_key, co_query,
   tag_assignment, agent_scope, semantic_sim, cost) with per-edge source + as_of
@@ -3652,8 +3665,20 @@ Phase-3 gate. Dedupe runs BEFORE any clustering, so we never grow tag sprawl.
 
 ### Prompt 17e — Phase 3b: domain / sub-domain clustering (L4; MV-D39)
 
+> **Build-ready (mirrors the Phase-1/2/3a pairs).** The full section-by-section spec is
+> `docs/design/ontology-phase3b-build.md` (§1 scope → §12 DoD) and the Goal-Mode
+> launcher is `docs/design/ontology-phase3b-driver.md`. The block below is the
+> register summary; the build spec is the source of truth. Acceptance is **offline
+> for the code, deploy-gated for verification** — the agent green-tests the offline
+> slice (two-level tree, reuse-vs-create, determinism/idempotency, naming-degrade,
+> updated firewall) and stops before the live materialize. This is the first phase to
+> **populate proposal tables** (`genie_ont_domains`/`_members`) and the first to **add
+> a dependency** (`igraph`, so `uv.lock` changes); there is **no UI change** (drafts
+> render in 17g).
+
 ```
-The L4 clustering subsection under architecture §5. Backend only. Inherit MV-D39
+The L4 clustering subsection under architecture §5. Batch-side in the GSO wheel (no
+backend/route/model/frontend change; proposals are served in 17g). Inherit MV-D39
 (igraph Louvain / label-propagation) + evidence-first (MV-D35). Runs AFTER 17d
 dedupe, on canonical entities.
 - Community detection on the fused graph with tag_assignment as the STRONGEST
