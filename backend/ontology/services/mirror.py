@@ -182,7 +182,7 @@ async def read_tag_graph(workspace_id: str) -> dict[str, Any] | None:
             async with pool.acquire() as conn:
                 rows = [
                     dict(r) for r in await conn.fetch(
-                        f'SELECT tag_key, allowed_values, assignment_count, as_of '
+                        f'SELECT tag_key, allowed_values, assignment_count, dedupe_verdicts, as_of '
                         f'FROM "{_gso._GSO_PG_SCHEMA}"."genie_ont_tag_graph_synced" WHERE workspace_id = $1',
                         workspace_id,
                     )
@@ -194,21 +194,30 @@ async def read_tag_graph(workspace_id: str) -> dict[str, Any] | None:
         import asyncio
         rows = await asyncio.to_thread(
             _delta_query,
-            f"SELECT tag_key, allowed_values, assignment_count, as_of "
+            f"SELECT tag_key, allowed_values, assignment_count, dedupe_verdicts, as_of "
             f"FROM {_gso_fqn('genie_ont_tag_graph')} WHERE workspace_id = '{workspace_id}'",
         )
     if not rows:
         return None
     as_of = max((str(r.get("as_of") or "") for r in rows), default="")
-    tags = [
-        {
+    tags = []
+    for r in rows:
+        if not r.get("tag_key"):
+            continue
+        tag: dict[str, Any] = {
             "tag_key": r.get("tag_key"),
             "allowed_values": _as_list(r.get("allowed_values")),
             "assignment_count": int(r.get("assignment_count") or 0),
             "members": [],
         }
-        for r in rows
-        if r.get("tag_key")
-    ]
+        # Phase-3a: the embedding-backed per-tag dedupe verdicts (JSON), when present,
+        # so the tags route can surface enriched collisions through the frozen contract.
+        verdicts = r.get("dedupe_verdicts")
+        if verdicts:
+            try:
+                tag["dedupe_verdicts"] = json.loads(verdicts) if isinstance(verdicts, str) else verdicts
+            except (ValueError, TypeError):
+                pass
+        tags.append(tag)
     tags.sort(key=lambda t: t["tag_key"])
     return {"tags": tags, "as_of": as_of}

@@ -142,6 +142,18 @@ class SparkSystemTableReader:
 
 # COMMAND ----------
 
+# L3 ER wiring: the in-process similarity backend by default (Lakebase Search stays
+# OFF — enabling it is the §12 human gate), GTE embeddings via the shared FMAPI
+# client, and the near-tie LLM adjudicator (degrades if the endpoint is down).
+from genie_space_optimizer.ontology import er, similarity  # noqa: E402
+
+try:
+    from genie_space_optimizer.optimization.mv_scoring import FoundationModelEmbeddingClient
+    _embedder = FoundationModelEmbeddingClient(make_workspace_client())
+except Exception as _e:  # noqa: BLE001 — degrade to string-only ER
+    _log("Embedding client unavailable; ER runs string-only", error=str(_e))
+    _embedder = None
+
 writer = materialize.SparkSnapshotWriter(spark, catalog, schema)
 run = materialize.run_materialize(
     SparkSystemTableReader(),
@@ -150,6 +162,10 @@ run = materialize.run_materialize(
     trigger=trigger,
     allowlist=allowlist,
     run_id=run_id,
+    similarity_backend=similarity.get_similarity_backend(None),  # in-process (Lakebase Search off)
+    embedder=_embedder,
+    adjudicator=er.default_adjudicator(),
 )
-_log("Materialize complete", state=run["state"], tags=run.get("tag_count"), domains=run.get("domain_count"))
+_log("Materialize complete", state=run["state"], tags=run.get("tag_count"),
+     domains=run.get("domain_count"), identities=run.get("identity_count"))
 dbutils.notebook.exit(json.dumps({"run_id": run["run_id"], "state": run["state"]}, default=str))

@@ -45,10 +45,20 @@ async def get_tags() -> dict:
 
     # One downstream pipeline (shared transforms) regardless of source → parity.
     tags = [GovernedTag(**r) for r in transforms.governed_tag_rows(graph)]
+
+    # Phase 3a: prefer the mirror's embedding-backed dedupe verdicts when present
+    # (richer collisions, same frozen TagLens shape); else the string transforms.
+    enriched = dedupe.verdicts_from_graph(graph)
+    if enriched is not None:
+        collisions, cleanup = enriched
+    else:
+        collisions = dedupe.find_collisions(graph)
+        cleanup = dedupe.find_cleanup(graph)
+
     lens = TagLens(
         tags=tags,
-        collisions=dedupe.find_collisions(graph),
-        cleanup=dedupe.find_cleanup(graph),
+        collisions=collisions,
+        cleanup=cleanup,
         as_of=graph.get("as_of") or datetime.now(timezone.utc).isoformat(),
     )
     return lens.model_dump(mode="json")

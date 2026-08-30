@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from genie_space_optimizer.ontology import ddl, graph, transforms
+from genie_space_optimizer.ontology import ddl, er, graph, similarity, transforms
 
 # Derived keys / update columns for the snapshot MERGEs (§7.2).
 TAG_GRAPH_KEYS = ["workspace_id", "tag_key"]
@@ -29,6 +29,9 @@ TAG_GRAPH_UPDATE_COLS = [
 ]
 TAXONOMY_KEYS = ["workspace_id"]
 TAXONOMY_UPDATE_COLS = ["tree", "run_id", "as_of"]
+# Identity map (Phase 3a) — derived PK per §7.2.
+IDENTITY_KEYS = ["workspace_id", "canonical_id", "member_ref"]
+IDENTITY_UPDATE_COLS = ["member_kind", "verdict", "method", "score", "reason", "run_id", "as_of"]
 
 
 class MaterializeReader(Protocol):
@@ -56,13 +59,18 @@ def build_snapshot(
     workspace_id: str,
     run_id: str,
     as_of: str,
+    collisions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the Delta rows for the two data snapshots from the shared transforms.
 
     Uses the SAME transforms the Phase-1 routes call (parity). ``dedupe_verdicts``
-    carries the per-tag collisions + cleanup flags as JSON.
+    carries the per-tag collisions + cleanup flags as JSON. When ``collisions`` is
+    supplied (the Phase-3a embedding-backed ER verdicts) it replaces the string-only
+    ``find_collisions_dict`` — same shape, richer content; otherwise the Phase-2
+    string-only behavior is preserved.
     """
-    collisions = transforms.find_collisions_dict(graph_struct)
+    if collisions is None:
+        collisions = transforms.find_collisions_dict(graph_struct)
     cleanup = transforms.find_cleanup_dict(graph_struct)
 
     tag_graph_rows: list[dict[str, Any]] = []
@@ -109,12 +117,19 @@ def run_materialize(
     allowlist: list[str],
     run_id: str | None = None,
     now: datetime | None = None,
+    similarity_backend: Any | None = None,
+    embedder: Any | None = None,
+    adjudicator: Any | None = None,
 ) -> dict[str, Any]:
-    """Materialize the governed-tag graph + taxonomy snapshots for one workspace.
+    """Materialize the governed-tag graph + taxonomy snapshots for one workspace,
+    then resolve identity (L3 ER) and MERGE the identity map + embedding-backed
+    dedupe verdicts.
 
-    Writes a ``running`` run-ledger row, reads → transforms → MERGEs the two
-    snapshot tables, then flips the run row to ``succeeded`` (or ``failed`` with
-    the error). Returns the terminal run row.
+    Writes a ``running`` run-ledger row, reads → transforms → MERGEs tag_graph +
+    taxonomy + identity, then flips the run row to ``succeeded`` (or ``failed``).
+    ``embedder`` (mv_scoring EmbeddingClient shape) and ``adjudicator`` are optional;
+    without them ER runs string-only and skips escalation (MV-D43 degrade). Returns
+    the terminal run row.
     """
     run_id = run_id or uuid.uuid4().hex
     started = now or datetime.now(timezone.utc)
@@ -148,15 +163,40 @@ def run_materialize(
         # L2 fused-graph scaffold — built as a Phase-3 dependency, not persisted.
         graph.build_signal_graph(graph_struct, reader.lineage_edges(allowlist))
 
-        snap = build_snapshot(graph_struct, tree, workspace_id=workspace_id, run_id=run_id, as_of=as_of)
+        # L3 ER / dedupe over the (tag) candidate inventory. Similarity is behind
+        # the one interface (in-process cosine default); embeddings + LLM are
+        # optional and degrade to string-only / skip-escalation (MV-D43).
+        backend = similarity_backend or similarity.get_similarity_backend(None)
+        candidates = er.candidates_from_graph(graph_struct)
+        vectors: dict[str, Any] = {}
+        if embedder is not None and candidates:
+            try:
+                vecs = embedder.embed([c.text for c in candidates])
+                vectors = {c.ref: v for c, v in zip(candidates, vecs) if v}
+            except Exception as e:  # noqa: BLE001 — degrade to string-only ER
+                logger.info("ontology ER embedding failed (%s); string-only", e)
+        er_verdicts = er.run_er(candidates, backend=backend, vectors=vectors, adjudicator=adjudicator)
+        counts_by_ref = {t["tag_key"]: int(t.get("assignment_count") or 0) for t in graph_struct.get("tags", [])}
+        collisions = transforms.collisions_from_er_verdicts(er_verdicts, counts_by_ref)
+        identity_rows = transforms.identity_map_rows(
+            er_verdicts, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
+            member_kind_by_ref={c.ref: c.kind for c in candidates},
+        )
+
+        snap = build_snapshot(
+            graph_struct, tree, workspace_id=workspace_id, run_id=run_id,
+            as_of=as_of, collisions=collisions,
+        )
         writer.merge("genie_ont_tag_graph", snap["tag_graph_rows"], TAG_GRAPH_KEYS, workspace_id)
         writer.merge("genie_ont_taxonomy_snapshot", snap["taxonomy_rows"], TAXONOMY_KEYS, workspace_id)
+        writer.merge("genie_ont_identity", identity_rows, IDENTITY_KEYS, workspace_id)
 
         run_row = {
             **run_row,
             "state": "succeeded",
             "finished_at": datetime.now(timezone.utc).isoformat(),
             **snap["counts"],
+            "identity_count": len({r["canonical_id"] for r in identity_rows}),
         }
         writer.upsert_run(run_row)
         return run_row

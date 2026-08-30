@@ -150,7 +150,8 @@ def test_phase3_tables_never_written():
     writer = _FakeWriter()
     _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
     written = set(writer.tables)
-    assert written == {"genie_ont_tag_graph", "genie_ont_taxonomy_snapshot"}
+    # Phase 3a also writes the identity map; the proposal tables stay empty.
+    assert written == {"genie_ont_tag_graph", "genie_ont_taxonomy_snapshot", "genie_ont_identity"}
     for t in ddl.PHASE3_TABLES:
         assert t not in written
 
@@ -177,6 +178,38 @@ def test_run_ledger_one_row_per_run_and_running_then_terminal():
     assert run["tag_count"] == 4 and run["domain_count"] == 1
 
 
+def test_identity_map_idempotent_stable_canonical_no_dups():
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    keys1 = set(writer.tables["genie_ont_identity"])
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r2")
+    keys2 = set(writer.tables["genie_ont_identity"])
+    # Stable canonical_id (fingerprint of members) → identical (cid, member_ref) keys.
+    assert keys1 == keys2
+    # Every member appears exactly once (no duplicates).
+    member_refs = [k[2] for k in keys2]
+    assert len(member_refs) == len(set(member_refs))
+    # Finance + finance resolve to one canonical (exact-casefold merge).
+    id_rows = writer.tables["genie_ont_identity"]
+    cid = {k[2]: k[1] for k in id_rows}
+    assert cid["Finance"] == cid["finance"]
+
+
+def test_identity_member_removed_is_deleted():
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    assert any(k[2] == "finance" for k in writer.tables["genie_ont_identity"])
+
+    trimmed = [r for r in catalog_rows if r.get("tag_name") != "finance"]
+    trimmed_assign = [r for r in assign_rows if r.get("tag_name") != "finance"]
+    _run(_FakeReader(trimmed, trimmed_assign, [], []), writer, run_id="r2")
+    # NOT MATCHED BY SOURCE: the removed member no longer appears in the map.
+    assert not any(k[2] == "finance" for k in writer.tables["genie_ont_identity"])
+    assert any(k[2] == "Finance" for k in writer.tables["genie_ont_identity"])
+
+
 def test_merge_sql_shape_not_matched_by_source_scoped():
     sql = ddl.build_snapshot_merge_sql(
         catalog="c", schema="s", table="genie_ont_tag_graph", source_view="v",
@@ -198,10 +231,11 @@ def test_merge_sql_empty_update_cols_omits_matched_clause():
     assert "WHEN NOT MATCHED BY SOURCE" in sql
 
 
-def test_ddl_shape_exactly_eight_tables_no_deferred_tokens():
+def test_ddl_shape_exactly_nine_tables_no_deferred_tokens():
     rendered = ddl.all_ddl("maincat", "gso_schema")
     assert set(rendered) == set(ddl.SNAPSHOT_TABLES) | set(ddl.PHASE3_TABLES)
-    assert len(rendered) == 8
+    # Phase 3a adds genie_ont_identity to the 4 snapshot tables (+ 5 empty Phase-3).
+    assert len(rendered) == 9
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():
         assert stmt.startswith("CREATE TABLE IF NOT EXISTS maincat.gso_schema.")

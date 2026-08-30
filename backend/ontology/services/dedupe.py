@@ -27,3 +27,37 @@ def find_collisions(graph: dict[str, Any]) -> list[TagCollision]:
 def find_cleanup(graph: dict[str, Any]) -> list[TagCleanup]:
     """Flag orphan / near-empty / deprecated-but-assigned governed tags."""
     return [TagCleanup(**c) for c in transforms.find_cleanup_dict(graph)]
+
+
+def verdicts_from_graph(graph: dict[str, Any]) -> tuple[list[TagCollision], list[TagCleanup]] | None:
+    """Assemble collisions + cleanup from the mirror's embedding-backed per-tag
+    ``dedupe_verdicts`` (Phase 3a), or ``None`` when the graph carries none.
+
+    Same frozen ``TagCollision`` / ``TagCleanup`` shape as the string path — the
+    content is richer (embedding-adjudicated) but the contract is unchanged. Used
+    by the tags route on the mirror path; the live path keeps the string transforms.
+    """
+    tags = graph.get("tags", [])
+    if not any(t.get("dedupe_verdicts") for t in tags):
+        return None
+    seen_collisions: set[tuple[str, ...]] = set()
+    collisions: list[TagCollision] = []
+    seen_cleanup: set[tuple[str, str]] = set()
+    cleanup: list[TagCleanup] = []
+    for t in tags:
+        verdicts = t.get("dedupe_verdicts") or {}
+        for c in verdicts.get("collisions", []) or []:
+            key = tuple(sorted(c.get("members", []) or []))
+            if len(key) < 2 or key in seen_collisions:
+                continue
+            seen_collisions.add(key)
+            collisions.append(TagCollision(**c))
+        for cl in verdicts.get("cleanup", []) or []:
+            key2 = (cl.get("tag_key", ""), cl.get("flag", ""))
+            if key2 in seen_cleanup:
+                continue
+            seen_cleanup.add(key2)
+            cleanup.append(TagCleanup(**cl))
+    collisions.sort(key=lambda c: tuple(c.members))
+    cleanup.sort(key=lambda c: (c.tag_key, c.flag))
+    return collisions, cleanup

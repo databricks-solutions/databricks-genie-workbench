@@ -299,3 +299,75 @@ def find_cleanup_dict(graph: dict[str, Any]) -> list[dict[str, Any]]:
                 "detail": f"only {count} in-scope assignment(s)",
             })
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 3a: identity-map + embedding-backed collision assembly (pure).
+# Duck-typed on ER verdicts (``.members``/``.verdict``/``.method``/``.score``/
+# ``.reason``/``.canonical_id``) so this module never imports ``er`` (no cycle).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _collision_kind_for_method(members: list[str], method: str) -> str:
+    """Map an ER merge to a frozen ``CollisionKind`` (TagLens contract stays byte-
+    identical). String/exact merges keep their precise string kind; semantic
+    (embedding/LLM) merges surface as the loosest existing kind, ``fuzzy_token``."""
+    if method in ("exact", "string"):
+        return collision_kind(members)
+    return "fuzzy_token"
+
+
+def collisions_from_er_verdicts(verdicts: list[Any], counts: dict[str, int]) -> list[dict[str, Any]]:
+    """Convert ER merge verdicts (tag members) into TagCollision-shaped dicts.
+
+    Superset of the Phase-2 string-only ``find_collisions_dict``: string/exact
+    merges reproduce the same groups; embedding/LLM merges add new (semantic) ones.
+    ``kind`` stays within the frozen 4-value vocabulary — content enriched, shape
+    unchanged.
+    """
+    out: list[dict[str, Any]] = []
+    for v in verdicts:
+        members = sorted(getattr(v, "members", ()) or ())
+        if getattr(v, "verdict", None) != "merge" or len(members) < 2:
+            continue
+        canonical = sorted(members, key=lambda k: (-int(counts.get(k, 0)), len(k), k))[0]
+        others = [m for m in members if m != canonical]
+        suggestion = f"reuse `{canonical}` instead of creating " + ", ".join(f"`{o}`" for o in others)
+        out.append({
+            "kind": _collision_kind_for_method(members, getattr(v, "method", "string")),
+            "members": members,
+            "suggestion": suggestion,
+        })
+    return out
+
+
+def identity_map_rows(
+    verdicts: list[Any],
+    *,
+    workspace_id: str,
+    run_id: str,
+    as_of: str,
+    member_kind_by_ref: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Expand ER verdicts into per-member ``genie_ont_identity`` rows.
+
+    One row per (workspace_id, canonical_id, member_ref) — the derived PK, so the
+    idempotent MERGE never duplicates and a member that left a group is deleted.
+    """
+    kinds = member_kind_by_ref or {}
+    rows: list[dict[str, Any]] = []
+    for v in verdicts:
+        for ref in getattr(v, "members", ()) or ():
+            rows.append({
+                "workspace_id": workspace_id,
+                "canonical_id": getattr(v, "canonical_id", ""),
+                "member_ref": ref,
+                "member_kind": kinds.get(ref, "tag"),
+                "verdict": getattr(v, "verdict", "distinct"),
+                "method": getattr(v, "method", "string"),
+                "score": float(getattr(v, "score", 0.0) or 0.0),
+                "reason": getattr(v, "reason", None),
+                "run_id": run_id,
+                "as_of": as_of,
+            })
+    return rows

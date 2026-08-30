@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_runs (
     tag_count        INT       COMMENT 'Governed tags snapshotted',
     domain_count     INT       COMMENT 'Domains in the taxonomy tree',
     ungrouped_count  INT       COMMENT 'Assets under no domain tag',
+    identity_count   INT       COMMENT 'Canonical entities resolved by L3 ER (Phase 3a)',
     error            STRING    COMMENT 'Failure detail when state = failed'
 ) USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
@@ -132,15 +133,35 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_suppressions (
 ) USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
-# Tables the batch job WRITES (snapshots + run ledger).
+# Identity map (canonical entity -> members) — NEW in 17d (Phase 3a). One row per
+# (workspace_id, canonical_id, member_ref): the ER output that L4 clustering (17e)
+# forms communities over. Written idempotently by the materializer.
+_GENIE_ONT_IDENTITY_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_identity (
+    workspace_id  STRING     COMMENT 'Owning workspace',
+    canonical_id  STRING     COMMENT 'Derived id (dedupe_<fingerprint of sorted members>)',
+    member_ref    STRING     COMMENT '(workspace_id, canonical_id, member_ref) is the derived PK',
+    member_kind   STRING     COMMENT 'tag | measure | metric_view | agent | page_name',
+    verdict       STRING     COMMENT 'merge | reject | escalate | distinct',
+    method        STRING     COMMENT 'exact | string | embedding | llm',
+    score         DOUBLE,
+    reason        STRING     COMMENT 'LLM reason for near-tie adjudications only',
+    run_id        STRING,
+    as_of         TIMESTAMP
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
+
+# Tables the batch job WRITES (snapshots + run ledger + identity map).
 TABLE_ONT_RUNS = "genie_ont_runs"
 TABLE_ONT_TAG_GRAPH = "genie_ont_tag_graph"
 TABLE_ONT_TAXONOMY_SNAPSHOT = "genie_ont_taxonomy_snapshot"
+TABLE_ONT_IDENTITY = "genie_ont_identity"
 
 SNAPSHOT_TABLES: tuple[str, ...] = (
     TABLE_ONT_RUNS,
     TABLE_ONT_TAG_GRAPH,
     TABLE_ONT_TAXONOMY_SNAPSHOT,
+    TABLE_ONT_IDENTITY,
 )
 
 # Tables created EMPTY for Phase 3 (never written in Phase 2).
@@ -156,6 +177,7 @@ _ONT_ALL_DDL: dict[str, str] = {
     TABLE_ONT_RUNS: _GENIE_ONT_RUNS_DDL,
     TABLE_ONT_TAG_GRAPH: _GENIE_ONT_TAG_GRAPH_DDL,
     TABLE_ONT_TAXONOMY_SNAPSHOT: _GENIE_ONT_TAXONOMY_SNAPSHOT_DDL,
+    TABLE_ONT_IDENTITY: _GENIE_ONT_IDENTITY_DDL,
     "genie_ont_domains": _GENIE_ONT_DOMAINS_DDL,
     "genie_ont_members": _GENIE_ONT_MEMBERS_DDL,
     "genie_ont_pages": _GENIE_ONT_PAGES_DDL,

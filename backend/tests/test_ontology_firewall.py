@@ -31,8 +31,13 @@ _FORBIDDEN = [
     "manage_uc_tags",
 ]
 
-# Phase-3/4 substrate must not be pulled forward anywhere in Phase 2.
-_DEFERRED_TOKENS = ["lakebase_vector", "lakebase_text", "web_search"]
+# Phase-4 external-context substrate must not be pulled forward. (Phase 3a
+# unlocks the Lakebase Search similarity tokens, but ONLY inside similarity.py —
+# see test_lakebase_search_tokens_confined_to_similarity below.)
+_DEFERRED_TOKENS = ["web_search"]
+
+# Lakebase Search tokens are allowed in exactly one module (the similarity seam).
+_LAKEBASE_SEARCH_TOKENS = ["lakebase_vector", "lakebase_text"]
 
 _PY_FILES = sorted(_BACKEND_ONTOLOGY.rglob("*.py")) + sorted(_WHEEL_ONTOLOGY.rglob("*.py"))
 
@@ -52,10 +57,21 @@ def test_no_write_path_in_ontology_module(path: pathlib.Path):
 
 
 @pytest.mark.parametrize("path", _PY_FILES, ids=lambda p: f"{p.parent.name}/{p.name}")
-def test_no_deferred_phase34_tokens(path: pathlib.Path):
+def test_no_deferred_phase4_tokens(path: pathlib.Path):
     text = path.read_text().lower()
     hits = [tok for tok in _DEFERRED_TOKENS if tok in text]
-    assert not hits, f"{path.name} references a deferred Phase-3/4 token: {hits}"
+    assert not hits, f"{path.name} references a deferred Phase-4 token: {hits}"
+
+
+@pytest.mark.parametrize("path", _PY_FILES, ids=lambda p: f"{p.parent.name}/{p.name}")
+def test_lakebase_search_tokens_confined_to_similarity(path: pathlib.Path):
+    """MV-D40/D45: the Lakebase Search tokens live in exactly one module (the
+    similarity seam), so enabling/disabling that backend is a scoped change."""
+    text = path.read_text().lower()
+    hits = [tok for tok in _LAKEBASE_SEARCH_TOKENS if tok in text]
+    if path.name == "similarity.py":
+        return  # the one place they are allowed
+    assert not hits, f"{path.name} references Lakebase Search token(s) outside similarity.py: {hits}"
 
 
 def test_backend_router_verbs_are_read_only_plus_settings_put_and_refresh_post():

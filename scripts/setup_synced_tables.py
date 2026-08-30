@@ -49,6 +49,8 @@ TABLES = [
     ("genie_ont_runs",               ["run_id"]),
     ("genie_ont_tag_graph",          ["workspace_id", "tag_key"]),
     ("genie_ont_taxonomy_snapshot",  ["workspace_id"]),
+    # Phase-3a identity map (canonical entity -> members). Derived PK.
+    ("genie_ont_identity",           ["workspace_id", "canonical_id", "member_ref"]),
 ]
 
 SYNCED_SUFFIX = "_synced"
