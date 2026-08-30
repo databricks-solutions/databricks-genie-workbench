@@ -166,6 +166,26 @@ def build_assignment_sql(allowlist: list[str]) -> tuple[str, list[StatementParam
     return sql, binds
 
 
+def sp_assignment_count(allowlist: list[str]) -> int:
+    """Count governed-tag assignment rows the *service principal* can see in scope.
+
+    Uses the same assignment SQL as :func:`build_graph`, wrapped in a COUNT. Because
+    ``system.information_schema.*_tags`` is privilege-filtered, this returns 0 when
+    the SP lacks ``BROWSE``/privileges on the allowlisted catalogs — the signal the
+    preflight banner pairs with the OBO count to detect a missing BROWSE grant.
+    Never raises (best-effort; 0 on any failure).
+    """
+    if not allowlist:
+        return 0
+    try:
+        assign_sql, binds = build_assignment_sql(allowlist)
+        rows = _run(f"SELECT count(*) AS n FROM ({assign_sql}) _a", binds, track_health=False)
+        return int(rows[0].get("n") or 0) if rows else 0
+    except Exception as e:  # noqa: BLE001 — probe never raises
+        logger.info("sp_assignment_count failed: %s", e)
+        return 0
+
+
 def build_graph(allowlist: list[str]) -> dict[str, Any]:
     """Enumerate governed tags + their in-scope assignments into the tag-graph
     structure (SP live read + TTL cache). The assembly is the shared pure

@@ -19,9 +19,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from backend.ontology.models import OntologyPreflight, PermissionTier
-from backend.ontology.services import ont_settings, tag_graph
+from backend.ontology.services import grants, inventory, ont_settings, tag_graph
 from backend.services import lakebase
-from backend.services.auth import get_databricks_host
+from backend.services.auth import get_databricks_host, get_workspace_client
 from backend.watch.services import system_tables
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,14 @@ _ENRICHMENT_GRANTS = [
 ]
 
 
+def _with_sp(lines: list[str], sp: str | None) -> list[str]:
+    """Substitute the resolved app SP into the ``<app-service-principal>`` placeholder
+    so every grant line in the banner is genuinely copy-paste ready."""
+    if not sp:
+        return lines
+    return [ln.replace("<app-service-principal>", sp) for ln in lines]
+
+
 @router.get("/preflight")
 async def preflight() -> dict:
     settings = await ont_settings.get_settings()
@@ -57,8 +65,37 @@ async def preflight() -> dict:
     # Tier probes are cheap SP round-trips; run them off the event loop.
     signals_status = system_tables.system_tables_status()
     tag_ok = await asyncio.to_thread(tag_graph.probe)
+    sp_id = grants.app_service_principal()
 
     empty_scope = not settings.catalog_allowlist
+
+    # BROWSE differential (MV-D42): the taxonomy tree comes from the account-level
+    # governed-tag catalog, but member counts come from privilege-filtered
+    # information_schema. If the SP sees zero assignments in scope while the admin
+    # (OBO) sees some, the SP is missing BROWSE — surface the exact grant instead of
+    # a silent "0 members". Both probes are best-effort and never block the page.
+    browse_needed = False
+    browse_grants: list[str] = []
+    if tag_ok and not empty_scope:
+        sp_seen = await asyncio.to_thread(tag_graph.sp_assignment_count, settings.catalog_allowlist)
+        obo_seen = 0
+        if sp_seen == 0:
+            try:
+                obo_seen = await asyncio.to_thread(
+                    inventory.governed_tag_count, get_workspace_client(), settings.catalog_allowlist
+                )
+            except Exception as e:  # noqa: BLE001 — preflight never raises
+                logger.info("OBO governed-tag probe failed: %s", e)
+        browse_needed = grants.browse_needed(
+            tag_ok=tag_ok,
+            allowlist=settings.catalog_allowlist,
+            sp_seen=sp_seen,
+            obo_seen=obo_seen,
+        )
+        if browse_needed:
+            browse_grants = [
+                grants.browse_grant_line(c, sp_id) for c in settings.catalog_allowlist
+            ]
 
     inventory_tier = PermissionTier(
         id="inventory",
@@ -79,24 +116,40 @@ async def preflight() -> dict:
         label="Usage / lineage / cost ranking",
         identity="sp",
         status="degraded" if signals_status is False else "ok",
-        grants=_SIGNALS_GRANTS,
+        grants=_with_sp(_SIGNALS_GRANTS, sp_id),
         reason=(
             "System-table grants missing — the page still renders; ranking would be weaker."
             if signals_status is False
             else None
         ),
     )
+    if not tag_ok:
+        tag_status = "blocked"
+        tag_grants = _with_sp(_TAG_GRAPH_GRANTS, sp_id)
+        tag_reason = (
+            "Grant SELECT on system.tags.governed_tags to the app service principal "
+            "to render the taxonomy and tags lens."
+        )
+    elif browse_needed:
+        # Tree renders, but members read 0 — the actionable, common case.
+        tag_status = "degraded"
+        tag_grants = browse_grants
+        tag_reason = (
+            "Domains render, but members show 0 because the app service principal "
+            "cannot see governed-tag assignments in the selected catalogs. Grant "
+            "BROWSE (metadata-only — no data access) so member counts populate."
+        )
+    else:
+        tag_status = "ok"
+        tag_grants = _with_sp(_TAG_GRAPH_GRANTS, sp_id)
+        tag_reason = None
     tag_tier = PermissionTier(
         id="tag_graph",
         label="Governed-tag graph (dedupe)",
         identity="sp",
-        status="ok" if tag_ok else "blocked",
-        grants=_TAG_GRAPH_GRANTS,
-        reason=(
-            None
-            if tag_ok
-            else "Grant SELECT on system.tags.governed_tags to the app service principal to render the taxonomy and tags lens."
-        ),
+        status=tag_status,
+        grants=tag_grants,
+        reason=tag_reason,
     )
     membership_tier = PermissionTier(
         id="membership_write",

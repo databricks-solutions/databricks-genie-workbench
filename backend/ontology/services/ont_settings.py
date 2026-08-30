@@ -64,4 +64,9 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
             seen.add(name)
             allowlist.append(name)
     await lakebase.ont_upsert_settings(_workspace_id(), company, allowlist)
+    # NOTE: we deliberately do NOT auto-grant BROWSE to the app SP here. The app's
+    # OBO token is scoped read-only for Unity Catalog (catalog.*:read + sql, no
+    # UC-write scope), so the REST permissions API is blocked under OBO — an
+    # in-app grant would silently fail. The preflight banner instead surfaces a
+    # copy-ready GRANT BROWSE for an admin to run. See services/grants.py.
     return OntologySettings(company_name=company, catalog_allowlist=allowlist)
