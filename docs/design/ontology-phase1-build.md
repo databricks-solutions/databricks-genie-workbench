@@ -36,8 +36,9 @@ in §12 so the agent does not silently pull it forward.
   deprecated-but-assigned).
 - **Settings** → company name + **catalog allowlist** (MV-D42), durable.
 - **Top-level admin-gated nav entry** `Ontology` in `App.tsx`, lazy-loaded.
-- **Grants** → extend `scripts/grant_permissions.py` (the grant source of truth)
-  with the governed-tag read.
+- **Grants** → extend the `WATCH_SYSTEM_GRANTS` list in `scripts/deploy_lib/uc.py`
+  (the grant source of truth, imported by `scripts/grant_permissions.py`) with the
+  governed-tag read.
 
 ### Out (deferred — see §12)
 
@@ -345,8 +346,11 @@ Lakebase Search similarity (embeddings + BM25) is explicitly **out** of this pha
 
 ## 10. Grants
 
-Add the governed-tag read to `scripts/grant_permissions.py` (the source of truth,
-per AGENTS.md): the SP needs `USE CATALOG system`, `USE SCHEMA system.tags`, and
+Add the governed-tag read to the `WATCH_SYSTEM_GRANTS` list in
+`scripts/deploy_lib/uc.py` — that list is the single source of truth for
+system-table grants and is imported by `scripts/grant_permissions.py`, so adding it
+once covers both the terminal (`grant_permissions.py`) and notebook install paths.
+The SP needs `USE CATALOG system`, `USE SCHEMA system.tags`, and
 `SELECT ON system.tags.governed_tags` (in addition to the existing GenieWatch
 `system.{query,billing,access}` grants). The banner's `tag_graph` tier surfaces the
 exact copy-ready grant line when it resolves `blocked`.
