@@ -30,6 +30,8 @@ _memory_store: dict = {
     "watch_message_cache": {},      # (space_id, conversation_id, message_id) -> dict
     "watch_sync_watermark": {},     # resource -> dict
     "watch_daily_rollup": {},       # (space_id, day) -> dict
+    # ── Ontology (read-only estate surface) — durable settings only ──
+    "ont_settings": {},             # workspace_id -> {company_name, catalog_allowlist, updated_at}
 }
 
 _pool = None
@@ -295,8 +297,23 @@ async def _ensure_schema():
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_watch_rollup_day ON genie.watch_daily_usage_rollup(day DESC)"
             )
+
+            # ── Ontology (Phase 1) — the ONE durable table: settings ──
+            # company name + catalog allowlist (MV-D42), one row per workspace/
+            # app instance. Everything else the Ontology page reads (governed-tag
+            # graph, taxonomy, tags lens) is served live + TTL-cached, never
+            # persisted, in Phase 1. The genie_ont_* proposal/mirror/audit tables
+            # from architecture §7 are intentionally NOT created here.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.genie_ont_settings (
+                    workspace_id      TEXT PRIMARY KEY,
+                    company_name      TEXT,
+                    catalog_allowlist JSONB NOT NULL DEFAULT '[]',
+                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
         _lakebase_available = True
-        logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables)")
+        logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables + 1 ontology table)")
     except Exception as e:
         logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
         _lakebase_available = False
@@ -1036,3 +1053,74 @@ async def watch_upsert_daily_rollup(row: dict) -> None:
             row.get("feedback_pos") or 0,
             row.get("feedback_neg") or 0,
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Ontology settings — company name + catalog allowlist (MV-D42).
+# The only durable Ontology state in Phase 1. Reads fail open (a transient
+# Lakebase issue yields defaults so the page still renders); the write path
+# fails closed so the UI never reports a save that would be lost on restart.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def ont_get_settings(workspace_id: str) -> Optional[dict]:
+    """Read the Ontology settings row for a workspace, or ``None``."""
+    await _maybe_retry_schema()
+    if not is_available():
+        return _memory_store["ont_settings"].get(workspace_id)
+
+    try:
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT company_name, catalog_allowlist, updated_at "
+                "FROM genie.genie_ont_settings WHERE workspace_id = $1",
+                workspace_id,
+            )
+        if not row:
+            return None
+        try:
+            allowlist = json.loads(row["catalog_allowlist"]) or []
+        except (ValueError, TypeError):
+            allowlist = []
+        return {
+            "company_name": row["company_name"],
+            "catalog_allowlist": allowlist,
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+    except Exception:
+        logger.warning("Failed to read ontology settings for %s", workspace_id, exc_info=True)
+        return None
+
+
+async def ont_upsert_settings(
+    workspace_id: str,
+    company_name: str | None,
+    catalog_allowlist: list[str],
+) -> dict:
+    """Upsert the Ontology settings row for a workspace. Fails closed."""
+    await _maybe_retry_schema()
+    record = {
+        "company_name": company_name,
+        "catalog_allowlist": catalog_allowlist,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    if not is_available():
+        _memory_store["ont_settings"][workspace_id] = record
+        return record
+
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO genie.genie_ont_settings (workspace_id, company_name, catalog_allowlist, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (workspace_id) DO UPDATE SET
+                company_name      = EXCLUDED.company_name,
+                catalog_allowlist = EXCLUDED.catalog_allowlist,
+                updated_at        = NOW()
+            """,
+            workspace_id,
+            company_name,
+            json.dumps(catalog_allowlist),
+        )
+    return record

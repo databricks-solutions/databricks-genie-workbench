@@ -82,6 +82,13 @@ from backend.watch.routers import (
     watch_usage_router,
 )
 from backend.watch.services.system_tables import warm_cost_overview_cache
+from backend.ontology.routers import (
+    ontology_inventory_router,
+    ontology_preflight_router,
+    ontology_settings_router,
+    ontology_tags_router,
+    ontology_taxonomy_router,
+)
 
 
 class OBOAuthMiddleware(BaseHTTPMiddleware):
@@ -225,6 +232,13 @@ app.include_router(watch_feedback_router)
 app.include_router(watch_resources_router)
 app.include_router(watch_settings_router)
 app.include_router(watch_admin_router)
+
+# Ontology (read-only estate surface) — all routes under /api/ontology/*
+app.include_router(ontology_preflight_router)
+app.include_router(ontology_inventory_router)
+app.include_router(ontology_taxonomy_router)
+app.include_router(ontology_tags_router)
+app.include_router(ontology_settings_router)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

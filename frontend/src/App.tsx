@@ -2,9 +2,9 @@
  * App - Genie Workbench root component.
  * Supports five top-level views: SpaceList, SpaceDetail, AdminDashboard, CreateSpace, HowItWorks.
  */
-import { useCallback, useEffect, useState, Component } from "react"
+import { useCallback, useEffect, useState, Component, Suspense, lazy } from "react"
 import type { ReactNode, ErrorInfo } from "react"
-import { LayoutGrid, BarChart2, BookOpen } from "lucide-react"
+import { LayoutGrid, BarChart2, BookOpen, FolderTree } from "lucide-react"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { useTheme } from "@/hooks/useTheme"
 import { SpaceList } from "@/pages/SpaceList"
@@ -12,7 +12,11 @@ import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
 import { HowItWorks } from "@/pages/HowItWorks"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
-import { getSpaceDetail } from "@/lib/api"
+import { getSpaceDetail, getCurrentUser } from "@/lib/api"
+
+// Ontology is a standalone, admin-gated top-level page (MV-D36). Lazy-loaded so
+// its bundle only enters when an admin opens it (like the GenieWatch sub-tabs).
+const OntologyPage = lazy(() => import("@/ontology/OntologyPage"))
 import {
   LIST_ROUTE,
   buildAppRouteUrl,
@@ -66,6 +70,7 @@ export default function App() {
   const [route, setRoute] = useState<AppRoute>(initialRoute)
   const [detailState, setDetailState] = useState<DetailState | null>(null)
   const [detailError, setDetailError] = useState<DetailError | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
   const currentView = route.view
   const routeSpaceId = route.view === "detail" ? route.spaceId : undefined
   const detailReady = Boolean(routeSpaceId && detailState?.spaceId === routeSpaceId)
@@ -85,6 +90,15 @@ export default function App() {
     const handlePopState = () => setRoute(parseAppRoute(window.location.search))
     window.addEventListener("popstate", handlePopState)
     return () => window.removeEventListener("popstate", handlePopState)
+  }, [])
+
+  // Resolve admin status once — gates the Ontology nav entry + view (MV-D36).
+  useEffect(() => {
+    let cancelled = false
+    getCurrentUser()
+      .then((u) => { if (!cancelled) setIsAdmin(Boolean(u.is_admin)) })
+      .catch(() => { if (!cancelled) setIsAdmin(false) })
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -145,6 +159,10 @@ export default function App() {
     navigate({ view: "how-it-works" })
   }
 
+  const handleNavOntology = () => {
+    navigate({ view: "ontology" })
+  }
+
   const handleDetailNavigate = (tab: SpaceTab, runId?: string) => {
     if (route.view !== "detail" || !route.spaceId) return
     navigate({ view: "detail", spaceId: route.spaceId, tab, runId })
@@ -197,6 +215,19 @@ export default function App() {
               <BarChart2 className="w-4 h-4" />
               Admin
             </button>
+            {isAdmin && (
+              <button
+                onClick={handleNavOntology}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  currentView === "ontology"
+                    ? "bg-accent/10 text-accent"
+                    : "text-muted hover:text-secondary hover:bg-surface-secondary"
+                }`}
+              >
+                <FolderTree className="w-4 h-4" />
+                Ontology
+              </button>
+            )}
             <button
               onClick={handleNavHowItWorks}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -253,6 +284,18 @@ export default function App() {
 
         {currentView === "how-it-works" && (
           <HowItWorks />
+        )}
+
+        {currentView === "ontology" && (
+          isAdmin ? (
+            <Suspense fallback={<div className="py-16 text-center text-sm text-muted">Loading Ontology…</div>}>
+              <OntologyPage />
+            </Suspense>
+          ) : (
+            <div className="rounded-xl border border-default bg-surface p-6 text-sm text-muted">
+              Ontology is available to workspace admins.
+            </div>
+          )
         )}
 
         {/* CreateAgentChat stays mounted (hidden when inactive) so SSE streams

@@ -46,6 +46,13 @@ WATCH_SYSTEM_GRANTS: list[tuple[str, str, str]] = [
     ("TABLE",   "system.access.column_lineage",   "SELECT"),
     # workspaces_latest is optional / newer; absence is handled in code.
     ("TABLE",   "system.access.workspaces_latest", "SELECT"),
+    # Ontology (Phase 1, MV-D37): the governed-tag graph read that powers the
+    # taxonomy + tags/dedupe lens under /api/ontology/*. Read-only; the SP needs
+    # USE CATALOG system (granted above) + USE SCHEMA system.tags + SELECT on
+    # system.tags.governed_tags. When absent, the ontology preflight surfaces the
+    # copy-ready GRANT and degrades (never hangs).
+    ("SCHEMA",  "system.tags",                    "USE_SCHEMA"),
+    ("TABLE",   "system.tags.governed_tags",      "SELECT"),
 ]
 
 
