@@ -3596,6 +3596,14 @@ STOP for the Phase-1 review checkpoint (spec §12 Definition of Done).
 
 ### Prompt 17c — Phase 2: batch materialization + Lakebase mirror (MV-D41; L7 + reader swap)
 
+> **Build-ready (mirrors the Phase-1 pair).** The full section-by-section spec is
+> `docs/design/ontology-phase2-build.md` (§1 scope → §12 DoD) and the Goal-Mode
+> launcher is `docs/design/ontology-phase2-driver.md`. The block below is the
+> register summary; the build spec is the source of truth. Acceptance is **offline
+> for the code, deploy-gated for verification** — the agent green-tests the offline
+> slice (parity, idempotency, reader-swap, freshness, extended firewall) and stops
+> before the DABs deploy + first live materialize (spec §12).
+
 ```
 Stand up the batch path and the mirror WITHOUT adding new proposals — the 17a
 route contracts MUST NOT change (architecture §2: the page reads the mirror, the
