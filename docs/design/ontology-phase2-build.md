@@ -294,11 +294,18 @@ empty until Phase 3.)
 
 ### 7.3 Lakebase mirror (synced tables — no app DDL)
 
-Register `genie_ont_runs`, `genie_ont_tag_graph`, and `genie_ont_taxonomy_snapshot`
-as **synced tables** (`scripts/setup_synced_tables.py` + `scripts/deploy_lib/`), the
-same mechanism GSO uses for `genie_opt_mv_*`. `backend/ontology/services/mirror.py`
-reads them from Lakebase via the `gso_lakebase.py` connection/shape. The Phase-1
-`genie_ont_settings` Postgres table (created by `_ensure_schema`) is unchanged.
+`backend/ontology/services/mirror.py` **mirrors `gso_lakebase.py` exactly** — do not
+invent a new read path. Note the current GSO reality: in `gso_lakebase.py`,
+`_SYNCED_TABLES_ENABLED = False`, so reads **fall through to the Delta table via the
+SQL warehouse today**; true Lakebase **synced tables** are the future flip (registered
+via `scripts/setup_synced_tables.py` + `scripts/deploy_lib/`, the same mechanism GSO
+uses for `genie_opt_mv_*`) that activates when the flag flips and the tables are
+provisioned. So `mirror.py` reads `genie_ont_runs`, `genie_ont_tag_graph`, and
+`genie_ont_taxonomy_snapshot` through that one interface — **Delta-via-warehouse now,
+auto-upgrading to synced tables later** — and the routers never see the difference.
+Register the three tables in `setup_synced_tables.py` so they light up when the flip
+happens. The Phase-1 `genie_ont_settings` Postgres table (created by `_ensure_schema`)
+is unchanged.
 
 ---
 

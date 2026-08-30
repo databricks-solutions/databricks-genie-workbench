@@ -47,7 +47,10 @@ REUSE, DON'T FORK:
   genie_space_optimizer/jobs/run_intake_and_snapshot.py (job-task shape: notebook-source,
                                                      make_workspace_client, params in / Delta out)
   genie_space_optimizer/integration/trigger.py + backend job_launcher (jobs.run_now → GSO_ONT_JOB_ID)
-  backend/services/gso_lakebase.py                   (synced-table reads from Lakebase → mirror.py)
+  backend/services/gso_lakebase.py                   (mirror.py mirrors THIS exactly — note
+                                                     _SYNCED_TABLES_ENABLED=False today, so reads fall
+                                                     through to Delta-via-SQL-warehouse; synced tables
+                                                     are the future flip. Do NOT invent a new read path.)
   scripts/setup_synced_tables.py + scripts/deploy_lib/ (register the new genie_ont_* synced tables)
   backend/ontology/services/{tag_graph,taxonomy,dedupe}.py (extract PURE transforms to the wheel;
                                                      backend imports them back — contracts UNCHANGED)
