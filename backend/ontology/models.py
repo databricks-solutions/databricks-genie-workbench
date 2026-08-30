@@ -114,3 +114,21 @@ class TagLens(BaseModel):
 class OntologySettings(BaseModel):
     company_name: str | None = None
     catalog_allowlist: list[str] = Field(default_factory=list)
+
+
+# ── Phase 2: refresh / freshness surface (the ONLY new model) ──────────────
+# The Phase-1 models above are FROZEN (byte-identical to Phase 1). `as_of` on the
+# existing payloads now reports the mirror materialization time when served from
+# the mirror, and the live read time on the fallback — the field type is unchanged.
+
+RefreshState = Literal["cold", "queued", "running", "fresh", "stale", "failed"]
+
+
+class OntologyRefreshStatus(BaseModel):
+    state: RefreshState  # cold=never run; fresh=within window; stale=beyond window
+    source: Literal["mirror", "live"]  # what the read routes are currently serving
+    mirror_as_of: str | None = None  # materialization time of the current mirror (ISO-8601)
+    last_run_id: str | None = None
+    last_run_state: Literal["succeeded", "failed", "running", "none"] = "none"
+    freshness_window_hours: int = 24  # how old the mirror may be before "stale"
+    message: str | None = None  # plain-language, zero-burden (e.g. "Updated 3 hours ago")

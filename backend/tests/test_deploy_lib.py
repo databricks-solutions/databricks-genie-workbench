@@ -155,6 +155,7 @@ def test_all_current_app_yaml_placeholders_are_covered():
             "WAREHOUSE_ID": "wh",
             "GSO_CATALOG": "main",
             "GSO_JOB_ID": "123",
+            "GSO_ONT_JOB_ID": "456",
             "LAKEBASE_INSTANCE": "genie-workbench-lakebase",
             "LLM_MODEL": "databricks-claude-sonnet-4-6",
             "MLFLOW_EXPERIMENT_ID": "",
@@ -552,8 +553,15 @@ def _repo_root() -> Path:
 def _load_bundle_job(path: Path) -> dict:
     yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load(path.read_text())
-    (job,) = doc["resources"]["jobs"].values()
-    return job
+    # The GSO param lockstep pins the optimization runner specifically. Select it
+    # by its distinguishing `space_id` parameter so the Phase-2
+    # ontology-materialize-runner (which has no space_id) is never picked up.
+    opt = [
+        j for j in doc["resources"]["jobs"].values()
+        if any(p.get("name") == "space_id" for p in j.get("parameters", []))
+    ]
+    assert len(opt) == 1, f"expected exactly one optimization job in {path}, found {len(opt)}"
+    return opt[0]
 
 
 def _launcher_run_now_params() -> dict:

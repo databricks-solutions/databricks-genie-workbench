@@ -26,6 +26,7 @@ import { PermissionBanner } from "@/ontology/components/PermissionBanner"
 import { TaxonomyView } from "@/ontology/components/TaxonomyView"
 import { TagsLensView } from "@/ontology/components/TagsLens"
 import { SettingsForm } from "@/ontology/components/SettingsForm"
+import { FreshnessControls } from "@/ontology/components/FreshnessControls"
 
 type OntologyTab = "taxonomy" | "tags" | "settings"
 
@@ -196,6 +197,14 @@ export default function OntologyPage() {
                   void loadHead()
                 }}
               />
+            )}
+
+            {/* Freshness chip + Refresh button (Phase 2). The page is admin-gated,
+                so the refresh action is available; the chip is always informative. */}
+            {(tab === "taxonomy" || tab === "tags") && canRender && !emptyScope && (
+              <div className="flex justify-end">
+                <FreshnessControls isAdmin={true} />
+              </div>
             )}
 
             {tab === "taxonomy" && (

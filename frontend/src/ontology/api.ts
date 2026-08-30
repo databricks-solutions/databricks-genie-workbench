@@ -5,6 +5,7 @@
 import type {
   OntologyInventory,
   OntologyPreflight,
+  OntologyRefreshStatus,
   OntologySettings,
   OntologyTaxonomy,
   TagLens,
@@ -73,3 +74,9 @@ export const saveSettings = (settings: OntologySettings) =>
     method: "PUT",
     body: JSON.stringify(settings),
   })
+
+// ── Refresh / freshness (Phase 2) ─────────────────────────────────────────
+export const getRefreshStatus = () => fetchJson<OntologyRefreshStatus>("/refresh")
+
+export const triggerRefresh = () =>
+  fetchJson<OntologyRefreshStatus>("/refresh", { method: "POST" })

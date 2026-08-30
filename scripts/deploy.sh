@@ -396,6 +396,29 @@ fi
 
 echo "  ✓ Optimization job deployed: $JOB_ID"
 
+# Resolve the ontology materialize job id (Phase 2) — NON-FATAL. If it isn't in
+# state yet (e.g. first deploy of this bundle version), GSO_ONT_JOB_ID stays empty
+# and the app serves the live ontology view; the nightly/Refresh path lights up on
+# the next deploy. This never blocks the GSO deploy above.
+ONT_JOB_ID=$(cd "$PROJECT_DIR" && databricks bundle summary -t app \
+    --var="catalog=$CATALOG" \
+    --var="warehouse_id=$WAREHOUSE_ID" \
+    --var="llm_model=$LLM_MODEL" \
+    --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    s = json.load(sys.stdin)
+    print(s['resources']['jobs']['ontology-materialize-runner']['id'])
+except Exception:
+    pass
+" 2>/dev/null) || true
+if [ -n "$ONT_JOB_ID" ]; then
+    echo "  ✓ Ontology materialize job deployed: $ONT_JOB_ID"
+else
+    echo "  ℹ Ontology materialize job id not resolved yet — page will use the live view until next deploy"
+fi
+
 # Grant job permissions (bundle manages run_as; API call sets ownership + SP access)
 PERM_PAYLOAD=$(python3 -c "
 import json
@@ -477,6 +500,8 @@ sed -i.bak "s|__MLFLOW_EXPERIMENT_ID__|$MLFLOW_EXPERIMENT_ID|" "$PATCHED_APP_YAM
 if [ -n "$JOB_ID" ]; then
     sed -i.bak "s|__GSO_JOB_ID__|$JOB_ID|" "$PATCHED_APP_YAML"
 fi
+# Always inject the ontology job id (empty-safe) so no placeholder is left behind.
+sed -i.bak "s|__GSO_ONT_JOB_ID__|${ONT_JOB_ID:-}|" "$PATCHED_APP_YAML"
 
 rm -f "${PATCHED_APP_YAML}.bak"
 

@@ -226,6 +226,64 @@ resources:
             dependencies:
               - .build/genie_space_optimizer-0.0.0-py3-none-any.whl
 
+    # Ontology materialize (Phase 2, MV-D41) — nightly + on-demand. Snapshots the
+    # governed-tag graph + Domain/Sub-Domain taxonomy to Delta so the Ontology
+    # page reads a stable, sub-second mirror (with a live fallback). Read-only
+    # w.r.t. UC governance: the ONLY UC writes are the genie_ont_* Delta MERGEs —
+    # no governed-tag DDL. deploy.sh injects GSO_ONT_JOB_ID into app.yaml from
+    # bundle state, exactly like GSO_JOB_ID.
+    ontology-materialize-runner:
+      name: "genie-ontology-materialize-job"
+      description: >-
+        Materializes the estate ontology (governed-tag graph + taxonomy) to Delta
+        on a nightly schedule and on demand. Reads system tables as the SP, applies
+        the same pure transforms the page uses live, and MERGEs the genie_ont_*
+        snapshot tables idempotently. Writes NOTHING to Unity Catalog governance.
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: "UTC"
+        pause_status: UNPAUSED
+      tags:
+        app: "genie-workbench"
+        managed-by: "databricks-bundle"
+        pattern: "ontology-materialize"
+      parameters:
+        - name: workspace_id
+          default: ""
+        - name: trigger
+          default: "nightly"
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: "genie_space_optimizer"
+        - name: catalog_allowlist
+          default: "[]"
+        - name: run_id
+          default: ""
+      tasks:
+        - task_key: ontology_materialize
+          notebook_task:
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_ontology_materialize.py
+            base_parameters:
+              workspace_id: "{{job.parameters.workspace_id}}"
+              trigger: "{{job.parameters.trigger}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              catalog_allowlist: "{{job.parameters.catalog_allowlist}}"
+              run_id: "{{job.parameters.run_id}}"
+          environment_key: default
+          timeout_seconds: 3600
+          max_retries: 0
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - .build/genie_space_optimizer-0.0.0-py3-none-any.whl
+
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------

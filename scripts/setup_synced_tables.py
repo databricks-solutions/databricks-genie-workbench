@@ -42,6 +42,13 @@ TABLES = [
     ("genie_opt_iterations",         ["run_id", "iteration", "eval_scope"]),
     ("genie_opt_patches",            ["run_id", "iteration", "lever", "patch_index"]),
     ("genie_opt_benchmark_mutations", ["run_id", "question_id", "op"]),
+    # Ontology Phase-2 snapshots (Delta → Lakebase mirror). Derived PKs per §7.2:
+    # tag graph on (workspace_id, tag_key); taxonomy tree one row per workspace;
+    # the run ledger on run_id. They light up as synced tables when
+    # gso_lakebase._SYNCED_TABLES_ENABLED flips (reads fall through to Delta today).
+    ("genie_ont_runs",               ["run_id"]),
+    ("genie_ont_tag_graph",          ["workspace_id", "tag_key"]),
+    ("genie_ont_taxonomy_snapshot",  ["workspace_id"]),
 ]
 
 SYNCED_SUFFIX = "_synced"

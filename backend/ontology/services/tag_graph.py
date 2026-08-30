@@ -31,6 +31,8 @@ from typing import Any
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
+from genie_space_optimizer.ontology import transforms
+
 from backend.services.auth import get_service_principal_client
 
 logger = logging.getLogger(__name__)
@@ -140,43 +142,34 @@ def probe() -> bool:
     return _TAG_GRAPH_ACCESSIBLE is True
 
 
-def _tag_key(row: dict[str, Any]) -> str | None:
-    for k in ("tag_name", "tag_key", "name", "key"):
-        v = row.get(k)
-        if v:
-            return str(v)
-    return None
-
-
-def _allowed_values(row: dict[str, Any]) -> list[str]:
-    """Extract allowed values from a governed_tags row across schema variants."""
-    for k in ("allowed_values", "tag_values", "values"):
-        v = row.get(k)
-        if not v:
-            continue
-        if isinstance(v, list):
-            return [str(x) for x in v if x is not None]
-        if isinstance(v, str):
-            # Comma- or JSON-array-ish string.
-            s = v.strip().strip("[]")
-            return [p.strip().strip('"').strip("'") for p in s.split(",") if p.strip()]
-    return []
-
-
-def _member_fqn(row: dict[str, Any]) -> str | None:
-    cat = row.get("catalog_name")
-    sch = row.get("schema_name")
-    tbl = row.get("table_name")
-    parts = [p for p in (cat, sch, tbl) if p]
-    return ".".join(str(p) for p in parts) if parts else None
+# Shared, workspace-scoped assignment SQL (SP-read live; the batch job reads the
+# same system tables). Exposed as a builder so the materializer can reuse it.
+def build_assignment_sql(allowlist: list[str]) -> tuple[str, list[StatementParameterListItem]]:
+    n = len(allowlist)
+    binds = [_p(f"c{i}", allowlist[i % n]) for i in range(3 * n)]
+    in_clause = lambda occ: ", ".join(f":c{i}" for i in range(occ * n, (occ + 1) * n))  # noqa: E731
+    sql = (
+        "SELECT tag_name, catalog_name, schema_name, table_name FROM ("
+        "  SELECT tag_name, catalog_name, schema_name, table_name "
+        "    FROM system.information_schema.table_tags "
+        f"   WHERE catalog_name IN ({in_clause(0)})"
+        "  UNION ALL"
+        "  SELECT tag_name, catalog_name, schema_name, CAST(NULL AS STRING) AS table_name "
+        "    FROM system.information_schema.schema_tags "
+        f"   WHERE catalog_name IN ({in_clause(1)})"
+        "  UNION ALL"
+        "  SELECT tag_name, catalog_name, CAST(NULL AS STRING) AS schema_name, CAST(NULL AS STRING) AS table_name "
+        "    FROM system.information_schema.catalog_tags "
+        f"   WHERE catalog_name IN ({in_clause(2)})"
+        ")"
+    )
+    return sql, binds
 
 
 def build_graph(allowlist: list[str]) -> dict[str, Any]:
-    """Enumerate governed tags + allowed values and their in-scope assignments.
-
-    Returns a plain, JSON-friendly structure consumed by ``taxonomy`` and
-    ``dedupe`` (kept as data, not a model, so those stay pure and unit-testable
-    off fixtures)::
+    """Enumerate governed tags + their in-scope assignments into the tag-graph
+    structure (SP live read + TTL cache). The assembly is the shared pure
+    transform (``transforms.assemble_tag_graph``) so mirror == live.
 
         {"tags": [{"tag_key", "allowed_values", "assignment_count", "members"}], "as_of"}
 
@@ -196,68 +189,14 @@ def build_graph(allowlist: list[str]) -> dict[str, Any]:
 
     # 1) Governed-tag catalog (account-level; the substrate). Health tracked here
     #    because a permission error on this read is what blocks the tag_graph tier.
-    catalog_rows = _run(
-        "SELECT * FROM system.tags.governed_tags",
-        [],
-        track_health=True,
-    )
-    tags: dict[str, dict[str, Any]] = {}
-    for r in catalog_rows:
-        key = _tag_key(r)
-        if not key:
-            continue
-        tags.setdefault(key, {"tag_key": key, "allowed_values": _allowed_values(r), "members": []})
+    catalog_rows = _run("SELECT * FROM system.tags.governed_tags", [], track_health=True)
 
-    # 2) Assignments across grains, scoped to the allowlist (MV-D37 join on
-    #    tag_name = tag_key). Not health-tracked — absence here means "no
-    #    assignments", not "tier blocked".
-    n = len(allowlist)
-    binds = [_p(f"c{i}", allowlist[i % n]) for i in range(3 * n)]
-    in_clause = lambda occ: ", ".join(f":c{i}" for i in range(occ * n, (occ + 1) * n))  # noqa: E731
-    assign_sql = (
-        "SELECT tag_name, catalog_name, schema_name, table_name FROM ("
-        "  SELECT tag_name, catalog_name, schema_name, table_name "
-        "    FROM system.information_schema.table_tags "
-        f"   WHERE catalog_name IN ({in_clause(0)})"
-        "  UNION ALL"
-        "  SELECT tag_name, catalog_name, schema_name, CAST(NULL AS STRING) AS table_name "
-        "    FROM system.information_schema.schema_tags "
-        f"   WHERE catalog_name IN ({in_clause(1)})"
-        "  UNION ALL"
-        "  SELECT tag_name, catalog_name, CAST(NULL AS STRING) AS schema_name, CAST(NULL AS STRING) AS table_name "
-        "    FROM system.information_schema.catalog_tags "
-        f"   WHERE catalog_name IN ({in_clause(2)})"
-        ")"
-    )
+    # 2) Assignments across grains, scoped to the allowlist. Not health-tracked —
+    #    absence here means "no assignments", not "tier blocked".
+    assign_sql, binds = build_assignment_sql(allowlist)
     assign_rows = _run(assign_sql, binds, track_health=False)
-    for r in assign_rows:
-        key = _tag_key(r)
-        fqn = _member_fqn(r)
-        if not key or not fqn:
-            continue
-        # A tag may be assigned without appearing in the catalog read (or the
-        # catalog read may be scoped differently) — include it so orphans/collisions
-        # still surface.
-        entry = tags.setdefault(key, {"tag_key": key, "allowed_values": [], "members": []})
-        entry["members"].append({"fqn": fqn, "asset_type": "table"})
 
-    out_tags = []
-    for key, t in sorted(tags.items()):
-        # De-dupe members by fqn (a table can carry the same tag at >1 grain).
-        seen: set[str] = set()
-        members = []
-        for m in t["members"]:
-            if m["fqn"] not in seen:
-                seen.add(m["fqn"])
-                members.append(m)
-        out_tags.append({
-            "tag_key": key,
-            "allowed_values": t["allowed_values"],
-            "assignment_count": len(members),
-            "members": members,
-        })
-
-    result = {"tags": out_tags, "as_of": as_of}
+    result = transforms.assemble_tag_graph(catalog_rows, assign_rows, as_of)
     with _CACHE_LOCK:
         _CACHE[cache_key] = (time.monotonic(), result)
     return result

@@ -92,6 +92,11 @@ env:
     value: "genie_space_optimizer"
   - name: GSO_JOB_ID
     value: "__GSO_JOB_ID__"
+  # Ontology materialize job (Phase 2). deploy.sh injects this from bundle state,
+  # like GSO_JOB_ID. Empty when the ontology job isn't deployed yet — the page
+  # then serves the live view and the Refresh button reports "not set up yet".
+  - name: GSO_ONT_JOB_ID
+    value: "__GSO_ONT_JOB_ID__"
   - name: GSO_WAREHOUSE_ID
     valueFrom: sql-warehouse
 

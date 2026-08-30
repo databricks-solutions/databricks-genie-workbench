@@ -84,6 +84,10 @@ def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
             "WAREHOUSE_ID": cfg.warehouse_id,
             "GSO_CATALOG": cfg.catalog,
             "GSO_JOB_ID": str(gso_job.job_id),
+            # The ontology materialize job is a DABs-only (nightly) job; the
+            # notebook installer does not create it, so leave it empty here —
+            # the page serves the live ontology view until a DABs deploy sets it.
+            "GSO_ONT_JOB_ID": "",
             "LAKEBASE_INSTANCE": cfg.lakebase_instance or "",
             "LLM_MODEL": cfg.llm_model,
             "MLFLOW_EXPERIMENT_ID": cfg.mlflow_experiment_id or "",

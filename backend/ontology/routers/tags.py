@@ -1,9 +1,13 @@
-"""Ontology tags lens (SP, MV-D37).
+"""Ontology tags lens (MV-D37).
 
 `GET /api/ontology/tags` enumerates governed tags, reuse-vs-create collisions
 (exact + fuzzy: case / plural / token — no embeddings), and cleanup flags
-(orphan / near-empty / deprecated-but-assigned). Drives frame 17.0c. TTL-cached
-via the tag-graph reader. Empty allowlist → empty lens.
+(orphan / near-empty / deprecated-but-assigned). Drives frame 17.0c.
+
+Phase 2 reader swap (MV-D41/D43): use the materialized tag-graph mirror when it is
+fresh; otherwise the Phase-1 live-SP path. Both feed the SAME downstream transform
+pipeline, so the lens is identical whichever source served it. Response model
+unchanged. Empty allowlist → empty lens.
 """
 
 from __future__ import annotations
@@ -14,8 +18,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
+from genie_space_optimizer.ontology import transforms
+
 from backend.ontology.models import GovernedTag, TagLens
-from backend.ontology.services import dedupe, ont_settings, tag_graph, taxonomy
+from backend.ontology.services import dedupe, mirror, ont_settings, refresh, tag_graph
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ontology")
@@ -26,21 +32,19 @@ async def get_tags() -> dict:
     settings = await ont_settings.get_settings()
     allowlist = settings.catalog_allowlist
 
-    graph = await asyncio.to_thread(tag_graph.build_graph, allowlist)
+    # Mirror-first: reconstruct the tag graph from the materialized rows when fresh.
+    ws = ont_settings._workspace_id()
+    graph = None
+    if await refresh.mirror_is_fresh(ws):
+        graph = await mirror.read_tag_graph(ws)
+
+    # Fallback: Phase-1 live-SP path (degrade-not-hang; never blocks on the job).
+    if graph is None:
+        graph = await asyncio.to_thread(tag_graph.build_graph, allowlist)
     graph = graph or {"tags": []}
 
-    all_keys = [t["tag_key"] for t in graph.get("tags", [])]
-    tags = [
-        GovernedTag(
-            tag_key=t["tag_key"],
-            allowed_values=list(t.get("allowed_values") or []),
-            assignment_count=int(t.get("assignment_count") or 0),
-            acts_as_domain=taxonomy.acts_as_domain(t["tag_key"], all_keys),
-            acts_as_subdomain=taxonomy.acts_as_subdomain(t["tag_key"]),
-        )
-        for t in graph.get("tags", [])
-    ]
-
+    # One downstream pipeline (shared transforms) regardless of source → parity.
+    tags = [GovernedTag(**r) for r in transforms.governed_tag_rows(graph)]
     lens = TagLens(
         tags=tags,
         collisions=dedupe.find_collisions(graph),
