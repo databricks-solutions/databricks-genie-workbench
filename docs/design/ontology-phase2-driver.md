@@ -29,68 +29,61 @@ first materialize.
 ```text
 GOAL: Build the OFFLINE slice of Phase 2 of the Ontology page — batch
 materialization + Lakebase mirror + reader swap — exactly as specified. Work only on
-the current branch (ontology), on top of the shipped Phase-1 spine.
+the current branch (ontology), atop the shipped Phase-1 spine.
 
-SPEC (source of truth, follow section-by-section):
-  docs/design/ontology-phase2-build.md   ← §1 scope, §2 decisions, §3 layout,
-  §4 contracts, §5 TS mirrors, §6 routes, §7 DDL+idempotency, §8 job, §9 frontend,
-  §10 grants/deploy, §11 tests, §12 DoD
-BASELINE: docs/design/ontology-phase1-build.md (do NOT regress it)
+SPEC (source of truth, follow §1–§12): docs/design/ontology-phase2-build.md
+BASELINE (do NOT regress): docs/design/ontology-phase1-build.md
 DESIGN CONTEXT: docs/design/ontology-engine-architecture.md (§2, §7, L7, L8)
 DECISIONS: docs/design/mv-advisor-playbook.md (Prompt 17c; MV-D39/D41/D42/D43/D45)
-VISUAL CONTRACT: reuse mockups 17.0b + 17.0c; add ONLY a freshness chip + a
-  "Refresh ontology" button with zero-burden copy (no job/Delta/synced-table jargon).
-PROJECT RULES: AGENTS.md (read it first).
+VISUAL: reuse mockups 17.0b + 17.0c; add ONLY a freshness chip + a "Refresh
+  ontology" button, zero-burden copy (no job/Delta/synced-table jargon).
+RULES: AGENTS.md (read first).
 
 REUSE, DON'T FORK:
-  genie_space_optimizer/optimization/ddl.py          (Delta-DDL pattern for ontology/ddl.py)
-  genie_space_optimizer/jobs/run_intake_and_snapshot.py (job-task shape: notebook-source,
-                                                     make_workspace_client, params in / Delta out)
-  genie_space_optimizer/integration/trigger.py + backend job_launcher (jobs.run_now → GSO_ONT_JOB_ID)
-  backend/services/gso_lakebase.py                   (mirror.py mirrors THIS exactly — note
-                                                     _SYNCED_TABLES_ENABLED=False today, so reads fall
-                                                     through to Delta-via-SQL-warehouse; synced tables
-                                                     are the future flip. Do NOT invent a new read path.)
-  scripts/setup_synced_tables.py + scripts/deploy_lib/ (register the new genie_ont_* synced tables)
-  backend/ontology/services/{tag_graph,taxonomy,dedupe}.py (extract PURE transforms to the wheel;
-                                                     backend imports them back — contracts UNCHANGED)
-  backend/watch/services/system_tables.py            (SP reads + TTL cache for the live fallback)
+  - genie_space_optimizer/optimization/ddl.py — Delta-DDL pattern for ontology/ddl.py
+  - genie_space_optimizer/jobs/run_intake_and_snapshot.py — job-task shape
+  - integration/trigger.py + backend job_launcher — jobs.run_now (→ new GSO_ONT_JOB_ID)
+  - backend/services/gso_lakebase.py — mirror.py mirrors THIS exactly; note
+    _SYNCED_TABLES_ENABLED=False → reads fall through to Delta-via-SQL-warehouse today
+    (synced tables are the future flip). Do NOT invent a new read path.
+  - scripts/setup_synced_tables.py + scripts/deploy_lib/ — register the genie_ont_* tables
+  - backend/ontology/services/{tag_graph,taxonomy,dedupe}.py — extract PURE transforms
+    to the wheel; backend imports them back (route contracts UNCHANGED)
+  - backend/watch/services/system_tables.py — SP reads + TTL cache for the live fallback
 
 HARD GUARDRAILS (do not violate):
-  - Do NOT change any Phase-1 route RESPONSE contract (§4). The ONLY new model is
-    OntologyRefreshStatus; the ONLY new routes are GET/POST /api/ontology/refresh.
+  - Do NOT change any Phase-1 route RESPONSE contract (§4). ONLY new model:
+    OntologyRefreshStatus; ONLY new routes: GET/POST /api/ontology/refresh.
   - Write ONLY genie_ont_tag_graph + genie_ont_taxonomy_snapshot + genie_ont_runs.
     Create the Phase-3 tables (domains/members/pages/consents/suppressions) EMPTY
-    (schema only) and write NOTHING to them.
-  - The only UC writes are the genie_ont_* Delta snapshot MERGEs. NO SET TAG,
-    NO CREATE GOVERNED TAG, NO manage_uc_tags — anywhere (backend OR the wheel).
+    (schema only); write NOTHING to them.
+  - Only UC writes are the genie_ont_* Delta MERGEs. NO SET TAG, NO CREATE GOVERNED
+    TAG, NO manage_uc_tags — anywhere (backend OR wheel).
   - Idempotent: derived keys + MERGE (incl. NOT MATCHED BY SOURCE DELETE, scoped to
     workspace_id). A re-run MUST NOT duplicate rows.
   - Reader swap degrades, never blocks: mirror when fresh, else the Phase-1 live-SP
     path (MV-D43). Never block a request on the job.
-  - Do NOT pull forward §12: no proposals, no embeddings, no Lakebase Search
-    (do NOT enable it — irreversible), no clustering/Louvain, no external context /
-    web search, no SET TAG apply.
-  - NO DEPLOY. Do NOT run scripts/deploy.sh, databricks bundle deploy, uvicorn, or
-    npm run dev. Do NOT run the job on a real workspace. Do NOT enable Lakebase Search.
+  - Do NOT pull forward §12: no proposals, no embeddings, no Lakebase Search (do NOT
+    enable it — irreversible), no clustering/Louvain, no external context/web search,
+    no SET TAG apply.
+  - NO DEPLOY: no scripts/deploy.sh, no databricks bundle deploy, no uvicorn/npm run
+    dev, no running the job on a real workspace, no enabling Lakebase Search.
   - Keep Pydantic (§4) and TypeScript (§5) mirrors 1:1.
 
-ACCEPTANCE (all must be true before you declare done):
-  - ./scripts/test.sh is green, including: the contract-frozen guard (Phase-1 models
-    byte-identical), mirror-vs-live PARITY on a fixture, idempotent re-run (no dup
-    rows, NOT-MATCHED-BY-SOURCE delete), reader-swap fallback, freshness states, and
-    the EXTENDED read-only firewall that also scans the wheel's ontology/ package.
-  - The taxonomy (17.0b) + tags lens (17.0c) render mirror-backed data with a
-    zero-burden freshness chip; the admin "Refresh ontology" button calls POST
-    /refresh and polls GET /refresh.
-  - cd frontend && npm run lint passes; tsc is clean.
-  - The §12 "Offline done" checklist reads true.
+ACCEPTANCE (all true before done):
+  - ./scripts/test.sh green, incl: contract-frozen guard (Phase-1 models byte-
+    identical), mirror-vs-live PARITY, idempotent re-run (no dups, NOT-MATCHED-BY-
+    SOURCE delete), reader-swap fallback, freshness states, and the EXTENDED
+    read-only firewall that also scans the wheel's ontology/ package.
+  - Taxonomy (17.0b) + tags lens (17.0c) render mirror-backed data + a freshness chip;
+    the admin "Refresh ontology" button calls POST /refresh, polls GET /refresh.
+  - cd frontend && npm run lint passes; tsc clean. The §12 "Offline done" reads true.
 
-WORKFLOW: extract shared transforms → wheel ontology/{transforms,ddl,graph,materialize}
-  → job task run_ontology_materialize.py → backend mirror.py + refresh.py → reader
-  swap in tag_graph.py/taxonomy.py → refresh router + main.py wiring → frontend
-  types/api → freshness chip + button → tests. Run ./scripts/test.sh after each slice.
-  Stop and ask if a spec detail is ambiguous or if any guardrail would have to be crossed.
+WORKFLOW: shared transforms → wheel ontology/{transforms,ddl,graph,materialize} →
+  jobs/run_ontology_materialize.py → backend mirror.py + refresh.py → reader swap in
+  tag_graph.py/taxonomy.py → refresh router + main.py wiring → frontend types/api →
+  chip + button → tests. Run ./scripts/test.sh after each slice. Stop and ask if a
+  spec detail is ambiguous or a guardrail would have to be crossed.
 ```
 
 ---
