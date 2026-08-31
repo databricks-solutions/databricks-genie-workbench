@@ -9,7 +9,7 @@ and the frontend vitest. It ends at the **STOP proposal-quality checkpoint** —
 agent must not proceed to 17h/17i.
 
 - **Spec (source of truth):** `docs/design/ontology-phase3d-build.md`
-- **Re-grain prerequisite (must land first):** `docs/design/ontology-regrain-build.md`
+- **Re-grain prerequisite (already shipped — MV-D49 in `203c8b79`):** `docs/design/ontology-regrain-build.md`
 - **Baselines (already shipped):** `ontology-phase3c-build.md` (Pages) +
   `ontology-phase3b-build.md` (Domains + `reassign`/`conflict`) + `3a` + `2` + `1`
 - **Design context:** `docs/design/ontology-engine-architecture.md` (§5 — the **L6
@@ -35,7 +35,7 @@ dormant provenance hook), read suppressions, persist score+surfaced. (2) BACKEND
 ranked drafts (GET /drafts) + record human decisions (POST /decision) into the ledger; render 17.0d/17.0e
 zero-burden cards. NO SET TAG, NO apply. Branch: ontology.
 
-SPEC(§1-§12): ontology-phase3d-build.md. PREREQ: ontology-regrain-build.md (MV-D49 lands FIRST).
+SPEC(§1-§12): ontology-phase3d-build.md. PREREQ: ontology-regrain-build.md (MV-D49 already SHIPPED).
 BASELINE: 3c(Pages)+3b(Domains+reassign)+3a+2+1. DESIGN: ontology-engine-architecture.md §5 (L6+L7/L8),
 17.0d/17.0e mockups. DECISIONS: playbook 17g (MV-D49/D35/D26/D23/D37/D38/D43/D27). RULES: AGENTS.md.
 
