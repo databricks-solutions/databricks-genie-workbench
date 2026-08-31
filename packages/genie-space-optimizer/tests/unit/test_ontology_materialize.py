@@ -361,8 +361,13 @@ def test_domain_member_proposals_idempotent_no_dups():
     # Every domain row's evidence is JSON and tag_decision is in the frozen vocabulary.
     for row in writer.tables["genie_ont_domains"].values():
         assert row["tag_decision"] in ("reuse", "create", "reassign")
-        json.loads(row["evidence"])
-        assert row["score"] == 0.0  # L6 ranking is 17g
+        ev = json.loads(row["evidence"])
+        # Phase 3d (17g): L6 ranking now writes a numeric score + a rank block + the
+        # surfaced flag into evidence (was 0.0 / absent pre-17g). Deterministic, so the
+        # idempotent re-run above still produced identical rows.
+        assert isinstance(row["score"], float) and 0.0 <= row["score"] <= 100.0
+        assert "rank" in ev and "surfaced" in ev
+        assert ev["rank"]["tier"] in ("high", "medium", "low", None)
 
 
 def test_stale_domains_deleted_when_graph_changes():

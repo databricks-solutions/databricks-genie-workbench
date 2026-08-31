@@ -8,7 +8,8 @@
 # MAGIC | **Grain** | **metastore** (MV-D49) — resolved `metastore_id` is the storage/serving key; `workspace_id` is provenance only |
 # MAGIC | **Reads** | job params, `system.tags.governed_tags` + `information_schema.*_tags` + lineage (as the job's `run_as` identity — a metastore-admin user or an SP — allowlist-scoped) |
 # MAGIC | **Writes** | `genie_ont_runs`, `genie_ont_tag_graph`, `genie_ont_taxonomy_snapshot`, `genie_ont_identity`, `genie_ont_domains`, `genie_ont_members`, `genie_ont_pages` (idempotent MERGE) |
-# MAGIC | **Never writes** | any governed-tag DDL; `genie_ont_consents` / `_suppressions` (17g) |
+# MAGIC | **Reads (17g)** | `genie_ont_suppressions` (READ-ONLY, so the L6 gate skips curator-dismissed proposals, MV-D26) |
+# MAGIC | **Never writes** | any governed-tag DDL; `genie_ont_consents` / `_suppressions` (the backend OBO route is their only writer) |
 # MAGIC | **Log label** | `[TASK ONTOLOGY]` |
 # MAGIC
 # MAGIC ## 🎯 Purpose (Phase-2 §8, re-grained MV-D49)
@@ -221,6 +222,32 @@ class SparkSystemTableReader:
         """Existing Agent ``text_instructions`` (READ-ONLY, for the contradiction gate).
         Best-effort; absence simply means no contradiction downgrade (never blocks)."""
         return []
+
+    # ── Phase 3d (17g) L6 inputs — READ-ONLY, degrade to empty (MV-D43) ──────
+    def suppressions(self, metastore_id: str) -> list[dict[str, Any]]:
+        """READ the consent/suppression ledger's suppression rows for this metastore
+        so the L6 gate can mark a curator-dismissed proposal ``surfaced=false`` (MV-D26).
+        This is the ONLY ledger access in the run and it is a read: the backend (OBO) is
+        the sole writer. Any failure degrades to [] (nothing suppressed) rather than
+        blocking the run."""
+        if not catalog or not metastore_id:
+            return []
+        ms = metastore_id.replace("'", "''")
+        try:
+            return _rows(
+                f"SELECT proposal_kind, proposal_id FROM {catalog}.{schema}.genie_ont_suppressions "
+                f"WHERE metastore_id = '{ms}'"
+            )
+        except Exception as e:  # noqa: BLE001 — a missing/unreadable ledger never blocks
+            _log("suppression ledger read skipped", error=str(e))
+            return []
+
+    def usage_signals(self, allowlist: list[str]) -> dict[str, float]:
+        """The L2 usage/cost signal for the L6 blend. Not wired in the offline slice
+        (query.history/billing demand normalization is a serve-pass concern), so this
+        degrades to {} — the usage factor is simply absent, lowering coverage rather
+        than faking a zero (the honest-gap discipline)."""
+        return {}
 
 
 # COMMAND ----------

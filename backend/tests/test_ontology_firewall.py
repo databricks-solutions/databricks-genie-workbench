@@ -74,9 +74,10 @@ def test_lakebase_search_tokens_confined_to_similarity(path: pathlib.Path):
     assert not hits, f"{path.name} references Lakebase Search token(s) outside similarity.py: {hits}"
 
 
-def test_backend_router_verbs_are_read_only_plus_settings_put_and_refresh_post():
-    """Only mutating verbs: settings PUT (our config) + refresh POST (job trigger).
-    Neither writes Unity Catalog governance."""
+def test_backend_router_verbs_are_read_only_plus_settings_put_refresh_and_decision_post():
+    """Only mutating verbs: settings PUT (our config), refresh POST (job trigger), and
+    the Phase-3d decision POST (app-state ledger, OBO). None writes Unity Catalog
+    governance; PATCH/DELETE are forbidden everywhere."""
     routers_dir = _BACKEND_ONTOLOGY / "routers"
     put_files, post_files = [], []
     for path in sorted(routers_dir.glob("*.py")):
@@ -88,7 +89,8 @@ def test_backend_router_verbs_are_read_only_plus_settings_put_and_refresh_post()
         assert ".patch(" not in text, f"{path.name} defines a PATCH route"
         assert ".delete(" not in text, f"{path.name} defines a DELETE route"
     assert put_files == ["settings.py"], f"unexpected PUT routes: {put_files}"
-    assert post_files == ["refresh.py"], f"unexpected POST routes: {post_files}"
+    # drafts.py adds the ONLY new POST (POST /decision); refresh.py keeps its job POST.
+    assert post_files == ["drafts.py", "refresh.py"], f"unexpected POST routes: {post_files}"
 
 
 def test_wheel_writes_snapshots_proposals_pages_never_consents_suppressions():
@@ -111,6 +113,56 @@ def test_wheel_writes_snapshots_proposals_pages_never_consents_suppressions():
     # Phase 3c: the Page proposal table is now written (concept-anchored, MV-D49).
     assert ddl.PAGE_TABLES == ("genie_ont_pages",)
     assert "TABLE_ONT_PAGES" in src and "PAGE_KEYS" in src
+
+
+def test_wheel_reads_but_never_writes_the_ledger():
+    """Phase 3d §11.8b: the L6 gate READS the suppression ledger (through the injected
+    reader) but issues NO write against it, and the consent ledger is absent from the
+    wheel's write surface entirely. No MERGE/INSERT/UPDATE targets either ledger table
+    in ``materialize.py`` or ``rank.py``; there is no ledger-table MERGE constant."""
+    import re
+
+    from genie_space_optimizer.ontology import ddl  # noqa: F401
+
+    mat = (_WHEEL_ONTOLOGY / "materialize.py").read_text()
+    rnk = (_WHEEL_ONTOLOGY / "rank.py").read_text()
+    both = (mat + "\n" + rnk).lower()
+
+    # No write verb (MERGE/INSERT/UPDATE) may target either ledger table.
+    for ledger in ("genie_ont_consents", "genie_ont_suppressions"):
+        assert not re.search(rf"(merge\s+into|insert\s+into|update)\s+\S*{ledger}", both), (
+            f"a write statement targets the {ledger} ledger — the wheel must only read it"
+        )
+
+    # The consent ledger is written ONLY by the backend (OBO) — the wheel never MERGEs
+    # it, and there is no TABLE_ONT_CONSENTS/SUPPRESSIONS merge constant to write via.
+    assert "table_ont_consents" not in both and "table_ont_suppressions" not in both
+
+    # The read path is injection-based: the ranker consumes suppression ROWS, and the
+    # materializer fetches them through the reader (the SELECT lives in the job reader,
+    # not the wheel) — so the wheel carries no ledger-table literal write.
+    from genie_space_optimizer.ontology import materialize, rank  # noqa: F401
+
+    assert hasattr(rank, "mark_surfaced")  # reads rows the caller supplies
+    assert "_gather_suppressions" in mat and "reader" in mat
+
+
+def test_leakage_oracle_has_tag_name_pii_firewall_delegating_to_er():
+    """Phase 3d firewall: the LeakageOracle gained a tag-*name* PII check (the MV-D8
+    rule transposed to governed tag names) that delegates to the SINGLE tag-name PII
+    scanner ``er.pii_reject`` — the extended oracle, not a second scanner."""
+    import inspect
+
+    from genie_space_optimizer.optimization import leakage
+
+    assert hasattr(leakage.LeakageOracle, "tag_name_leaks")
+    src = inspect.getsource(leakage.LeakageOracle.tag_name_leaks)
+    assert "pii_reject" in src  # delegates to the one scanner
+    oracle = leakage.LeakageOracle()
+    assert oracle.tag_name_leaks("customer_ssn")[0] is True
+    assert oracle.tag_name_leaks("someone@example.com")[0] is True
+    assert oracle.tag_name_leaks("Finance")[0] is False
+    assert oracle.tag_name_leaks("")[0] is False
 
 
 def test_leakage_oracle_has_page_body_scan_not_a_second_scanner():

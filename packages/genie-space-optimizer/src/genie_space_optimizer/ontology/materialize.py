@@ -22,7 +22,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Protocol
 
-from genie_space_optimizer.ontology import cluster, ddl, er, graph, pages, similarity, transforms
+from genie_space_optimizer.ontology import cluster, ddl, er, graph, pages, rank, similarity, transforms
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,11 @@ class MaterializeReader(Protocol):
     def metric_view_fqns(self, allowlist: list[str]) -> list[str]: ...
     def agents(self) -> list[str]: ...
     def lineage_edges(self, allowlist: list[str]) -> list[tuple[str, str]]: ...
+    # Phase 3d (17g) L6 inputs — optional; the wheel calls them defensively (an older
+    # reader without them degrades to empty, MV-D43). ``suppressions`` is a READ-ONLY
+    # fetch of the ledger the backend writes; the wheel never writes it.
+    def usage_signals(self, allowlist: list[str]) -> dict[str, float]: ...
+    def suppressions(self, metastore_id: str) -> list[dict[str, Any]]: ...
 
 
 class SnapshotWriter(Protocol):
@@ -221,6 +226,53 @@ def _gather_page_inputs(reader: Any, allowlist: list[str]) -> dict[str, Any]:
     }
 
 
+def _gather_usage(reader: Any, allowlist: list[str]) -> dict[str, float]:
+    """The L2 usage/cost signal (fqn → pre-normalized [0,1] demand) for the L6 blend,
+    if the reader surfaces it, else empty (MV-D43 degrade — a reader without it just
+    leaves the usage factor absent, lowering coverage rather than faking a zero)."""
+    fn = getattr(reader, "usage_signals", None)
+    if fn is None:
+        return {}
+    try:
+        got = fn(allowlist)
+        return {str(k): float(v) for k, v in dict(got or {}).items()}
+    except Exception as exc:  # noqa: BLE001 — a missing signal never fails the run
+        logger.info("ontology usage signal unavailable (%s)", exc)
+        return {}
+
+
+def _gather_suppressions(reader: Any, metastore_id: str) -> list[dict[str, Any]]:
+    """READ-ONLY fetch of the suppression-ledger rows for this metastore (the backend
+    is the ONLY writer, MV-D26). The read goes through the injected reader method (the
+    SELECT lives in the job's system-table reader, never here) so the wheel holds no
+    ledger table literal and no ledger write. Defensive: an older reader without it, or
+    a failed read, degrades to an empty ledger (everything surfaces per its score)
+    rather than blocking the run."""
+    fn = getattr(reader, "suppressions", None)
+    if fn is None:
+        return []
+    try:
+        return list(fn(metastore_id) or [])
+    except Exception as exc:  # noqa: BLE001 — a missing ledger never fails the run
+        logger.info("ontology suppression ledger unavailable (%s)", exc)
+        return []
+
+
+def _governance_map(graph_struct: dict[str, Any]) -> dict[str, str]:
+    """Governance rung (fqn → ``governed``) for the L6 blend, from the governed-tag
+    graph: an asset carrying ≥1 governed tag is ``governed``. ``curated`` (certified)
+    is a richer rung not read in the offline slice; an untagged asset is simply absent
+    (the governance factor then leaves the blend rather than scoring it ``ungoverned``
+    — the honest-gap discipline, architecture §5)."""
+    out: dict[str, str] = {}
+    for t in graph_struct.get("tags", []):
+        for m in t.get("members", []):
+            fqn = m.get("fqn")
+            if fqn:
+                out[str(fqn)] = "governed"
+    return out
+
+
 def run_materialize(
     reader: MaterializeReader,
     writer: SnapshotWriter,
@@ -352,6 +404,31 @@ def run_materialize(
         )
         writer.merge(ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id)
 
+        # L6 rank & trust gate (Phase 3d) — the ADDITIVE-LAST step (§8). Score +
+        # firewall the just-written Domain/Page rows, READ the suppression ledger
+        # (never write it), then re-MERGE with score + surfaced. The re-MERGE source
+        # carries the FULL metastore proposal set (every row 17e/17f just wrote), so
+        # the metastore-scoped NOT-MATCHED-BY-SOURCE delete prunes nothing it
+        # shouldn't. Ranking is additive/idempotent — it never corrupts the snapshots
+        # committed above, so a rank error records `failed` without losing them.
+        signals = rank.RankSignals(
+            usage=_gather_usage(reader, allowlist),
+            centrality=graph.lineage_centrality(signal_graph),
+            governance=_governance_map(graph_struct),
+        )
+        members_by_domain: dict[str, list[str]] = {}
+        for m in expanded["member_rows"]:
+            members_by_domain.setdefault(m["domain_id"], []).append(m["asset_fqn"])
+        rank.score_proposals(
+            expanded["domain_rows"], page_rows,
+            members_by_domain=members_by_domain, signals=signals,
+        )
+        report = rank.mark_surfaced(
+            expanded["domain_rows"], page_rows, _gather_suppressions(reader, metastore_id),
+        )
+        writer.merge(ddl.TABLE_ONT_DOMAINS, expanded["domain_rows"], DOMAIN_KEYS, metastore_id)
+        writer.merge(ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id)
+
         counts = {**snap["counts"], "domain_count": len(proposals)}
         run_row = {
             **run_row,
@@ -360,6 +437,11 @@ def run_materialize(
             **counts,
             "identity_count": len({r["canonical_id"] for r in identity_rows}),
             "page_count": len(page_rows),
+            # L6 report (§8.3). Returned + logged for the run summary; NOT persisted
+            # columns (no DDL, MV-D49) — the writer drops keys absent from the schema.
+            "surfaced_count": report["surfaced"],
+            "suppressed_count": report["suppressed"],
+            "blocked_count": report["blocked"],
         }
         writer.upsert_run(run_row)
         return run_row

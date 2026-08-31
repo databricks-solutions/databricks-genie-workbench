@@ -137,3 +137,66 @@ class OntologyRefreshStatus(BaseModel):
     last_run_state: Literal["succeeded", "failed", "running", "none"] = "none"
     freshness_window_hours: int = 24  # how old the mirror may be before "stale"
     message: str | None = None  # plain-language, zero-burden (e.g. "Updated 3 hours ago")
+
+
+# ── Phase 3d: serve the ranked drafts + record decisions (§4) ──────────────
+# APPEND-ONLY. The Phase-1/2/3a-c models above are FROZEN (byte-identical). These
+# new models mirror 1:1 into frontend/src/ontology/types.ts. The card is prop-driven
+# (MV-D23): the backend assembles the zero-burden ``why``/``reason`` + evidence chips;
+# the component renders them and assembles nothing.
+
+DraftTier = Literal["high", "medium", "low"]  # sub-threshold is never served
+DecisionKind = Literal["domain", "subdomain", "page", "reassign"]
+DecisionAction = Literal["approve", "dismiss", "reassign_accept", "reassign_reject"]
+
+
+class EvidenceChip(BaseModel):
+    label: str  # plain-language, e.g. "41% of Genie questions" — never a rendered "NN% confidence"
+    kind: Literal["usage", "centrality", "governance", "corroboration", "conflict"]
+
+
+class DomainDraft(BaseModel):
+    proposal_id: str  # = domain_id (member-fingerprint-derived, metastore-stable)
+    kind: Literal["domain", "subdomain", "reassign"]
+    name: str
+    description: str
+    tag_decision: Literal["create", "reuse", "reassign"]
+    conflict_tag: str | None = None  # for reassign: the governed tag it conflicts with
+    subdomains: list[str] = Field(default_factory=list)
+    members: list[MemberAsset] = Field(default_factory=list)
+    why: str  # "Why we're suggesting this" — zero-burden, assembled server-side
+    evidence: list[EvidenceChip] = Field(default_factory=list)
+    tier: DraftTier
+
+
+class PageDraft(BaseModel):
+    proposal_id: str  # = page_id (canonical-concept-derived, 17f)
+    archetype: Literal["Routing", "Disambiguation", "Guardrail", "Taxonomy"]
+    title: str
+    reason: str  # leads the card
+    body: str
+    synonyms: list[str] = Field(default_factory=list)
+    related_fqns: list[str] = Field(default_factory=list)
+    source_fqns: list[str] = Field(default_factory=list)
+    certify: bool
+    evidence: list[EvidenceChip] = Field(default_factory=list)
+    tier: DraftTier
+
+
+class OntologyDrafts(BaseModel):
+    domains: list[DomainDraft] = Field(default_factory=list)
+    pages: list[PageDraft] = Field(default_factory=list)
+    source: Literal["mirror", "live", "cold"]  # cold = empty/degraded (MV-D43)
+    as_of: str
+
+
+class DecisionRequest(BaseModel):
+    kind: DecisionKind
+    proposal_id: str
+    action: DecisionAction
+
+
+class DecisionResponse(BaseModel):
+    ok: bool
+    recorded: Literal["consent", "suppression"]
+    as_of: str

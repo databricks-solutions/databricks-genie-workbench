@@ -83,6 +83,7 @@ from backend.watch.routers import (
 )
 from backend.watch.services.system_tables import warm_cost_overview_cache
 from backend.ontology.routers import (
+    ontology_drafts_router,
     ontology_inventory_router,
     ontology_preflight_router,
     ontology_refresh_router,
@@ -241,6 +242,7 @@ app.include_router(ontology_taxonomy_router)
 app.include_router(ontology_tags_router)
 app.include_router(ontology_settings_router)
 app.include_router(ontology_refresh_router)
+app.include_router(ontology_drafts_router)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

@@ -7,13 +7,19 @@ import pytest
 from pydantic import ValidationError
 
 from backend.ontology.models import (
+    DecisionRequest,
+    DecisionResponse,
+    DomainDraft,
     DomainNode,
+    EvidenceChip,
     GovernedTag,
     MemberAsset,
+    OntologyDrafts,
     OntologyInventory,
     OntologyPreflight,
     OntologySettings,
     OntologyTaxonomy,
+    PageDraft,
     PermissionTier,
     SubDomainNode,
     TagCleanup,
@@ -44,6 +50,25 @@ def test_all_models_round_trip_json():
         TagCleanup(tag_key="x", flag="orphan", detail="no assignments"),
         TagLens(tags=[], collisions=[], cleanup=[], as_of="2026-08-29T00:00:00Z"),
         OntologySettings(company_name="Acme", catalog_allowlist=["finance"]),
+        # ── Phase 3d: the new drafts + decision models (append-only) ──────────
+        EvidenceChip(label="Actively queried", kind="usage"),
+        DomainDraft(
+            proposal_id="sug_d", kind="reassign", name="Finance", description="d",
+            tag_decision="reassign", conflict_tag="finance", subdomains=["Tax"],
+            members=[MemberAsset(fqn="c.s.t", asset_type="table")],
+            why="worth confirming", evidence=[EvidenceChip(label="x", kind="conflict")],
+            tier="high",
+        ),
+        PageDraft(
+            proposal_id="pg_1", archetype="Routing", title="[Routing] total_revenue",
+            reason="answer from the metric view", body="Description: ...",
+            synonyms=["TR"], related_fqns=[], source_fqns=["c.s.mv"], certify=True,
+            evidence=[EvidenceChip(label="Backed by 2 sources", kind="corroboration")],
+            tier="medium",
+        ),
+        OntologyDrafts(domains=[], pages=[], source="cold", as_of="2026-08-31T00:00:00Z"),
+        DecisionRequest(kind="reassign", proposal_id="sug_d", action="reassign_reject"),
+        DecisionResponse(ok=True, recorded="suppression", as_of="2026-08-31T00:00:00Z"),
     ]
     for m in models:
         dumped = m.model_dump(mode="json")

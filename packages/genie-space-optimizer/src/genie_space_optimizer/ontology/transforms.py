@@ -19,6 +19,21 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+# Reuse the MV-advisor's tier / coverage thresholds (MV-D35) — do NOT fork them.
+# Imported as pure numeric constants from ``common.config`` (no sqlglot/pyspark), so
+# ``transforms`` stays import-light for the backend serve layer that also calls
+# :func:`tier_of`. The blend + coverage machinery itself is reused from
+# ``mv_scoring`` inside the wheel's ``rank.py``; here we own only the tier vocabulary
+# mapped to the API's lowercase ``DraftTier`` — the single source shared by the wheel
+# ranker and the backend serve tiering (Phase 3d §5).
+from genie_space_optimizer.common.config import (
+    MV_COVERAGE_HIGH_MIN,
+    MV_COVERAGE_MEDIUM_MIN,
+    MV_TIER_HIGH_MIN,
+    MV_TIER_LOW_MIN,
+    MV_TIER_MEDIUM_MIN,
+)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Raw governed-tag row extraction + tag-graph assembly (from tag_graph.py)
 # ─────────────────────────────────────────────────────────────────────────
@@ -339,6 +354,74 @@ def collisions_from_er_verdicts(verdicts: list[Any], counts: dict[str, int]) -> 
             "suggestion": suggestion,
         })
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 3d (L6): tier vocabulary + coverage cap — the ONE home for tiering,
+# shared by the wheel ranker (``rank.py``) and the backend serve layer so the
+# mirror-tiered order == the live-tiered order (MV-D35 display contract). Pure.
+# ─────────────────────────────────────────────────────────────────────────
+
+# The API ``DraftTier`` vocabulary is lowercase; sub-threshold is ``None`` (never
+# served). Order low→high so the coverage cap can compare rungs.
+_RANK_TIER_ORDER: tuple[str, ...] = ("low", "medium", "high")
+
+
+def tier_of(score: float) -> str | None:
+    """Map a blended 0-100 rank score to a ``DraftTier`` (``high``/``medium``/``low``)
+    or ``None`` (sub-threshold → suppressed, never served). Reuses the MV-advisor
+    thresholds (MV-D35). This is a *demand/importance* ranking, never a confidence.
+    """
+    if score >= MV_TIER_HIGH_MIN:
+        return "high"
+    if score >= MV_TIER_MEDIUM_MIN:
+        return "medium"
+    if score >= MV_TIER_LOW_MIN:
+        return "low"
+    return None
+
+
+def _coverage_ceiling_tier(coverage: float) -> str:
+    """Best tier the evidence *coverage* permits (MV-D15 cap, lowercased). Never
+    suppresses — coverage bounds a tier from above; suppression is :func:`tier_of`'s
+    call."""
+    if coverage >= MV_COVERAGE_HIGH_MIN:
+        return "high"
+    if coverage >= MV_COVERAGE_MEDIUM_MIN:
+        return "medium"
+    return "low"
+
+
+def coverage_cap(score: float, coverage: float) -> tuple[str | None, str | None, bool]:
+    """Apply the evidence-coverage cap so a single-signal opinion cannot outrank a
+    corroborated finding (MV-D35, dovetails with 17f corroboration).
+
+    Returns ``(tier, uncapped_tier, capped_by_coverage)`` — the tier actually
+    awarded, the tier the score alone earned, and whether coverage bound it down.
+    Mirrors ``mv_scoring.capped_tier`` on the lowercase ``DraftTier`` vocabulary.
+    """
+    uncapped = tier_of(score)
+    if uncapped is None:
+        return None, None, False
+    ceiling = _coverage_ceiling_tier(coverage)
+    if _RANK_TIER_ORDER.index(uncapped) <= _RANK_TIER_ORDER.index(ceiling):
+        return uncapped, uncapped, False
+    return ceiling, uncapped, True
+
+
+def proposal_kind_of(domain_row: dict[str, Any]) -> str:
+    """The ``DecisionKind`` of a ``genie_ont_domains`` row (``reassign`` /
+    ``subdomain`` / ``domain``), computed identically by the wheel ranker (ledger
+    matching) and the backend serve (card ``kind``), so a dismissed proposal matches
+    its suppression on re-run (MV-D26). Pages are always ``"page"`` (handled at the
+    call site). A ``reassign`` decision outranks the parent/child distinction: a
+    domain row flagged ``tag_decision == "reassign"`` is a ``reassign`` regardless of
+    level."""
+    if str(domain_row.get("tag_decision") or "") == "reassign":
+        return "reassign"
+    if domain_row.get("parent_id"):
+        return "subdomain"
+    return "domain"
 
 
 def identity_map_rows(

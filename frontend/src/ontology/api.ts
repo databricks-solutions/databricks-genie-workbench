@@ -3,6 +3,9 @@
 // Modeled on frontend/src/lib/api.ts (fetch-with-timeout + typed ApiError).
 
 import type {
+  DecisionRequest,
+  DecisionResponse,
+  OntologyDrafts,
   OntologyInventory,
   OntologyPreflight,
   OntologyRefreshStatus,
@@ -80,3 +83,12 @@ export const getRefreshStatus = () => fetchJson<OntologyRefreshStatus>("/refresh
 
 export const triggerRefresh = () =>
   fetchJson<OntologyRefreshStatus>("/refresh", { method: "POST" })
+
+// ── Drafts + decisions (Phase 3d) ──────────────────────────────────────────
+export const getDrafts = () => fetchJson<OntologyDrafts>("/drafts")
+
+export const postDecision = (decision: DecisionRequest) =>
+  fetchJson<DecisionResponse>("/decision", {
+    method: "POST",
+    body: JSON.stringify(decision),
+  })

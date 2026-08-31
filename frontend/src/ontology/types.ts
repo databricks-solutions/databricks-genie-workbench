@@ -120,3 +120,68 @@ export interface OntologyRefreshStatus {
   freshness_window_hours: number
   message?: string | null
 }
+
+// ── Phase 3d: ranked drafts + decisions (§4) ───────────────────────────────
+// 1:1 mirror of the append-only backend models. Sub-threshold is never served.
+export type DraftTier = "high" | "medium" | "low"
+export type DecisionKind = "domain" | "subdomain" | "page" | "reassign"
+export type DecisionAction = "approve" | "dismiss" | "reassign_accept" | "reassign_reject"
+
+export type EvidenceChipKind =
+  | "usage"
+  | "centrality"
+  | "governance"
+  | "corroboration"
+  | "conflict"
+
+export interface EvidenceChip {
+  label: string
+  kind: EvidenceChipKind
+}
+
+export interface DomainDraft {
+  proposal_id: string
+  kind: "domain" | "subdomain" | "reassign"
+  name: string
+  description: string
+  tag_decision: "create" | "reuse" | "reassign"
+  conflict_tag?: string | null
+  subdomains: string[]
+  members: MemberAsset[]
+  why: string
+  evidence: EvidenceChip[]
+  tier: DraftTier
+}
+
+export interface PageDraft {
+  proposal_id: string
+  archetype: "Routing" | "Disambiguation" | "Guardrail" | "Taxonomy"
+  title: string
+  reason: string
+  body: string
+  synonyms: string[]
+  related_fqns: string[]
+  source_fqns: string[]
+  certify: boolean
+  evidence: EvidenceChip[]
+  tier: DraftTier
+}
+
+export interface OntologyDrafts {
+  domains: DomainDraft[]
+  pages: PageDraft[]
+  source: "mirror" | "live" | "cold"
+  as_of: string
+}
+
+export interface DecisionRequest {
+  kind: DecisionKind
+  proposal_id: string
+  action: DecisionAction
+}
+
+export interface DecisionResponse {
+  ok: boolean
+  recorded: "consent" | "suppression"
+  as_of: string
+}

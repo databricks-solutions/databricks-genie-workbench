@@ -113,3 +113,34 @@ def build_signal_graph(
         add_edge(a, b, "semantic_sim", "embedding", weight)
 
     return {"nodes": nodes, "edges": edges}
+
+
+# ── Lineage centrality (L6 rank input, precomputed here — MV-D35) ───────────
+
+
+def lineage_centrality(signal_graph: dict[str, Any]) -> dict[str, float]:
+    """Per-asset lineage centrality on the fused subgraph, normalized to [0, 1] — the
+    ``lineage-centrality`` factor the L6 ranker (``rank.py``) reads (the load-bearing
+    spine everything joins to outranks a leaf).
+
+    **Degree centrality** over the structural asset↔asset edge kinds
+    (``lineage_adjacency`` + ``co_query``) — pure and ``igraph``-free (betweenness is
+    ``cluster.py``'s lazy-``igraph`` anchor pick; degree is the cheap, deterministic
+    ranking proxy computed here so the score stays offline). Keyed by bare asset FQN
+    (the ``asset:`` prefix stripped) to match how ``rank`` addresses assets. Normalized
+    by the max degree so the busiest spine asset is 1.0; an empty/edgeless graph yields
+    ``{}`` (the factor is then simply absent, lowering coverage — never a false 0)."""
+    degree: dict[str, int] = {}
+    for e in signal_graph.get("edges", []):
+        if e.get("kind") not in ("lineage_adjacency", "co_query"):
+            continue
+        for node_id in (e.get("src"), e.get("dst")):
+            if isinstance(node_id, str) and node_id.startswith("asset:"):
+                fqn = node_id.split(":", 1)[1]
+                degree[fqn] = degree.get(fqn, 0) + 1
+    if not degree:
+        return {}
+    peak = max(degree.values())
+    if peak <= 0:
+        return {}
+    return {fqn: round(count / peak, 6) for fqn, count in degree.items()}

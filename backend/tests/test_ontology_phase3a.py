@@ -18,12 +18,20 @@ from backend.ontology.services import ont_settings
 
 # ── Contract-frozen: Phase 3a adds no model (byte-identical surface) ────────
 
-# The complete API model surface after Phase 1 + Phase 2. Phase 3a adds NONE.
+# The complete API model surface after Phase 1 + Phase 2. Phase 3a adds NONE, and it
+# stays byte-identical through 3b/3c — the FROZEN set (MV contract discipline).
 _EXPECTED_MODELS = {
     "PermissionTier", "OntologyPreflight", "OntologyInventory", "MemberAsset",
     "SubDomainNode", "DomainNode", "UngroupedBucket", "OntologyTaxonomy",
     "GovernedTag", "TagCollision", "TagCleanup", "TagLens", "OntologySettings",
     "OntologyRefreshStatus",
+}
+
+# Phase 3d (17g) adds these APPEND-ONLY drafts + decision models (§11 item 7). The
+# frozen set above must remain a strict subset — nothing removed or renamed.
+_PHASE3D_MODELS = {
+    "EvidenceChip", "DomainDraft", "PageDraft", "OntologyDrafts",
+    "DecisionRequest", "DecisionResponse",
 }
 
 
@@ -32,7 +40,14 @@ def test_no_new_api_model_added_in_phase3a():
         name for name, obj in inspect.getmembers(models, inspect.isclass)
         if issubclass(obj, BaseModel) and obj.__module__ == models.__name__
     }
-    assert defined == _EXPECTED_MODELS, f"model surface changed: {defined ^ _EXPECTED_MODELS}"
+    # Every Phase-1/2/3a-c model is still present (byte-identical contract) …
+    assert _EXPECTED_MODELS <= defined, (
+        f"a frozen model was removed/renamed: {_EXPECTED_MODELS - defined}"
+    )
+    # … and the ONLY additions are the append-only Phase-3d models.
+    assert defined == _EXPECTED_MODELS | _PHASE3D_MODELS, (
+        f"unexpected model surface change: {defined ^ (_EXPECTED_MODELS | _PHASE3D_MODELS)}"
+    )
 
 
 def test_tag_collision_kind_vocabulary_unchanged():

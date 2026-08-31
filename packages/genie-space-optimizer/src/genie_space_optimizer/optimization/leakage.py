@@ -916,6 +916,29 @@ class LeakageOracle:
                     return True, f"page_body:{reason}"
         return False, ""
 
+    def tag_name_leaks(self, name: str) -> tuple[bool, str]:
+        """Return ``(is_leak, reason)`` when a proposed governed *tag name* — a
+        ``tag_key`` or ``tag_value`` — echoes PII (an email, an SSN / card-shaped id,
+        or a PII token word like ``ssn`` / ``email``).
+
+        Governed tag names replicate globally in plaintext, so a Domain / Sub-Domain
+        proposal whose *name* would leak PII is a leak vector and must be BLOCKED
+        before it is ever surfaced (Phase 3d L6 firewall — the MV-D8 comment-echo rule
+        transposed to tag names). Delegates to the SINGLE tag-name PII scanner
+        ``ontology.er.pii_reject`` (lazy-imported so this module keeps no module-scope
+        optimization→ontology import) — the extended oracle, **not** a second scanner.
+
+        Corpus-independent: PII in a name is intrinsic to the name, so this fires with
+        or without a benchmark corpus (unlike :meth:`contains_page_leak` /
+        :meth:`evaluate_example_sql`, which need a corpus to compare against)."""
+        if not name or not isinstance(name, str) or not name.strip():
+            return False, ""
+        try:
+            from genie_space_optimizer.ontology.er import pii_reject
+        except Exception:  # noqa: BLE001 — scanner unavailable → do not block (degrade)
+            return False, ""
+        return (True, "tag_name_pii") if pii_reject(name) else (False, "")
+
     # Deliberately absent — see class docstring for rationale. Any of
     # the following would re-open the side channel the wrapper exists
     # to close. Do not add them.
