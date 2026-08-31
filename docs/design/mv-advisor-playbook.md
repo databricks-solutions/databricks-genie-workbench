@@ -69,7 +69,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D47 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D50 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -422,7 +422,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D47)
+## Decisions register (MV-D1–MV-D50)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. MV-D33 (the semantic-model graph, reviewer-approved directly) is decided at Prompt 12e. MV-D34 (create-at-approval) and MV-D35 (facts lead, score ranks) were reviewer-approved at the THIRD smoke review after a process autopsy found three waves of display patches had never owned the acceptance journey end-to-end — both are implemented at Prompt 15.8, and the autopsy's process fix (the fidelity gate) is now a rules-file discipline. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -726,11 +726,11 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D36 — The Ontology surface is a workspace/account-level standalone page, not a per-Agent tab; it proposes Domains, Sub-Domains, AND Pages (DECIDED at Prompt 17.0 redraft — owner directive; re-scopes the whole 17.x track and un-defers Prompt 20).** The 17.0 mockups placed Ontology as a fifth SpaceDetail tab scoped to one Agent. The owner moved it UP one level: a **top-level, admin-gated page** (its own `App.tsx` view, reusing GenieWatch's SP + system-table grant plumbing and admin gating — not a SpaceDetail tab). Its input is the whole estate — **every Genie Agent in the workspace** (existing `list_spaces`) plus **every metric view in the account** — and its output is a proposed **Domain → Sub-Domain → Page** taxonomy for Databricks Discover. This absorbs the deferred Prompt 20 (the original domain/tag curator, POV Part 8): Prompt 20 is un-deferred and folded here. Decisions baked in, so no sub-prompt re-litigates them: (1) **Enumeration.** Metric views are listed account-wide via `system.information_schema.tables WHERE table_type = 'METRIC_VIEW'` (fallback `information_schema.views WHERE view_definition ILIKE '%WITH METRICS%'`) — `system.information_schema` is privilege-auto-filtered and needs NO explicit grant, so this runs under **OBO** and returns exactly what the user may see; `DESCRIBE TABLE EXTENDED … AS JSON` (POV §1) enriches only the matched shortlist for measures/synonyms. Seed-from-Agents is the clustering PRIOR, not the enumeration boundary. (2) **Identity is hybrid.** OBO for UC reads (info_schema inventory + metric-view DESCRIBE, auto-filtered to the user); the **SP** for the system-table usage/lineage/cost signals that weight domain clustering (`system.access.audit`, `system.access.table_lineage`, `system.billing.usage`, `system.query.history`) — the exact GenieWatch pattern (`watch/services/system_tables.py`, `get_service_principal_client()`), whose grant list (`scripts/grant_permissions.py`) is the source of truth. (3) **Grant preflight.** Because the SP system-table reads need explicit grants (USE CATALOG system + SELECT), the page opens on a preflight gate that verifies them and, if missing, shows copy-ready grant SQL and blocks the signal-weighted view — degrading to an OBO-only (inventory-without-usage-signal) draft rather than hanging, the MV degrade-not-hang rule. (4) **Company name** is a persisted Settings field (`/api/settings`), added to give the LLM clustering/naming context; a run without it still produces a taxonomy, just less business-aligned naming. (5) **Copy-ready output — REFINED by MV-D37.** As drafted here, the page writes NOTHING and emits a copy-ready taxonomy. **MV-D37 corrects the premise:** a Domain/Sub-Domain *is a governed tag*, so its membership IS DDL-writable (`CREATE GOVERNED TAG` + `SET TAG`); only the Discover *card* presentation and *Pages* are UI-only. So "copy-ready-only" holds for Pages + card, but domain/sub-domain membership gains an OPTIONAL consented write tier (MV-D37). What this re-scopes: **MV-D26** persistence becomes workspace/account-scoped (domain/subdomain/page candidate rows, not space-partitioned); **MV-D27** stands (Page-only → now "no-API-writes-anywhere"); **MV-D28** enrichment is unchanged. The per-Agent Ontology tab (17.0a–d as a SpaceDetail tab) is removed; those Page-draft/empty states become states of the new page.
 
-**MV-D37 — Domains and Sub-Domains ARE governed tags; the ontology sits on a governed-tag substrate, dedupe is mandatory, and membership gains an optional consented write tier (DECIDED at Prompt 17.0 redraft — owner directive, corrects MV-D36(5)).** Verified 2026-08-28 against `docs.databricks.com/aws/en/uc-semantics/domains`: "Domains are an organization layer that groups assets **by governed tags** … to create a 'Marketing' domain you must create a 'Marketing' governed tag"; sub-domains are the same primitive under a `{parentDomainTag}/{subdomainName}` convention (`Finance/Tax`), parent and child being independent tags; governed tags apply to tables, dashboards, metric views, **and Genie Agents**. Consequences: **(A) Three write tiers, not one.** Domain/sub-domain **membership** = the governed tag + `SET TAG` on the asset → DDL-writable (`CREATE/ALTER/DROP GOVERNED TAG`, `SET/UNSET TAG` DBR 16.1+, `SHOW GOVERNED TAGS` 18.1+); the Discover **card** (subtitle/description/publish/sections) is UI-only; **Pages** are UI-only. So MV-D36's "no writes anywhere" softens: Pages + card stay copy-ready; membership gains an OPTIONAL, consented OBO tag-apply — the MV consent + `require_obo` rails, dry-run-first, mirroring Databricks' own Automate-tag-assignment (beta). Default remains PROPOSE-ONLY; the write tier is off unless the curator consents and holds the permissions. **(B) A Governed-Tags lens is core, not optional.** Because a domain proposal is really "reuse or create a governed tag," the page must enumerate existing governed tags (`system.tags.governed_tags` + `SHOW GOVERNED TAGS` for allowed values) and their assignments (`system.information_schema.{catalog,schema,table,column}_tags`, joined on `tag_name = tag_key` for `is_governed`), flag which already act as domains/sub-domains (the `/` convention), and **de-dupe before proposing** — fuzzy (case/plural/token) + embedding similarity against existing tag keys, so every proposal is an explicit reuse-vs-create decision, never a silent duplicate. It also surfaces orphans (governed tags with no domain), near-empty domains, and deprecated-but-assigned tags as cleanup. Tag policies (allowed values) and the plaintext-global-replication warning (no PII in tag names) are honoured. **(C) Permissions gain a write row + a governed-tag read row.** The preflight banner (MV-D36(3)) becomes a capability→permission MATRIX with four tiers: inventory (OBO, no grant) → usage/lineage/cost ranking (SP system-table SELECTs) → governed-tag graph (`SELECT system.tags.governed_tags`) → optional membership write (`MANAGE DISCOVERY` + `ASSIGN` on each tag + `APPLY TAG`/`USE SCHEMA`/`USE CATALOG`, OBO). Read tiers degrade gracefully; the write tier is never required to view. **(D) Page-dedupe asymmetry.** Tags/domains are fully queryable for dedupe; **Pages have no read API**, so Page-dedupe is best-effort (name/synonym heuristics) — a known gap to record, not silently assume away. Detection methods this unlocks (for 17a): community detection (Louvain/label-propagation) on the lineage + join-key graph, co-query co-occurrence from `query.history`, Agent-table-set priors, existing-tag reuse, and LLM naming with the company prior; an entity-resolution/dedupe pass over {governed tags, domains, measures, Pages, Agents}; and evidence-first ranking (MV-D35). The advisor may also recommend improvements to **metric views** (gaps/duplicates/quality) and **Genie Agents** (domain assignment, overlap/consolidation) as first-class outputs, not just Domains/Pages.
+**MV-D37 — Domains and Sub-Domains ARE governed tags; the ontology sits on a governed-tag substrate, dedupe is mandatory, and membership gains an optional consented write tier (DECIDED at Prompt 17.0 redraft — owner directive, corrects MV-D36(5)).** Verified 2026-08-28 against `docs.databricks.com/aws/en/uc-semantics/domains`: "Domains are an organization layer that groups assets **by governed tags** … to create a 'Marketing' domain you must create a 'Marketing' governed tag"; sub-domains are the same primitive under a `{parentDomainTag}/{subdomainName}` convention (`Finance/Tax`), parent and child being independent tags; governed tags apply to tables, dashboards, metric views, **and Genie Agents**. Consequences: **(A) Three write tiers, not one.** Domain/sub-domain **membership** = the governed tag + `SET TAG` on the asset → DDL-writable (`CREATE/ALTER/DROP GOVERNED TAG`, `SET/UNSET TAG` DBR 16.1+, `SHOW GOVERNED TAGS` 18.1+); the Discover **card** (subtitle/description/publish/sections) is UI-only; **Pages** are UI-only. So MV-D36's "no writes anywhere" softens: Pages + card stay copy-ready; membership gains an OPTIONAL, consented OBO tag-apply — the MV consent + `require_obo` rails, dry-run-first, mirroring Databricks' own Automate-tag-assignment (beta). Default remains PROPOSE-ONLY; the write tier is off unless the curator consents and holds the permissions. **(B) A Governed-Tags lens is core, not optional.** Because a domain proposal is really "reuse or create a governed tag," the page must enumerate existing governed tags (`system.tags.governed_tags` + `SHOW GOVERNED TAGS` for allowed values) and their assignments (`system.information_schema.{catalog,schema,table,column}_tags`, joined on `tag_name = tag_key` for `is_governed`), flag which already act as domains/sub-domains (the `/` convention), and **de-dupe before proposing** — fuzzy (case/plural/token) + embedding similarity against existing tag keys, so every proposal is an explicit reuse-vs-create-vs-**reassign** decision, never a silent duplicate or a silent tag switch. Because clustering seeds softly (MV-D39, `initial_membership` not a hard pin), the graph may contradict an existing governed tag; when it does so beyond a confidence margin, the engine emits a **reassign (conflict)** proposal — evidence-backed, **human-adjudicated in 17g** (approve/dismiss recorded in `genie_ont_consents`/`genie_ont_suppressions`), and applied only via the Phase-5 (17i) consented `SET TAG`. It NEVER auto-switches a tag, and a dismissed reassignment stays suppressed on re-runs (MV-D26). It also surfaces orphans (governed tags with no domain), near-empty domains, and deprecated-but-assigned tags as cleanup. Tag policies (allowed values) and the plaintext-global-replication warning (no PII in tag names) are honoured. **(C) Permissions gain a write row + a governed-tag read row.** The preflight banner (MV-D36(3)) becomes a capability→permission MATRIX with four tiers: inventory (OBO, no grant) → usage/lineage/cost ranking (SP system-table SELECTs) → governed-tag graph (`SELECT system.tags.governed_tags`) → optional membership write (`MANAGE DISCOVERY` + `ASSIGN` on each tag + `APPLY TAG`/`USE SCHEMA`/`USE CATALOG`, OBO). Read tiers degrade gracefully; the write tier is never required to view. **(D) Page-dedupe asymmetry.** Tags/domains are fully queryable for dedupe; **Pages have no read API**, so Page-dedupe is best-effort (name/synonym heuristics) — a known gap to record, not silently assume away. Detection methods this unlocks (for 17a): community detection (Leiden) on the lineage + join-key graph, co-query co-occurrence from `query.history`, Agent-table-set priors, existing-tag reuse, and LLM naming with the company prior; an entity-resolution/dedupe pass over {governed tags, domains, measures, Pages, Agents}; and evidence-first ranking (MV-D35). The advisor may also recommend improvements to **metric views** (gaps/duplicates/quality) and **Genie Agents** (domain assignment, overlap/consolidation) as first-class outputs, not just Domains/Pages.
 
 **MV-D38 — External context is a fifth, opt-in enrichment tier: a naming/description/hypothesis PRIOR and informational overlay, NEVER structural truth; resolved once into a cached, versioned, self-validated Context Pack that is an INTERNAL artifact with zero user burden (DECIDED at Prompt 17.0 redraft — owner directive; extends MV-D28 enrichment + MV-D35 evidence-first).** Web search (industry, competitor, company, Wall-Street filings/financials, regulatory) and Databricks industry data models make the ontology domain-aware instead of pure schema clustering — but they must never poison structure. Governing rule: **the graph (system tables) decides membership; the outside world only decides vocabulary and informational overlay.** Consequences: **(A) Provenance ladder** (higher tiers win, MV-D35): T0 internal-verified (system tables — the only tier that may set membership/measures/certification) > T1 company-official (filings/their docs) > T2 industry-canonical (Databricks industry models, GICS/NAICS, standards) > T3 web-inferred (competitors, news). T1–T3 may influence names, descriptions, synonyms, and gap *hypotheses* only; they may NEVER set membership, define a measure, mark certified, or emit an unsourced number. **(B) Two plug-in points, nowhere else:** the **Context Pack** (resolved before the run, steering L4/L5 cluster naming + gap hypotheses) and **Page Recent-context enrichment** (L5, informational overlay — the MV-D28 contract: labeled, sourced, dated, `certify-no`). **(C) Context Pack is an internal artifact, not inline calls and NOT a user surface** — versioned, cached per company in `genie_ont_context_pack`, self-validated (firewall + no-unsourced-numbers + PII scan + confidence-gate) before it steers naming; this buys reproducibility (web volatility can't silently rename domains), auditability, and bounded cost/latency (batch-only, slow refresh). **Zero user burden:** the user never approves, versions, or manages a pack — the engine does the heavy lifting and surfaces only clean Domain/Sub-Domain/Page suggestions; the entire external-context surface is one opt-in toggle + one optional low-confidence industry confirm. **(D) Fifth permission tier** — external egress is opt-in and added as a 5th row to the MV-D37 capability→permission banner; no egress → the engine degrades to estate-only naming, nothing breaks. Default OFF. **(E) Rails:** structural firewall (external reaches only naming/description/synonym/gap functions, never the membership/measure writers), no-unsourced-numbers (LeakageOracle extended), recency decay on T3, confidence-gating (a low-confidence company→industry map suppresses the canonical-domain gap-check), and zero-user-burden (provenance/tiers/validation are all internal, never surfaced). Tools: `WebSearch` + model serving for synthesis; MS-Learn / Databricks docs MCP for the T2 industry-model template. The full engine design lives in `docs/design/ontology-engine-architecture.md` (the 17a build spec).
 
-**MV-D39 — Graph compute engine: in-job `igraph`, escalate to Spark GraphFrames only on overflow (DECIDED — owner directive; closes `ontology-engine-architecture.md` §11.1).** The estate graph (L2) and its community detection (L4) run in-process with `igraph` (with `networkx` acceptable for prototyping) inside the GSO-style batch wheel: dependency-light, comfortable to ~10⁵ nodes, and colocated with the L1 readers so there is no cross-engine handoff. Spark **GraphFrames** is the documented escalation path, taken only if a specific account's fused graph exceeds job memory; the L2 builder isolates the community-detection + centrality calls behind one interface so the swap is local, not a rewrite. No per-request graph compute — the interactive page reads materialized results only (MV-D43). Phase-1 note: the read-only slice does NOT run Louvain at all; it derives the taxonomy from `tag_assignment` + lineage adjacency directly, and the `igraph` clustering lands in a later phase.
+**MV-D39 — Graph compute engine + algorithm: in-job Leiden (`leidenalg` over `python-igraph`) — multiplex layers, soft-seeded (`initial_membership`) with human-adjudicated reassignment, CPM objective — escalate to Spark GraphFrames only on overflow (DECIDED — owner directive; closes `ontology-engine-architecture.md` §11.1; algorithm firmed from Louvain to Leiden after the deep-research pass; seeding firmed from hard-pin to soft-seed + reassignment after the seeding-posture review).** The estate graph (L2) and its community detection (L4) run in-process with `python-igraph` inside the GSO-style batch wheel: dependency-light, comfortable to ~10⁵ nodes, and colocated with the L1 readers so there is no cross-engine handoff. The algorithm is **Leiden via `leidenalg`**, not Louvain: Louvain can emit **disconnected / badly-connected communities** (up to ~16% when run iteratively — precisely L4's recursive Domain→Sub-Domain split), whereas Leiden *guarantees* connected communities at higher modularity and lower runtime. `leidenalg` also natively provides the two things L4 needs — **multiplex** community detection (weigh the lineage / join-key / co-query / semantic layers separately instead of hand-fusing one scalar weight) and **partial optimisation** (governed-tag nodes seed the partition) — plus the **CPM** objective with a tunable `γ` to sidestep modularity's resolution limit. Seeding is **soft** (`initial_membership`), not a hard pin: governed tags are a *strong prior*, but when the fused graph strongly contradicts a tag (beyond a confidence margin) the engine does not silently honour it and does not silently switch it — it emits a **reassign / conflict** proposal (evidence-backed, human-adjudicated in 17g, applied only by the Phase-5/17i consented `SET TAG`), so a stale or over-broad tag can be corrected with a human in the loop. Dismissed reassignments are recorded in the suppression ledger (MV-D26), so soft seeding does not cause proposal churn across runs. Spark **GraphFrames** is *not* adopted (LPA-only — no Leiden/Louvain — and a Scala JAR that is awkward on the serverless job, `environment_version 4`, where the `leidenalg`/`igraph` manylinux wheels install via pip with zero cluster libraries); it remains the documented escalation path only if a specific account's fused graph exceeds job memory. The L2 builder isolates the community-detection + centrality calls behind one interface so the swap is local, not a rewrite. Determinism is required (fixed RNG seed via `leidenalg` `set_rng_seed`, fixed `n_iterations`/`beta`, stable tie-break) so `domain_id` fingerprints stay stable across runs (MV-D26 suppression ledger). No per-request graph compute — the interactive page reads materialized results only (MV-D43). Phase-1 note: the read-only slice does NOT run clustering at all; it derives the taxonomy from `tag_assignment` + lineage adjacency directly, and the Leiden clustering lands in Phase 3b (17e).
 
 **MV-D40 — Similarity substrate: Lakebase Search (`lakebase_vector` + `lakebase_text`) in the already-installed Lakebase — NOT a separate managed Vector Search service; embeddings reuse the existing FMAPI endpoint; introduced in Phase 3 behind a degrade-to-cosine interface (DECIDED — owner directive; revises the earlier managed-Vector-Search lean; closes §11.2).** L3 dedupe (MV-D37 reuse-vs-create) needs both semantic and keyword similarity, and this app already runs an **Autoscaling Lakebase** (`backend/services/lakebase.py`). So the substrate is **Lakebase Search** on that same Postgres, not a new service: **`lakebase_vector`** (pgvector-compatible ANN, `lakebase_ann`, `vector_cosine_ops`) for embedding kNN AND **`lakebase_text`** (BM25) for the fuzzy/keyword tag-name collisions — one hybrid SQL next to the `genie_ont_*` tables, tenant-filtered in-database. Embeddings come from the **existing** `databricks-gte-large-en` FMAPI endpoint (`GSO_MV_EMBEDDING_ENDPOINT`, reuse `leakage.get_embedding` / the `mv_scoring` path) — no new embedding service; the GTE L2-normalization caveat carries over. **Placement:** introduced in **Phase 3 (17d, L3)**, NOT Phase 1 — enabling Lakebase Search is beta, **irreversible**, restarts project computes, and needs account-team access, so it is the Phase-3 gate, and Phase 1 stays zero-install (MV-D45). **Resilience (showcase-when-available, never a hard blocker):** the similarity call sits behind one interface (the `mv_scoring.EmbeddingClient` Protocol precedent); a workspace without Lakebase Search enabled degrades to **in-process cosine** over the same GTE vectors. Managed Vector Search remains only a documented alternative, not a requirement. Phase-1 note: the read-only slice does exact + fuzzy (case/plural/token) in-process tag-name matching only — no embeddings, no Lakebase Search.
 
@@ -745,6 +745,8 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **Default-known registry leads with:** `system.ai.web_search` + You.com (**T3** industry / competitor / regulatory), Confluence / Google Drive / Microsoft 365 (**T1** company glossaries & data dictionaries), and the internal **Genie / Databricks SQL** MCPs (**T0** reuse + validation). **PII-heavy / low-signal SaaS (Gmail, Slack, Calendar) default OFF or are excluded.** Governance is Databricks-native (reinforces MV-D45): no app-built egress controls — `EXECUTE` grants + service policies (write-block / PII-block / human-approval, evaluated `ON CALL` and `ON RESULT`) + `ai_gateway.usage`/`audit` observability (read via the GenieWatch SP pattern). **Zero-burden:** the curator still sees only recommendations + a labeled/dated **Sources** chip; the admin toggles the sources. Default OFF (MV-D44); **Phase 4**. Ref: [managed MCP servers](https://docs.databricks.com/aws/en/agents/mcp-tools/managed-mcp).
 
+**MV-D48 — Estate Graph / "Ontology Map": a read-only, interactive force-graph of the materialized estate; persist the fused L2 graph + a precomputed `igraph` layout as `genie_ont_graph_snapshot`, serve `GET /api/ontology/graph` (mirror-only), and render it with a frontend library chosen by a human BAKEOFF on static mockups before any buildout (DECIDED — owner directive; net-new, scoped as Phase 3e).** The engine already assembles the fused signal graph (`build_signal_graph`) and clusters it — then **throws the graph away** (`materialize.py` builds it and discards it). MV-D48 **persists** that graph plus a precomputed layout and **renders it** so an admin can *see* the estate — domains as coloured clusters, lineage/co-query as edges — and click a cluster straight into its Domain draft. **Zero new Python dependency:** the layout reuses the **`python-igraph`** that MV-D39 already added in Phase 3b (`igraph.Graph.layout_drl`/`layout_fruchterman_reingold`, fixed-seed → deterministic; coords are not bit-identical across versions, so tests assert *structure*, not floats). **Two levels of detail:** a domain/sub-domain **rollup** (default) and a full **asset** graph (capped top-N by centrality, `truncated` flag + true `node_count` — honesty). **Signals only (MV-D35):** node colour = 17e `domain_id`, size = centrality / `cost` / L6 `score` — no new metric is minted. **Read-only:** the map performs **no** UC write; clicking a cluster opens the 17g Domain draft ("Apply for me" stays disabled until the Phase-5 apply, 17i); no external context touches it (MV-D38 firewall intact). **Minimal footprint (MV-D45):** the only net-new artifacts are **one wheel module** (`ontology/layout.py`), **one Delta table** (`genie_ont_graph_snapshot`, an SP snapshot — not a proposal table), **one read route/model** (`OntologyGraph`), **one additive `materialize.py` step**, and — in Step B only — **one npm dependency** (the chosen library). **The frontend library is a BAKEOFF:** three static mockups render the *same* estate — **`17.0h` Sigma.js v3 + graphology** (WebGL, precomputed `(x,y)`, lightest bundle, MIT), **`17.0i` Reagraph** (React-first WebGL, modern glow/depth, heavier), **`17.0j` Cytoscape.js** (canvas, native compound "domains-as-containers", mature) — a human eyeballs them and records the winner **before** any component or npm dep is added; `react-force-graph` (React-19 ref red flag) and Cosmograph (non-commercial license) are ruled out. Lettered **Prompt 17k** to avoid renumbering 17h–17j; **build order Phase 3e — after 17g** (needs the graph 17d, colouring 17e, scores 17g), independent of Phase 4/5. Build spec: `docs/design/ontology-phase3e-build.md`; driver: `docs/design/ontology-phase3e-driver.md`.
+
 **MV-D41 — Refresh model: nightly materialize + on-demand override (DECIDED — owner directive; closes §11.3).** The batch engine runs on a **nightly schedule** to keep the materialized ontology fresh, and the page exposes an on-demand **"Refresh ontology"** trigger for a curator who wants a run now. Both write the same `genie_ont_*` tables through the same idempotent path (derived candidate ids + the MV-D26 suppression ledger), so a manual run between nightlies never double-surfaces or resurrects a dismissed proposal. Reuses the GSO job scheduling/packaging. Phase-1 note: the read-only slice ships **on-demand only** (the OBO inventory fast-path, MV-D43); the nightly schedule is wired when the full batch run lands.
 
 **MV-D42 — Scope boundary: an opt-in catalog allowlist in Settings (DECIDED — owner directive; closes §11.4).** The engine does NOT scan the whole account by default; it runs over an **opt-in catalog allowlist** stored in Settings beside the company name, to bound cost, blast radius, and cross-tenant noise. An empty allowlist ⇒ the page prompts the admin to choose catalogs rather than silently scanning everything. Account-wide is reachable by adding all catalogs, but that is a deliberate act, not the default. This scopes every downstream reader (inventory, usage/lineage, governed-tag graph) and the enrichment egress.
@@ -752,6 +754,10 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 **MV-D43 — First render: OBO inventory fast-path, full run backgrounded (degrade-not-hang) (DECIDED — owner directive; closes §11.5).** On first load the page renders the cheap OBO **inventory-only** tier (metric-view + governed-tag counts via `system.information_schema`, auto-filtered, no grant) in-request, then kicks the full signal-weighted run into the background and polls/streams results — it never blocks on a full run. This is the concrete form of the degrade-not-hang rule: a missing SP grant degrades a ranking tier rather than failing the page, and a cold estate still renders instantly. The interactive page is otherwise a thin reader over the Lakebase mirror (§2 load-bearing decision).
 
 **MV-D44 — External enrichment (MV-D38) default OFF (DECIDED — owner directive; closes §11.6).** The egress / Context-Pack tier is **off by default** and opt-in per workspace (egress is disabled in many locked-down workspaces). With it off, the engine produces the full **estate-only** ontology — structure from system tables, names from the company prior — and nothing breaks; enrichment only ever adds vocabulary and informational overlay (never structure, MV-D38). When a workspace opts in, the Context Pack self-validates before it steers naming (no user approval — the MV-D38 zero-burden contract). The Phase-1 read-only slice ships with enrichment **entirely absent**, not merely toggled off.
+
+**MV-D49 — Ontology grain is the METASTORE (account-level governance boundary); `workspace_id` is provenance, not a key (DECIDED — owner directive; corrects the workspace-scoping inherited from the GSO/Lakebase plumbing).** Domains and Sub-Domains are **governed tags** (`system.tags.governed_tags`, MV-D37) and Pages are **Databricks Discover** artifacts — all three are **metastore-scoped** (the UC governance boundary), and their substrate (metric views, tables, lineage) is Unity Catalog, also metastore-level. The batch reads already prove this: `system.tags.governed_tags` + `system.information_schema.*_tags`/`.tables` are read with **no workspace filter**, bounded only by the MV-D42 **catalog allowlist**; the *only* workspace-bound input is the Genie-agents list (`list_spaces`, already "best-effort in the ungrouped bucket"). So the pipeline **reads account-level data and then stamps a synthetic `workspace_id`** on it — which lets the same account-level concept (`Domain=Finance`, a single governed tag) surface as duplicate rows differing only by `workspace_id`, and lets a `reuse/create/reassign` proposal for one account-level tag fork per workspace. **Resolution:** every `genie_ont_*` table is keyed by **`metastore_id`** (not `workspace_id`); the idempotent MERGE's `WHEN NOT MATCHED BY SOURCE DELETE` is **metastore-scoped**; the batch runs **once per metastore** (the idempotent MERGE makes a single scheduled runner safe — duplicate/concurrent installs converge on one row set); `workspace_id` is demoted to a **provenance** column (which install triggered the run; which workspace an agent lives in). **Subtleties:** an account may have several **metastores** (typically one per region) — the grain is the metastore, so "run once per metastore"; single-metastore accounts read as fully account-level. Workspace↔catalog **visibility** stays governed by UC + the MV-D42 allowlist (workspace matters for *read visibility*, never for the *artifact grain*). Serving (17g) remains a per-workspace app that **reads** the metastore-scoped ontology — users see the one account ontology, still filtered to the catalogs they can access. **Sequencing:** the shipped 17d/17e code is still `workspace_id`-keyed; a **dedicated re-grain phase** (`docs/design/ontology-regrain-build.md` + `ontology-regrain-driver.md`) reconciles 17d/17e to `metastore_id` **before** 17f, and 17f is authored at metastore grain from the start. This is an **offline** change (keys + MERGE scope + job cardinality + tests); no behaviour changes beyond the grain. The full cross-metastore merge (one physical row spanning metastores) is out of scope — the grain is the single metastore.
+
+**MV-D50 — OBO-first foundations: the ontology reads default to OBO (the admin viewer's identity), the app service principal is an OPTIONAL upgrade, and the batch materialize reads system tables as a configurable job `run_as` identity (DECIDED — owner directive; unblocks estates where admins won't grant an SP access to system tables).** The Ontology page is **admin-gated**, so the viewing admin already holds the system-table access the taxonomy needs — the two SP-only foundation reads (governed-tag graph `system.tags.governed_tags` + usage/lineage/cost `signals`) default to **OBO** (`require_obo_workspace_client()`), so **nothing must be granted to the app SP to render**. This aligns with **Databricks Discover's persona model**: account/workspace admins are **curators** (`MANAGE DISCOVERY`) by default, so "a platform admin sets up the foundations, a curator approves" maps to OBO foundation reads + the existing OBO `membership_write` tier (governed-tag `ASSIGN` + the native Discover **Pages** suggest→accept/reject workflow — the approval surface governed-tag *assignment* lacks natively, which this engine supplies, MV-D37/D39). **A single `read_identity` setting** (`obo` default | `sp` | `auto`) selects the posture: `obo` = always the viewer (no grant), `sp` = the app SP (requires the banner grants — enables a **shared cross-user cache** / consumer-safe serving), `auto` = SP when its probe succeeds else OBO. There is **no silent SP fallback** — an OBO read that can't authorize **degrades the tier** (MV-D43), it never widens to the SP; and the in-process caches key on the **resolved principal** so a privilege-filtered OBO view is never served to another user. **Batch is the one thing OBO can't cover** — a scheduled job has no forwarded user token — so the `ontology-materialize-runner` gets a `run_as` knob (bundle var `ontology_job_run_as`): set it to a **metastore-admin user** (the admin's grants back the read) or a granted **SP**; unset keeps today's behaviour. This is the supported bridge when the app SP has no system grants (Databricks recommends SP `run_as` for durability, but user `run_as` is fully supported). **Signals stays optional (MV-D44)** — if the active identity can't read `system.access/billing/query`, ranking degrades, nothing blocks. **Caveat:** OBO is **privilege-filtered**, so the ontology stays an **admin/curator surface** (a non-admin OBO viewer sees a partial estate) and a metastore-complete ontology requires the setup identity — the live admin viewer or the job `run_as` — to be an **account/metastore admin**. **Grain unchanged (MV-D49 holds)**, no new table, no new dependency (`uv.lock` untouched), no response-shape change; the preflight banner (frame 17.0a) simply renders the two read tiers as **"OBO (admin) or SP"** with the SP grants framed as an *optional upgrade* and a copy button on every tier (fixing the missing copy button on already-satisfied tiers). Build spec: `docs/design/ontology-obo-first-build.md`; driver: `docs/design/ontology-obo-first-driver.md`. Offline for the code; deploy-gated for verification (set `ontology_job_run_as`, confirm the mirror populates with no app-SP system grant).
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
@@ -3343,8 +3349,11 @@ Finish the branch:
 > Lakebase mirror (MV-D41); 17d–17g are the proposal engine (L3 ER + MV-D40
 > embeddings, L4 `igraph` clustering, L5 Page miners, L6 rank/trust, serving the
 > 17.0d/e drafts); 17h is the opt-in external-enrichment tier (MV-D38/D44); 17i is
-> the single consented `SET TAG` apply (L9); 17j is the track's hardening + E2E.
-> The stale space-scoped 17a–d bodies below were replaced by this sequence.
+> the single consented `SET TAG` apply (L9); 17j is the track's hardening + E2E;
+> **17k (Phase 3e) is the read-only Estate Graph / "Ontology Map" (MV-D48) — a
+> force-graph view of the materialized estate, lettered 17k to avoid renumbering but
+> build-order after 17g; independent of Phase 4/5.** The stale space-scoped 17a–d
+> bodies below were replaced by this sequence.
 > **Further refined by MV-D37** (Domains/Sub-Domains ARE governed tags — a
 > Tags/dedupe lens, a tiered permission banner, and an optional consented
 > `SET TAG` write; Pages + card stay copy-ready) **and MV-D38** (an opt-in
@@ -3609,7 +3618,7 @@ Stand up the batch path and the mirror WITHOUT adding new proposals — the 17a
 route contracts MUST NOT change (architecture §2: the page reads the mirror, the
 job materializes it). Implements L7 (persistence) + the reader swap; L2 graph
 build is scaffolded here, full clustering is 17e. Inherit MV-D41 (nightly +
-on-demand), MV-D39 (in-job igraph — dependency only, no Louvain yet), MV-D42
+on-demand), MV-D39 (in-job igraph — dependency only, no clustering yet), MV-D42
 (allowlist scopes the run).
 - genie_ont_* tables per architecture §7 that Phase 2 writes: genie_ont_tag_graph
   (snapshot) + the taxonomy snapshot; the proposal tables (domains/members/pages)
@@ -3635,12 +3644,14 @@ on-demand), MV-D39 (in-job igraph — dependency only, no Louvain yet), MV-D42
 > slice (blocking recall, string-vs-embedding catch, near-tie adjudication band,
 > degrade parity, PII firewall, identity idempotency, updated firewall) behind the
 > in-process cosine fallback and stops before the **irreversible Lakebase Search
-> enable** + first live materialize (spec §12).
+> enable** + first live materialize (spec §12). **Grain note (MV-D49):** the shipped
+> 17d code is `workspace_id`-keyed; the **metastore re-grain phase** (below, before 17f)
+> re-keys it to `metastore_id` (`workspace_id` → provenance).
 
 ```
 Architecture §3–4 (signal graph) + the L3 ER/dedupe subsection under §5. Batch-side
 in the GSO wheel (the backend touch is a read-only mirror read; NO new route, NO new
-API model). Inherit MV-D39 (igraph — scaffolded, no Louvain) + MV-D40 (Lakebase
+API model). Inherit MV-D39 (igraph — scaffolded, no clustering) + MV-D40 (Lakebase
 Search — `lakebase_vector` ANN for embedding dedupe + `lakebase_text` BM25 for fuzzy
 tag-name matching, on the EXISTING Lakebase; embeddings from the existing
 databricks-gte-large-en FMAPI endpoint via leakage.get_embedding, L2-normalize GTE
@@ -3670,28 +3681,126 @@ we never grow tag sprawl.
 > launcher is `docs/design/ontology-phase3b-driver.md`. The block below is the
 > register summary; the build spec is the source of truth. Acceptance is **offline
 > for the code, deploy-gated for verification** — the agent green-tests the offline
-> slice (two-level tree, reuse-vs-create, determinism/idempotency, naming-degrade,
+> slice (two-level tree, reuse/create/reassign, determinism/idempotency, naming-degrade,
 > updated firewall) and stops before the live materialize. This is the first phase to
 > **populate proposal tables** (`genie_ont_domains`/`_members`) and the first to **add
-> a dependency** (`igraph`, so `uv.lock` changes); there is **no UI change** (drafts
-> render in 17g).
+> a dependency** (`leidenalg` + `python-igraph`, so `uv.lock` changes); there is **no
+> UI change** (drafts render in 17g). **Grain note (MV-D49):** the shipped 17e code is
+> `workspace_id`-keyed; the **metastore re-grain phase** (below, before 17f) re-keys the
+> proposal tables to `metastore_id` (`workspace_id` → provenance).
 
 ```
 The L4 clustering subsection under architecture §5. Batch-side in the GSO wheel (no
 backend/route/model/frontend change; proposals are served in 17g). Inherit MV-D39
-(igraph Louvain / label-propagation) + evidence-first (MV-D35). Runs AFTER 17d
-dedupe, on canonical entities.
-- Community detection on the fused graph with tag_assignment as the STRONGEST
-  prior and the lineage backbone; recursive split for Domain -> Sub-Domain;
-  centrality picks anchors; LLM names clusters (the Context Pack prior is 17h —
-  here naming uses the company prior + member identifiers only).
-- Emit domain / sub-domain PROPOSALS with evidence + a REUSE-vs-CREATE tag_decision
-  (MV-D37) into genie_ont_domains / genie_ont_members (proposal rows, NOT writes).
+(Leiden via leidenalg — multiplex layers + soft-seeded `initial_membership`, CPM
+objective) + evidence-first (MV-D35). Runs AFTER 17d dedupe, on canonical entities.
+- Community detection (Leiden) on the multiplex graph with tag_assignment as the
+  STRONGEST (but SOFT) prior and the lineage backbone; recursive split for Domain ->
+  Sub-Domain; centrality picks anchors; LLM names clusters (the Context Pack prior is
+  17h — here naming uses the company prior + member identifiers only).
+- Emit domain / sub-domain PROPOSALS with evidence + a REUSE / CREATE / REASSIGN
+  tag_decision (MV-D37) into genie_ont_domains / genie_ont_members (proposal rows,
+  NOT writes). `reassign` = the soft seed moved assets against an existing tag beyond
+  `τ_reassign`; it is a CONFLICT proposal for human adjudication (17g), never an
+  auto-switch. Below the margin, stay conservative → `reuse`.
 - Tests: a seeded fixture yields the expected two-level tree; a tag-seeded cluster
-  REUSES the existing tag rather than proposing a duplicate.
+  REUSES the existing tag rather than proposing a duplicate; a strong-contradiction
+  fixture emits a `reassign` proposal (and writes no tag).
+```
+
+### Ontology re-grain — metastore grain (MV-D49; runs AFTER 17e, BEFORE 17f)
+
+> **Build-ready (a pure refactor, no feature).** The full section-by-section spec is
+> `docs/design/ontology-regrain-build.md` (§1 scope → §12 DoD) and the Goal-Mode launcher
+> is `docs/design/ontology-regrain-driver.md`. Per **MV-D49** the ontology grain is the
+> **metastore** (governed tags + Pages + UC assets are metastore-scoped; the substrate
+> reads are already account-level), so this phase re-keys every `genie_ont_*` table from
+> `workspace_id` to `metastore_id`, re-scopes the idempotent MERGE delete, runs the batch
+> **once per metastore**, and demotes `workspace_id` to provenance. It reconciles the
+> already-shipped 17d/17e code (which is `workspace_id`-keyed) so 17f is authored at the
+> correct grain from the start. **No new API model/route/frontend/TS, no new table, no
+> dependency** (`uv.lock` untouched) — the only visible change is the storage/serving
+> grain; every route response is byte-identical. Acceptance is **offline for the code,
+> deploy-gated for verification** (run the job once per metastore; confirm one ontology,
+> no per-workspace duplicates).
+
+```
+Re-grain the ontology from workspace to METASTORE (MV-D49). Every genie_ont_* table:
+metastore_id becomes the LEADING key column; workspace_id is KEPT as a provenance
+column, never a key. The idempotent MERGE's WHEN NOT MATCHED BY SOURCE DELETE is
+metastore-scoped (a different metastore's rows are never deleted). The batch resolves
+metastore_id (WorkspaceClient().metastores.current(); else CURRENT_METASTORE(); else
+'default' — degrade, MV-D43) and runs once per metastore; concurrent/duplicate installs
+CONVERGE via the idempotent MERGE. The backend mirror reads scope by metastore_id
+(resolve the app's metastore once + cache; thread through refresh/taxonomy/tags) with
+NO response-shape change. Synced-table PKs lead metastore_id.
+- Tests: keys lead metastore_id; MERGE delete predicate metastore-scoped; CONVERGENCE
+  (two runs, same metastore_id + different provenance workspace_id -> one row set);
+  metastore-scoped idempotency; provenance retained (workspace_id never in a key);
+  resolver degrade; contracts byte-identical; firewall unchanged.
+- Deferred: cross-metastore merge (one row spanning metastores) — grain is the single
+  metastore.
+```
+
+### Ontology OBO-first — foundations identity (MV-D50; runs any time after the re-grain)
+
+> **Build-ready (an identity refactor, no feature).** The full section-by-section spec is
+> `docs/design/ontology-obo-first-build.md` (§1 scope → §12 DoD) and the Goal-Mode launcher
+> is `docs/design/ontology-obo-first-driver.md`. Per **MV-D50** the two foundation reads
+> (governed-tag graph + usage/lineage signals) default to **OBO** (the admin viewer's
+> identity) instead of the app SP; the SP becomes an **opt-in** via a single `read_identity`
+> setting (`obo` default | `sp` | `auto`); the materialize job reads as a configurable
+> **`run_as`** identity (a metastore-admin **user** or an SP); and the preflight banner
+> renders the SP tiers as **"OBO (admin) or SP"** with an always-on copy button, framing the
+> SP grants as an optional upgrade. This unblocks estates where admins won't grant the app
+> SP access to system tables — nothing must be granted to render the taxonomy for an admin.
+> **No grain change (MV-D49 holds), no new table, no dependency** (`uv.lock` untouched), and
+> every route response is byte-identical (`OntologySettings` gains one additive, defaulted
+> field). It is **independent of 17f/17g** — sequence it whenever convenient after the
+> re-grain. Acceptance is **offline for the code, deploy-gated for verification** (set
+> `ontology_job_run_as` to a real metastore admin; confirm the mirror populates with no
+> app-SP system grant; confirm the live page renders with `read_identity="obo"`).
+
+```
+OBO-first ontology foundations (MV-D50). The two foundation reads (governed-tag graph +
+usage/lineage signals) default to OBO (the admin viewer's identity), NOT the app SP; the SP
+is an opt-in upgrade selected by a single read_identity setting (obo default | sp | auto),
+with NO silent SP fallback — an OBO read that can't authorize degrades the tier (MV-D43). The
+in-process caches key on the resolved principal so a privilege-filtered OBO view is never
+served to another user. The materialize job reads system tables as a configurable run_as
+identity (bundle var ontology_job_run_as → a metastore-admin user or an SP); refresh._launch
+(jobs.run_now via SP) is unchanged — run_now only STARTS the job. The preflight banner renders
+the two read tiers as "OBO (admin) or SP" with the SP grants framed as an optional upgrade and
+a copy button on every tier. Grain unchanged (MV-D49), no new table/dependency, no response-
+shape change; the page stays admin-gated (OBO is privilege-filtered).
+- Tests: default OBO (SP client not used); no silent SP fallback; sp/auto resolution; per-
+  identity cache isolation; read_identity additive/defaulted; banner "OBO (admin) or SP" +
+  copy button on a green tier; run_as wiring (set → run_as block, unset → none); contracts
+  byte-identical; firewall unchanged; uv lock --check green.
+- Deferred: consumer-facing (non-admin) serving — OBO is privilege-filtered; needs the SP/
+  mirror path. Out of scope here.
 ```
 
 ### Prompt 17f — Phase 3c: Page miners + MV / Agent advisories (L5)
+
+> **Build-ready (mirrors the Phase-1/2/3a/3b pairs).** The full section-by-section spec is
+> `docs/design/ontology-phase3c-build.md` (§1 scope → §12 DoD) and the Goal-Mode launcher
+> is `docs/design/ontology-phase3c-driver.md`. The block below is the register summary; the
+> build spec is the source of truth. **Runs AFTER the metastore re-grain (MV-D49)** — 17f
+> is authored at metastore grain from the start. Acceptance is **offline for the code,
+> deploy-gated for verification** — the agent green-tests the offline slice (per-archetype
+> detectors, **canonical-concept keying** + **estate corroboration gate** + **metastore
+> grain**, the identifier + four retrieval gates, contradiction→CONFLICT with no write-back,
+> certify rule, drafting/`ask_genie` degrade, determinism/idempotency, updated firewall) and
+> stops before the live materialize. This is the first phase to **populate
+> `genie_ont_pages`**; it adds **no dependency** (`uv.lock` untouched, MV-D45) and **no UI**
+> (drafts render in 17g). **Estate-level (MV-D49):** Pages are keyed to a **canonical
+> concept** (17d identity), aggregate every artifact across the metastore that expresses the
+> concept (incl. across sub-domains), and are **corroboration-gated** (≥2 independent
+> artifacts → full/certify-eligible; a single artifact → low-confidence). **Scope
+> refinement:** the **MV / Agent advisory persisted surface is deferred to 17g** — MV
+> dupe/quality is already surfaced by 17d's identity map and Agent overlap by 17e's domain
+> evidence, and a dedicated advisory table/contract is an owner decision (build spec §12).
 
 ```
 The L5 Page-miners subsection under architecture §5, carrying the retrieval
@@ -3699,12 +3808,22 @@ discipline from the original 17b. READ docs/design/genie-retrieval-notes.md AND
 docs/docs/platform/gsl-instruction-schema.md first (CLAUDE.md mandate; the latter
 is READ context for the contradiction gate ONLY — this track writes no
 instructions, MV-D27). The eight archetypes are the 17.0 standard.
-- Per-archetype DETERMINISTIC detectors emit PageCandidate(archetype, evidence,
-  confidence) from signals only: [Disambiguation] from CONFLICT + same-concept-
-  different-expr fingerprints; [Routing] from data_sources.metric_views +
-  measures; [Guardrail] from ratio/percentage + AVG-of-rate; [Taxonomy] from
-  low-cardinality coded columns; [Method] from same-family measures; [Cross-domain]
-  from join-spine; [Defaults]/[Rule] low-confidence stubs. No evidence -> nothing.
+- Estate-level, metastore grain (MV-D49): Pages are keyed (metastore_id, page_id) and
+  ANCHORED ON A CANONICAL CONCEPT (17d genie_ont_identity.canonical_id), NOT a single
+  artifact. Resolve every signal to its canonical_id, aggregate ALL artifacts across the
+  metastore that express the concept (incl. across sub-domains -> collapse to ONE Page),
+  and gate on CORROBORATION: >=2 independent artifacts -> full-confidence + certify-
+  eligible; exactly 1 -> low-confidence + certify=false (surface, never drop/auto-certify).
+  page_id = pg_<fp(canonical_id, archetype, sorted canonical ids)> — never domain_id,
+  never the LLM prose (a concept keeps one stable Page even if it moves sub-domains).
+- Per-archetype DETERMINISTIC detectors emit PageCandidate(archetype, canonical_id,
+  evidence, corroboration, confidence) from signals only, over the AGGREGATED concept:
+  [Disambiguation] from CONFLICT + same-concept-different-expr fingerprints (>=2 by
+  construction); [Routing] per canonical measure concept (all MV measures resolving to
+  the same canonical_id collapse to one Page); [Guardrail] from ratio/percentage +
+  AVG-of-rate; [Taxonomy] from low-cardinality coded columns; [Method] from same-family
+  measures; [Cross-domain] from join-spine; [Defaults]/[Rule] low-confidence stubs. No
+  evidence -> nothing.
 - LLM drafting through llm_utils.call_serving_endpoint (model override validated by
   model_catalog.validate_chat_model) into the Page standard format, validated
   structurally (title prefix from the eight; required sections; identifiers
@@ -3716,9 +3835,11 @@ instructions, MV-D27). The eight archetypes are the 17.0 standard.
   text_instructions (reuse the conflict-surface machinery, not a new comparator;
   a hit downgrades to CONFLICT for human adjudication, never auto-resolved, never
   written back; Pages have no read API — say so, don't imply page-conflict
-  coverage); CORROBORATION is STRUCTURAL (Sources + Related point at the pattern,
-  not a second copy); CERTIFY recommendation per draft (formulas yes, informational
-  context no; a Recent-context section never earns certify-yes).
+  coverage); retrieval CORROBORATION is STRUCTURAL (Sources + Related point at the
+  pattern, not a second copy) — distinct from the ESTATE corroboration gate above
+  (# independent artifacts); CERTIFY recommendation per draft requires corroboration
+  >=2 AND an authoritative shape (formulas yes; single-artifact / informational /
+  Recent-context never earns certify-yes).
 - Firewall: extend LeakageOracle for Page bodies (the MV-D8 comment-echo rule
   transposed; same oracle, no second scanner).
 - Related/Sources emission (MV-D27 Page-only): copy-ready FQNs the user @-tags in
@@ -3727,13 +3848,34 @@ instructions, MV-D27). The eight archetypes are the 17.0 standard.
   instruction delta.
 - MV / Agent advisories as first-class outputs (MV-D37): metric-view gaps / dupes /
   quality and Agent domain-assignment / overlap, each evidence-backed.
-- Tests: format + identifier gate (incl. Related/Sources FQNs), firewall, and the
-  retrieval gates (synonym-count/class failure, chunk-unsafe rule rejected,
-  contradiction -> CONFLICT and NOT written back, Agent present in Related, certify
-  recommendation present).
+- Tests: canonical-concept keying (cross-sub-domain artifacts collapse to one Page;
+  page_id from canonical_id, invariant when the home sub-domain moves); estate
+  corroboration gate (>=2 -> certify-eligible, 1 -> low-conf); metastore grain
+  (metastore_id key + scoped delete; workspace_id provenance only); format + identifier
+  gate (incl. Related/Sources FQNs); firewall; and the retrieval gates (synonym-count/
+  class failure, chunk-unsafe rule rejected, contradiction -> CONFLICT and NOT written
+  back, Agent present in Related, certify recommendation present).
 ```
 
 ### Prompt 17g — Phase 3d: rank & trust gate + serve the drafts (L6; serve 17.0d/e) — STOP checkpoint
+
+> **Build-ready (mirrors the Phase-1/2/3a/3b/3c pairs).** The full section-by-section spec
+> is `docs/design/ontology-phase3d-build.md` (§1 scope → §12 DoD) and the Goal-Mode launcher
+> is `docs/design/ontology-phase3d-driver.md`. The block below is the register summary; the
+> build spec is the source of truth. **Runs AFTER the metastore re-grain (MV-D49) and 17f** —
+> 17g scores, serves, and records decisions at metastore grain from the start. This is the
+> **first phase to serve proposals and record human decisions**: the wheel adds the L6 gate
+> (`usage × lineage-centrality × governance`, MV-D35 — the score *ranks*, never a rendered
+> "NN%"), the PII/policy firewalls (+ a dormant MV-D38 ladder hook for 17h), and reads the
+> suppression ledger to persist `score` + `surfaced`; the backend serves ranked drafts (`GET
+> /api/ontology/drafts`, incl. 17e `reassign`/`conflict`) and records approve/dismiss/reassign
+> adjudications (`POST /api/ontology/decision`) into `genie_ont_consents` /
+> `genie_ont_suppressions` under OBO — a dismissed proposal (and a rejected `reassign`) never
+> resurfaces (MV-D26). It renders the `17.0d` / `17.0e` zero-burden cards (the first UI change
+> since Phase 1; Apply-for-me stays **disabled** until 17i). Acceptance is **offline for the
+> code** (pytest + the frontend vitest render test), **deploy-gated for verification**. There
+> is **still no `SET TAG`, no apply route** — the only write is the app-state ledger. **STOP**
+> at the proposal-quality review checkpoint before 17h/17i.
 
 ```
 The L6 rank/trust subsection under architecture §5 + the serving of the draft
@@ -3743,11 +3885,14 @@ no writes (the apply is 17i).
   firewalls: PII scan on proposed tag names, tag-policy conformance, and (once 17h
   lands) the MV-D38 provenance ladder. Rank; suppress dismissed via the consent /
   suppression ledger.
-- Routes: GET drafts (ranked domain / sub-domain + Page proposals) reading the
-  mirror; the decision route (approve / reject with suppression). Still NO apply
-  route.
+- Routes: GET drafts (ranked domain / sub-domain + Page proposals, INCLUDING 17e's
+  `reassign`/conflict proposals) reading the mirror; the decision route (approve /
+  reject with suppression) — this is where a human ADJUDICATES a reassignment; the
+  decision is recorded in genie_ont_consents / genie_ont_suppressions and a rejected
+  reassign stays suppressed on re-run (MV-D26). Still NO apply route.
 - Frontend (prop-driven cards — the MV-D23 obligation): wire 17.0d (Domain draft —
-  ZERO-BURDEN: recommendation + plain new-vs-reuse + "why we're suggesting this" +
+  ZERO-BURDEN: recommendation + plain new-vs-reuse-vs-reassign + "why we're
+  suggesting this" (for a reassign, the tag it conflicts with + the evidence) +
   Apply-for-me [disabled until 17i] / do-it-yourself; NO DDL, grants, or system-
   table names) and 17.0e (Page draft — leads with the reason, prominent Synonyms,
   Related/Sources chips, certify, copy + checklist), plus the enrichment-failed +
@@ -3819,9 +3964,10 @@ Agent instructions — stays copy-ready; no API writes.
   Databricks Automate-tag-assignment dry-run precedent.
 - Identity: OBO — attributed to the consenting human, gated on their MANAGE
   DISCOVERY + ASSIGN (+ APPLY TAG / USE SCHEMA / USE CATALOG) grants (the write row
-  in the banner). CREATE GOVERNED TAG when the reuse-vs-create decision is CREATE,
-  else SET TAG on the members. This apply route is the ONLY write route in the
-  subsystem.
+  in the banner). CREATE GOVERNED TAG when the decision is CREATE, SET TAG on the
+  members when REUSE, and for an APPROVED `reassign` (17g) UNSET the old tag + SET
+  the new one on the moved members — this is the only place a 17e reassignment is
+  ever physically applied. This apply route is the ONLY write route in the subsystem.
 - Frontend: 17.0d "Apply for me -> Preview changes" becomes live; the DDL stays
   behind the scenes (zero-burden).
 - Tests: dry-run produces a diff and writes NOTHING; consent required before
@@ -3848,6 +3994,56 @@ the combined PR are Prompt 16's job.
   proven; allowlist scoping proven (a catalog outside the allowlist is absent).
 - MV-D9 sweep; baseline lockstep. Docs / changelog / combined PR follow in Prompt
   16, which cites this prompt's E2E record for the track's results.
+```
+
+### Prompt 17k — Phase 3e: Estate Graph / "Ontology Map" (MV-D48; build-order after 17g)
+
+> **Build-ready (mirrors the Phase-1/2/3a/3b pairs).** The full section-by-section
+> spec is `docs/design/ontology-phase3e-build.md` (§1 scope → §12 DoD) and the
+> Goal-Mode launcher is `docs/design/ontology-phase3e-driver.md`. The block below is
+> the register summary; the build spec is the source of truth. **Lettered 17k to
+> avoid renumbering 17h–17j, but its build order is Phase 3e — after 17g** (it needs
+> the materialized graph 17d, the domain colouring 17e, and the L6 scores 17g); it is
+> **independent of** the Phase-4 external tier (17h) and the Phase-5 apply (17i), and
+> does not depend on 17j. Acceptance is **offline for the code, deploy-gated for
+> verification**, and the phase ships in **two steps with a human STOP between them**:
+> **Step A** (the agent builds this, then STOPS) persists + serves the graph and
+> **stages a 3-library bakeoff**; **Step B** (a separate follow-up run, after a human
+> eyeballs the mockups and picks) renders the chosen library. This reuses the
+> `python-igraph` MV-D39 already added — **no new Python dep, `uv.lock` untouched**;
+> the only npm dep is added in Step B.
+
+```
+Architecture §5 (the fused L2 signal graph + L4 clusters this VISUALIZES). MV-D48:
+a read-only "Ontology Map" — no new signal, no new Python dep, no UC write. Two
+ordered steps with a human STOP between.
+
+STEP A (offline; the agent builds this, then STOPS):
+- Persist (L7): NEW genie_ont_graph_snapshot (one JSON blob per workspace, a SP
+  snapshot in SNAPSHOT_TABLES — NOT a proposal table), MERGE'd by an ADDITIVE final
+  step in run_materialize that reuses the in-memory graph the job already builds and
+  discards (~line 164) + 17e domain_id + 17g scores.
+- Layout (ontology/layout.py, wheel): build an igraph.Graph (igraph is ALREADY a
+  17e/MV-D39 dep — ZERO new Python dep), deterministic force layout (fixed seed) →
+  (x,y) per node; size by centrality/cost/score; colour by domain_id; roll up to a
+  domain/sub-domain graph (default LOD) + a top-N-by-centrality asset graph
+  (truncated + true node_count). Pure/offline. Coords not bit-identical across
+  versions → tests assert STRUCTURE, not floats.
+- Serve: NEW OntologyGraph{,Node,Edge,Level} model + TS mirror; GET /api/ontology/
+  graph, MIRROR-ONLY (layout is a batch artifact — no live rebuild); cold →
+  state="cold", empty, never raises. All prior models/routes BYTE-IDENTICAL.
+- Bakeoff (the eyeball gate): 3 STATIC mockups of the SAME 17.0b estate — 17.0h
+  Sigma.js v3, 17.0i Reagraph, 17.0j Cytoscape.js — NO real libs / NO npm dep. Then
+  STOP for a human to eyeball + record the winner. NO graph component in Step A.
+- Tests (offline): contract-frozen; layout-fixture (domain rollup + asset level,
+  orders=anchor); structural determinism x2; top-N cap+honesty; route-shape incl
+  cold; additive-safety; updated firewall (graph_snapshot allowed SP write; route
+  read-only; no SET TAG/web_search). uv.lock UNTOUCHED; no npm dep.
+
+STEP B (separate run, after the pick): add the ONE chosen lib (exact-pinned) +
+EstateGraph.tsx — precomputed coords, domains-default LOD → drill to assets, edge-
+kind filters, hover evidence card, click a cluster → the existing 17.0d Domain draft
+(reuse; Apply disabled until 17i); light + a11y pass.
 ```
 
 ### Prompt 18 — Create Agent semantic-model step (separate branch, after Prompt 16; owns MV-D25)

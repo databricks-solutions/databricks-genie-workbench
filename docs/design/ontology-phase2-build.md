@@ -39,7 +39,7 @@ context, and no UC writes.** Everything harder is a later phase and is called ou
   `gso_lakebase.py`-style reader for fast page loads.
 - **L2 signal-graph scaffold** → the job builds the fused signal graph **structure
   only** (nodes/edges from tags + lineage adjacency) as a dependency for Phase 3;
-  **no clustering, no Louvain** (MV-D39 is a dependency here, not an algorithm).
+  **no clustering** (MV-D39 is a dependency here, not an algorithm).
 - **Reader swap** → `taxonomy.py` / `tags.py` read the mirror when it exists and is
   fresh; otherwise they fall back to the Phase-1 live-SP + TTL path (MV-D43). The
   route **response models do not change** (§4).
@@ -69,7 +69,7 @@ writes **nothing to UC**.
 | MV-D36 standalone admin-gated estate page | **Active** — unchanged from Phase 1. |
 | MV-D37 governed-tag substrate + Tags lens | **Active (read-only)** — now **snapshotted** to Delta + mirror; still **no** `CREATE/SET TAG`. |
 | MV-D38 external enrichment | **Dormant** — absent entirely. |
-| MV-D39 in-job `igraph` clustering | **Scaffolded** — `igraph` becomes a job dependency and L2 builds the fused graph; **no Louvain / no communities** (that is 17e). |
+| MV-D39 in-job Leiden clustering | **Scaffolded** — L2 builds the fused graph; **no clustering / no communities** (that is 17e, which adds `leidenalg`/`igraph`). |
 | MV-D40 Lakebase Search similarity | **Dormant** — dedupe verdicts are still exact + fuzzy in-process; **Lakebase Search is NOT enabled** (Phase 3, irreversible). |
 | MV-D41 nightly batch + on-demand | **Active — this is the phase.** Nightly schedule + `POST /refresh`; both write the same tables through the same idempotent path. |
 | MV-D42 catalog allowlist | **Active** — the allowlist scopes the run (the job reads it from `genie_ont_settings`). |
@@ -389,7 +389,7 @@ is unchanged.
 4. Builds the **L2 fused signal graph** (`ontology/graph.py`) as a structural
    dependency only — nodes (tag/table/mv/agent) + edges (tag_assignment, lineage
    adjacency). **No clustering.** It is not persisted as proposals; it exists so 17e
-   can attach Louvain without a new builder.
+   can attach Leiden without a new builder.
 5. **`MERGE`-writes** the Delta snapshots (§7.2), then flips the `genie_ont_runs`
    row to `succeeded` with `as_of`, counts. On any failure → `failed` with `error`;
    the page keeps serving the last good mirror (or the live fallback).
@@ -487,8 +487,9 @@ that boundary is why Phase 2's offline slice stops before deploy.
 
 - **Phase 3** — the proposal engine: L3 ER + **MV-D40 Lakebase Search dedupe**
   (`lakebase_vector` + `lakebase_text`; **enables Lakebase Search** — beta,
-  irreversible; degrades to in-process cosine), L4 `igraph` **clustering / Louvain**
-  (MV-D39, using the L2 graph this phase scaffolds), L5 Page miners, L6 rank/trust;
+  irreversible; degrades to in-process cosine), L4 **Leiden clustering** (via
+  `leidenalg`/`igraph`) (MV-D39, using the L2 graph this phase scaffolds), L5 Page
+  miners, L6 rank/trust;
   populates the empty `genie_ont_domains/members/pages` and unlocks the `17.0d/e`
   **drafts**.
 - **Phase 4** — external context / Context Pack (MV-D38 / MV-D44) via the MV-D47 AI

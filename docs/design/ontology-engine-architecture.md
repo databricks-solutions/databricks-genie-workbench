@@ -69,7 +69,7 @@ Browser  ◄──►  /api/ontology/*  (thin FastAPI, OBO) ──► optional S
 | **L1 Signal readers** | Typed readers → normalized signal frames, TTL-cached | GenieWatch `watch/services/system_tables.py` (extend), `genie_client.list_spaces` | mostly reuse |
 | **L2 Graph builder** | Fuse signals into one weighted heterograph | concept from `auto_optimize.py:_build_semantic_graph` (generalize estate-wide) | new (estate) |
 | **L3 Embedding + ER** | Lakebase Search (`lakebase_vector` ANN + `lakebase_text` BM25) on the existing Lakebase; block→score→LLM-adjudicate dedupe | Lakebase Search extensions; `leakage.get_embedding` (gte); `llm_utils.call_serving_endpoint`; `mv_scoring.dedup_gate` pattern; in-process cosine fallback | new + reuse |
-| **L4 Clustering** | Louvain/label-prop → domains → sub-domains, seeded by tags/Agents/schema | — | new |
+| **L4 Clustering** | Leiden (multiplex + soft `initial_membership`, CPM) → domains → sub-domains, seeded by tags/Agents/schema; tag conflicts → `reassign` proposals | — | new |
 | **L5 Proposers** | Domain/subdomain, Page miners, MV gap/dup/quality, Agent domain/overlap | MV fingerprint/scoring shapes; `manage_metric_views`; `ask_genie` (validate routing Pages) | new + reuse |
 | **L6 Rank/trust** | `usage × lineage-centrality × governance` (MV-D35); PII firewall on tag names; policy conformance; provenance ladder (MV-D38) | `leakage.LeakageOracle` (extend to tag names) | new + reuse |
 | **L7 Persistence** | `genie_ont_*` candidate/consent/suppression/applied/context tables | `genie_opt_mv_*` + `mv_state.py` + `gso_lakebase.py` precedent | reuse pattern |
@@ -276,12 +276,13 @@ The signal kinds above feed an entity-resolution + clustering engine with the
 evidence-first trust rule. Per-object methods:
 
 - **Domains / Sub-Domains** — cluster the asset graph by combining: (a)
-  catalog/schema structure prior, (b) community detection (Louvain /
-  label-propagation) on the lineage + join-key graph, (c) co-query co-occurrence,
+  catalog/schema structure prior, (b) community detection (Leiden via
+  `leidenalg`) on the lineage + join-key graph, (c) co-query co-occurrence,
   (d) existing governed tags (strongest — reuse over invent), (e) Genie Agent
   groupings, then (f) LLM naming with company context. Sub-domains = finer
   communities inside a domain community. Every proposal carries evidence chips
-  (shared spine, N co-queries, cost share) and a **reuse-vs-create tag decision**.
+  (shared spine, N co-queries, cost share) and a **reuse / create / reassign tag
+  decision** (`reassign` = a soft-seed conflict flagged for human adjudication).
 - **Dedupe (the entity-resolution core)** — a canonical pass over {governed
   tags, domains, measures, Pages, Agents}: block by prefix/schema, score by
   string + embedding similarity, adjudicate near-ties with the LLM. Outputs:
@@ -396,7 +397,7 @@ L3 emits **two** things: **canonical entities** into L4 clustering, and
    └──────────────┬───────────────────────────────────┬──────────────────────────────┘
                   │ canonical entities                 │ merge / collision / orphan
                   ▼                                     ▼   verdicts
-        L4  CLUSTERING (Louvain)              L7 genie_ont_* (Delta + Lakebase)
+        L4  CLUSTERING (Leiden)               L7 genie_ont_* (Delta + Lakebase)
         → domains / sub-domains                        │
                                                        ▼
                                         L8 API → 17.0c Tags lens
@@ -414,40 +415,67 @@ community inside it. Same algorithm, two passes. Because it runs **after L3**
 Four building blocks, and — like L3 — most of it is a re-point of existing
 primitives plus one graph library:
 
-1. **Fuse the weighted edges** — the weights are *not* equal, and that is the
-   whole game. `lineage` is the clustering backbone; `join_key` and `co_query`
-   reinforce it; `semantic_sim` is weak glue; **`tag_assignment` is the strongest
-   prior** (reuse an existing tag over inventing a domain). `cost` is not an edge
-   — it is a ranking weight saved for L6.
-2. **Seeded community detection (Domains)** — Louvain / label-propagation on the
-   fused edge set, but *seeded*: existing governed tags **pin** nodes
-   (semi-supervised — don't re-derive `Finance` if a `Finance` tag already
-   anchors 18 assets), Agent scopes act as **seeds** (a curated "these go
-   together"), and catalog/schema is the **fallback prior** when signals are thin.
+1. **Assemble the weighted layers (multiplex)** — the weights are *not* equal,
+   and that is the whole game. `lineage` is the clustering backbone; `join_key`
+   and `co_query` reinforce it; `semantic_sim` is weak glue; **`tag_assignment`
+   is the strongest prior** (reuse an existing tag over inventing a domain).
+   Rather than hand-collapse these into one scalar edge weight (lossy, needs
+   tuned coefficients), keep each signal as its own **layer** and let Leiden weigh
+   them via **multiplex** community detection (per-layer weights). `cost` is not a
+   layer — it is a ranking weight saved for L6.
+2. **Seeded community detection (Domains)** — **Leiden** (via `leidenalg`, the
+   reference implementation over `python-igraph`) on the multiplex layers, but
+   *soft-seeded*: existing governed tags seed the partition via `initial_membership`
+   (a **strong prior, not a hard pin** — don't re-derive `Finance` if a `Finance`
+   tag already anchors 18 assets, but *let strong graph evidence override a stale or
+   over-broad tag*), Agent scopes act as **seeds** (a curated "these go together"),
+   and catalog/schema is the **fallback prior** when signals are thin. Leiden is used
+   over Louvain deliberately: Louvain can emit **disconnected communities** (up to
+   ~16% when run iteratively — exactly our recursive-split pattern), whereas Leiden
+   *guarantees* every community and sub-community is connected, at higher modularity
+   and lower runtime.
 3. **Recursive split (Sub-Domains)** — take each Domain community's subgraph and
    run detection again at a **finer resolution**; the sub-communities become
    Sub-Domains. This is what turns `Commercial` into `{Sales, Marketing,
-   Partnerships}` instead of a flat list.
+   Partnerships}` instead of a flat list. Resolution is controlled by the
+   **Constant Potts Model (CPM)** objective with a tunable `γ` — this sidesteps
+   the modularity **resolution limit** (which would otherwise bury small domains
+   next to large ones), giving one interpretable granularity knob.
 4. **Centrality + naming** — betweenness / degree centrality on the **lineage
    subgraph** picks the load-bearing anchor of each cluster (the spine everything
    joins to) — the MV-D35 headline chip; then LLM naming turns the anonymous
    cluster into `"Commercial"` using the company prior + Context Pack
    `industry`/`canonical_domains` as a **vocabulary** prior (never structure, §6);
    finally each cluster is bound to L3's dedupe verdict → **REUSE** an existing
-   tag or **CREATE** a new one.
+   tag, **CREATE** a new one, or — when the soft seed let the graph move assets
+   *away* from an existing tag beyond a confidence margin — **REASSIGN** (a conflict
+   proposal flagged for human adjudication, never an auto-switch).
 
 | Building block | Reuse anchor |
 |---|---|
-| Weighted edge fusion | L2 graph + provenance weights (new, thin) |
-| Community detection (Domains) | `igraph`/`networkx` Louvain in the GSO batch job (§11.1) |
-| Recursive resolution split (Sub-Domains) | same library, per-subgraph second pass |
+| Multiplex layer assembly | L2 graph + provenance weights (new, thin) |
+| Community detection (Domains) | `leidenalg` Leiden over `python-igraph` — multiplex layers + soft-seeded (`initial_membership`), CPM objective — in the GSO batch job (§11.1) |
+| Recursive resolution split (Sub-Domains) | same library, per-subgraph second pass at a finer CPM `γ` |
 | Lineage centrality (load-bearing anchor) | betweenness/degree on the `lineage` subgraph → MV-D35 |
 | Cluster naming | `llm_utils.call_serving_endpoint` + Context Pack vocabulary (§6) |
-| Reuse-vs-create binding | L3 verdicts (already computed) |
+| Reuse / create / reassign binding | L3 verdicts + soft-seed conflict check (`reassign` = human-adjudicated in 17g) |
 | Persist the tree | `genie_ont_*` Delta + Lakebase mirror |
 
+**Soft seeding + reassignment (the human-in-the-loop rule).** Because the seed is
+soft, the graph can disagree with an existing governed tag. The engine never silently
+honours a stale tag *and never silently switches one*: when a cluster's membership
+contradicts a tag beyond a confidence margin `τ_reassign`, it emits a **`reassign`**
+(conflict) proposal — carrying the evidence for the disagreement (shared spine,
+co-query pattern, the members that pulled away) — for a human to approve or dismiss in
+17g. Below `τ_reassign` the engine stays conservative and proposes **`reuse`** (honour
+the tag), keeping the reviewer's queue small (the zero-burden ethos). Approve/dismiss
+is recorded in `genie_ont_consents`/`genie_ont_suppressions`; a dismissed reassignment
+is suppressed on future runs (MV-D26), which is what removes soft seeding's churn risk;
+and the actual `SET TAG` happens only in the Phase-5 (L9) consented apply. So soft
+seeding buys evidence-first correction *without* auto-switching and *without* churn.
+
 L4 emits the **Domain → Sub-Domain tree** — each node carrying evidence chips
-(shared spine, N co-queries, cost share) and a reuse/create decision — into
+(shared spine, N co-queries, cost share) and a reuse / create / reassign decision — into
 **L5** (which mines each sub-domain's measures into Pages) and **L8** (the 17.0b
 taxonomy tree and the 17.0d Domain draft).
 
@@ -461,7 +489,7 @@ taxonomy tree and the 17.0d Domain draft).
  │     tag_assignment ▓▓▓▓▓ STRONGEST prior (reuse>invent)         │
  │     agent_scope ▓▓▓ seed     semantic_sim ▓ weak glue           │
  │                        │                                        │
- │  ② COMMUNITY DETECTION (Louvain, coarse)  ← seeded by tags/     │
+ │  ② COMMUNITY DETECTION (Leiden, coarse)   ← seeded by tags/     │
  │                        │                     agents/schema      │
  │                        ▼        coarse communities = DOMAINS    │
  │        ┌───────────────┴───────────────┐                        │
@@ -493,11 +521,13 @@ recursive split separates the dense `finance.sales.*` lineage from
 the highest betweenness → the anchor chip; the LLM names it `Commercial`; and
 L3 says a `Commercial` tag already exists → **REUSE**.
 
-**Honest gap.** Community detection is sensitive to the **resolution parameter**
-(too coarse → one mega-domain; too fine → singletons) and to weight calibration;
-the exact algorithm and params are left as an open choice (§11.1), with the
-tag/Agent seeding as the stabiliser until real estate graphs are available to
-tune against.
+**Honest gap.** Community detection is still sensitive to the resolution knob
+(CPM `γ`: too low → one mega-domain; too high → singletons) and to per-layer
+weight calibration; the algorithm is now fixed (Leiden / CPM, §11.1) but `γ` and
+the layer weights are exposed as tunable constants, with the soft tag/Agent seeding
+(`initial_membership`) plus the reassignment ledger as the stabiliser until real
+estate graphs are available to tune against. `τ_reassign` is likewise a tunable
+constant — set conservatively so only strong tag disagreements surface for review.
 
 ### The Page miners (L5), in building blocks
 
@@ -1006,6 +1036,19 @@ Refs: [managed MCP servers](https://docs.databricks.com/aws/en/agents/mcp-tools/
 
 ## 7. The data model (extends the GSO precedent)
 
+**Grain: the METASTORE, not the workspace (MV-D49).** Domains/Sub-Domains are
+governed tags and Pages are Discover artifacts — both metastore-scoped — and the
+substrate (metric views, tables, lineage, `system.tags.governed_tags`) is Unity
+Catalog, also metastore-level and read with no workspace filter (bounded only by
+the MV-D42 catalog allowlist). So every `genie_ont_*` table is keyed by
+**`metastore_id`**, the idempotent MERGE's `WHEN NOT MATCHED BY SOURCE DELETE` is
+**metastore-scoped**, and the batch runs **once per metastore** (the idempotent
+MERGE makes a single scheduled runner safe; duplicate installs converge).
+`workspace_id` is retained only as **provenance** (which install triggered a run;
+which workspace an Agent lives in) — never as a partition key. The shipped 17d/17e
+code is still `workspace_id`-keyed and is reconciled to this grain by the dedicated
+re-grain phase (`ontology-regrain-build.md`) before 17f.
+
 Named `genie_ont_*` to sit beside `genie_opt_mv_*` in the same GSO
 catalog/schema, written by the job, mirrored to Lakebase for the page:
 
@@ -1073,10 +1116,18 @@ footprint, MV-D46 governed web-search MCP, MV-D47 AI Gateway MCP context-source
 registry) fold in the Lakebase Search + AI Gateway MCP choices. The leans became
 the decisions:
 
-1. **Compute engine for the graph** → **MV-D39: in-job `igraph`** (comfortable to
-   ~10⁵ nodes) inside the GSO wheel, with Spark **GraphFrames** as the
-   escalation-only path if an account overflows memory. The L2 builder hides the
-   algorithm behind one interface so the swap stays local.
+1. **Compute engine + algorithm for the graph** → **MV-D39: in-job Leiden**
+   (`leidenalg` over `python-igraph`, comfortable to ~10⁵ nodes) inside the GSO
+   wheel — multiplex layers + soft-seeded (`initial_membership`) + CPM objective,
+   with soft-seed disagreements surfaced as human-adjudicated `reassign` proposals
+   (17g), never auto-switches. Leiden is
+   chosen over Louvain (which can emit disconnected communities under the
+   recursive split) and over Spark **GraphFrames** (LPA-only — no Leiden — and a
+   Scala JAR awkward on the serverless job, `environment_version 4`, where the
+   `leidenalg`/`igraph` manylinux wheels install via pip with zero cluster
+   libraries). GraphFrames stays the documented escalation-only path if an
+   account's fused graph overflows job memory. The L2 builder hides the algorithm
+   behind one interface so the swap stays local.
 2. **Similarity substrate** → **MV-D40: Lakebase Search** (`lakebase_vector` ANN
    + `lakebase_text` BM25) on the **already-installed** Lakebase — not a separate
    managed Vector Search service; embeddings reuse the existing `databricks-gte-
@@ -1115,6 +1166,6 @@ Three further component decisions bound the install footprint and enrichment:
 **Build sequencing.** With these closed, the engine is buildable in phases. The
 first Goal-Mode slice is the read-only spine (preflight → OBO inventory →
 tag/lineage taxonomy → serve 17.0a/b/c), specified in
-`ontology-phase1-build.md`; clustering sophistication (MV-D39 `igraph` Louvain),
+`ontology-phase1-build.md`; clustering sophistication (MV-D39 Leiden via `leidenalg`),
 Lakebase Search dedupe (MV-D40), the nightly batch (MV-D41), external enrichment
 (MV-D44/D46), and the `SET TAG` apply (L9) land in later phases.

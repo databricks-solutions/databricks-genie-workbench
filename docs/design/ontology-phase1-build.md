@@ -58,7 +58,7 @@ new** and writes **nothing**.
 | MV-D36 standalone admin-gated estate page | **Active** — new top-level nav, admin-gated. |
 | MV-D37 governed-tag substrate + Tags lens | **Active (read-only)** — enumerate/dedupe; **no** `CREATE/SET TAG`. |
 | MV-D38 external enrichment | **Dormant** — absent entirely (not even toggled). |
-| MV-D39 in-job `igraph` clustering | **Dormant** — taxonomy is tag-derived, no Louvain. |
+| MV-D39 in-job Leiden clustering | **Dormant** — taxonomy is tag-derived, no clustering. |
 | MV-D40 Lakebase Search similarity | **Dormant** — dedupe is exact + fuzzy in-process only; no embeddings, Lakebase Search not enabled (Phase 3). |
 | MV-D41 nightly batch | **Dormant** — Phase 1 is live-read + TTL cache (GenieWatch model). |
 | MV-D42 catalog allowlist | **Active** — scopes every reader. |

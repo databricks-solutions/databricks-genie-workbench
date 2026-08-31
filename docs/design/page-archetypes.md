@@ -266,7 +266,7 @@ Search embeddings), **company prior** (Settings company name → industry taxono
 
 Methods:
 - **Domains / Sub-Domains** — cluster the asset graph by catalog/schema prior +
-  community detection (Louvain / label-propagation) on lineage + join-key edges
+  community detection (Leiden via `leidenalg`) on lineage + join-key edges
   + co-query co-occurrence + Agent-table-set priors + existing-tag reuse, named
   by LLM with the company prior. Sub-Domains = finer communities in a Domain.
 - **Pages** — mine measures (routing), same-term conflicts (disambiguation),

@@ -64,7 +64,7 @@ HARD GUARDRAILS (do not violate):
   - Reader swap degrades, never blocks: mirror when fresh, else the Phase-1 live-SP
     path (MV-D43). Never block a request on the job.
   - Do NOT pull forward §12: no proposals, no embeddings, no Lakebase Search (do NOT
-    enable it — irreversible), no clustering/Louvain, no external context/web search,
+    enable it — irreversible), no clustering, no external context/web search,
     no SET TAG apply.
   - NO DEPLOY: no scripts/deploy.sh, no databricks bundle deploy, no uvicorn/npm run
     dev, no running the job on a real workspace, no enabling Lakebase Search.
