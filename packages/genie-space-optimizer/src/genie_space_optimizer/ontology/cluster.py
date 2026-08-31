@@ -6,24 +6,28 @@ bound to a REUSE / CREATE / REASSIGN governed-tag decision (a *proposal field* �
 never a UC write). Written by ``materialize.py`` into ``genie_ont_domains`` +
 ``genie_ont_members``.
 
-The four building blocks (architecture §5, MV-D39):
+The building blocks (architecture §5, MV-D39 + Stage-1 MV-D51/52/53):
 
-  1. **Assemble weighted layers (multiplex).** The fused heterograph's edge kinds
-     each become their OWN ``leidenalg`` layer with a per-layer weight — never
-     hand-collapsed to one scalar. Structural signals (``lineage_adjacency`` backbone,
-     ``join_key``, ``co_query``, ``semantic_sim`` weak glue) are asset<->asset directly;
-     the strong PRIORS (``tag_assignment`` strongest, ``agent_scope`` seed) are
-     projected to asset<->asset cliques. ``cost`` is a ranking weight (L6), not a layer.
-  2. **Soft-seeded community detection (Domains).** Leiden via ``leidenalg`` over
-     ``python-igraph`` with the **CPM** objective; existing governed tags + Agent
-     scopes seed the partition via ``initial_membership`` — a STRONG but SOFT prior
-     (``is_membership_fixed`` is never set, so strong graph evidence can still move a
-     mis-seeded node). Catalog/schema is the thin-signal fallback prior. Leiden (not
-     Louvain) guarantees every community is internally connected.
+  0. **Facet routing (MV-D51).** Before a governed tag can seed or bind a Domain it
+     is classified (``transforms.classify_tag``): FACET tags (sensitivity / tier /
+     quality / lifecycle / synthetic / certification / demo / team …) are dropped from
+     the tag priors entirely — a Domain names WHAT DATA IS ABOUT, not an attribute OF it.
+  1. **Rules-first Domain grouping (MV-D53).** Assets group DETERMINISTICALLY where a
+     strong signal is decisive, in precedence: curated domain tag (an aboutness tag that
+     acts as a governance domain) → FK-connected component (``join_key``) → metric-view
+     membership → shared schema (edgeless assets only, so structurally-connected assets
+     stay for the clusterer). Each rule stamps a plain ``reason`` into ``evidence``.
+  2. **Leiden on the REMAINDER only (MV-D53, MV-D39 retained).** Assets no rule
+     resolves fall through to soft-seeded multiplex Leiden-CPM over ``python-igraph``:
+     each edge kind is its own layer (per-layer weight; ``tag_assignment`` is demoted to
+     CORROBORATION weight, MV-D52), governed tags + Agent scopes seed via
+     ``initial_membership`` (SOFT — ``is_membership_fixed`` is never set, so strong graph
+     evidence can still move a mis-seeded node → a ``reassign`` proposal), catalog/schema
+     is the thin-signal fallback prior. A leftover community held together ONLY by a tag
+     prior (no structural edge) is dropped — a tag NEVER solo-creates a Domain (MV-D52).
   3. **Recursive split (Sub-Domains).** Re-run detection at a finer CPM ``γ`` on each
-     Domain's induced subgraph, over the STRUCTURAL layers only (the domain tag has
-     already bound the domain — sub-domains are structural); the sub-communities become
-     Sub-Domains.
+     Domain's induced subgraph, over the STRUCTURAL layers only; the sub-communities
+     become Sub-Domains (unchanged from 17e; Stage-2 refines the boundary source).
   4. **Centrality + naming + binding.** Betweenness/degree on the lineage subgraph
      picks the anchor chip; the LLM names the cluster (company prior + member
      identifiers only — degrades to an anchor-derived name, MV-D43); each cluster is
@@ -49,7 +53,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Sequence
 
-from genie_space_optimizer.ontology import er
+from genie_space_optimizer.ontology import er, transforms
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +69,8 @@ GAMMA_FINE = 0.30     # Sub-Domains (per-Domain finer pass, structural layers on
 # absent by design (L6 ranking weight, not a clustering layer).
 LAYER_WEIGHTS: dict[str, float] = {
     "lineage_adjacency": 5.0,   # backbone
-    "join_key": 3.0,            # reinforce (17d emits none yet; forward-compatible)
-    "tag_assignment": 5.0,      # strongest prior (reuse an existing tag over inventing)
+    "join_key": 5.0,            # decisive structural signal (FK) — Stage 1 populates it
+    "tag_assignment": 2.5,      # CORROBORATION, not seed (MV-D52): demoted 5.0 → lineage/2
     "agent_scope": 3.0,         # a curated "these go together" seed
     "co_query": 2.0,            # reinforce
     "semantic_sim": 1.0,        # weak glue
@@ -445,12 +449,155 @@ def _bind_level(
     return result
 
 
+# ── Rules-first Domain grouping (MV-D53) ────────────────────────────────────
+
+
+def _components(vertices: Sequence[str], edges: Sequence[tuple]) -> list[set[str]]:
+    """Connected components over undirected asset↔asset ``edges`` (union-find)."""
+    verts = list(vertices)
+    idx = set(verts)
+    uf = _UF(verts)
+    for e in edges:
+        a, b = e[0], e[1]
+        if a in idx and b in idx:
+            uf.union(a, b)
+    comps: dict[str, set[str]] = {}
+    for v in verts:
+        comps.setdefault(uf.find(v), set()).add(v)
+    return list(comps.values())
+
+
+def _structural_asset_set(struct: dict[str, list[tuple[str, str, float]]]) -> set[str]:
+    """Assets that touch at least one STRUCTURAL asset↔asset edge (so the shared-schema
+    rule can leave them for the clusterer instead of pre-binding them by schema)."""
+    out: set[str] = set()
+    for kind in STRUCTURAL_KINDS:
+        for a, b, _w in struct.get(kind, []):
+            out.add(a)
+            out.add(b)
+    return out
+
+
+def _rules_first_partition(
+    vertices: Sequence[str],
+    *,
+    struct: dict[str, list[tuple[str, str, float]]],
+    tag_members: dict[str, set[str]],
+    agent_members: dict[str, set[str]],
+    mv_members: dict[str, set[str]],
+    schema_members: dict[str, set[str]],
+    curated_domain_keys: set[str],
+) -> tuple[list[tuple[frozenset[str], str]], set[str]]:
+    """Group assets DETERMINISTICALLY where a signal is decisive (MV-D53), in
+    precedence: curated domain tag → FK-connected component → metric-view membership →
+    shared schema (edgeless assets only). Each group carries a plain reason. Returns
+    ``(rule_groups, remainder)`` — the remainder falls through to Leiden."""
+    resolved: set[str] = set()
+    groups: list[tuple[set[str], str]] = []
+
+    def emit(members: set[str], reason: str, *, min_size: int) -> None:
+        ms = {m for m in members if m not in resolved}
+        if len(ms) < min_size:
+            return
+        groups.append((ms, reason))
+        resolved.update(ms)
+
+    # R1 — curated domain tag (authoritative): the tag's own members + its sub-tags'.
+    for dkey in sorted(curated_domain_keys):
+        members = set(tag_members.get(dkey, set()))
+        for sk, mem in tag_members.items():
+            if sk.startswith(dkey + "/"):
+                members |= mem
+        emit(members, f"grouped by curated domain tag: {dkey}", min_size=1)
+
+    # R2 — FK-connected component (+ shared-join proxy): components over join_key edges.
+    jk = struct.get("join_key", [])
+    if jk:
+        remaining = [v for v in vertices if v not in resolved]
+        for comp in sorted(_components(remaining, jk), key=lambda c: (-len(c), sorted(c)[0] if c else "")):
+            emit(comp, "grouped by foreign key / shared join column", min_size=2)
+
+    # R3 — metric-view membership: an MV's source tables form a curated group.
+    for mv, mem in sorted(mv_members.items()):
+        emit(set(mem), f"grouped by metric view: {mv}", min_size=2)
+
+    # R4 — shared schema: EDGELESS assets only (structurally-connected assets stay for
+    # the clusterer so the soft-seed reassignment path is preserved).
+    structural_assets = _structural_asset_set(struct)
+    for sk, mem in sorted(schema_members.items()):
+        emit({m for m in mem if m not in structural_assets}, f"grouped by shared schema: {sk}", min_size=2)
+
+    remainder = {v for v in vertices if v not in resolved}
+    return [(frozenset(m), r) for (m, r) in groups], remainder
+
+
+def _leiden_communities(
+    subset: set[str],
+    *,
+    struct: dict[str, list[tuple[str, str, float]]],
+    tag_members: dict[str, set[str]],
+    agent_members: dict[str, set[str]],
+    gamma: float,
+) -> list[set[str]]:
+    """Soft-seeded multiplex Leiden over the REMAINDER only (MV-D53). Structural layers
+    direct + tag/agent priors projected to cliques (restricted to ``subset``); the
+    thin-signal fallback prior is the catalog.schema prefix. Mirrors the shipped 17e
+    coarse pass, now scoped to the assets no rule resolved."""
+    verts = sorted(subset)
+    if not verts:
+        return []
+
+    coarse_layers: dict[str, list[tuple[str, str, float]]] = {}
+    for kind in STRUCTURAL_KINDS:
+        pairs = [(a, b, w) for (a, b, w) in struct.get(kind, []) if a in subset and b in subset]
+        if pairs:
+            coarse_layers[kind] = pairs
+    tag_clique = _clique_edges([{a for a in mem if a in subset} for mem in tag_members.values()])
+    agent_clique = _clique_edges([{a for a in mem if a in subset} for mem in agent_members.values()])
+    if tag_clique:
+        coarse_layers["tag_assignment"] = tag_clique
+    if agent_clique:
+        coarse_layers["agent_scope"] = agent_clique
+
+    uf = _UF(verts)
+    for grp in list(tag_members.values()) + list(agent_members.values()):
+        ms = sorted(a for a in grp if a in subset)
+        for other in ms[1:]:
+            uf.union(ms[0], other)
+    seeded = {v for v in verts if uf.find(v) != v}
+    by_prefix: dict[str, list[str]] = {}
+    for v in verts:
+        if v not in seeded:
+            by_prefix.setdefault(_schema_prefix(v), []).append(v)
+    for grp in by_prefix.values():
+        for other in grp[1:]:
+            uf.union(grp[0], other)
+    roots = sorted({uf.find(v) for v in verts})
+    root_idx = {r: i for i, r in enumerate(roots)}
+    seed_membership = [root_idx[uf.find(v)] for v in verts]
+
+    mem = _run_multiplex(verts, coarse_layers, gamma=gamma, seed_membership=seed_membership)
+    return [set(c) for c in _communities(verts, mem)]
+
+
+def _has_internal_structure(community: set[str], struct: dict[str, list[tuple[str, str, float]]]) -> bool:
+    """True iff the community holds ≥1 internal STRUCTURAL asset↔asset edge — i.e. it is
+    NOT held together only by a tag/agent prior. A tag never solo-creates a Domain
+    (MV-D52), so a Leiden community with no internal structure is dropped."""
+    for kind in STRUCTURAL_KINDS:
+        for a, b, _w in struct.get(kind, []):
+            if a in community and b in community:
+                return True
+    return False
+
+
 def cluster(
     signal_graph: dict[str, Any],
     *,
     identity: Sequence[Any] | None = None,
     company: str | None = None,
     namer: Namer | None = None,
+    facet_tiebreaker: Callable[[str], bool | None] | None = None,
     gamma_coarse: float = GAMMA_COARSE,
     gamma_fine: float = GAMMA_FINE,
 ) -> list[DomainProposal]:
@@ -458,11 +605,14 @@ def cluster(
 
     ``identity`` is 17d's ER verdicts (duck-typed ``.verdict``/``.members``) used to
     collapse duplicate tags to canonical seeds; ``namer`` is injected for tests (the
-    real job passes :func:`default_namer`). Deterministic and offline.
+    real job passes :func:`default_namer`). ``facet_tiebreaker`` is an optional injected
+    facet/aboutness resolver for genuinely ambiguous tag names (degrades, MV-D43).
+    Rules-first (MV-D53): decisive signals group deterministically, Leiden handles the
+    remainder. Deterministic and offline.
     """
     canon_tag = _tag_canonical_map(identity)
 
-    # ── Collect asset<->asset structural signals + tag/agent hub memberships. ───
+    # ── Collect asset<->asset structural signals + tag/agent/MV/schema memberships. ─
     asset_type: dict[str, str] = {}
     for nd in signal_graph.get("nodes", []):
         if _is_asset(nd["id"]):
@@ -471,6 +621,8 @@ def cluster(
     struct: dict[str, list[tuple[str, str, float]]] = {k: [] for k in STRUCTURAL_KINDS}
     tag_members: dict[str, set[str]] = {}     # canonical tag_key -> seeded asset fqns
     agent_members: dict[str, set[str]] = {}
+    mv_members: dict[str, set[str]] = {}      # metric-view fqn -> source asset fqns (R3)
+    schema_members: dict[str, set[str]] = {}  # schema key -> asset fqns (R4)
     for e in signal_graph.get("edges", []):
         kind = e.get("kind", "")
         a = _canon_node(e["src"], canon_tag)
@@ -482,17 +634,30 @@ def cluster(
             tag_members.setdefault(_fqn_of(a), set()).add(_fqn_of(b))
         elif kind == "agent_scope" and _is_asset(b):
             agent_members.setdefault(_fqn_of(a), set()).add(_fqn_of(b))
+        elif kind == "mv_membership" and _is_asset(b):
+            mv_members.setdefault(_fqn_of(a), set()).add(_fqn_of(b))
+        elif kind == "schema_affinity" and _is_asset(b):
+            schema_members.setdefault(_fqn_of(a), set()).add(_fqn_of(b))
 
-    # Asset vertex universe (everything the layers or hubs touch).
+    # Facet routing (MV-D51): a FACET tag names an attribute OF data, not a business
+    # area — drop it from the tag priors so it neither seeds nor binds a Domain.
+    tag_members = {
+        k: m for k, m in tag_members.items()
+        if not transforms.is_facet_tag(k, tiebreaker=facet_tiebreaker)
+    }
+    # A curated domain tag = an aboutness top-level tag that acts as a governance domain
+    # (it has ≥1 sub-tag under the Domain/Sub convention) → the R1 authoritative rule.
+    curated_domain_keys = {t.split("/", 1)[0] for t in tag_members if "/" in t}
+
+    # Asset vertex universe (everything the layers, hubs, or rules touch).
     assets: set[str] = set(asset_type)
     for pairs in struct.values():
         for a, b, _w in pairs:
             assets.add(a)
             assets.add(b)
-    for m in tag_members.values():
-        assets |= m
-    for m in agent_members.values():
-        assets |= m
+    for grp in list(tag_members.values()) + list(agent_members.values()) \
+            + list(mv_members.values()) + list(schema_members.values()):
+        assets |= grp
     vertices = sorted(assets)
     if not vertices:
         return []
@@ -500,48 +665,35 @@ def cluster(
     lineage_pairs = struct["lineage_adjacency"]
     coquery_pairs = struct["co_query"]
 
-    # ── Layers: structural direct + priors as projected cliques (asset-only). ───
-    coarse_layers: dict[str, list[tuple[str, str, float]]] = {
-        k: v for k, v in struct.items() if v
-    }
-    tag_clique = _clique_edges(list(tag_members.values()))
-    agent_clique = _clique_edges(list(agent_members.values()))
-    if tag_clique:
-        coarse_layers["tag_assignment"] = tag_clique
-    if agent_clique:
-        coarse_layers["agent_scope"] = agent_clique
+    # ── Rules-first Domain grouping (MV-D53); Leiden on the remainder only. ──────
+    rule_groups, remainder = _rules_first_partition(
+        vertices, struct=struct, tag_members=tag_members, agent_members=agent_members,
+        mv_members=mv_members, schema_members=schema_members,
+        curated_domain_keys=curated_domain_keys,
+    )
+    domains_with_reason: list[tuple[list[str], str]] = [
+        (sorted(members), reason) for members, reason in rule_groups
+    ]
+    for comm in _leiden_communities(
+        remainder, struct=struct, tag_members=tag_members,
+        agent_members=agent_members, gamma=gamma_coarse,
+    ):
+        # A leftover community with no internal structure is tag-only — a tag never
+        # solo-creates a Domain (MV-D52), so it is dropped rather than surfaced.
+        if _has_internal_structure(comm, struct):
+            domains_with_reason.append((sorted(comm), "grouped by graph community detection"))
+    # Deterministic order (largest first, then first sorted member) so downstream
+    # binding + ids are stable across runs.
+    domains_with_reason.sort(key=lambda mr: (-len(mr[0]), mr[0][0] if mr[0] else ""))
 
-    # ── Soft seed: union tag/agent cliques; assets with no hub fall back to their
-    # catalog.schema prefix. Contiguous re-index -> a valid partition. ──────────
-    uf = _UF(vertices)
-    for grp in list(tag_members.values()) + list(agent_members.values()):
-        ms = sorted(grp)
-        for other in ms[1:]:
-            uf.union(ms[0], other)
-    seeded = {v for v in vertices if uf.find(v) != v}
-    by_prefix: dict[str, list[str]] = {}
-    for v in vertices:
-        if v not in seeded:
-            by_prefix.setdefault(_schema_prefix(v), []).append(v)
-    for grp in by_prefix.values():
-        for other in grp[1:]:
-            uf.union(grp[0], other)
-    roots = sorted({uf.find(v) for v in vertices})
-    root_idx = {r: i for i, r in enumerate(roots)}
-    seed_membership = [root_idx[uf.find(v)] for v in vertices]
-
-    # ── Coarse pass -> Domains. ─────────────────────────────────────────────────
-    coarse_mem = _run_multiplex(vertices, coarse_layers, gamma=gamma_coarse, seed_membership=seed_membership)
-    domains = _communities(vertices, coarse_mem)
-    domain_sets = [set(c) for c in domains]
-
+    domain_sets = [set(m) for m, _ in domains_with_reason]
     domain_level_tags = [t for t in tag_members if "/" not in t]
     domain_binds = _bind_level(domain_sets, domain_level_tags, tag_members)
 
     proposals: list[DomainProposal] = []
-    for community, bind in zip(domains, domain_binds):
+    for (community, reason), bind in zip(domains_with_reason, domain_binds):
         dom = _make_proposal(
-            community, parent_id=None, bind=bind, tag_members=tag_members,
+            community, parent_id=None, bind=bind, reason=reason, tag_members=tag_members,
             agent_members=agent_members, lineage_pairs=lineage_pairs,
             coquery_pairs=coquery_pairs, namer=namer, company=company,
         )
@@ -567,8 +719,8 @@ def cluster(
         sub_binds = _bind_level(sub_sets, sub_level_tags, tag_members)
         for sub, sbind in zip(subs, sub_binds):
             proposals.append(_make_proposal(
-                sub, parent_id=dom.domain_id, bind=sbind, tag_members=tag_members,
-                agent_members=agent_members, lineage_pairs=lineage_pairs,
+                sub, parent_id=dom.domain_id, bind=sbind, reason="sub-domain split by structure",
+                tag_members=tag_members, agent_members=agent_members, lineage_pairs=lineage_pairs,
                 coquery_pairs=coquery_pairs, namer=namer, company=company,
             ))
     return proposals
@@ -579,6 +731,7 @@ def _make_proposal(
     *,
     parent_id: str | None,
     bind: _Bind | None,
+    reason: str,
     tag_members: dict[str, set[str]],
     agent_members: dict[str, set[str]],
     lineage_pairs: list[tuple[str, str, float]],
@@ -587,7 +740,8 @@ def _make_proposal(
     company: str | None,
 ) -> DomainProposal:
     """Build one Domain/Sub-Domain proposal from its asset set + the level's tag
-    binding, attaching evidence (MV-D35)."""
+    binding, attaching evidence (MV-D35). ``reason`` is the plain grouping explanation
+    (MV-D53) stamped into ``evidence`` so every assignment shows WHY it grouped."""
     members = tuple(sorted(assets))
     s = set(members)
     is_sub = parent_id is not None
@@ -632,6 +786,7 @@ def _make_proposal(
         "co_query_count": internal_coquery,
         "tag_prior": level_tag_prior,
         "seed": seed_agents,
+        "reason": reason,
     }
     if conflict is not None:
         evidence["conflict"] = conflict

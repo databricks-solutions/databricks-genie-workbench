@@ -6,11 +6,18 @@ completes it into the full weighted heterograph the design names: it adds the
 ``semantic_sim`` edges that L3 (``er.py``) contributes — every edge carrying its
 per-edge ``source`` + ``as_of`` (the Provenanced discipline).
 
+Stage 1 of the curation redesign (MV-D52) fills in the strong-but-unused
+structural signals as opt-in edge kinds: ``join_key`` (FK/PK + a shared-join-column
+proxy, populating the layer 17d only declared), ``mv_membership`` (a metric view →
+its source tables, hub-projected), and ``schema_affinity`` (assets sharing a schema,
+hub-projected). All are readable from ``information_schema`` / MV YAML with no new
+dependency; each edge stamps a ``source`` so the clusterer can name the reason.
+
 There is still **NO clustering / no Louvain / no community detection** here
 (MV-D39 stays a scaffolded dependency; communities are 17e). Pure and offline: no
-I/O, no graph library (``igraph`` is 17e). The extra edge kinds are opt-in — a
+I/O, no graph library (``igraph`` is 17e). Every extra edge kind is opt-in — a
 caller that passes only ``graph`` (+ ``lineage_edges``) gets the exact Phase-2
-scaffold back, so existing callers/tests are unchanged.
+scaffold back, so existing callers/tests are byte-identical.
 """
 
 from __future__ import annotations
@@ -31,6 +38,9 @@ def build_signal_graph(
     agent_scopes: dict[str, list[str]] | None = None,
     costs: dict[str, float] | None = None,
     semantic_sim_edges: Iterable[tuple] | None = None,
+    join_key_edges: Iterable[tuple] | None = None,
+    mv_membership: dict[str, list[str]] | None = None,
+    schema_affinity: dict[str, list[str]] | None = None,
     as_of: str | None = None,
 ) -> dict[str, Any]:
     """Return ``{"nodes": [...], "edges": [...]}`` — the fused heterograph.
@@ -41,6 +51,16 @@ def build_signal_graph(
     ``tag_assignment``, ``lineage_adjacency``, ``co_query`` (asset↔asset), and
     ``agent_scope`` (agent→asset); ``semantic_sim`` edges (from L3) are appended when
     supplied. No weights beyond an optional per-edge ``weight``; no clusters.
+
+    Stage-1 structural signals (MV-D52), all opt-in:
+    - ``join_key_edges``: asset↔asset FK/PK + shared-join-column proxy edges, kind
+      ``join_key``. Each item is ``(a, b)`` | ``(a, b, weight)`` | ``(a, b, weight,
+      source)``; ``source`` defaults to ``"foreign_key"`` (use ``"shared_join_column"``
+      for the lower-weight proxy) so the clusterer can name the grouping reason.
+    - ``mv_membership``: ``{mv_fqn: [source_table_fqn, ...]}``. Emits a metric-view hub
+      node (``mv:<fqn>``) → each source asset, kind ``mv_membership``.
+    - ``schema_affinity``: ``{schema_key: [asset_fqn, ...]}``. Emits a schema hub node
+      (``schema:<key>``) → each asset, kind ``schema_affinity``.
     """
     stamp = as_of or graph.get("as_of") or _now_iso()
     costs = costs or {}
@@ -111,6 +131,35 @@ def build_signal_graph(
         if b not in seen:
             add_node(b, "node")
         add_edge(a, b, "semantic_sim", "embedding", weight)
+
+    # Join-key structural edges (Stage 1, MV-D52): FK/PK relationships +
+    # shared-join-column proxies, asset↔asset. Accepts ``(a, b)`` | ``(a, b, weight)``
+    # | ``(a, b, weight, source)``; ``source`` names FK vs proxy for the grouping reason.
+    for item in join_key_edges or []:
+        a, b = item[0], item[1]
+        weight = item[2] if len(item) > 2 else None
+        source = item[3] if len(item) > 3 else "foreign_key"
+        add_asset(a)
+        add_asset(b)
+        add_edge(f"asset:{a}", f"asset:{b}", "join_key", source, weight)
+
+    # Metric-view membership (Stage 1, MV-D52): an MV → its source tables, projected
+    # from a metric-view hub node so the clusterer can group an MV's sources.
+    for mv_fqn, sources in (mv_membership or {}).items():
+        mv_node = f"mv:{mv_fqn}"
+        add_node(mv_node, "metric_view")
+        for src in sources:
+            add_asset(src)
+            add_edge(mv_node, f"asset:{src}", "mv_membership", "metric_view")
+
+    # Schema affinity (Stage 1, MV-D52): assets sharing a schema (esp. named business
+    # areas), projected from a schema hub node.
+    for schema_key, fqns in (schema_affinity or {}).items():
+        schema_node = f"schema:{schema_key}"
+        add_node(schema_node, "schema")
+        for fqn in fqns:
+            add_asset(fqn)
+            add_edge(schema_node, f"asset:{fqn}", "schema_affinity", "information_schema")
 
     return {"nodes": nodes, "edges": edges}
 

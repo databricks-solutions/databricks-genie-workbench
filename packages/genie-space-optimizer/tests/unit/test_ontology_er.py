@@ -172,6 +172,50 @@ def test_fake_lakebase_backend_parity_with_in_process():
     assert shape(in_proc) == shape(fake_lb)
 
 
+# ── Map-not-merge across bounded contexts (MV-D60) ──────────────────────────
+
+
+def test_same_name_different_context_stays_distinct_and_maps():
+    # "customer" in two contexts is the same real-world noun in different roles — it
+    # must NOT collapse to one canonical entity; instead a same-as correspondence maps it.
+    cands = [
+        C("sales.customer", "tag", "customer", "customer", context="Sales"),
+        C("support.customer", "tag", "customer", "customer", context="Support"),
+    ]
+    corr: list = []
+    v = er.run_er(cands, backend=similarity.InProcessCosineBackend(), vectors={},
+                  adjudicator=None, correspondences=corr)
+    # Two distinct canonical entities (kept distinct), not one merged group.
+    assert _canonical_of(v, "sales.customer") != _canonical_of(v, "support.customer")
+    # A typed same-as correspondence was recorded instead of a merge.
+    assert len(corr) == 1
+    c = corr[0]
+    assert c.relation == "same-as" and {c.context_a, c.context_b} == {"Sales", "Support"}
+
+
+def test_same_context_still_merges_exact_duplicates():
+    # Within ONE context, exact duplicates still merge (map-not-merge is cross-context).
+    cands = [
+        C("sales.customer", "tag", "customer", "customer", context="Sales"),
+        C("sales.customers", "tag", "customer", "customer", context="Sales"),
+    ]
+    corr: list = []
+    v = er.run_er(cands, backend=similarity.InProcessCosineBackend(), vectors={},
+                  adjudicator=None, correspondences=corr)
+    assert _canonical_of(v, "sales.customer") == _canonical_of(v, "sales.customers")
+    assert corr == []  # no cross-context map — same context
+
+
+def test_contextless_candidates_are_byte_identical_to_before():
+    # The default (no context) path is unchanged: exact-name dupes merge as always.
+    cands = [
+        C("m.order_revenue", "measure", "order_revenue", "order_revenue"),
+        C("m.orders_revenue", "measure", "orders_revenue", "orders_revenue"),
+    ]
+    v = er.run_er(cands, backend=similarity.InProcessCosineBackend(), vectors={}, adjudicator=None)
+    assert len(v) == 1 and v[0].verdict == "merge"
+
+
 # ── PII firewall ─────────────────────────────────────────────────────────────
 
 

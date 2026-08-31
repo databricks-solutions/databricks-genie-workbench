@@ -295,6 +295,86 @@ def test_empty_graph_yields_no_proposals():
 # ── Canonical collapse: duplicate tags do not double-seed ───────────────────
 
 
+# ── Rules-first grouping (Stage 1, MV-D51/52/53) ────────────────────────────
+
+
+def test_fk_connected_component_domain_with_no_tag():
+    # No governed tag at all — a foreign-key-connected component still forms a Domain.
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        join_key_edges=[
+            ("c.rev.fact_revenue", "c.rev.dim_route"),
+            ("c.rev.fact_revenue", "c.rev.dim_fare"),
+        ],
+    )
+    domains = [p for p in cluster.cluster(sig, namer=lambda i, a, c: "Revenue") if p.parent_id is None]
+    assert len(domains) == 1
+    assert set(domains[0].members) == {"c.rev.fact_revenue", "c.rev.dim_route", "c.rev.dim_fare"}
+    assert domains[0].tag_decision == "create"  # no tag to reuse
+    assert "foreign key" in domains[0].evidence["reason"]
+
+
+def test_shared_schema_domain_with_no_tag():
+    # Assets sharing a schema (no tag, no lineage) group by the shared-schema rule.
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        schema_affinity={"c.loyalty": ["c.loyalty.members", "c.loyalty.tiers"]},
+    )
+    domains = [p for p in cluster.cluster(sig, namer=lambda i, a, c: None) if p.parent_id is None]
+    assert len(domains) == 1
+    assert set(domains[0].members) == {"c.loyalty.members", "c.loyalty.tiers"}
+    assert "shared schema" in domains[0].evidence["reason"]
+
+
+def test_metric_view_membership_domain_with_no_tag():
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        mv_membership={"c.metrics.rev_mv": ["c.rev.fact", "c.rev.dim"]},
+    )
+    domains = [p for p in cluster.cluster(sig, namer=lambda i, a, c: None) if p.parent_id is None]
+    assert len(domains) == 1
+    assert set(domains[0].members) == {"c.rev.fact", "c.rev.dim"}
+    assert "metric view" in domains[0].evidence["reason"]
+
+
+def test_tag_only_single_asset_makes_no_domain():
+    # A governed tag on one asset, with no structural signal, no longer creates a
+    # single-asset Domain (MV-D52 — a tag never solo-creates a Domain).
+    sig = graph.build_signal_graph({"tags": [{"tag_key": "Widget", "members": [{"fqn": "c.s.only"}]}]})
+    assert cluster.cluster(sig, namer=lambda i, a, c: None) == []
+
+
+def test_facet_tag_never_becomes_a_domain():
+    # A FACET tag (Data Tier) is routed out of candidacy; its assets carry no other
+    # signal, so no Domain is created and no proposal reuses the facet tag.
+    sig = graph.build_signal_graph(
+        {"tags": [{"tag_key": "Data Tier", "members": [{"fqn": "c.s.a"}, {"fqn": "c.s.b"}]}]}
+    )
+    props = cluster.cluster(sig, namer=lambda i, a, c: None)
+    assert all("Data Tier" != (p.tag_key or "") for p in props)
+
+
+def test_leiden_runs_only_on_the_remainder():
+    # An FK component is resolved by a rule; a separate lineage-only pair falls through
+    # to Leiden. Each carries its own reason — rules first, clustering for the rest.
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        [("c.a.x", "c.a.y")],                     # lineage-only pair → Leiden remainder
+        join_key_edges=[("c.b.p", "c.b.q")],      # FK pair → rule-resolved
+    )
+    reasons = {
+        frozenset(p.members): p.evidence["reason"]
+        for p in cluster.cluster(sig, namer=lambda i, a, c: None) if p.parent_id is None
+    }
+    assert "foreign key" in reasons[frozenset({"c.b.p", "c.b.q"})]
+    assert "community detection" in reasons[frozenset({"c.a.x", "c.a.y"})]
+
+
+def test_every_proposal_carries_a_plain_reason():
+    for p in cluster.cluster(_commercial_graph(), namer=_schema_namer):
+        assert isinstance(p.evidence.get("reason"), str) and p.evidence["reason"]
+
+
 def test_duplicate_tags_collapse_to_canonical_seed():
     # 17d merged Finance/finance -> they must not seed two rival domains.
     sig = graph.build_signal_graph(

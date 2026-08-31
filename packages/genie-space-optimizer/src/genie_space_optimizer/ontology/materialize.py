@@ -53,6 +53,11 @@ class MaterializeReader(Protocol):
     def metric_view_fqns(self, allowlist: list[str]) -> list[str]: ...
     def agents(self) -> list[str]: ...
     def lineage_edges(self, allowlist: list[str]) -> list[tuple[str, str]]: ...
+    # Stage-1 structural signals (MV-D52) — optional; the wheel calls them defensively
+    # (an older reader without them degrades to the lineage-only graph, MV-D43).
+    def join_key_edges(self, allowlist: list[str]) -> list[tuple]: ...
+    def mv_membership(self, allowlist: list[str]) -> dict[str, list[str]]: ...
+    def schema_affinity(self, allowlist: list[str]) -> dict[str, list[str]]: ...
     # Phase 3d (17g) L6 inputs — optional; the wheel calls them defensively (an older
     # reader without them degrades to empty, MV-D43). ``suppressions`` is a READ-ONLY
     # fetch of the ledger the backend writes; the wheel never writes it.
@@ -226,6 +231,29 @@ def _gather_page_inputs(reader: Any, allowlist: list[str]) -> dict[str, Any]:
     }
 
 
+def _gather_structural_signals(reader: Any, allowlist: list[str]) -> dict[str, Any]:
+    """Collect the Stage-1 structural grouping signals (MV-D52) from the reader if it
+    surfaces them, else empty (MV-D43 degrade). ``join_key_edges`` (FK + shared-join
+    proxy), ``mv_membership`` (MV → source tables), and ``schema_affinity`` (shared
+    schema) are opt-in ``build_signal_graph`` kwargs; a Phase-2/3b reader without them
+    (or a failed information_schema read) still yields a valid run over lineage alone."""
+    def _call(name: str, default: Any):
+        fn = getattr(reader, name, None)
+        if fn is None:
+            return default
+        try:
+            return fn(allowlist)
+        except Exception as exc:  # noqa: BLE001 — a missing signal never fails the run
+            logger.info("ontology structural signal %s unavailable (%s)", name, exc)
+            return default
+
+    return {
+        "join_key_edges": list(_call("join_key_edges", [])),
+        "mv_membership": dict(_call("mv_membership", {})),
+        "schema_affinity": dict(_call("schema_affinity", {})),
+    }
+
+
 def _gather_usage(reader: Any, allowlist: list[str]) -> dict[str, float]:
     """The L2 usage/cost signal (fqn → pre-normalized [0,1] demand) for the L6 blend,
     if the reader surfaces it, else empty (MV-D43 degrade — a reader without it just
@@ -376,7 +404,16 @@ def run_materialize(
         tree = transforms.build_taxonomy_dict(graph_struct, metric_views, agents)
 
         # L2 fused signal graph — the clustering input (17d builds it; 17e consumes it).
-        signal_graph = graph.build_signal_graph(graph_struct, reader.lineage_edges(allowlist))
+        # Stage 1 (MV-D52) feeds in the strong structural signals (FK/shared-join, MV
+        # membership, shared schema) when the reader surfaces them; a reader without them
+        # degrades to the lineage-only graph unchanged (MV-D43).
+        structural = _gather_structural_signals(reader, allowlist)
+        signal_graph = graph.build_signal_graph(
+            graph_struct, reader.lineage_edges(allowlist),
+            join_key_edges=structural["join_key_edges"],
+            mv_membership=structural["mv_membership"],
+            schema_affinity=structural["schema_affinity"],
+        )
 
         # L3 ER / dedupe over the (tag) candidate inventory. Similarity is behind
         # the one interface (in-process cosine default); embeddings + LLM are

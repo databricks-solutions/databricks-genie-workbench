@@ -55,6 +55,24 @@ class DedupeCandidate:
     kind: str           # 'tag' | 'measure' | 'metric_view' | 'agent' | 'page_name'
     name: str
     text: str           # name + comment used for embedding/BM25
+    context: str | None = None  # bounded context (domain/schema) — map-not-merge (MV-D60)
+
+
+# Cross-context correspondence (MV-D60): the same real-world noun legitimately differs
+# by context (customer vs party vs subscriber), so instead of MERGING two contexts we
+# MAP them — recording a typed relation for the Stage-4 [Disambiguation] Page.
+CorrespondenceRelation = Literal["same-as", "role-of", "related"]
+
+
+@dataclass(frozen=True)
+class Correspondence:
+    a_ref: str
+    b_ref: str
+    context_a: str
+    context_b: str
+    relation: CorrespondenceRelation
+    method: Method
+    score: float
 
 
 @dataclass(frozen=True)
@@ -189,12 +207,30 @@ def candidates_from_graph(graph: dict) -> list[DedupeCandidate]:
 # ── The engine ────────────────────────────────────────────────────────────────
 
 
+def _cross_context(a: DedupeCandidate, b: DedupeCandidate) -> bool:
+    """True iff both candidates declare a context and the contexts differ — a
+    would-be merge across bounded contexts becomes a MAP, not a collapse (MV-D60)."""
+    return a.context is not None and b.context is not None and a.context != b.context
+
+
+def _relation(a: DedupeCandidate, b: DedupeCandidate) -> CorrespondenceRelation:
+    """Type a cross-context correspondence: identical name → ``same-as``; one name's
+    tokens contain the other's → ``role-of``; otherwise a near-duplicate → ``related``."""
+    if a.name.casefold() == b.name.casefold():
+        return "same-as"
+    ta, tb = set(transforms._tokens(a.name)), set(transforms._tokens(b.name))
+    if ta and tb and (ta <= tb or tb <= ta):
+        return "role-of"
+    return "related"
+
+
 def run_er(
     candidates: Sequence[DedupeCandidate],
     *,
     backend: SimilarityBackend,
     vectors: dict[str, Sequence[float]] | None = None,
     adjudicator: Adjudicator | None = None,
+    correspondences: list[Correspondence] | None = None,
 ) -> list[DedupeVerdict]:
     """Resolve candidates into canonical entities. Returns one DedupeVerdict per
     canonical group (singletons included), most-merged first.
@@ -203,8 +239,21 @@ def run_er(
     drop the embedding signal for that candidate (string signal still applies).
     ``adjudicator`` is called ONLY for near-tie-band pairs; if it is None or raises,
     those pairs degrade to unmerged/escalate (never a hard failure, MV-D43).
-    """
+
+    Map-not-merge (MV-D60): a would-be merge whose two candidates sit in DIFFERENT
+    bounded contexts is NOT collapsed — the two stay distinct entities, and (when the
+    ``correspondences`` list is supplied) a typed :class:`Correspondence` is recorded
+    for the Stage-4 [Disambiguation] Page. Candidates with no context (the default)
+    behave exactly as before, so the canonical-id scheme and every existing verdict are
+    byte-identical."""
     vectors = vectors or {}
+
+    def _map_not_merge(a: DedupeCandidate, b: DedupeCandidate, method: Method, score: float) -> None:
+        if correspondences is not None:
+            correspondences.append(Correspondence(
+                a_ref=a.ref, b_ref=b.ref, context_a=str(a.context), context_b=str(b.context),
+                relation=_relation(a, b), method=method, score=score,
+            ))
     # 1) PII firewall — drop PII-echoing names entirely (never enter the map).
     survivors = [c for c in candidates if not pii_reject(c.name)]
     by_ref = {c.ref: c for c in survivors}
@@ -225,8 +274,11 @@ def run_er(
         a, b = by_ref[a_ref], by_ref[b_ref]
         # Exact name match is a merge with no scoring needed.
         if a.name.casefold() == b.name.casefold():
-            uf.union(a_ref, b_ref)
-            merge_edge[frozenset((a_ref, b_ref))] = ("exact", 1.0, None)
+            if _cross_context(a, b):
+                _map_not_merge(a, b, "exact", 1.0)  # distinct entities, mapped (MV-D60)
+            else:
+                uf.union(a_ref, b_ref)
+                merge_edge[frozenset((a_ref, b_ref))] = ("exact", 1.0, None)
             continue
 
         cosine, keyword = _pair_scores(a, b, backend, vectors)
@@ -234,8 +286,11 @@ def run_er(
         method: Method = "embedding" if cosine >= keyword else "string"
 
         if best >= MERGE_THRESHOLD:
-            uf.union(a_ref, b_ref)
-            merge_edge[frozenset((a_ref, b_ref))] = (method, best, None)
+            if _cross_context(a, b):
+                _map_not_merge(a, b, method, best)  # distinct entities, mapped (MV-D60)
+            else:
+                uf.union(a_ref, b_ref)
+                merge_edge[frozenset((a_ref, b_ref))] = (method, best, None)
         elif best >= ESCALATE_LOW:
             # Near-tie band — the ONLY pairs the LLM ever sees.
             decision, reason = (None, None)
@@ -246,8 +301,11 @@ def run_er(
                     logger.info("ontology ER adjudication failed (%s); leaving pair unmerged", e)
                     decision, reason = None, None
             if decision is True:
-                uf.union(a_ref, b_ref)
-                merge_edge[frozenset((a_ref, b_ref))] = ("llm", best, reason)
+                if _cross_context(a, b):
+                    _map_not_merge(a, b, "llm", best)  # distinct entities, mapped (MV-D60)
+                else:
+                    uf.union(a_ref, b_ref)
+                    merge_edge[frozenset((a_ref, b_ref))] = ("llm", best, reason)
             elif decision is False:
                 _note_band(a_ref, "reject", "llm", best, reason)
                 _note_band(b_ref, "reject", "llm", best, reason)

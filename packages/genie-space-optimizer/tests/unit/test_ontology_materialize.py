@@ -428,19 +428,36 @@ def test_domain_member_proposals_idempotent_no_dups():
         assert ev["rank"]["tier"] in ("high", "medium", "low", None)
 
 
+class _LineageReader(_FakeReader):
+    """A reader with a custom lineage edge set (the base reader hard-codes one pair)."""
+
+    def __init__(self, catalog_rows, assign_rows, metric_views, agents, *, lineage):
+        super().__init__(catalog_rows, assign_rows, metric_views, agents)
+        self._lineage = lineage
+
+    def lineage_edges(self, allowlist):
+        return self._lineage
+
+
 def test_stale_domains_deleted_when_graph_changes():
     catalog_rows, assign_rows = _fixture_rows()
     writer = _FakeWriter()
     _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
     before = set(writer.tables["genie_ont_domains"])
 
-    # Add a disjoint tagged asset -> the community set changes, so old fingerprints
-    # vanish; NOT MATCHED BY SOURCE deletes the stale domain rows (no orphans).
+    # Add a disjoint, STRUCTURALLY-connected Ops domain (two assets joined by lineage —
+    # a tag alone never solo-creates a Domain, MV-D52). The community set changes, so old
+    # fingerprints vanish; NOT MATCHED BY SOURCE deletes the stale domain rows (no orphans).
     added = catalog_rows + [{"tag_name": "Ops"}]
     added_assign = assign_rows + [
         {"tag_name": "Ops", "catalog_name": "ops", "schema_name": "core", "table_name": "events"},
+        {"tag_name": "Ops", "catalog_name": "ops", "schema_name": "core", "table_name": "summary"},
     ]
-    _run(_FakeReader(added, added_assign, [], []), writer, run_id="r2")
+    reader = _LineageReader(added, added_assign, [], [], lineage=[
+        ("finance.core.ledger", "finance.tax.filings"),
+        ("ops.core.events", "ops.core.summary"),
+    ])
+    _run(reader, writer, run_id="r2")
     after = set(writer.tables["genie_ont_domains"])
     # No stale domain_id survives that is not in the new run's output.
     r2_ids = {k for k, v in writer.tables["genie_ont_domains"].items() if v["run_id"] == "r2"}

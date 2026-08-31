@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Literal
 
 # Reuse the MV-advisor's tier / coverage thresholds (MV-D35) — do NOT fork them.
 # Imported as pure numeric constants from ``common.config`` (no sqlglot/pyspark), so
@@ -219,6 +219,120 @@ def governed_tag_rows(graph: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for t in graph.get("tags", [])
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Facet vs aboutness classification (Stage 1, MV-D51). A Domain names WHAT DATA
+# IS ABOUT (a business area); a FACET describes an attribute OF the data
+# (sensitivity / tier / quality / lifecycle / PII / synthetic / certification /
+# status / team / demo). Facet tags route OUT of domain candidacy. Deterministic,
+# heuristic-first; the LLM tiebreaker is optional and degrades (MV-D43). The pattern
+# list ships as constants here (Stage 3 lifts it to OntologySettings).
+# ─────────────────────────────────────────────────────────────────────────
+
+FacetClass = Literal["facet", "aboutness"]
+
+# Seeded from the live estate (§Appendix A): the "Domains" that are really data
+# attributes. Matched against a normalized (casefold, non-alnum → "_") tag key.
+_FACET_EXACT: frozenset[str] = frozenset({
+    "domain",                 # a tag literally named "Domain"
+    "governance", "certification", "certified",
+    "reference", "open_reference",
+    "data_tier", "tier",
+    "contains_synthetic", "synthetic",
+    "controlled_placeholder", "placeholder",
+    "sensitivity", "pii", "quality", "status", "lifecycle",
+})
+_FACET_PREFIXES: tuple[str, ...] = ("demo", "techsummit")   # demo/demos/demo_domain/techsummit-*
+_FACET_SUFFIXES: tuple[str, ...] = ("_team", "_tier", "_status", "_flag")
+_FACET_SUBSTRINGS: tuple[str, ...] = ("synthetic", "placeholder")
+
+# Values that read as an enumerated flag/tier set (the enum backstop): a tag whose
+# allowed values are a small set drawn from these is describing an attribute, not a
+# business area. Conservative — a business tag's values (region names, product lines)
+# do not sit in this vocabulary.
+_FACET_VALUE_TOKENS: frozenset[str] = frozenset({
+    "public", "internal", "confidential", "restricted", "private", "secret",
+    "low", "medium", "high", "critical",
+    "gold", "silver", "bronze", "platinum",
+    "yes", "no", "true", "false", "y", "n",
+    "bronze", "raw", "curated",
+    "active", "inactive", "deprecated", "retired", "draft", "certified",
+})
+
+
+def _normalize_tag_token(tag_key: str) -> str:
+    """casefold + non-alnum → ``_`` (so ``Data Tier`` / ``Data-Tier`` → ``data_tier``)."""
+    return re.sub(r"[^0-9a-z]+", "_", tag_key.casefold()).strip("_")
+
+
+def _values_look_enumerated(allowed_values: list[str] | None) -> bool:
+    vals = [str(v).strip().casefold() for v in (allowed_values or []) if str(v).strip()]
+    if not (2 <= len(vals) <= 8):
+        return False
+    # Every value is a short single token, and at least one is a known facet value.
+    if not all(len(v) <= 20 and " " not in v for v in vals):
+        return False
+    return any(v in _FACET_VALUE_TOKENS for v in vals)
+
+
+def _facet_name_match(tag_key: str) -> str | None:
+    """The facet pattern a tag's TOP-LEVEL name matches, or None. Classification is on
+    the domain part — a facet is a top-level attribute; sub-tags inherit their parent."""
+    token = _normalize_tag_token(domain_part(tag_key))
+    if not token:
+        return None
+    if token in _FACET_EXACT:
+        return token
+    for p in _FACET_PREFIXES:
+        if token == p or token.startswith(p + "_") or token.startswith(p):
+            return p + "*"
+    for s in _FACET_SUFFIXES:
+        if token.endswith(s):
+            return "*" + s
+    for sub in _FACET_SUBSTRINGS:
+        if sub in token:
+            return "*" + sub + "*"
+    return None
+
+
+def classify_tag(
+    tag_key: str,
+    *,
+    allowed_values: list[str] | None = None,
+    tiebreaker: Callable[[str], bool | None] | None = None,
+) -> tuple[FacetClass, str]:
+    """Classify a governed tag as ``facet`` or ``aboutness`` + a plain reason (MV-D51).
+
+    Order: (1) a name-pattern hit → facet; (2) an enumerated flag/tier value set →
+    facet; (3) an optional injected ``tiebreaker`` (LLM) for the genuinely ambiguous
+    only — ``True`` = facet, ``False`` = aboutness, ``None``/raise = degrade; (4)
+    default → aboutness (a business area). The tiebreaker is never asked when a
+    heuristic already decided, so it is cheap and always optional (MV-D43)."""
+    hit = _facet_name_match(tag_key)
+    if hit is not None:
+        return "facet", f"facet: name matches data-attribute pattern '{hit}'"
+    if _values_look_enumerated(allowed_values):
+        return "facet", "facet: allowed values read as an enumerated flag/tier set"
+    if tiebreaker is not None:
+        try:
+            verdict = tiebreaker(tag_key)
+        except Exception:  # noqa: BLE001 — degrade to the heuristic default
+            verdict = None
+        if verdict is True:
+            return "facet", "facet: classifier tiebreaker"
+        if verdict is False:
+            return "aboutness", "aboutness: classifier tiebreaker"
+    return "aboutness", "aboutness: names a business area"
+
+
+def is_facet_tag(
+    tag_key: str,
+    *,
+    allowed_values: list[str] | None = None,
+    tiebreaker: Callable[[str], bool | None] | None = None,
+) -> bool:
+    return classify_tag(tag_key, allowed_values=allowed_values, tiebreaker=tiebreaker)[0] == "facet"
 
 
 # ─────────────────────────────────────────────────────────────────────────

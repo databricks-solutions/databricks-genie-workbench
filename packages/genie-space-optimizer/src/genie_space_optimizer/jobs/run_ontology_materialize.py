@@ -181,6 +181,81 @@ class SparkSystemTableReader:
         # Structural adjacency only (used by the L2 scaffold; never invents a domain).
         return []
 
+    # ── Stage 1 (MV-D52) structural grouping signals — read as run_as, allowlist-
+    # scoped, degrade to empty on any missing grant (MV-D43). All parsing is the PURE
+    # schema_signals module; this class only issues the queries and hands over rows. ──
+    def _rows_safe(self, sql: str, what: str) -> list[dict[str, Any]]:
+        try:
+            return _rows(sql)
+        except Exception as e:  # noqa: BLE001 — a missing/unreadable grant never blocks
+            _log(f"{what} read skipped", error=str(e))
+            return []
+
+    def _per_catalog(self, allowlist: list[str], relation: str, cols: str, what: str) -> list[dict[str, Any]]:
+        """Read ``<catalog>.information_schema.<relation>`` for each allowlisted catalog
+        (constraint/column metadata is per-catalog, not in system.information_schema),
+        degrading each catalog independently."""
+        out: list[dict[str, Any]] = []
+        for cat in allowlist:
+            ident = "`" + str(cat).replace("`", "``") + "`"
+            out += self._rows_safe(f"SELECT {cols} FROM {ident}.information_schema.{relation}", f"{relation}({cat})")
+        return out
+
+    def join_key_edges(self, allowlist: list[str]) -> list[tuple]:
+        if not allowlist:
+            return []
+        from genie_space_optimizer.ontology import schema_signals
+        rc = self._per_catalog(
+            allowlist, "referential_constraints",
+            "constraint_catalog, constraint_schema, constraint_name, "
+            "unique_constraint_catalog, unique_constraint_schema, unique_constraint_name",
+            "referential_constraints",
+        )
+        kcu = self._per_catalog(
+            allowlist, "key_column_usage",
+            "constraint_catalog, constraint_schema, constraint_name, "
+            "table_catalog, table_schema, table_name, column_name",
+            "key_column_usage",
+        )
+        ccu = self._per_catalog(
+            allowlist, "constraint_column_usage",
+            "constraint_catalog, constraint_schema, constraint_name, "
+            "table_catalog, table_schema, table_name, column_name",
+            "constraint_column_usage",
+        )
+        cols = self._per_catalog(
+            allowlist, "columns", "table_catalog, table_schema, table_name, column_name", "columns",
+        )
+        return schema_signals.join_key_edges(rc, kcu, ccu, cols)
+
+    def mv_membership(self, allowlist: list[str]) -> dict[str, list[str]]:
+        from genie_space_optimizer.ontology import schema_signals
+        mv_fqns = self.metric_view_fqns(allowlist)
+        if not mv_fqns:
+            return {}
+        try:
+            from genie_space_optimizer.optimization.mv_advisor import estate_metric_view_yamls
+            yamls = estate_metric_view_yamls(
+                spark, mv_fqns, w=make_workspace_client(),
+                warehouse_id=os.environ.get("GSO_WAREHOUSE_ID", ""),
+            )
+        except Exception as e:  # noqa: BLE001 — a failed MV-YAML read yields no membership
+            _log("mv_membership read skipped", error=str(e))
+            return {}
+        return schema_signals.mv_membership_map(yamls)
+
+    def schema_affinity(self, allowlist: list[str]) -> dict[str, list[str]]:
+        if not allowlist:
+            return {}
+        from genie_space_optimizer.ontology import schema_signals
+        cats = _in_list(allowlist)
+        rows = self._rows_safe(
+            "SELECT table_catalog, table_schema, table_name FROM system.information_schema.tables "
+            f"WHERE table_catalog IN ({cats}) AND table_type IN ('MANAGED', 'EXTERNAL', 'MANAGED_SHALLOW_CLONE')",
+            "schema_affinity",
+        )
+        return schema_signals.schema_affinity_map(rows)
+
     # ── Phase 3c (17f) L5 Page-miner inputs — best-effort, degrade to [] ─────
     def measure_signals(self, allowlist: list[str]) -> list[Any]:
         """Governed metric-view measures as :class:`pages.MeasureSignal`s (the concept
