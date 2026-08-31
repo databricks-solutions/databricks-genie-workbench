@@ -209,7 +209,7 @@ export default function OntologyPage() {
                 so the refresh action is available; the chip is always informative. */}
             {(tab === "taxonomy" || tab === "tags" || tab === "drafts") && canRender && !emptyScope && (
               <div className="flex justify-end">
-                <FreshnessControls isAdmin={true} />
+                <FreshnessControls isAdmin={true} onOpenSettings={() => setTab("settings")} />
               </div>
             )}
 

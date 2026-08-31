@@ -109,14 +109,14 @@ export interface OntologySettings {
 }
 
 // ── Phase 2: refresh / freshness surface (the one new model) ───────────────
-export type RefreshState = "cold" | "queued" | "running" | "fresh" | "stale" | "failed"
+export type RefreshState = "cold" | "queued" | "running" | "fresh" | "stale" | "failed" | "skipped"
 
 export interface OntologyRefreshStatus {
   state: RefreshState
   source: "mirror" | "live"
   mirror_as_of?: string | null
   last_run_id?: string | null
-  last_run_state: "succeeded" | "failed" | "running" | "none"
+  last_run_state: "succeeded" | "failed" | "running" | "none" | "skipped"
   freshness_window_hours: number
   message?: string | null
 }

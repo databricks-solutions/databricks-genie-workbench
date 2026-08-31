@@ -126,7 +126,7 @@ class OntologySettings(BaseModel):
 # existing payloads now reports the mirror materialization time when served from
 # the mirror, and the live read time on the fallback — the field type is unchanged.
 
-RefreshState = Literal["cold", "queued", "running", "fresh", "stale", "failed"]
+RefreshState = Literal["cold", "queued", "running", "fresh", "stale", "failed", "skipped"]
 
 
 class OntologyRefreshStatus(BaseModel):
@@ -134,7 +134,7 @@ class OntologyRefreshStatus(BaseModel):
     source: Literal["mirror", "live"]  # what the read routes are currently serving
     mirror_as_of: str | None = None  # materialization time of the current mirror (ISO-8601)
     last_run_id: str | None = None
-    last_run_state: Literal["succeeded", "failed", "running", "none"] = "none"
+    last_run_state: Literal["succeeded", "failed", "running", "none", "skipped"] = "none"
     freshness_window_hours: int = 24  # how old the mirror may be before "stale"
     message: str | None = None  # plain-language, zero-burden (e.g. "Updated 3 hours ago")
 

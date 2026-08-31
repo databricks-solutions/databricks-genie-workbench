@@ -58,7 +58,7 @@ def _humanize(hours: float) -> str:
 
 def _map_last_run_state(state) -> str:
     s = str(state or "").lower()
-    if s in {"succeeded", "failed", "running"}:
+    if s in {"succeeded", "failed", "running", "skipped"}:
         return s
     return "none"
 
@@ -78,6 +78,23 @@ def compute_status(head: dict | None, succeeded: dict | None, *, now: datetime |
     elif last_run_state == "running":
         state = "running"
         message = "Refreshing…"
+    elif last_run_state == "skipped":
+        # The last refresh ran with no catalog scope, so it scanned nothing and
+        # (by the materializer's empty-scope guard) preserved the prior snapshot
+        # rather than clearing it. Surface that explicitly — even when a fresh prior
+        # mirror still backs the reads — so a user who forgot to set an allowlist
+        # gets feedback instead of a silent "Updated recently".
+        state = "skipped"
+        if mirror_fresh:
+            message = (
+                "Last refresh scanned nothing — set a catalog allowlist in Settings. "
+                "Showing the last saved snapshot."
+            )
+        else:
+            message = (
+                "Last refresh scanned nothing — set a catalog allowlist in Settings "
+                "to build the ontology."
+            )
     elif succeeded is None:
         if last_run_state == "failed":
             state, message = "failed", "Last refresh didn't finish — showing the live view."

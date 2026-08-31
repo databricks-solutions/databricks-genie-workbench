@@ -93,6 +93,25 @@ def test_status_failed_without_prior_success():
     assert s.state == "failed" and s.source == "live"
 
 
+def test_status_skipped_surfaces_over_fresh_prior_snapshot():
+    # A skipped last-run (empty-scope guard) must be surfaced distinctly even when a
+    # fresh prior snapshot still backs the reads — the user forgot the allowlist and
+    # needs feedback, not a silent "Updated recently".
+    skipped = _run_row("skipped", _NOW, run_id="r2")
+    succ = _run_row("succeeded", _NOW - timedelta(hours=2), run_id="r1")
+    s = refresh.compute_status(skipped, succ, now=_NOW)
+    assert s.state == "skipped" and s.last_run_state == "skipped"
+    assert s.source == "mirror"  # the good snapshot still backs the reads
+    assert "scanned nothing" in s.message and "allowlist" in s.message
+
+
+def test_status_skipped_without_prior_success_points_to_settings():
+    skipped = _run_row("skipped", _NOW)
+    s = refresh.compute_status(skipped, None, now=_NOW)
+    assert s.state == "skipped" and s.source == "live"
+    assert "scanned nothing" in s.message and "Settings" in s.message
+
+
 # ── Trigger idempotency (mock the launcher) ─────────────────────────────────
 
 

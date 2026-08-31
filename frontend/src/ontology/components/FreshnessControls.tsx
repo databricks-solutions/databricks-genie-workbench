@@ -3,13 +3,38 @@
 // "Live view" when serving the live fallback. The admin button POSTs /refresh
 // then polls until the run settles. No jargon about jobs, Delta, or synced tables.
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Loader2, RefreshCw, Zap } from "lucide-react"
+import { AlertTriangle, Loader2, RefreshCw, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { getRefreshStatus, triggerRefresh } from "@/ontology/api"
 import type { OntologyRefreshStatus } from "@/ontology/types"
 
-function Chip({ status }: { status: OntologyRefreshStatus | null }) {
+function Chip({ status, onOpenSettings }: { status: OntologyRefreshStatus | null; onOpenSettings?: () => void }) {
   if (!status) return null
+
+  // A skipped last-run means the refresh scanned nothing (no catalog allowlist).
+  // Surface it distinctly (amber) with a one-click path to fix it, even when a
+  // prior snapshot still backs the reads — otherwise the user gets no feedback.
+  if (status.state === "skipped") {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full border border-warning/40 bg-warning/5 px-2.5 py-1 text-xs text-warning-foreground"
+        title="The last refresh had no catalog scope, so it scanned nothing and kept the previous snapshot"
+      >
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+        {status.message || "Last refresh scanned nothing — set a catalog allowlist in Settings."}
+        {onOpenSettings && (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="ml-0.5 rounded font-semibold underline underline-offset-2 hover:opacity-80"
+          >
+            Set allowlist
+          </button>
+        )}
+      </span>
+    )
+  }
+
   const live = status.source === "live"
   const label = status.message || (live ? "Live view" : "Updated recently")
   return (
@@ -27,7 +52,7 @@ function Chip({ status }: { status: OntologyRefreshStatus | null }) {
   )
 }
 
-export function FreshnessControls({ isAdmin }: { isAdmin: boolean }) {
+export function FreshnessControls({ isAdmin, onOpenSettings }: { isAdmin: boolean; onOpenSettings?: () => void }) {
   const [status, setStatus] = useState<OntologyRefreshStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -74,7 +99,7 @@ export function FreshnessControls({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="flex items-center gap-2">
-      <Chip status={status} />
+      <Chip status={status} onOpenSettings={onOpenSettings} />
       {isAdmin && (
         <Button size="sm" variant="secondary" onClick={onRefresh} disabled={running}>
           {running ? (
