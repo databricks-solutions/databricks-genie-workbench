@@ -67,3 +67,20 @@ def test_new_signals_stamp_as_of_like_existing_edges():
         as_of="2026-08-31T00:00:00+00:00",
     )
     assert all(e["as_of"] == "2026-08-31T00:00:00+00:00" for e in sig["edges"])
+
+
+def test_tag_value_threads_onto_assignment_edge_additively():
+    """Stage 2 (MV-D54): a value-carrying member threads ``tag_value`` onto its
+    assignment edge; a value-free member's edge stays byte-identical (no key)."""
+    sig = graph.build_signal_graph({"tags": [{"tag_key": "mvm_subdomain", "members": [
+        {"fqn": "c.s.a", "tag_value": "fare_pricing"},
+        {"fqn": "c.s.b"},  # value-free -> byte-identical scaffold edge
+    ]}]}, as_of="2026-08-31T00:00:00+00:00")
+    by_dst = {e["dst"]: e for e in sig["edges"] if e["kind"] == "tag_assignment"}
+    assert by_dst["asset:c.s.a"]["tag_value"] == "fare_pricing"
+    # The value-free edge carries EXACTLY the scaffold keys — no tag_value.
+    assert by_dst["asset:c.s.b"] == {
+        "src": "tag:mvm_subdomain", "dst": "asset:c.s.b",
+        "kind": "tag_assignment", "source": "tag_assignment",
+        "as_of": "2026-08-31T00:00:00+00:00",
+    }

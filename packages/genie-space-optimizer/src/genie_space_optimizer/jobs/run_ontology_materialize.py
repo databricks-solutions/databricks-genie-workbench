@@ -136,13 +136,16 @@ class SparkSystemTableReader:
         if not allowlist:
             return []
         cats = _in_list(allowlist)
+        # ``tag_value`` (Stage 2, MV-D54): information_schema *_tags carry the per-
+        # assignment value; a value-carrying tag (``mvm_subdomain``) names a sub-domain.
+        # A value-free tag simply reads NULL — the member dict stays byte-identical.
         sql = (
-            "SELECT tag_name, catalog_name, schema_name, table_name FROM ("
-            f" SELECT tag_name, catalog_name, schema_name, table_name FROM system.information_schema.table_tags WHERE catalog_name IN ({cats})"
+            "SELECT tag_name, catalog_name, schema_name, table_name, tag_value FROM ("
+            f" SELECT tag_name, catalog_name, schema_name, table_name, tag_value FROM system.information_schema.table_tags WHERE catalog_name IN ({cats})"
             " UNION ALL"
-            f" SELECT tag_name, catalog_name, schema_name, CAST(NULL AS STRING) table_name FROM system.information_schema.schema_tags WHERE catalog_name IN ({cats})"
+            f" SELECT tag_name, catalog_name, schema_name, CAST(NULL AS STRING) table_name, tag_value FROM system.information_schema.schema_tags WHERE catalog_name IN ({cats})"
             " UNION ALL"
-            f" SELECT tag_name, catalog_name, CAST(NULL AS STRING) schema_name, CAST(NULL AS STRING) table_name FROM system.information_schema.catalog_tags WHERE catalog_name IN ({cats})"
+            f" SELECT tag_name, catalog_name, CAST(NULL AS STRING) schema_name, CAST(NULL AS STRING) table_name, tag_value FROM system.information_schema.catalog_tags WHERE catalog_name IN ({cats})"
             ")"
         )
         try:

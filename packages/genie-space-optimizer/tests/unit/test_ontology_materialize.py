@@ -364,7 +364,10 @@ def test_run_ledger_one_row_per_run_and_running_then_terminal():
     run = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
     assert list(writer.runs) == ["r1"]  # one header per run_id (upsert)
     assert run["state"] == "succeeded"
-    assert run["tag_count"] == 4 and run["domain_count"] == 1
+    # Stage 2 (MV-D54): the governed ``Finance/Tax`` slash sub-tag surfaces a Tax
+    # sub-domain under the Finance domain (explicit boundary), so the proposal set is
+    # the Finance domain + its Tax sub-domain = 2 rows.
+    assert run["tag_count"] == 4 and run["domain_count"] == 2
 
     # A second run keeps the first run's header — the ledger is history, not a
     # single latest row (guards the upsert-only MERGE for genie_ont_runs).
@@ -660,6 +663,29 @@ def test_signal_graph_scaffold_nodes_and_edges_no_clustering():
     assert edge_kinds == {"tag_assignment", "lineage_adjacency"}
     # Pure structure — no cluster/community keys.
     assert "clusters" not in sig and "communities" not in sig
+
+
+def test_assemble_tag_graph_threads_tag_value_additively():
+    """Stage 2 (MV-D54): a value-carrying assignment threads ``tag_value`` onto its
+    member dict; a value-free assignment yields the exact ``{fqn, asset_type}`` shape
+    (byte-identical), and ``build_taxonomy_dict`` still drops the extra key."""
+    catalog_rows = [{"tag_name": "mvm_subdomain"}, {"tag_name": "Finance"}]
+    assign_rows = [
+        {"tag_name": "mvm_subdomain", "catalog_name": "rev", "schema_name": "core",
+         "table_name": "fares", "tag_value": "fare_pricing"},
+        {"tag_name": "Finance", "catalog_name": "finance", "schema_name": "core", "table_name": "ledger"},
+    ]
+    g = transforms.assemble_tag_graph(catalog_rows, assign_rows, _AS_OF)
+    by_key = {t["tag_key"]: t for t in g["tags"]}
+    assert by_key["mvm_subdomain"]["members"][0] == {
+        "fqn": "rev.core.fares", "asset_type": "table", "tag_value": "fare_pricing"}
+    # Value-free assignment is byte-identical to the pre-Stage-2 member shape.
+    assert by_key["Finance"]["members"][0] == {"fqn": "finance.core.ledger", "asset_type": "table"}
+    # The taxonomy tree drops the extra key (value-carrying tags are not domain tags).
+    tree = transforms.build_taxonomy_dict(g, [], [])
+    for dom in tree["domains"]:
+        for m in dom["members"]:
+            assert set(m) == {"fqn", "asset_type"}
 
 
 def test_coerce_scalar_fits_explicit_schema_types():

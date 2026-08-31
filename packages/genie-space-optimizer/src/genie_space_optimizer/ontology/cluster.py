@@ -25,9 +25,13 @@ The building blocks (architecture §5, MV-D39 + Stage-1 MV-D51/52/53):
      evidence can still move a mis-seeded node → a ``reassign`` proposal), catalog/schema
      is the thin-signal fallback prior. A leftover community held together ONLY by a tag
      prior (no structural edge) is dropped — a tag NEVER solo-creates a Domain (MV-D52).
-  3. **Recursive split (Sub-Domains).** Re-run detection at a finer CPM ``γ`` on each
-     Domain's induced subgraph, over the STRUCTURAL layers only; the sub-communities
-     become Sub-Domains (unchanged from 17e; Stage-2 refines the boundary source).
+  3. **Sub-Domains from an EXPLICIT boundary (Stage 2, MV-D54).** Per Domain, derive
+     sub-domains from an explicit boundary FIRST, in precedence: governed slash
+     sub-tags (``Domain/Sub``) → a value-carrying tag's distinct values
+     (``mvm_subdomain=fare_pricing``) → schema-within-domain → MV/FK component. The
+     finer CPM-``γ`` Leiden split over the STRUCTURAL layers is the FALLBACK ONLY when
+     no explicit boundary exists (17e ran it unconditionally). Each sub-domain stamps
+     its boundary reason into ``evidence``.
   4. **Centrality + naming + binding.** Betweenness/degree on the lineage subgraph
      picks the anchor chip; the LLM names the cluster (company prior + member
      identifiers only — degrades to an anchor-derived name, MV-D43); each cluster is
@@ -591,6 +595,93 @@ def _has_internal_structure(community: set[str], struct: dict[str, list[tuple[st
     return False
 
 
+# ── Stage 2: sub-domains from an EXPLICIT boundary (MV-D54) ─────────────────
+
+# One derived sub-domain: (sorted members, boundary reason, governed slash bind or
+# None, value (tag_key, tag_value) binding or None). At most one of bind/value_binding
+# is set; a plain create sub carries neither.
+_SubGroup = tuple[list[str], str, "_Bind | None", "tuple[str, str] | None"]
+
+
+def _sorted_subgroups(groups: list[_SubGroup]) -> list[_SubGroup]:
+    """Deterministic order (largest first, then first sorted member) so sub-domain
+    ids/binding are stable across runs."""
+    return sorted(groups, key=lambda g: (-len(g[0]), g[0][0] if g[0] else ""))
+
+
+def _derive_subdomains(
+    community: list[str],
+    *,
+    domain_tag_key: str | None,
+    struct: dict[str, list[tuple[str, str, float]]],
+    tag_members: dict[str, set[str]],
+    tag_values: dict[str, dict[str, str]],
+    mv_members: dict[str, set[str]],
+) -> list[_SubGroup] | None:
+    """Derive a Domain's sub-domains from an EXPLICIT boundary (Stage 2, MV-D54), in
+    precedence: (1) governed slash sub-tags (``Domain/Sub``) → (2) a value-carrying
+    tag's distinct values (``mvm_subdomain=fare_pricing``) → (3) schema-within-domain
+    → (4) MV / FK component. Returns the sub-group descriptors for the FIRST rule that
+    finds a boundary, or ``None`` when NONE apply (the caller then falls back to the
+    finer Leiden split). Assets no sub-group covers stay direct members of the parent
+    Domain (the parent always lists its full member set)."""
+    sset = set(community)
+
+    # (1) Governed slash sub-tags whose parent IS this Domain's tag (bind via the
+    # global per-level ownership pass so two subs never claim the same governed tag).
+    if domain_tag_key:
+        slash = sorted(
+            t for t in tag_members
+            if "/" in t and t.split("/", 1)[0] == domain_tag_key and (tag_members[t] & sset)
+        )
+        if slash:
+            sub_sets = [tag_members[t] & sset for t in slash]
+            binds = _bind_level(sub_sets, slash, tag_members)
+            return _sorted_subgroups(
+                [(sorted(sub), f"sub-tag: {t}", bind, None)
+                 for t, sub, bind in zip(slash, sub_sets, binds)]
+            )
+
+    # (2) A value-carrying tag: one sub-domain per distinct governed value (≥2 values
+    # over the Domain's assets to be a boundary). A reuse of the tag with that value.
+    for tk in sorted(tag_values):
+        if tk == domain_tag_key:
+            continue
+        by_value: dict[str, set[str]] = {}
+        for fqn, val in tag_values[tk].items():
+            if fqn in sset:
+                by_value.setdefault(val, set()).add(fqn)
+        if len(by_value) >= 2:
+            return _sorted_subgroups(
+                [(sorted(mem), f"{tk}={val}", None, (tk, val)) for val, mem in by_value.items()]
+            )
+
+    # (3) Schema-within-domain: group the Domain's assets by schema; a multi-schema
+    # Domain splits one sub-domain per schema.
+    by_schema: dict[str, set[str]] = {}
+    for fqn in community:
+        by_schema.setdefault(_schema_prefix(fqn), set()).add(fqn)
+    if len(by_schema) >= 2:
+        return _sorted_subgroups(
+            [(sorted(mem), f"schema: {sk}", None, None) for sk, mem in by_schema.items()]
+        )
+
+    # (4) MV / FK component within the Domain: ≥2 FK components (or ≥2 MV source sets).
+    jk = [(a, b, w) for (a, b, w) in struct.get("join_key", []) if a in sset and b in sset]
+    fk_comps = [c for c in _components(sorted(sset), jk) if len(c) >= 2] if jk else []
+    if len(fk_comps) >= 2:
+        return _sorted_subgroups(
+            [(sorted(c), "foreign-key component within domain", None, None) for c in fk_comps]
+        )
+    mv_groups = [(mv, mem & sset) for mv, mem in sorted(mv_members.items()) if len(mem & sset) >= 2]
+    if len(mv_groups) >= 2:
+        return _sorted_subgroups(
+            [(sorted(mem), f"metric view: {mv}", None, None) for mv, mem in mv_groups]
+        )
+
+    return None
+
+
 def cluster(
     signal_graph: dict[str, Any],
     *,
@@ -620,6 +711,10 @@ def cluster(
 
     struct: dict[str, list[tuple[str, str, float]]] = {k: [] for k in STRUCTURAL_KINDS}
     tag_members: dict[str, set[str]] = {}     # canonical tag_key -> seeded asset fqns
+    # Per-asset governed VALUE of a value-carrying tag (Stage 2, MV-D54): tag_key ->
+    # {asset_fqn -> tag_value}. A tag whose assignments carry distinct values
+    # (``mvm_subdomain=fare_pricing`` ...) names sub-domains by value.
+    tag_values: dict[str, dict[str, str]] = {}
     agent_members: dict[str, set[str]] = {}
     mv_members: dict[str, set[str]] = {}      # metric-view fqn -> source asset fqns (R3)
     schema_members: dict[str, set[str]] = {}  # schema key -> asset fqns (R4)
@@ -632,6 +727,9 @@ def cluster(
             struct[kind].append((_fqn_of(a), _fqn_of(b), w))
         elif kind == "tag_assignment" and _is_tag(a) and _is_asset(b):
             tag_members.setdefault(_fqn_of(a), set()).add(_fqn_of(b))
+            tv = e.get("tag_value")
+            if tv is not None and str(tv) != "":
+                tag_values.setdefault(_fqn_of(a), {})[_fqn_of(b)] = str(tv)
         elif kind == "agent_scope" and _is_asset(b):
             agent_members.setdefault(_fqn_of(a), set()).add(_fqn_of(b))
         elif kind == "mv_membership" and _is_asset(b):
@@ -645,6 +743,8 @@ def cluster(
         k: m for k, m in tag_members.items()
         if not transforms.is_facet_tag(k, tiebreaker=facet_tiebreaker)
     }
+    # A facet tag never names a sub-domain either (MV-D51) — drop its per-asset values.
+    tag_values = {k: v for k, v in tag_values.items() if k in tag_members}
     # A curated domain tag = an aboutness top-level tag that acts as a governance domain
     # (it has ≥1 sub-tag under the Domain/Sub convention) → the R1 authoritative rule.
     curated_domain_keys = {t.split("/", 1)[0] for t in tag_members if "/" in t}
@@ -699,7 +799,25 @@ def cluster(
         )
         proposals.append(dom)
 
-        # ── Recursive split -> Sub-Domains (STRUCTURAL layers only, finer γ). ────
+        # ── Sub-domains from an EXPLICIT boundary first (Stage 2, MV-D54); the finer
+        # Leiden split is the FALLBACK ONLY when no explicit boundary exists. ────────
+        explicit = _derive_subdomains(
+            community,
+            domain_tag_key=dom.tag_key if dom.tag_decision in ("reuse", "reassign") else None,
+            struct=struct, tag_members=tag_members, tag_values=tag_values, mv_members=mv_members,
+        )
+        if explicit is not None:
+            # Rules (2)-(4) only return when they find ≥2 groups; rule (1) may name a
+            # single governed sub-domain (the rest stays direct in the parent Domain).
+            for members, reason, sbind, vbind in explicit:
+                proposals.append(_make_proposal(
+                    members, parent_id=dom.domain_id, bind=sbind, reason=reason,
+                    tag_members=tag_members, agent_members=agent_members, lineage_pairs=lineage_pairs,
+                    coquery_pairs=coquery_pairs, namer=namer, company=company, value_binding=vbind,
+                ))
+            continue
+
+        # Fallback: the finer Leiden split over STRUCTURAL layers (finer γ, fixed seed).
         sset = set(community)
         sub_layers = {
             k: [(a, b, w) for (a, b, w) in struct[k] if a in sset and b in sset]
@@ -719,7 +837,7 @@ def cluster(
         sub_binds = _bind_level(sub_sets, sub_level_tags, tag_members)
         for sub, sbind in zip(subs, sub_binds):
             proposals.append(_make_proposal(
-                sub, parent_id=dom.domain_id, bind=sbind, reason="sub-domain split by structure",
+                sub, parent_id=dom.domain_id, bind=sbind, reason="split by structure",
                 tag_members=tag_members, agent_members=agent_members, lineage_pairs=lineage_pairs,
                 coquery_pairs=coquery_pairs, namer=namer, company=company,
             ))
@@ -738,10 +856,14 @@ def _make_proposal(
     coquery_pairs: list[tuple[str, str, float]],
     namer: Namer | None,
     company: str | None,
+    value_binding: tuple[str, str] | None = None,
 ) -> DomainProposal:
     """Build one Domain/Sub-Domain proposal from its asset set + the level's tag
     binding, attaching evidence (MV-D35). ``reason`` is the plain grouping explanation
-    (MV-D53) stamped into ``evidence`` so every assignment shows WHY it grouped."""
+    (MV-D53) stamped into ``evidence`` so every assignment shows WHY it grouped.
+    ``value_binding`` (Stage 2, MV-D54) names a sub-domain from a value-carrying
+    tag's ``(tag_key, tag_value)`` — a reuse of that governed tag+value; it takes
+    precedence over ``bind`` and the LLM namer (the governed value IS the name)."""
     members = tuple(sorted(assets))
     s = set(members)
     is_sub = parent_id is not None
@@ -751,7 +873,10 @@ def _make_proposal(
     tag_value: str | None = None
     conflict: dict | None = None
 
-    if bind is not None:
+    if value_binding is not None:
+        tag_key, tag_value = value_binding
+        tag_decision = "reuse"
+    elif bind is not None:
         tag_key = bind.tag_key
         tag_value = bind.tag_key.split("/", 1)[1] if "/" in bind.tag_key else bind.tag_key
         if bind.moved and bind.margin > REASSIGN_MARGIN:

@@ -83,19 +83,30 @@ def build_signal_graph(
             node["cost"] = float(costs[fqn])
         return node
 
-    def add_edge(src: str, dst: str, kind: str, source: str, weight: float | None = None) -> None:
+    def add_edge(
+        src: str, dst: str, kind: str, source: str,
+        weight: float | None = None, tag_value: str | None = None,
+    ) -> None:
         edge: dict[str, Any] = {"src": src, "dst": dst, "kind": kind, "source": source, "as_of": stamp}
         if weight is not None:
             edge["weight"] = float(weight)
+        # Stage-2 (MV-D54): a value-carrying assignment's ``tag_value`` rides the
+        # edge ADDITIVELY — present only when the member carries one, so a value-free
+        # assignment edge stays byte-identical to the Phase-2 scaffold shape.
+        if tag_value is not None and str(tag_value) != "":
+            edge["tag_value"] = str(tag_value)
         edges.append(edge)
 
-    # Tag → asset assignment edges (Phase-2 scaffold).
+    # Tag → asset assignment edges (Phase-2 scaffold). A value-carrying member's
+    # ``tag_value`` (Stage 2) threads onto the edge so the clusterer can split a
+    # Domain into sub-domains by distinct value; a value-free member is unchanged.
     for t in graph.get("tags", []):
         tag_id = f"tag:{t['tag_key']}"
         add_node(tag_id, "tag")
         for m in t.get("members", []):
             add_asset(m["fqn"], m.get("asset_type", "table"))
-            add_edge(tag_id, f"asset:{m['fqn']}", "tag_assignment", "tag_assignment")
+            add_edge(tag_id, f"asset:{m['fqn']}", "tag_assignment", "tag_assignment",
+                     tag_value=m.get("tag_value"))
 
     # Lineage adjacency (asset → asset).
     for pair in lineage_edges or []:

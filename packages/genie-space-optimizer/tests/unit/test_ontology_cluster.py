@@ -393,3 +393,142 @@ def test_duplicate_tags_collapse_to_canonical_seed():
     assert len(domains) == 1  # one canonical Finance domain, not two
     assert domains[0].tag_decision == "reuse"
     assert domains[0].tag_key == "Finance"  # sorted-first canonical representative
+
+
+# ── Stage 2: sub-domains from an EXPLICIT boundary (MV-D54) ─────────────────
+#
+# Precedence: (1) governed slash sub-tags → (2) a value-carrying tag's distinct
+# values → (3) schema-within-domain → (4) MV/FK component; the finer Leiden split
+# is the FALLBACK ONLY when NONE apply. Each sub-domain carries a boundary reason.
+
+
+def _fine_calls(monkeypatch):
+    """Spy on the sub-split Leiden invocations: record ``(gamma, frozenset(verts))``
+    for every ``_run_multiplex`` call so a test can assert the finer split (gamma_fine)
+    fires ONLY over a Domain with no explicit boundary."""
+    calls: list[tuple[float, frozenset[str]]] = []
+    orig = cluster._run_multiplex
+
+    def spy(vertices, edges_by_kind, *, gamma, seed_membership):
+        calls.append((gamma, frozenset(vertices)))
+        return orig(vertices, edges_by_kind, gamma=gamma, seed_membership=seed_membership)
+
+    monkeypatch.setattr(cluster, "_run_multiplex", spy)
+    return calls
+
+
+def test_slash_subtag_becomes_subdomain_under_parent():
+    # A governed 'Reservation/PNR' sub-tag whose parent is the Reservation domain tag
+    # -> a PNR sub-domain (reuse), Y under X, carrying the sub-tag boundary reason.
+    tags = [
+        {"tag_key": "Reservation", "members": [{"fqn": f} for f in (
+            "air.res.pnr", "air.res.segment", "air.res.ticket", "air.res.coupon")]},
+        {"tag_key": "Reservation/PNR", "members": [{"fqn": f} for f in ("air.res.pnr", "air.res.segment")]},
+    ]
+    sig = graph.build_signal_graph(
+        {"tags": tags}, [("air.res.pnr", "air.res.segment"), ("air.res.ticket", "air.res.coupon")])
+    props = cluster.cluster(sig, namer=lambda i, a, c: None)
+    dom = next(p for p in props if p.parent_id is None)
+    assert dom.tag_key == "Reservation"
+    subs = [p for p in props if p.parent_id is not None]
+    pnr = next(s for s in subs if s.tag_key == "Reservation/PNR")
+    assert pnr.parent_id == dom.domain_id
+    # tag_value keeps the governed value; the rendered name is humanized ("PNR"->"Pnr").
+    assert pnr.tag_decision == "reuse" and pnr.tag_value == "PNR" and pnr.name == "Pnr"
+    assert set(pnr.members) == {"air.res.pnr", "air.res.segment"}
+    assert pnr.evidence["reason"] == "sub-tag: Reservation/PNR"
+
+
+def test_value_carrying_tag_names_subdomains_by_value(monkeypatch):
+    # A value-carrying tag (mvm_subdomain=fare_pricing / route_ops) over the Domain's
+    # assets -> one sub-domain per distinct value (reuse of the tag+value); Leiden is
+    # NOT consulted (an explicit boundary exists).
+    fine = _fine_calls(monkeypatch)
+    _V = ["rev.core.fare_a", "rev.core.fare_b", "rev.core.route_x", "rev.core.route_y"]
+    tags = [
+        # A domain membership tag binds the Domain; mvm_subdomain carries the per-asset
+        # values that split it into sub-domains (the value tag is not the domain tag).
+        {"tag_key": "Revenue", "members": [{"fqn": f} for f in _V]},
+        {"tag_key": "mvm_subdomain", "members": [
+            {"fqn": "rev.core.fare_a", "tag_value": "fare_pricing"},
+            {"fqn": "rev.core.fare_b", "tag_value": "fare_pricing"},
+            {"fqn": "rev.core.route_x", "tag_value": "route_ops"},
+            {"fqn": "rev.core.route_y", "tag_value": "route_ops"},
+        ]},
+    ]
+    # An FK component forms the Domain deterministically (no coarse Leiden).
+    sig = graph.build_signal_graph(
+        {"tags": tags},
+        join_key_edges=[
+            ("rev.core.fare_a", "rev.core.fare_b"),
+            ("rev.core.fare_a", "rev.core.route_x"),
+            ("rev.core.route_x", "rev.core.route_y"),
+        ],
+    )
+    props = cluster.cluster(sig, namer=lambda i, a, c: "Revenue")
+    subs = [p for p in props if p.parent_id is not None]
+    assert {s.name for s in subs} == {"Fare Pricing", "Route Ops"}
+    for s in subs:
+        assert s.tag_decision == "reuse" and s.tag_key == "mvm_subdomain"
+        assert s.tag_value in {"fare_pricing", "route_ops"}
+        assert s.evidence["reason"] == f"mvm_subdomain={s.tag_value}"
+    fare = next(s for s in subs if s.tag_value == "fare_pricing")
+    assert set(fare.members) == {"rev.core.fare_a", "rev.core.fare_b"}
+    # No explicit-boundary Domain ever reaches the finer Leiden split.
+    assert not any(g == cluster.GAMMA_FINE for g, _ in fine)
+
+
+def test_schema_within_domain_becomes_subdomains(monkeypatch):
+    # A Domain spanning two schemas (no slash / no value tag) splits one sub-domain per
+    # schema; the finer Leiden split is NOT consulted.
+    fine = _fine_calls(monkeypatch)
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        join_key_edges=[
+            ("air.rev.fact", "air.rev.dim"),      # x.rev schema
+            ("air.rev.fact", "air.ops.log"),      # bridges to air.ops schema
+        ],
+    )
+    props = cluster.cluster(sig, namer=lambda i, a, c: None)
+    subs = [p for p in props if p.parent_id is not None]
+    reasons = {s.evidence["reason"] for s in subs}
+    assert reasons == {"schema: air.rev", "schema: air.ops"}
+    rev = next(s for s in subs if s.evidence["reason"] == "schema: air.rev")
+    assert set(rev.members) == {"air.rev.fact", "air.rev.dim"}
+    assert not any(g == cluster.GAMMA_FINE for g, _ in fine)
+
+
+def test_leiden_is_the_fallback_only_where_no_explicit_boundary(monkeypatch):
+    # Domain A (FK across two schemas) has an explicit schema boundary -> schema subs,
+    # no Leiden. Domain B (single schema, two lineage blobs, no explicit boundary)
+    # falls back to the finer Leiden split. Assert the finer split fires ONLY over B.
+    fine = _fine_calls(monkeypatch)
+    a_assets = {"a.rev.fact", "a.rev.dim", "a.ops.log"}
+    b_assets = {"c.mkt.x1", "c.mkt.x2", "c.mkt.y1", "c.mkt.y2"}
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        [("c.mkt.x1", "c.mkt.x2"), ("c.mkt.y1", "c.mkt.y2")],   # B: two disconnected blobs
+        join_key_edges=[("a.rev.fact", "a.rev.dim"), ("a.rev.fact", "a.ops.log")],  # A: FK component
+        mv_membership={"c.mkt.mv": sorted(b_assets)},           # B: one MV -> one Domain
+    )
+    props = cluster.cluster(sig, namer=lambda i, a, c: None)
+    a_subs = [p for p in props if p.parent_id is not None and set(p.members) <= a_assets]
+    b_subs = [p for p in props if p.parent_id is not None and set(p.members) <= b_assets]
+    assert {s.evidence["reason"] for s in a_subs} == {"schema: a.rev", "schema: a.ops"}
+    assert b_subs and all(s.evidence["reason"] == "split by structure" for s in b_subs)
+    # Every finer-γ (sub-split) Leiden call is over B's assets — never A's.
+    fine_verts = [v for g, v in fine if g == cluster.GAMMA_FINE]
+    assert fine_verts and all(v <= b_assets for v in fine_verts)
+    assert not any(v & a_assets for v in fine_verts)
+
+
+def test_every_subdomain_carries_a_boundary_reason():
+    # Whatever the boundary source, every sub-domain stamps a plain boundary reason.
+    _BOUNDARY = ("sub-tag: ", "mvm_subdomain=", "schema: ", "foreign-key component",
+                 "metric view: ", "split by structure")
+    props = cluster.cluster(_commercial_graph(), namer=_schema_namer)
+    subs = [p for p in props if p.parent_id is not None]
+    assert subs
+    for s in subs:
+        reason = s.evidence.get("reason")
+        assert isinstance(reason, str) and reason.startswith(_BOUNDARY)

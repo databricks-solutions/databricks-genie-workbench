@@ -69,6 +69,19 @@ def member_fqn_of(row: dict[str, Any]) -> str | None:
     return ".".join(str(p) for p in parts) if parts else None
 
 
+def tag_value_of(row: dict[str, Any]) -> str | None:
+    """The per-assignment governed-tag VALUE, if the row carries one (the
+    ``information_schema.*_tags`` ``tag_value`` column). A value-carrying tag
+    (e.g. ``mvm_subdomain=fare_pricing``) names a sub-domain in Stage 2; a
+    membership-only tag has no value and this returns ``None`` (keeping the
+    member dict byte-identical to the value-free shape)."""
+    for k in ("tag_value", "value"):
+        v = row.get(k)
+        if v is not None and str(v) != "":
+            return str(v)
+    return None
+
+
 def assemble_tag_graph(
     catalog_rows: list[dict[str, Any]],
     assign_rows: list[dict[str, Any]],
@@ -78,6 +91,12 @@ def assemble_tag_graph(
 
     Returns ``{"tags": [{"tag_key", "allowed_values", "assignment_count",
     "members"}], "as_of"}`` — identical to the Phase-1 ``build_graph`` output.
+
+    A per-assignment ``tag_value`` (Stage 2, MV-D54) is threaded onto the member
+    dict ADDITIVELY: the key is present ONLY when the assignment row carries a
+    non-empty value, so a value-free (membership-only) tag yields the exact
+    ``{"fqn", "asset_type"}`` member shape the value-free callers already emit —
+    byte-identical. Only a value-carrying tag (``mvm_subdomain``) grows the key.
     """
     tags: dict[str, dict[str, Any]] = {}
     for r in catalog_rows:
@@ -92,7 +111,11 @@ def assemble_tag_graph(
         if not key or not fqn:
             continue
         entry = tags.setdefault(key, {"tag_key": key, "allowed_values": [], "members": []})
-        entry["members"].append({"fqn": fqn, "asset_type": "table"})
+        member: dict[str, Any] = {"fqn": fqn, "asset_type": "table"}
+        tv = tag_value_of(r)
+        if tv is not None:
+            member["tag_value"] = tv
+        entry["members"].append(member)
 
     out_tags = []
     for key, t in sorted(tags.items()):
