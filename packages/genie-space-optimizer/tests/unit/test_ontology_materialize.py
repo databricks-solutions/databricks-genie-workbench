@@ -287,6 +287,64 @@ def test_consents_suppressions_never_written_pages_now_written():
     assert writer.tables["genie_ont_pages"] == {}
 
 
+# ── Empty-scope guard (MV-D49 safety): no scope never wipes a good snapshot ──
+
+def test_empty_allowlist_is_skipped_and_preserves_snapshot():
+    """A refresh with no catalog scope must not clear the last good mirror.
+
+    The first (scoped) run lands a snapshot; a second run with an empty allowlist
+    records a terminal ``skipped`` header and issues NO MERGE, so every derived table —
+    and the prior ``succeeded`` run the UI serves from — is preserved byte-for-byte.
+    """
+    from datetime import datetime, timezone
+
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    good = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    assert good["state"] == "succeeded"
+    before = {t: dict(rows) for t, rows in writer.tables.items()}
+    assert before["genie_ont_domains"]  # the scoped run produced Domain rows
+
+    skipped = materialize.run_materialize(
+        _FakeReader(catalog_rows, assign_rows, [], []), writer,
+        metastore_id="ms1", workspace_id="ws1", trigger="on_demand",
+        allowlist=[], run_id="r2",
+        now=datetime.fromisoformat(_AS_OF).astimezone(timezone.utc),
+    )
+
+    # The empty-scope run is a terminal skip that touched no snapshot table.
+    assert skipped["state"] == "skipped"
+    assert "empty catalog allowlist" in (skipped["error"] or "")
+    assert writer.tables == before  # no MERGE issued → snapshot preserved
+    # The ledger keeps the prior succeeded run (what latest_succeeded_run serves).
+    assert writer.runs["r1"]["state"] == "succeeded"
+    assert writer.runs["r2"]["state"] == "skipped"
+
+
+def test_whitespace_only_allowlist_is_also_skipped():
+    """A whitespace/empty-string allowlist is still no scope (guards sloppy config)."""
+    from datetime import datetime, timezone
+
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    run = materialize.run_materialize(
+        _FakeReader(catalog_rows, assign_rows, [], []), writer,
+        metastore_id="ms1", workspace_id="ws1", trigger="scheduled",
+        allowlist=["", "   "], run_id="r1",
+        now=datetime.fromisoformat(_AS_OF).astimezone(timezone.utc),
+    )
+    assert run["state"] == "skipped"
+    assert writer.tables == {}  # nothing written at all on a first empty run
+
+
+def test_has_scope_helper():
+    assert materialize._has_scope(["finance"]) is True
+    assert materialize._has_scope(["", "  ", "ops"]) is True
+    assert materialize._has_scope([]) is False
+    assert materialize._has_scope(None) is False
+    assert materialize._has_scope(["", "   "]) is False
+
+
 def test_failed_run_records_error_and_reraises():
     class _Boom(_FakeReader):
         def governed_tags(self):
@@ -612,3 +670,97 @@ def test_coerce_scalar_fits_explicit_schema_types():
     # An already-native datetime is left untouched (idempotent).
     now = datetime(2026, 8, 30)
     assert materialize._coerce_scalar(now, "timestamp") is now
+
+
+# ── SparkSnapshotWriter MERGE generation (offline, via a fake Spark) ─────────
+# The real writer builds each MERGE from the row's keys; nothing offline used to
+# exercise it, which let the L6 report-count keys (and a page_count absent on a
+# pre-existing table) leak into the run-ledger SQL and fail the LIVE run with
+# UNRESOLVED_COLUMN. These tests pin the schema-projection fix without a cluster.
+import types as _types
+
+
+def _field(name, type_name="string"):
+    return _types.SimpleNamespace(
+        name=name, dataType=_types.SimpleNamespace(typeName=lambda tn=type_name: tn)
+    )
+
+
+class _FakeDF:
+    def createOrReplaceTempView(self, name):
+        return None
+
+
+class _FakeSpark:
+    """Minimal Spark double: ``.table(fqn).schema`` + ``.createDataFrame`` + ``.sql``
+    (captured), enough to drive ``SparkSnapshotWriter`` MERGE generation offline."""
+
+    def __init__(self, schemas: dict):
+        self._schemas = schemas
+        self.sqls: list[str] = []
+
+    def table(self, fqn):
+        name = fqn.split(".")[-1]
+        return _types.SimpleNamespace(schema=list(self._schemas[name]))
+
+    def createDataFrame(self, data, struct):
+        return _FakeDF()
+
+    def sql(self, query):
+        self.sqls.append(query)
+        return _FakeDF()
+
+
+def test_upsert_run_drops_report_keys_and_absent_columns_from_merge_sql():
+    """Terminal run row carries non-DDL report counts (surfaced/suppressed/blocked)
+    and — on a table created before the column existed — page_count. The generated
+    MERGE must reference ONLY real columns, else the live run fails UNRESOLVED_COLUMN."""
+    runs_cols = [  # live-shaped schema WITHOUT page_count (the deployed state)
+        "run_id", "metastore_id", "workspace_id", "trigger", "state",
+        "scope_allowlist", "started_at", "finished_at", "as_of", "tag_count",
+        "domain_count", "ungrouped_count", "identity_count", "error",
+    ]
+    spark = _FakeSpark({"genie_ont_runs": [_field(c) for c in runs_cols]})
+    writer = materialize.SparkSnapshotWriter(spark, "cat", "sch")
+    writer.upsert_run({
+        "run_id": "r1", "metastore_id": "ms1", "workspace_id": "wsP", "state": "succeeded",
+        "as_of": _AS_OF, "domain_count": 3, "identity_count": 2,
+        "page_count": 4,                                              # absent from schema
+        "surfaced_count": 5, "suppressed_count": 1, "blocked_count": 0,  # never DDL
+    })
+    sql = spark.sqls[-1]
+    for banned in ("page_count", "surfaced_count", "suppressed_count", "blocked_count"):
+        assert banned not in sql, f"{banned} leaked into the run-ledger MERGE"
+    assert "domain_count" in sql and "identity_count" in sql  # real cols still written
+    assert "not matched by source" not in sql.lower()         # upsert-only ledger
+
+
+def test_upsert_run_keeps_page_count_once_the_column_exists():
+    """After the ALTER / fresh DDL, page_count IS a real column and gets written."""
+    runs_cols = ["run_id", "metastore_id", "state", "as_of", "domain_count", "page_count"]
+    spark = _FakeSpark({"genie_ont_runs": [_field(c) for c in runs_cols]})
+    writer = materialize.SparkSnapshotWriter(spark, "cat", "sch")
+    writer.upsert_run({
+        "run_id": "r1", "metastore_id": "ms1", "state": "succeeded", "as_of": _AS_OF,
+        "domain_count": 3, "page_count": 4, "surfaced_count": 9,
+    })
+    sql = spark.sqls[-1]
+    assert "page_count" in sql
+    assert "surfaced_count" not in sql
+
+
+def test_merge_projects_proposal_rows_to_schema():
+    """merge() projects rows to the target schema too, so a stray non-DDL key on a
+    proposal row cannot produce an unresolved-column MERGE."""
+    dom_cols = ["metastore_id", "domain_id", "name", "score", "run_id", "as_of"]
+    spark = _FakeSpark({"genie_ont_domains": [_field(c) for c in dom_cols]})
+    writer = materialize.SparkSnapshotWriter(spark, "cat", "sch")
+    writer.merge(
+        "genie_ont_domains",
+        [{"metastore_id": "ms1", "domain_id": "d1", "name": "Finance", "score": 1.0,
+          "run_id": "r1", "as_of": _AS_OF, "surfaced_count": 7}],  # stray non-DDL key
+        ["metastore_id", "domain_id"], "ms1",
+    )
+    sql = spark.sqls[-1]
+    assert "surfaced_count" not in sql
+    assert "score" in sql

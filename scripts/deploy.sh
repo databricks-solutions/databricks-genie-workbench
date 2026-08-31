@@ -460,6 +460,18 @@ except Exception:
 " 2>/dev/null) || true
 if [ -n "$ONT_JOB_ID" ]; then
     echo "  ✓ Ontology materialize job deployed: $ONT_JOB_ID"
+    # Grant the app SP CAN_MANAGE_RUN on the ontology job so the in-app
+    # "Refresh ontology" button can launch it (MV-D41/D50). The main UC-grant
+    # step ran before this id was resolvable, so this is a second, lightweight
+    # pass. Non-fatal — a denial logs the manual command and continues.
+    uv run python "$SCRIPT_DIR/grant_permissions.py" \
+        --profile "$PROFILE" \
+        --app-name "$APP_NAME" \
+        --catalog "$CATALOG" \
+        --schema "$GSO_SCHEMA" \
+        --ontology-job-id "$ONT_JOB_ID" \
+        --job-run-grant-only \
+        || echo "  ⚠ Could not grant SP run permission on ontology job (non-fatal)"
 else
     echo "  ℹ Ontology materialize job id not resolved yet — page will use the live view until next deploy"
 fi

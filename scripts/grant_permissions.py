@@ -288,6 +288,40 @@ def _verify_required_privileges(
         )
 
 
+def _grant_job_run(*, profile: str, job_id: str, principal: str) -> None:
+    """Grant the app SP CAN_MANAGE_RUN on the ontology materialize job.
+
+    Without this the app SP cannot ``jobs.run_now`` the job, so the in-app
+    "Refresh ontology" button fails with "does not have Manage Run or Owner or
+    Admin permissions on job ...". ``databricks permissions update`` MERGES the
+    ACL (it does not clobber the owner/admins). Idempotent and best-effort — a
+    permission denial logs a warning with the manual command rather than failing
+    the deploy.
+    """
+    payload = json.dumps({
+        "access_control_list": [
+            {"service_principal_name": principal, "permission_level": "CAN_MANAGE_RUN"},
+        ],
+    })
+    try:
+        _run([
+            "databricks", "permissions", "update", "jobs", str(job_id),
+            "--profile", profile, "--json", payload,
+        ])
+        print(
+            f"[grant-permissions] Job run grant: CAN_MANAGE_RUN on job {job_id} "
+            f"-> {principal}"
+        )
+    except Exception as err:
+        last = str(err).splitlines()[-1] if str(err).strip() else str(err)
+        print(
+            f"[grant-permissions] WARNING: could not grant CAN_MANAGE_RUN on job "
+            f"{job_id} to {principal} ({last}). A job owner/admin can run:\n"
+            f"    databricks permissions update jobs {job_id} --json '{payload}'",
+            file=sys.stderr,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Grant Unity Catalog privileges to Genie Workbench app SP.",
@@ -297,10 +331,24 @@ def main() -> int:
     parser.add_argument("--catalog", required=True)
     parser.add_argument("--schema", required=True)
     parser.add_argument("--warehouse-id", default=None)
+    parser.add_argument(
+        "--ontology-job-id",
+        default=None,
+        help="Ontology materialize job id — grants the app SP CAN_MANAGE_RUN so the "
+        "in-app 'Refresh ontology' button can launch it (MV-D41/D50).",
+    )
+    parser.add_argument(
+        "--job-run-grant-only",
+        action="store_true",
+        help="Only resolve the app SP and grant CAN_MANAGE_RUN on --ontology-job-id, "
+        "skipping all schema/volume/table creation and UC grants. Used by deploy.sh "
+        "after the job id is resolved (which happens after the main UC-grant step).",
+    )
     args = parser.parse_args()
 
-    # Create schema and volume if warehouse ID provided
-    if args.warehouse_id:
+    # Create schema and volume if warehouse ID provided (skipped in the
+    # job-run-grant-only pass, which runs after the schema already exists).
+    if args.warehouse_id and not args.job_run_grant_only:
         _ensure_schema(
             profile=args.profile, catalog=args.catalog,
             schema=args.schema, warehouse_id=args.warehouse_id,
@@ -346,6 +394,22 @@ def main() -> int:
         raise RuntimeError(
             "Could not resolve app service principal from `databricks apps get` output.",
         )
+
+    # Job-run-grant-only pass: grant CAN_MANAGE_RUN on the ontology job and stop.
+    # This is a second, lightweight invocation from deploy.sh once the job id is
+    # known (the main UC-grant step runs before the bundle deploy resolves it).
+    if args.job_run_grant_only:
+        if args.ontology_job_id:
+            _grant_job_run(
+                profile=args.profile, job_id=args.ontology_job_id, principal=principal,
+            )
+        else:
+            print(
+                "[grant-permissions] WARNING: --job-run-grant-only requires "
+                "--ontology-job-id; nothing granted.",
+                file=sys.stderr,
+            )
+        return 0
 
     schema_fqn = f"{args.catalog}.{args.schema}"
 
@@ -433,6 +497,14 @@ def main() -> int:
     # GenieWatch system-table grants — best-effort. Only a workspace admin can
     # issue these, so failures are warnings, not hard errors.
     _grant_watch_system_tables(profile=args.profile, principal=principal)
+
+    # Ontology job-run grant (when the id is supplied to a full run — e.g. a manual
+    # invocation). deploy.sh normally does this via a second --job-run-grant-only
+    # pass once the bundle resolves the job id.
+    if args.ontology_job_id:
+        _grant_job_run(
+            profile=args.profile, job_id=args.ontology_job_id, principal=principal,
+        )
 
     return 0
 

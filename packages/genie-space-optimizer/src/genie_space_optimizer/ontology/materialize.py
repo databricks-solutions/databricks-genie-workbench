@@ -273,6 +273,18 @@ def _governance_map(graph_struct: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _has_scope(allowlist: list[str] | None) -> bool:
+    """True iff the catalog allowlist names at least one catalog.
+
+    An empty allowlist means "no scope selected" (never "scan everything"): every
+    allowlist-scoped reader call — assignments, metric views, lineage, page inputs —
+    returns nothing, so the derived Domain/Member/Page snapshots MERGE to zero and the
+    metastore-scoped NOT-MATCHED-BY-SOURCE delete wipes a good snapshot. The guard in
+    ``run_materialize`` uses this to refuse a destructive empty-scope run.
+    """
+    return any((c or "").strip() for c in (allowlist or []))
+
+
 def run_materialize(
     reader: MaterializeReader,
     writer: SnapshotWriter,
@@ -329,6 +341,31 @@ def run_materialize(
         "error": None,
     }
     writer.upsert_run(run_row)
+
+    # Empty-scope guard (MV-D49 safety). An empty catalog allowlist scans nothing, so
+    # every derived snapshot would MERGE to zero and the metastore-scoped delete would
+    # wipe the last good mirror (the failure mode behind an empty nightly run clearing
+    # a curated ontology). Refuse to run destructively: record a terminal ``skipped``
+    # header and return WITHOUT issuing any MERGE, so the prior snapshot — and the
+    # prior ``succeeded`` run the UI serves from — is preserved untouched. Clearing the
+    # estate is a deliberate, scoped action, never an accidental empty refresh.
+    if not _has_scope(allowlist):
+        logger.warning(
+            "ontology materialize skipped: empty catalog allowlist (run_id=%s, "
+            "metastore_id=%s) — snapshot preserved",
+            run_id, metastore_id,
+        )
+        run_row = {
+            **run_row,
+            "state": "skipped",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "error": "empty catalog allowlist — no scope selected; snapshot preserved",
+            "tag_count": 0,
+            "domain_count": 0,
+            "ungrouped_count": 0,
+        }
+        writer.upsert_run(run_row)
+        return run_row
 
     try:
         catalog_rows = reader.governed_tags()
@@ -480,6 +517,22 @@ def _coerce_scalar(value: Any, type_name: str) -> Any:
     return value
 
 
+def _project_to_schema(row: dict[str, Any], struct) -> dict[str, Any]:
+    """Keep only the keys that are real columns of the target table.
+
+    The run-ledger terminal row carries report-only counts (``surfaced_count`` /
+    ``suppressed_count`` / ``blocked_count``) that are intentionally NOT DDL columns
+    (MV-D49, no-DDL), and a live table created before a column was added (e.g.
+    ``page_count``) legitimately lacks it. Because ``update_cols`` is derived from the
+    row's keys, an un-projected row would build a MERGE that references ``s.<col>`` /
+    ``t.<col>`` for columns that exist on neither side → ``UNRESOLVED_COLUMN`` at
+    execute. Projecting to the schema honours the "writer drops keys absent from the
+    schema" contract so the generated MERGE stays resolvable.
+    """
+    names = {f.name for f in struct}
+    return {k: v for k, v in row.items() if k in names}
+
+
 class SparkSnapshotWriter:
     """Writes the snapshots to Delta via Spark, using the idempotent MERGE."""
 
@@ -491,16 +544,18 @@ class SparkSnapshotWriter:
     def ensure_tables(self) -> None:
         ddl.ensure_ontology_tables(self.spark, self.catalog, self.schema)
 
-    def _df_for(self, table: str, rows: list[dict[str, Any]]):
+    def _df_for(self, table: str, rows: list[dict[str, Any]], struct=None):
         """Build a source DataFrame with the TARGET table's schema.
 
         Spark Connect (serverless) raises ``CANNOT_DETERMINE_TYPE`` when it must
         infer a column that is entirely ``None`` (e.g. ``error`` on a running row).
         Reading the schema from the already-created Delta table makes every column
         explicitly typed, aligns values by field name (missing keys → ``None``),
-        and coerces ISO-string timestamps/dates to native objects.
+        and coerces ISO-string timestamps/dates to native objects. ``struct`` may be
+        passed in to reuse a schema the caller already fetched (avoids a second read).
         """
-        struct = self.spark.table(f"{self.catalog}.{self.schema}.{table}").schema
+        if struct is None:
+            struct = self.spark.table(f"{self.catalog}.{self.schema}.{table}").schema
         data = [
             tuple(_coerce_scalar(r.get(f.name), f.dataType.typeName()) for f in struct)
             for r in rows
@@ -508,7 +563,9 @@ class SparkSnapshotWriter:
         return self.spark.createDataFrame(data, struct)
 
     def upsert_run(self, row: dict[str, Any]) -> None:
-        df = self._df_for("genie_ont_runs", [row])
+        struct = self.spark.table(f"{self.catalog}.{self.schema}.genie_ont_runs").schema
+        row = _project_to_schema(row, struct)  # drop non-DDL report keys / absent cols
+        df = self._df_for("genie_ont_runs", [row], struct)
         view = "_ont_run_src"
         df.createOrReplaceTempView(view)
         update_cols = [c for c in row.keys() if c != "run_id"]
@@ -527,8 +584,10 @@ class SparkSnapshotWriter:
     def merge(self, table: str, rows: list[dict[str, Any]], key_cols: list[str], metastore_id: str) -> None:
         view = f"_ont_src_{table}"
         if rows:
+            struct = self.spark.table(f"{self.catalog}.{self.schema}.{table}").schema
+            rows = [_project_to_schema(r, struct) for r in rows]
             update_cols = [c for c in rows[0].keys() if c not in key_cols]
-            self._df_for(table, rows).createOrReplaceTempView(view)
+            self._df_for(table, rows, struct).createOrReplaceTempView(view)
         else:
             # Empty source: create an empty view with the table's schema so the
             # NOT-MATCHED-BY-SOURCE delete still clears this metastore's stale rows.
