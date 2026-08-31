@@ -3955,6 +3955,17 @@ hypothesis PRIOR + informational overlay, NEVER structural truth; ZERO user burd
 
 ### Prompt 17i — Phase 5: the single consented SET TAG apply (L9)
 
+> **Build-ready (mirrors the Phase-1/2/3a-d pairs).** The full section-by-section spec
+> is `docs/design/ontology-phase5-apply-build.md` (§1 scope → §12 DoD) and the Goal-Mode
+> launcher is `docs/design/ontology-phase5-apply-driver.md`. The block below is the
+> register summary; the build spec is the source of truth. It consumes the 17g
+> `genie_ont_consents` `state='approved'` rows, writes governed-tag membership **under
+> OBO** (MV-D50) behind a `confirm` + `plan_hash` dry-run gate, audits every statement to
+> the new `genie_ont_applied` table (metastore grain, MV-D49), and carves the write
+> tokens to exactly `backend/ontology/services/apply.py` (the single-writer invariant,
+> with a positive guard test). No new dependency (MV-D45); no deploy; STOP at the
+> apply-safety checkpoint before 17j.
+
 ```
 The L9 apply (architecture §5, "Serving + apply"). The ONE mutation the whole
 engine offers, DEFAULT OFF (MV-D37). Everything else — Pages, the Discover card,
