@@ -184,6 +184,24 @@ unchanged.
   the MV-D50 pattern; mirrored in `types.ts`; exposed in `SettingsForm`):
   `domain_facet_denylist`, `domain_min_tables=3`, `domain_min_schemas=2`,
   `domain_require_connection=true`, `industry_alignment={enabled,reference_model}`.
+- **Name dedup / qualification (Stage-1 live finding — see §Appendix A.2).** Two
+  domains must never share a rendered `name`. When the FK-component rule and the
+  shared-schema rule (or two structural components) yield the same label, qualify by
+  the distinguishing scope (`Cost Attribution (finance)` vs `Cost Attribution
+  (ops)`) or, when they cover the same asset set, collapse to one. The `domain_id`
+  is already a member-fingerprint (distinct sets → distinct ids); this gate only
+  fixes the human-facing **label** collision. Applies to sub-domains too (the raw
+  duplicated `Dev … Metrics` sub-labels seen live collapse once Stage 2's explicit
+  boundaries name them).
+- **Curated-tag absorbs its structural component (Stage-1 live finding — see
+  §Appendix A.2).** When a curated-domain-tag domain (e.g. `Alaska Airlines
+  Maintenance and Engineering`, 19) and an FK-component domain (e.g.
+  `airline_demo_mvm_maintenance`, 46) overlap in members or share a governed home,
+  they are the **same** business area surfaced by two rules — do not emit both. The
+  curated tag wins the identity (name + `reuse` decision) and **absorbs** the FK
+  component's members; the structural signal becomes corroborating `evidence`
+  (raising confidence), not a rival domain. Reconciliation is deterministic
+  (member-overlap ≥ threshold OR shared parent tag) and precedes ranking.
 
 ## 8. Stage 4 — Pages · MV-D55
 `pages.py` keeps concept-anchoring (17d `canonical_id`) + the eight archetypes, but:
@@ -290,6 +308,40 @@ legitimacy bar (≥3 tables / ≥2 schemas / ≥1 connection) is comfortably met
 business areas and excludes one-asset facet tags. **Primary rule = FK-connected
 component + schema-name grouping; MV membership = sub-domain boundary; tags demoted
 to corroboration + facet routing.**
+
+### A.2 — Stage-1 live verification (2026-08-31, deployed app)
+
+`./scripts/deploy.sh --update` (app RUNNING) → `ontology_materialize` run scoped to
+`catalog_allowlist=["serverless_stable_6t92c3_catalog"]` → **SUCCEEDED** (1925 tags,
+207 domains, 45 ungrouped). Results:
+
+- **Facets eliminated from Domains (the fix, proven):** an explicit check for every
+  known facet key (`certified`/`contains_synthetic`/`confidential`/`restricted`/
+  `reconciled`/`semantic_layer`/`pii_*`/`data_tier`/`certification`/`governance`…)
+  as a top-level domain returned **zero rows**.
+- **Governed taxonomy surfaces with reasons:** `Alaska Airlines Commercial` (reuse,
+  48, *"grouped by curated domain tag"*), `Maintenance and Engineering` (reuse, 19),
+  `IFEC` (reuse, 15), `Operations` (reassign, 24). Rule split of top-level domains:
+  **32 FK-component, 26 shared-schema, 3 curated-tag** — every domain carries a plain
+  `evidence.reason`.
+- **Two refinements this run exposed (folded into §7):**
+  1. **Duplicate labels** — the same schema emitted both an FK-component and a
+     shared-schema domain (`Cost Attribution` ×2, `Northpeak` ×2, `Default` ×2), and
+     the structural sub-split fragmented one schema into many identically-named
+     sub-domains (`Dev … Airline Demo Metrics` ×14). → §7 name-dedup/qualification;
+     Stage 2's explicit boundaries also collapse the sub-label duplication.
+  2. **Concept split across rules** — `Alaska Airlines Maintenance and Engineering`
+     (curated tag, 19) and `Airline Demo Mvm Maintenance` (FK, 46) are the same area
+     via two rules. → §7 curated-tag-absorbs-structural-component.
+- **Expected pre-Stage-3 noise:** scoping to the *whole* shared catalog (dozens of
+  unrelated `e2e_real_*`/`bakehouse`/`migration`/`cost_attribution` schemas) inflated
+  the count via the shared-schema rule; Stage-3 `domain_require_connection=true` +
+  the legitimacy bar prune schema-only groups, and a Settings allowlist scoped to the
+  airline catalogs avoids it. (The bare button run also correctly `skipped` on an
+  empty allowlist — the snapshot guard held.)
+
+**Verdict:** Stage 1's core thesis is validated live; remaining items are Stage-2
+(sub-domain boundaries) and Stage-3 (legitimacy bar + the two §7 gates) scope.
 
 ## Appendix B — Skipped-refresh banner (independent follow-up)
 Surface a distinct `skipped` refresh state (empty-allowlist run, per the materializer
