@@ -779,6 +779,21 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D60 — Identity is MAPPED, not MERGED, across bounded contexts (PROPOSED — owner directive; the same real-world noun legitimately differs by context — customer vs party vs subscriber — so over-merging destroys meaning).** `er.py` continues to merge exact/near-duplicate tags WITHIN a context but records cross-context correspondences (`same-as` / `role-of` / `related`) rather than collapsing them; cross-context homonyms become `[Disambiguation]` Pages (MV-D55). No change to the canonical-id scheme. Grain unchanged (MV-D49). Build spec §5.4.
 
+> **Curation-redesign driver status (mirrors the Phase-pair pointers).** The full
+> section-by-section spec is `docs/design/ontology-curation-redesign-build.md`
+> (§5 Stage 1 → §10 harness); each stage has a Goal-Mode launcher. **Stage 1**
+> (`ontology-curation-redesign-driver.md`, MV-D51/52/53/60) — **LANDED + deploy-verified**
+> (facets no longer surface as Domains; FK/MV/naming drive the airline domains).
+> **Stage 2** (`ontology-curation-redesign-stage2-driver.md`, MV-D54) — **LANDED +
+> deploy-verified** (sub-domains bind from slash sub-tags + `mvm_subdomain` values;
+> Leiden fallback-only). **Stage 3 — BUILD-READY** (`ontology-curation-redesign-stage3-driver.md`,
+> MV-D56/D57 + the two §7 gates from the Stage-2 live run): legitimacy bar +
+> name-dedup/qualification + curated-tag-absorbs-FK-component + honest confidence +
+> the config surface; additive backend/frontend, offline-tested then deploy-gated.
+> **Stage 4** (Pages, MV-D55, build spec §8) — driver pending. §9 alignment folds into
+> Phase 4 (17h); §10 eval harness (MV-D59) follows. The block above is the register;
+> the build spec is the source of truth.
+
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
 ```
