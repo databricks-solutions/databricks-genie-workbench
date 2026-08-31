@@ -102,10 +102,22 @@ export interface TagLens {
 // (opt-in), "auto" = SP when its probe succeeds, else OBO.
 export type ReadIdentity = "obo" | "sp" | "auto"
 
+// Industry-reference alignment (MV-D58) — STORED + DORMANT; §9 is Phase 4.
+export interface IndustryAlignment {
+  enabled: boolean
+  reference_model?: string | null
+}
+
 export interface OntologySettings {
   company_name?: string | null
   catalog_allowlist: string[]
   read_identity?: ReadIdentity
+  // Stage 3 (MV-D57): per-enterprise curation policy — additive + defaulted.
+  domain_facet_denylist?: string[]
+  domain_min_tables?: number
+  domain_min_schemas?: number
+  domain_require_connection?: boolean
+  industry_alignment?: IndustryAlignment
 }
 
 // ── Phase 2: refresh / freshness surface (the one new model) ───────────────
@@ -139,6 +151,14 @@ export interface EvidenceChip {
   kind: EvidenceChipKind
 }
 
+// The honest confidence (MV-D56): a readable band + the signals present + the one
+// useful gap — NEVER a percent (MV-D35). Rendered in place of the bare tier.
+export interface ConfidenceBand {
+  band: "High" | "Medium" | "Low" | null
+  signals_present: string[]
+  gap: string
+}
+
 export interface DomainDraft {
   proposal_id: string
   kind: "domain" | "subdomain" | "reassign"
@@ -151,6 +171,7 @@ export interface DomainDraft {
   why: string
   evidence: EvidenceChip[]
   tier: DraftTier
+  confidence?: ConfidenceBand | null
 }
 
 export interface PageDraft {

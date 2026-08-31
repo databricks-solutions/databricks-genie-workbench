@@ -135,11 +135,17 @@ async def mirror_is_fresh(metastore_id: str) -> bool:
     return age is not None and age <= FRESHNESS_WINDOW_HOURS
 
 
-def _launch(job_id: str, *, metastore_id: str, workspace_id: str, allowlist: list[str]) -> str | None:
+def _launch(
+    job_id: str, *, metastore_id: str, workspace_id: str, allowlist: list[str],
+    facet_denylist: list[str] | None = None,
+    min_tables: int = 3, min_schemas: int = 2, require_connection: bool = True,
+) -> str | None:
     """Trigger the materialize job via run_now. Returns the job run id, or None.
 
     ``metastore_id`` is the run grain (MV-D49) — passed so the on-demand run scopes
     to the same metastore the app reads; ``workspace_id`` rides along as provenance.
+    The Stage-3 curation policy (MV-D57) rides as job_parameters like ``catalog_allowlist``;
+    the job reads them with in-code defaults, so a param-less run still works (MV-D43).
     """
     import json
 
@@ -155,6 +161,10 @@ def _launch(job_id: str, *, metastore_id: str, workspace_id: str, allowlist: lis
             "catalog": os.environ.get("GSO_CATALOG", ""),
             "schema": os.environ.get("GSO_SCHEMA", "genie_space_optimizer"),
             "catalog_allowlist": json.dumps(allowlist),
+            "domain_facet_denylist": json.dumps(list(facet_denylist or [])),
+            "domain_min_tables": str(int(min_tables)),
+            "domain_min_schemas": str(int(min_schemas)),
+            "domain_require_connection": "true" if require_connection else "false",
         },
     )
     return str(getattr(waiter, "run_id", "")) or None
@@ -177,7 +187,12 @@ async def trigger() -> OntologyRefreshStatus:
 
     settings = await ont_settings.get_settings()
     try:
-        _launch(job_id, metastore_id=ms, workspace_id=ws, allowlist=settings.catalog_allowlist)
+        _launch(
+            job_id, metastore_id=ms, workspace_id=ws, allowlist=settings.catalog_allowlist,
+            facet_denylist=settings.domain_facet_denylist,
+            min_tables=settings.domain_min_tables, min_schemas=settings.domain_min_schemas,
+            require_connection=settings.domain_require_connection,
+        )
     except Exception as e:  # noqa: BLE001 — surface plainly, never 500 the button
         logger.warning("ontology refresh launch failed: %s", e)
         status = await get_status()

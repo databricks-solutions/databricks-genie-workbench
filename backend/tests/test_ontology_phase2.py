@@ -33,9 +33,14 @@ _PHASE1_FIELDS = {
     "TagCollision": {"kind", "members", "suggestion"},
     "TagCleanup": {"tag_key", "flag", "detail"},
     "TagLens": {"tags", "collisions", "cleanup", "as_of"},
-    # read_identity is the single additive, defaulted field for OBO-first (MV-D50);
-    # every other Phase-1 shape stays byte-identical.
-    "OntologySettings": {"company_name", "catalog_allowlist", "read_identity"},
+    # OntologySettings is the config surface: it grows additively + defaulted with each
+    # stage (read_identity for OBO-first MV-D50; the Stage-3 curation policy MV-D57).
+    # Every OTHER Phase-1 shape stays byte-identical.
+    "OntologySettings": {
+        "company_name", "catalog_allowlist", "read_identity",
+        "domain_facet_denylist", "domain_min_tables", "domain_min_schemas",
+        "domain_require_connection", "industry_alignment",
+    },
 }
 
 
@@ -160,9 +165,10 @@ def test_trigger_launches_when_idle(monkeypatch):
 
     launched = {"n": 0}
 
-    def _launch(job_id, *, metastore_id, workspace_id, allowlist):
+    def _launch(job_id, *, metastore_id, workspace_id, allowlist, **kw):
         launched["n"] += 1
         launched["args"] = (job_id, metastore_id, workspace_id, allowlist)
+        launched["policy"] = kw  # Stage 3 curation policy rides as extra kwargs (MV-D57)
         return "job-run-1"
 
     monkeypatch.setattr(mirror, "latest_run", _none)
@@ -176,6 +182,10 @@ def test_trigger_launches_when_idle(monkeypatch):
     assert launched["n"] == 1
     # The job is launched scoped to the metastore (grain), with workspace as provenance.
     assert launched["args"] == ("12345", "ms1", "ws1", ["finance"])
+    # Stage 3 curation policy rides along (MV-D57): the bar + denylist are threaded.
+    assert set(launched["policy"]) == {
+        "facet_denylist", "min_tables", "min_schemas", "require_connection"
+    }
 
 
 def test_trigger_reports_not_configured_without_job_id(monkeypatch):

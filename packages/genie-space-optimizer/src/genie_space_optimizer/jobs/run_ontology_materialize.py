@@ -60,6 +60,12 @@ dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("schema", "genie_space_optimizer")
 dbutils.widgets.text("catalog_allowlist", "[]")
 dbutils.widgets.text("run_id", "")
+# Stage 3 curation policy (MV-D57) — job_parameters with in-code defaults so a
+# param-less run (nightly, or an older launcher) still works (MV-D43).
+dbutils.widgets.text("domain_facet_denylist", "[]")
+dbutils.widgets.text("domain_min_tables", "3")
+dbutils.widgets.text("domain_min_schemas", "2")
+dbutils.widgets.text("domain_require_connection", "true")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -71,6 +77,21 @@ try:
     allowlist = [str(c).strip() for c in json.loads(dbutils.widgets.get("catalog_allowlist") or "[]") if str(c).strip()]
 except (TypeError, ValueError):
     allowlist = []
+
+# Stage 3 curation policy (MV-D57), each parsed defensively → in-code default (MV-D43).
+try:
+    facet_denylist = [str(c).strip() for c in json.loads(dbutils.widgets.get("domain_facet_denylist") or "[]") if str(c).strip()]
+except (TypeError, ValueError):
+    facet_denylist = []
+try:
+    domain_min_tables = int(dbutils.widgets.get("domain_min_tables").strip() or "3")
+except (TypeError, ValueError):
+    domain_min_tables = 3
+try:
+    domain_min_schemas = int(dbutils.widgets.get("domain_min_schemas").strip() or "2")
+except (TypeError, ValueError):
+    domain_min_schemas = 2
+domain_require_connection = (dbutils.widgets.get("domain_require_connection").strip().lower() or "true") != "false"
 
 
 def _resolve_metastore_id() -> str:
@@ -362,6 +383,11 @@ run = materialize.run_materialize(
     # confirmation degrades to unvalidated (no concept→Agent map wired here).
     page_drafter=pages.default_page_drafter(),
     routing_validator=None,
+    # Stage 3 curation policy (MV-D57) — from job_parameters, in-code defaults above.
+    facet_denylist=facet_denylist,
+    domain_min_tables=domain_min_tables,
+    domain_min_schemas=domain_min_schemas,
+    domain_require_connection=domain_require_connection,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))

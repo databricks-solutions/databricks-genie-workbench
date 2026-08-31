@@ -142,10 +142,13 @@ def _governed_signals(fqn="c.s.a"):
 
 
 def test_dismissed_proposal_is_suppressed_and_stays_suppressed_on_rerun():
+    # The legitimacy bar (MV-D57) is orthogonal to suppression; disable it here so a
+    # minimal single-asset fixture still surfaces and the suppression path is exercised.
     def fresh():
         row = _domain_row("sug_dom")
         rank.score_proposals([row], [], members_by_domain={"sug_dom": ["c.s.a"]},
-                             signals=_governed_signals())
+                             signals=_governed_signals(),
+                             min_tables=1, min_schemas=1, require_connection=False)
         return row
 
     suppressions = [{"metastore_id": "ms1", "proposal_kind": "domain", "proposal_id": "sug_dom"}]
@@ -174,13 +177,109 @@ def test_rejected_reassign_stays_suppressed():
 
 def test_suppression_of_other_kind_does_not_hide_a_domain():
     row = _domain_row("sug_dom")
-    rank.score_proposals([row], [], members_by_domain={"sug_dom": ["c.s.a"]}, signals=_governed_signals())
+    # Legitimacy bar off (orthogonal) so the single-asset fixture surfaces.
+    rank.score_proposals([row], [], members_by_domain={"sug_dom": ["c.s.a"]}, signals=_governed_signals(),
+                         min_tables=1, min_schemas=1, require_connection=False)
     # A page suppression with the same id must NOT hide the domain (kind-scoped).
     rank.mark_surfaced([row], [], [{"proposal_kind": "page", "proposal_id": "sug_dom"}])
     assert _ev(row)["surfaced"] is True
 
 
 # ── 6. Metastore grain ──────────────────────────────────────────────────────
+
+
+# ── Stage 3: legitimacy bar (MV-D57) + honest confidence band (MV-D56) ──────
+
+
+def test_legitimacy_ok_thresholds():
+    assert transforms.legitimacy_ok(3, 2, True)[0] is True
+    ok, reason = transforms.legitimacy_ok(1, 1, False)
+    assert ok is False and "legitimacy bar" in reason
+    # require_connection off lets a big edgeless group pass; config can lower the bar.
+    assert transforms.legitimacy_ok(5, 3, False, require_connection=False)[0] is True
+    assert transforms.legitimacy_ok(1, 1, True, min_tables=1, min_schemas=1)[0] is True
+
+
+def test_below_bar_group_kept_not_surfaced_with_hint():
+    # A 1-table / 1-schema shared-schema fragment (the §Appendix A junk) is KEPT but
+    # not surfaced, with an "add to existing domain" hint — not a standalone Domain.
+    row = _domain_row("sug_small", evidence={"reason": "grouped by shared schema: c.bakehouse"})
+    rank.score_proposals([row], [], members_by_domain={"sug_small": ["c.bakehouse.sales"]},
+                         signals=_governed_signals("c.bakehouse.sales"))
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is False
+    assert r["surfaced"] is False              # gated even though the score is high
+    assert r["gate_hint"].startswith("add to existing domain:")
+    assert "c.bakehouse" in r["gate_hint"]
+
+
+def test_legit_group_surfaces_over_the_bar():
+    ev = {"shared_spine": ["a.rev.fact", "a.rev.dim"],
+          "reason": "grouped by foreign key / shared join column"}
+    row = _domain_row("sug_big", evidence=ev)
+    members = ["a.rev.fact", "a.rev.dim", "a.ops.log"]  # 3 tables, 2 schemas, connected
+    rank.score_proposals([row], [], members_by_domain={"sug_big": members},
+                         signals=_governed_signals("a.rev.fact"))
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is True
+    assert r["surfaced"] is True
+
+
+def test_shared_schema_only_group_gated_on_connection():
+    # 3 tables but ONE schema and no structural connection → require_connection prunes.
+    row = _domain_row("sug_sch", evidence={"reason": "grouped by shared schema: c.bakehouse"})
+    members = ["c.bakehouse.a", "c.bakehouse.b", "c.bakehouse.c"]
+    rank.score_proposals([row], [], members_by_domain={"sug_sch": members},
+                         signals=_governed_signals("c.bakehouse.a"))
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is False
+    assert r["surfaced"] is False
+
+
+def test_subdomain_is_exempt_from_legitimacy_bar():
+    row = _domain_row("sug_sub", parent_id="sug_parent")
+    rank.score_proposals([row], [], members_by_domain={"sug_sub": ["c.s.a"]}, signals=_governed_signals())
+    r = _ev(row)
+    assert transforms.proposal_kind_of(row) == "subdomain"
+    assert r["rank"].get("legitimate") is None  # gate never runs for a sub-domain
+    assert r["surfaced"] is True
+
+
+def test_confidence_band_full_coverage_is_high_no_gap_no_percent():
+    b = rank.blend(["c.s.a"], rank.RankSignals(
+        usage={"c.s.a": 0.9}, centrality={"c.s.a": 0.8}, governance={"c.s.a": "governed"}))
+    band = transforms.confidence_band(b)
+    assert band["band"] == "High"
+    assert band["signals_present"] == [
+        "actively queried", "central to how the data connects", "built on governed data"]
+    assert band["gap"] == ""
+    # NEVER a percent (MV-D35).
+    assert "%" not in band["gap"] and not any("%" in s for s in band["signals_present"])
+
+
+def test_confidence_band_partial_coverage_names_the_gap():
+    # Centrality only → coverage 0.35 caps the tier to LOW; the gap names the first
+    # missing factor (usage) as a next step, never a number.
+    b = rank.blend(["c.s.a"], rank.RankSignals(centrality={"c.s.a": 0.9}))
+    band = transforms.confidence_band(b)
+    assert band["band"] == "Low"
+    assert band["signals_present"] == ["central to how the data connects"]
+    assert band["gap"] == "connect query history to rank by usage"
+
+
+def test_confidence_band_written_into_rank_block():
+    row = _domain_row("sug_big", evidence={
+        "shared_spine": ["a.rev.fact", "a.rev.dim"], "reason": "grouped by foreign key"})
+    rank.score_proposals([row], [], members_by_domain={"sug_big": ["a.rev.fact", "a.rev.dim", "a.ops.log"]},
+                         signals=_governed_signals("a.rev.fact"))
+    conf = _ev(row)["rank"]["confidence"]
+    assert set(conf) == {"band", "signals_present", "gap"}
+    assert conf["band"] in ("High", "Medium", "Low")
+
+
+def test_sub_threshold_confidence_band_is_none():
+    b = rank.blend(["c.s.a"], rank.RankSignals(governance={"c.s.a": "ungoverned"}))  # score 20 → None
+    assert transforms.confidence_band(b)["band"] is None
 
 
 def test_ledger_match_is_by_kind_and_id_not_workspace():

@@ -115,6 +115,26 @@ describe("DomainDraftCard — zero-burden render (17.0d)", () => {
     // The only disabled action by default is Apply-for-me.
     expect(html).toContain("disabled")
   })
+
+  it("renders the honest confidence band + signals + gap, never a percent (MV-D56/D35)", () => {
+    const html = renderToStaticMarkup(
+      <DomainDraftCard
+        draft={domain({
+          confidence: {
+            band: "Medium",
+            signals_present: ["central to how the data connects", "built on governed data"],
+            gap: "connect query history to rank by usage",
+          },
+        })}
+        onDecide={noop}
+      />,
+    )
+    expect(html).toContain("Medium")
+    expect(html).toContain("central to how the data connects")
+    expect(html).toContain("connect query history to rank by usage")
+    expect(html).not.toContain("%") // never a rendered percent
+    assertZeroBurden(html)
+  })
 })
 
 describe("PageDraftCard — zero-burden render (17.0e)", () => {

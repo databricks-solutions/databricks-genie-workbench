@@ -25,6 +25,26 @@ export function TierBadge({ tier }: { tier: DomainDraft["tier"] }) {
   return <Badge variant={tier}>{TIER_LABEL[tier]}</Badge>
 }
 
+const BAND_VARIANT = { High: "high", Medium: "medium", Low: "low" } as const
+
+// The honest confidence (MV-D56): a readable band word — never a percent (MV-D35).
+export function ConfidenceBadge({ band }: { band: "High" | "Medium" | "Low" }) {
+  return <Badge variant={BAND_VARIANT[band]}>{band}</Badge>
+}
+
+// "High — actively queried, central to how the data connects; connect query history
+// to rank by usage" — the signals present + the one useful gap, in plain language.
+export function ConfidenceLine({ confidence }: { confidence: NonNullable<DomainDraft["confidence"]> }) {
+  if (!confidence.band) return null
+  return (
+    <p className="text-xs text-muted">
+      <span className="font-medium text-secondary">{confidence.band}</span>
+      {confidence.signals_present.length > 0 && <> — {confidence.signals_present.join(", ")}</>}
+      {confidence.gap && <>; {confidence.gap}</>}
+    </p>
+  )
+}
+
 export function EvidenceChips({ chips }: { chips: EvidenceChip[] }) {
   if (chips.length === 0) return null
   return (
@@ -88,7 +108,12 @@ export function DomainDraftCard({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-semibold text-primary">{draft.name}</h3>
-              <TierBadge tier={draft.tier} />
+              {/* The honest band replaces the bare tier (MV-D56); tier still orders the queue. */}
+              {draft.confidence?.band ? (
+                <ConfidenceBadge band={draft.confidence.band} />
+              ) : (
+                <TierBadge tier={draft.tier} />
+              )}
             </div>
             <p className="mt-0.5 text-xs font-medium text-secondary">{DECISION_LEAD[draft.tag_decision]}</p>
           </div>
@@ -111,6 +136,9 @@ export function DomainDraftCard({
       </div>
 
       <EvidenceChips chips={draft.evidence} />
+
+      {/* The honest confidence: band + signals present + the one useful gap (MV-D56). */}
+      {draft.confidence && <ConfidenceLine confidence={draft.confidence} />}
 
       {draft.subdomains.length > 0 && (
         <div>

@@ -34,6 +34,10 @@ _PHASE3D_MODELS = {
     "DecisionRequest", "DecisionResponse",
 }
 
+# Stage 3 (MV-D56/57) additive models: the honest confidence band carried on
+# DomainDraft, and the STORED+DORMANT industry-alignment config on OntologySettings.
+_STAGE3_MODELS = {"ConfidenceBand", "IndustryAlignment"}
+
 
 def test_no_new_api_model_added_in_phase3a():
     defined = {
@@ -44,9 +48,10 @@ def test_no_new_api_model_added_in_phase3a():
     assert _EXPECTED_MODELS <= defined, (
         f"a frozen model was removed/renamed: {_EXPECTED_MODELS - defined}"
     )
-    # … and the ONLY additions are the append-only Phase-3d models.
-    assert defined == _EXPECTED_MODELS | _PHASE3D_MODELS, (
-        f"unexpected model surface change: {defined ^ (_EXPECTED_MODELS | _PHASE3D_MODELS)}"
+    # … and the ONLY additions are the append-only Phase-3d + Stage-3 models.
+    allowed = _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS
+    assert defined == allowed, (
+        f"unexpected model surface change: {defined ^ allowed}"
     )
 
 

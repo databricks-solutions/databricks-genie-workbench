@@ -21,7 +21,11 @@ from __future__ import annotations
 
 import logging
 
-from backend.ontology.models import OntologySettings
+from backend.ontology.models import (
+    DEFAULT_DOMAIN_FACET_DENYLIST,
+    IndustryAlignment,
+    OntologySettings,
+)
 from backend.services import lakebase
 from backend.services.auth import get_service_principal_client
 
@@ -70,38 +74,82 @@ def _metastore_id() -> str:
     return _METASTORE_ID or "default"
 
 
+def _norm_str_list(values) -> list[str]:
+    """Drop blanks, dedupe, preserve order (shared by allowlist + facet denylist)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in values or []:
+        name = (str(v) or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _industry_alignment(raw) -> IndustryAlignment:
+    """Coerce the stored ``industry_alignment`` (dict/JSON/None) into the model,
+    defaulting to disabled (STORED + DORMANT, MV-D58)."""
+    if isinstance(raw, IndustryAlignment):
+        return raw
+    if isinstance(raw, dict):
+        return IndustryAlignment(
+            enabled=bool(raw.get("enabled", False)),
+            reference_model=raw.get("reference_model"),
+        )
+    return IndustryAlignment()
+
+
 async def get_settings() -> OntologySettings:
-    """Read the stored company name + catalog allowlist (defaults if unset)."""
+    """Read the stored company name + catalog allowlist + curation policy (defaults if
+    unset). Every Stage-3 field is additive/defaulted (MV-D50/D57): an old row missing
+    the columns (or NULLs) falls through to the shipped moderate defaults."""
     row = await lakebase.ont_get_settings(_workspace_id())
     if not row:
         return OntologySettings()
-    # read_identity is additive/defaulted (MV-D50): an old row without the field
-    # (or a NULL) falls through to the model default "obo".
+    denylist = row.get("domain_facet_denylist")
     return OntologySettings(
         company_name=row.get("company_name"),
         catalog_allowlist=list(row.get("catalog_allowlist") or []),
         read_identity=row.get("read_identity") or "obo",
+        domain_facet_denylist=(
+            list(denylist) if denylist is not None else list(DEFAULT_DOMAIN_FACET_DENYLIST)
+        ),
+        domain_min_tables=int(row["domain_min_tables"]) if row.get("domain_min_tables") is not None else 3,
+        domain_min_schemas=int(row["domain_min_schemas"]) if row.get("domain_min_schemas") is not None else 2,
+        domain_require_connection=(
+            bool(row["domain_require_connection"])
+            if row.get("domain_require_connection") is not None else True
+        ),
+        industry_alignment=_industry_alignment(row.get("industry_alignment")),
     )
 
 
 async def save_settings(settings: OntologySettings) -> OntologySettings:
-    """Persist the company name + catalog allowlist. Returns the stored value."""
+    """Persist the company name + catalog allowlist + curation policy. Returns the
+    stored value."""
     company = (settings.company_name or "").strip() or None
-    # Normalize: drop blanks, dedupe, preserve order.
-    seen: set[str] = set()
-    allowlist: list[str] = []
-    for c in settings.catalog_allowlist:
-        name = (c or "").strip()
-        if name and name not in seen:
-            seen.add(name)
-            allowlist.append(name)
+    allowlist = _norm_str_list(settings.catalog_allowlist)
     read_identity = settings.read_identity or "obo"
-    await lakebase.ont_upsert_settings(_workspace_id(), company, allowlist, read_identity)
+    facet_denylist = _norm_str_list(settings.domain_facet_denylist)
+    industry = settings.industry_alignment or IndustryAlignment()
+    await lakebase.ont_upsert_settings(
+        _workspace_id(), company, allowlist, read_identity,
+        domain_facet_denylist=facet_denylist,
+        domain_min_tables=int(settings.domain_min_tables),
+        domain_min_schemas=int(settings.domain_min_schemas),
+        domain_require_connection=bool(settings.domain_require_connection),
+        industry_alignment=industry.model_dump(mode="json"),
+    )
     # NOTE: we deliberately do NOT auto-grant BROWSE to the app SP here. The app's
     # OBO token is scoped read-only for Unity Catalog (catalog.*:read + sql, no
     # UC-write scope), so the REST permissions API is blocked under OBO — an
     # in-app grant would silently fail. The preflight banner instead surfaces a
     # copy-ready GRANT BROWSE for an admin to run. See services/grants.py.
     return OntologySettings(
-        company_name=company, catalog_allowlist=allowlist, read_identity=read_identity
+        company_name=company, catalog_allowlist=allowlist, read_identity=read_identity,
+        domain_facet_denylist=facet_denylist,
+        domain_min_tables=int(settings.domain_min_tables),
+        domain_min_schemas=int(settings.domain_min_schemas),
+        domain_require_connection=bool(settings.domain_require_connection),
+        industry_alignment=industry,
     )

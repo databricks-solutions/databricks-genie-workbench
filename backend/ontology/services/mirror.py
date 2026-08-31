@@ -320,6 +320,21 @@ def _domain_why(kind: str, name: str, tag_decision: str, member_count: int, conf
     return f"“{name}” groups {member_count} related assets that aren't organized under a shared domain yet."
 
 
+def _confidence_of(evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """The honest confidence band (MV-D56) from ``evidence.rank.confidence``, or None
+    for a pre-Stage-3 mirror row. Shape ``{band, signals_present, gap}`` — the wheel
+    computed it via ``transforms.confidence_band`` (never a percent, MV-D35)."""
+    conf = (evidence.get("rank") or {}).get("confidence")
+    if not isinstance(conf, dict):
+        return None
+    band = conf.get("band")
+    return {
+        "band": band if band in ("High", "Medium", "Low") else None,
+        "signals_present": [str(s) for s in (conf.get("signals_present") or [])],
+        "gap": str(conf.get("gap") or ""),
+    }
+
+
 def _assemble_domain_draft(
     row: dict[str, Any],
     members: list[dict[str, str]],
@@ -344,6 +359,10 @@ def _assemble_domain_draft(
         "why": _domain_why(kind, name, tag_decision, len(members), conflict_tag),
         "evidence": _domain_chips(evidence, conflict_tag),
         "tier": tier,
+        # Stage 3 (MV-D56): the honest confidence band assembled by the wheel and
+        # carried in evidence.rank.confidence; served additively (the card renders it
+        # in place of the bare tier). A pre-Stage-3 mirror row without it → None.
+        "confidence": _confidence_of(evidence),
     }
 
 

@@ -522,6 +522,117 @@ def test_leiden_is_the_fallback_only_where_no_explicit_boundary(monkeypatch):
     assert not any(v & a_assets for v in fine_verts)
 
 
+# ── Stage 3: curated-tag absorbs FK component + name dedup/qualification ────
+
+
+def _prop(domain_id_members, *, parent_id=None, name="D", tag_decision="create",
+          tag_key="D", tag_value="D", reason="grouped by foreign key / shared join column",
+          extra_ev=None):
+    ev = {"reason": reason, "anchor": None, "shared_spine": [], "co_query_count": 0,
+          "tag_prior": [], "seed": []}
+    if extra_ev:
+        ev.update(extra_ev)
+    members = tuple(sorted(domain_id_members))
+    return cluster.DomainProposal(
+        domain_id=cluster.domain_id_of(members), parent_id=parent_id, name=name,
+        description="d", tag_decision=tag_decision, tag_key=tag_key, tag_value=tag_value,
+        evidence=ev, members=members,
+    )
+
+
+def test_curated_tag_absorbs_overlapping_fk_component():
+    # A curated (reuse) Domain and an FK-component (create) Domain covering the same
+    # business area (curated ⊂ FK) collapse to ONE — the curated wins name+reuse, the
+    # FK signal becomes corroborating evidence, and the FK row disappears.
+    curated = _prop(
+        {"air.maint.work_order", "air.maint.part", "air.maint.aircraft"},
+        name="Maintenance and Engineering", tag_decision="reuse",
+        tag_key="Maintenance", tag_value="Maintenance", reason="grouped by curated domain tag: Maintenance",
+    )
+    fk = _prop(
+        {"air.maint.work_order", "air.maint.part", "air.maint.aircraft",
+         "air.maint.inspection", "air.maint.log"},
+        name="Airline Demo Mvm Maintenance", tag_decision="create",
+        tag_key="Airline Demo Mvm Maintenance", tag_value="Airline Demo Mvm Maintenance",
+    )
+    out = cluster.absorb_curated_into_structural([curated, fk])
+    tops = [p for p in out if p.parent_id is None]
+    assert len(tops) == 1
+    merged = tops[0]
+    assert merged.tag_decision == "reuse" and merged.name == "Maintenance and Engineering"
+    assert merged.tag_key == "Maintenance"
+    # The FK component's members are absorbed; the FK reason is corroboration.
+    assert "air.maint.inspection" in merged.members and "air.maint.log" in merged.members
+    assert merged.evidence["corroborating"]
+    # The FK component no longer stands as its own Domain.
+    assert not any(p.name == "Airline Demo Mvm Maintenance" for p in out)
+
+
+def test_low_overlap_curated_and_fk_stay_distinct():
+    curated = _prop({"a.x.t1", "a.x.t2"}, name="Alpha", tag_decision="reuse", tag_key="Alpha")
+    fk = _prop({"b.y.p", "b.y.q", "b.y.r"}, name="Beta", tag_decision="create", tag_key="Beta")
+    out = cluster.absorb_curated_into_structural([curated, fk])
+    assert len([p for p in out if p.parent_id is None]) == 2  # no overlap → both kept
+
+
+def test_absorb_reparents_fk_subdomains():
+    curated = _prop({"m.a.t1", "m.a.t2", "m.a.t3"}, name="Maint", tag_decision="reuse", tag_key="Maint")
+    fk = _prop({"m.a.t1", "m.a.t2", "m.a.t3", "m.a.t4"}, name="MvmMaint", tag_decision="create", tag_key="MvmMaint")
+    sub = _prop({"m.a.t1", "m.a.t2"}, parent_id=fk.domain_id, name="Sub", reason="schema: m.a")
+    out = cluster.absorb_curated_into_structural([curated, fk, sub])
+    merged = next(p for p in out if p.parent_id is None)
+    resub = next(p for p in out if p.parent_id is not None)
+    assert resub.parent_id == merged.domain_id  # re-parented onto the merged Domain
+
+
+def test_two_curated_each_absorb_own_fk_twin_no_cross_reparent():
+    # Two independent curated Domains, each with its own FK twin + a sub-domain. A
+    # sub-domain must re-parent onto ITS curated's merge, never the other's.
+    cA = _prop({"a.x.t1", "a.x.t2", "a.x.t3"}, name="Alpha", tag_decision="reuse", tag_key="Alpha")
+    fkA = _prop({"a.x.t1", "a.x.t2", "a.x.t3", "a.x.t4"}, name="AlphaFk", tag_decision="create", tag_key="AlphaFk")
+    subA = _prop({"a.x.t1", "a.x.t2"}, parent_id=fkA.domain_id, name="SubA", reason="schema: a.x")
+    cB = _prop({"b.y.t1", "b.y.t2", "b.y.t3"}, name="Beta", tag_decision="reuse", tag_key="Beta")
+    fkB = _prop({"b.y.t1", "b.y.t2", "b.y.t3", "b.y.t4"}, name="BetaFk", tag_decision="create", tag_key="BetaFk")
+    subB = _prop({"b.y.t1", "b.y.t2"}, parent_id=fkB.domain_id, name="SubB", reason="schema: b.y")
+
+    out = cluster.absorb_curated_into_structural([cA, fkA, subA, cB, fkB, subB])
+    merged_alpha = next(p for p in out if p.name == "Alpha")
+    merged_beta = next(p for p in out if p.name == "Beta")
+    resub_a = next(p for p in out if p.name == "SubA")
+    resub_b = next(p for p in out if p.name == "SubB")
+    assert resub_a.parent_id == merged_alpha.domain_id
+    assert resub_b.parent_id == merged_beta.domain_id
+
+
+def test_dedupe_qualifies_two_same_named_top_level_domains():
+    a = _prop({"finance.cost.a", "finance.cost.b", "finance.cost.c"}, name="Cost Attribution")
+    b = _prop({"ops.cost.x", "ops.cost.y", "ops.cost.z"}, name="Cost Attribution")
+    out = cluster.dedupe_domain_names([a, b])
+    names = sorted(p.name for p in out)
+    assert len(names) == len(set(names))  # no two share a rendered name
+    assert names == ["Cost Attribution (Cost)", "Cost Attribution (Cost)"] or all(
+        n.startswith("Cost Attribution (") for n in names
+    )
+    # domain_id (member fingerprint) is untouched by the label fix.
+    assert {p.domain_id for p in out} == {a.domain_id, b.domain_id}
+
+
+def test_dedupe_collapses_identical_member_sets():
+    members = {"c.s.a", "c.s.b"}
+    a = _prop(members, name="Dup")
+    b = _prop(members, name="Dup")  # identical members → same domain_id
+    assert a.domain_id == b.domain_id
+    out = cluster.dedupe_domain_names([a, b])
+    assert len(out) == 1  # collapsed to one
+
+
+def test_dedupe_leaves_unique_names_untouched():
+    a = _prop({"c.s.a", "c.s.b"}, name="Alpha", tag_key="Alpha")
+    b = _prop({"c.t.x", "c.t.y"}, name="Beta", tag_key="Beta")
+    out = cluster.dedupe_domain_names([a, b])
+    assert sorted(p.name for p in out) == ["Alpha", "Beta"]
+
+
 def test_every_subdomain_carries_a_boundary_reason():
     # Whatever the boundary source, every sub-domain stamps a plain boundary reason.
     _BOUNDARY = ("sub-tag: ", "mvm_subdomain=", "schema: ", "foreign-key component",

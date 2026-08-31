@@ -319,6 +319,31 @@ async def _ensure_schema():
                 "ALTER TABLE genie.genie_ont_settings "
                 "ADD COLUMN IF NOT EXISTS read_identity TEXT NOT NULL DEFAULT 'obo'"
             )
+            # Stage 3 curation policy (MV-D57): additive + defaulted, one ADD COLUMN IF
+            # NOT EXISTS each (the MV-D50 pattern), so an old row reads the shipped
+            # moderate defaults. industry_alignment is STORED + DORMANT (MV-D58, §9 is
+            # Phase 4). Idempotent on restart.
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_facet_denylist JSONB NOT NULL DEFAULT '[]'"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_min_tables INT NOT NULL DEFAULT 3"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_min_schemas INT NOT NULL DEFAULT 2"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_require_connection BOOLEAN NOT NULL DEFAULT TRUE"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS industry_alignment JSONB NOT NULL "
+                "DEFAULT '{\"enabled\": false, \"reference_model\": null}'"
+            )
         _lakebase_available = True
         logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables + 1 ontology table)")
     except Exception as e:
@@ -1079,7 +1104,9 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
     try:
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT company_name, catalog_allowlist, read_identity, updated_at "
+                "SELECT company_name, catalog_allowlist, read_identity, "
+                "domain_facet_denylist, domain_min_tables, domain_min_schemas, "
+                "domain_require_connection, industry_alignment, updated_at "
                 "FROM genie.genie_ont_settings WHERE workspace_id = $1",
                 workspace_id,
             )
@@ -1089,10 +1116,27 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
             allowlist = json.loads(row["catalog_allowlist"]) or []
         except (ValueError, TypeError):
             allowlist = []
+        # Stage 3 config is additive: an old row predates these columns' ALTER — but
+        # since the columns carry NOT NULL DEFAULTs, a read returns the defaults, not
+        # NULL. Parse defensively so a hand-edited NULL still degrades to the default.
+        def _json(val, default):
+            if val is None:
+                return default
+            if isinstance(val, (dict, list)):
+                return val
+            try:
+                return json.loads(val)
+            except (ValueError, TypeError):
+                return default
         return {
             "company_name": row["company_name"],
             "catalog_allowlist": allowlist,
             "read_identity": row["read_identity"] or "obo",
+            "domain_facet_denylist": _json(row["domain_facet_denylist"], None),
+            "domain_min_tables": row["domain_min_tables"],
+            "domain_min_schemas": row["domain_min_schemas"],
+            "domain_require_connection": row["domain_require_connection"],
+            "industry_alignment": _json(row["industry_alignment"], None),
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
     except Exception:
@@ -1105,13 +1149,30 @@ async def ont_upsert_settings(
     company_name: str | None,
     catalog_allowlist: list[str],
     read_identity: str = "obo",
+    *,
+    domain_facet_denylist: list[str] | None = None,
+    domain_min_tables: int = 3,
+    domain_min_schemas: int = 2,
+    domain_require_connection: bool = True,
+    industry_alignment: dict | None = None,
 ) -> dict:
-    """Upsert the Ontology settings row for a workspace. Fails closed."""
+    """Upsert the Ontology settings row for a workspace. Fails closed. The Stage-3
+    curation-policy fields are keyword-only + defaulted, so an older caller (positional
+    company/allowlist/read_identity only) still writes a valid row."""
     await _maybe_retry_schema()
+    denylist = list(domain_facet_denylist or [])
+    industry = industry_alignment if isinstance(industry_alignment, dict) else {
+        "enabled": False, "reference_model": None
+    }
     record = {
         "company_name": company_name,
         "catalog_allowlist": catalog_allowlist,
         "read_identity": read_identity or "obo",
+        "domain_facet_denylist": denylist,
+        "domain_min_tables": int(domain_min_tables),
+        "domain_min_schemas": int(domain_min_schemas),
+        "domain_require_connection": bool(domain_require_connection),
+        "industry_alignment": industry,
         "updated_at": datetime.utcnow().isoformat(),
     }
 
@@ -1123,17 +1184,29 @@ async def ont_upsert_settings(
         await conn.execute(
             """
             INSERT INTO genie.genie_ont_settings
-                (workspace_id, company_name, catalog_allowlist, read_identity, updated_at)
-            VALUES ($1, $2, $3, $4, NOW())
+                (workspace_id, company_name, catalog_allowlist, read_identity,
+                 domain_facet_denylist, domain_min_tables, domain_min_schemas,
+                 domain_require_connection, industry_alignment, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
             ON CONFLICT (workspace_id) DO UPDATE SET
-                company_name      = EXCLUDED.company_name,
-                catalog_allowlist = EXCLUDED.catalog_allowlist,
-                read_identity     = EXCLUDED.read_identity,
-                updated_at        = NOW()
+                company_name             = EXCLUDED.company_name,
+                catalog_allowlist        = EXCLUDED.catalog_allowlist,
+                read_identity            = EXCLUDED.read_identity,
+                domain_facet_denylist    = EXCLUDED.domain_facet_denylist,
+                domain_min_tables        = EXCLUDED.domain_min_tables,
+                domain_min_schemas       = EXCLUDED.domain_min_schemas,
+                domain_require_connection = EXCLUDED.domain_require_connection,
+                industry_alignment       = EXCLUDED.industry_alignment,
+                updated_at               = NOW()
             """,
             workspace_id,
             company_name,
             json.dumps(catalog_allowlist),
             record["read_identity"],
+            json.dumps(denylist),
+            record["domain_min_tables"],
+            record["domain_min_schemas"],
+            record["domain_require_connection"],
+            json.dumps(industry),
         )
     return record

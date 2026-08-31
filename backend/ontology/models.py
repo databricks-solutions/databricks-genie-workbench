@@ -111,6 +111,25 @@ class TagLens(BaseModel):
     as_of: str
 
 
+# Curation-policy defaults (MV-D57), shipped moderate + inspectable. The facet
+# denylist mirrors the wheel's in-code Stage-1 constants (transforms._FACET_*), lifted
+# here so an enterprise can inspect + extend it; the wheel treats config entries as
+# ADDITIVE on top of the shipped patterns, never removing one.
+DEFAULT_DOMAIN_FACET_DENYLIST: list[str] = [
+    "contains_synthetic", "data_tier", "certification", "certified",
+    "controlled_placeholder", "governance", "open_reference", "reference",
+    "demo", "demos", "demo_domain", "techsummit", "domain",
+    "sensitivity", "pii", "quality", "status", "lifecycle",
+]
+
+
+class IndustryAlignment(BaseModel):
+    """Industry-reference alignment toggle (MV-D58) — STORED + DORMANT here; §9 is
+    Phase 4. Persisted so the surface exists, but nothing reads it in Stage 3."""
+    enabled: bool = False
+    reference_model: str | None = None
+
+
 class OntologySettings(BaseModel):
     company_name: str | None = None
     catalog_allowlist: list[str] = Field(default_factory=list)
@@ -119,6 +138,14 @@ class OntologySettings(BaseModel):
     # "obo" (the viewing admin). "sp" = the app service principal (opt-in, requires
     # the banner's grants); "auto" = SP when its probe succeeds, else OBO.
     read_identity: Literal["obo", "sp", "auto"] = "obo"
+    # ── Stage 3 (MV-D57): per-enterprise curation policy — additive + defaulted, so an
+    # old stored row (missing these keys) reads the shipped moderate defaults. Persisted
+    # via the MV-D50 ADD COLUMN IF NOT EXISTS pattern; threaded to the job as params. ──
+    domain_facet_denylist: list[str] = Field(default_factory=lambda: list(DEFAULT_DOMAIN_FACET_DENYLIST))
+    domain_min_tables: int = 3
+    domain_min_schemas: int = 2
+    domain_require_connection: bool = True
+    industry_alignment: IndustryAlignment = Field(default_factory=IndustryAlignment)
 
 
 # ── Phase 2: refresh / freshness surface (the ONLY new model) ──────────────
@@ -155,6 +182,15 @@ class EvidenceChip(BaseModel):
     kind: Literal["usage", "centrality", "governance", "corroboration", "conflict"]
 
 
+class ConfidenceBand(BaseModel):
+    """The honest confidence (MV-D56): a readable band + the signals present + the one
+    useful gap — NEVER a percent (MV-D35). Replaces the opaque bare tier on the card.
+    ``band`` is None only when sub-threshold (never served)."""
+    band: Literal["High", "Medium", "Low"] | None = None
+    signals_present: list[str] = Field(default_factory=list)
+    gap: str = ""
+
+
 class DomainDraft(BaseModel):
     proposal_id: str  # = domain_id (member-fingerprint-derived, metastore-stable)
     kind: Literal["domain", "subdomain", "reassign"]
@@ -167,6 +203,9 @@ class DomainDraft(BaseModel):
     why: str  # "Why we're suggesting this" — zero-burden, assembled server-side
     evidence: list[EvidenceChip] = Field(default_factory=list)
     tier: DraftTier
+    # Stage 3 (MV-D56): the honest confidence band, additive. The card renders this in
+    # place of the bare tier; ``tier`` stays for ordering + back-compat.
+    confidence: ConfidenceBand | None = None
 
 
 class PageDraft(BaseModel):

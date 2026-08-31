@@ -431,6 +431,65 @@ def test_domain_member_proposals_idempotent_no_dups():
         assert ev["rank"]["tier"] in ("high", "medium", "low", None)
 
 
+# ── Stage 3: legitimacy bar + facet-denylist config through the materializer ──
+
+
+def _top_domain(writer):
+    for row in writer.tables["genie_ont_domains"].values():
+        if row.get("parent_id") is None:
+            return row
+    return None
+
+
+def test_run_param_less_uses_default_legitimacy_bar():
+    # A param-less run uses the shipped moderate defaults (≥3 tables / ≥2 schemas). The
+    # fixture's Finance domain spans 2 tables / 2 schemas → kept but not surfaced.
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    ev = json.loads(_top_domain(writer)["evidence"])
+    assert ev["rank"]["legitimate"] is False
+    assert ev["surfaced"] is False
+    assert ev["gate_hint"].startswith("add to existing domain:")
+
+
+def test_run_param_driven_bar_lets_small_domain_pass():
+    # A param-driven run lowers the bar; the same 2-table Finance domain now clears it.
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+         domain_min_tables=1, domain_min_schemas=1, domain_require_connection=False)
+    ev = json.loads(_top_domain(writer)["evidence"])
+    assert ev["rank"]["legitimate"] is True
+    assert "gate_hint" not in ev
+
+
+def test_facet_denylist_config_routes_tag_out_of_domains():
+    from datetime import datetime, timezone
+
+    catalog_rows = [{"tag_name": "widget_kind"}]
+    assign_rows = [
+        {"tag_name": "widget_kind", "catalog_name": "c", "schema_name": "s", "table_name": "t1"},
+        {"tag_name": "widget_kind", "catalog_name": "c", "schema_name": "s", "table_name": "t2"},
+    ]
+
+    def go(denylist):
+        writer = _FakeWriter()
+        materialize.run_materialize(
+            _LineageReader(catalog_rows, assign_rows, [], [], lineage=[("c.s.t1", "c.s.t2")]),
+            writer, metastore_id="ms1", workspace_id="ws1", trigger="on_demand",
+            allowlist=["c"], run_id="r1",
+            now=datetime.fromisoformat(_AS_OF).astimezone(timezone.utc), facet_denylist=denylist,
+        )
+        return writer.tables.get("genie_ont_domains", {})
+
+    # Without the denylist, widget_kind binds a Domain (reuse); with it, it's a facet
+    # and routed OUT of domain candidacy (the structural community still forms, but as
+    # a create — never reusing the facet tag).
+    assert any((r.get("tag_key") or "") == "widget_kind" for r in go(None).values())
+    assert all((r.get("tag_key") or "") != "widget_kind" for r in go(["widget_kind"]).values())
+
+
 class _LineageReader(_FakeReader):
     """A reader with a custom lineage edge set (the base reader hard-codes one pair)."""
 

@@ -331,6 +331,10 @@ def run_materialize(
     page_drafter: Any | None = None,
     routing_validator: Any | None = None,
     page_oracle: Any | None = None,
+    facet_denylist: list[str] | frozenset[str] | None = None,
+    domain_min_tables: int = transforms.DOMAIN_MIN_TABLES,
+    domain_min_schemas: int = transforms.DOMAIN_MIN_SCHEMAS,
+    domain_require_connection: bool = transforms.DOMAIN_REQUIRE_CONNECTION,
 ) -> dict[str, Any]:
     """Materialize the governed-tag graph + taxonomy snapshots for one metastore
     (MV-D49 grain), then resolve identity (L3 ER) and MERGE the identity map +
@@ -449,7 +453,10 @@ def run_materialize(
         # + membership. Deterministic + offline; naming degrades (MV-D43). The snapshot
         # writes above are already committed, so a clustering error records `failed`
         # without corrupting them.
-        proposals = cluster.cluster(signal_graph, identity=er_verdicts, namer=namer, company=company)
+        proposals = cluster.cluster(
+            signal_graph, identity=er_verdicts, namer=namer, company=company,
+            facet_denylist=facet_denylist,
+        )
         expanded = build_domain_rows(
             proposals, metastore_id=metastore_id, workspace_id=workspace_id,
             run_id=run_id, as_of=as_of,
@@ -496,6 +503,8 @@ def run_materialize(
         rank.score_proposals(
             expanded["domain_rows"], page_rows,
             members_by_domain=members_by_domain, signals=signals,
+            min_tables=domain_min_tables, min_schemas=domain_min_schemas,
+            require_connection=domain_require_connection,
         )
         report = rank.mark_surfaced(
             expanded["domain_rows"], page_rows, _gather_suppressions(reader, metastore_id),

@@ -208,6 +208,63 @@ def _load_evidence(row: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _schema_of(fqn: str) -> str:
+    """``catalog.schema`` of an asset fqn (the natural bigger home for a below-bar
+    fragment's "add to existing domain" hint)."""
+    parts = str(fqn).split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else str(fqn)
+
+
+def _is_connected(evidence: Mapping[str, Any]) -> bool:
+    """Whether a Domain proposal has a STRUCTURAL connection between its assets — a
+    lineage spine, a co-query link, or an FK / metric-view / community grouping. A
+    shared-schema-only group (edgeless assets that merely sit in one schema) is NOT
+    connected, so ``domain_require_connection`` prunes it (the §Appendix A junk)."""
+    if len(evidence.get("shared_spine") or []) >= 2:
+        return True
+    if int(evidence.get("co_query_count") or 0) > 0:
+        return True
+    reason = str(evidence.get("reason") or "").lower()
+    return any(k in reason for k in ("foreign key", "foreign-key", "metric view", "community detection"))
+
+
+def _legitimacy_home(members: Sequence[str], evidence: Mapping[str, Any]) -> str:
+    """The bigger home a below-bar fragment should fold into: its most common schema
+    (deterministic, alphabetical tie-break), else the anchor's schema."""
+    schemas = [_schema_of(m) for m in members]
+    if schemas:
+        counts: dict[str, int] = {}
+        for s in schemas:
+            counts[s] = counts.get(s, 0) + 1
+        return max(sorted(counts), key=lambda s: counts[s])
+    anchor = evidence.get("anchor")
+    return _schema_of(str(anchor)) if anchor else "another domain"
+
+
+def _apply_legitimacy_gate(
+    row: dict[str, Any], evidence: dict[str, Any], members: Sequence[str], rank: dict[str, Any],
+    *, min_tables: int, min_schemas: int, require_connection: bool,
+) -> None:
+    """The legitimacy bar (MV-D57), applied to a top-level Domain proposal in place: a
+    below-bar group is KEPT but ``surfaced=false`` with an "add to existing domain"
+    hint, never a standalone Domain. Sub-domains + reassign + pages are exempt (they
+    already live inside a domain or name a governed conflict). Records the verdict on
+    ``rank`` so the run report and the serve layer can read it."""
+    n_tables = len({str(m) for m in members})
+    n_schemas = len({_schema_of(m) for m in members})
+    connected = _is_connected(evidence)
+    ok, reason = transforms.legitimacy_ok(
+        n_tables, n_schemas, connected,
+        min_tables=min_tables, min_schemas=min_schemas, require_connection=require_connection,
+    )
+    rank["legitimate"] = ok
+    if not ok:
+        home = _legitimacy_home(members, evidence)
+        rank["legitimacy_reason"] = reason
+        evidence["gate_hint"] = f"add to existing domain: {home}"
+        evidence["surfaced"] = False
+
+
 def _domain_assets(row: dict[str, Any], evidence: Mapping[str, Any], members_by_domain: Mapping[str, Sequence[str]]) -> list[str]:
     """A Domain proposal's scoring assets: its member FQNs (17e membership) plus the
     lineage anchor / shared spine carried in evidence (the load-bearing spine)."""
@@ -227,10 +284,17 @@ def _page_assets(row: dict[str, Any]) -> list[str]:
     return sorted(assets)
 
 
-def _score_row(row: dict[str, Any], *, kind: str, assets: Sequence[str], signals: RankSignals, oracle: Any) -> None:
+def _score_row(
+    row: dict[str, Any], *, kind: str, assets: Sequence[str], signals: RankSignals, oracle: Any,
+    members: Sequence[str] = (), min_tables: int = transforms.DOMAIN_MIN_TABLES,
+    min_schemas: int = transforms.DOMAIN_MIN_SCHEMAS,
+    require_connection: bool = transforms.DOMAIN_REQUIRE_CONNECTION,
+) -> None:
     """Score + firewall one proposal row in place: set ``score`` and write the rank
     block + a tentative ``surfaced`` flag into ``evidence`` (the ledger pass finalizes
-    ``surfaced``). A blocked candidate keeps its row but never surfaces (§8)."""
+    ``surfaced``). A blocked candidate keeps its row but never surfaces (§8). A
+    top-level Domain below the legitimacy bar (MV-D57) is kept but not surfaced. The
+    readable confidence band (MV-D56) is written into the rank block."""
     evidence = _load_evidence(row)
     rank = blend(assets, signals)
 
@@ -255,11 +319,20 @@ def _score_row(row: dict[str, Any], *, kind: str, assets: Sequence[str], signals
     rank["blocked"] = blocked
     if blocked:
         rank["block_reason"] = reason
+    # Honest confidence (MV-D56): band + signals present + gap, never a percent.
+    rank["confidence"] = transforms.confidence_band(rank)
     row["score"] = rank["score"]
     evidence["rank"] = rank
     # Tentative: surfaced iff it cleared threshold AND passed every firewall. The
     # ledger pass (mark_surfaced) may still flip it to false for a dismissed proposal.
     evidence["surfaced"] = bool(rank["tier"] is not None and not blocked)
+    # Legitimacy bar (MV-D57) — top-level Domains only; below-bar rows are kept but
+    # not surfaced, with an "add to existing domain" hint (§Appendix A junk pruning).
+    if kind == "domain":
+        _apply_legitimacy_gate(
+            row, evidence, members, rank,
+            min_tables=min_tables, min_schemas=min_schemas, require_connection=require_connection,
+        )
     row["evidence"] = json.dumps(evidence, sort_keys=True)
 
 
@@ -270,14 +343,19 @@ def score_proposals(
     members_by_domain: Mapping[str, Sequence[str]] | None = None,
     signals: RankSignals | None = None,
     oracle: Any | None = None,
+    min_tables: int = transforms.DOMAIN_MIN_TABLES,
+    min_schemas: int = transforms.DOMAIN_MIN_SCHEMAS,
+    require_connection: bool = transforms.DOMAIN_REQUIRE_CONNECTION,
 ) -> None:
     """Score + firewall every Domain / Sub-Domain / Page proposal **in place**.
 
     Deterministic and pure. Each row gets its ``score`` (0-100 blend) and an
     ``evidence["rank"]`` block (tier, uncapped tier, coverage, factors, blocked +
-    reason) plus a tentative ``evidence["surfaced"]``. Blocked (firewall) and
-    sub-threshold proposals are marked ``surfaced=false`` but KEPT in the list so the
-    metastore-scoped re-MERGE carries the full set (§8). The ledger pass
+    reason, the readable ``confidence`` band) plus a tentative ``evidence["surfaced"]``.
+    Blocked (firewall), sub-threshold, and below-legitimacy-bar (MV-D57) proposals are
+    marked ``surfaced=false`` but KEPT in the list so the metastore-scoped re-MERGE
+    carries the full set (§8). The legitimacy bar defaults come from config (MV-D57);
+    a param-less call uses the shipped moderate defaults. The ledger pass
     (:func:`mark_surfaced`) runs after this.
     """
     members = members_by_domain or {}
@@ -285,7 +363,11 @@ def score_proposals(
     oracle = oracle or _default_oracle()
     for row in domain_rows:
         ev = _load_evidence(row)
-        _score_row(row, kind=transforms.proposal_kind_of(row), assets=_domain_assets(row, ev, members), signals=sig, oracle=oracle)
+        _score_row(
+            row, kind=transforms.proposal_kind_of(row), assets=_domain_assets(row, ev, members),
+            signals=sig, oracle=oracle, members=members.get(str(row.get("domain_id") or ""), ()),
+            min_tables=min_tables, min_schemas=min_schemas, require_connection=require_connection,
+        )
     for row in page_rows:
         _score_row(row, kind="page", assets=_page_assets(row), signals=sig, oracle=oracle)
 

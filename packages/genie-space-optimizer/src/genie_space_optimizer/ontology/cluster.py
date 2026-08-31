@@ -91,6 +91,14 @@ PRIOR_KINDS = ("tag_assignment", "agent_scope")
 LEIDEN_SEED = 1_729
 N_ITERATIONS = 5
 
+# Curated-tag-absorbs-structural threshold (Stage 3, MV-D56/57): when a curated
+# (governed-tag) Domain and an FK-component Domain overlap by at least this fraction
+# of the SMALLER member set (the overlap coefficient), they are the same business
+# area surfaced by two rules — the curated one wins identity and absorbs the FK
+# component (the FK signal drops to corroborating evidence). Deterministic; a lower
+# overlap keeps them distinct. The live evidence (§A.2): curated 19 ⊂ FK 46.
+ABSORB_OVERLAP = 0.5
+
 # Reassignment margin (τ_reassign): the fraction of a governed tag's seeded members
 # the graph must pull into a DIFFERENT community before we surface a `reassign`
 # conflict for human adjudication (17g). Conservative so only strong contradictions
@@ -689,6 +697,7 @@ def cluster(
     company: str | None = None,
     namer: Namer | None = None,
     facet_tiebreaker: Callable[[str], bool | None] | None = None,
+    facet_denylist: frozenset[str] | list[str] | None = None,
     gamma_coarse: float = GAMMA_COARSE,
     gamma_fine: float = GAMMA_FINE,
 ) -> list[DomainProposal]:
@@ -698,10 +707,12 @@ def cluster(
     collapse duplicate tags to canonical seeds; ``namer`` is injected for tests (the
     real job passes :func:`default_namer`). ``facet_tiebreaker`` is an optional injected
     facet/aboutness resolver for genuinely ambiguous tag names (degrades, MV-D43).
-    Rules-first (MV-D53): decisive signals group deterministically, Leiden handles the
-    remainder. Deterministic and offline.
+    ``facet_denylist`` (Stage 3, MV-D57 config) adds enterprise facet patterns on top of
+    the shipped constants. Rules-first (MV-D53): decisive signals group deterministically,
+    Leiden handles the remainder. Deterministic and offline.
     """
     canon_tag = _tag_canonical_map(identity)
+    denylist = transforms._normalize_denylist(facet_denylist)
 
     # ── Collect asset<->asset structural signals + tag/agent/MV/schema memberships. ─
     asset_type: dict[str, str] = {}
@@ -741,7 +752,7 @@ def cluster(
     # area — drop it from the tag priors so it neither seeds nor binds a Domain.
     tag_members = {
         k: m for k, m in tag_members.items()
-        if not transforms.is_facet_tag(k, tiebreaker=facet_tiebreaker)
+        if not transforms.is_facet_tag(k, tiebreaker=facet_tiebreaker, extra_denylist=denylist)
     }
     # A facet tag never names a sub-domain either (MV-D51) — drop its per-asset values.
     tag_values = {k: v for k, v in tag_values.items() if k in tag_members}
@@ -841,6 +852,11 @@ def cluster(
                 tag_members=tag_members, agent_members=agent_members, lineage_pairs=lineage_pairs,
                 coquery_pairs=coquery_pairs, namer=namer, company=company,
             ))
+    # Stage 3 (MV-D56/57): reconcile a curated tag with its FK-component twin (one
+    # Domain, FK → corroboration), THEN qualify/collapse duplicate rendered names. Both
+    # are deterministic post-passes that precede ranking; ``domain_id`` is untouched.
+    proposals = absorb_curated_into_structural(proposals)
+    proposals = dedupe_domain_names(proposals)
     return proposals
 
 
@@ -934,6 +950,198 @@ def _describe(name: str, decision: str, anchor: str | None, n: int) -> str:
             "reassign": "flags a governed-tag disagreement for review"}[decision]
     tail = f" anchored on `{anchor}`" if anchor else ""
     return f"'{name}' — {n} asset(s){tail}; {verb}."
+
+
+# ── Stage 3: curated-tag absorbs its structural component (MV-D56/57) ────────
+
+
+def _is_fk_component(p: DomainProposal) -> bool:
+    """A top-level CREATE Domain grouped by the foreign-key rule (a structural twin of
+    a curated tag when they cover the same assets)."""
+    return (
+        p.parent_id is None
+        and p.tag_decision == "create"
+        and "foreign key" in str(p.evidence.get("reason") or "").lower()
+    )
+
+
+def _is_curated(p: DomainProposal) -> bool:
+    """A top-level Domain that reuses/reassigns a governed tag identity (the curated
+    authority that wins the name + reuse decision when it absorbs an FK twin)."""
+    return p.parent_id is None and p.tag_decision in ("reuse", "reassign")
+
+
+def _overlap_coeff(a: frozenset[str], b: frozenset[str]) -> float:
+    """|a ∩ b| / min(|a|, |b|) — forgiving when the curated set is a subset of the
+    larger FK component (the live 19-⊂-46 case)."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def absorb_curated_into_structural(proposals: list[DomainProposal]) -> list[DomainProposal]:
+    """CURATED-TAG ABSORBS FK COMPONENT (Stage 3, MV-D56/57; live finding §A.2). When a
+    curated-domain-tag Domain and an FK-component Domain overlap by ≥ :data:`ABSORB_OVERLAP`
+    of the smaller member set, they are ONE business area surfaced by two rules — do not
+    emit both. The curated tag wins identity (name + reuse); it absorbs the FK component's
+    members; the structural signal becomes corroborating ``evidence`` (raising confidence),
+    not a rival Domain. Deterministic and precedes ranking. Pure; returns new proposals.
+    Sub-domains of an absorbed FK component re-parent onto the merged Domain."""
+    curated = [p for p in proposals if _is_curated(p)]
+    fk = [p for p in proposals if _is_fk_component(p)]
+    if not curated or not fk:
+        return list(proposals)
+
+    remap: dict[str, str] = {}          # old domain_id -> merged domain_id
+    absorbed_fk: set[str] = set()       # fk domain_ids that were absorbed
+    replaced: dict[str, DomainProposal] = {}  # curated domain_id -> merged proposal
+
+    for c in sorted(curated, key=lambda p: (-len(p.members), p.domain_id)):
+        c_members = frozenset(c.members)
+        merged_members = set(c.members)
+        corrob: list[str] = []
+        this_round: list[str] = []  # only the fids THIS curated absorbs (re-parent scope)
+        for f in sorted(fk, key=lambda p: (-len(p.members), p.domain_id)):
+            if f.domain_id in absorbed_fk:
+                continue
+            if _overlap_coeff(c_members, frozenset(f.members)) >= ABSORB_OVERLAP:
+                absorbed_fk.add(f.domain_id)
+                this_round.append(f.domain_id)
+                merged_members |= set(f.members)
+                corrob.append(str(f.evidence.get("reason") or "grouped by foreign key"))
+        if not corrob:
+            continue
+        new_members = tuple(sorted(merged_members))
+        new_id = domain_id_of(new_members)
+        evidence = dict(c.evidence)
+        evidence["corroborating"] = sorted(set(evidence.get("corroborating", [])) | set(corrob))
+        merged = DomainProposal(
+            domain_id=new_id, parent_id=None, name=c.name,
+            description=_describe(c.name, c.tag_decision, evidence.get("anchor"), len(new_members)),
+            tag_decision=c.tag_decision, tag_key=c.tag_key, tag_value=c.tag_value,
+            evidence=evidence, members=new_members,
+        )
+        replaced[c.domain_id] = merged
+        remap[c.domain_id] = new_id            # this curated's own sub-domains re-parent
+        for fid in this_round:                 # + the FK twins it absorbed this round
+            remap[fid] = new_id
+
+    if not absorbed_fk:
+        return list(proposals)
+
+    out: list[DomainProposal] = []
+    for p in proposals:
+        if p.domain_id in absorbed_fk and p.parent_id is None:
+            continue  # the FK component's top-level row is absorbed away
+        if p.domain_id in replaced and p.parent_id is None:
+            out.append(replaced[p.domain_id])
+            continue
+        if p.parent_id in remap:  # re-parent a sub-domain of an absorbed/merged Domain
+            out.append(DomainProposal(
+                p.domain_id, remap[p.parent_id], p.name, p.description, p.tag_decision,
+                p.tag_key, p.tag_value, p.evidence, p.members,
+            ))
+            continue
+        out.append(p)
+    return out
+
+
+# ── Stage 3: name dedup / qualification (MV-D56/57) ─────────────────────────
+
+
+def _scope_label(members: tuple[str, ...]) -> str:
+    """A distinguishing scope for a name collision: the humanized last segment of the
+    proposal's dominant schema (``finance.sales`` -> ``Sales``). Deterministic."""
+    schemas = [_schema_prefix(m) for m in members]
+    if not schemas:
+        return ""
+    top = max(sorted(set(schemas)), key=lambda s: (schemas.count(s), s))
+    seg = top.split(".")[-1] if "." in top else top
+    return _humanize(seg)
+
+
+def _renamed(p: DomainProposal, new_name: str) -> DomainProposal:
+    """A copy of ``p`` with a new rendered name (domain_id UNCHANGED — the member
+    fingerprint is stable, MV-D57). A CREATE proposal keeps ``tag_value`` in sync with
+    the label (its proposed governed value); a reuse/reassign keeps its governed
+    ``tag_key``/``tag_value`` untouched — only the display name is qualified."""
+    is_create = p.tag_decision == "create"
+    tag_value = new_name if is_create else p.tag_value
+    tag_key = new_name if (is_create and p.parent_id is None) else p.tag_key
+    return DomainProposal(
+        p.domain_id, p.parent_id, new_name,
+        _describe(new_name, p.tag_decision, p.evidence.get("anchor"), len(p.members)),
+        p.tag_decision, tag_key, tag_value, p.evidence, p.members,
+    )
+
+
+def _dedupe_namespace(group: list[DomainProposal]) -> list[DomainProposal]:
+    """Resolve one namespace (all top-level Domains, or the sub-domains of one parent)
+    so no two proposals share a rendered name. Collapse proposals with an IDENTICAL
+    member set (a true duplicate — same domain_id); qualify the rest by scope, and if a
+    scope still collides, append a stable numeric suffix. Deterministic."""
+    by_name: dict[str, list[DomainProposal]] = {}
+    for p in group:
+        by_name.setdefault(p.name, []).append(p)
+
+    out: list[DomainProposal] = []
+    for name, members in by_name.items():
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        # Collapse identical member sets to a single proposal (same fingerprint id).
+        by_fingerprint: dict[str, DomainProposal] = {}
+        for p in sorted(members, key=lambda x: x.domain_id):
+            by_fingerprint.setdefault(p.domain_id, p)
+        distinct = sorted(by_fingerprint.values(), key=lambda x: (-len(x.members), x.domain_id))
+        if len(distinct) == 1:
+            out.append(distinct[0])
+            continue
+        # Qualify each distinct proposal by its scope; break any remaining tie by index.
+        used: set[str] = set()
+        for i, p in enumerate(distinct):
+            label = _scope_label(p.members)
+            qualified = f"{name} ({label})" if label else name
+            if qualified in used or qualified == name:
+                qualified = f"{name} ({label} {i + 1})" if label else f"{name} ({i + 1})"
+            used.add(qualified)
+            out.append(_renamed(p, qualified))
+    return out
+
+
+def dedupe_domain_names(proposals: list[DomainProposal]) -> list[DomainProposal]:
+    """NAME DEDUP / QUALIFICATION (Stage 3, MV-D56/57; live finding §A.2). No two
+    proposals share a rendered ``name``: top-level Domains form one namespace, and the
+    sub-domains of each parent form their own. Collisions are qualified by distinguishing
+    scope (schema) or collapsed when the member set is identical. ``domain_id`` (the
+    member fingerprint) is never touched — this gate fixes the human-facing label only.
+    Pure; returns new proposals in the input order's namespaces (deterministic)."""
+    tops = [p for p in proposals if p.parent_id is None]
+    subs_by_parent: dict[str, list[DomainProposal]] = {}
+    for p in proposals:
+        if p.parent_id is not None:
+            subs_by_parent.setdefault(p.parent_id, []).append(p)
+
+    resolved: dict[tuple[str | None, str], DomainProposal] = {}
+    for p in _dedupe_namespace(tops):
+        resolved[(None, p.domain_id)] = p
+    for parent_id, subs in subs_by_parent.items():
+        for p in _dedupe_namespace(subs):
+            resolved[(parent_id, p.domain_id)] = p
+
+    # Emit each resolved proposal exactly once, in the input's first-seen order (a
+    # collapsed duplicate is dropped rather than emitted twice).
+    out: list[DomainProposal] = []
+    emitted: set[tuple[str | None, str]] = set()
+    for p in proposals:
+        key = (p.parent_id, p.domain_id)
+        if key in emitted:
+            continue
+        r = resolved.get(key)
+        if r is not None:
+            emitted.add(key)
+            out.append(r)
+    return out
 
 
 def qualify_subdomain_keys(proposals: list[DomainProposal]) -> list[DomainProposal]:

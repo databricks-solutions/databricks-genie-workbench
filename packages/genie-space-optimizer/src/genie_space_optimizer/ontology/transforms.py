@@ -299,13 +299,17 @@ def _values_look_enumerated(allowed_values: list[str] | None) -> bool:
     return any(v in _FACET_VALUE_TOKENS for v in vals)
 
 
-def _facet_name_match(tag_key: str) -> str | None:
+def _facet_name_match(tag_key: str, extra_denylist: frozenset[str] | None = None) -> str | None:
     """The facet pattern a tag's TOP-LEVEL name matches, or None. Classification is on
-    the domain part — a facet is a top-level attribute; sub-tags inherit their parent."""
+    the domain part — a facet is a top-level attribute; sub-tags inherit their parent.
+    ``extra_denylist`` (Stage 3, MV-D57 config) adds enterprise-supplied normalized
+    facet tokens ON TOP of the shipped constants; it never removes a shipped pattern."""
     token = _normalize_tag_token(domain_part(tag_key))
     if not token:
         return None
     if token in _FACET_EXACT:
+        return token
+    if extra_denylist and token in extra_denylist:
         return token
     for p in _FACET_PREFIXES:
         if token == p or token.startswith(p + "_") or token.startswith(p):
@@ -319,20 +323,32 @@ def _facet_name_match(tag_key: str) -> str | None:
     return None
 
 
+def _normalize_denylist(denylist: list[str] | frozenset[str] | None) -> frozenset[str] | None:
+    """Normalize a config facet denylist (raw tag names) to the matcher's token form,
+    so ``Data Tier`` / ``data-tier`` and ``data_tier`` all match. ``None`` when empty."""
+    if not denylist:
+        return None
+    toks = {_normalize_tag_token(str(x)) for x in denylist}
+    toks.discard("")
+    return frozenset(toks) or None
+
+
 def classify_tag(
     tag_key: str,
     *,
     allowed_values: list[str] | None = None,
     tiebreaker: Callable[[str], bool | None] | None = None,
+    extra_denylist: frozenset[str] | None = None,
 ) -> tuple[FacetClass, str]:
     """Classify a governed tag as ``facet`` or ``aboutness`` + a plain reason (MV-D51).
 
-    Order: (1) a name-pattern hit → facet; (2) an enumerated flag/tier value set →
-    facet; (3) an optional injected ``tiebreaker`` (LLM) for the genuinely ambiguous
-    only — ``True`` = facet, ``False`` = aboutness, ``None``/raise = degrade; (4)
-    default → aboutness (a business area). The tiebreaker is never asked when a
-    heuristic already decided, so it is cheap and always optional (MV-D43)."""
-    hit = _facet_name_match(tag_key)
+    Order: (1) a name-pattern hit (shipped constants + the config ``extra_denylist``,
+    MV-D57) → facet; (2) an enumerated flag/tier value set → facet; (3) an optional
+    injected ``tiebreaker`` (LLM) for the genuinely ambiguous only — ``True`` = facet,
+    ``False`` = aboutness, ``None``/raise = degrade; (4) default → aboutness (a business
+    area). The tiebreaker is never asked when a heuristic already decided, so it is
+    cheap and always optional (MV-D43)."""
+    hit = _facet_name_match(tag_key, extra_denylist)
     if hit is not None:
         return "facet", f"facet: name matches data-attribute pattern '{hit}'"
     if _values_look_enumerated(allowed_values):
@@ -354,8 +370,11 @@ def is_facet_tag(
     *,
     allowed_values: list[str] | None = None,
     tiebreaker: Callable[[str], bool | None] | None = None,
+    extra_denylist: frozenset[str] | None = None,
 ) -> bool:
-    return classify_tag(tag_key, allowed_values=allowed_values, tiebreaker=tiebreaker)[0] == "facet"
+    return classify_tag(
+        tag_key, allowed_values=allowed_values, tiebreaker=tiebreaker, extra_denylist=extra_denylist,
+    )[0] == "facet"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -544,6 +563,86 @@ def coverage_cap(score: float, coverage: float) -> tuple[str | None, str | None,
     if _RANK_TIER_ORDER.index(uncapped) <= _RANK_TIER_ORDER.index(ceiling):
         return uncapped, uncapped, False
     return ceiling, uncapped, True
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Stage 3 (MV-D56/57): the legitimacy bar + the honest confidence band. Both
+# PURE + deterministic. ``legitimacy_ok`` is the size/connectedness gate whose
+# defaults (≥3 tables / ≥2 schemas / ≥1 connection) come from the live estate
+# (§Appendix A); ``confidence_band`` turns a rank block into a READABLE band +
+# the signals present + the one useful gap — NEVER a percent (MV-D35). The band
+# reuses the coverage-capped tier already in the rank block (``coverage_cap``);
+# this is the ONE tiering home, so it forks nothing.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Default legitimacy bar (MV-D57) — moderate, comfortably met by a real business
+# area and failed by a one-asset facet/shared-schema fragment (§Appendix A).
+DOMAIN_MIN_TABLES = 3
+DOMAIN_MIN_SCHEMAS = 2
+DOMAIN_REQUIRE_CONNECTION = True
+
+
+def legitimacy_ok(
+    n_tables: int,
+    n_schemas: int,
+    connected: bool,
+    *,
+    min_tables: int = DOMAIN_MIN_TABLES,
+    min_schemas: int = DOMAIN_MIN_SCHEMAS,
+    require_connection: bool = DOMAIN_REQUIRE_CONNECTION,
+) -> tuple[bool, str]:
+    """The legitimacy bar (MV-D57): is a proposed Domain big + connected enough to
+    stand on its own? Returns ``(ok, reason)`` — a below-bar group is KEPT but not
+    surfaced, and ``reason`` is the plain shortfall the serve layer turns into an
+    "add to existing domain" hint (empty when ``ok``). Deterministic; a sparse
+    estate can lower the bar via config so it never over-prunes (MV-D43)."""
+    shortfalls: list[str] = []
+    if n_tables < min_tables:
+        shortfalls.append(f"only {n_tables} table{'s' if n_tables != 1 else ''} (needs {min_tables})")
+    if n_schemas < min_schemas:
+        shortfalls.append(f"spans {n_schemas} schema{'s' if n_schemas != 1 else ''} (needs {min_schemas})")
+    if require_connection and not connected:
+        shortfalls.append("no structural connection between the assets")
+    if shortfalls:
+        return False, "below the legitimacy bar: " + "; ".join(shortfalls)
+    return True, ""
+
+
+# Readable band words (the opaque tier is retired, MV-D56) + per-factor plain
+# labels / gap hints. Order is stable so the assembled band is deterministic.
+_BAND_LABEL: dict[str, str] = {"high": "High", "medium": "Medium", "low": "Low"}
+_FACTOR_PRESENT_LABEL: dict[str, str] = {
+    "usage": "actively queried",
+    "centrality": "central to how the data connects",
+    "governance": "built on governed data",
+}
+_FACTOR_GAP_HINT: dict[str, str] = {
+    "usage": "connect query history to rank by usage",
+    "centrality": "add lineage so its structural role can be measured",
+    "governance": "govern these assets to raise confidence",
+}
+
+
+def confidence_band(rank_block: dict[str, Any]) -> dict[str, Any]:
+    """A READABLE confidence (MV-D56) from a proposal's ``evidence.rank`` block:
+    ``{band, signals_present, gap}`` — never a percent (MV-D35). ``band`` is the
+    coverage-capped tier already computed by :func:`coverage_cap` mapped to a plain
+    word (``None`` when sub-threshold, never served); ``signals_present`` names the
+    rank factors that fired in plain language; ``gap`` is the single most useful
+    missing factor phrased as a next step (empty string when nothing is missing)."""
+    tier = rank_block.get("tier")
+    band = _BAND_LABEL.get(str(tier)) if tier in ("high", "medium", "low") else None
+    factors = rank_block.get("factors") or {}
+    present: list[str] = []
+    missing: list[str] = []
+    for name in ("usage", "centrality", "governance"):  # stable, coverage order
+        f = factors.get(name) or {}
+        (present if f.get("present") else missing).append(name)
+    return {
+        "band": band,
+        "signals_present": [_FACTOR_PRESENT_LABEL[n] for n in present],
+        "gap": _FACTOR_GAP_HINT.get(missing[0], "") if missing else "",
+    }
 
 
 def proposal_kind_of(domain_row: dict[str, Any]) -> str:
