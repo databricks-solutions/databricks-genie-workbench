@@ -30,10 +30,10 @@ chosen by a **human bakeoff** and built in a separate follow-up run.
 ## Driver prompt (paste verbatim)
 
 ```text
-GOAL: OFFLINE Step A of Phase 3e — Estate Graph / "Ontology Map". Persist the fused
-signal graph + a precomputed igraph layout as a new snapshot, serve it read-only,
-and stage a 3-library BAKEOFF (static mockups). Then STOP for a human to eyeball the
-mockups + pick the frontend lib. Branch: ontology, atop shipped Phase-1..3d.
+GOAL: OFFLINE Step A of Phase 3e — Estate Graph / Ontology Map. Persist the fused
+graph + a precomputed igraph layout as a snapshot, serve it read-only,
+and stage a 3-library BAKEOFF (static mockups). Then STOP for a human to eyeball
+mockups + pick the lib. Branch: ontology, atop shipped Phase-1..3d.
 
 SPEC: ontology-phase3e-build.md — Step A = §1,§3,§4,§6,§7,§8,§11 + bakeoff §5; Step B
 DEFERRED. BASELINE (no regress): phase3a/3b + 17f/17g + phase2/1. DESIGN: ontology-
@@ -43,13 +43,14 @@ D39/D41/D45). RULES: AGENTS.md.
 REUSE, DON'T FORK:
   - graph.py build_signal_graph {nodes,edges} = layout INPUT; layout.py does ONLY
     layout + domain rollup (no rebuild, no re-signal).
-  - materialize.py run_materialize builds the graph (~line164, discarded) + (17e)
-    {node->domain_id}; feed both (+17g scores if any) to layout.py, then MERGE
-    genie_ont_graph_snapshot as the LAST additive step (build_snapshot_merge_sql).
+  - materialize.py builds the graph (~line164, discarded) + (17e) {node->domain_id};
+    feed both (+17g scores) to layout.py, then MERGE genie_ont_graph_snapshot LAST
+    (build_snapshot_merge_sql).
   - ddl.py — add genie_ont_graph_snapshot like genie_ont_taxonomy_snapshot (JSON blob
-    keyed by workspace_id) + add to SNAPSHOT_TABLES (no proposal/consent semantics).
+    keyed by metastore_id [MV-D49], workspace_id provenance) + SNAPSHOT_TABLES (no
+    proposal/consent semantics).
   - mirror.py — clone read_taxonomy_tree (synced->Delta->JSON) as read_graph_snapshot;
-    graph route = taxonomy.py mirror-first serve, NO live fallback.
+    graph route = taxonomy.py serve, NO live fallback.
 
 HARD GUARDRAILS:
   - igraph ALREADY a wheel dep (17e/MV-D39): add NO Python dep, uv.lock UNTOUCHED; add
@@ -57,33 +58,34 @@ HARD GUARDRAILS:
   - ONE read model OntologyGraph{,Node,Edge,Level} + ONE read route GET /api/ontology/
     graph (mirror-only; cold->state="cold", empty, never raises) + TS mirror in
     types.ts. All Phase-1..3d models/routes BYTE-IDENTICAL.
-  - WRITE only genie_ont_graph_snapshot (SP snapshot, key=workspace_id, NOT-MATCHED-BY-
-    SOURCE DELETE scoped to workspace_id). NEVER write proposals/consents/suppressions
-    or any tag. Route READ-ONLY. NO new signal, NO clustering re-run.
+  - GRAIN (MV-D49): resolve metastore_id (re-grain resolver); genie_ont_graph_snapshot
+    key=metastore_id (workspace_id provenance); NOT-MATCHED-BY-SOURCE DELETE + writer.
+    merge + read_graph_snapshot all metastore_id-scoped.
+  - WRITE only genie_ont_graph_snapshot (snapshot, job run_as). NEVER write proposals/
+    consents/suppressions or any tag. Route READ-ONLY. NO new signal/cluster re-run.
   - NO SET/UNSET TAG, NO CREATE GOVERNED TAG, NO manage_uc_tags, NO web_search;
     lakebase_* confined to similarity.py.
-  - DETERMINISTIC layout: fixed igraph RNG seed + single thread. Coords NOT bit-
-    identical across versions -> TESTS ASSERT STRUCTURE (node/edge set, domain_id
-    colour, rollup counts), NOT exact (x,y). Two levels: domains (rollup, default) +
-    assets (capped top-N by centrality; truncated=True + true node_count).
+  - DETERMINISTIC layout: fixed igraph seed + single thread. Coords NOT bit-identical
+    across versions -> TESTS ASSERT STRUCTURE (node/edge set, domain_id colour, rollup
+    counts), NOT (x,y). Two levels: domains (rollup, default) + assets (top-N by
+    centrality; truncated=True + true node_count).
   - Degrade (MV-D43): layout LAST; failure records run 'failed' but must NOT corrupt
     earlier snapshots; empty graph -> empty snapshot, run 'succeeded'.
   - BAKEOFF (§5): 3 STATIC mockups of the SAME 17.0b estate, NO real libs / NO npm
-    import: 17.0h (Sigma.js v3, flat/crisp), 17.0i (Reagraph, glow/depth/curved), 17.0j
-    (Cytoscape.js, compound containers+collapse). Each: domain clusters; lineage-solid/
-    co-query-dashed/scope-thin edges (incl 2 cross-domain co-query); legend; LOD+filter
-    controls; hover evidence card; click->draft hint; "why this lib / trade-offs" strip.
-    Do NOT pick a winner.
-  - Do NOT pull forward §12: no EstateGraph.tsx/npm dep (Step B); no new signal/
-    clustering (17d/17e); no external context (P4); no write/apply (P5).
-  - NO DEPLOY: no deploy.sh/bundle deploy/uvicorn/npm dev/live run.
+    import: 17.0h (Sigma.js v3, flat/crisp), 17.0i (Reagraph, glow/curved), 17.0j
+    (Cytoscape.js, compound). Each: domain clusters; lineage-solid/co-query-dashed/
+    scope-thin edges (incl 2 cross-domain); legend; LOD+filter controls; hover evidence
+    card; click->draft hint; "why this lib / trade-offs" strip. Do NOT pick a winner.
+  - Do NOT pull forward §12: no EstateGraph.tsx/npm dep (Step B); no new signal/cluster
+    (17d/e); no external context (P4); no write/apply (P5).
+  - NO DEPLOY: no deploy.sh/bundle/uvicorn/npm dev/live run.
 
-ACCEPTANCE (all before done): ./scripts/test.sh green (§11 = contract-frozen; layout-
-  fixture; determinism x2 runs; top-N cap+honesty; route-shape incl cold;
-  additive-safety; updated-firewall). uv.lock UNTOUCHED; npm ci --dry-run clean; lint +
-  tsc clean (unused type OK). §12 "Step-A offline done" true. THEN STOP.
+ACCEPTANCE: ./scripts/test.sh green (§11 = contract-frozen; layout-fixture; determinism
+  x2; metastore-grain; top-N cap+honesty; route-shape incl cold; additive-safety;
+  updated-firewall). uv.lock UNTOUCHED; npm ci --dry-run clean; lint + tsc clean. §12
+  "Step-A offline done" true. THEN STOP.
 
-WORKFLOW: ddl.py (+graph_snapshot) -> layout.py (igraph layout+rollup, deterministic)
+WORKFLOW: ddl.py (+graph_snapshot) -> layout.py (layout+rollup, deterministic)
   -> materialize.py (feed graph+communities, MERGE last) -> models.py (OntologyGraph)
   -> routers/graph.py + __init__ + main.py -> mirror.read_graph_snapshot -> types.ts
   -> mockups 17.0h/i/j -> firewall/tests. Test per slice; STOP if ambiguous or a

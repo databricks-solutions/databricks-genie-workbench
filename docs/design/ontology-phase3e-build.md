@@ -37,7 +37,8 @@ in full and STOPS**; **Step B is a follow-up run** after a human picks the libra
 ### Step A — persist + serve the graph, and stage the library bakeoff (the agent builds this, then STOPS)
 
 - **Persist the fused graph + a precomputed layout (L7)** — a new
-  `genie_ont_graph_snapshot` Delta table (one JSON blob per workspace), MERGE'd by
+  `genie_ont_graph_snapshot` Delta table (one JSON blob per **metastore**, MV-D49 —
+  `workspace_id` rides along as provenance only), MERGE'd by
   an **additive final step** in `run_materialize` that reuses the in-memory graph
   the job *already* builds (and today discards at `materialize.py` ~line 164) plus
   17e's `domain_id` assignments and 17g's scores.
@@ -90,6 +91,8 @@ the only mutation — the map's "click → draft" reuses 17g's read-only draft, 
 | Decision | Phase-3e posture |
 |---|---|
 | **MV-D48 Estate Graph** | **Active — this is the phase.** Persist the fused graph + precomputed `igraph` layout as `genie_ont_graph_snapshot`; serve `GET /api/ontology/graph` (mirror-only); render via a **bakeoff-chosen** library (Sigma.js v3 / Reagraph / Cytoscape.js) after a human eyeballs `17.0h/i/j`. No new signal, no new Python dep, no UC write. |
+| **MV-D49 grain = metastore** | **Active** — `genie_ont_graph_snapshot` is keyed by `metastore_id` (leading PK); the MERGE and the delete predicate are metastore-scoped; `read_graph_snapshot(metastore_id)`; `workspace_id` is provenance only, never a key. The job resolves `metastore_id` with the re-grain resolver before the write. |
+| **MV-D50 OBO-first / `run_as`** | **Active (write side only)** — the snapshot write runs inside the batch under the job's `run_as` identity (not "the SP"); the `/graph` route is **mirror-only** (reads Lakebase, not system tables), so the OBO `read_identity` setting never applies to it. |
 | MV-D35 evidence-first trust | **Active** — node size/colour and the hover card are the same signals (usage, lineage centrality, score) the drafts carry; the map asserts nothing new. |
 | MV-D36 standalone admin-gated estate page | **Active** — the Map is a view *inside* the admin-gated Ontology page, not a new surface. |
 | MV-D37 governed-tag substrate | **Active (read-only)** — clusters are coloured by 17e's `domain_id`; clicking one opens the 17g Domain draft (reuse/create/reassign proposal). The map **never** writes a tag. |
@@ -122,7 +125,7 @@ backend/ontology/
   models.py                 # MODIFIED (Step A) — + OntologyGraph{,Node,Edge,Level} (read model)
   routers/graph.py          # NEW (Step A) — GET /api/ontology/graph (mirror-only, read-only)
   routers/__init__.py       # MODIFIED (Step A) — register ontology_graph_router
-  services/mirror.py        # MODIFIED (Step A) — + read_graph_snapshot(workspace_id)
+  services/mirror.py        # MODIFIED (Step A) — + read_graph_snapshot(metastore_id)
 backend/main.py             # MODIFIED (Step A) — include ontology_graph_router
 frontend/src/ontology/
   types.ts                  # MODIFIED (Step A) — + OntologyGraph TS mirror (no component yet)
@@ -149,7 +152,9 @@ frontend/src/ontology/EstateGraph.tsx        # the Map view (chosen lib), click�
 - `genie_space_optimizer/ontology/ddl.py` (`build_snapshot_merge_sql`,
   `SNAPSHOT_TABLES`, `ensure_ontology_tables`) — add `genie_ont_graph_snapshot`
   exactly like `genie_ont_taxonomy_snapshot` (one JSON blob keyed by
-  `workspace_id`); reuse the idempotent MERGE.
+  `metastore_id`, MV-D49); reuse the idempotent MERGE (whose delete predicate is
+  already `t.metastore_id`-scoped from the re-grain, so the key **must** lead
+  `metastore_id`).
 - `backend/ontology/services/mirror.py` (`read_taxonomy_tree`) — the graph read is
   the **same** pattern (synced-pool-first → Delta-via-warehouse fallback → JSON
   parse); do not invent a new read path.
@@ -289,11 +294,13 @@ cost together.
 ## 7. Persistence / DDL
 
 **One new snapshot table** (schema mirrors `genie_ont_taxonomy_snapshot` — a JSON
-blob keyed by `workspace_id`), written by the SP inside the existing job.
+blob keyed by `metastore_id`, MV-D49), written inside the existing job under its
+`run_as` identity (MV-D50).
 
 ```sql
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_graph_snapshot (
-    workspace_id  STRING     COMMENT 'Derived PK — one serialized estate graph per workspace',
+    metastore_id  STRING     COMMENT 'Leading PK (MV-D49) — one serialized estate graph per metastore',
+    workspace_id  STRING     COMMENT 'Provenance only (NOT a key) — the workspace that ran the materialize',
     graph         STRING     COMMENT 'JSON: {domains:{nodes,edges}, assets:{nodes,edges}, layout, meta} — precomputed (x,y)',
     node_count    INT        COMMENT 'Total asset-level nodes BEFORE the top-N cap',
     edge_count    INT        COMMENT 'Total asset-level edges',
@@ -305,16 +312,20 @@ TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
 ```
 
 - Register `TABLE_ONT_GRAPH_SNAPSHOT = "genie_ont_graph_snapshot"` and add it to
-  **`SNAPSHOT_TABLES`** (SP-written; it is a materialized view of the estate, **not**
-  a proposal table — no consent/suppression semantics).
-- **Key (idempotent MERGE, §7.2 precedent):** `(workspace_id)`; update cols
-  `(graph, node_count, edge_count, layout, run_id, as_of)`; `WHEN NOT MATCHED BY
-  SOURCE ... DELETE` scoped to `workspace_id`. A re-run replaces the one blob.
-- **Lakebase mirror** — register `genie_ont_graph_snapshot` in
-  `scripts/setup_synced_tables.py`; it reads Delta-via-warehouse through the Phase-2
-  `mirror.py` interface until the synced-table flip (no new read path).
-- **Firewall guard** — `genie_ont_graph_snapshot` is an **allowed SP snapshot
-  write** (add to the snapshot allow-set, like taxonomy); the `graph` route stays
+  **`SNAPSHOT_TABLES`** (batch-written; it is a materialized view of the estate,
+  **not** a proposal table — no consent/suppression semantics).
+- **Key (idempotent MERGE, §7.2 precedent):** `(metastore_id)`; update cols
+  `(workspace_id, graph, node_count, edge_count, layout, run_id, as_of)` —
+  `workspace_id` rides along as a provenance update col, never a key; `WHEN NOT
+  MATCHED BY SOURCE ... DELETE` scoped to `metastore_id` (the re-grained builder
+  emits `t.metastore_id`). A re-run replaces the one blob for the metastore; another
+  metastore's blob is never touched.
+- **Lakebase mirror** — register `genie_ont_graph_snapshot` (PK leading
+  `metastore_id`) in `scripts/setup_synced_tables.py`; it reads Delta-via-warehouse
+  through the Phase-2 `mirror.py` interface until the synced-table flip (no new read
+  path).
+- **Firewall guard** — `genie_ont_graph_snapshot` is an **allowed snapshot write**
+  (add to the snapshot allow-set, like taxonomy); the `graph` route stays
   **read-only**; still **no** `SET/UNSET TAG`, `CREATE GOVERNED TAG`,
   `manage_uc_tags`, or `web_search` anywhere.
 
@@ -327,11 +338,13 @@ No new job task — the snapshot is written **inside** `run_materialize`, as the
 
 1. The job already builds the fused graph (`materialize.py` ~line 164) and (post-17e)
    the `{node → domain_id}` communities. Pass both (+ 17g scores if present) to
-   `layout.build_graph_snapshot(...)`.
+   `layout.build_graph_snapshot(...)`. The job has already resolved `metastore_id`
+   (the re-grain resolver, MV-D49) and carries `workspace_id` as provenance.
 2. `layout.py`: build the `igraph.Graph`, run the deterministic force layout (fixed
    seed), attach `(x,y)`/`size`/`domain_id`, roll up to the domain level, cap the
-   asset level at top-N, serialize to the §7 JSON blob.
-3. `writer.merge("genie_ont_graph_snapshot", [row], ["workspace_id"], workspace_id)`.
+   asset level at top-N, serialize to the §7 JSON blob. The row carries
+   `metastore_id` (key) + `workspace_id` (provenance).
+3. `writer.merge("genie_ont_graph_snapshot", [row], ["metastore_id"], metastore_id)`.
 4. Degrade (MV-D43): a layout exception records `failed` but does **not** corrupt the
    tag/taxonomy/identity/domain snapshots written earlier; an empty graph → empty
    snapshot, run still `succeeded`.
@@ -383,6 +396,10 @@ cluster, no Lakebase, no browser.
 - **Structural determinism** — two runs over the same fixture yield the **same** node
   set, edge set, `domain_id` colouring, and rollup counts (assert structure, **not**
   exact floats — §6 honesty); the MERGE replaces the single blob (no dup rows).
+- **Metastore grain (MV-D49)** — the snapshot row/DDL/MERGE lead with `metastore_id`
+  and the generated delete predicate is `t.metastore_id`-scoped (asserted on the SQL);
+  `workspace_id` is an update col / provenance, never a key; a second metastore's blob
+  is not deleted by this metastore's run; `read_graph_snapshot` scopes by `metastore_id`.
 - **Top-N cap + honesty** — a fixture above the cap sets `truncated=True` and reports
   the true `node_count`; below the cap, `truncated=False`.
 - **Route shape** — `GET /api/ontology/graph` returns a valid `OntologyGraph`; a cold
