@@ -165,11 +165,15 @@ tag-lens byte-identical); firewall unchanged (no SET/UNSET/CREATE TAG, no
 ---
 
 ## 6. Stage 2 — Sub-domains from explicit boundaries · MV-D54
-Per Domain, derive sub-domains from **explicit boundaries first**: sub-tags
-(`Domain/Sub` convention) → schema-within-domain → MV/FK components; the finer Leiden
-split is the **fallback only** when no explicit boundary exists (today `cluster.py`
-*always* re-clusters). Each sub-domain carries its boundary reason. Offline; grain
-unchanged.
+Per Domain, derive sub-domains from **explicit boundaries first**, in precedence:
+sub-tags (`Domain/Sub` convention) → **value sub-tag** (a distinct `tag_value` of a
+value-carrying tag on the Domain's assets, e.g. `mvm_subdomain=fare_pricing` — the 14
+values proven in findings §3; the one genuinely-new read, threaded additively through
+`transforms.assemble_tag_graph`) → schema-within-domain → MV/FK components; the finer
+Leiden split is the **fallback only** when no explicit boundary exists (today
+`cluster.py` *always* re-clusters). Each sub-domain carries its boundary reason.
+Offline; grain unchanged (sub-domains stay `genie_ont_domains` rows with `parent_id` +
+`Domain/Sub` `tag_value`, MV-D49).
 
 ## 7. Stage 3 — Gates + explainable why/confidence + config · MV-D56/57
 - **Facet filter** (§5.2) as the front gate.
