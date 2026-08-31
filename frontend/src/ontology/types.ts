@@ -97,9 +97,15 @@ export interface TagLens {
   as_of: string
 }
 
+// Identity the two foundation reads run under (MV-D50). Optional + defaulted
+// server-side to "obo" (the viewing admin); "sp" = the app service principal
+// (opt-in), "auto" = SP when its probe succeeds, else OBO.
+export type ReadIdentity = "obo" | "sp" | "auto"
+
 export interface OntologySettings {
   company_name?: string | null
   catalog_allowlist: string[]
+  read_identity?: ReadIdentity
 }
 
 // ── Phase 2: refresh / freshness surface (the one new model) ───────────────

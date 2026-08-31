@@ -114,6 +114,11 @@ class TagLens(BaseModel):
 class OntologySettings(BaseModel):
     company_name: str | None = None
     catalog_allowlist: list[str] = Field(default_factory=list)
+    # Identity the two foundation reads (tag graph + signals) run under (MV-D50).
+    # Additive + defaulted: old clients and stored rows without the field read as
+    # "obo" (the viewing admin). "sp" = the app service principal (opt-in, requires
+    # the banner's grants); "auto" = SP when its probe succeeds, else OBO.
+    read_identity: Literal["obo", "sp", "auto"] = "obo"
 
 
 # ── Phase 2: refresh / freshness surface (the ONLY new model) ──────────────

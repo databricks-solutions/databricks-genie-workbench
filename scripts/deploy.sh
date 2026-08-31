@@ -321,6 +321,51 @@ fi
 # upload dominates deploy time, not the ~350 small file uploads.
 rm -f "$PROJECT_DIR/.databricks/bundle/app/sync-snapshots/"*.json 2>/dev/null || true
 
+# Ontology materialize run_as (MV-D50). `ontology_job_run_as` is a complex bundle
+# var, which the CLI cannot accept via --var/BUNDLE_VAR_ — so set it through the
+# sanctioned variable-overrides.json (precedence above the target default). Merge
+# our single key so any other overrides are preserved. When unset, drop our key so
+# the empty {} default applies (job runs as the deploy identity).
+_OVERRIDES_FILE="$PROJECT_DIR/.databricks/bundle/app/variable-overrides.json"
+if [ -n "${ONTOLOGY_JOB_RUN_AS_JSON:-}" ]; then
+    mkdir -p "$(dirname "$_OVERRIDES_FILE")"
+    ONTOLOGY_JOB_RUN_AS_JSON="$ONTOLOGY_JOB_RUN_AS_JSON" _OVERRIDES_FILE="$_OVERRIDES_FILE" python3 - <<'PY'
+import json, os
+path = os.environ["_OVERRIDES_FILE"]
+val = json.loads(os.environ["ONTOLOGY_JOB_RUN_AS_JSON"])
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except (ValueError, OSError):
+        data = {}
+data["ontology_job_run_as"] = val
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+    echo "  ✓ Ontology job run_as → variable-overrides.json (${ONTOLOGY_JOB_RUN_AS_USER:-$ONTOLOGY_JOB_RUN_AS_SP})"
+elif [ -f "$_OVERRIDES_FILE" ]; then
+    _OVERRIDES_FILE="$_OVERRIDES_FILE" python3 - <<'PY'
+import json, os
+path = os.environ["_OVERRIDES_FILE"]
+try:
+    with open(path) as f:
+        data = json.load(f) or {}
+except (ValueError, OSError):
+    data = {}
+data.pop("ontology_job_run_as", None)
+if data:
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+else:
+    os.remove(path)
+PY
+    echo "  ✓ Ontology job run_as unset — cleared from variable-overrides.json"
+fi
+
 set +e
 BUNDLE_OUTPUT=$(cd "$PROJECT_DIR" && databricks bundle deploy -t app \
     --var="catalog=$CATALOG" \

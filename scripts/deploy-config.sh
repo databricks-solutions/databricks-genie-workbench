@@ -39,6 +39,23 @@ LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-}"
 MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
 
+# ── Ontology materialize job run_as (MV-D50) ─────────────────────────────
+# The identity the ontology materialize job reads system tables as, so NO app
+# service-principal system-table grant is required. This is the bundle's
+# `ontology_job_run_as` complex variable — which CANNOT be set via --var or
+# BUNDLE_VAR_ (the CLI expects a string for those), so deploy.sh writes it to
+# the sanctioned `.databricks/bundle/app/variable-overrides.json` file instead.
+# Prefer a metastore-admin user; fall back to a granted SP. Empty ⇒ no override
+# (the job runs as the deploy identity — the backward-compatible default).
+ONTOLOGY_JOB_RUN_AS_USER="${GENIE_ONTOLOGY_JOB_RUN_AS_USER:-}"
+ONTOLOGY_JOB_RUN_AS_SP="${GENIE_ONTOLOGY_JOB_RUN_AS_SP:-}"
+ONTOLOGY_JOB_RUN_AS_JSON=""
+if [ -n "$ONTOLOGY_JOB_RUN_AS_USER" ]; then
+    ONTOLOGY_JOB_RUN_AS_JSON="{\"user_name\": \"${ONTOLOGY_JOB_RUN_AS_USER}\"}"
+elif [ -n "$ONTOLOGY_JOB_RUN_AS_SP" ]; then
+    ONTOLOGY_JOB_RUN_AS_JSON="{\"service_principal_name\": \"${ONTOLOGY_JOB_RUN_AS_SP}\"}"
+fi
+
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then
     echo "ERROR: GENIE_WAREHOUSE_ID is required but not set." >&2
@@ -70,5 +87,6 @@ _print_config() {
     echo "  │  Default LLM:  $LLM_MODEL"
     echo "  │  Lakebase:     $LAKEBASE_INSTANCE"
     echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
+    echo "  │  Ont run_as:   ${ONTOLOGY_JOB_RUN_AS_USER:-${ONTOLOGY_JOB_RUN_AS_SP:-<deploy identity>}}"
     echo "  └─────────────────────────────────────────────────────────┘"
 }

@@ -20,8 +20,12 @@ def fake_store(monkeypatch):
     async def _get(ws):
         return store.get(ws)
 
-    async def _upsert(ws, company, allowlist):
-        store[ws] = {"company_name": company, "catalog_allowlist": allowlist}
+    async def _upsert(ws, company, allowlist, read_identity="obo"):
+        store[ws] = {
+            "company_name": company,
+            "catalog_allowlist": allowlist,
+            "read_identity": read_identity,
+        }
         return store[ws]
 
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
@@ -34,6 +38,21 @@ async def test_defaults_when_unset(fake_store):
     s = await ont_settings.get_settings()
     assert s.company_name is None
     assert s.catalog_allowlist == []
+    # read_identity defaults to OBO — the viewing admin (MV-D50).
+    assert s.read_identity == "obo"
+
+
+async def test_read_identity_round_trips_and_defaults_obo(fake_store):
+    # An explicit choice round-trips through the store…
+    saved = await ont_settings.save_settings(
+        OntologySettings(company_name="Acme", catalog_allowlist=["finance"], read_identity="sp")
+    )
+    assert saved.read_identity == "sp"
+    assert (await ont_settings.get_settings()).read_identity == "sp"
+
+    # …and an old row missing the field (additive/defaulted) reads as "obo".
+    fake_store["ws1"] = {"company_name": "Acme", "catalog_allowlist": ["finance"]}
+    assert (await ont_settings.get_settings()).read_identity == "obo"
 
 
 async def test_save_normalizes_and_round_trips(fake_store):
@@ -69,11 +88,12 @@ def test_settings_router_wire_shape(monkeypatch):
     client = TestClient(app)
 
     got = client.get("/api/ontology/settings").json()
-    assert got == {"company_name": "Acme", "catalog_allowlist": ["finance"]}
+    assert got == {"company_name": "Acme", "catalog_allowlist": ["finance"], "read_identity": "obo"}
 
+    # PUT without read_identity → the additive default "obo" fills in.
     put = client.put(
         "/api/ontology/settings",
         json={"company_name": "Beta", "catalog_allowlist": ["ops"]},
     )
     assert put.status_code == 200
-    assert put.json() == {"company_name": "Beta", "catalog_allowlist": ["ops"]}
+    assert put.json() == {"company_name": "Beta", "catalog_allowlist": ["ops"], "read_identity": "obo"}

@@ -13,6 +13,16 @@ variables:
   llm_model:
     description: "LLM serving endpoint name"
     default: "databricks-claude-sonnet-4-6"
+  ontology_job_run_as:
+    # MV-D50: the identity the ontology materialize job reads system tables as, so
+    # NO app-SP system-table grant is required. Supply the full run_as mapping the
+    # Jobs API expects — {user_name: "admin@company.com"} for a metastore-admin user
+    # (the documented default when the app SP has no system grants), or
+    # {service_principal_name: "<sp-app-id>"} for a granted SP. Leave at the default
+    # (empty {} ⇒ no run_as) to run as the deploy identity — backward compatible.
+    description: "Optional run_as identity (user_name or service_principal_name) for the ontology materialize job. Empty = run as the deploy identity."
+    type: complex
+    default: {}
 
 sync:
   include:
@@ -236,9 +246,14 @@ resources:
       name: "genie-ontology-materialize-job"
       description: >-
         Materializes the estate ontology (governed-tag graph + taxonomy) to Delta
-        on a nightly schedule and on demand. Reads system tables as the SP, applies
-        the same pure transforms the page uses live, and MERGEs the genie_ont_*
-        snapshot tables idempotently. Writes NOTHING to Unity Catalog governance.
+        on a nightly schedule and on demand. Reads system tables as the job's run_as
+        identity (a metastore-admin user or an SP — see the ontology_job_run_as var),
+        applies the same pure transforms the page uses live, and MERGEs the
+        genie_ont_* snapshot tables idempotently. Writes NOTHING to Unity Catalog
+        governance.
+      # MV-D50: run_as selects who the job reads system tables as. Set via the
+      # ontology_job_run_as var; empty ({}) omits run_as → runs as the deploy identity.
+      run_as: ${var.ontology_job_run_as}
       max_concurrent_runs: 1
       queue:
         enabled: true

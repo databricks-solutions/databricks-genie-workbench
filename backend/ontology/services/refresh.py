@@ -103,23 +103,27 @@ def compute_status(head: dict | None, succeeded: dict | None, *, now: datetime |
 
 
 async def get_status() -> OntologyRefreshStatus:
-    ws = ont_settings._workspace_id()
-    head = await mirror.latest_run(ws)
-    succeeded = await mirror.latest_succeeded_run(ws)
+    ms = ont_settings._metastore_id()
+    head = await mirror.latest_run(ms)
+    succeeded = await mirror.latest_succeeded_run(ms)
     return compute_status(head, succeeded)
 
 
-async def mirror_is_fresh(workspace_id: str) -> bool:
-    """Whether a fresh materialized mirror backs this workspace (reader-swap gate)."""
-    succeeded = await mirror.latest_succeeded_run(workspace_id)
+async def mirror_is_fresh(metastore_id: str) -> bool:
+    """Whether a fresh materialized mirror backs this metastore (reader-swap gate)."""
+    succeeded = await mirror.latest_succeeded_run(metastore_id)
     if not succeeded:
         return False
     age = _age_hours(succeeded.get("as_of"), datetime.now(timezone.utc))
     return age is not None and age <= FRESHNESS_WINDOW_HOURS
 
 
-def _launch(job_id: str, *, workspace_id: str, allowlist: list[str]) -> str | None:
-    """Trigger the materialize job via run_now. Returns the job run id, or None."""
+def _launch(job_id: str, *, metastore_id: str, workspace_id: str, allowlist: list[str]) -> str | None:
+    """Trigger the materialize job via run_now. Returns the job run id, or None.
+
+    ``metastore_id`` is the run grain (MV-D49) — passed so the on-demand run scopes
+    to the same metastore the app reads; ``workspace_id`` rides along as provenance.
+    """
     import json
 
     from backend.services.auth import get_service_principal_client
@@ -128,6 +132,7 @@ def _launch(job_id: str, *, workspace_id: str, allowlist: list[str]) -> str | No
     waiter = ws_client.jobs.run_now(
         job_id=int(job_id),
         job_parameters={
+            "metastore_id": metastore_id,
             "workspace_id": workspace_id,
             "trigger": "on_demand",
             "catalog": os.environ.get("GSO_CATALOG", ""),
@@ -140,8 +145,9 @@ def _launch(job_id: str, *, workspace_id: str, allowlist: list[str]) -> str | No
 
 async def trigger() -> OntologyRefreshStatus:
     """Start an on-demand materialization; idempotent while one is running."""
-    ws = ont_settings._workspace_id()
-    head = await mirror.latest_run(ws)
+    ms = ont_settings._metastore_id()
+    ws = ont_settings._workspace_id()  # provenance only
+    head = await mirror.latest_run(ms)
     if head and _map_last_run_state(head.get("state")) == "running":
         # A run is already in flight — return it, do not launch a duplicate.
         return await get_status()
@@ -154,7 +160,7 @@ async def trigger() -> OntologyRefreshStatus:
 
     settings = await ont_settings.get_settings()
     try:
-        _launch(job_id, workspace_id=ws, allowlist=settings.catalog_allowlist)
+        _launch(job_id, metastore_id=ms, workspace_id=ws, allowlist=settings.catalog_allowlist)
     except Exception as e:  # noqa: BLE001 — surface plainly, never 500 the button
         logger.warning("ontology refresh launch failed: %s", e)
         status = await get_status()

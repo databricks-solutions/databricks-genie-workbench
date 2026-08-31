@@ -54,17 +54,22 @@ async def get_taxonomy() -> dict:
     allowlist = settings.catalog_allowlist
 
     # Mirror-first: serve the materialized tree when it is fresh (sub-second).
-    ws = ont_settings._workspace_id()
-    if await refresh.mirror_is_fresh(ws):
-        tree = await mirror.read_taxonomy_tree(ws)
+    # The ontology grain is the metastore (MV-D49); the per-workspace app reads
+    # the one metastore ontology.
+    ms = ont_settings._metastore_id()
+    if await refresh.mirror_is_fresh(ms):
+        tree = await mirror.read_taxonomy_tree(ms)
         if tree is not None:
             return OntologyTaxonomy(**tree).model_dump(mode="json")
 
-    # Fallback: Phase-1 live-SP path (degrade-not-hang, never blocks on the job).
+    # Fallback: Phase-1 live path, read as the ontology identity (OBO by default,
+    # MV-D50; degrade-not-hang, never blocks on the job).
     client = get_workspace_client()
+    ri = settings.read_identity
+    sp_ok = await asyncio.to_thread(tag_graph.probe, "sp") if ri == "auto" else False
 
     graph, metric_views, spaces = await asyncio.gather(
-        asyncio.to_thread(_safe, tag_graph.build_graph, allowlist),
+        asyncio.to_thread(_safe, tag_graph.build_graph, allowlist, ri, sp_probe_ok=sp_ok),
         asyncio.to_thread(_safe, inventory.metric_view_fqns, client, allowlist),
         asyncio.to_thread(_safe, genie_client.list_genie_spaces),
     )

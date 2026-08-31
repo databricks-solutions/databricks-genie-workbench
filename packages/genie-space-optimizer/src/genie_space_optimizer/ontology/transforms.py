@@ -344,6 +344,7 @@ def collisions_from_er_verdicts(verdicts: list[Any], counts: dict[str, int]) -> 
 def identity_map_rows(
     verdicts: list[Any],
     *,
+    metastore_id: str,
     workspace_id: str,
     run_id: str,
     as_of: str,
@@ -351,14 +352,16 @@ def identity_map_rows(
 ) -> list[dict[str, Any]]:
     """Expand ER verdicts into per-member ``genie_ont_identity`` rows.
 
-    One row per (workspace_id, canonical_id, member_ref) — the derived PK, so the
-    idempotent MERGE never duplicates and a member that left a group is deleted.
+    One row per (metastore_id, canonical_id, member_ref) — the derived PK (MV-D49),
+    so the idempotent MERGE never duplicates and a member that left a group is
+    deleted. ``workspace_id`` rides along as provenance only.
     """
     kinds = member_kind_by_ref or {}
     rows: list[dict[str, Any]] = []
     for v in verdicts:
         for ref in getattr(v, "members", ()) or ():
             rows.append({
+                "metastore_id": metastore_id,
                 "workspace_id": workspace_id,
                 "canonical_id": getattr(v, "canonical_id", ""),
                 "member_ref": ref,

@@ -3,11 +3,19 @@
 // choose catalogs). Backed by GET/PUT /api/ontology/settings — the only write,
 // and it writes our own config, never Unity Catalog.
 import { useState } from "react"
-import { Building2, Check, Database, Loader2 } from "lucide-react"
+import { Building2, Check, Database, Loader2, UserCog } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { saveSettings } from "@/ontology/api"
-import type { OntologySettings } from "@/ontology/types"
+import type { OntologySettings, ReadIdentity } from "@/ontology/types"
+
+// "Read as" options (MV-D50). Default is the viewing admin (OBO) — no SP grant
+// needed to view. SP / Auto are opt-in upgrades (shared cross-user cache).
+const READ_IDENTITY_OPTIONS: { value: ReadIdentity; label: string }[] = [
+  { value: "obo", label: "My identity (admin)" },
+  { value: "sp", label: "Service principal" },
+  { value: "auto", label: "Auto" },
+]
 
 export function SettingsForm({
   settings,
@@ -18,6 +26,7 @@ export function SettingsForm({
 }) {
   const [company, setCompany] = useState(settings.company_name ?? "")
   const [allowlistText, setAllowlistText] = useState(settings.catalog_allowlist.join(", "))
+  const [readIdentity, setReadIdentity] = useState<ReadIdentity>(settings.read_identity ?? "obo")
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -33,6 +42,7 @@ export function SettingsForm({
       const next = await saveSettings({
         company_name: company.trim() || null,
         catalog_allowlist: catalogs,
+        read_identity: readIdentity,
       })
       onSaved(next)
       setSavedAt(Date.now())
@@ -77,6 +87,36 @@ export function SettingsForm({
           placeholder="finance, marketing, operations"
           onChange={(e) => setAllowlistText(e.target.value)}
         />
+      </div>
+
+      <div>
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+          <UserCog className="h-4 w-4 text-accent" />
+          Read as
+        </p>
+        <p className="mt-0.5 max-w-prose text-xs text-muted">
+          Which identity reads the governed-tag graph and usage signals. Defaults to your own admin
+          identity (OBO) — no service-principal grant is required to view. Switch to the service
+          principal (an optional upgrade) for a shared cross-user cache once its system-table grants
+          are in place.
+        </p>
+        <div className="mt-2 inline-flex rounded-lg border border-default bg-sunken p-0.5">
+          {READ_IDENTITY_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setReadIdentity(opt.value)}
+              className={
+                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors " +
+                (readIdentity === opt.value
+                  ? "bg-surface text-primary shadow-sm"
+                  : "text-secondary hover:text-primary")
+              }
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {error && <p className="text-xs text-danger-foreground">{error}</p>}

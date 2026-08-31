@@ -90,16 +90,16 @@ def _as_list(value: Any) -> list[str]:
     return []
 
 
-async def latest_run(workspace_id: str) -> dict[str, Any] | None:
-    """Most recent run header for a workspace (any state), or None."""
+async def latest_run(metastore_id: str) -> dict[str, Any] | None:
+    """Most recent run header for a metastore (any state), or None."""
     pool = _synced_pool()
     if pool is not None:
         try:
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     f'SELECT * FROM "{_gso._GSO_PG_SCHEMA}"."genie_ont_runs_synced" '
-                    "WHERE workspace_id = $1 ORDER BY started_at DESC LIMIT 1",
-                    workspace_id,
+                    "WHERE metastore_id = $1 ORDER BY started_at DESC LIMIT 1",
+                    metastore_id,
                 )
                 return dict(row) if row else None
         except Exception:
@@ -109,12 +109,12 @@ async def latest_run(workspace_id: str) -> dict[str, Any] | None:
     rows = await asyncio.to_thread(
         _delta_query,
         f"SELECT * FROM {_gso_fqn('genie_ont_runs')} "
-        f"WHERE workspace_id = '{workspace_id}' ORDER BY started_at DESC LIMIT 1",
+        f"WHERE metastore_id = '{metastore_id}' ORDER BY started_at DESC LIMIT 1",
     )
     return rows[0] if rows else None
 
 
-async def latest_succeeded_run(workspace_id: str) -> dict[str, Any] | None:
+async def latest_succeeded_run(metastore_id: str) -> dict[str, Any] | None:
     """Most recent *succeeded* run header (backs mirror freshness), or None."""
     pool = _synced_pool()
     if pool is not None:
@@ -122,8 +122,8 @@ async def latest_succeeded_run(workspace_id: str) -> dict[str, Any] | None:
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     f'SELECT * FROM "{_gso._GSO_PG_SCHEMA}"."genie_ont_runs_synced" '
-                    "WHERE workspace_id = $1 AND state = 'succeeded' ORDER BY as_of DESC LIMIT 1",
-                    workspace_id,
+                    "WHERE metastore_id = $1 AND state = 'succeeded' ORDER BY as_of DESC LIMIT 1",
+                    metastore_id,
                 )
                 return dict(row) if row else None
         except Exception:
@@ -133,21 +133,21 @@ async def latest_succeeded_run(workspace_id: str) -> dict[str, Any] | None:
     rows = await asyncio.to_thread(
         _delta_query,
         f"SELECT * FROM {_gso_fqn('genie_ont_runs')} "
-        f"WHERE workspace_id = '{workspace_id}' AND state = 'succeeded' ORDER BY as_of DESC LIMIT 1",
+        f"WHERE metastore_id = '{metastore_id}' AND state = 'succeeded' ORDER BY as_of DESC LIMIT 1",
     )
     return rows[0] if rows else None
 
 
-async def read_taxonomy_tree(workspace_id: str) -> dict[str, Any] | None:
-    """The serialized taxonomy tree for a workspace (OntologyTaxonomy JSON), or None."""
+async def read_taxonomy_tree(metastore_id: str) -> dict[str, Any] | None:
+    """The serialized taxonomy tree for a metastore (OntologyTaxonomy JSON), or None."""
     pool = _synced_pool()
     if pool is not None:
         try:
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     f'SELECT tree FROM "{_gso._GSO_PG_SCHEMA}"."genie_ont_taxonomy_snapshot_synced" '
-                    "WHERE workspace_id = $1",
-                    workspace_id,
+                    "WHERE metastore_id = $1",
+                    metastore_id,
                 )
             tree = row["tree"] if row else None
         except Exception:
@@ -157,7 +157,7 @@ async def read_taxonomy_tree(workspace_id: str) -> dict[str, Any] | None:
         import asyncio
         rows = await asyncio.to_thread(
             _delta_query,
-            f"SELECT tree FROM {_gso_fqn('genie_ont_taxonomy_snapshot')} WHERE workspace_id = '{workspace_id}'",
+            f"SELECT tree FROM {_gso_fqn('genie_ont_taxonomy_snapshot')} WHERE metastore_id = '{metastore_id}'",
         )
         tree = rows[0].get("tree") if rows else None
     if not tree:
@@ -168,7 +168,7 @@ async def read_taxonomy_tree(workspace_id: str) -> dict[str, Any] | None:
         return None
 
 
-async def read_tag_graph(workspace_id: str) -> dict[str, Any] | None:
+async def read_tag_graph(metastore_id: str) -> dict[str, Any] | None:
     """Reconstruct the tag-graph structure from the mirror rows, or None.
 
     Members are not stored per tag (they live in the taxonomy tree), so the
@@ -183,8 +183,8 @@ async def read_tag_graph(workspace_id: str) -> dict[str, Any] | None:
                 rows = [
                     dict(r) for r in await conn.fetch(
                         f'SELECT tag_key, allowed_values, assignment_count, dedupe_verdicts, as_of '
-                        f'FROM "{_gso._GSO_PG_SCHEMA}"."genie_ont_tag_graph_synced" WHERE workspace_id = $1',
-                        workspace_id,
+                        f'FROM "{_gso._GSO_PG_SCHEMA}"."genie_ont_tag_graph_synced" WHERE metastore_id = $1',
+                        metastore_id,
                     )
                 ]
         except Exception:
@@ -195,7 +195,7 @@ async def read_tag_graph(workspace_id: str) -> dict[str, Any] | None:
         rows = await asyncio.to_thread(
             _delta_query,
             f"SELECT tag_key, allowed_values, assignment_count, dedupe_verdicts, as_of "
-            f"FROM {_gso_fqn('genie_ont_tag_graph')} WHERE workspace_id = '{workspace_id}'",
+            f"FROM {_gso_fqn('genie_ont_tag_graph')} WHERE metastore_id = '{metastore_id}'",
         )
     if not rows:
         return None

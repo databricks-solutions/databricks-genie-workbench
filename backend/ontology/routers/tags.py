@@ -33,14 +33,19 @@ async def get_tags() -> dict:
     allowlist = settings.catalog_allowlist
 
     # Mirror-first: reconstruct the tag graph from the materialized rows when fresh.
-    ws = ont_settings._workspace_id()
+    # The ontology grain is the metastore (MV-D49); the per-workspace app reads the
+    # one metastore ontology.
+    ms = ont_settings._metastore_id()
     graph = None
-    if await refresh.mirror_is_fresh(ws):
-        graph = await mirror.read_tag_graph(ws)
+    if await refresh.mirror_is_fresh(ms):
+        graph = await mirror.read_tag_graph(ms)
 
-    # Fallback: Phase-1 live-SP path (degrade-not-hang; never blocks on the job).
+    # Fallback: Phase-1 live path, read as the ontology identity (OBO by default,
+    # MV-D50; degrade-not-hang, never blocks on the job).
     if graph is None:
-        graph = await asyncio.to_thread(tag_graph.build_graph, allowlist)
+        ri = settings.read_identity
+        sp_ok = await asyncio.to_thread(tag_graph.probe, "sp") if ri == "auto" else False
+        graph = await asyncio.to_thread(tag_graph.build_graph, allowlist, ri, sp_probe_ok=sp_ok)
     graph = graph or {"tags": []}
 
     # One downstream pipeline (shared transforms) regardless of source → parity.

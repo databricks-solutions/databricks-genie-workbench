@@ -265,3 +265,6 @@ packages/genie-space-optimizer/docs/skills/
 # Design working notes + HTML mockups — kept local only.
 # Canonical, published documentation lives in docs/docs/ (Docusaurus).
 docs/design/
+
+# Goal-Mode harness artifact (local only).
+.isaac/

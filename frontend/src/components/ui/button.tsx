@@ -4,24 +4,24 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-semibold transition-all duration-200 active:scale-[0.97] active:duration-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
         default:
-          "gradient-accent text-white shadow-lg shadow-accent/25 hover:shadow-xl hover:shadow-accent/30 hover:-translate-y-0.5 dark:shadow-accent/20 dark:hover:shadow-accent/30 dark:hover:glow-accent",
+          "gradient-accent text-white shadow-lg shadow-accent/25 hover:shadow-xl hover:shadow-accent/30 hover:-translate-y-0.5 active:translate-y-0 active:shadow-md dark:shadow-accent/20 dark:hover:shadow-accent/30 dark:hover:glow-accent",
         secondary:
-          "bg-elevated text-primary border border-default hover:bg-sunken dark:hover:border-strong",
+          "bg-elevated text-primary border border-default hover:bg-sunken active:bg-sunken active:border-strong dark:hover:border-strong",
         outline:
-          "border-2 border-default bg-transparent hover:bg-elevated text-primary dark:border-strong dark:hover:bg-elevated",
+          "border-2 border-default bg-transparent hover:bg-elevated active:bg-sunken text-primary dark:border-strong dark:hover:bg-elevated",
         ghost:
-          "hover:bg-elevated text-secondary hover:text-primary",
+          "hover:bg-elevated active:bg-sunken text-secondary hover:text-primary",
         link:
           "text-accent underline-offset-4 hover:underline",
         success:
-          "gradient-success text-white shadow-lg shadow-success/25 hover:shadow-xl hover:shadow-success/30 hover:-translate-y-0.5",
+          "gradient-success text-white shadow-lg shadow-success/25 hover:shadow-xl hover:shadow-success/30 hover:-translate-y-0.5 active:translate-y-0 active:shadow-md",
         danger:
-          "gradient-danger text-white shadow-lg shadow-danger/25 hover:shadow-xl hover:shadow-danger/30 hover:-translate-y-0.5",
+          "gradient-danger text-white shadow-lg shadow-danger/25 hover:shadow-xl hover:shadow-danger/30 hover:-translate-y-0.5 active:translate-y-0 active:shadow-md",
       },
       size: {
         default: "h-10 px-5 py-2",

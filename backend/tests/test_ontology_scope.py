@@ -42,7 +42,7 @@ def test_preflight_hints_to_choose_catalogs_when_empty(monkeypatch):
     async def _fake():
         return OntologySettings(company_name=None, catalog_allowlist=[])
     monkeypatch.setattr(ont_settings, "get_settings", _fake)
-    monkeypatch.setattr(tag_graph, "probe", lambda: True)
+    monkeypatch.setattr(tag_graph, "probe", lambda *a, **k: True)
     monkeypatch.setattr(system_tables, "system_tables_status", lambda: True)
 
     app = FastAPI()

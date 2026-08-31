@@ -33,7 +33,9 @@ _PHASE1_FIELDS = {
     "TagCollision": {"kind", "members", "suggestion"},
     "TagCleanup": {"tag_key", "flag", "detail"},
     "TagLens": {"tags", "collisions", "cleanup", "as_of"},
-    "OntologySettings": {"company_name", "catalog_allowlist"},
+    # read_identity is the single additive, defaulted field for OBO-first (MV-D50);
+    # every other Phase-1 shape stays byte-identical.
+    "OntologySettings": {"company_name", "catalog_allowlist", "read_identity"},
 }
 
 
@@ -102,6 +104,7 @@ def _client_refresh() -> TestClient:
 
 def test_trigger_while_running_does_not_launch_duplicate(monkeypatch):
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
+    monkeypatch.setattr(ont_settings, "_metastore_id", lambda: "ms1")
 
     async def _latest_run(ws):
         return {"run_id": "r2", "state": "running", "as_of": _NOW.isoformat()}
@@ -127,6 +130,7 @@ def test_trigger_while_running_does_not_launch_duplicate(monkeypatch):
 
 def test_trigger_launches_when_idle(monkeypatch):
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
+    monkeypatch.setattr(ont_settings, "_metastore_id", lambda: "ms1")
     monkeypatch.setenv("GSO_ONT_JOB_ID", "12345")
 
     async def _none(ws):
@@ -137,9 +141,9 @@ def test_trigger_launches_when_idle(monkeypatch):
 
     launched = {"n": 0}
 
-    def _launch(job_id, *, workspace_id, allowlist):
+    def _launch(job_id, *, metastore_id, workspace_id, allowlist):
         launched["n"] += 1
-        launched["args"] = (job_id, workspace_id, allowlist)
+        launched["args"] = (job_id, metastore_id, workspace_id, allowlist)
         return "job-run-1"
 
     monkeypatch.setattr(mirror, "latest_run", _none)
@@ -151,11 +155,13 @@ def test_trigger_launches_when_idle(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["state"] == "queued"
     assert launched["n"] == 1
-    assert launched["args"] == ("12345", "ws1", ["finance"])
+    # The job is launched scoped to the metastore (grain), with workspace as provenance.
+    assert launched["args"] == ("12345", "ms1", "ws1", ["finance"])
 
 
 def test_trigger_reports_not_configured_without_job_id(monkeypatch):
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
+    monkeypatch.setattr(ont_settings, "_metastore_id", lambda: "ms1")
     monkeypatch.delenv("GSO_ONT_JOB_ID", raising=False)
 
     async def _none(ws):
@@ -188,6 +194,8 @@ def _patch_settings(monkeypatch):
         return OntologySettings(company_name=None, catalog_allowlist=["finance"])
     monkeypatch.setattr(ont_settings, "get_settings", _settings)
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
+    # The ontology grain is the metastore (MV-D49); the mirror reads scope by it.
+    monkeypatch.setattr(ont_settings, "_metastore_id", lambda: "ms1")
 
 
 def test_taxonomy_serves_mirror_when_fresh(monkeypatch):
@@ -206,7 +214,7 @@ def test_taxonomy_serves_mirror_when_fresh(monkeypatch):
     monkeypatch.setattr(taxonomy_router.refresh, "mirror_is_fresh", _fresh)
     monkeypatch.setattr(taxonomy_router.mirror, "read_taxonomy_tree", _tree)
     # If the live path were taken this would blow up — proving the mirror served.
-    monkeypatch.setattr(taxonomy_router.tag_graph, "build_graph", lambda a: (_ for _ in ()).throw(AssertionError("live path used")))
+    monkeypatch.setattr(taxonomy_router.tag_graph, "build_graph", lambda a, *_a, **_k: (_ for _ in ()).throw(AssertionError("live path used")))
 
     data = TestClient(_taxonomy_client()).get("/api/ontology/taxonomy").json()
     assert [d["tag_key"] for d in data["domains"]] == ["Finance"]
@@ -223,7 +231,7 @@ def test_taxonomy_falls_back_to_live_when_cold(monkeypatch):
     monkeypatch.setattr(taxonomy_router, "get_workspace_client", lambda: object())
     monkeypatch.setattr(
         taxonomy_router.tag_graph, "build_graph",
-        lambda a: {"tags": [{"tag_key": "Finance", "allowed_values": [], "assignment_count": 1,
+        lambda a, *_a, **_k: {"tags": [{"tag_key": "Finance", "allowed_values": [], "assignment_count": 1,
                              "members": [{"fqn": "finance.core.ledger", "asset_type": "table"}]},
                             {"tag_key": "Finance/Tax", "allowed_values": [], "assignment_count": 1,
                              "members": [{"fqn": "finance.tax.filings", "asset_type": "table"}]}],
@@ -252,7 +260,7 @@ def test_tags_serves_mirror_graph_when_fresh(monkeypatch):
     monkeypatch.setattr(tags_router.refresh, "mirror_is_fresh", _fresh)
     monkeypatch.setattr(tags_router.mirror, "read_tag_graph", _graph)
     monkeypatch.setattr(tags_router.tag_graph, "build_graph",
-                        lambda a: (_ for _ in ()).throw(AssertionError("live path used")))
+                        lambda a, *_a, **_k: (_ for _ in ()).throw(AssertionError("live path used")))
 
     data = TestClient(_tags_client()).get("/api/ontology/tags").json()
     by_key = {t["tag_key"]: t for t in data["tags"]}
@@ -269,7 +277,7 @@ def test_tags_falls_back_to_live_when_cold(monkeypatch):
 
     monkeypatch.setattr(tags_router.refresh, "mirror_is_fresh", _not_fresh)
     monkeypatch.setattr(tags_router.tag_graph, "build_graph",
-                        lambda a: {"tags": [{"tag_key": "finance", "allowed_values": [], "assignment_count": 0, "members": []}],
+                        lambda a, *_a, **_k: {"tags": [{"tag_key": "finance", "allowed_values": [], "assignment_count": 0, "members": []}],
                                    "as_of": "2026-08-30T12:00:00+00:00"})
 
     data = TestClient(_tags_client()).get("/api/ontology/tags").json()
@@ -292,7 +300,7 @@ async def test_mirror_read_tag_graph_reconstructs_from_delta_rows(monkeypatch):
     monkeypatch.setattr(mirror, "_synced_pool", lambda: None)
     monkeypatch.setattr(mirror, "_delta_query", lambda sql, params=None: delta_rows)
 
-    graph = await mirror.read_tag_graph("ws1")
+    graph = await mirror.read_tag_graph("ms1")
     assert [t["tag_key"] for t in graph["tags"]] == ["Finance", "Finance/Tax"]
     assert graph["tags"][1]["allowed_values"] == ["x"]  # JSON-array string parsed
     # The same transforms the live route runs yield a consistent lens off the mirror.
@@ -308,7 +316,7 @@ async def test_mirror_read_taxonomy_tree_parses_json(monkeypatch):
 
     monkeypatch.setattr(mirror, "_synced_pool", lambda: None)
     monkeypatch.setattr(mirror, "_delta_query", lambda sql, params=None: [{"tree": _json.dumps(tree)}])
-    got = await mirror.read_taxonomy_tree("ws1")
+    got = await mirror.read_taxonomy_tree("ms1")
     assert got == tree
 
 
@@ -316,6 +324,64 @@ async def test_mirror_returns_none_without_warehouse(monkeypatch):
     # No synced pool and no warehouse (empty _delta_query) → None → route degrades.
     monkeypatch.setattr(mirror, "_synced_pool", lambda: None)
     monkeypatch.setattr(mirror, "_delta_query", lambda sql, params=None: [])
-    assert await mirror.read_tag_graph("ws1") is None
-    assert await mirror.read_taxonomy_tree("ws1") is None
-    assert await mirror.latest_succeeded_run("ws1") is None
+    assert await mirror.read_tag_graph("ms1") is None
+    assert await mirror.read_taxonomy_tree("ms1") is None
+    assert await mirror.latest_succeeded_run("ms1") is None
+
+
+# ── Re-grain to metastore (MV-D49, spec §11) ────────────────────────────────
+
+
+async def test_mirror_delta_reads_scope_by_metastore_id_not_workspace(monkeypatch):
+    """Backend mirror scope (§11): every mirror Delta read filters on metastore_id
+    (the grain), never on workspace_id (provenance)."""
+    seen: list[str] = []
+
+    def _capture(sql, params=None):
+        seen.append(sql)
+        return []
+
+    monkeypatch.setattr(mirror, "_synced_pool", lambda: None)
+    monkeypatch.setattr(mirror, "_delta_query", _capture)
+
+    await mirror.read_tag_graph("ms-abc")
+    await mirror.read_taxonomy_tree("ms-abc")
+    await mirror.latest_run("ms-abc")
+    await mirror.latest_succeeded_run("ms-abc")
+
+    assert seen, "expected mirror to issue Delta reads"
+    for sql in seen:
+        assert "metastore_id = 'ms-abc'" in sql
+        assert "WHERE workspace_id" not in sql  # workspace_id is provenance, never scope
+
+
+def test_metastore_id_resolver_degrades_to_stable_default(monkeypatch):
+    """Metastore resolver degrade (§11, MV-D43): a resolution failure falls back to
+    the stable literal 'default' so a missing metastore id never blocks a read."""
+    def _boom():
+        raise RuntimeError("metastores.current() unavailable")
+
+    monkeypatch.setattr(ont_settings, "get_service_principal_client", _boom)
+    # Reset the module-level cache so the resolver actually runs under the patch.
+    monkeypatch.setattr(ont_settings, "_METASTORE_ID", None, raising=False)
+    monkeypatch.setattr(ont_settings, "_METASTORE_ID_RESOLVED", False, raising=False)
+
+    assert ont_settings._metastore_id() == "default"
+
+
+def test_metastore_id_resolver_returns_current_metastore(monkeypatch):
+    """Happy path: the resolver returns the SP client's current metastore id."""
+    class _Meta:
+        metastore_id = "ms-live"
+
+    class _Client:
+        class metastores:  # noqa: N801 — mimic the SDK attribute shape
+            @staticmethod
+            def current():
+                return _Meta()
+
+    monkeypatch.setattr(ont_settings, "get_service_principal_client", lambda: _Client())
+    monkeypatch.setattr(ont_settings, "_METASTORE_ID", None, raising=False)
+    monkeypatch.setattr(ont_settings, "_METASTORE_ID_RESOLVED", False, raising=False)
+
+    assert ont_settings._metastore_id() == "ms-live"

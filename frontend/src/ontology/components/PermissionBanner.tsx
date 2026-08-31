@@ -2,16 +2,12 @@
 // Driven by GET /api/ontology/preflight. Read tiers degrade gracefully; the
 // optional write tier is never required to view. Fresh component (does not
 // import the mockup scaffold), matching the 17.0a visual contract.
+import { useState } from "react"
 import { Building2, Check, Copy, Info, Lock, Minus, ShieldAlert, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { OntologyPreflight, PermissionTier, TierStatus } from "@/ontology/types"
-
-const IDENTITY_LABEL: Record<PermissionTier["identity"], string> = {
-  obo: "OBO",
-  sp: "SP",
-  batch: "Batch",
-}
+import { copyButtonLabel, grantCopyText, identityLabel, showGrantCopy } from "./permissionTiers"
 
 function StatusPill({ status }: { status: TierStatus }) {
   if (status === "ok") {
@@ -36,8 +32,27 @@ function StatusPill({ status }: { status: TierStatus }) {
   )
 }
 
-function copy(text: string) {
-  void navigator.clipboard?.writeText(text)
+function CopyGrantButton({ tier }: { tier: PermissionTier }) {
+  const [copied, setCopied] = useState(false)
+  const onClick = async () => {
+    try {
+      await navigator.clipboard?.writeText(grantCopyText(tier))
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard unavailable (permissions / insecure context) — no-op.
+    }
+  }
+  return (
+    <Button size="sm" variant="secondary" onClick={onClick} aria-live="polite">
+      {copied ? (
+        <Check className="mr-1 h-3 w-3 text-success-foreground" />
+      ) : (
+        <Copy className="mr-1 h-3 w-3" />
+      )}
+      {copied ? "Copied!" : copyButtonLabel(tier)}
+    </Button>
+  )
 }
 
 export function PermissionBanner({ preflight }: { preflight: OntologyPreflight }) {
@@ -54,9 +69,10 @@ export function PermissionBanner({ preflight }: { preflight: OntologyPreflight }
             Ontology access — {readyCount} of {readTiers.length} read tiers ready
           </p>
           <p className="mt-1 max-w-prose text-xs text-secondary">
-            Each tier below unlocks more of the ontology. Read tiers degrade gracefully; the optional
-            write tier is never required — Ontology is read-only in this release and writes nothing to
-            Unity Catalog.
+            The taxonomy renders as the signed-in admin (OBO) — no service-principal grant is
+            required to view. The SP grant lines below are an optional upgrade (a shared cross-user
+            cache / consumer-safe serving). Read tiers degrade gracefully; the optional write tier is
+            never required — Ontology is read-only in this release and writes nothing to Unity Catalog.
           </p>
         </div>
       </div>
@@ -68,7 +84,6 @@ export function PermissionBanner({ preflight }: { preflight: OntologyPreflight }
           <span>Identity</span>
         </div>
         {tiers.map((t) => {
-          const needsGrant = t.status === "blocked" || t.status === "degraded"
           const locked = t.id === "membership_write"
           return (
             <div
@@ -91,17 +106,14 @@ export function PermissionBanner({ preflight }: { preflight: OntologyPreflight }
                     ))}
                   </div>
                 )}
-                {needsGrant && t.grants.length > 0 && (
+                {showGrantCopy(t) && (
                   <div className="mt-1.5">
-                    <Button size="sm" variant="secondary" onClick={() => copy(t.grants.join("\n"))}>
-                      <Copy className="mr-1 h-3 w-3" />
-                      {t.identity === "sp" ? "Copy GRANT SQL" : "Copy entitlement request"}
-                    </Button>
+                    <CopyGrantButton tier={t} />
                   </div>
                 )}
               </div>
               <Badge variant={t.identity === "sp" ? "secondary" : "default"}>
-                {IDENTITY_LABEL[t.identity]}
+                {identityLabel(t)}
               </Badge>
             </div>
           )

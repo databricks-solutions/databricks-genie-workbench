@@ -57,6 +57,8 @@ def _patch_settings(monkeypatch):
         return OntologySettings(company_name=None, catalog_allowlist=["finance"])
     monkeypatch.setattr(ont_settings, "get_settings", _settings)
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
+    # The ontology grain is the metastore (MV-D49); mirror reads scope by it.
+    monkeypatch.setattr(ont_settings, "_metastore_id", lambda: "ms1")
 
 
 def test_mirror_surfaces_embedding_backed_collisions_through_frozen_shape(monkeypatch):
@@ -101,7 +103,7 @@ def test_mirror_surfaces_embedding_backed_collisions_through_frozen_shape(monkey
     monkeypatch.setattr(tags_router.refresh, "mirror_is_fresh", _fresh)
     monkeypatch.setattr(tags_router.mirror, "read_tag_graph", _graph)
     monkeypatch.setattr(tags_router.tag_graph, "build_graph",
-                        lambda a: (_ for _ in ()).throw(AssertionError("live path used")))
+                        lambda a, *_a, **_k: (_ for _ in ()).throw(AssertionError("live path used")))
 
     data = TestClient(_tags_app()).get("/api/ontology/tags").json()
 
@@ -126,7 +128,7 @@ def test_cold_path_still_uses_string_collisions(monkeypatch):
     # Live graph (no dedupe_verdicts) → string collisions path.
     monkeypatch.setattr(
         tags_router.tag_graph, "build_graph",
-        lambda a: {"tags": [
+        lambda a, *_a, **_k: {"tags": [
             {"tag_key": "finance", "allowed_values": [], "assignment_count": 3, "members": []},
             {"tag_key": "Finance", "allowed_values": [], "assignment_count": 1, "members": []},
         ], "as_of": "2026-08-30T12:00:00+00:00"},

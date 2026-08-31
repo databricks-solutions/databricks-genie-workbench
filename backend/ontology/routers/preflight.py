@@ -58,26 +58,52 @@ def _with_sp(lines: list[str], sp: str | None) -> list[str]:
     return [ln.replace("<app-service-principal>", sp) for ln in lines]
 
 
+# The two foundation reads (signals + tag_graph) default to OBO (the viewing
+# admin, MV-D50). The banner frames the SP grants below as an OPTIONAL UPGRADE —
+# a shared cross-user cache / consumer-safe serving — not a prerequisite to view.
+_OPTIONAL_UPGRADE = (
+    "These service-principal grants are an optional upgrade (a shared cross-user "
+    "cache / consumer-safe serving) — not required to view. The taxonomy renders "
+    "as the signed-in admin (OBO)."
+)
+
+
 @router.get("/preflight")
 async def preflight() -> dict:
     settings = await ont_settings.get_settings()
+    read_identity = settings.read_identity
 
-    # Tier probes are cheap SP round-trips; run them off the event loop.
+    # Resolve the active read identity for the tier probes (MV-D50). "auto" reads
+    # as the SP only when the SP probe succeeds (a cheap SP round-trip); otherwise
+    # the reads run as the viewing admin (OBO) — the default.
+    sp_probe_ok = False
+    if read_identity == "auto":
+        sp_probe_ok = await asyncio.to_thread(tag_graph.probe, "sp")
+    active_is_sp = read_identity == "sp" or (read_identity == "auto" and sp_probe_ok)
+
+    # Tier probes are cheap round-trips; run them off the event loop.
     signals_status = system_tables.system_tables_status()
-    tag_ok = await asyncio.to_thread(tag_graph.probe)
+    tag_ok = await asyncio.to_thread(
+        tag_graph.probe, read_identity, sp_probe_ok=sp_probe_ok
+    )
     sp_id = grants.app_service_principal()
 
     empty_scope = not settings.catalog_allowlist
 
-    # BROWSE differential (MV-D42): the taxonomy tree comes from the account-level
-    # governed-tag catalog, but member counts come from privilege-filtered
-    # information_schema. If the SP sees zero assignments in scope while the admin
-    # (OBO) sees some, the SP is missing BROWSE — surface the exact grant instead of
-    # a silent "0 members". Both probes are best-effort and never block the page.
+    # BROWSE differential (MV-D42) — only meaningful when the SP is the *active*
+    # read identity (the opt-in SP upgrade). Under the OBO default the graph is read
+    # as the admin, so there is no "SP is blind" gap to detect and the SP is never
+    # touched here. The taxonomy tree comes from the account-level governed-tag
+    # catalog, but member counts come from privilege-filtered information_schema; if
+    # the SP sees zero assignments while the admin (OBO) sees some, the SP is missing
+    # BROWSE — surface the exact grant instead of a silent "0 members". Best-effort;
+    # never blocks the page.
     browse_needed = False
     browse_grants: list[str] = []
-    if tag_ok and not empty_scope:
-        sp_seen = await asyncio.to_thread(tag_graph.sp_assignment_count, settings.catalog_allowlist)
+    if tag_ok and not empty_scope and active_is_sp:
+        sp_seen = await asyncio.to_thread(
+            tag_graph.sp_assignment_count, settings.catalog_allowlist, "sp"
+        )
         obo_seen = 0
         if sp_seen == 0:
             try:
@@ -111,6 +137,9 @@ async def preflight() -> dict:
     )
     # signals only weights ranking (not exercised in Phase 1's read-only spine),
     # so it is informational: ok unless GenieWatch has already observed a denial.
+    # signals reads as the viewing admin by default (MV-D50); the SP system-table
+    # grants below are an optional upgrade (shared cache / stronger ranking), never
+    # required to view. It never gates rendering (MV-D44).
     signals_tier = PermissionTier(
         id="signals",
         label="Usage / lineage / cost ranking",
@@ -118,30 +147,34 @@ async def preflight() -> dict:
         status="degraded" if signals_status is False else "ok",
         grants=_with_sp(_SIGNALS_GRANTS, sp_id),
         reason=(
-            "System-table grants missing — the page still renders; ranking would be weaker."
+            "The page still renders and ranking is best-effort. " + _OPTIONAL_UPGRADE
             if signals_status is False
             else None
         ),
     )
+    # The tag_graph grant lines are ALWAYS surfaced as the optional SP upgrade
+    # (shown on every state, incl. ok, so an admin can copy them to enable the
+    # shared cache). The taxonomy itself renders as the viewing admin (OBO).
+    tag_grants = _with_sp(_TAG_GRAPH_GRANTS, sp_id)
     if not tag_ok:
         tag_status = "blocked"
-        tag_grants = _with_sp(_TAG_GRAPH_GRANTS, sp_id)
         tag_reason = (
-            "Grant SELECT on system.tags.governed_tags to the app service principal "
-            "to render the taxonomy and tags lens."
+            "The signed-in identity can't read governed tags — a metastore-complete "
+            "ontology needs an account/metastore admin (as the OBO viewer or the "
+            "batch run_as identity). " + _OPTIONAL_UPGRADE
         )
     elif browse_needed:
-        # Tree renders, but members read 0 — the actionable, common case.
+        # Tree renders, but members read 0 under the SP upgrade — the actionable case.
         tag_status = "degraded"
         tag_grants = browse_grants
         tag_reason = (
             "Domains render, but members show 0 because the app service principal "
             "cannot see governed-tag assignments in the selected catalogs. Grant "
-            "BROWSE (metadata-only — no data access) so member counts populate."
+            "BROWSE (metadata-only — no data access) so member counts populate. This "
+            "applies only to the optional SP read path; the OBO admin view is unaffected."
         )
     else:
         tag_status = "ok"
-        tag_grants = _with_sp(_TAG_GRAPH_GRANTS, sp_id)
         tag_reason = None
     tag_tier = PermissionTier(
         id="tag_graph",

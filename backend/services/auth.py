@@ -9,9 +9,11 @@ Locally, falls back to PAT token or CLI profile (singleton client).
 """
 
 import contextvars
+import hashlib
 import logging
 import os
 from contextvars import ContextVar
+from typing import Literal
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.config import Config
@@ -19,6 +21,11 @@ from databricks.sdk.config import Config
 from backend._telemetry import PRODUCT_NAME, PRODUCT_VERSION
 
 logger = logging.getLogger(__name__)
+
+# Identity a foundation read runs under (MV-D50). "obo" (default) = the viewing
+# admin; "sp" = the app service principal; "auto" = SP when the SP probe last
+# succeeded (shared cross-user cache), else OBO.
+ReadIdentity = Literal["obo", "sp", "auto"]
 
 # Singleton client for local dev (or fallback when no user token is available)
 _client: WorkspaceClient | None = None
@@ -137,6 +144,52 @@ def get_service_principal_client() -> WorkspaceClient:
       until the consent flow is triggered)
     """
     return _get_default_client()
+
+
+def read_principal_id(client: WorkspaceClient, *, is_obo: bool) -> str:
+    """A stable, cheap cache-partition key for a resolved read identity (MV-D50).
+
+    Foundation-read caches key on this so an OBO (privilege-filtered) result is
+    never served to another user, and an SP result never leaks into an OBO view.
+
+    - OBO: a hash of the user's forwarded token — distinct users hash to distinct
+      keys with no network round-trip; a rotated token simply misses the cache
+      (never leaks another user's rows).
+    - SP: the app client id (a fixed partition shared across all users, which is
+      exactly what enables the SP shared cache).
+    """
+    if is_obo:
+        token = (client.config.token or "").encode()
+        return "obo:" + hashlib.sha256(token).hexdigest()[:16]
+    return "sp:" + (client.config.client_id or "app")
+
+
+def resolve_read_client(
+    read_identity: ReadIdentity = "obo",
+    *,
+    sp_probe_ok: bool = False,
+) -> tuple[WorkspaceClient, str]:
+    """Resolve the WorkspaceClient for an ontology foundation read (MV-D50).
+
+    A switch over ``read_identity`` — NOT a new auth path. Returns
+    ``(client, principal_id)`` where ``principal_id`` partitions the per-identity
+    cache (:func:`read_principal_id`).
+
+    - ``"obo"`` (default): the viewing admin via :func:`require_obo_workspace_client`.
+      No OBO context raises ``RuntimeError`` — the caller degrades the tier; it is
+      **never** silently widened to the SP.
+    - ``"sp"``: the app service principal (requires the banner's optional grants).
+    - ``"auto"``: the SP when ``sp_probe_ok`` (shared cross-user cache), else the
+      OBO viewer.
+    """
+    if read_identity == "sp" or (read_identity == "auto" and sp_probe_ok):
+        client = get_service_principal_client()
+        return client, read_principal_id(client, is_obo=False)
+    # "obo" (default) or "auto" without a working SP probe → the viewer.
+    # require_obo_workspace_client raises if there is no OBO context: the read
+    # degrades, and the SP is never touched (no silent fallback).
+    client = require_obo_workspace_client()
+    return client, read_principal_id(client, is_obo=True)
 
 
 def get_databricks_host() -> str:

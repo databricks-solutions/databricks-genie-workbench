@@ -1,11 +1,15 @@
-"""Governed-tag graph (SP, MV-D37).
+"""Governed-tag graph (OBO-first, MV-D37/D50).
 
 Enumerate ``system.tags.governed_tags`` + allowed values, and join the
 assignments from ``system.information_schema.{catalog,schema,table,column}_tags``
-(``tag_name = tag_key``). Runs as the *service principal*
-(`get_service_principal_client`) — system tables are not OBO-readable — with the
-same in-process TTL cache and permission-error detection shape as
-`backend/watch/services/system_tables.py`.
+(``tag_name = tag_key``). The read identity is selected per call from the
+ontology ``read_identity`` setting (MV-D50): **OBO by default** (the viewing
+admin, via :func:`resolve_read_client`), the app service principal on opt-in, or
+``auto``. There is **no silent SP fallback** — an ``obo`` read with no OBO context
+degrades the tier, it is never widened to the SP. The in-process TTL cache and
+permission-error detection shape match `backend/watch/services/system_tables.py`;
+the cache key gains the resolved principal so a privilege-filtered OBO view is
+never served to a different identity.
 
 Phase 1 reads this live + TTL-cached (GenieWatch model). When the batch mirror
 lands (Phase 2) the same route contract is served from the mirror table without
@@ -33,7 +37,7 @@ from databricks.sdk.service.sql import StatementParameterListItem, StatementStat
 
 from genie_space_optimizer.ontology import transforms
 
-from backend.services.auth import get_service_principal_client
+from backend.services.auth import ReadIdentity, resolve_read_client
 
 logger = logging.getLogger(__name__)
 
@@ -79,16 +83,28 @@ def _p(name: str, value: Any, value_type: str = "STRING") -> StatementParameterL
     return StatementParameterListItem(name=name, value=str(value), type=value_type)
 
 
+def _resolve(
+    read_identity: ReadIdentity, sp_probe_ok: bool
+) -> tuple[WorkspaceClient | None, str | None]:
+    """Resolve the read client + cache principal, or ``(None, None)`` when the
+    identity can't be resolved (no OBO context) — degrade, never widen to the SP."""
+    try:
+        return resolve_read_client(read_identity, sp_probe_ok=sp_probe_ok)
+    except RuntimeError as e:
+        logger.info("tag-graph read identity %r unavailable: %s", read_identity, e)
+        return None, None
+
+
 def _run(
+    client: WorkspaceClient,
     sql: str,
     parameters: list[StatementParameterListItem],
     *,
     track_health: bool,
     poll_total_seconds: int = 120,
 ) -> list[dict[str, Any]]:
-    """Execute an SP statement; return rows as dicts (best-effort, cached)."""
+    """Execute a statement as the resolved client; return rows as dicts (cached)."""
     global _TAG_GRAPH_ACCESSIBLE
-    client: WorkspaceClient = get_service_principal_client()
     resp = client.statement_execution.execute_statement(
         warehouse_id=_warehouse_id(),
         statement=sql,
@@ -128,22 +144,31 @@ def _run(
     return [{cols[i]: row[i] for i in range(len(cols))} for row in resp.result.data_array]
 
 
-def probe() -> bool:
-    """Cheap SP read of the governed-tag catalog to resolve the tag_graph tier.
+def probe(read_identity: ReadIdentity = "obo", *, sp_probe_ok: bool = False) -> bool:
+    """Cheap read of the governed-tag catalog to resolve the tag_graph tier.
 
-    Returns True if the SP can SELECT ``system.tags.governed_tags`` (tier ``ok``),
-    False on a permission error (tier ``blocked``). Updates the observational
-    accessibility signal as a side effect. Never raises.
+    Returns True if the resolved identity can SELECT ``system.tags.governed_tags``
+    (tier ``ok``), False on a permission error (tier ``blocked``). With the default
+    ``obo`` identity and no OBO context the tier degrades to blocked — it never
+    widens to the SP. Updates the observational accessibility signal as a side
+    effect. Never raises.
     """
+    global _TAG_GRAPH_ACCESSIBLE
+    client, _ = _resolve(read_identity, sp_probe_ok)
+    if client is None:
+        # No OBO context under an obo/auto read → the tier is blocked, not the SP.
+        _TAG_GRAPH_ACCESSIBLE = False
+        return False
     try:
-        _run("SELECT * FROM system.tags.governed_tags LIMIT 1", [], track_health=True)
+        _run(client, "SELECT * FROM system.tags.governed_tags LIMIT 1", [], track_health=True)
     except Exception as e:  # noqa: BLE001 — preflight never raises
         logger.info("tag-graph probe failed: %s", e)
     return _TAG_GRAPH_ACCESSIBLE is True
 
 
-# Shared, workspace-scoped assignment SQL (SP-read live; the batch job reads the
-# same system tables). Exposed as a builder so the materializer can reuse it.
+# Shared, workspace-scoped assignment SQL (read live as the resolved identity;
+# the batch job reads the same system tables as its run_as identity). Exposed as a
+# builder so the materializer can reuse it.
 def build_assignment_sql(allowlist: list[str]) -> tuple[str, list[StatementParameterListItem]]:
     n = len(allowlist)
     binds = [_p(f"c{i}", allowlist[i % n]) for i in range(3 * n)]
@@ -166,34 +191,46 @@ def build_assignment_sql(allowlist: list[str]) -> tuple[str, list[StatementParam
     return sql, binds
 
 
-def sp_assignment_count(allowlist: list[str]) -> int:
-    """Count governed-tag assignment rows the *service principal* can see in scope.
+def sp_assignment_count(
+    allowlist: list[str], read_identity: ReadIdentity = "sp", *, sp_probe_ok: bool = False
+) -> int:
+    """Count governed-tag assignment rows the *active* identity can see in scope.
 
     Uses the same assignment SQL as :func:`build_graph`, wrapped in a COUNT. Because
     ``system.information_schema.*_tags`` is privilege-filtered, this returns 0 when
-    the SP lacks ``BROWSE``/privileges on the allowlisted catalogs — the signal the
-    preflight banner pairs with the OBO count to detect a missing BROWSE grant.
-    Never raises (best-effort; 0 on any failure).
+    the identity lacks ``BROWSE``/privileges on the allowlisted catalogs. The
+    preflight banner pairs the SP count with the OBO count to detect a missing SP
+    ``BROWSE`` grant — so this defaults to reading as the SP; that comparison only
+    runs when the SP is the active read identity (MV-D50). Never raises
+    (best-effort; 0 on any failure, including no resolvable identity).
     """
     if not allowlist:
         return 0
+    client, _ = _resolve(read_identity, sp_probe_ok)
+    if client is None:
+        return 0
     try:
         assign_sql, binds = build_assignment_sql(allowlist)
-        rows = _run(f"SELECT count(*) AS n FROM ({assign_sql}) _a", binds, track_health=False)
+        rows = _run(client, f"SELECT count(*) AS n FROM ({assign_sql}) _a", binds, track_health=False)
         return int(rows[0].get("n") or 0) if rows else 0
     except Exception as e:  # noqa: BLE001 — probe never raises
         logger.info("sp_assignment_count failed: %s", e)
         return 0
 
 
-def build_graph(allowlist: list[str]) -> dict[str, Any]:
+def build_graph(
+    allowlist: list[str], read_identity: ReadIdentity = "obo", *, sp_probe_ok: bool = False
+) -> dict[str, Any]:
     """Enumerate governed tags + their in-scope assignments into the tag-graph
-    structure (SP live read + TTL cache). The assembly is the shared pure
-    transform (``transforms.assemble_tag_graph``) so mirror == live.
+    structure (live read of the resolved identity + TTL cache). The assembly is the
+    shared pure transform (``transforms.assemble_tag_graph``) so mirror == live.
 
         {"tags": [{"tag_key", "allowed_values", "assignment_count", "members"}], "as_of"}
 
     An empty allowlist yields ``{"tags": [], ...}`` and queries nothing (MV-D42).
+    Reads default to OBO (the viewing admin); with no OBO context the graph
+    degrades to empty rather than widening to the SP (MV-D50). The cache is keyed
+    by the resolved principal so an OBO view is never served to another identity.
     """
     from datetime import datetime, timezone
 
@@ -201,7 +238,13 @@ def build_graph(allowlist: list[str]) -> dict[str, Any]:
     if not allowlist:
         return {"tags": [], "as_of": as_of}
 
-    cache_key = "graph:" + "|".join(sorted(allowlist))
+    client, principal = _resolve(read_identity, sp_probe_ok)
+    if client is None:
+        # No resolvable read identity (e.g. obo with no OBO context) → degrade to
+        # an empty graph; never silently fall back to the SP.
+        return {"tags": [], "as_of": as_of}
+
+    cache_key = f"graph:{principal}:" + "|".join(sorted(allowlist))
     with _CACHE_LOCK:
         entry = _CACHE.get(cache_key)
         if entry and time.monotonic() - entry[0] <= _CACHE_TTL_SECONDS:
@@ -209,12 +252,12 @@ def build_graph(allowlist: list[str]) -> dict[str, Any]:
 
     # 1) Governed-tag catalog (account-level; the substrate). Health tracked here
     #    because a permission error on this read is what blocks the tag_graph tier.
-    catalog_rows = _run("SELECT * FROM system.tags.governed_tags", [], track_health=True)
+    catalog_rows = _run(client, "SELECT * FROM system.tags.governed_tags", [], track_health=True)
 
     # 2) Assignments across grains, scoped to the allowlist. Not health-tracked —
     #    absence here means "no assignments", not "tier blocked".
     assign_sql, binds = build_assignment_sql(allowlist)
-    assign_rows = _run(assign_sql, binds, track_health=False)
+    assign_rows = _run(client, assign_sql, binds, track_health=False)
 
     result = transforms.assemble_tag_graph(catalog_rows, assign_rows, as_of)
     with _CACHE_LOCK:

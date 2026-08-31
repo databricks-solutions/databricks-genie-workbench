@@ -312,6 +312,13 @@ async def _ensure_schema():
                     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            # read_identity (MV-D50): additive, defaulted — old rows read as "obo"
+            # (the viewing admin). IF NOT EXISTS keeps this idempotent on restart,
+            # matching the CREATE TABLE IF NOT EXISTS discipline above.
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS read_identity TEXT NOT NULL DEFAULT 'obo'"
+            )
         _lakebase_available = True
         logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables + 1 ontology table)")
     except Exception as e:
@@ -1072,7 +1079,7 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
     try:
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT company_name, catalog_allowlist, updated_at "
+                "SELECT company_name, catalog_allowlist, read_identity, updated_at "
                 "FROM genie.genie_ont_settings WHERE workspace_id = $1",
                 workspace_id,
             )
@@ -1085,6 +1092,7 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
         return {
             "company_name": row["company_name"],
             "catalog_allowlist": allowlist,
+            "read_identity": row["read_identity"] or "obo",
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
     except Exception:
@@ -1096,12 +1104,14 @@ async def ont_upsert_settings(
     workspace_id: str,
     company_name: str | None,
     catalog_allowlist: list[str],
+    read_identity: str = "obo",
 ) -> dict:
     """Upsert the Ontology settings row for a workspace. Fails closed."""
     await _maybe_retry_schema()
     record = {
         "company_name": company_name,
         "catalog_allowlist": catalog_allowlist,
+        "read_identity": read_identity or "obo",
         "updated_at": datetime.utcnow().isoformat(),
     }
 
@@ -1112,15 +1122,18 @@ async def ont_upsert_settings(
     async with _pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO genie.genie_ont_settings (workspace_id, company_name, catalog_allowlist, updated_at)
-            VALUES ($1, $2, $3, NOW())
+            INSERT INTO genie.genie_ont_settings
+                (workspace_id, company_name, catalog_allowlist, read_identity, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (workspace_id) DO UPDATE SET
                 company_name      = EXCLUDED.company_name,
                 catalog_allowlist = EXCLUDED.catalog_allowlist,
+                read_identity     = EXCLUDED.read_identity,
                 updated_at        = NOW()
             """,
             workspace_id,
             company_name,
             json.dumps(catalog_allowlist),
+            record["read_identity"],
         )
     return record

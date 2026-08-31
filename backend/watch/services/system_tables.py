@@ -6,11 +6,17 @@ Reads:
   - system.access.audit           (Genie feedback events)
   - system.access.table_lineage   (executed-resource attribution)
 
-All queries run as the *service principal* — system tables are not OBO-readable.
-SP must hold `USE CATALOG system`, `USE SCHEMA system.{query,billing,access}`,
-and SELECT on each table above. The deploy script grants these automatically.
+GenieWatch queries run as the *service principal* (the default) — system tables
+are its remit and it needs a shared cross-user cache. The SP must hold
+`USE CATALOG system`, `USE SCHEMA system.{query,billing,access}`, and SELECT on
+each table above. The deploy script grants these automatically.
 
-`scripts/grant_permissions.py` is the source of truth for the grant list.
+The ontology signals tier reuses the same reader through a per-call identity seam
+(MV-D50): it passes ``read_identity="obo"`` so the read runs as the viewing admin,
+with the cache partitioned by the resolved principal (:func:`_cache_key`). An
+``obo`` read with no OBO context degrades to empty — it is never widened to the SP.
+
+`scripts/grant_permissions.py` is the source of truth for the SP grant list.
 """
 
 from __future__ import annotations
@@ -25,7 +31,11 @@ from typing import Any
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
-from backend.services.auth import get_service_principal_client
+from backend.services.auth import (
+    ReadIdentity,
+    get_service_principal_client,
+    resolve_read_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +76,15 @@ def system_tables_status() -> bool | None:
     return _SYSTEM_TABLES_ACCESSIBLE
 
 
-def _cache_key(sql: str, parameters: list[StatementParameterListItem]) -> str:
+def _cache_key(
+    sql: str, parameters: list[StatementParameterListItem], principal: str = "sp"
+) -> str:
+    # The resolved principal partitions the cache (MV-D50): GenieWatch reads always
+    # resolve the SP (a fixed partition → the shared cache is preserved); an OBO
+    # ontology signals read gets its own per-user partition, so a privilege-filtered
+    # result is never served to another identity.
     bag = sorted([(p.name, p.value, getattr(p.type, "value", str(p.type))) for p in parameters])
-    return f"{hash(sql)}|{json.dumps(bag)}"
+    return f"{principal}|{hash(sql)}|{json.dumps(bag)}"
 
 
 def _cache_get(key: str, ttl_seconds: int = _CACHE_TTL_SECONDS) -> list[dict[str, Any]] | None:
@@ -113,7 +129,22 @@ def _warehouse_id() -> str:
 
 
 def _client() -> WorkspaceClient:
+    # SP-only helper used for workspace-id resolution (an app-identity fact, not a
+    # privilege-filtered read). Foundation reads resolve their client in :func:`_run`.
     return get_service_principal_client()
+
+
+def _resolve_client(
+    read_identity: ReadIdentity, sp_probe_ok: bool
+) -> tuple[WorkspaceClient | None, str | None]:
+    """Resolve the read client + cache principal, or ``(None, None)`` when the
+    identity can't be resolved (an ``obo`` read with no OBO context) — degrade,
+    never widen to the SP (MV-D50)."""
+    try:
+        return resolve_read_client(read_identity, sp_probe_ok=sp_probe_ok)
+    except RuntimeError as e:
+        logger.info("system-table read identity %r unavailable: %s", read_identity, e)
+        return None, None
 
 
 def _run(
@@ -123,14 +154,22 @@ def _run(
     poll_interval_seconds: float = 2.0,
     track_health: bool = True,
     ttl_seconds: int = _CACHE_TTL_SECONDS,
+    read_identity: ReadIdentity = "sp",
+    sp_probe_ok: bool = False,
 ) -> list[dict[str, Any]]:
     global _SYSTEM_TABLES_ACCESSIBLE
-    key = _cache_key(sql, parameters)
+    # GenieWatch defaults to the SP (system tables are its remit); the ontology
+    # signals tier passes read_identity="obo" so it reads as the viewing admin.
+    client, principal = _resolve_client(read_identity, sp_probe_ok)
+    if client is None:
+        # OBO signals read with no context → degrade (MV-D44); never touch the SP.
+        return []
+
+    key = _cache_key(sql, parameters, principal or "sp")
     cached = _cache_get(key, ttl_seconds=ttl_seconds)
     if cached is not None:
         return cached
 
-    client = _client()
     resp = client.statement_execution.execute_statement(
         warehouse_id=_warehouse_id(),
         statement=sql,
