@@ -52,7 +52,8 @@ class _FakeReader:
 
 class _FakeWriter:
     """In-memory Delta MERGE semantics: upsert by key + NOT-MATCHED-BY-SOURCE
-    delete scoped to workspace_id (mirrors §7.2)."""
+    delete scoped to metastore_id (mirrors §7.2, re-grained MV-D49). A row of a
+    different metastore is never touched by this run."""
 
     def __init__(self):
         self.tables: dict[str, dict] = {}
@@ -65,24 +66,147 @@ class _FakeWriter:
     def upsert_run(self, row):
         self.runs[row["run_id"]] = dict(row)
 
-    def merge(self, table, rows, key_cols, workspace_id):
+    def merge(self, table, rows, key_cols, metastore_id):
         store = self.tables.setdefault(table, {})
         src_keys = {tuple(r[k] for k in key_cols) for r in rows}
         for k in list(store):
-            if store[k].get("workspace_id") == workspace_id and k not in src_keys:
+            if store[k].get("metastore_id") == metastore_id and k not in src_keys:
                 del store[k]
         for r in rows:
             store[tuple(r[k] for k in key_cols)] = dict(r)
 
 
-def _run(reader, writer, *, run_id):
+def _run(reader, writer, *, run_id, metastore_id="ms1", workspace_id="ws1", **kw):
     from datetime import datetime, timezone
 
     return materialize.run_materialize(
-        reader, writer, workspace_id="ws1", trigger="on_demand",
-        allowlist=["finance"], run_id=run_id,
-        now=datetime.fromisoformat(_AS_OF).astimezone(timezone.utc),
+        reader, writer, metastore_id=metastore_id, workspace_id=workspace_id,
+        trigger="on_demand", allowlist=["finance"], run_id=run_id,
+        now=datetime.fromisoformat(_AS_OF).astimezone(timezone.utc), **kw,
     )
+
+
+# ── Phase 3c: Page mining through the materializer (§11) ────────────────────
+
+
+class _PageReader(_FakeReader):
+    """A reader that also surfaces the L5 miner inputs (measure/column signals)."""
+
+    def __init__(self, catalog_rows, assign_rows, metric_views, agents, *, measures=(), columns=(), instructions=()):
+        super().__init__(catalog_rows, assign_rows, metric_views, agents)
+        self._measures, self._columns, self._instr = list(measures), list(columns), list(instructions)
+
+    def measure_signals(self, allowlist):
+        return self._measures
+
+    def coded_column_signals(self, allowlist):
+        return self._columns
+
+    def space_instructions(self):
+        return self._instr
+
+
+def _page_drafter(facts):
+    lines = [f"Description: {facts['description']}", "", "Definition:", f"  {facts['definition']}"]
+    if facts["rules"]:
+        lines.append("")
+        lines.append("Rules:")
+        lines.extend(f"  - {r}" for r in facts["rules"])
+    return "\n".join(lines)
+
+
+def _rev_measures():
+    from genie_space_optimizer.ontology.pages import MeasureSignal
+
+    # Same concept (total_revenue) in two DIFFERENT sub-domains → ONE Page.
+    return [
+        MeasureSignal(mv_fqn="finance.core.rev_mv", name="total_revenue", expression="SUM(a)",
+                      comment="TR; net sales; revenue booked", source_fqns=("finance.core.ledger",),
+                      agent_fqns=("Sales · 01ef",), domain_id="sug_finance"),
+        MeasureSignal(mv_fqn="finance.tax.rev_mv", name="total_revenue", expression="SUM(a)",
+                      comment="TR; net sales; revenue booked", source_fqns=("finance.tax.filings",),
+                      agent_fqns=("Tax · 02aa",), domain_id="sug_tax"),
+    ]
+
+
+def _page_reader(**over):
+    catalog_rows, assign_rows = _fixture_rows()
+    kw = dict(measures=_rev_measures())
+    kw.update(over)
+    return _PageReader(catalog_rows, assign_rows, [], [], **kw)
+
+
+def test_pages_mined_metastore_keyed_and_concept_collapsed():
+    writer = _FakeWriter()
+    run = _run(_page_reader(), writer, run_id="r1", page_drafter=_page_drafter)
+    assert run["state"] == "succeeded"
+    pages_tbl = writer.tables["genie_ont_pages"]
+    # Two measures, same concept, two sub-domains → ONE Page (canonical-concept keying).
+    routing = [v for v in pages_tbl.values() if v["archetype"] == "Routing"]
+    assert len(routing) == 1
+    row = routing[0]
+    # Keyed (metastore_id, page_id); workspace_id is provenance, never in the key.
+    for key in pages_tbl:
+        assert key[0] == "ms1" and "ws1" not in key
+    assert row["workspace_id"] == "ws1"
+    # Sources aggregate BOTH sub-domains' MVs.
+    assert {"finance.core.rev_mv", "finance.tax.rev_mv"} <= set(row["source_fqns"])
+    # page_count on the ledger.
+    assert run["page_count"] == len(pages_tbl)
+
+
+def test_pages_idempotent_rerun_stable_page_ids():
+    writer = _FakeWriter()
+    _run(_page_reader(), writer, run_id="r1", page_drafter=_page_drafter)
+    keys1 = set(writer.tables["genie_ont_pages"])
+    _run(_page_reader(), writer, run_id="r2", page_drafter=_page_drafter)
+    keys2 = set(writer.tables["genie_ont_pages"])
+    assert keys1 == keys2 and keys1  # same concept-anchored page_ids, no dups
+
+
+def test_page_losing_all_signal_is_deleted_not_matched_by_source():
+    writer = _FakeWriter()
+    _run(_page_reader(), writer, run_id="r1", page_drafter=_page_drafter)
+    assert writer.tables["genie_ont_pages"]
+    # Re-run with no measure signal → the concept loses all signal → Page removed.
+    _run(_page_reader(measures=[]), writer, run_id="r2", page_drafter=_page_drafter)
+    assert writer.tables["genie_ont_pages"] == {}
+
+
+def test_page_metastore_scoped_delete_leaves_other_metastore_intact():
+    writer = _FakeWriter()
+    _run(_page_reader(), writer, run_id="r1", metastore_id="ms1", page_drafter=_page_drafter)
+    _run(_page_reader(), writer, run_id="r2", metastore_id="ms2", page_drafter=_page_drafter)
+    ms2_pages = {k for k in writer.tables["genie_ont_pages"] if k[0] == "ms2"}
+    assert ms2_pages
+    # Re-run ms1 with no signal → ms1's Pages go, ms2's survive (metastore-scoped delete).
+    _run(_page_reader(measures=[]), writer, run_id="r3", metastore_id="ms1", page_drafter=_page_drafter)
+    remaining = set(writer.tables["genie_ont_pages"])
+    assert remaining == ms2_pages
+
+
+def test_page_mining_error_records_failed_but_keeps_earlier_snapshots(monkeypatch):
+    import pytest
+
+    from genie_space_optimizer.ontology import pages as pages_mod
+
+    writer = _FakeWriter()
+
+    def _boom(*a, **k):
+        raise RuntimeError("page miner boom")
+
+    monkeypatch.setattr(pages_mod, "mine_pages", _boom)
+    with pytest.raises(RuntimeError):
+        _run(_page_reader(), writer, run_id="rP", page_drafter=_page_drafter)
+
+    # Additive-LAST (§8): everything MERGEd before page mining survives intact.
+    assert writer.tables.get("genie_ont_tag_graph")
+    assert writer.tables.get("genie_ont_identity")
+    assert writer.tables.get("genie_ont_domains")
+    # No pages table written, and the run is recorded failed.
+    assert "genie_ont_pages" not in writer.tables
+    assert writer.runs["rP"]["state"] == "failed"
+    assert "page miner boom" in (writer.runs["rP"]["error"] or "")
 
 
 def test_mirror_vs_live_parity_tree_and_tag_graph():
@@ -98,7 +222,7 @@ def test_mirror_vs_live_parity_tree_and_tag_graph():
     gtags_live = transforms.governed_tag_rows(graph_struct)
 
     # Mirror path: what the materializer wrote.
-    stored_tree = json.loads(writer.tables["genie_ont_taxonomy_snapshot"][("ws1",)]["tree"])
+    stored_tree = json.loads(writer.tables["genie_ont_taxonomy_snapshot"][("ms1",)]["tree"])
     assert stored_tree == tree_live  # byte-identical JSON
 
     stored_tags = writer.tables["genie_ont_tag_graph"]
@@ -127,13 +251,13 @@ def test_not_matched_by_source_delete_and_add_once():
     catalog_rows, assign_rows = _fixture_rows()
     writer = _FakeWriter()
     _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
-    assert ("ws1", "sensitivity") in writer.tables["genie_ont_tag_graph"]
+    assert ("ms1", "sensitivity") in writer.tables["genie_ont_tag_graph"]
 
     # Remove a tag between runs → it is deleted (NOT MATCHED BY SOURCE).
     trimmed = [r for r in catalog_rows if r.get("tag_name") != "sensitivity"]
     trimmed_assign = [r for r in assign_rows if r.get("tag_name") != "sensitivity"]
     _run(_FakeReader(trimmed, trimmed_assign, [], []), writer, run_id="r2")
-    assert ("ws1", "sensitivity") not in writer.tables["genie_ont_tag_graph"]
+    assert ("ms1", "sensitivity") not in writer.tables["genie_ont_tag_graph"]
 
     # Add a new tag → it appears exactly once.
     added = trimmed + [{"tag_name": "Ops"}, {"tag_name": "Ops/Fulfillment"}]
@@ -142,22 +266,25 @@ def test_not_matched_by_source_delete_and_add_once():
     ]
     _run(_FakeReader(added, added_assign, [], []), writer, run_id="r3")
     ops_keys = [k for k in writer.tables["genie_ont_tag_graph"] if k[1] == "Ops"]
-    assert ops_keys == [("ws1", "Ops")]
+    assert ops_keys == [("ms1", "Ops")]
 
 
-def test_pages_consents_suppressions_never_written():
+def test_consents_suppressions_never_written_pages_now_written():
     catalog_rows, assign_rows = _fixture_rows()
     writer = _FakeWriter()
     _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
     written = set(writer.tables)
-    # Phase 3b now writes the Domain/Member proposal tables too; only the 17f/17g
-    # tables (pages/consents/suppressions) stay empty.
+    # Phase 3c now MERGEs genie_ont_pages too (even when the estate mines zero Pages —
+    # the empty MERGE clears stale rows). Only the 17g ledger tables stay empty.
     assert written == {
         "genie_ont_tag_graph", "genie_ont_taxonomy_snapshot", "genie_ont_identity",
-        "genie_ont_domains", "genie_ont_members",
+        "genie_ont_domains", "genie_ont_members", "genie_ont_pages",
     }
     for t in ddl.PHASE3_TABLES:
         assert t not in written
+    assert ddl.PHASE3_TABLES == ("genie_ont_consents", "genie_ont_suppressions")
+    # A fixture with no measure/column signal mines zero Pages, but the MERGE still ran.
+    assert writer.tables["genie_ont_pages"] == {}
 
 
 def test_failed_run_records_error_and_reraises():
@@ -180,6 +307,12 @@ def test_run_ledger_one_row_per_run_and_running_then_terminal():
     assert list(writer.runs) == ["r1"]  # one header per run_id (upsert)
     assert run["state"] == "succeeded"
     assert run["tag_count"] == 4 and run["domain_count"] == 1
+
+    # A second run keeps the first run's header — the ledger is history, not a
+    # single latest row (guards the upsert-only MERGE for genie_ont_runs).
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r2")
+    assert set(writer.runs) == {"r1", "r2"}
+    assert writer.runs["r1"]["run_id"] == "r1" and writer.runs["r2"]["run_id"] == "r2"
 
 
 def test_identity_map_idempotent_stable_canonical_no_dups():
@@ -281,27 +414,58 @@ def test_merge_sql_shape_not_matched_by_source_scoped():
     sql = ddl.build_snapshot_merge_sql(
         catalog="c", schema="s", table="genie_ont_tag_graph", source_view="v",
         key_cols=materialize.TAG_GRAPH_KEYS, update_cols=materialize.TAG_GRAPH_UPDATE_COLS,
-        workspace_id="ws1",
+        metastore_id="ms1",
     )
     assert "MERGE INTO c.s.genie_ont_tag_graph" in sql
     assert "WHEN MATCHED THEN UPDATE SET" in sql
     assert "WHEN NOT MATCHED THEN INSERT" in sql
-    assert "WHEN NOT MATCHED BY SOURCE AND t.workspace_id = 'ws1' THEN DELETE" in sql
+    # Re-grained (MV-D49): the delete predicate is METASTORE-scoped, never workspace.
+    assert "WHEN NOT MATCHED BY SOURCE AND t.metastore_id = 'ms1' THEN DELETE" in sql
+    # workspace_id is never part of the delete predicate (it rides along as an
+    # update col / provenance only).
+    assert "BY SOURCE AND t.workspace_id" not in sql
+    # The key leads with metastore_id; workspace_id rides along as an update col.
+    assert materialize.TAG_GRAPH_KEYS[0] == "metastore_id"
+    assert "workspace_id" in materialize.TAG_GRAPH_UPDATE_COLS
 
 
 def test_merge_sql_empty_update_cols_omits_matched_clause():
     sql = ddl.build_snapshot_merge_sql(
         catalog="c", schema="s", table="genie_ont_tag_graph", source_view="v",
-        key_cols=["workspace_id", "tag_key"], update_cols=[], workspace_id="ws1",
+        key_cols=["metastore_id", "tag_key"], update_cols=[], metastore_id="ms1",
     )
     assert "WHEN MATCHED THEN UPDATE SET" not in sql
     assert "WHEN NOT MATCHED BY SOURCE" in sql
 
 
+def test_merge_sql_delete_unmatched_false_is_upsert_only():
+    """The run ledger (genie_ont_runs) MUST be upsert-only: run_id is unique per
+    run, so a source-diff delete would wipe every prior run's header. Snapshots
+    keep the default (delete_unmatched=True) to prune stale entities."""
+    upsert_only = ddl.build_snapshot_merge_sql(
+        catalog="c", schema="s", table="genie_ont_runs", source_view="v",
+        key_cols=["run_id"], update_cols=["state", "finished_at"], metastore_id="ms1",
+        delete_unmatched=False,
+    )
+    assert "WHEN MATCHED THEN UPDATE SET" in upsert_only
+    assert "WHEN NOT MATCHED THEN INSERT" in upsert_only
+    assert "WHEN NOT MATCHED BY SOURCE" not in upsert_only  # no prior-run wipe
+
+    # Default keeps the source-diff delete (stale-entity prune) for snapshots.
+    default_sql = ddl.build_snapshot_merge_sql(
+        catalog="c", schema="s", table="genie_ont_runs", source_view="v",
+        key_cols=["run_id"], update_cols=["state"], metastore_id="ms1",
+    )
+    assert "WHEN NOT MATCHED BY SOURCE AND t.metastore_id = 'ms1' THEN DELETE" in default_sql
+
+
 def test_ddl_shape_exactly_nine_tables_no_deferred_tokens():
     rendered = ddl.all_ddl("maincat", "gso_schema")
-    assert set(rendered) == set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES) | set(ddl.PHASE3_TABLES)
-    # 4 snapshot tables + 2 written proposal tables + 3 still-empty (pages/consents/suppressions).
+    assert set(rendered) == (
+        set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES)
+        | set(ddl.PAGE_TABLES) | set(ddl.PHASE3_TABLES)
+    )
+    # 4 snapshot + 2 proposal + 1 page (now written) + 2 still-empty (consents/suppressions).
     assert len(rendered) == 9
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():
@@ -309,6 +473,101 @@ def test_ddl_shape_exactly_nine_tables_no_deferred_tokens():
     # No Phase-3/4 substrate, no governed-tag writes anywhere in the DDL.
     for tok in ("lakebase_vector", "lakebase_text", "web_search", "set tag", "create governed tag"):
         assert tok not in joined
+
+
+# ── Re-grain to metastore (MV-D49, spec §11) ────────────────────────────────
+
+
+def test_convergence_same_metastore_two_workspaces_one_row_set():
+    """Two installs of the SAME metastore (different provenance workspace_id) must
+    converge on ONE row set — no duplicate Domain=Finance — and the second run's
+    provenance is recorded without forking the metastore-led key."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+         metastore_id="ms1", workspace_id="wsA")
+    d1 = set(writer.tables["genie_ont_domains"])
+    tg1 = set(writer.tables["genie_ont_tag_graph"])
+
+    # Second install, same metastore, DIFFERENT provenance workspace.
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r2",
+         metastore_id="ms1", workspace_id="wsB")
+
+    # Convergent: identical key sets, no duplicate rows.
+    assert set(writer.tables["genie_ont_domains"]) == d1
+    assert set(writer.tables["genie_ont_tag_graph"]) == tg1
+    # One taxonomy row for the metastore (not one per workspace).
+    assert len(writer.tables["genie_ont_taxonomy_snapshot"]) == 1
+    # Provenance updated to the latest install without forking the key.
+    tax_row = writer.tables["genie_ont_taxonomy_snapshot"][("ms1",)]
+    assert tax_row["workspace_id"] == "wsB"
+    for row in writer.tables["genie_ont_tag_graph"].values():
+        assert row["workspace_id"] == "wsB"
+
+
+def test_metastore_scoped_idempotency_other_metastore_not_deleted():
+    """A run scoped to one metastore must NOT delete/alter another metastore's
+    rows (NOT-MATCHED-BY-SOURCE is metastore-scoped)."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+         metastore_id="ms1", workspace_id="wsA")
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r2",
+         metastore_id="ms2", workspace_id="wsB")
+
+    tg = writer.tables["genie_ont_tag_graph"]
+    # Both metastores hold their own Finance row — neither run wiped the other.
+    assert ("ms1", "Finance") in tg and ("ms2", "Finance") in tg
+    ms2_before = {k for k in tg if k[0] == "ms2"}
+
+    # Re-running ms1 with a TRIMMED graph deletes ms1's stale row but leaves ms2 intact.
+    trimmed = [r for r in catalog_rows if r.get("tag_name") != "sensitivity"]
+    trimmed_assign = [r for r in assign_rows if r.get("tag_name") != "sensitivity"]
+    _run(_FakeReader(trimmed, trimmed_assign, [], []), writer, run_id="r3",
+         metastore_id="ms1", workspace_id="wsA")
+    tg = writer.tables["genie_ont_tag_graph"]
+    # ms2's full row set survived the ms1 re-run untouched…
+    assert {k for k in tg if k[0] == "ms2"} == ms2_before
+    assert ("ms2", "sensitivity") in tg
+    # …while ms1's stale row was deleted (metastore-scoped NOT-MATCHED-BY-SOURCE).
+    assert ("ms1", "sensitivity") not in tg
+
+
+def test_provenance_retained_but_never_in_a_key():
+    """workspace_id is present on every written row (provenance) but never appears
+    in a key tuple or the delete predicate."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+         metastore_id="ms1", workspace_id="wsProv")
+
+    for table in ("genie_ont_tag_graph", "genie_ont_taxonomy_snapshot",
+                  "genie_ont_identity", "genie_ont_domains", "genie_ont_members"):
+        rows = writer.tables[table]
+        assert rows, f"{table} should have rows"
+        for key, row in rows.items():
+            # Provenance present on the row…
+            assert row["workspace_id"] == "wsProv"
+            # …but the metastore leads the key and the provenance value is not in it.
+            assert key[0] == "ms1"
+            assert "wsProv" not in key
+    # Run ledger carries both metastore_id (grain) and workspace_id (provenance).
+    ledger = writer.runs["r1"]
+    assert ledger["metastore_id"] == "ms1" and ledger["workspace_id"] == "wsProv"
+
+
+def test_degraded_metastore_id_still_runs_and_keys_on_stable_id():
+    """MV-D43: a degraded/stable metastore id ('default') still yields a valid,
+    convergent run keyed on that id."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    run = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+               metastore_id="default", workspace_id="wsA")
+    assert run["state"] == "succeeded"
+    assert ("default",) in writer.tables["genie_ont_taxonomy_snapshot"]
+    assert any(k[0] == "default" for k in writer.tables["genie_ont_tag_graph"])
 
 
 def test_signal_graph_scaffold_nodes_and_edges_no_clustering():
@@ -321,3 +580,30 @@ def test_signal_graph_scaffold_nodes_and_edges_no_clustering():
     assert edge_kinds == {"tag_assignment", "lineage_adjacency"}
     # Pure structure — no cluster/community keys.
     assert "clusters" not in sig and "communities" not in sig
+
+
+def test_coerce_scalar_fits_explicit_schema_types():
+    """SparkSnapshotWriter._df_for passes the target Delta schema to
+    createDataFrame (serverless can't infer all-None columns). _coerce_scalar
+    turns the row builders' ISO strings into native datetime/date for
+    TIMESTAMP/DATE columns; everything else (incl. None) passes through."""
+    from datetime import date, datetime
+
+    # ISO strings → native objects for timestamp/date columns.
+    ts = materialize._coerce_scalar("2026-08-30T00:00:00+00:00", "timestamp")
+    assert isinstance(ts, datetime) and ts.tzinfo is not None
+    assert materialize._coerce_scalar("2026-08-30T00:00:00Z", "timestamp") == (
+        datetime.fromisoformat("2026-08-30T00:00:00+00:00")
+    )
+    assert materialize._coerce_scalar("2026-08-30", "date") == date(2026, 8, 30)
+
+    # All-None column (the bug trigger) and every other type pass through.
+    assert materialize._coerce_scalar(None, "timestamp") is None
+    assert materialize._coerce_scalar("Finance", "string") == "Finance"
+    assert materialize._coerce_scalar(5, "integer") == 5
+    assert materialize._coerce_scalar(["a", "b"], "array") == ["a", "b"]
+    assert materialize._coerce_scalar(True, "boolean") is True
+
+    # An already-native datetime is left untouched (idempotent).
+    now = datetime(2026, 8, 30)
+    assert materialize._coerce_scalar(now, "timestamp") is now

@@ -892,6 +892,30 @@ class LeakageOracle:
             sql_score=best_sql_score,
         )
 
+    def contains_page_leak(self, body: str, *, w: Any = None) -> tuple[bool, str]:
+        """Return ``(is_leak, reason)`` when an ontology **Page body** echoes a
+        benchmark answer shape (the MV-D8 comment-echo rule transposed to Pages, which
+        Genie retrieves and reads).
+
+        A drafted Page body is inference-visible, so an LLM that reproduces a benchmark
+        question or its expected SQL near-verbatim would leak an answer into a
+        retrievable artifact. This scans the body against every corpus on BOTH the
+        question and SQL sides via the SAME ``_check_string_against_corpus`` used for
+        example-SQL — the extended oracle, not a second scanner. No-op (returns
+        ``(False, "")``) when the oracle carries no corpus, which is the normal
+        ontology run (Page mining has no benchmark corpus in scope).
+        """
+        if not body or not isinstance(body, str) or not body.strip():
+            return False, ""
+        for corpus in self._corpora:
+            for is_sql in (False, True):
+                is_leak, reason, _score = _check_string_against_corpus(
+                    body, corpus, is_sql=is_sql, w=w,
+                )
+                if is_leak:
+                    return True, f"page_body:{reason}"
+        return False, ""
+
     # Deliberately absent — see class docstring for rationale. Any of
     # the following would re-open the side channel the wrapper exists
     # to close. Do not add them.

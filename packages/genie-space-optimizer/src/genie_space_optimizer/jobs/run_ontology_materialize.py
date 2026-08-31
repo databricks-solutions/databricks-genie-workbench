@@ -5,18 +5,27 @@
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
 # MAGIC | **Task** | `ontology_materialize` |
-# MAGIC | **Reads** | job params, `system.tags.governed_tags` + `information_schema.*_tags` + lineage (SP, allowlist-scoped) |
-# MAGIC | **Writes** | `genie_ont_runs`, `genie_ont_tag_graph`, `genie_ont_taxonomy_snapshot`, `genie_ont_identity`, `genie_ont_domains`, `genie_ont_members` (idempotent MERGE) |
-# MAGIC | **Never writes** | any governed-tag DDL; `genie_ont_pages` / `_consents` / `_suppressions` (17f/17g) |
+# MAGIC | **Grain** | **metastore** (MV-D49) — resolved `metastore_id` is the storage/serving key; `workspace_id` is provenance only |
+# MAGIC | **Reads** | job params, `system.tags.governed_tags` + `information_schema.*_tags` + lineage (as the job's `run_as` identity — a metastore-admin user or an SP — allowlist-scoped) |
+# MAGIC | **Writes** | `genie_ont_runs`, `genie_ont_tag_graph`, `genie_ont_taxonomy_snapshot`, `genie_ont_identity`, `genie_ont_domains`, `genie_ont_members`, `genie_ont_pages` (idempotent MERGE) |
+# MAGIC | **Never writes** | any governed-tag DDL; `genie_ont_consents` / `_suppressions` (17g) |
 # MAGIC | **Log label** | `[TASK ONTOLOGY]` |
 # MAGIC
-# MAGIC ## 🎯 Purpose (Phase-2 §8)
+# MAGIC ## 🎯 Purpose (Phase-2 §8, re-grained MV-D49)
 # MAGIC
 # MAGIC Materialize the Phase-1 live outputs (governed-tag graph + taxonomy tree) to
 # MAGIC Delta so the page reads a stable, sub-second snapshot. The heavy logic lives
 # MAGIC in the wheel (`genie_space_optimizer.ontology.*`) using the SAME pure
 # MAGIC transforms the Phase-1 routes call, so mirror output == live output. This
-# MAGIC notebook is thin glue: read params → SP reads → `run_materialize`.
+# MAGIC notebook is thin glue: resolve metastore_id → read system tables as the job's
+# MAGIC `run_as` identity (a metastore-admin user or an SP, MV-D50) → `run_materialize`.
+# MAGIC No app-SP system-table grant is required; the run_as identity's own grants back
+# MAGIC the reads.
+# MAGIC
+# MAGIC **Run once per metastore.** The MERGE is idempotent and metastore-scoped, so
+# MAGIC several workspace installs sharing a metastore are convergent (they land the
+# MAGIC same rows) — but the operational recommendation is a single scheduled runner
+# MAGIC per metastore to avoid churn. No code lock is added; the MERGE is the net.
 # MAGIC
 # MAGIC Read-only w.r.t. UC governance: the ONLY UC writes are the `genie_ont_*`
 # MAGIC Delta MERGEs. No `SET`/`CREATE` governed-tag statements anywhere.
@@ -43,6 +52,7 @@ def _log(msg: str, **kw: Any) -> None:
 
 # COMMAND ----------
 
+dbutils.widgets.text("metastore_id", "")
 dbutils.widgets.text("workspace_id", "")
 dbutils.widgets.text("trigger", "nightly")
 dbutils.widgets.text("catalog", "")
@@ -50,6 +60,7 @@ dbutils.widgets.text("schema", "genie_space_optimizer")
 dbutils.widgets.text("catalog_allowlist", "[]")
 dbutils.widgets.text("run_id", "")
 
+metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
 trigger = dbutils.widgets.get("trigger").strip() or "nightly"
 catalog = dbutils.widgets.get("catalog").strip() or os.environ.get("GSO_CATALOG", "")
@@ -60,6 +71,32 @@ try:
 except (TypeError, ValueError):
     allowlist = []
 
+
+def _resolve_metastore_id() -> str:
+    """Resolve the metastore grain (MV-D49), degrading rather than hanging (MV-D43).
+
+    Tiers: the SDK ``metastores.current()`` → the system-table ``CURRENT_METASTORE()``
+    → the stable literal ``"default"``. A missing id never blocks the run; a run
+    scoped to a stable id still MERGEs onto the same rows on the next run.
+    """
+    try:
+        current = make_workspace_client().metastores.current()
+        mid = getattr(current, "metastore_id", None)
+        if mid:
+            return str(mid)
+    except Exception as e:  # noqa: BLE001 — degrade to the system-table read
+        _log("metastores.current() failed; trying CURRENT_METASTORE()", error=str(e))
+    try:
+        rows = [r.asDict(recursive=True) for r in spark.sql("SELECT CURRENT_METASTORE() AS metastore_id").collect()]
+        mid = rows[0].get("metastore_id") if rows else None
+        if mid:
+            return str(mid)
+    except Exception as e:  # noqa: BLE001 — degrade to the stable literal
+        _log("CURRENT_METASTORE() read failed; using 'default'", error=str(e))
+    return "default"
+
+
+# workspace_id is PROVENANCE (which install triggered this run), never a key.
 if not workspace_id:
     w0 = make_workspace_client()
     try:
@@ -67,7 +104,11 @@ if not workspace_id:
     except Exception:
         workspace_id = "default"
 
-_log("Resolved params", workspace_id=workspace_id, trigger=trigger, catalog=catalog, schema=schema, allowlist=allowlist)
+if not metastore_id:
+    metastore_id = _resolve_metastore_id()
+
+_log("Resolved params", metastore_id=metastore_id, workspace_id=workspace_id,
+     trigger=trigger, catalog=catalog, schema=schema, allowlist=allowlist)
 
 # COMMAND ----------
 
@@ -139,6 +180,48 @@ class SparkSystemTableReader:
         # Structural adjacency only (used by the L2 scaffold; never invents a domain).
         return []
 
+    # ── Phase 3c (17f) L5 Page-miner inputs — best-effort, degrade to [] ─────
+    def measure_signals(self, allowlist: list[str]) -> list[Any]:
+        """Governed metric-view measures as :class:`pages.MeasureSignal`s (the concept
+        signals for [Routing]/[Guardrail]/[Disambiguation]). Reuses the MV-advisor's
+        estate YAML read + ``metric_view_fields`` flatten — no new DESCRIBE path. Any
+        failure degrades to [] (MV-D43); measure format / serving-Agent / home-domain
+        enrichment is layered in at serve time (17g)."""
+        try:
+            from genie_space_optimizer.optimization.mv_advisor import estate_metric_view_yamls
+            from genie_space_optimizer.optimization.mv_scoring import FIELD_MEASURE, metric_view_fields
+            from genie_space_optimizer.ontology.pages import MeasureSignal
+        except Exception as e:  # noqa: BLE001
+            _log("page measure imports unavailable; mining zero Routing/Guardrail pages", error=str(e))
+            return []
+        mv_fqns = self.metric_view_fqns(allowlist)
+        if not mv_fqns:
+            return []
+        try:
+            yamls = estate_metric_view_yamls(
+                spark, mv_fqns, w=make_workspace_client(),
+                warehouse_id=os.environ.get("GSO_WAREHOUSE_ID", ""),
+            )
+            fields = metric_view_fields(yamls)
+        except Exception as e:  # noqa: BLE001 — a failed estate read is not evidence of none
+            _log("metric-view measure read failed; mining zero measure pages", error=str(e))
+            return []
+        return [
+            MeasureSignal(mv_fqn=f.mv_fqn, name=f.field_name, expression=f.expr, comment=f.text)
+            for f in fields if getattr(f, "kind", "") == FIELD_MEASURE and f.field_name and f.expr
+        ]
+
+    def coded_column_signals(self, allowlist: list[str]) -> list[Any]:
+        """Low-cardinality coded columns ([Taxonomy] signals). Deferred to the serve
+        pass (17g) — column value-profiling is not read here — so this degrades to []
+        (no [Taxonomy] pages) rather than issue a profiling sweep in the offline slice."""
+        return []
+
+    def space_instructions(self) -> list[str]:
+        """Existing Agent ``text_instructions`` (READ-ONLY, for the contradiction gate).
+        Best-effort; absence simply means no contradiction downgrade (never blocks)."""
+        return []
+
 
 # COMMAND ----------
 
@@ -147,7 +230,7 @@ class SparkSystemTableReader:
 # client, and the near-tie LLM adjudicator (degrades if the endpoint is down).
 # L4 clustering (Phase 3b) uses the same LLM path for cluster NAMING only (degrades
 # to anchor-derived names — MV-D43).
-from genie_space_optimizer.ontology import cluster, er, similarity  # noqa: E402
+from genie_space_optimizer.ontology import cluster, er, pages, similarity  # noqa: E402
 
 try:
     from genie_space_optimizer.optimization.mv_scoring import FoundationModelEmbeddingClient
@@ -160,6 +243,7 @@ writer = materialize.SparkSnapshotWriter(spark, catalog, schema)
 run = materialize.run_materialize(
     SparkSystemTableReader(),
     writer,
+    metastore_id=metastore_id,
     workspace_id=workspace_id,
     trigger=trigger,
     allowlist=allowlist,
@@ -168,7 +252,12 @@ run = materialize.run_materialize(
     embedder=_embedder,
     adjudicator=er.default_adjudicator(),
     namer=cluster.default_namer(),  # LLM cluster naming; degrades to anchor names
+    # L5 Page mining (Phase 3c) — deterministic detectors + LLM BODY PROSE only
+    # (degrades to a deterministic stub + certify=false, MV-D43). Routing ask_genie
+    # confirmation degrades to unvalidated (no concept→Agent map wired here).
+    page_drafter=pages.default_page_drafter(),
+    routing_validator=None,
 )
-_log("Materialize complete", state=run["state"], tags=run.get("tag_count"),
-     domains=run.get("domain_count"), identities=run.get("identity_count"))
+_log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
+     domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))
 dbutils.notebook.exit(json.dumps({"run_id": run["run_id"], "state": run["state"]}, default=str))

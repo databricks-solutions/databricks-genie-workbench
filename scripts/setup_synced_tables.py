@@ -42,20 +42,26 @@ TABLES = [
     ("genie_opt_iterations",         ["run_id", "iteration", "eval_scope"]),
     ("genie_opt_patches",            ["run_id", "iteration", "lever", "patch_index"]),
     ("genie_opt_benchmark_mutations", ["run_id", "question_id", "op"]),
-    # Ontology Phase-2 snapshots (Delta → Lakebase mirror). Derived PKs per §7.2:
-    # tag graph on (workspace_id, tag_key); taxonomy tree one row per workspace;
-    # the run ledger on run_id. They light up as synced tables when
-    # gso_lakebase._SYNCED_TABLES_ENABLED flips (reads fall through to Delta today).
+    # Ontology snapshots (Delta → Lakebase mirror), re-grained to the metastore
+    # (MV-D49): every derived PK leads with metastore_id; workspace_id rides along
+    # as provenance only. tag graph on (metastore_id, tag_key); taxonomy tree one
+    # row per metastore; the run ledger on run_id. They light up as synced tables
+    # when gso_lakebase._SYNCED_TABLES_ENABLED flips (reads fall through to Delta
+    # today).
     ("genie_ont_runs",               ["run_id"]),
-    ("genie_ont_tag_graph",          ["workspace_id", "tag_key"]),
-    ("genie_ont_taxonomy_snapshot",  ["workspace_id"]),
+    ("genie_ont_tag_graph",          ["metastore_id", "tag_key"]),
+    ("genie_ont_taxonomy_snapshot",  ["metastore_id"]),
     # Phase-3a identity map (canonical entity -> members). Derived PK.
-    ("genie_ont_identity",           ["workspace_id", "canonical_id", "member_ref"]),
+    ("genie_ont_identity",           ["metastore_id", "canonical_id", "member_ref"]),
     # Phase-3b Domain / Sub-Domain proposals + their asset membership. Derived PKs
-    # per §7: domain on (workspace_id, domain_id); member on (workspace_id,
+    # per §7: domain on (metastore_id, domain_id); member on (metastore_id,
     # domain_id, asset_fqn). Unserved until 17g (mirror carries proposal rows).
-    ("genie_ont_domains",            ["workspace_id", "domain_id"]),
-    ("genie_ont_members",            ["workspace_id", "domain_id", "asset_fqn"]),
+    ("genie_ont_domains",            ["metastore_id", "domain_id"]),
+    ("genie_ont_members",            ["metastore_id", "domain_id", "asset_fqn"]),
+    # Phase-3c canonical-concept Page proposals. Derived PK (metastore_id, page_id) —
+    # concept-anchored, not artifact- or domain-scoped (MV-D49). Unserved until 17g
+    # (the mirror carries the Page rows; the /drafts route + 17.0e frame land in 17g).
+    ("genie_ont_pages",              ["metastore_id", "page_id"]),
 ]
 
 SYNCED_SUFFIX = "_synced"

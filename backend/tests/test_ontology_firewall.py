@@ -91,15 +91,15 @@ def test_backend_router_verbs_are_read_only_plus_settings_put_and_refresh_post()
     assert post_files == ["refresh.py"], f"unexpected POST routes: {post_files}"
 
 
-def test_wheel_writes_snapshots_plus_proposals_never_pages_consents_suppressions():
-    """Phase 3b: the materializer MERGEs the snapshot tables AND the Domain/Member
-    PROPOSAL tables; the Page/consent/suppression tables are created (DDL) but still
-    never written (17f/17g own them)."""
+def test_wheel_writes_snapshots_proposals_pages_never_consents_suppressions():
+    """Phase 3c: the materializer MERGEs the snapshot tables, the Domain/Member
+    PROPOSAL tables, AND the genie_ont_pages PAGE table; only the consent/suppression
+    ledger tables are created (DDL) but never written (17g owns them)."""
     from genie_space_optimizer.ontology import ddl, materialize  # noqa: F401
 
     src = (_WHEEL_ONTOLOGY / "materialize.py").read_text()
-    # The still-forbidden Phase-3 tables must be absent from the materializer.
-    assert ddl.PHASE3_TABLES == ("genie_ont_pages", "genie_ont_consents", "genie_ont_suppressions")
+    # The still-forbidden ledger tables must be absent from the materializer.
+    assert ddl.PHASE3_TABLES == ("genie_ont_consents", "genie_ont_suppressions")
     for t in ddl.PHASE3_TABLES:
         assert t not in src, f"materialize.py references unwritten table {t} (must not write it)"
     # The snapshot tables it writes.
@@ -108,3 +108,22 @@ def test_wheel_writes_snapshots_plus_proposals_never_pages_consents_suppressions
     assert ddl.PROPOSAL_TABLES == ("genie_ont_domains", "genie_ont_members")
     assert "TABLE_ONT_DOMAINS" in src and "TABLE_ONT_MEMBERS" in src
     assert "DOMAIN_KEYS" in src and "MEMBER_KEYS" in src
+    # Phase 3c: the Page proposal table is now written (concept-anchored, MV-D49).
+    assert ddl.PAGE_TABLES == ("genie_ont_pages",)
+    assert "TABLE_ONT_PAGES" in src and "PAGE_KEYS" in src
+
+
+def test_leakage_oracle_has_page_body_scan_not_a_second_scanner():
+    """Phase 3c firewall: the LeakageOracle gained a page-body scan (the extended
+    oracle, MV-D8 comment-echo transposed) — it delegates to the same corpus matcher,
+    not a new scanner class."""
+    import inspect
+
+    from genie_space_optimizer.optimization import leakage
+
+    assert hasattr(leakage.LeakageOracle, "contains_page_leak")
+    body_src = inspect.getsource(leakage.LeakageOracle.contains_page_leak)
+    # Reuses the shared corpus matcher (no second scanner).
+    assert "_check_string_against_corpus" in body_src
+    # No-op with no corpus (the normal ontology run has no benchmark corpus in scope).
+    assert leakage.LeakageOracle().contains_page_leak("any `finance.x.y` body") == (False, "")

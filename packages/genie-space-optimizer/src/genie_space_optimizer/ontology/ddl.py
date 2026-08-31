@@ -22,8 +22,9 @@ from __future__ import annotations
 
 _GENIE_ONT_RUNS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_runs (
-    run_id           STRING    COMMENT 'UUID for this materialization run',
-    workspace_id     STRING    COMMENT 'Owning workspace/app instance',
+    run_id           STRING    COMMENT 'UUID for this materialization run; PK (one header per run)',
+    metastore_id     STRING    COMMENT 'Metastore grain (MV-D49) this run materialized',
+    workspace_id     STRING    COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     trigger          STRING    COMMENT 'nightly | on_demand',
     state            STRING    COMMENT 'running | succeeded | failed',
     scope_allowlist  ARRAY<STRING> COMMENT 'Catalog allowlist the run was scoped to (MV-D42)',
@@ -34,13 +35,15 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_runs (
     domain_count     INT       COMMENT 'Domains in the taxonomy tree',
     ungrouped_count  INT       COMMENT 'Assets under no domain tag',
     identity_count   INT       COMMENT 'Canonical entities resolved by L3 ER (Phase 3a)',
+    page_count       INT       COMMENT 'Archetype Page proposals mined by L5 (Phase 3c)',
     error            STRING    COMMENT 'Failure detail when state = failed'
 ) USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
 _GENIE_ONT_TAG_GRAPH_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_tag_graph (
-    workspace_id      STRING     COMMENT 'Owning workspace; (workspace_id, tag_key) is the derived PK',
+    metastore_id      STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, tag_key) is the derived PK',
+    workspace_id      STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     tag_key           STRING     COMMENT 'Governed tag key',
     allowed_values    ARRAY<STRING> COMMENT 'Allowed values (policy), if any',
     assignment_count  INT        COMMENT 'In-scope assignments',
@@ -54,7 +57,8 @@ TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
 _GENIE_ONT_TAXONOMY_SNAPSHOT_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_taxonomy_snapshot (
-    workspace_id  STRING     COMMENT 'Derived PK — one serialized tree per workspace',
+    metastore_id  STRING     COMMENT 'Derived PK (MV-D49) — one serialized tree per metastore',
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     tree          STRING     COMMENT 'JSON: the OntologyTaxonomy payload (Phase-1 contract)',
     run_id        STRING     COMMENT 'FK to genie_ont_runs.run_id',
     as_of         TIMESTAMP  COMMENT 'Materialization time'
@@ -65,8 +69,9 @@ TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
 _GENIE_ONT_DOMAINS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_domains (
-    domain_id     STRING     COMMENT 'Derived id (sug_<fingerprint>); PK with workspace_id',
-    workspace_id  STRING,
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, domain_id) is the derived PK',
+    domain_id     STRING     COMMENT 'Derived id (sug_<fingerprint>); PK with metastore_id',
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     parent_id     STRING     COMMENT 'NULL = domain; set = sub-domain (self-ref to domain_id)',
     name          STRING,
     description   STRING,
@@ -82,10 +87,11 @@ TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
 _GENIE_ONT_MEMBERS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_members (
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, domain_id, asset_fqn) is the derived PK',
     domain_id     STRING     COMMENT 'FK -> genie_ont_domains.domain_id',
-    asset_fqn     STRING     COMMENT '(domain_id, asset_fqn) is the derived PK',
+    asset_fqn     STRING     COMMENT '(metastore_id, domain_id, asset_fqn) is the derived PK',
     asset_type    STRING     COMMENT 'table | metric_view | dashboard | genie_agent',
-    workspace_id  STRING,
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     run_id        STRING,
     as_of         TIMESTAMP
 ) USING DELTA
@@ -93,8 +99,9 @@ TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
 _GENIE_ONT_PAGES_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_pages (
-    page_id       STRING     COMMENT 'Derived id; PK with workspace_id',
-    workspace_id  STRING,
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, page_id) is the derived PK',
+    page_id       STRING     COMMENT 'Derived id; PK with metastore_id',
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     domain_id     STRING     COMMENT 'The sub-domain this Page elevates a concept for',
     archetype     STRING     COMMENT 'Routing | Disambiguation | Guardrail | Taxonomy',
     title         STRING,
@@ -114,9 +121,10 @@ TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 # proposal is never re-surfaced (MV-D26). Empty until Phase 3.
 _GENIE_ONT_CONSENTS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_consents (
-    workspace_id  STRING,
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, proposal_kind, proposal_id) is the PK',
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     proposal_kind STRING     COMMENT 'domain | member | page',
-    proposal_id   STRING     COMMENT '(workspace_id, proposal_kind, proposal_id) is the PK',
+    proposal_id   STRING     COMMENT '(metastore_id, proposal_kind, proposal_id) is the PK',
     state         STRING     COMMENT 'applied',
     decided_by    STRING     COMMENT 'Consenting user email (OBO)',
     decided_at    TIMESTAMP
@@ -125,9 +133,10 @@ TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
 _GENIE_ONT_SUPPRESSIONS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_suppressions (
-    workspace_id  STRING,
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, proposal_kind, proposal_id) is the PK',
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     proposal_kind STRING     COMMENT 'domain | member | page',
-    proposal_id   STRING     COMMENT '(workspace_id, proposal_kind, proposal_id) is the PK',
+    proposal_id   STRING     COMMENT '(metastore_id, proposal_kind, proposal_id) is the PK',
     reason        STRING     COMMENT 'Optional dismissal note',
     dismissed_by  STRING,
     dismissed_at  TIMESTAMP
@@ -135,13 +144,14 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_suppressions (
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
 # Identity map (canonical entity -> members) — NEW in 17d (Phase 3a). One row per
-# (workspace_id, canonical_id, member_ref): the ER output that L4 clustering (17e)
+# (metastore_id, canonical_id, member_ref): the ER output that L4 clustering (17e)
 # forms communities over. Written idempotently by the materializer.
 _GENIE_ONT_IDENTITY_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_identity (
-    workspace_id  STRING     COMMENT 'Owning workspace',
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, canonical_id, member_ref) is the derived PK',
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
     canonical_id  STRING     COMMENT 'Derived id (dedupe_<fingerprint of sorted members>)',
-    member_ref    STRING     COMMENT '(workspace_id, canonical_id, member_ref) is the derived PK',
+    member_ref    STRING     COMMENT '(metastore_id, canonical_id, member_ref) is the derived PK',
     member_kind   STRING     COMMENT 'tag | measure | metric_view | agent | page_name',
     verdict       STRING     COMMENT 'merge | reject | escalate | distinct',
     method        STRING     COMMENT 'exact | string | embedding | llm',
@@ -175,10 +185,18 @@ PROPOSAL_TABLES: tuple[str, ...] = (
     TABLE_ONT_MEMBERS,
 )
 
-# Tables still created EMPTY and NEVER written in this phase (Page miners = 17f;
-# consent/suppression ledger = 17g). The firewall test asserts these stay empty.
+# Page proposal table — WRITTEN starting Phase 3c (17f): the L5 miners MERGE
+# canonical-concept-anchored, corroboration-gated archetype Page proposals here
+# (metastore-scoped, MV-D49). It left PHASE3_TABLES when 17f began populating it.
+TABLE_ONT_PAGES = "genie_ont_pages"
+
+PAGE_TABLES: tuple[str, ...] = (
+    TABLE_ONT_PAGES,
+)
+
+# Tables still created EMPTY and NEVER written in this phase (consent/suppression
+# ledger = 17g). The firewall test asserts these stay empty.
 PHASE3_TABLES: tuple[str, ...] = (
-    "genie_ont_pages",
     "genie_ont_consents",
     "genie_ont_suppressions",
 )
@@ -215,21 +233,30 @@ def build_snapshot_merge_sql(
     source_view: str,
     key_cols: list[str],
     update_cols: list[str],
-    workspace_id: str,
+    metastore_id: str,
+    delete_unmatched: bool = True,
 ) -> str:
-    """Build the idempotent MERGE for a snapshot table (§7.2).
+    """Build the idempotent MERGE for a snapshot table (§7.2, re-grained MV-D49).
 
-    Update matched, insert new, and delete rows of THIS workspace that are no
-    longer in the source (``WHEN NOT MATCHED BY SOURCE`` scoped to
-    ``workspace_id`` so a tag that disappeared is removed without touching other
-    workspaces). A re-run therefore yields the same rows, never duplicates.
+    Update matched, insert new, and (when ``delete_unmatched``) delete rows of THIS
+    metastore that are no longer in the source (``WHEN NOT MATCHED BY SOURCE`` scoped
+    to ``metastore_id`` so a tag that disappeared is removed without touching other
+    metastores). A re-run therefore yields the same rows, never duplicates; a row
+    written by a different metastore is never deleted by this run. ``workspace_id``
+    rides along as provenance and is never part of the key or the delete predicate.
+
+    ``delete_unmatched=False`` makes the MERGE **upsert-only** (no source-diff delete).
+    The run ledger (``genie_ont_runs``) needs this: its key is ``run_id``, which is
+    unique per run, so a source-diff delete would wipe every *prior* run's header —
+    the opposite of a ledger. Snapshot/proposal tables keep the default (True) because
+    their keys are stable across runs, so the delete correctly prunes stale entities.
     """
     target = f"{catalog}.{schema}.{table}"
     on = " AND ".join(f"t.{c} = s.{c}" for c in key_cols)
     insert_cols = key_cols + [c for c in update_cols if c not in key_cols]
     insert_names = ", ".join(insert_cols)
     insert_vals = ", ".join(f"s.{c}" for c in insert_cols)
-    ws = workspace_id.replace("'", "''")
+    ms = metastore_id.replace("'", "''")
     clauses = [
         f"MERGE INTO {target} AS t",
         f"USING {source_view} AS s",
@@ -239,5 +266,6 @@ def build_snapshot_merge_sql(
         set_clause = ", ".join(f"t.{c} = s.{c}" for c in update_cols)
         clauses.append(f"WHEN MATCHED THEN UPDATE SET {set_clause}")
     clauses.append(f"WHEN NOT MATCHED THEN INSERT ({insert_names}) VALUES ({insert_vals})")
-    clauses.append(f"WHEN NOT MATCHED BY SOURCE AND t.workspace_id = '{ws}' THEN DELETE")
+    if delete_unmatched:
+        clauses.append(f"WHEN NOT MATCHED BY SOURCE AND t.metastore_id = '{ms}' THEN DELETE")
     return "\n".join(clauses)
