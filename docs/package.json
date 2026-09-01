@@ -24,7 +24,7 @@
     "docusaurus-lunr-search": "3.6.0",
     "docusaurus-plugin-image-zoom": "3.0.1",
     "prism-react-renderer": "2.4.1",
-    "react": "19.2.6",
+    "react": "19.2.8",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
@@ -32,7 +32,7 @@
     "@docusaurus/tsconfig": "3.10.1",
     "@docusaurus/types": "3.10.1",
     "@tailwindcss/typography": "0.5.19",
-    "@types/react": "19.2.15",
+    "@types/react": "19.2.18",
     "autoprefixer": "10.5.0",
     "postcss": "8.5.15",
     "tailwindcss": "3.4.19",
