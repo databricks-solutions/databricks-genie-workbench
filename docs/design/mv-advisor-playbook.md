@@ -69,7 +69,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D60 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D62 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -422,7 +422,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D60)
+## Decisions register (MV-D1–MV-D62)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. MV-D33 (the semantic-model graph, reviewer-approved directly) is decided at Prompt 12e. MV-D34 (create-at-approval) and MV-D35 (facts lead, score ranks) were reviewer-approved at the THIRD smoke review after a process autopsy found three waves of display patches had never owned the acceptance journey end-to-end — both are implemented at Prompt 15.8, and the autopsy's process fix (the fidelity gate) is now a rules-file discipline. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -779,6 +779,10 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D60 — Identity is MAPPED, not MERGED, across bounded contexts (PROPOSED — owner directive; the same real-world noun legitimately differs by context — customer vs party vs subscriber — so over-merging destroys meaning).** `er.py` continues to merge exact/near-duplicate tags WITHIN a context but records cross-context correspondences (`same-as` / `role-of` / `related`) rather than collapsing them; cross-context homonyms become `[Disambiguation]` Pages (MV-D55). No change to the canonical-id scheme. Grain unchanged (MV-D49). Build spec §5.4.
 
+**MV-D61 — Structural edge hygiene: reference codes and generic ids are not join keys; cross-schema shared columns are bridges, not domain keys (PROPOSED — owner directive; grounded in the Stage-3.2 Step-0 probe, which showed the diffuse maintenance hairball is fused by `_code` reference/enum columns and generic `_id`s spanning 3–9 schemas under the ≤15-table cap, plus infra/pipeline schemas that are not business domains at all).** The `shared_join_column` proxy (`schema_signals.py`) (1) drops `_code` from the join-suffix default (`("_id","_key")` — configurable), (2) gains a per-column **schema-span cap** (skip a proxy column touching more than `domain_join_col_max_schemas`=2 schemas), (3) gains a generic-name denylist, and (4) is preceded by a **non-business schema denylist** (`domain_schema_denylist`, shipped default `["information_schema"]`, per-enterprise per MV-D57) applied to all row inputs before edges are built. Declared FKs (`fk_edges`) are EXEMPT — decisive and explicit. Absorb-relaxation (option a) and finer-γ component split (option c) were **declined** (over-merge / redundant-with-Stage-2). Grain unchanged (MV-D49); no new dependency (MV-D45). Build spec: `ontology-curation-redesign-stage3.2-build.md` §1–§2.1/§3.
+
+**MV-D62 — Diffuseness gate is a presentation safety net for non-curated structural Domains (PROPOSED — owner directive).** `rank._apply_diffuseness_gate` (mirroring `_apply_legitimacy_gate`, curated-exempt per Stage-3.1) keeps but does not surface a **top-level, non-curated, structural** Domain that still spans ≥ `domain_max_diffuse_schemas`=6 schemas with home-concentration < `domain_min_home_concentration`=0.5 (the A.3 hairball was 9/0.32). Additive `evidence.rank` keys only; no new table/route. It is a net, not the fix — MV-D61 is the root cause. Build spec §2.2.
+
 > **Curation-redesign driver status (mirrors the Phase-pair pointers).** The full
 > section-by-section spec is `docs/design/ontology-curation-redesign-build.md`
 > (§5 Stage 1 → §10 harness); each stage has a Goal-Mode launcher. **Stage 1**
@@ -786,12 +790,19 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > (facets no longer surface as Domains; FK/MV/naming drive the airline domains).
 > **Stage 2** (`ontology-curation-redesign-stage2-driver.md`, MV-D54) — **LANDED +
 > deploy-verified** (sub-domains bind from slash sub-tags + `mvm_subdomain` values;
-> Leiden fallback-only). **Stage 3 — LANDED (offline) + deploy-verify pending**
+> Leiden fallback-only). **Stage 3 — LANDED + deploy-verified**
 > (`ontology-curation-redesign-stage3-driver.md`, MV-D56/D57 + the two §7 gates from
 > the Stage-2 live run): legitimacy bar + name-dedup/qualification +
-> curated-tag-absorbs-FK-component + honest confidence + the config surface; committed
-> and offline-green (2642 passed), awaiting the deploy-verify gate (blocked on a
-> transient PyPI/npm proxy outage). **Stage 4 — BUILD-READY**
+> curated-tag-absorbs-FK-component + honest confidence + the config surface. The live
+> gate (§A.3) exposed two curated-gating defects, fixed by **Stage 3.1** (curated Domains
+> exempt from the legitimacy bar; absorb widened to shared-home) — LANDED + deploy-verified
+> (Fix 1 full, Fix 2 partial: one diffuse FK twin still surfaced). **Stage 3.2 —
+> BUILD-READY** (`ontology-curation-redesign-stage3.2-driver.md`, MV-D61/D62, build spec
+> `ontology-curation-redesign-stage3.2-build.md`): dissolve the diffuse cross-schema FK
+> hairball at the root (schema/edge denylist + `_code` drop + per-column schema-span cap,
+> grounded in the Step-0 probe) and add Gate-B as a presentation net; options a (relax
+> absorb) and c (component split) declined with rationale; wheel/job/config only,
+> additive, offline-tested then deploy-gated. **Stage 4 — BUILD-READY**
 > (`ontology-curation-redesign-stage4-driver.md`, MV-D55, build spec §8): the 3c Page
 > engine, broadened — new triggers (table/column comments + recurring Genie-history
 > disambiguations), source-majority attachment, and a per-asset "why"; additive +
