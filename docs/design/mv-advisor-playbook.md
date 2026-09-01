@@ -797,12 +797,15 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > gate (§A.3) exposed two curated-gating defects, fixed by **Stage 3.1** (curated Domains
 > exempt from the legitimacy bar; absorb widened to shared-home) — LANDED + deploy-verified
 > (Fix 1 full, Fix 2 partial: one diffuse FK twin still surfaced). **Stage 3.2 —
-> BUILD-READY** (`ontology-curation-redesign-stage3.2-driver.md`, MV-D61/D62, build spec
-> `ontology-curation-redesign-stage3.2-build.md`): dissolve the diffuse cross-schema FK
-> hairball at the root (schema/edge denylist + `_code` drop + per-column schema-span cap,
-> grounded in the Step-0 probe) and add Gate-B as a presentation net; options a (relax
-> absorb) and c (component split) declined with rationale; wheel/job/config only,
-> additive, offline-tested then deploy-gated. **Stage 4 — BUILD-READY**
+> LANDED + deploy-verified** (`ontology-curation-redesign-stage3.2-driver.md`, MV-D61/D62,
+> build spec `ontology-curation-redesign-stage3.2-build.md`, commit `e365bcaf`): dissolved
+> the diffuse cross-schema FK hairball at the root (schema/edge denylist + `_code` drop +
+> per-column schema-span cap, grounded in the Step-0 probe) and added Gate-B as a
+> presentation net; options a (relax absorb) and c (component split) declined with
+> rationale. Live gate (build §A.4): the maintenance twin is gone (top-level Domains
+> 61→12), the curated maintenance Domain absorbed its FK as corroboration (closing §A.3
+> Fix 2), the curated-3 still surface, and Gate-B's curated-exemption held; root cause did
+> the work (`rank.diffuse=false` everywhere). **Stage 4 — BUILD-READY**
 > (`ontology-curation-redesign-stage4-driver.md`, MV-D55, build spec §8): the 3c Page
 > engine, broadened — new triggers (table/column comments + recurring Genie-history
 > disambiguations), source-majority attachment, and a per-asset "why"; additive +

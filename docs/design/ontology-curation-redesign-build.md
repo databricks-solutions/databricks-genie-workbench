@@ -394,6 +394,43 @@ the legitimacy bar must not suppress curated governed-tag Domains — that is a 
 bug, tracked as **Stage-3.1** (small `rank.py` + `cluster.py` wheel patch; offline-tested,
 then deploy-verified via the now-fast offline path). Independent of Stage 4 (Pages).
 
+### A.4 — Stage-3.2 live verification (2026-09-01, deployed app)
+
+`./scripts/deploy.sh --update` (offline path — `SKIP_FRONTEND_BUILD=1 UV_OFFLINE=1`, app
+RUNNING; commit `e365bcaf`) → `ontology_materialize` run `901760762662552`, `run_as` =
+the user (MV-D50), scoped to `catalog_allowlist=["serverless_stable_6t92c3_catalog"]`
+**with** `domain_schema_denylist` set to the estate's infra/demo schemas (`migration`,
+`genie_space_optimizer`, `cost_attribution`, `metadata_results`,
+`prashanth_wanderbricks_{bronze,silver,gold}`, `bakehouse`, `e2e_*`, `ebm_demo`,
+`ed_azure_costs`, `exception_management_schema`, `master`, `northpeak`, `digital`,
+`default`, `sales_reports`) → **SUCCEEDED**. Every §7 / Stage-3.2-spec acceptance held:
+
+- **Diffuse FK hairball dissolved at the root (MV-D61).** `Airline Demo Mvm Maintenance`
+  no longer exists as a standalone Domain — the schema denylist stripped its infra mass
+  and the `_code` drop + per-column schema-span cap removed the cross-schema bridges, so
+  the component collapsed. **Top-level Domains dropped 61 → 12.**
+- **Fix 2 completed (was partial in §A.3).** The curated `Alaska Airlines Maintenance and
+  Engineering` **absorbed** the FK component as
+  `corroborating=["grouped by foreign key / shared join column"]` — one row, curated wins
+  identity, FK is now corroboration.
+- **Curated-3 regression guard holds.** `Alaska Airlines Commercial` / `IFEC` /
+  `Maintenance and Engineering` all surface (plus `Operations` as a `reassign`).
+- **Curated-exemption validated live (MV-D62).** `Commercial` (6 schemas / 0.38 home) and
+  `Operations` (7 / 0.44) exceed Gate-B's diffuse thresholds yet correctly surface because
+  they are curated — the exemption works as designed. Non-curated `create` residue (Dev
+  Airline Demo Bronze/Silver, Shop Reports Silver Dev, Skyloyalty Dev ×4) is gated by the
+  legitimacy bar (`surfaced=false`).
+- **Root cause did the work; Gate-B was the (unused) net.** `rank.diffuse=false` on every
+  Domain — the denylist dissolved the hairball before Gate-B needed to fire.
+
+**Honest caveat:** because this estate's genuine structure *is* the curated Alaska
+taxonomy, all four surfaced Domains are curated — so the live run did not exercise a
+*non-curated* clean-surface or a live Gate-B firing. Those paths are covered by the
+offline tests (`is_diffuse` boundaries + a non-curated 7-schema/0.3 Domain → gated).
+
+**Verdict:** Stage-3.2 is **LANDED + deploy-verified**. The maintenance twin defect from
+§A.3 is fully closed; the curation redesign's Domain/Sub-Domain track is complete.
+
 ## Appendix B — Skipped-refresh banner (independent follow-up)
 Surface a distinct `skipped` refresh state (empty-allowlist run, per the materializer
 guard) with plain messaging and a Settings deep link. Small and decoupled — tracked
