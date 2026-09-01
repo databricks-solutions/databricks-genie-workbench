@@ -66,6 +66,17 @@ dbutils.widgets.text("domain_facet_denylist", "[]")
 dbutils.widgets.text("domain_min_tables", "3")
 dbutils.widgets.text("domain_min_schemas", "2")
 dbutils.widgets.text("domain_require_connection", "true")
+# Stage 3.2 edge hygiene + Gate-B (MV-D61/62) — job_parameters with in-code defaults so
+# a param-less run keeps today's behavior except the two principled cuts (spec §3).
+dbutils.widgets.text("domain_schema_denylist", "[\"information_schema\"]")
+dbutils.widgets.text("domain_join_col_suffixes", "[\"_id\", \"_key\"]")
+dbutils.widgets.text("domain_join_col_max_schemas", "2")
+dbutils.widgets.text(
+    "domain_join_col_denylist",
+    "[\"id\", \"user_id\", \"workspace_id\", \"category_id\", \"tenant_id\", \"account_id\"]",
+)
+dbutils.widgets.text("domain_max_diffuse_schemas", "6")
+dbutils.widgets.text("domain_min_home_concentration", "0.5")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -92,6 +103,40 @@ try:
 except (TypeError, ValueError):
     domain_min_schemas = 2
 domain_require_connection = (dbutils.widgets.get("domain_require_connection").strip().lower() or "true") != "false"
+
+# Stage 3.2 edge hygiene + Gate-B (MV-D61/62), each parsed defensively → in-code default
+# (MV-D43). A param-less run still applies the shipped default cuts (spec §3).
+from genie_space_optimizer.ontology import schema_signals as _ss  # noqa: E402
+
+
+def _parse_str_list(name: str, default: list[str]) -> list[str]:
+    try:
+        parsed = [str(c).strip() for c in json.loads(dbutils.widgets.get(name) or "[]") if str(c).strip()]
+    except (TypeError, ValueError):
+        return list(default)
+    return parsed
+
+
+def _parse_int(name: str, default: int) -> int:
+    try:
+        return int(dbutils.widgets.get(name).strip() or str(default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_float(name: str, default: float) -> float:
+    try:
+        return float(dbutils.widgets.get(name).strip() or str(default))
+    except (TypeError, ValueError):
+        return default
+
+
+schema_denylist = _parse_str_list("domain_schema_denylist", ["information_schema"])
+join_col_suffixes = tuple(_parse_str_list("domain_join_col_suffixes", list(_ss.JOIN_COLUMN_SUFFIXES))) or _ss.JOIN_COLUMN_SUFFIXES
+join_col_max_schemas = _parse_int("domain_join_col_max_schemas", _ss.MAX_SCHEMAS_PER_SHARED_COLUMN)
+join_col_denylist = frozenset(_parse_str_list("domain_join_col_denylist", list(_ss.GENERIC_JOIN_COLUMN_DENYLIST)))
+max_diffuse_schemas = _parse_int("domain_max_diffuse_schemas", 6)
+min_home_concentration = _parse_float("domain_min_home_concentration", 0.5)
 
 
 def _resolve_metastore_id() -> str:
@@ -144,7 +189,30 @@ def _in_list(allowlist: list[str]) -> str:
 
 
 class SparkSystemTableReader:
-    """SP/Spark reads of the same system tables Phase 1 reads live (allowlist-scoped)."""
+    """SP/Spark reads of the same system tables Phase 1 reads live (allowlist-scoped).
+
+    The Stage-3.2 edge-hygiene knobs (MV-D61) are held on the instance: the non-business
+    ``schema_denylist`` is applied to EVERY row input before any edge is built, and the
+    proxy join knobs (suffixes / span cap / name denylist) thread into
+    ``schema_signals.join_key_edges`` (a declared FK is never span-capped)."""
+
+    def __init__(
+        self,
+        *,
+        schema_denylist: list[str] | None = None,
+        join_col_suffixes: tuple[str, ...] = None,
+        join_col_max_schemas: int = None,
+        join_col_denylist: frozenset[str] = None,
+    ) -> None:
+        from genie_space_optimizer.ontology import schema_signals as ss
+        self._schema_denylist = list(schema_denylist or ["information_schema"])
+        self._join_suffixes = tuple(join_col_suffixes) if join_col_suffixes else ss.JOIN_COLUMN_SUFFIXES
+        self._join_max_schemas = (
+            int(join_col_max_schemas) if join_col_max_schemas is not None else ss.MAX_SCHEMAS_PER_SHARED_COLUMN
+        )
+        self._join_name_denylist = (
+            frozenset(join_col_denylist) if join_col_denylist is not None else ss.GENERIC_JOIN_COLUMN_DENYLIST
+        )
 
     def governed_tags(self) -> list[dict[str, Any]]:
         try:
@@ -250,7 +318,18 @@ class SparkSystemTableReader:
         cols = self._per_catalog(
             allowlist, "columns", "table_catalog, table_schema, table_name, column_name", "columns",
         )
-        return schema_signals.join_key_edges(rc, kcu, ccu, cols)
+        # MV-D61: drop non-business schemas from EVERY row input BEFORE any edge is built
+        # (spec §2.1.1), then thread the proxy knobs (fk_edges is never span-capped).
+        dl = self._schema_denylist
+        return schema_signals.join_key_edges(
+            schema_signals.filter_denylisted_schemas(rc, denylist=dl),
+            schema_signals.filter_denylisted_schemas(kcu, denylist=dl),
+            schema_signals.filter_denylisted_schemas(ccu, denylist=dl),
+            schema_signals.filter_denylisted_schemas(cols, denylist=dl),
+            join_suffixes=self._join_suffixes,
+            max_schemas=self._join_max_schemas,
+            name_denylist=self._join_name_denylist,
+        )
 
     def mv_membership(self, allowlist: list[str]) -> dict[str, list[str]]:
         from genie_space_optimizer.ontology import schema_signals
@@ -266,7 +345,26 @@ class SparkSystemTableReader:
         except Exception as e:  # noqa: BLE001 — a failed MV-YAML read yields no membership
             _log("mv_membership read skipped", error=str(e))
             return {}
-        return schema_signals.mv_membership_map(yamls)
+        mapped = schema_signals.mv_membership_map(yamls)
+        dl = self._schema_denylist
+        if not dl:
+            return mapped
+
+        def _ok(fqn: str) -> bool:
+            parts = str(fqn).split(".")
+            row = {"table_catalog": parts[0] if parts else None,
+                   "table_schema": parts[1] if len(parts) > 1 else None}
+            return bool(schema_signals.filter_denylisted_schemas([row], denylist=dl))
+
+        # MV-D61: drop an MV (or a source) that lives in a denylisted schema.
+        out: dict[str, list[str]] = {}
+        for mv_fqn, sources in mapped.items():
+            if not _ok(mv_fqn):
+                continue
+            kept = [s for s in sources if _ok(s)]
+            if kept:
+                out[mv_fqn] = kept
+        return out
 
     def schema_affinity(self, allowlist: list[str]) -> dict[str, list[str]]:
         if not allowlist:
@@ -278,6 +376,8 @@ class SparkSystemTableReader:
             f"WHERE table_catalog IN ({cats}) AND table_type IN ('MANAGED', 'EXTERNAL', 'MANAGED_SHALLOW_CLONE')",
             "schema_affinity",
         )
+        # MV-D61: a denylisted schema contributes no shared-schema affinity either.
+        rows = schema_signals.filter_denylisted_schemas(rows, denylist=self._schema_denylist)
         return schema_signals.schema_affinity_map(rows)
 
     # ── Phase 3c (17f) L5 Page-miner inputs — best-effort, degrade to [] ─────
@@ -367,7 +467,12 @@ except Exception as _e:  # noqa: BLE001 — degrade to string-only ER
 
 writer = materialize.SparkSnapshotWriter(spark, catalog, schema)
 run = materialize.run_materialize(
-    SparkSystemTableReader(),
+    SparkSystemTableReader(
+        schema_denylist=schema_denylist,
+        join_col_suffixes=join_col_suffixes,
+        join_col_max_schemas=join_col_max_schemas,
+        join_col_denylist=join_col_denylist,
+    ),
     writer,
     metastore_id=metastore_id,
     workspace_id=workspace_id,
@@ -388,6 +493,9 @@ run = materialize.run_materialize(
     domain_min_tables=domain_min_tables,
     domain_min_schemas=domain_min_schemas,
     domain_require_connection=domain_require_connection,
+    # Stage 3.2 Gate-B (MV-D62) — the diffuseness presentation net (spec §2.2/§3).
+    domain_max_diffuse_schemas=max_diffuse_schemas,
+    domain_min_home_concentration=min_home_concentration,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))

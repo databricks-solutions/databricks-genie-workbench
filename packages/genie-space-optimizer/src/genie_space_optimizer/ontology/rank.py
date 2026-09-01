@@ -277,6 +277,40 @@ def _apply_legitimacy_gate(
         evidence["surfaced"] = False
 
 
+def _apply_diffuseness_gate(
+    row: dict[str, Any], evidence: dict[str, Any], members: Sequence[str], rank: dict[str, Any],
+    *, max_schemas: int, min_home_concentration: float,
+) -> None:
+    """Gate-B (MV-D62), applied to a top-level structural Domain in place: a diffuse
+    cross-schema hairball is KEPT but ``surfaced=false`` with a "split or attach" hint,
+    never a standalone Domain — the last-resort presentation net (spec §2.2). Runs ONLY
+    on a top-level, non-curated Domain whose origin is STRUCTURAL (``tag_decision ==
+    'create'`` — an FK-component / community / shared-schema grouping); a curated
+    governed-tag Domain (a human-asserted bounded context, MV-D53 #1) and a governed-tag
+    REUSE Domain are never diffuse-gated, and sub-domains / reassign / pages are skipped
+    by the ``kind == 'domain'`` guard at the call site (exactly like the legitimacy
+    bar). Records the verdict on ``rank`` so the run report + serve layer can read it."""
+    if _is_curated_domain(evidence):
+        return
+    if str(row.get("tag_decision") or "") != "create":
+        return
+    uniq = {str(m) for m in members}
+    if not uniq:
+        return
+    schemas = [_schema_of(m) for m in uniq]
+    n_schemas = len(set(schemas))
+    home = max(schemas.count(s) for s in set(schemas))
+    home_concentration = home / len(uniq)
+    diffuse, reason = transforms.is_diffuse(
+        n_schemas, home_concentration,
+        max_schemas=max_schemas, min_home_concentration=min_home_concentration,
+    )
+    rank["diffuse"] = diffuse
+    if diffuse:
+        rank["diffuse_reason"] = reason
+        evidence["surfaced"] = False
+
+
 def _domain_assets(row: dict[str, Any], evidence: Mapping[str, Any], members_by_domain: Mapping[str, Sequence[str]]) -> list[str]:
     """A Domain proposal's scoring assets: its member FQNs (17e membership) plus the
     lineage anchor / shared spine carried in evidence (the load-bearing spine)."""
@@ -301,6 +335,8 @@ def _score_row(
     members: Sequence[str] = (), min_tables: int = transforms.DOMAIN_MIN_TABLES,
     min_schemas: int = transforms.DOMAIN_MIN_SCHEMAS,
     require_connection: bool = transforms.DOMAIN_REQUIRE_CONNECTION,
+    max_diffuse_schemas: int = transforms.DOMAIN_MAX_DIFFUSE_SCHEMAS,
+    min_home_concentration: float = transforms.DOMAIN_MIN_HOME_CONCENTRATION,
 ) -> None:
     """Score + firewall one proposal row in place: set ``score`` and write the rank
     block + a tentative ``surfaced`` flag into ``evidence`` (the ledger pass finalizes
@@ -345,6 +381,12 @@ def _score_row(
             row, evidence, members, rank,
             min_tables=min_tables, min_schemas=min_schemas, require_connection=require_connection,
         )
+        # Gate-B (MV-D62) — the diffuseness net, right AFTER the legitimacy bar: a diffuse
+        # cross-schema structural hairball is kept but not surfaced (spec §2.2).
+        _apply_diffuseness_gate(
+            row, evidence, members, rank,
+            max_schemas=max_diffuse_schemas, min_home_concentration=min_home_concentration,
+        )
     row["evidence"] = json.dumps(evidence, sort_keys=True)
 
 
@@ -358,6 +400,8 @@ def score_proposals(
     min_tables: int = transforms.DOMAIN_MIN_TABLES,
     min_schemas: int = transforms.DOMAIN_MIN_SCHEMAS,
     require_connection: bool = transforms.DOMAIN_REQUIRE_CONNECTION,
+    max_diffuse_schemas: int = transforms.DOMAIN_MAX_DIFFUSE_SCHEMAS,
+    min_home_concentration: float = transforms.DOMAIN_MIN_HOME_CONCENTRATION,
 ) -> None:
     """Score + firewall every Domain / Sub-Domain / Page proposal **in place**.
 
@@ -379,6 +423,7 @@ def score_proposals(
             row, kind=transforms.proposal_kind_of(row), assets=_domain_assets(row, ev, members),
             signals=sig, oracle=oracle, members=members.get(str(row.get("domain_id") or ""), ()),
             min_tables=min_tables, min_schemas=min_schemas, require_connection=require_connection,
+            max_diffuse_schemas=max_diffuse_schemas, min_home_concentration=min_home_concentration,
         )
     for row in page_rows:
         _score_row(row, kind="page", assets=_page_assets(row), signals=sig, oracle=oracle)

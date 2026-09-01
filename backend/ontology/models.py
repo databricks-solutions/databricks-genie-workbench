@@ -122,6 +122,18 @@ DEFAULT_DOMAIN_FACET_DENYLIST: list[str] = [
     "sensitivity", "pii", "quality", "status", "lifecycle",
 ]
 
+# Stage 3.2 edge-hygiene + diffuseness-net defaults (MV-D61/62), shipped conservative
+# and inspectable. Only ``information_schema`` is denylisted by default (always non-
+# business, estate-neutral); the ``_code`` suffix is intentionally absent (a reference/
+# enum, not a join key); the generic-name seed and the diffuseness thresholds mirror the
+# wheel's in-code constants (schema_signals / transforms), lifted here so an enterprise
+# can inspect + extend them per its estate (spec §3).
+DEFAULT_DOMAIN_SCHEMA_DENYLIST: list[str] = ["information_schema"]
+DEFAULT_DOMAIN_JOIN_COL_SUFFIXES: list[str] = ["_id", "_key"]
+DEFAULT_DOMAIN_JOIN_COL_DENYLIST: list[str] = [
+    "id", "user_id", "workspace_id", "category_id", "tenant_id", "account_id",
+]
+
 
 class IndustryAlignment(BaseModel):
     """Industry-reference alignment toggle (MV-D58) — STORED + DORMANT here; §9 is
@@ -145,6 +157,14 @@ class OntologySettings(BaseModel):
     domain_min_tables: int = 3
     domain_min_schemas: int = 2
     domain_require_connection: bool = True
+    # ── Stage 3.2 (MV-D61/62): edge-hygiene + diffuseness net — additive + defaulted,
+    # threaded to the job as params; a param-less run applies the shipped defaults. ──
+    domain_schema_denylist: list[str] = Field(default_factory=lambda: list(DEFAULT_DOMAIN_SCHEMA_DENYLIST))
+    domain_join_col_suffixes: list[str] = Field(default_factory=lambda: list(DEFAULT_DOMAIN_JOIN_COL_SUFFIXES))
+    domain_join_col_max_schemas: int = 2
+    domain_join_col_denylist: list[str] = Field(default_factory=lambda: list(DEFAULT_DOMAIN_JOIN_COL_DENYLIST))
+    domain_max_diffuse_schemas: int = 6
+    domain_min_home_concentration: float = 0.5
     industry_alignment: IndustryAlignment = Field(default_factory=IndustryAlignment)
 
 

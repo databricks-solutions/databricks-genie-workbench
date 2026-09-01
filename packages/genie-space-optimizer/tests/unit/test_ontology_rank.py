@@ -262,6 +262,107 @@ def test_curated_domain_is_exempt_from_legitimacy_bar():
     assert r["surfaced"] is True
 
 
+# ── Stage 3.2: Gate-B diffuseness net (MV-D62) ──────────────────────────────
+
+
+def test_is_diffuse_thresholds_strict():
+    assert transforms.is_diffuse(9, 0.32)[0] is True
+    assert transforms.is_diffuse(3, 0.8)[0] is False       # too few schemas
+    assert transforms.is_diffuse(6, 0.5)[0] is False       # boundary → strict < / >=, not diffuse
+    assert transforms.is_diffuse(6, 0.49)[0] is True
+    assert transforms.is_diffuse(5, 0.1)[0] is False       # 5 < 6 schemas
+    reason = transforms.is_diffuse(9, 0.32)[1]
+    assert "spans 9 schemas" in reason and "home concentration 0.32" in reason
+    assert "split or attach" in reason and "%" not in reason
+
+
+def _diffuse_members():
+    """10 members across 7 distinct catalog.schema, home concentration 0.30 (3/10)."""
+    return (
+        ["c.home.a", "c.home.b", "c.home.c"]
+        + [f"c.s{i}.t" for i in range(2, 7)]
+        + ["c.s7.a", "c.s7.b"]
+    )
+
+
+def test_diffuse_structural_domain_kept_not_surfaced():
+    # A non-curated top-level FK (create) Domain spanning 7 schemas / 0.30 home → KEPT
+    # but not surfaced, with rank.diffuse + a "split or attach" reason (spec §2.2). The
+    # legitimacy bar passes first (10 tables / 7 schemas / FK-connected), so Gate-B is
+    # demonstrably what flips surfaced to false.
+    members = _diffuse_members()
+    row = _domain_row("sug_hairball", evidence={"reason": "grouped by foreign key / shared join column"})
+    rank.score_proposals([row], [], members_by_domain={"sug_hairball": members},
+                         signals=_governed_signals("c.home.a"))
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is True     # clears the legitimacy bar…
+    assert r["rank"]["diffuse"] is True         # …but Gate-B catches the hairball
+    assert r["surfaced"] is False
+    assert "spans 7 schemas" in r["rank"]["diffuse_reason"]
+
+
+def test_curated_domain_is_exempt_from_diffuseness_gate():
+    # The same diffuse shape but a curated governed-tag Domain (reuse) → surfaced (a
+    # human-asserted bounded context is never diffuse-gated, mirroring the legitimacy
+    # exemption).
+    members = _diffuse_members()
+    row = _domain_row("sug_curated_diffuse", tag_decision="reuse", tag_key="Maintenance",
+                      tag_value="Maintenance",
+                      evidence={"reason": "grouped by curated domain tag: Maintenance"})
+    rank.score_proposals([row], [], members_by_domain={"sug_curated_diffuse": members},
+                         signals=_governed_signals("c.home.a"))
+    r = _ev(row)
+    assert "diffuse" not in r["rank"]           # gate never ran
+    assert r["surfaced"] is True
+
+
+def test_governed_tag_reuse_domain_is_exempt_from_diffuseness_gate():
+    # A non-curated governed-tag REUSE Domain (structural restriction: only 'create'
+    # origins are diffuse-gated) is likewise never gated — we do not hide a human's
+    # governed tag even when it happens to span many schemas.
+    members = _diffuse_members()
+    row = _domain_row("sug_reuse_diffuse", tag_decision="reuse", tag_key="Ops", tag_value="Ops",
+                      evidence={"reason": "grouped by foreign key / shared join column"})
+    rank.score_proposals([row], [], members_by_domain={"sug_reuse_diffuse": members},
+                         signals=_governed_signals("c.home.a"))
+    r = _ev(row)
+    assert "diffuse" not in r["rank"]
+    assert r["surfaced"] is True
+
+
+def test_subdomain_is_exempt_from_diffuseness_gate():
+    members = _diffuse_members()
+    row = _domain_row("sug_sub_diffuse", parent_id="sug_parent",
+                      evidence={"reason": "grouped by foreign key"})
+    rank.score_proposals([row], [], members_by_domain={"sug_sub_diffuse": members},
+                         signals=_governed_signals("c.home.a"))
+    r = _ev(row)
+    assert transforms.proposal_kind_of(row) == "subdomain"
+    assert "diffuse" not in r["rank"]           # gate never runs for a sub-domain
+
+
+def test_concentrated_structural_domain_is_not_diffuse_gated():
+    # A 7-schema domain that is home-concentrated (≥ 0.5) is a legitimate broad domain,
+    # not a hairball → diffuse=False, still surfaced.
+    members = ["c.home.a", "c.home.b", "c.home.c", "c.home.d", "c.home.e", "c.home.f"] + \
+              [f"c.s{i}.t" for i in range(2, 8)]  # 6 home + 6 singletons → home 0.5
+    row = _domain_row("sug_broad", evidence={"reason": "grouped by foreign key"})
+    rank.score_proposals([row], [], members_by_domain={"sug_broad": members},
+                         signals=_governed_signals("c.home.a"))
+    r = _ev(row)
+    assert r["rank"]["diffuse"] is False        # 0.5 home is not < 0.5 (strict)
+    assert r["surfaced"] is True
+
+
+def test_diffuseness_thresholds_are_configurable():
+    members = _diffuse_members()  # 7 schemas / 0.30 home
+    # Raising the schema bar above 7 spares the same domain (no longer "too broad").
+    row = _domain_row("sug_cfg", evidence={"reason": "grouped by foreign key"})
+    rank.score_proposals([row], [], members_by_domain={"sug_cfg": members},
+                         signals=_governed_signals("c.home.a"), max_diffuse_schemas=8)
+    assert _ev(row)["rank"]["diffuse"] is False and _ev(row)["surfaced"] is True
+
+
 def test_confidence_band_full_coverage_is_high_no_gap_no_percent():
     b = rank.blend(["c.s.a"], rank.RankSignals(
         usage={"c.s.a": 0.9}, centrality={"c.s.a": 0.8}, governance={"c.s.a": "governed"}))

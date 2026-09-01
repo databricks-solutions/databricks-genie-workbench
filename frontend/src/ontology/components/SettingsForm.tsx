@@ -32,6 +32,20 @@ export function SettingsForm({
   const [minTables, setMinTables] = useState(String(settings.domain_min_tables ?? 3))
   const [minSchemas, setMinSchemas] = useState(String(settings.domain_min_schemas ?? 2))
   const [requireConnection, setRequireConnection] = useState(settings.domain_require_connection ?? true)
+  // Stage 3.2 edge-hygiene + diffuseness net (MV-D61/62) — shipped conservative defaults
+  // when a stored row predates them.
+  const [schemaDenylistText, setSchemaDenylistText] = useState(
+    (settings.domain_schema_denylist ?? ["information_schema"]).join(", "),
+  )
+  const [joinSuffixesText, setJoinSuffixesText] = useState(
+    (settings.domain_join_col_suffixes ?? ["_id", "_key"]).join(", "),
+  )
+  const [joinMaxSchemas, setJoinMaxSchemas] = useState(String(settings.domain_join_col_max_schemas ?? 2))
+  const [joinDenylistText, setJoinDenylistText] = useState(
+    (settings.domain_join_col_denylist ?? ["id", "user_id", "workspace_id", "category_id", "tenant_id", "account_id"]).join(", "),
+  )
+  const [maxDiffuseSchemas, setMaxDiffuseSchemas] = useState(String(settings.domain_max_diffuse_schemas ?? 6))
+  const [minHomeConcentration, setMinHomeConcentration] = useState(String(settings.domain_min_home_concentration ?? 0.5))
   // Industry alignment (MV-D58) is STORED + DORMANT (§9 is Phase 4) — preserved as-is.
   const industryAlignment: IndustryAlignment = settings.industry_alignment ?? {
     enabled: false,
@@ -48,10 +62,12 @@ export function SettingsForm({
       .split(/[,\n]/)
       .map((c) => c.trim())
       .filter(Boolean)
-    const facetDenylist = facetDenylistText
-      .split(/[,\n]/)
-      .map((c) => c.trim())
-      .filter(Boolean)
+    const splitList = (text: string) =>
+      text
+        .split(/[,\n]/)
+        .map((c) => c.trim())
+        .filter(Boolean)
+    const facetDenylist = splitList(facetDenylistText)
     try {
       const next = await saveSettings({
         company_name: company.trim() || null,
@@ -61,6 +77,13 @@ export function SettingsForm({
         domain_min_tables: Number.parseInt(minTables, 10) || 0,
         domain_min_schemas: Number.parseInt(minSchemas, 10) || 0,
         domain_require_connection: requireConnection,
+        // Stage 3.2 edge-hygiene + diffuseness net (MV-D61/62).
+        domain_schema_denylist: splitList(schemaDenylistText),
+        domain_join_col_suffixes: splitList(joinSuffixesText),
+        domain_join_col_max_schemas: Number.parseInt(joinMaxSchemas, 10) || 0,
+        domain_join_col_denylist: splitList(joinDenylistText),
+        domain_max_diffuse_schemas: Number.parseInt(maxDiffuseSchemas, 10) || 0,
+        domain_min_home_concentration: Number.parseFloat(minHomeConcentration) || 0,
         industry_alignment: industryAlignment,
       })
       onSaved(next)
@@ -199,6 +222,112 @@ export function SettingsForm({
             placeholder="data_tier, certification, contains_synthetic"
             onChange={(e) => setFacetDenylistText(e.target.value)}
           />
+        </div>
+      </div>
+
+      {/* ── Stage 3.2: edge hygiene + diffuseness net (MV-D61/62) ── */}
+      <div className="space-y-4 border-t border-default pt-4">
+        <div>
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+            <Database className="h-4 w-4 text-accent" />
+            Non-business schema denylist
+          </p>
+          <p className="mt-0.5 max-w-prose text-xs text-muted">
+            Schemas that are infrastructure / pipeline / demo, not business areas
+            (migration, cost attribution, dev/e2e). Their tables are dropped before
+            grouping, so a real key that only <em>looked</em> cross-schema collapses back
+            to its true home. Exact <code>catalog.schema</code>, a bare schema, or a glob
+            (<code>e2e_*</code>, <code>*_dev</code>). Comma- or newline-separated.
+          </p>
+          <textarea
+            className="mt-2 flex min-h-16 w-full rounded-lg border border-default bg-surface px-4 py-2 text-sm text-primary placeholder:text-muted focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20"
+            value={schemaDenylistText}
+            placeholder="information_schema, migration, e2e_*, *_dev"
+            onChange={(e) => setSchemaDenylistText(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+            <Filter className="h-4 w-4 text-accent" />
+            Join-key proxy
+          </p>
+          <p className="mt-0.5 max-w-prose text-xs text-muted">
+            When no foreign key is declared, tables sharing a join-shaped column are
+            treated as related. Suffixes decide which columns qualify (<code>_code</code>
+            is an enum, not a key — omit it); a proxy column reaching more than the
+            schema cap, or named in the denylist (generic surrogate/audit keys), is
+            skipped so it can&apos;t fuse unrelated areas. Declared foreign keys are never
+            capped.
+          </p>
+          <div className="mt-2 flex flex-wrap items-end gap-4">
+            <label className="text-xs text-secondary">
+              Column suffixes
+              <Input
+                className="mt-1 w-48"
+                value={joinSuffixesText}
+                placeholder="_id, _key"
+                onChange={(e) => setJoinSuffixesText(e.target.value)}
+              />
+            </label>
+            <label className="text-xs text-secondary">
+              Max schemas per column
+              <Input
+                type="number"
+                min={1}
+                className="mt-1 w-24"
+                value={joinMaxSchemas}
+                onChange={(e) => setJoinMaxSchemas(e.target.value)}
+              />
+            </label>
+          </div>
+          <label className="mt-3 block text-xs text-secondary">
+            Generic column-name denylist
+            <textarea
+              className="mt-1 flex min-h-16 w-full rounded-lg border border-default bg-surface px-4 py-2 text-sm text-primary placeholder:text-muted focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20"
+              value={joinDenylistText}
+              placeholder="id, user_id, workspace_id"
+              onChange={(e) => setJoinDenylistText(e.target.value)}
+            />
+          </label>
+        </div>
+
+        <div>
+          <p className="flex items-center gap-1.5 text-sm font-semibold text-primary">
+            <SlidersHorizontal className="h-4 w-4 text-accent" />
+            Diffuseness net
+          </p>
+          <p className="mt-0.5 max-w-prose text-xs text-muted">
+            A last-resort guard so a sprawling cross-schema blob never surfaces as a
+            domain. A domain that spans at least this many schemas <em>and</em> whose
+            largest schema holds less than this fraction of its members is kept but not
+            surfaced, with a &ldquo;split or attach&rdquo; hint. Curated domains are never
+            gated.
+          </p>
+          <div className="mt-2 flex flex-wrap items-end gap-4">
+            <label className="text-xs text-secondary">
+              Max schemas before diffuse
+              <Input
+                type="number"
+                min={1}
+                className="mt-1 w-24"
+                value={maxDiffuseSchemas}
+                onChange={(e) => setMaxDiffuseSchemas(e.target.value)}
+              />
+            </label>
+            <label className="text-xs text-secondary">
+              Min home concentration
+              <Input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                className="mt-1 w-24"
+                value={minHomeConcentration}
+                onChange={(e) => setMinHomeConcentration(e.target.value)}
+              />
+            </label>
+          </div>
         </div>
       </div>
 

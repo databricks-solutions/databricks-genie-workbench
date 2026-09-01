@@ -34,12 +34,16 @@ _PHASE1_FIELDS = {
     "TagCleanup": {"tag_key", "flag", "detail"},
     "TagLens": {"tags", "collisions", "cleanup", "as_of"},
     # OntologySettings is the config surface: it grows additively + defaulted with each
-    # stage (read_identity for OBO-first MV-D50; the Stage-3 curation policy MV-D57).
-    # Every OTHER Phase-1 shape stays byte-identical.
+    # stage (read_identity for OBO-first MV-D50; the Stage-3 curation policy MV-D57; the
+    # Stage-3.2 edge-hygiene + diffuseness net MV-D61/62). Every OTHER Phase-1 shape stays
+    # byte-identical.
     "OntologySettings": {
         "company_name", "catalog_allowlist", "read_identity",
         "domain_facet_denylist", "domain_min_tables", "domain_min_schemas",
         "domain_require_connection", "industry_alignment",
+        "domain_schema_denylist", "domain_join_col_suffixes",
+        "domain_join_col_max_schemas", "domain_join_col_denylist",
+        "domain_max_diffuse_schemas", "domain_min_home_concentration",
     },
 }
 
@@ -182,9 +186,12 @@ def test_trigger_launches_when_idle(monkeypatch):
     assert launched["n"] == 1
     # The job is launched scoped to the metastore (grain), with workspace as provenance.
     assert launched["args"] == ("12345", "ms1", "ws1", ["finance"])
-    # Stage 3 curation policy rides along (MV-D57): the bar + denylist are threaded.
+    # Stage 3 curation policy (MV-D57) + Stage 3.2 edge-hygiene / diffuseness net
+    # (MV-D61/62) ride along: the bar + denylists + span/diffuse thresholds are threaded.
     assert set(launched["policy"]) == {
-        "facet_denylist", "min_tables", "min_schemas", "require_connection"
+        "facet_denylist", "min_tables", "min_schemas", "require_connection",
+        "schema_denylist", "join_col_suffixes", "join_col_max_schemas",
+        "join_col_denylist", "max_diffuse_schemas", "min_home_concentration",
     }
 
 

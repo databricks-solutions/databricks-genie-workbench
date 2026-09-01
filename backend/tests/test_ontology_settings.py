@@ -30,6 +30,13 @@ def fake_store(monkeypatch):
             "domain_min_tables": kw.get("domain_min_tables", 3),
             "domain_min_schemas": kw.get("domain_min_schemas", 2),
             "domain_require_connection": kw.get("domain_require_connection", True),
+            # Stage 3.2 edge-hygiene + diffuseness net (MV-D61/62) — additive, keyword-only.
+            "domain_schema_denylist": kw.get("domain_schema_denylist"),
+            "domain_join_col_suffixes": kw.get("domain_join_col_suffixes"),
+            "domain_join_col_max_schemas": kw.get("domain_join_col_max_schemas", 2),
+            "domain_join_col_denylist": kw.get("domain_join_col_denylist"),
+            "domain_max_diffuse_schemas": kw.get("domain_max_diffuse_schemas", 6),
+            "domain_min_home_concentration": kw.get("domain_min_home_concentration", 0.5),
             "industry_alignment": kw.get("industry_alignment"),
         }
         return store[ws]
@@ -101,6 +108,40 @@ async def test_curation_policy_round_trips_and_old_row_reads_defaults(fake_store
     assert d.domain_require_connection is True
     assert d.domain_facet_denylist  # falls back to the shipped default list
     assert d.industry_alignment.enabled is False
+
+
+async def test_stage32_policy_round_trips_and_old_row_reads_defaults(fake_store):
+    # An explicit Stage-3.2 edge-hygiene + diffuseness policy round-trips (MV-D61/62)…
+    saved = await ont_settings.save_settings(
+        OntologySettings(
+            catalog_allowlist=["airline"],
+            domain_schema_denylist=["migration", " e2e_* ", ""],       # normalized
+            domain_join_col_suffixes=["_id", "_sk"],
+            domain_join_col_max_schemas=3,
+            domain_join_col_denylist=["id", "tenant_id"],
+            domain_max_diffuse_schemas=8,
+            domain_min_home_concentration=0.4,
+        )
+    )
+    assert saved.domain_schema_denylist == ["migration", "e2e_*"]      # de-duped/blank-stripped
+    assert saved.domain_join_col_suffixes == ["_id", "_sk"]
+    assert saved.domain_join_col_max_schemas == 3
+    assert saved.domain_max_diffuse_schemas == 8
+    assert saved.domain_min_home_concentration == 0.4
+    reread = await ont_settings.get_settings()
+    assert reread.domain_join_col_denylist == ["id", "tenant_id"]
+    assert reread.domain_min_home_concentration == 0.4
+
+    # …and an old row missing the Stage-3.2 columns reads the shipped defaults.
+    fake_store["ws1"] = {"company_name": "Acme", "catalog_allowlist": ["finance"]}
+    d = await ont_settings.get_settings()
+    assert d.domain_schema_denylist == ["information_schema"]
+    assert d.domain_join_col_suffixes == ["_id", "_key"]
+    assert d.domain_join_col_max_schemas == 2
+    assert d.domain_join_col_denylist == [
+        "id", "user_id", "workspace_id", "category_id", "tenant_id", "account_id"]
+    assert d.domain_max_diffuse_schemas == 6
+    assert d.domain_min_home_concentration == 0.5
 
 
 def test_settings_router_wire_shape(monkeypatch):

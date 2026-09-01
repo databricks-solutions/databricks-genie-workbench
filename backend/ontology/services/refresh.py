@@ -139,6 +139,12 @@ def _launch(
     job_id: str, *, metastore_id: str, workspace_id: str, allowlist: list[str],
     facet_denylist: list[str] | None = None,
     min_tables: int = 3, min_schemas: int = 2, require_connection: bool = True,
+    schema_denylist: list[str] | None = None,
+    join_col_suffixes: list[str] | None = None,
+    join_col_max_schemas: int = 2,
+    join_col_denylist: list[str] | None = None,
+    max_diffuse_schemas: int = 6,
+    min_home_concentration: float = 0.5,
 ) -> str | None:
     """Trigger the materialize job via run_now. Returns the job run id, or None.
 
@@ -165,6 +171,13 @@ def _launch(
             "domain_min_tables": str(int(min_tables)),
             "domain_min_schemas": str(int(min_schemas)),
             "domain_require_connection": "true" if require_connection else "false",
+            # Stage 3.2 edge-hygiene + diffuseness net (MV-D61/62).
+            "domain_schema_denylist": json.dumps(list(schema_denylist or [])),
+            "domain_join_col_suffixes": json.dumps(list(join_col_suffixes or [])),
+            "domain_join_col_max_schemas": str(int(join_col_max_schemas)),
+            "domain_join_col_denylist": json.dumps(list(join_col_denylist or [])),
+            "domain_max_diffuse_schemas": str(int(max_diffuse_schemas)),
+            "domain_min_home_concentration": str(float(min_home_concentration)),
         },
     )
     return str(getattr(waiter, "run_id", "")) or None
@@ -192,6 +205,12 @@ async def trigger() -> OntologyRefreshStatus:
             facet_denylist=settings.domain_facet_denylist,
             min_tables=settings.domain_min_tables, min_schemas=settings.domain_min_schemas,
             require_connection=settings.domain_require_connection,
+            schema_denylist=settings.domain_schema_denylist,
+            join_col_suffixes=settings.domain_join_col_suffixes,
+            join_col_max_schemas=settings.domain_join_col_max_schemas,
+            join_col_denylist=settings.domain_join_col_denylist,
+            max_diffuse_schemas=settings.domain_max_diffuse_schemas,
+            min_home_concentration=settings.domain_min_home_concentration,
         )
     except Exception as e:  # noqa: BLE001 — surface plainly, never 500 the button
         logger.warning("ontology refresh launch failed: %s", e)

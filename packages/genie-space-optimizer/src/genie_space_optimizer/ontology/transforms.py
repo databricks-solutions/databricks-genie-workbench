@@ -608,6 +608,37 @@ def legitimacy_ok(
     return True, ""
 
 
+# Default diffuseness net (Stage 3.2, MV-D62) — a last-resort presentation gate so the
+# UI never shows a cross-schema hairball even on an estate that has not tuned its
+# schema denylist. Provenance (§A.3): the observed hairball was 9 schemas / 0.32 home
+# concentration, while every real Domain in the estate is ≤ 3 schemas / ≥ 0.7.
+DOMAIN_MAX_DIFFUSE_SCHEMAS = 6
+DOMAIN_MIN_HOME_CONCENTRATION = 0.5
+
+
+def is_diffuse(
+    n_schemas: int,
+    home_concentration: float,
+    *,
+    max_schemas: int = DOMAIN_MAX_DIFFUSE_SCHEMAS,
+    min_home_concentration: float = DOMAIN_MIN_HOME_CONCENTRATION,
+) -> tuple[bool, str]:
+    """Gate-B (MV-D62): is a proposed Domain a diffuse cross-schema hairball? Returns
+    ``(diffuse, reason)`` — ``diffuse`` when ``n_schemas >= max_schemas`` AND
+    ``home_concentration < min_home_concentration`` (strict ``<``, so the boundary
+    ``(6, 0.5)`` is NOT diffuse). ``home_concentration`` is the fraction of members in
+    the single most common ``catalog.schema``; a real bounded context concentrates in a
+    home schema, a hairball smears across many. Mirrors :func:`legitimacy_ok`'s shape —
+    ``reason`` is the plain shortfall (empty when not diffuse). Deterministic; a diffuse
+    Domain is KEPT but not surfaced with a "split or attach" hint (:func:`rank`)."""
+    if n_schemas >= max_schemas and home_concentration < min_home_concentration:
+        return True, (
+            f"too broad — spans {n_schemas} schemas, "
+            f"home concentration {home_concentration:.2f}; split or attach to a specific area"
+        )
+    return False, ""
+
+
 # Readable band words (the opaque tier is retired, MV-D56) + per-factor plain
 # labels / gap hints. Order is stable so the assembled band is deterministic.
 _BAND_LABEL: dict[str, str] = {"high": "High", "medium": "Medium", "low": "Low"}

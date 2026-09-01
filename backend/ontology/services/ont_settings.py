@@ -23,6 +23,9 @@ import logging
 
 from backend.ontology.models import (
     DEFAULT_DOMAIN_FACET_DENYLIST,
+    DEFAULT_DOMAIN_JOIN_COL_DENYLIST,
+    DEFAULT_DOMAIN_JOIN_COL_SUFFIXES,
+    DEFAULT_DOMAIN_SCHEMA_DENYLIST,
     IndustryAlignment,
     OntologySettings,
 )
@@ -107,6 +110,9 @@ async def get_settings() -> OntologySettings:
     if not row:
         return OntologySettings()
     denylist = row.get("domain_facet_denylist")
+    schema_denylist = row.get("domain_schema_denylist")
+    join_suffixes = row.get("domain_join_col_suffixes")
+    join_denylist = row.get("domain_join_col_denylist")
     return OntologySettings(
         company_name=row.get("company_name"),
         catalog_allowlist=list(row.get("catalog_allowlist") or []),
@@ -120,6 +126,27 @@ async def get_settings() -> OntologySettings:
             bool(row["domain_require_connection"])
             if row.get("domain_require_connection") is not None else True
         ),
+        # Stage 3.2 (MV-D61/62) — additive/defaulted: an old row (missing columns / NULL)
+        # falls through to the shipped conservative defaults.
+        domain_schema_denylist=(
+            list(schema_denylist) if schema_denylist is not None else list(DEFAULT_DOMAIN_SCHEMA_DENYLIST)
+        ),
+        domain_join_col_suffixes=(
+            list(join_suffixes) if join_suffixes is not None else list(DEFAULT_DOMAIN_JOIN_COL_SUFFIXES)
+        ),
+        domain_join_col_max_schemas=(
+            int(row["domain_join_col_max_schemas"]) if row.get("domain_join_col_max_schemas") is not None else 2
+        ),
+        domain_join_col_denylist=(
+            list(join_denylist) if join_denylist is not None else list(DEFAULT_DOMAIN_JOIN_COL_DENYLIST)
+        ),
+        domain_max_diffuse_schemas=(
+            int(row["domain_max_diffuse_schemas"]) if row.get("domain_max_diffuse_schemas") is not None else 6
+        ),
+        domain_min_home_concentration=(
+            float(row["domain_min_home_concentration"])
+            if row.get("domain_min_home_concentration") is not None else 0.5
+        ),
         industry_alignment=_industry_alignment(row.get("industry_alignment")),
     )
 
@@ -131,6 +158,10 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
     allowlist = _norm_str_list(settings.catalog_allowlist)
     read_identity = settings.read_identity or "obo"
     facet_denylist = _norm_str_list(settings.domain_facet_denylist)
+    # Stage 3.2 (MV-D61/62): normalize the list knobs (blank-strip / dedupe / keep order).
+    schema_denylist = _norm_str_list(settings.domain_schema_denylist)
+    join_suffixes = _norm_str_list(settings.domain_join_col_suffixes)
+    join_denylist = _norm_str_list(settings.domain_join_col_denylist)
     industry = settings.industry_alignment or IndustryAlignment()
     await lakebase.ont_upsert_settings(
         _workspace_id(), company, allowlist, read_identity,
@@ -138,6 +169,12 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
         domain_min_tables=int(settings.domain_min_tables),
         domain_min_schemas=int(settings.domain_min_schemas),
         domain_require_connection=bool(settings.domain_require_connection),
+        domain_schema_denylist=schema_denylist,
+        domain_join_col_suffixes=join_suffixes,
+        domain_join_col_max_schemas=int(settings.domain_join_col_max_schemas),
+        domain_join_col_denylist=join_denylist,
+        domain_max_diffuse_schemas=int(settings.domain_max_diffuse_schemas),
+        domain_min_home_concentration=float(settings.domain_min_home_concentration),
         industry_alignment=industry.model_dump(mode="json"),
     )
     # NOTE: we deliberately do NOT auto-grant BROWSE to the app SP here. The app's
@@ -151,5 +188,11 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
         domain_min_tables=int(settings.domain_min_tables),
         domain_min_schemas=int(settings.domain_min_schemas),
         domain_require_connection=bool(settings.domain_require_connection),
+        domain_schema_denylist=schema_denylist,
+        domain_join_col_suffixes=join_suffixes,
+        domain_join_col_max_schemas=int(settings.domain_join_col_max_schemas),
+        domain_join_col_denylist=join_denylist,
+        domain_max_diffuse_schemas=int(settings.domain_max_diffuse_schemas),
+        domain_min_home_concentration=float(settings.domain_min_home_concentration),
         industry_alignment=industry,
     )

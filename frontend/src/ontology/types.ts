@@ -117,6 +117,13 @@ export interface OntologySettings {
   domain_min_tables?: number
   domain_min_schemas?: number
   domain_require_connection?: boolean
+  // Stage 3.2 (MV-D61/62): edge-hygiene + diffuseness net — additive + defaulted.
+  domain_schema_denylist?: string[]
+  domain_join_col_suffixes?: string[]
+  domain_join_col_max_schemas?: number
+  domain_join_col_denylist?: string[]
+  domain_max_diffuse_schemas?: number
+  domain_min_home_concentration?: number
   industry_alignment?: IndustryAlignment
 }
 

@@ -344,6 +344,36 @@ async def _ensure_schema():
                 "ADD COLUMN IF NOT EXISTS industry_alignment JSONB NOT NULL "
                 "DEFAULT '{\"enabled\": false, \"reference_model\": null}'"
             )
+            # Stage 3.2 edge-hygiene + diffuseness net (MV-D61/62): additive + defaulted,
+            # one ADD COLUMN IF NOT EXISTS each (the MV-D50 pattern), so an old row reads
+            # the shipped conservative defaults. Threaded to the job as params.
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_schema_denylist JSONB NOT NULL "
+                "DEFAULT '[\"information_schema\"]'"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_join_col_suffixes JSONB NOT NULL "
+                "DEFAULT '[\"_id\", \"_key\"]'"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_join_col_max_schemas INT NOT NULL DEFAULT 2"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_join_col_denylist JSONB NOT NULL "
+                "DEFAULT '[\"id\", \"user_id\", \"workspace_id\", \"category_id\", \"tenant_id\", \"account_id\"]'"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_max_diffuse_schemas INT NOT NULL DEFAULT 6"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS domain_min_home_concentration DOUBLE PRECISION NOT NULL DEFAULT 0.5"
+            )
         _lakebase_available = True
         logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables + 1 ontology table)")
     except Exception as e:
@@ -1106,7 +1136,10 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
             row = await conn.fetchrow(
                 "SELECT company_name, catalog_allowlist, read_identity, "
                 "domain_facet_denylist, domain_min_tables, domain_min_schemas, "
-                "domain_require_connection, industry_alignment, updated_at "
+                "domain_require_connection, domain_schema_denylist, "
+                "domain_join_col_suffixes, domain_join_col_max_schemas, "
+                "domain_join_col_denylist, domain_max_diffuse_schemas, "
+                "domain_min_home_concentration, industry_alignment, updated_at "
                 "FROM genie.genie_ont_settings WHERE workspace_id = $1",
                 workspace_id,
             )
@@ -1136,6 +1169,13 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
             "domain_min_tables": row["domain_min_tables"],
             "domain_min_schemas": row["domain_min_schemas"],
             "domain_require_connection": row["domain_require_connection"],
+            # Stage 3.2 (MV-D61/62) — JSONB lists parsed defensively; ints/float pass through.
+            "domain_schema_denylist": _json(row["domain_schema_denylist"], None),
+            "domain_join_col_suffixes": _json(row["domain_join_col_suffixes"], None),
+            "domain_join_col_max_schemas": row["domain_join_col_max_schemas"],
+            "domain_join_col_denylist": _json(row["domain_join_col_denylist"], None),
+            "domain_max_diffuse_schemas": row["domain_max_diffuse_schemas"],
+            "domain_min_home_concentration": row["domain_min_home_concentration"],
             "industry_alignment": _json(row["industry_alignment"], None),
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
@@ -1154,13 +1194,24 @@ async def ont_upsert_settings(
     domain_min_tables: int = 3,
     domain_min_schemas: int = 2,
     domain_require_connection: bool = True,
+    domain_schema_denylist: list[str] | None = None,
+    domain_join_col_suffixes: list[str] | None = None,
+    domain_join_col_max_schemas: int = 2,
+    domain_join_col_denylist: list[str] | None = None,
+    domain_max_diffuse_schemas: int = 6,
+    domain_min_home_concentration: float = 0.5,
     industry_alignment: dict | None = None,
 ) -> dict:
-    """Upsert the Ontology settings row for a workspace. Fails closed. The Stage-3
-    curation-policy fields are keyword-only + defaulted, so an older caller (positional
-    company/allowlist/read_identity only) still writes a valid row."""
+    """Upsert the Ontology settings row for a workspace. Fails closed. The Stage-3 /
+    Stage-3.2 curation-policy fields are keyword-only + defaulted, so an older caller
+    (positional company/allowlist/read_identity only) still writes a valid row."""
     await _maybe_retry_schema()
     denylist = list(domain_facet_denylist or [])
+    schema_denylist = list(domain_schema_denylist) if domain_schema_denylist is not None else ["information_schema"]
+    join_suffixes = list(domain_join_col_suffixes) if domain_join_col_suffixes is not None else ["_id", "_key"]
+    join_denylist = list(domain_join_col_denylist) if domain_join_col_denylist is not None else [
+        "id", "user_id", "workspace_id", "category_id", "tenant_id", "account_id"
+    ]
     industry = industry_alignment if isinstance(industry_alignment, dict) else {
         "enabled": False, "reference_model": None
     }
@@ -1172,6 +1223,12 @@ async def ont_upsert_settings(
         "domain_min_tables": int(domain_min_tables),
         "domain_min_schemas": int(domain_min_schemas),
         "domain_require_connection": bool(domain_require_connection),
+        "domain_schema_denylist": schema_denylist,
+        "domain_join_col_suffixes": join_suffixes,
+        "domain_join_col_max_schemas": int(domain_join_col_max_schemas),
+        "domain_join_col_denylist": join_denylist,
+        "domain_max_diffuse_schemas": int(domain_max_diffuse_schemas),
+        "domain_min_home_concentration": float(domain_min_home_concentration),
         "industry_alignment": industry,
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -1186,8 +1243,11 @@ async def ont_upsert_settings(
             INSERT INTO genie.genie_ont_settings
                 (workspace_id, company_name, catalog_allowlist, read_identity,
                  domain_facet_denylist, domain_min_tables, domain_min_schemas,
-                 domain_require_connection, industry_alignment, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                 domain_require_connection, domain_schema_denylist,
+                 domain_join_col_suffixes, domain_join_col_max_schemas,
+                 domain_join_col_denylist, domain_max_diffuse_schemas,
+                 domain_min_home_concentration, industry_alignment, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
             ON CONFLICT (workspace_id) DO UPDATE SET
                 company_name             = EXCLUDED.company_name,
                 catalog_allowlist        = EXCLUDED.catalog_allowlist,
@@ -1196,6 +1256,12 @@ async def ont_upsert_settings(
                 domain_min_tables        = EXCLUDED.domain_min_tables,
                 domain_min_schemas       = EXCLUDED.domain_min_schemas,
                 domain_require_connection = EXCLUDED.domain_require_connection,
+                domain_schema_denylist   = EXCLUDED.domain_schema_denylist,
+                domain_join_col_suffixes = EXCLUDED.domain_join_col_suffixes,
+                domain_join_col_max_schemas = EXCLUDED.domain_join_col_max_schemas,
+                domain_join_col_denylist = EXCLUDED.domain_join_col_denylist,
+                domain_max_diffuse_schemas = EXCLUDED.domain_max_diffuse_schemas,
+                domain_min_home_concentration = EXCLUDED.domain_min_home_concentration,
                 industry_alignment       = EXCLUDED.industry_alignment,
                 updated_at               = NOW()
             """,
@@ -1207,6 +1273,12 @@ async def ont_upsert_settings(
             record["domain_min_tables"],
             record["domain_min_schemas"],
             record["domain_require_connection"],
+            json.dumps(schema_denylist),
+            json.dumps(join_suffixes),
+            record["domain_join_col_max_schemas"],
+            json.dumps(join_denylist),
+            record["domain_max_diffuse_schemas"],
+            record["domain_min_home_concentration"],
             json.dumps(industry),
         )
     return record
