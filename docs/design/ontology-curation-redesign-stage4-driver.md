@@ -5,8 +5,10 @@ redesign stage) with a long-running agent (Claude Code / Cursor Goal Mode). Run 
 the **`ontology`** branch **after Stage 1 + Stage 2 + Stage 3 have landed and been
 deploy-verified**. Like Stage 3 it touches backend + frontend, but strictly
 **additively** — new wheel signal types, new draft fields, no new route or frame. The
-Page engine already exists (Phase 3c); Stage 4 **broadens its triggers, fixes
-attachment, and adds a per-asset "why."** The offline code + tests are the agent's
+Page engine already exists (Phase 3c); Stage 4 **broadens its triggers (table/column
+comments live; a Genie-history signal scaffolded but dormant), attaches each Page to its
+source-majority domain via a threaded `source_fqn → domain_id` map, and adds a per-asset
+"why."** The offline code + tests are the agent's
 job; it stops before deploy.
 
 - **Spec (source of truth):** `docs/design/ontology-curation-redesign-build.md` (§8;
@@ -47,65 +49,65 @@ each Source/Related carries a one-line "why this asset."
 ## Driver prompt (paste verbatim)
 
 ```text
-GOAL: Build Stage 4 of the ontology curation redesign — PAGES. Broaden the trigger
-surface, attach each Page to its source-majority domain, and give every asset a
-one-line "why." Branch: ontology, atop LANDED Stage 1+2+3 + 3c Pages. ADDITIVE,
-read-only, offline.
+GOAL: Build Stage 4 — PAGES. Broaden triggers (COMMENTS live; Genie-history dormant),
+attach each Page to its SOURCE-majority domain, + a per-asset why. Branch: ontology, atop
+LANDED Stage 1+2+3 + 3c Pages. ADDITIVE, read-only, offline.
 
 SPEC (§8; honor §11-§14): docs/design/ontology-curation-redesign-build.md
-DECISIONS: mv-advisor-playbook.md (MV-D55; honor MV-D27/35/43/45/49/50)
-LIVE EVIDENCE: ontology-signal-inventory-findings.md (airline MVs, coded cols, comments).
+DECISIONS: mv-advisor-playbook.md (MV-D55; honor MV-D27/35/43/45/49/50). EVIDENCE:
+findings doc (airline MVs, coded cols, comments).
 BASELINE (no regress): Stage 1+2+3 + 3c Pages + 17g/17f/re-grain/3b/3a. RULES: AGENTS.md.
 
-BUILD A — WHEEL triggers (ontology/pages.py; pure/deterministic/offline; REUSE
-concept-anchoring + er + mv_fingerprint + similarity — NO new comparator/backend):
-  - Add frozen CommentSignal (business term in a table/column COMMENT) + HistorySignal
-    (recurring Genie-history disambiguation), mirroring Measure/ColumnSignal (fqn,
-    domain_id, agent_fqns, comment). Each resolves to canonical_id via
-    er.canonical_id_of(token_set_sig(...)) — SAME identity scheme.
-  - Detectors: corroborated comment-term -> [Taxonomy]/[Disambiguation]; recurring
-    history disambiguation -> [Disambiguation]. Corroboration-gated like measures/cols
-    (>=2 artifacts -> certify-eligible; 1 -> low-conf + certify=false). Retrieval gates
-    (synonyms, chunk-safe, specificity, read-only contradiction) UNCHANGED. Empty reads
-    -> mine nothing.
-  - Attachment: home_domain() picks the domain of the MAJORITY of the Page's SOURCE
-    TABLES (not signal.domain_id counts); deterministic sorted tie-break. page_id stays
-    concept-anchored (canonical_id|archetype|sorted keys) — NEVER domain_id/body.
-  - Per-asset why: each Source (backing MV/table) + Related (agent) carries a one-line
-    deterministic, evidence-derived "why this asset" (additive field).
+BUILD A — WHEEL (ontology/pages.py; pure/offline; REUSE concept-anchoring + er +
+mv_fingerprint + similarity — NO new comparator/backend):
+  - CommentSignal (LIVE): frozen dataclass (fqn, domain_id, term, comment, agent_fqns)
+    like ColumnSignal; canonical_id via er.canonical_id_of(token_set_sig(term)) — SAME
+    scheme.
+  - HistorySignal (DORMANT): frozen dataclass + seam ONLY — no detector, no job read, no
+    input -> mines nothing (like the 4 dormant archetypes). Do NOT read Genie history.
+  - Extend _Concept: add comments:list[CommentSignal]; contributing_artifacts(),
+    corroboration(), build_universe(), _concept_vocab() ALL count comment artifacts
+    (certify+gate math stays correct).
+  - Comment detector (deterministic): comment-term on a CODED column -> [Taxonomy]; SAME
+    term on >=2 assets whose canonical measure defs CONFLICT -> [Disambiguation]; else
+    nothing. Corroboration-gated (>=2 -> certify-eligible; 1 -> low-conf+certify=false).
+    Retrieval gates (synonyms/chunk-safe/specificity/contradiction) UNCHANGED.
+  - Attachment: home_domain() = domain of the MAJORITY of a Page's SOURCE TABLES via an
+    injected asset_domain: Mapping[str,str] (source_fqn->domain_id) threaded into
+    mine_pages(); sorted tie-break; EMPTY map -> fall back to signal.domain_id. page_id
+    stays concept-anchored — NEVER domain_id/body.
+  - Per-asset why: evidence["asset_why"]={fqn: one-line deterministic reason} for each
+    Source+Related; don't restructure source_fqns/related_fqns tuples.
 
-BUILD B — JOB reads (jobs/run_ontology_materialize.py; best-effort, MV-D43): extend the
-page-signal reader to ALSO gather table/column COMMENTs (information_schema, allowlist-
-scoped) -> CommentSignal, and recurring disambiguations from Genie history if available
--> HistorySignal. Missing grant/absent source -> mine zero (no raise). No new profiling.
+BUILD B — JOB reads (run_ontology_materialize.py; best-effort, MV-D43): ALSO gather
+table/column COMMENTs (information_schema, scoped) -> CommentSignal, and build
+asset_domain from the domain rows/members computed THIS run; pass both into mine_pages.
+NO Genie-history read. Missing grant -> mine zero.
 
-BUILD C — PRESENTATION (contracts frozen; additive only):
-  - materialize.build_page_rows carries the per-asset why in the EXISTING evidence JSON
-    (prefer no new Delta column; if unavoidable, ddl ADD-COLUMN-IF-NOT-EXISTS).
-  - mirror._assemble_page_draft/_page_chips surface the why + broadened provenance
-    (additive); types.ts mirrors; PageDraftCard.tsx renders "why this asset" under
-    Sources/Related — reuse the card; NO new route/frame.
+BUILD C — PRESENTATION (contracts frozen; additive): materialize.build_page_rows carries
+asset_why in the EXISTING evidence JSON (no new Delta col); mirror._assemble_page_draft/
+_page_chips surface it + broadened provenance; types.ts mirrors; PageDraftCard.tsx renders
+"why this asset" under Sources/Related (reuse card); NO new route/frame.
 
-HARD GUARDRAILS:
-  - Read-only: NO SET/UNSET/CREATE TAG, NO Agent-instruction write (MV-D27), NO
-    manage_uc_tags, NO web_search; wheel writes no ledger; contradiction gate read-only.
-  - page_id concept-anchored + deterministic; drafter writes PROSE only, never the id;
-    absent/raising drafter -> stub + certify=false.
-  - Metastore grain (MV-D49); OBO reads (MV-D50); NO new dependency (MV-D45) — uv.lock
-    UNTOUCHED (git status). NO new similarity backend/comparator.
-  - Response keys byte-identical (additive only). Do NOT change Stage 1/2/3 grouping/
-    gates; do NOT pull forward §9 alignment or §10. NO DEPLOY.
+HARD GUARDRAILS: Read-only — NO SET/UNSET/CREATE TAG, NO Agent-instruction write
+(MV-D27), NO manage_uc_tags/web_search; wheel writes no ledger; contradiction read-only.
+page_id concept-anchored+deterministic; drafter writes PROSE only (never the id); absent/
+raising drafter -> stub+certify=false. Metastore grain (D49); OBO reads (D50); NO new dep
+(D45) — uv.lock UNTOUCHED (git); NO new similarity backend/comparator. Response keys
+byte-identical (additive). Do NOT change Stage 1/2/3 grouping/gates or pull forward §9/§10.
+NO DEPLOY.
 
-ACCEPTANCE (./scripts/test.sh green): comment-term w/ >=2 artifacts -> certify-eligible
-Page; single-artifact concept -> low-conf + certify=false; history disambiguation ->
-[Disambiguation] Page; attachment == majority source-table domain (asserted); page_id
-stable as body/home change; every Source/Related has a why; contradiction read-only;
-contract-frozen (routes + OntologyRefreshStatus/taxonomy/tag-lens/drafts keys); firewall
-unchanged. npm run test + lint + tsc clean; uv.lock untouched.
+ACCEPTANCE (./scripts/test.sh green): comment-term on a coded col w/ >=2 artifacts ->
+certify-eligible [Taxonomy]; same term/2 assets/conflicting defs -> [Disambiguation];
+1 artifact -> low-conf+certify=false; attachment == majority source-table domain via
+asset_domain (asserted, incl. empty-map fallback); HistorySignal present but mines
+nothing; page_id stable as body/home change; every Source/Related has a why; contract-
+frozen (routes + refresh/taxonomy/tag-lens/drafts keys); firewall unchanged. npm test+
+lint+tsc clean; uv.lock untouched.
 
-WORKFLOW: pages.py -> materialize.build_page_rows -> job reader ->
-  mirror._assemble_page_draft -> types/PageDraftCard. ./scripts/test.sh per slice.
-  STOP and ask if ambiguous or a guardrail would break.
+WORKFLOW: pages.py -> materialize.build_page_rows(+asset_domain) -> job reader (comments+
+  asset_domain) -> mirror -> types/PageDraftCard. test.sh per slice. STOP if ambiguous or
+  a guardrail would break.
 ```
 
 ---
@@ -124,7 +126,7 @@ cd frontend && npm run test && npm run lint && npm run build && cd ..
 git status --porcelain uv.lock   # UNCHANGED (MV-D45; uv lock --check fails structurally here)
 
 git add packages/genie-space-optimizer backend frontend
-git commit -m "feat(ontology): Stage 4 Pages — broadened triggers (comments + Genie history), source-majority attachment, per-asset why (MV-D55)"
+git commit -m "feat(ontology): Stage 4 Pages — broadened triggers (comments live; Genie-history dormant-scaffolded), source-majority attachment, per-asset why (MV-D55)"
 git push -u origin ontology
 ```
 
@@ -149,8 +151,8 @@ Then **you** run the deploy-and-verify gate:
 #   ORDER BY certify DESC, corr DESC;
 ```
 
-Stage 4 is offline and deterministic, but the broadened reads (comments, Genie
-history), the Delta write, and the synced mirror can only be validated in a deployed
+Stage 4 is offline and deterministic, but the broadened reads (comments — Genie
+history stays a dormant scaffold), the Delta write, and the synced mirror can only be validated in a deployed
 app — which is why the offline slice stops here. Stage 4 is the last curation-redesign
 stage; §9 industry alignment folds into Phase 4 (17h) and §10 the eval harness
 (MV-D59) follows.
