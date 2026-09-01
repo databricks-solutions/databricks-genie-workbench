@@ -228,6 +228,13 @@ def _is_connected(evidence: Mapping[str, Any]) -> bool:
     return any(k in reason for k in ("foreign key", "foreign-key", "metric view", "community detection"))
 
 
+def _is_curated_domain(evidence: Mapping[str, Any]) -> bool:
+    """A human-curated governed-tag Domain (grouped by the R1 curated-domain-tag rule,
+    MV-D53 precedence #1). Such a Domain is a human-asserted bounded context — legitimate
+    by fiat — so the structural legitimacy bar must never gate it (Stage-3.1, §A.3)."""
+    return str(evidence.get("reason") or "").lower().startswith("grouped by curated domain tag")
+
+
 def _legitimacy_home(members: Sequence[str], evidence: Mapping[str, Any]) -> str:
     """The bigger home a below-bar fragment should fold into: its most common schema
     (deterministic, alphabetical tie-break), else the anchor's schema."""
@@ -248,8 +255,13 @@ def _apply_legitimacy_gate(
     """The legitimacy bar (MV-D57), applied to a top-level Domain proposal in place: a
     below-bar group is KEPT but ``surfaced=false`` with an "add to existing domain"
     hint, never a standalone Domain. Sub-domains + reassign + pages are exempt (they
-    already live inside a domain or name a governed conflict). Records the verdict on
-    ``rank`` so the run report and the serve layer can read it."""
+    already live inside a domain or name a governed conflict); a curated governed-tag
+    Domain is likewise exempt — a human already asserted it as a bounded context
+    (MV-D53 precedence #1), so it is legitimate by fiat (Stage-3.1, §A.3). Records the
+    verdict on ``rank`` so the run report and the serve layer can read it."""
+    if _is_curated_domain(evidence):
+        rank["legitimate"] = True
+        return
     n_tables = len({str(m) for m in members})
     n_schemas = len({_schema_of(m) for m in members})
     connected = _is_connected(evidence)

@@ -441,12 +441,33 @@ def _top_domain(writer):
     return None
 
 
+def _small_ops_domain_rows():
+    """A NON-curated, structurally-connected domain: an aboutness "Ops" tag on two
+    lineage-joined assets in one schema (2 tables / 1 schema). Below the default bar,
+    yet not curated — so the legitimacy bar (not the Stage-3.1 curated exemption)
+    governs whether it surfaces."""
+    catalog_rows = [{"tag_name": "Ops"}]
+    assign_rows = [
+        {"tag_name": "Ops", "catalog_name": "ops", "schema_name": "core", "table_name": "events"},
+        {"tag_name": "Ops", "catalog_name": "ops", "schema_name": "core", "table_name": "summary"},
+    ]
+    return _LineageReader(catalog_rows, assign_rows, [], [],
+                          lineage=[("ops.core.events", "ops.core.summary")])
+
+
 def test_run_param_less_uses_default_legitimacy_bar():
     # A param-less run uses the shipped moderate defaults (≥3 tables / ≥2 schemas). The
-    # fixture's Finance domain spans 2 tables / 2 schemas → kept but not surfaced.
-    catalog_rows, assign_rows = _fixture_rows()
+    # non-curated Ops domain spans 2 tables / 1 schema → kept but not surfaced. (Curated
+    # governed-tag Domains are exempt from the bar — Stage-3.1 §A.3 — so this fixture is
+    # deliberately non-curated to still exercise the gate.)
+    from datetime import datetime, timezone
+
     writer = _FakeWriter()
-    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    materialize.run_materialize(
+        _small_ops_domain_rows(), writer, metastore_id="ms1", workspace_id="ws1",
+        trigger="on_demand", allowlist=["ops"], run_id="r1",
+        now=datetime.fromisoformat(_AS_OF).astimezone(timezone.utc),
+    )
     ev = json.loads(_top_domain(writer)["evidence"])
     assert ev["rank"]["legitimate"] is False
     assert ev["surfaced"] is False
@@ -454,11 +475,16 @@ def test_run_param_less_uses_default_legitimacy_bar():
 
 
 def test_run_param_driven_bar_lets_small_domain_pass():
-    # A param-driven run lowers the bar; the same 2-table Finance domain now clears it.
-    catalog_rows, assign_rows = _fixture_rows()
+    # A param-driven run lowers the bar; the same 2-table Ops domain now clears it.
+    from datetime import datetime, timezone
+
     writer = _FakeWriter()
-    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
-         domain_min_tables=1, domain_min_schemas=1, domain_require_connection=False)
+    materialize.run_materialize(
+        _small_ops_domain_rows(), writer, metastore_id="ms1", workspace_id="ws1",
+        trigger="on_demand", allowlist=["ops"], run_id="r1",
+        now=datetime.fromisoformat(_AS_OF).astimezone(timezone.utc),
+        domain_min_tables=1, domain_min_schemas=1, domain_require_connection=False,
+    )
     ev = json.loads(_top_domain(writer)["evidence"])
     assert ev["rank"]["legitimate"] is True
     assert "gate_hint" not in ev

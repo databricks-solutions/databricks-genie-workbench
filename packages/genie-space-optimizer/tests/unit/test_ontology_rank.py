@@ -245,6 +245,23 @@ def test_subdomain_is_exempt_from_legitimacy_bar():
     assert r["surfaced"] is True
 
 
+def test_curated_domain_is_exempt_from_legitimacy_bar():
+    # A human-curated governed-tag Domain (R1 rule) with a single asset in one schema —
+    # structurally it would fail the bar, but a curated tag is a human-asserted bounded
+    # context (MV-D53 precedence #1), so it is legitimate by fiat and still surfaces
+    # (Stage-3.1 §A.3). Contrast test_shared_schema_only_group_gated_on_connection.
+    row = _domain_row("sug_curated", tag_decision="reuse", tag_key="Alaska Airlines Maintenance",
+                      tag_value="Alaska Airlines Maintenance",
+                      evidence={"reason": "grouped by curated domain tag: Alaska Airlines Maintenance"})
+    rank.score_proposals([row], [], members_by_domain={"sug_curated": ["c.airline_maint.ad_compliance"]},
+                         signals=_governed_signals("c.airline_maint.ad_compliance"))
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is True     # legitimate by fiat, not by structure
+    assert "legitimacy_reason" not in r["rank"]
+    assert "gate_hint" not in r                # never gated to "add to existing domain"
+    assert r["surfaced"] is True
+
+
 def test_confidence_band_full_coverage_is_high_no_gap_no_percent():
     b = rank.blend(["c.s.a"], rank.RankSignals(
         usage={"c.s.a": 0.9}, centrality={"c.s.a": 0.8}, governance={"c.s.a": "governed"}))

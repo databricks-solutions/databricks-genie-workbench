@@ -569,10 +569,40 @@ def test_curated_tag_absorbs_overlapping_fk_component():
 
 
 def test_low_overlap_curated_and_fk_stay_distinct():
+    # Distinct schema homes (a.x vs b.y) AND zero member overlap → neither the overlap
+    # nor the shared-home branch fires, so both are kept (Stage-3.1 over-merge guardrail).
     curated = _prop({"a.x.t1", "a.x.t2"}, name="Alpha", tag_decision="reuse", tag_key="Alpha")
     fk = _prop({"b.y.p", "b.y.q", "b.y.r"}, name="Beta", tag_decision="create", tag_key="Beta")
     out = cluster.absorb_curated_into_structural([curated, fk])
-    assert len([p for p in out if p.parent_id is None]) == 2  # no overlap → both kept
+    assert len([p for p in out if p.parent_id is None]) == 2  # no overlap, no shared home → both kept
+
+
+def test_curated_absorbs_fk_on_shared_schema_home_without_overlap():
+    # Stage-3.1 §A.3 — the live maintenance case: a curated tag and its FK twin sit in
+    # ONE schema but the tagged asset set differs from the FK/MV-derived members, so
+    # member overlap is zero. The shared governed home schema still claims the twin: the
+    # curated Domain wins identity (name + reuse), the FK reason becomes corroboration,
+    # and the FK row disappears.
+    curated = _prop(
+        {"air.maint.ad_compliance", "air.maint.component_removal"},
+        name="Maintenance and Engineering", tag_decision="reuse",
+        tag_key="Maintenance", tag_value="Maintenance",
+        reason="grouped by curated domain tag: Maintenance",
+    )
+    fk = _prop(
+        {"air.maint.work_order", "air.maint.part", "air.maint.aircraft"},
+        name="Airline Demo Mvm Maintenance", tag_decision="create",
+        tag_key="Airline Demo Mvm Maintenance", tag_value="Airline Demo Mvm Maintenance",
+    )
+    assert not (set(curated.members) & set(fk.members))  # zero member overlap
+    out = cluster.absorb_curated_into_structural([curated, fk])
+    tops = [p for p in out if p.parent_id is None]
+    assert len(tops) == 1
+    merged = tops[0]
+    assert merged.tag_decision == "reuse" and merged.name == "Maintenance and Engineering"
+    assert "air.maint.work_order" in merged.members  # FK members absorbed
+    assert merged.evidence["corroborating"]          # FK reason recorded as corroboration
+    assert not any(p.name == "Airline Demo Mvm Maintenance" for p in out)
 
 
 def test_absorb_reparents_fk_subdomains():

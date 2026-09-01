@@ -979,14 +979,29 @@ def _overlap_coeff(a: frozenset[str], b: frozenset[str]) -> float:
     return len(a & b) / min(len(a), len(b))
 
 
+def _home_schema(p: DomainProposal) -> str:
+    """Dominant ``catalog.schema`` of a proposal — the majority member schema
+    (deterministic count then alphabetical tie-break), else the anchor's schema. The
+    "governed home" a curated tag and its FK twin share when their tagged asset sets
+    differ but sit in the same schema (Stage-3.1 §A.3 — the maintenance case)."""
+    schemas = [_schema_prefix(m) for m in p.members]
+    if schemas:
+        return max(sorted(set(schemas)), key=lambda s: (schemas.count(s), s))
+    anchor = p.evidence.get("anchor")
+    return _schema_prefix(str(anchor)) if anchor else ""
+
+
 def absorb_curated_into_structural(proposals: list[DomainProposal]) -> list[DomainProposal]:
-    """CURATED-TAG ABSORBS FK COMPONENT (Stage 3, MV-D56/57; live finding §A.2). When a
-    curated-domain-tag Domain and an FK-component Domain overlap by ≥ :data:`ABSORB_OVERLAP`
-    of the smaller member set, they are ONE business area surfaced by two rules — do not
-    emit both. The curated tag wins identity (name + reuse); it absorbs the FK component's
-    members; the structural signal becomes corroborating ``evidence`` (raising confidence),
-    not a rival Domain. Deterministic and precedes ranking. Pure; returns new proposals.
-    Sub-domains of an absorbed FK component re-parent onto the merged Domain."""
+    """CURATED-TAG ABSORBS FK COMPONENT (Stage 3, MV-D56/57; live findings §A.2/§A.3).
+    When a curated-domain-tag Domain and an FK-component Domain are the same business
+    area surfaced by two rules — either they overlap by ≥ :data:`ABSORB_OVERLAP` of the
+    smaller member set (the 19-⊂-46 case) OR they share a governed home schema
+    (:func:`_home_schema`, the maintenance case where the tagged assets differ from the
+    FK/MV-derived members but sit in one schema) — do not emit both. The curated tag wins
+    identity (name + reuse); it absorbs the FK component's members; the structural signal
+    becomes corroborating ``evidence`` (raising confidence), not a rival Domain.
+    Deterministic and precedes ranking. Pure; returns new proposals. Sub-domains of an
+    absorbed FK component re-parent onto the merged Domain."""
     curated = [p for p in proposals if _is_curated(p)]
     fk = [p for p in proposals if _is_fk_component(p)]
     if not curated or not fk:
@@ -998,13 +1013,20 @@ def absorb_curated_into_structural(proposals: list[DomainProposal]) -> list[Doma
 
     for c in sorted(curated, key=lambda p: (-len(p.members), p.domain_id)):
         c_members = frozenset(c.members)
+        c_home = _home_schema(c)
         merged_members = set(c.members)
         corrob: list[str] = []
         this_round: list[str] = []  # only the fids THIS curated absorbs (re-parent scope)
         for f in sorted(fk, key=lambda p: (-len(p.members), p.domain_id)):
             if f.domain_id in absorbed_fk:
                 continue
-            if _overlap_coeff(c_members, frozenset(f.members)) >= ABSORB_OVERLAP:
+            # Two ways a curated tag claims an FK twin (Stage-3.1 §A.3): a member-overlap
+            # subset (the 19-⊂-46 case) OR a shared governed home schema (the tagged
+            # asset set differs from the FK/MV-derived members but sits in one schema —
+            # the maintenance case). Home match is gated on equal, non-empty schemas so
+            # unrelated groups that merely coexist in a catalog never over-merge.
+            same_home = bool(c_home) and c_home == _home_schema(f)
+            if _overlap_coeff(c_members, frozenset(f.members)) >= ABSORB_OVERLAP or same_home:
                 absorbed_fk.add(f.domain_id)
                 this_round.append(f.domain_id)
                 merged_members |= set(f.members)
