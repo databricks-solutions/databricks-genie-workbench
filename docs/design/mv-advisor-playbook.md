@@ -786,13 +786,18 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > (facets no longer surface as Domains; FK/MV/naming drive the airline domains).
 > **Stage 2** (`ontology-curation-redesign-stage2-driver.md`, MV-D54) — **LANDED +
 > deploy-verified** (sub-domains bind from slash sub-tags + `mvm_subdomain` values;
-> Leiden fallback-only). **Stage 3 — BUILD-READY** (`ontology-curation-redesign-stage3-driver.md`,
-> MV-D56/D57 + the two §7 gates from the Stage-2 live run): legitimacy bar +
-> name-dedup/qualification + curated-tag-absorbs-FK-component + honest confidence +
-> the config surface; additive backend/frontend, offline-tested then deploy-gated.
-> **Stage 4** (Pages, MV-D55, build spec §8) — driver pending. §9 alignment folds into
-> Phase 4 (17h); §10 eval harness (MV-D59) follows. The block above is the register;
-> the build spec is the source of truth.
+> Leiden fallback-only). **Stage 3 — LANDED (offline) + deploy-verify pending**
+> (`ontology-curation-redesign-stage3-driver.md`, MV-D56/D57 + the two §7 gates from
+> the Stage-2 live run): legitimacy bar + name-dedup/qualification +
+> curated-tag-absorbs-FK-component + honest confidence + the config surface; committed
+> and offline-green (2642 passed), awaiting the deploy-verify gate (blocked on a
+> transient PyPI/npm proxy outage). **Stage 4 — BUILD-READY**
+> (`ontology-curation-redesign-stage4-driver.md`, MV-D55, build spec §8): the 3c Page
+> engine, broadened — new triggers (table/column comments + recurring Genie-history
+> disambiguations), source-majority attachment, and a per-asset "why"; additive +
+> read-only, offline-tested then deploy-gated. §9 alignment folds into Phase 4 (17h);
+> §10 eval harness (MV-D59) follows. The block above is the register; the build spec is
+> the source of truth.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
