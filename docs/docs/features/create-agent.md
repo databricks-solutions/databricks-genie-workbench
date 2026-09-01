@@ -144,6 +144,12 @@ The create agent uses SSE (Server-Sent Events) to stream progress to the fronten
 | `error` | Something went wrong |
 | `done` | Stream complete (may include `needs_continuation: true`) |
 
+Databricks Model Serving can return assistant content either as a plain string
+or as structured content blocks. Claude 5 models use the structured form for
+some streamed deltas. The backend normalizes both forms into plain text before
+emitting `message_delta`; the frontend treats a non-string text event as a
+protocol error rather than coercing it into visible `[Object Object]` text.
+
 ### Continuation Protocol
 
 Each HTTP request performs exactly **one** LLM inference plus **one** batch of tool calls, then closes. This keeps each response under the Databricks Apps reverse proxy timeout (~120s).

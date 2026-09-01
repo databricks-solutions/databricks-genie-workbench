@@ -5,9 +5,75 @@ functions, no mocking required.
 """
 
 import json
+from types import SimpleNamespace
+
 import pytest
 
-from backend.services.llm_utils import _repair_json, parse_json_from_llm_response
+from backend.services import llm_utils
+from backend.services.llm_utils import (
+    _repair_json,
+    normalize_message_content,
+    parse_json_from_llm_response,
+)
+
+
+# ---------------------------------------------------------------------------
+# normalize_message_content
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("plain text", "plain text"),
+        (
+            [
+                {"type": "text", "text": "first "},
+                {"type": "text", "text": "block"},
+            ],
+            "first block",
+        ),
+        (
+            [
+                {"type": "metadata", "signature": "ignored"},
+                {"type": "text", "content": [{"value": "nested text"}]},
+            ],
+            "nested text",
+        ),
+        (None, ""),
+    ],
+)
+def test_normalize_message_content(content, expected):
+    assert normalize_message_content(content) == expected
+
+
+def test_call_serving_endpoint_normalizes_structured_content(monkeypatch):
+    client = SimpleNamespace(
+        config=SimpleNamespace(
+            host="https://example.databricks.com",
+            authenticate=lambda: {"Authorization": "Bearer test"},
+        )
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        json=lambda: {
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": '{"findings":'},
+                        {"type": "text", "text": " []}"},
+                    ]
+                }
+            }]
+        },
+    )
+    monkeypatch.setattr(llm_utils, "get_workspace_client", lambda: client)
+    monkeypatch.setattr(llm_utils.httpx, "post", lambda *args, **kwargs: response)
+
+    result = llm_utils.call_serving_endpoint(
+        [{"role": "user", "content": "Return JSON"}]
+    )
+
+    assert result == '{"findings": []}'
 
 
 # ---------------------------------------------------------------------------

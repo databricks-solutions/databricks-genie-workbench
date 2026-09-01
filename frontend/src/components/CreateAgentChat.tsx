@@ -40,6 +40,7 @@ import {
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat, fetchCreatePreflight } from "@/lib/api"
+import { MAX_AUTO_RECONNECTS, decideReconnect } from "@/lib/reconnect-policy"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
 import { TableBrowserDrawer } from "@/components/TableBrowserDrawer"
 import { ChatModelMenu } from "@/components/ModelPicker"
@@ -411,7 +412,21 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   // retry automatically (up to a limit) when the Databricks Apps proxy drops
   // the SSE stream during long-running tool calls.
   const reconnectCountRef = useRef(0)
-  const MAX_AUTO_RECONNECTS = 3
+
+  // Set once a `created` event is seen this session. A create that succeeded
+  // server-side (even one whose response timed out and got reconciled) must
+  // never be re-driven by a reconnect — doing so creates duplicate spaces.
+  const createdSpaceIdRef = useRef<string | null>(null)
+
+  // True while a create_space attempt is in flight this turn (set on the
+  // create_space tool_call, cleared on `created`). Used to detect a create
+  // attempt that ended WITHOUT a confirmed `created` event (timeout/unknown).
+  const createInFlightRef = useRef(false)
+  // When a create attempt ends with an unknown outcome (timed out / errored,
+  // no `created`), we must NOT let a reflexive re-click spawn a duplicate —
+  // the space may already exist server-side. This flips Approve & Create into
+  // a two-step confirm ("check your Genie list, then confirm retry").
+  const [createOutcomeUnknown, setCreateOutcomeUnknown] = useState(false)
 
   // Streaming message state — accumulate tokens in a ref and flush to React
   // state on an animation-frame schedule to keep renders at ~60 fps.
@@ -472,6 +487,9 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setPlanTab("schema")
     setExpandedTableId(null)
     reconnectCountRef.current = 0
+    createdSpaceIdRef.current = null
+    createInFlightRef.current = false
+    setCreateOutcomeUnknown(false)
     queuedMessageRef.current = null
     setQueuedMessage(null)
     setElementSearch({})
@@ -499,6 +517,20 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   // stale `sendMessage` with out-of-date deps. Routing through a ref keeps the
   // scheduled calls pointing at the latest callback.
   const sendMessageRef = useRef<(text: string, selections?: Record<string, unknown>) => void>(() => {})
+
+  // If a create_space attempt is in flight when a turn terminates for ANY
+  // reason (clean error/done, reconnect cap exhausted, or the user hitting
+  // Stop) and no `created` event confirmed success, the space MAY exist
+  // server-side. Mark the outcome unknown so Approve & Create requires an
+  // explicit confirm before it can spawn a duplicate.
+  // Declared BEFORE `sendMessage` so the lint rule (react-hooks/immutability)
+  // can statically verify the closure reference is always live.
+  const resolveInFlightCreateAsUnknown = () => {
+    if (createInFlightRef.current) {
+      createInFlightRef.current = false
+      if (!createdSpaceIdRef.current) setCreateOutcomeUnknown(true)
+    }
+  }
 
   const sendMessage = useCallback(
     (text: string, selections?: Record<string, unknown>) => {
@@ -563,13 +595,26 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       }
 
       stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
-        onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid); reconnectCountRef.current = 0 },
+        onSession: (sid) => {
+          sessionIdRef.current = sid
+          setSessionId(sid)
+          // Only reset the reconnect budget on a genuine new user turn. The
+          // backend re-emits `session` at the start of EVERY stream, including
+          // auto-reconnect continuations — resetting here on a continuation
+          // makes MAX_AUTO_RECONNECTS unreachable and turns a dropped create
+          // into an unbounded reconnect loop (duplicate-space bug). See RCA.
+          if (!isContinuation) reconnectCountRef.current = 0
+        },
         onStep: () => {},
         onThinking: (message) => {
           setAgentStatus(message)
         },
         onToolCall: (tool, args) => {
           setAgentStatus(getStatusText(tool, args))
+
+          // Track create_space attempts so we can detect one that ends without
+          // a confirmed `created` event (timed out / unknown outcome).
+          if (tool === "create_space") createInFlightRef.current = true
 
           // Finalize any in-flight streaming message before showing tool calls
           if (streamingMsgIdRef.current) {
@@ -759,6 +804,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
         },
         onCreated: (spaceId, url, displayName) => {
+          // Remember a space now exists so a later connection drop cannot
+          // auto-reconnect into a duplicate create.
+          createdSpaceIdRef.current = spaceId
+          // Confirmed success — the attempt resolved; clear the in-flight and
+          // unknown-outcome flags.
+          createInFlightRef.current = false
+          setCreateOutcomeUnknown(false)
           setMessages((prev) => [
             ...prev,
             {
@@ -820,28 +872,44 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           streamingMsgIdRef.current = null
           pendingToolCalls = []
 
-          // Auto-reconnect on proxy/network disconnects (up to MAX_AUTO_RECONNECTS).
-          // The backend session is persisted and orphaned tool calls are healed,
-          // so resuming with an empty message picks up exactly where we left off.
-          if (needsContinuation === "connection_lost" && sessionIdRef.current) {
-            reconnectCountRef.current += 1
-            if (reconnectCountRef.current <= MAX_AUTO_RECONNECTS) {
-              const attempt = reconnectCountRef.current
-              setAgentStatus(`Reconnecting (attempt ${attempt}/${MAX_AUTO_RECONNECTS})...`)
-              setTimeout(() => sendMessageRef.current(""), 2000 * attempt)
+          // Auto-reconnect on proxy/network disconnects. The decision (reconnect
+          // vs stop, and why) lives in the pure, unit-tested decideReconnect —
+          // the component must NOT reimplement it inline (that duplication is
+          // what let the reconnect cap silently regress). The backend session is
+          // persisted and orphaned tool calls are healed, so resuming with an
+          // empty message picks up where we left off.
+          if (needsContinuation === "connection_lost") {
+            const decision = decideReconnect({
+              connectionLost: true,
+              hasSession: !!sessionIdRef.current,
+              spaceAlreadyCreated: !!createdSpaceIdRef.current,
+              currentCount: reconnectCountRef.current,
+            })
+            if (decision.action === "reconnect") {
+              // Same attempt continues — do NOT resolve the in-flight create yet.
+              reconnectCountRef.current = decision.attempt
+              setAgentStatus(`Reconnecting (attempt ${decision.attempt}/${MAX_AUTO_RECONNECTS})...`)
+              setTimeout(() => sendMessageRef.current(""), 2000 * decision.attempt)
               return
             }
-            // Exhausted retries — show error and stop
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: nextId(),
-                role: "assistant",
-                content: "Connection lost after multiple retries. Your session is saved — click Send to resume.",
-                timestamp: Date.now(),
-                is_error: true,
-              } as AgentChatMessage,
-            ])
+            // Terminal stop (cap-reached or no session). The attempt is over —
+            // if a create was in flight and unconfirmed, mark it unknown so a
+            // re-click can't spawn a duplicate.
+            resolveInFlightCreateAsUnknown()
+            // Only "cap-reached" warrants the resume-prompt message; a
+            // space-already-created stop is a clean success (space exists).
+            if (decision.reason === "cap-reached") {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: nextId(),
+                  role: "assistant",
+                  content: "Connection lost after multiple retries. Your session is saved — click Send to resume.",
+                  timestamp: Date.now(),
+                  is_error: true,
+                } as AgentChatMessage,
+              ])
+            }
             reconnectCountRef.current = 0
             setIsStreaming(false)
             return
@@ -854,6 +922,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             requestAnimationFrame(() => sendMessageRef.current(""))
             return
           }
+
+          // Clean terminal end (error event or normal done, no continuation).
+          // Resolve any unconfirmed in-flight create as unknown-outcome.
+          resolveInFlightCreateAsUnknown()
 
           reconnectCountRef.current = 0
           setIsStreaming(false)
@@ -889,6 +961,9 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const handleStop = () => {
     stopRef.current?.()
+    // Stop aborts the fetch; the AbortError never reaches onDone, so resolve
+    // an in-flight create's unknown outcome here.
+    resolveInFlightCreateAsUnknown()
     setIsStreaming(false)
     setAgentStatus(null)
     queuedMessageRef.current = null
@@ -1431,13 +1506,30 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     })
   }
 
-  const approvePlanAndCreate = () => {
+  const doCreate = () => {
     if (!editedPlan) return
+    setCreateOutcomeUnknown(false)
     sendMessage("Plan approved — go ahead and create the agent.", {
       edited_plan: editedPlan,
       action: "create",
       display_name: progress.title || undefined,
     })
+  }
+
+  const approvePlanAndCreate = () => {
+    if (!editedPlan) return
+    // A prior create attempt timed out with an unknown outcome — the space may
+    // already exist. Don't let a reflexive click create a duplicate: require an
+    // explicit confirmation after the user has checked their Genie list.
+    if (createOutcomeUnknown) {
+      const proceed = window.confirm(
+        "A previous create attempt timed out and its result is unknown — the " +
+        "space may already have been created.\n\nCheck your Genie list first. " +
+        "Create another space anyway?"
+      )
+      if (!proceed) return
+    }
+    doCreate()
   }
 
   // ─── Plan card renderer ──────────────────────────────────────
@@ -1980,8 +2072,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-md text-[11px] font-semibold hover:bg-emerald-500 transition-colors disabled:opacity-40"
           >
             <Rocket className="w-3 h-3" />
-            Approve &amp; Create
+            {createOutcomeUnknown ? "Verify & Retry Create" : "Approve & Create"}
           </button>
+          {createOutcomeUnknown && (
+            <span className="text-[11px] text-amber-400">
+              Previous attempt timed out — check your Genie list before retrying.
+            </span>
+          )}
         </div>
       </div>
     )
