@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from typing import Any
 
 import httpx
 
@@ -19,6 +20,33 @@ _RETRYABLE_STATUSES = {429, 502, 503}
 def get_llm_model() -> str:
     """Get the configured LLM model name."""
     return os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+
+
+def normalize_message_content(content: Any) -> str:
+    """Normalize OpenAI-compatible message content into plain text.
+
+    Databricks serving endpoints can return either a string or structured
+    content blocks. Claude 5 models may use the structured form for both
+    streaming deltas and complete messages. Only known text-bearing fields are
+    retained so unrelated block metadata is not rendered to users.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        return "".join(normalize_message_content(part) for part in content)
+    if isinstance(content, dict):
+        for key in ("text", "content", "value"):
+            if key in content:
+                return normalize_message_content(content[key])
+        return ""
+
+    for attribute in ("text", "content", "value"):
+        value = getattr(content, attribute, None)
+        if value is not None and value is not content:
+            return normalize_message_content(value)
+    return str(content)
 
 
 def call_serving_endpoint(
@@ -99,7 +127,7 @@ def call_serving_endpoint(
     if not response["choices"]:
         raise ValueError("Response has empty 'choices' list")
 
-    content = response["choices"][0]["message"]["content"]
+    content = normalize_message_content(response["choices"][0]["message"]["content"])
     if not content:
         raise ValueError("LLM returned empty content")
 

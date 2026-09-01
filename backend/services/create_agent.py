@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import AsyncGenerator, Generator
 
-from backend.services.llm_utils import get_llm_model
+from backend.services.llm_utils import get_llm_model, normalize_message_content
 from backend.services.auth import get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
@@ -207,9 +207,10 @@ class CreateGenieAgent:
                 delta = choices[0].get("delta", {})
 
                 if delta.get("content"):
-                    token = delta["content"]
-                    content_parts.append(token)
-                    yield {"event": "message_delta", "data": {"content": token}}
+                    token = normalize_message_content(delta["content"])
+                    if token:
+                        content_parts.append(token)
+                        yield {"event": "message_delta", "data": {"content": token}}
 
                 if delta.get("tool_calls"):
                     if not tool_call_signaled:

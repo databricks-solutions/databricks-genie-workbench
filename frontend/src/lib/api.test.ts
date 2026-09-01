@@ -312,4 +312,58 @@ describe("model selection API payloads", () => {
       model: "selected-chat",
     })
   })
+
+  it("rejects non-string Create Agent text events without coercing objects", async () => {
+    const payload = [
+      'event: message_delta\ndata: {"content":[{"type":"text","text":"bad"}]}',
+      'event: message_delta\ndata: {"content":"good"}',
+      'event: done\ndata: {"needs_continuation":false}',
+      "",
+    ].join("\n\n")
+    const encoder = new TextEncoder()
+    let readCount = 0
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (readCount++ === 0) {
+              return { done: false, value: encoder.encode(payload) }
+            }
+            return { done: true, value: undefined }
+          },
+        }),
+      },
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const onMessageDelta = vi.fn()
+    const onError = vi.fn()
+    let resolveDone: () => void = () => {}
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve
+    })
+
+    streamAgentChat("hello", null, null, {
+      onSession: () => {},
+      onStep: () => {},
+      onThinking: () => {},
+      onToolCall: () => {},
+      onToolResult: () => {},
+      onMessageDelta,
+      onMessage: () => {},
+      onCreated: () => {},
+      onUpdated: () => {},
+      onError,
+      onDone: resolveDone,
+    })
+    await done
+
+    expect(onMessageDelta).toHaveBeenCalledOnce()
+    expect(onMessageDelta).toHaveBeenCalledWith("good")
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledWith(
+      "Invalid Create Agent message_delta event: content must be a string.",
+    )
+  })
 })

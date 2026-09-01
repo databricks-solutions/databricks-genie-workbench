@@ -368,6 +368,15 @@ export function streamAgentChat(
       if (!reader) throw new Error("No response body")
       const decoder = new TextDecoder()
       let buffer = ""
+      let invalidTextEventReported = false
+
+      const reportInvalidTextEvent = (eventType: "message_delta" | "message") => {
+        if (invalidTextEventReported) return
+        invalidTextEventReported = true
+        callbacks.onError(
+          `Invalid Create Agent ${eventType} event: content must be a string.`,
+        )
+      }
 
       while (true) {
         const { done, value } = await reader.read()
@@ -393,8 +402,14 @@ export function streamAgentChat(
               case "thinking": callbacks.onThinking(data.message, data.step, data.round); break
               case "tool_call": callbacks.onToolCall(data.tool, data.args); break
               case "tool_result": callbacks.onToolResult(data.tool, data.result); break
-              case "message_delta": callbacks.onMessageDelta(data.content); break
-              case "message": callbacks.onMessage(data.content, data.ui_elements); break
+              case "message_delta":
+                if (typeof data.content === "string") callbacks.onMessageDelta(data.content)
+                else reportInvalidTextEvent("message_delta")
+                break
+              case "message":
+                if (typeof data.content === "string") callbacks.onMessage(data.content, data.ui_elements)
+                else reportInvalidTextEvent("message")
+                break
               case "created": callbacks.onCreated(data.space_id, data.url, data.display_name); break
               case "updated": callbacks.onUpdated(data.space_id, data.url); break
               case "error": callbacks.onError(data.message); break
