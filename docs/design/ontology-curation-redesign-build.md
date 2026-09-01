@@ -347,6 +347,53 @@ to corroboration + facet routing.**
 **Verdict:** Stage 1's core thesis is validated live; remaining items are Stage-2
 (sub-domain boundaries) and Stage-3 (legitimacy bar + the two §7 gates) scope.
 
+### A.3 — Stage-3 live verification (2026-09-01, deployed app)
+
+`./scripts/deploy.sh --update` (offline path — `SKIP_FRONTEND_BUILD=1 UV_OFFLINE=1`, app
+RUNNING) → `ontology_materialize` run scoped to `catalog_allowlist=
+["serverless_stable_6t92c3_catalog"]`, `run_as` = the user (MV-D50) → **SUCCEEDED**
+(143 rows: 61 top-level, 82 sub). Stage-3 mechanics that **passed**:
+
+- **Name dedup / qualification (§7):** zero duplicate rendered names *within the
+  top-level namespace*; the raw duplicates that remain (`Cost Attribution (…N)`,
+  `Prashanth Wanderbricks Silver ×8`) are **cross-parent sub-domains** — namespace-legal
+  by design (`dedupe_domain_names` deduplicates per parent).
+- **Honest confidence (MV-D56):** `evidence.rank.confidence.band` renders `Low/Medium/
+  High` + `signals_present` + `gap`, never a percent.
+- **Legitimacy bar prunes junk (MV-D57):** 58 / 61 top-level domains gated
+  (`surfaced=false`) — the shared-catalog noise (`e2e_real_*`, `bakehouse`,
+  `wanderbricks_*`, `cost_attribution` fragments) no longer stands up as Domains.
+
+**Two real defects the gate exposed (→ Stage-3.1 follow-up, NOT yet fixed):**
+
+1. **Trust inversion — curated governed-tag Domains are wrongly gated.** All three
+   curated `reuse` Domains (`Alaska Airlines Commercial` / `IFEC` / `Maintenance and
+   Engineering`) came back `surfaced=false` with `legitimacy_reason = "no structural
+   connection between the assets"`, while ad-hoc FK-component Domains (`Airline Demo Mvm
+   Airport` / `… Maintenance`) and the `reassign` `Operations` surfaced. Root cause:
+   `rank._is_connected` only accepts a *structural* keyword (`foreign key` / `metric
+   view` / `community detection` / co-query / shared-spine); a curated Domain's reason
+   is `"grouped by curated domain tag: …"`, which matches none, so `require_connection`
+   fails the bar. This **inverts MV-D53 precedence** (a human-asserted governed tag is
+   the highest-trust signal and must be legitimate by fiat — never gated below a
+   structural heuristic; its `uncapped_tier` was already `high`, capped only by sparse
+   coverage). **Fix:** treat a curated governed-tag grouping as connected/legitimate
+   (or exempt curated Domains from the bar entirely).
+2. **`absorb_curated_into_structural` did not fire for maintenance.** The curated
+   `Alaska Airlines Maintenance and Engineering` and the FK `Airline Demo Mvm
+   Maintenance` (same schema `airline_demo_mvm_maintenance`) stayed as two separate
+   Domains (`corroborating` empty) — the ≥ 0.5 member-overlap wasn't met because the
+   curated tag sits on a different asset set than the FK/MV-derived component. Worst
+   outcome: the FK twin surfaces (`create`) while the curated original is gated.
+   **Fix:** widen the §7 reconciliation to also merge on a **shared governed home /
+   schema anchor** (the "OR shared parent tag" branch), not member-overlap alone, so the
+   curated Domain wins identity and the FK becomes corroboration.
+
+**Verdict:** Stage-3 plumbing (dedup, honest bands, junk-gating) is validated live, but
+the legitimacy bar must not suppress curated governed-tag Domains — that is a correctness
+bug, tracked as **Stage-3.1** (small `rank.py` + `cluster.py` wheel patch; offline-tested,
+then deploy-verified via the now-fast offline path). Independent of Stage 4 (Pages).
+
 ## Appendix B — Skipped-refresh banner (independent follow-up)
 Surface a distinct `skipped` refresh state (empty-allowlist run, per the materializer
 guard) with plain messaging and a Settings deep link. Small and decoupled — tracked

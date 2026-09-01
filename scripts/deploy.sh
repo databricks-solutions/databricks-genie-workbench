@@ -177,7 +177,11 @@ _preflight_check_tools
 _preflight_check_python_dependency_sources
 _preflight_check_venv
 _preflight_check_npm_lockfiles
-_preflight_check_npm_registry
+# SKIP_FRONTEND_BUILD=1 reuses an already-built frontend/dist (see Step 2) — skip the
+# npm registry reachability probe, since no npm install will run.
+if [ "${SKIP_FRONTEND_BUILD:-0}" != "1" ]; then
+    _preflight_check_npm_registry
+fi
 _preflight_check_profile "$PROFILE"
 
 # Resolve deployer email (needed for workspace paths)
@@ -194,7 +198,13 @@ echo "  ✓ All pre-flight checks passed"
 STEP=2
 echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Building frontend..."
-if ! (cd "$PROJECT_DIR/frontend" && npm ci && npm run build); then
+# SKIP_FRONTEND_BUILD=1 reuses a pre-built frontend/dist (e.g. an earlier deploy in
+# this session already ran `npm ci && npm run build`) — useful when the npm registry
+# proxy is flaky and the dist is already current. The dist presence check below still
+# guards against a missing build.
+if [ "${SKIP_FRONTEND_BUILD:-0}" = "1" ]; then
+    echo "  ⏭ SKIP_FRONTEND_BUILD=1 — reusing existing frontend/dist (no npm install)"
+elif ! (cd "$PROJECT_DIR/frontend" && npm ci && npm run build); then
     echo "  ✗ Frontend build failed (npm returned non-zero exit code)."
     echo ""
     echo "  See npm's error output above for the root cause."
@@ -209,6 +219,8 @@ if ! (cd "$PROJECT_DIR/frontend" && npm ci && npm run build); then
 fi
 if [ ! -f "$PROJECT_DIR/frontend/dist/index.html" ]; then
     echo "  ✗ Frontend build failed — frontend/dist/index.html not found."
+    [ "${SKIP_FRONTEND_BUILD:-0}" = "1" ] && \
+        echo "  (SKIP_FRONTEND_BUILD=1 was set but no pre-built dist exists — unset it to build.)"
     exit 1
 fi
 echo "  ✓ Frontend built"
@@ -283,7 +295,7 @@ if [ -z "$SP_CLIENT_ID" ]; then
 fi
 echo "  ✓ SP client ID: $SP_CLIENT_ID"
 
-uv run python "$SCRIPT_DIR/grant_permissions.py" \
+uv run --frozen python "$SCRIPT_DIR/grant_permissions.py" \
     --profile "$PROFILE" \
     --app-name "$APP_NAME" \
     --catalog "$CATALOG" \
@@ -464,7 +476,7 @@ if [ -n "$ONT_JOB_ID" ]; then
     # "Refresh ontology" button can launch it (MV-D41/D50). The main UC-grant
     # step ran before this id was resolvable, so this is a second, lightweight
     # pass. Non-fatal — a denial logs the manual command and continues.
-    uv run python "$SCRIPT_DIR/grant_permissions.py" \
+    uv run --frozen python "$SCRIPT_DIR/grant_permissions.py" \
         --profile "$PROFILE" \
         --app-name "$APP_NAME" \
         --catalog "$CATALOG" \
@@ -602,7 +614,7 @@ fi
 # ── Set up Lakebase Autoscaling (if configured) ──────────────────────────
 if [ -n "$LAKEBASE_INSTANCE" ] && [ -n "$SP_CLIENT_ID" ]; then
     echo "  Setting up Lakebase Autoscaling..."
-    uv run python "$SCRIPT_DIR/setup_lakebase.py" \
+    uv run --frozen python "$SCRIPT_DIR/setup_lakebase.py" \
         --profile "$PROFILE" \
         --project-name "$LAKEBASE_INSTANCE" \
         --sp-client-id "$SP_CLIENT_ID" 2>&1 || \
