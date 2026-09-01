@@ -190,6 +190,8 @@ export interface PageDraft {
   synonyms: string[]
   related_fqns: string[]
   source_fqns: string[]
+  // Stage 4 (MV-D55): one-line "why this asset" keyed by Source/Related FQN. Additive.
+  asset_why: Record<string, string>
   certify: boolean
   evidence: EvidenceChip[]
   tier: DraftTier

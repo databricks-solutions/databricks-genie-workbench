@@ -122,6 +122,46 @@ class ColumnSignal:
 
 
 @dataclass(frozen=True)
+class CommentSignal:
+    """One business term carried in a table/column COMMENT — a broadened Page trigger
+    (MV-D55). Modelled on ``ColumnSignal``: ``fqn`` is the asset the comment lives on
+    (a table or a ``table.column``); ``term`` is the business term the comment names;
+    ``comment`` is its free text. ``agent_fqns`` are serving Agents (Discover Related);
+    ``domain_id`` is the signal's home sub-domain (provenance for the source-majority
+    fallback; never in the ``page_id``). Its ``canonical_id`` is derived from ``term``
+    with the SAME scheme as every other signal (``token_set_sig`` → ``canonical_id_of``),
+    so a comment collapses onto the concept its term names — corroborating a measure /
+    coded column that shares the concept, or standing alone as a comment-primary
+    trigger."""
+
+    fqn: str
+    term: str
+    comment: str = ""
+    agent_fqns: tuple[str, ...] = ()
+    domain_id: str = ""
+
+    @property
+    def ref(self) -> str:
+        return self.fqn
+
+
+@dataclass(frozen=True)
+class HistorySignal:
+    """DORMANT trigger seam (MV-D55) — a recurring Genie-history disambiguation would
+    land here as a broadened trigger. Like the four dormant archetypes
+    ([Method]/[Cross-domain]/[Defaults]/[Rule]), the offline slice reads NO Genie
+    history, so there is no detector and no job reader for it: "no input → nothing
+    mined." The dataclass + the accepted-but-unconsumed ``mine_pages(history=…)`` seam
+    exist only so the trigger surface is named; they mine nothing until a later stage
+    wires a detector and a (deploy-gated) Genie-history reader."""
+
+    question: str
+    term: str = ""
+    agent_fqns: tuple[str, ...] = ()
+    domain_id: str = ""
+
+
+@dataclass(frozen=True)
 class PageCandidate:
     """A concept-anchored Page proposal (maps 1:1 onto the genie_ont_pages columns;
     ``canonical_id`` / ``corroboration`` / ``confidence`` ride in ``evidence`` JSON —
@@ -153,6 +193,7 @@ class _Concept:
     canonical_id: str
     measures: list[MeasureSignal] = field(default_factory=list)
     columns: list[ColumnSignal] = field(default_factory=list)
+    comments: list[CommentSignal] = field(default_factory=list)
 
     def _all_agents(self) -> set[str]:
         out: set[str] = set()
@@ -160,13 +201,18 @@ class _Concept:
             out.update(m.agent_fqns)
         for c in self.columns:
             out.update(c.agent_fqns)
+        for cm in self.comments:
+            out.update(cm.agent_fqns)
         return out
 
     def contributing_artifacts(self) -> list[str]:
         """The independent artifacts backing the concept — distinct metric views /
-        coded tables / serving Agents. Their count is the corroboration (MV-D35)."""
+        coded tables / commented assets / serving Agents. Their count is the
+        corroboration (MV-D35); a comment on a distinct asset is an independent artifact
+        exactly like a measure or a coded column."""
         arts: set[str] = {m.mv_fqn for m in self.measures}
         arts |= {c.table_fqn for c in self.columns}
+        arts |= {cm.fqn for cm in self.comments}
         arts |= self._all_agents()
         return sorted(arts)
 
@@ -175,9 +221,11 @@ class _Concept:
 
     def home_domain(self) -> str:
         """The sub-domain of the concept's strongest membership (most signals);
-        deterministic tie-break by sorted domain_id."""
+        deterministic tie-break by sorted domain_id. This is the SIGNAL-derived fallback
+        (MV-D55): source-majority attachment (``_resolve_home_domain``) overrides it when
+        an ``asset_domain`` map is threaded in."""
         counts = Counter(
-            s.domain_id for s in (*self.measures, *self.columns) if s.domain_id
+            s.domain_id for s in (*self.measures, *self.columns, *self.comments) if s.domain_id
         )
         if not counts:
             return ""
@@ -212,9 +260,13 @@ def aggregate_concepts(
     measures: Sequence[MeasureSignal],
     columns: Sequence[ColumnSignal],
     index: Mapping[str, str],
+    comments: Sequence[CommentSignal] = (),
 ) -> list[_Concept]:
     """Group all signals across the metastore by canonical concept (MV-D49). Order is
-    deterministic (sorted by canonical_id)."""
+    deterministic (sorted by canonical_id). Comment signals resolve by their ``term``
+    with the SAME identity scheme, so a comment naming a measure/column's concept
+    aggregates into it (corroborating), and a comment naming an otherwise-unseen term
+    forms a comment-primary concept."""
     by_cid: dict[str, _Concept] = {}
     for m in measures:
         cid = resolve_canonical_id(m.ref, m.name, index)
@@ -222,7 +274,26 @@ def aggregate_concepts(
     for c in columns:
         cid = resolve_canonical_id(c.ref, c.column, index)
         by_cid.setdefault(cid, _Concept(cid)).columns.append(c)
+    for cm in comments:
+        cid = resolve_canonical_id(cm.ref, cm.term, index)
+        by_cid.setdefault(cid, _Concept(cid)).comments.append(cm)
     return [by_cid[k] for k in sorted(by_cid)]
+
+
+def _resolve_home_domain(
+    concept: _Concept, source_fqns: Sequence[str], asset_domain: Mapping[str, str],
+) -> str:
+    """The Page's home sub-domain = the domain of the MAJORITY of its SOURCE assets
+    (MV-D55), via the injected ``asset_domain`` (source_fqn → domain_id) map computed
+    THIS run; deterministic tie-break by sorted domain_id. An EMPTY map — or Sources none
+    of which the map covers — falls back to the concept's signal-derived
+    ``home_domain()`` (the pre-Stage-4 behaviour). ``page_id`` never depends on this."""
+    if asset_domain:
+        counts = Counter(asset_domain[s] for s in source_fqns if s in asset_domain)
+        if counts:
+            top = max(counts.values())
+            return sorted(k for k, v in counts.items() if v == top)[0]
+    return concept.home_domain()
 
 
 # ── Deterministic id ────────────────────────────────────────────────────────
@@ -380,6 +451,10 @@ def _concept_vocab(concept: _Concept, instructions: Sequence[str]) -> list[str]:
         if c.comment:
             bag.append(c.comment)
         bag.extend(c.distinct_values)
+    for cm in concept.comments:
+        bag.append(cm.term)
+        if cm.comment:
+            bag.append(cm.comment)
     bag.extend(instructions)
     return bag
 
@@ -558,15 +633,19 @@ def build_universe(
     measures: Sequence[MeasureSignal],
     columns: Sequence[ColumnSignal],
     members: Sequence[str],
+    comments: Sequence[CommentSignal] = (),
 ) -> frozenset[str]:
     """Every real identifier the miner may backtick / cite as a Source — member
     assets, metric-view + measure pointers, source tables, coded-column pointers,
-    serving Agents. Anything outside this set is invented and fails the gate."""
+    commented assets, serving Agents. Anything outside this set is invented and fails
+    the gate."""
     u: set[str] = set(members)
     for m in measures:
         u.update({m.mv_fqn, m.ref, m.name, *m.source_fqns, *m.agent_fqns})
     for c in columns:
         u.update({c.table_fqn, c.ref, c.column, *c.agent_fqns})
+    for cm in comments:
+        u.update({cm.fqn, cm.term, *cm.agent_fqns})
     return frozenset(u)
 
 
@@ -579,7 +658,9 @@ def _distinct_definitions(measures: Sequence[MeasureSignal]) -> set[str]:
     return {(_canonical_measure(m.expression) or m.expression) for m in measures if (m.expression or "")}
 
 
-def _measure_detector(concept: _Concept, instructions: Sequence[str]) -> _DraftSpec | None:
+def _measure_detector(
+    concept: _Concept, instructions: Sequence[str], asset_domain: Mapping[str, str],
+) -> _DraftSpec | None:
     """One measure concept → exactly ONE Page: Disambiguation on a genuine expression
     conflict, else Guardrail for a rate/percentage, else Routing (the canonical
     answer). All corroborating measures aggregate into Sources."""
@@ -588,10 +669,10 @@ def _measure_detector(concept: _Concept, instructions: Sequence[str]) -> _DraftS
         return None
     name = ms[0].name
     cid = concept.canonical_id
-    dom = concept.home_domain()
     corr = concept.corroboration()
     agents = sorted({a for m in ms for a in m.agent_fqns})
     mv_sources = sorted({m.mv_fqn for m in ms} | {s for m in ms for s in m.source_fqns})
+    dom = _resolve_home_domain(concept, mv_sources, asset_domain)
     synonyms, classes = derive_synonyms(name, _concept_vocab(concept, instructions))
     key_ids = tuple(sorted(m.ref for m in ms))
     base_ev = {"contributing_artifacts": concept.contributing_artifacts()}
@@ -660,7 +741,9 @@ def _measure_detector(concept: _Concept, instructions: Sequence[str]) -> _DraftS
     )
 
 
-def _taxonomy_detector(concept: _Concept, instructions: Sequence[str]) -> _DraftSpec | None:
+def _taxonomy_detector(
+    concept: _Concept, instructions: Sequence[str], asset_domain: Mapping[str, str],
+) -> _DraftSpec | None:
     """Coded columns for one concept → a [Taxonomy] Page decoding the code list.
     Certify only for a governed code list (else no — page-archetypes.md)."""
     coded = [
@@ -672,10 +755,10 @@ def _taxonomy_detector(concept: _Concept, instructions: Sequence[str]) -> _Draft
     coded = sorted(coded, key=lambda c: c.ref)
     col = coded[0]
     cid = concept.canonical_id
-    dom = concept.home_domain()
     corr = concept.corroboration()
     agents = sorted({a for c in coded for a in c.agent_fqns})
     sources = sorted({c.table_fqn for c in coded})
+    dom = _resolve_home_domain(concept, sources, asset_domain)
     vocab = _concept_vocab(concept, instructions)
     synonyms, classes = derive_synonyms(col.column, vocab)
     key_ids = tuple(sorted(c.ref for c in coded))
@@ -696,23 +779,146 @@ def _taxonomy_detector(concept: _Concept, instructions: Sequence[str]) -> _Draft
     )
 
 
-def detect_concept(concept: _Concept, instructions: Sequence[str]) -> list[_DraftSpec]:
+def _comment_detector(
+    concept: _Concept,
+    instructions: Sequence[str],
+    asset_domain: Mapping[str, str],
+    coded_by_fqn: Mapping[str, ColumnSignal],
+    def_by_fqn: Mapping[str, frozenset[str]],
+) -> _DraftSpec | None:
+    """A business term carried in table/column COMMENTs → at most one broadened-trigger
+    Page (MV-D55): the SAME term on ≥2 assets whose canonical measure definitions
+    CONFLICT → [Disambiguation]; else a comment term sitting on a CODED column →
+    [Taxonomy]; else nothing (a lone descriptive comment with no coded/conflict signal
+    mines no Page — "no signal → nothing"). Codedness (``coded_by_fqn``) and conflicting
+    definitions (``def_by_fqn``) come from the estate-wide signal maps; the detector
+    reuses the SAME comparator (``_canonical_measure`` fingerprints, computed upstream)
+    and identity scheme — it invents nothing. ``detect_concept`` suppresses a comment
+    Page whose archetype the measure/taxonomy detectors already produced for the concept,
+    so comments never duplicate a Page they merely corroborate."""
+    cms = sorted(concept.comments, key=lambda c: c.fqn)
+    if not cms:
+        return None
+    cid = concept.canonical_id
+    corr = concept.corroboration()
+    term = cms[0].term
+    agents = sorted({a for cm in cms for a in cm.agent_fqns})
+    synonyms, classes = derive_synonyms(term, _concept_vocab(concept, instructions))
+
+    # [Disambiguation] — the same term on ≥2 distinct assets carrying conflicting
+    # canonical measure definitions (read from the estate-wide fingerprint map).
+    conflict_assets = sorted({cm.fqn for cm in cms if def_by_fqn.get(cm.fqn)})
+    conflict_defs: set[str] = set()
+    for f in conflict_assets:
+        conflict_defs |= set(def_by_fqn.get(f, ()))
+    if len(conflict_assets) >= 2 and len(conflict_defs) >= 2:
+        dom = _resolve_home_domain(concept, conflict_assets, asset_domain)
+        rules = tuple(
+            f"When asked for \"{term}\", {_bt(f)} carries its own definition of the term; "
+            f"confirm which asset is meant before writing SQL."
+            for f in conflict_assets
+        )
+        return _DraftSpec(
+            archetype="Disambiguation", canonical_id=cid, domain_id=dom, concept_name=term,
+            title=f"{_TITLE_PREFIX['Disambiguation']} {term}",
+            description=f"\"{term}\" names conflicting definitions across the estate — confirm which is meant.",
+            definition=(
+                f"The business term \"{term}\" appears on "
+                + ", ".join(_bt(f) for f in conflict_assets)
+                + " with conflicting definitions — these are not interchangeable."
+            ),
+            rules=rules, key_ids=tuple(conflict_assets), synonyms=synonyms, synonym_classes=classes,
+            related_fqns=tuple(agents), source_fqns=tuple(conflict_assets), corroboration=corr,
+            certify_shape=True, confidence=0.8,
+            evidence={"contributing_artifacts": concept.contributing_artifacts(),
+                      "conflicting_definitions": sorted(conflict_defs), "trigger": "comment"},
+        )
+
+    # [Taxonomy] — the comment term sits on a coded column (a decode Page keyed to the
+    # BUSINESS term the comment names, distinct from a bare column-name Taxonomy Page).
+    coded_hits = sorted(cm.fqn for cm in cms if cm.fqn in coded_by_fqn)
+    if coded_hits:
+        cols = [coded_by_fqn[f] for f in coded_hits]
+        sources = sorted({c.table_fqn for c in cols})
+        dom = _resolve_home_domain(concept, sources, asset_domain)
+        values = ", ".join(cols[0].distinct_values[:12])
+        return _DraftSpec(
+            archetype="Taxonomy", canonical_id=cid, domain_id=dom, concept_name=term,
+            title=f"{_TITLE_PREFIX['Taxonomy']} {term}",
+            description=f"\"{term}\" is stored as a coded column — decode its values before filtering or grouping.",
+            definition=(
+                f"The business term \"{term}\" is held as a fixed code list in "
+                + ", ".join(_bt(c.ref) for c in cols)
+                + f" ({values}). Decode each code to its business meaning."
+            ),
+            rules=(), key_ids=tuple(coded_hits), synonyms=synonyms, synonym_classes=classes,
+            related_fqns=tuple(agents), source_fqns=tuple(sources), corroboration=corr,
+            certify_shape=all(c.governed for c in cols), confidence=0.5,
+            evidence={"contributing_artifacts": concept.contributing_artifacts(),
+                      "distinct_values": list(cols[0].distinct_values),
+                      "governed": all(c.governed for c in cols), "trigger": "comment"},
+        )
+    return None
+
+
+def detect_concept(
+    concept: _Concept,
+    instructions: Sequence[str],
+    *,
+    asset_domain: Mapping[str, str] | None = None,
+    coded_by_fqn: Mapping[str, ColumnSignal] | None = None,
+    def_by_fqn: Mapping[str, frozenset[str]] | None = None,
+) -> list[_DraftSpec]:
     """All Page specs a concept yields (measures → one measure Page; coded columns → a
-    Taxonomy Page). [Method]/[Cross-domain]/[Defaults]/[Rule] are signal-gated and
-    dormant in the offline slice — their unambiguous signals (method families,
-    join-spine, standard filters, structural breaks) are not among the offline
-    reader's inputs, so "No signal → nothing" (§1.1)."""
+    Taxonomy Page; comment terms → a broadened-trigger Page). A comment Page whose
+    archetype a measure/taxonomy detector already produced for the concept is dropped —
+    comments then only corroborate that Page, never duplicate it.
+    [Method]/[Cross-domain]/[Defaults]/[Rule] are signal-gated and dormant in the
+    offline slice — their unambiguous signals (method families, join-spine, standard
+    filters, structural breaks) are not among the offline reader's inputs, so "No signal
+    → nothing" (§1.1); the same holds for :class:`HistorySignal` (no detector)."""
+    asset_domain = asset_domain or {}
+    coded_by_fqn = coded_by_fqn or {}
+    def_by_fqn = def_by_fqn or {}
     specs: list[_DraftSpec] = []
-    m = _measure_detector(concept, instructions)
+    produced: set[str] = set()
+    m = _measure_detector(concept, instructions, asset_domain)
     if m is not None:
         specs.append(m)
-    t = _taxonomy_detector(concept, instructions)
+        produced.add(m.archetype)
+    t = _taxonomy_detector(concept, instructions, asset_domain)
     if t is not None:
         specs.append(t)
+        produced.add(t.archetype)
+    cm = _comment_detector(concept, instructions, asset_domain, coded_by_fqn, def_by_fqn)
+    if cm is not None and cm.archetype not in produced:
+        specs.append(cm)
     return specs
 
 
 # ── Draft → validate → certify → PageCandidate ──────────────────────────────
+
+
+# One-line, archetype-keyed reason for why each SOURCE asset backs the Page (MV-D55).
+_SOURCE_WHY: dict[str, str] = {
+    "Routing": "Backs this metric — the governed answer for the concept.",
+    "Guardrail": "Backs this rate — recompute it from its numerator and denominator here.",
+    "Disambiguation": "One of the conflicting definitions this page reconciles.",
+    "Taxonomy": "Holds the coded values this page decodes.",
+}
+_RELATED_WHY = "Serving Genie Agent that answers questions about this concept."
+
+
+def _asset_why(spec: _DraftSpec) -> dict[str, str]:
+    """A deterministic one-line "why this asset" for every Source and Related FQN
+    (MV-D55). Rides in ``evidence`` — it never restructures the ``source_fqns`` /
+    ``related_fqns`` tuples. Sources read from the archetype; Related are the serving
+    Agents."""
+    src_reason = _SOURCE_WHY.get(spec.archetype, "Backs this page.")
+    why: dict[str, str] = {f: src_reason for f in spec.source_fqns}
+    for f in spec.related_fqns:
+        why[f] = _RELATED_WHY
+    return why
 
 
 def _validate_routing(spec: _DraftSpec, routing_validator: Callable[[str, str], bool] | None) -> bool | None:
@@ -802,6 +1008,7 @@ def _finalize(
         "routing_validated": routing_validated,
         "leak_degraded": leaked,
         "low_confidence": (not corroborated) or (not syn_ok),
+        "asset_why": _asset_why(spec),
         "gate_results": {
             "identifier": True, "chunk_safe": True, "specificity": True,
             "synonyms": syn_ok, "corroborated": corroborated, "contradiction": conflict,
@@ -845,13 +1052,41 @@ def flag_duplicates(candidates: Sequence[PageCandidate]) -> None:
                 b.evidence.setdefault("possible_duplicate_of", []).append(a.page_id)
 
 
+def _coded_column_index(columns: Sequence[ColumnSignal]) -> dict[str, ColumnSignal]:
+    """Estate-wide map ``coded-column ref → ColumnSignal`` (low-cardinality only) — the
+    codedness lookup for the comment detector's [Taxonomy] branch."""
+    return {
+        c.ref: c for c in columns
+        if c.distinct_values and len(c.distinct_values) <= _TAXONOMY_MAX_CARDINALITY
+    }
+
+
+def _definition_index(measures: Sequence[MeasureSignal]) -> dict[str, frozenset[str]]:
+    """Estate-wide map ``asset fqn → {canonical measure definitions}`` (reusing the ONLY
+    comparator, ``_canonical_measure`` / ``mv_fingerprint``) — the conflicting-definition
+    lookup for the comment detector's [Disambiguation] branch. An asset carrying two
+    differently-defined measures maps to a two-element set (a same-asset conflict); the
+    detector also unions across the ≥2 assets a term spans."""
+    out: dict[str, set[str]] = {}
+    for m in measures:
+        d = _canonical_measure(m.expression) or (m.expression or "")
+        if not d:
+            continue
+        for f in (m.mv_fqn, *m.source_fqns):
+            out.setdefault(f, set()).add(d)
+    return {f: frozenset(defs) for f, defs in out.items()}
+
+
 def mine_pages(
     *,
     measures: Sequence[MeasureSignal] = (),
     columns: Sequence[ColumnSignal] = (),
+    comments: Sequence[CommentSignal] = (),
+    history: Sequence[HistorySignal] = (),
     identity_verdicts: Sequence[Any] = (),
     members: Sequence[str] = (),
     instructions: Sequence[str] = (),
+    asset_domain: Mapping[str, str] | None = None,
     workspace_id: str = "",
     drafter: Callable[[dict], str] | None = None,
     routing_validator: Callable[[str, str], bool] | None = None,
@@ -860,19 +1095,30 @@ def mine_pages(
     """Mine archetype Page proposals for every canonical concept in the metastore.
 
     Resolve each signal to its 17d ``canonical_id`` (the anchor), aggregate all
-    artifacts that resolve to the same concept (across sub-domains), run the
-    deterministic detectors, draft + validate each candidate, dedupe best-effort, and
-    return concept-anchored ``PageCandidate``s (stable ``page_id``s). Per-concept and
-    per-candidate errors are logged and skipped (MV-D43); the caller MERGEs the result
-    metastore-scoped. Deterministic and offline."""
+    artifacts that resolve to the same concept (across sub-domains) — measures, coded
+    columns AND business-term comments (MV-D55) — run the deterministic detectors, attach
+    each Page to the domain of the MAJORITY of its Source assets (via ``asset_domain``,
+    an empty map falling back to the signal home), draft + validate each candidate,
+    dedupe best-effort, and return concept-anchored ``PageCandidate``s (stable
+    ``page_id``s). ``history`` is the DORMANT :class:`HistorySignal` seam — accepted so
+    the trigger surface is named, consumed by no detector (mines nothing). Per-concept
+    and per-candidate errors are logged and skipped (MV-D43); the caller MERGEs the
+    result metastore-scoped. Deterministic and offline."""
+    _ = history  # dormant seam (MV-D55): named, not mined — no Genie-history detector.
+    asset_domain = dict(asset_domain or {})
     index = _identity_index(identity_verdicts)
-    concepts = aggregate_concepts(measures, columns, index)
-    universe = build_universe(measures, columns, members)
+    concepts = aggregate_concepts(measures, columns, index, comments)
+    universe = build_universe(measures, columns, members, comments)
+    coded_by_fqn = _coded_column_index(columns)
+    def_by_fqn = _definition_index(measures)
 
     out: dict[str, PageCandidate] = {}
     for concept in concepts:
         try:
-            specs = detect_concept(concept, instructions)
+            specs = detect_concept(
+                concept, instructions, asset_domain=asset_domain,
+                coded_by_fqn=coded_by_fqn, def_by_fqn=def_by_fqn,
+            )
         except Exception as exc:  # noqa: BLE001 — skip this concept, keep the run
             logger.info("ontology page detection failed for %s (%s)", concept.canonical_id, exc)
             continue

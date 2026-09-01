@@ -60,6 +60,7 @@ function page(overrides: Partial<PageDraft> = {}): PageDraft {
     synonyms: ["TR", "net sales", "revenue booked"],
     related_fqns: ["Sales · 01ef"],
     source_fqns: ["finance.core.rev_mv"],
+    asset_why: {},
     certify: true,
     evidence: [{ label: "Backed by 2 sources", kind: "corroboration" }],
     tier: "medium",
@@ -153,5 +154,22 @@ describe("PageDraftCard — zero-burden render (17.0e)", () => {
     const html = renderToStaticMarkup(<PageDraftCard draft={page()} onDecide={noop} />)
     expect(html).toContain("Apply for me")
     expect(html).toContain("disabled")
+  })
+
+  it("renders the one-line why under Sources/Related (MV-D55)", () => {
+    const html = renderToStaticMarkup(
+      <PageDraftCard
+        draft={page({
+          asset_why: {
+            "finance.core.rev_mv": "Backs this metric — the governed answer for the concept.",
+            "Sales · 01ef": "Serving Genie Agent that answers questions about this concept.",
+          },
+        })}
+        onDecide={noop}
+      />,
+    )
+    expect(html).toContain("Backs this metric")
+    expect(html).toContain("Serving Genie Agent that answers questions")
+    assertZeroBurden(html)
   })
 })

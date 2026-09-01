@@ -227,6 +227,7 @@ def _gather_page_inputs(reader: Any, allowlist: list[str]) -> dict[str, Any]:
     return {
         "measures": _call("measure_signals", allowlist),
         "columns": _call("coded_column_signals", allowlist),
+        "comments": _call("comment_signals", allowlist),
         "instructions": _call("space_instructions"),
     }
 
@@ -475,10 +476,16 @@ def run_materialize(
         # corrupting the 17d/17e snapshots.
         page_in = _gather_page_inputs(reader, allowlist)
         member_fqns = {r["asset_fqn"] for r in expanded["member_rows"]}
+        # Source-majority attachment (MV-D55): the asset → sub-domain map computed THIS
+        # run (the just-MERGEd Sub-Domain membership). A Page attaches to the domain of
+        # the majority of its Source assets; an asset absent from this map (or an empty
+        # map) falls back to the signal home inside the wheel.
+        asset_domain = {r["asset_fqn"]: r["domain_id"] for r in expanded["member_rows"]}
         page_cands = pages.mine_pages(
             measures=page_in["measures"], columns=page_in["columns"],
-            identity_verdicts=er_verdicts, members=sorted(member_fqns | set(agents)),
-            instructions=page_in["instructions"], workspace_id=workspace_id,
+            comments=page_in["comments"], identity_verdicts=er_verdicts,
+            members=sorted(member_fqns | set(agents)), instructions=page_in["instructions"],
+            asset_domain=asset_domain, workspace_id=workspace_id,
             drafter=page_drafter, routing_validator=routing_validator, oracle=page_oracle,
         )
         page_rows = build_page_rows(

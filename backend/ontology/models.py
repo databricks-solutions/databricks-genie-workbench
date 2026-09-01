@@ -237,6 +237,10 @@ class PageDraft(BaseModel):
     synonyms: list[str] = Field(default_factory=list)
     related_fqns: list[str] = Field(default_factory=list)
     source_fqns: list[str] = Field(default_factory=list)
+    # Stage 4 (MV-D55): a one-line "why this asset" per Source/Related FQN, assembled
+    # server-side from the wheel's ``evidence.asset_why``. Additive; the card renders it
+    # under Sources/Related. Absent → an empty map (older rows, or a degraded run).
+    asset_why: dict[str, str] = Field(default_factory=dict)
     certify: bool
     evidence: list[EvidenceChip] = Field(default_factory=list)
     tier: DraftTier

@@ -18,6 +18,38 @@ function copyText(draft: PageDraft): string {
   return lines.join("\n")
 }
 
+/**
+ * A labelled list of Source/Related assets, each with its one-line "why this asset"
+ * (MV-D55) beneath. Reuses the card's mono chip styling; the reason is muted so the
+ * asset FQN stays primary.
+ */
+function AssetRows({
+  label,
+  fqns,
+  why,
+}: {
+  label: string
+  fqns: string[]
+  why: Record<string, string>
+}) {
+  if (!fqns.length) return null
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</p>
+      <ul className="mt-1 space-y-1.5">
+        {fqns.map((f) => (
+          <li key={f}>
+            <span className="inline-block rounded-md bg-elevated px-2 py-0.5 font-mono text-xs text-secondary">
+              {f}
+            </span>
+            {why[f] && <p className="mt-0.5 text-xs text-muted">{why[f]}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export function PageDraftCard({
   draft,
   onDecide,
@@ -78,31 +110,8 @@ export function PageDraftCard({
         </div>
       )}
 
-      {draft.related_fqns.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Related</p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {draft.related_fqns.map((r) => (
-              <span key={r} className="rounded-md bg-elevated px-2 py-0.5 font-mono text-xs text-secondary">
-                {r}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {draft.source_fqns.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Sources</p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {draft.source_fqns.map((s) => (
-              <span key={s} className="rounded-md bg-elevated px-2 py-0.5 font-mono text-xs text-secondary">
-                {s}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      <AssetRows label="Related" fqns={draft.related_fqns} why={draft.asset_why ?? {}} />
+      <AssetRows label="Sources" fqns={draft.source_fqns} why={draft.asset_why ?? {}} />
 
       <details className="rounded-lg border border-default bg-elevated/50 px-3 py-2">
         <summary className="cursor-pointer text-xs font-semibold text-secondary">

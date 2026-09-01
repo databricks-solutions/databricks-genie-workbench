@@ -443,6 +443,15 @@ def _page_chips(evidence: dict[str, Any], certify: bool) -> list[dict[str, str]]
     return chips
 
 
+def _page_asset_why(evidence: dict[str, Any]) -> dict[str, str]:
+    """The per-asset "why" map from the wheel's ``evidence.asset_why`` (MV-D55), coerced
+    to ``{str: str}``. Defensive: a missing / malformed value degrades to an empty map."""
+    raw = evidence.get("asset_why")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if v}
+
+
 def _assemble_page_draft(row: dict[str, Any], tier: str) -> dict[str, Any]:
     evidence = _evidence_of(row)
     archetype = str(row.get("archetype") or "Routing")
@@ -458,6 +467,9 @@ def _assemble_page_draft(row: dict[str, Any], tier: str) -> dict[str, Any]:
         "synonyms": _as_list(row.get("synonyms")),
         "related_fqns": _as_list(row.get("related_fqns")),
         "source_fqns": _as_list(row.get("source_fqns")),
+        # Stage 4 (MV-D55): per-asset "why", from the wheel's evidence.asset_why. A dict
+        # of {fqn: reason}; absent → empty (older rows / degraded run).
+        "asset_why": _page_asset_why(evidence),
         "certify": certify,
         "evidence": _page_chips(evidence, certify),
         "tier": tier,

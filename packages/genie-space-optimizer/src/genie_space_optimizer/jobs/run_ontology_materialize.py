@@ -417,6 +417,56 @@ class SparkSystemTableReader:
         (no [Taxonomy] pages) rather than issue a profiling sweep in the offline slice."""
         return []
 
+    def comment_signals(self, allowlist: list[str]) -> list[Any]:
+        """Business terms carried in table/column COMMENTs as :class:`pages.CommentSignal`s
+        — the broadened Page trigger (MV-D55). A best-effort ``information_schema`` read
+        scoped to the allowlist (per-catalog, denylist-filtered like every other schema
+        read, MV-D61); term = the asset's own name (column/table) so a comment corroborates
+        that asset's concept and its text enriches the synonym vocabulary. A missing grant
+        or unreadable relation degrades to [] (mine zero, MV-D43). Genie history is NOT
+        read — that trigger stays a dormant seam."""
+        if not allowlist:
+            return []
+        try:
+            from genie_space_optimizer.ontology import schema_signals
+            from genie_space_optimizer.ontology.pages import CommentSignal
+        except Exception as e:  # noqa: BLE001 — wheel/imports unavailable → mine zero
+            _log("page comment imports unavailable; mining zero comment pages", error=str(e))
+            return []
+        dl = self._schema_denylist
+        col_rows = schema_signals.filter_denylisted_schemas(
+            self._per_catalog(
+                allowlist, "columns",
+                "table_catalog, table_schema, table_name, column_name, comment",
+                "column_comments",
+            ),
+            denylist=dl,
+        )
+        tbl_rows = schema_signals.filter_denylisted_schemas(
+            self._per_catalog(
+                allowlist, "tables",
+                "table_catalog, table_schema, table_name, comment",
+                "table_comments",
+            ),
+            denylist=dl,
+        )
+        out: list[Any] = []
+        for r in col_rows:
+            comment = str(r.get("comment") or "").strip()
+            col = r.get("column_name")
+            if not comment or not col:
+                continue
+            fqn = f"{r.get('table_catalog')}.{r.get('table_schema')}.{r.get('table_name')}.{col}"
+            out.append(CommentSignal(fqn=fqn, term=str(col), comment=comment))
+        for r in tbl_rows:
+            comment = str(r.get("comment") or "").strip()
+            tbl = r.get("table_name")
+            if not comment or not tbl:
+                continue
+            fqn = f"{r.get('table_catalog')}.{r.get('table_schema')}.{tbl}"
+            out.append(CommentSignal(fqn=fqn, term=str(tbl), comment=comment))
+        return out
+
     def space_instructions(self) -> list[str]:
         """Existing Agent ``text_instructions`` (READ-ONLY, for the contradiction gate).
         Best-effort; absence simply means no contradiction downgrade (never blocks)."""

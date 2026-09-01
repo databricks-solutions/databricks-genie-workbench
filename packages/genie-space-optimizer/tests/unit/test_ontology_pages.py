@@ -13,7 +13,12 @@ determinism/idempotency.
 from __future__ import annotations
 
 from genie_space_optimizer.ontology import pages
-from genie_space_optimizer.ontology.pages import ColumnSignal, MeasureSignal
+from genie_space_optimizer.ontology.pages import (
+    ColumnSignal,
+    CommentSignal,
+    HistorySignal,
+    MeasureSignal,
+)
 
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -330,3 +335,148 @@ def test_default_page_drafter_degrades_to_empty_when_backend_absent():
     drafter = pages.default_page_drafter()
     assert drafter({"archetype": "Routing", "concept": "x", "description": "",
                     "definition": "", "rules": [], "sources": []}) == ""
+
+
+# ── Stage 4 (MV-D55): broadened COMMENT triggers ─────────────────────────────
+
+
+def _cabin_col(governed: bool = True) -> ColumnSignal:
+    return ColumnSignal(table_fqn="ops.air.flights", column="cabin_code",
+                        distinct_values=("F", "J", "Y"), governed=governed,
+                        domain_id="sug_ops")
+
+
+def test_comment_term_on_coded_column_yields_certify_eligible_taxonomy():
+    # A business term carried in comments, sitting on a coded column, backed by >=2
+    # independent artifacts → a certify-eligible [Taxonomy] Page keyed to the TERM.
+    c1 = CommentSignal(fqn="ops.air.flights.cabin_code", term="cabin",
+                       comment="cabin class; fare cabin; CBN",
+                       agent_fqns=("Ops · 01",), domain_id="sug_ops")
+    c2 = CommentSignal(fqn="ops.air.segments.cabin", term="cabin",
+                       comment="cabin class; fare cabin; CBN", domain_id="sug_ops")
+    cands = pages.mine_pages(columns=[_cabin_col()], comments=[c1, c2],
+                             members=["ops.air.flights", "Ops · 01"], drafter=_good_drafter)
+    cabin = [c for c in cands if c.title == "[Taxonomy] cabin"]
+    assert len(cabin) == 1
+    assert cabin[0].corroboration >= 2
+    assert cabin[0].certify is True
+    assert "ops.air.flights" in cabin[0].source_fqns
+
+
+def test_single_comment_artifact_is_low_confidence_not_certified():
+    c1 = CommentSignal(fqn="ops.air.flights.cabin_code", term="cabin",
+                       comment="cabin class; fare cabin; CBN", domain_id="sug_ops")
+    cands = pages.mine_pages(columns=[_cabin_col()], comments=[c1],
+                             members=["ops.air.flights"], drafter=_good_drafter)
+    cabin = [c for c in cands if c.title == "[Taxonomy] cabin"][0]
+    assert cabin.corroboration == 1
+    assert cabin.certify is False
+    assert cabin.evidence["low_confidence"] is True
+
+
+def test_comment_term_on_conflicting_defs_yields_disambiguation():
+    # The same comment term ("revenue") sits on two differently-defined measures →
+    # a [Disambiguation] Page reconciling them, both as Sources.
+    m1 = MeasureSignal(mv_fqn="finance.a.rev_mv", name="net_bookings",
+                       expression="SUM(net_amount)", comment="net",
+                       source_fqns=("finance.a.orders",), domain_id="sug_a")
+    m2 = MeasureSignal(mv_fqn="finance.b.rev_mv", name="gross_bookings",
+                       expression="SUM(gross_amount)", comment="gross",
+                       source_fqns=("finance.b.orders",), domain_id="sug_b")
+    c1 = CommentSignal(fqn="finance.a.rev_mv", term="revenue",
+                       comment="rev; ARR; top line", domain_id="sug_a")
+    c2 = CommentSignal(fqn="finance.b.rev_mv", term="revenue",
+                       comment="rev; ARR; top line", domain_id="sug_b")
+    members = ["finance.a.rev_mv", "finance.b.rev_mv", "finance.a.orders", "finance.b.orders"]
+    cands = pages.mine_pages(measures=[m1, m2], comments=[c1, c2], members=members,
+                             drafter=_good_drafter)
+    disamb = [c for c in cands if c.title == "[Disambiguation] revenue"]
+    assert len(disamb) == 1
+    assert {"finance.a.rev_mv", "finance.b.rev_mv"} <= set(disamb[0].source_fqns)
+
+
+def test_lone_descriptive_comment_mines_nothing():
+    # A comment naming a term that is neither coded nor conflicting → no Page.
+    c1 = CommentSignal(fqn="ops.air.flights.notes", term="remarks",
+                       comment="free text; notes; RMK", domain_id="sug_ops")
+    cands = pages.mine_pages(comments=[c1], members=["ops.air.flights"], drafter=_good_drafter)
+    assert cands == []
+
+
+def test_comment_on_present_coded_column_corroborates_not_duplicates():
+    # term == the coded column name → same concept; the taxonomy detector owns the
+    # Page and the comment only corroborates it (no second Taxonomy Page).
+    col = ColumnSignal(table_fqn="finance.sales.orders", column="status",
+                       distinct_values=("O", "F", "P"), governed=True, domain_id="sug_sales")
+    cm = CommentSignal(fqn="finance.sales.orders.status", term="status",
+                       comment="status code; state; STS", domain_id="sug_sales")
+    cands = pages.mine_pages(columns=[col], comments=[cm],
+                             members=["finance.sales.orders"], drafter=_good_drafter)
+    tax = [c for c in cands if c.archetype == "Taxonomy"]
+    assert len(tax) == 1
+    assert tax[0].corroboration == 2  # coded column + commented asset
+
+
+# ── Stage 4 (MV-D55): source-majority attachment ────────────────────────────
+
+
+def _sales_measure() -> MeasureSignal:
+    return MeasureSignal(mv_fqn="finance.s.rev_mv", name="total_revenue",
+                         expression="SUM(x)", comment="TR; net sales; booked",
+                         source_fqns=("finance.s.orders", "finance.s.items"),
+                         agent_fqns=("A · 1",), domain_id="sug_signal_home")
+
+
+def _sales_members() -> list[str]:
+    return ["finance.s.rev_mv", "finance.s.orders", "finance.s.items", "A · 1"]
+
+
+def test_attachment_is_source_majority_domain_via_asset_domain():
+    asset_domain = {
+        "finance.s.orders": "dom_sales", "finance.s.items": "dom_sales",
+        "finance.s.rev_mv": "dom_other",
+    }
+    [r] = [c for c in pages.mine_pages(measures=[_sales_measure()], members=_sales_members(),
+                                       asset_domain=asset_domain, drafter=_good_drafter)
+           if c.archetype == "Routing"]
+    assert r.domain_id == "dom_sales"  # majority of Source assets (2 vs 1)
+
+
+def test_empty_asset_domain_falls_back_to_signal_home():
+    [r] = [c for c in pages.mine_pages(measures=[_sales_measure()], members=_sales_members(),
+                                       drafter=_good_drafter)
+           if c.archetype == "Routing"]
+    assert r.domain_id == "sug_signal_home"
+
+
+def test_page_id_stable_as_home_domain_changes():
+    a = [c for c in pages.mine_pages(measures=[_sales_measure()], members=_sales_members(),
+                                     asset_domain={"finance.s.orders": "dom_A", "finance.s.items": "dom_A"},
+                                     drafter=_good_drafter) if c.archetype == "Routing"][0]
+    b = [c for c in pages.mine_pages(measures=[_sales_measure()], members=_sales_members(),
+                                     asset_domain={"finance.s.orders": "dom_B", "finance.s.items": "dom_B"},
+                                     drafter=_good_drafter) if c.archetype == "Routing"][0]
+    assert a.domain_id == "dom_A" and b.domain_id == "dom_B"
+    assert a.page_id == b.page_id  # concept-anchored — never the home domain
+
+
+# ── Stage 4 (MV-D55): per-asset "why" ────────────────────────────────────────
+
+
+def test_every_source_and_related_asset_has_a_why():
+    for c in _mine():
+        why = c.evidence["asset_why"]
+        for f in c.source_fqns:
+            assert why.get(f), f"missing why for Source {f}"
+        for f in c.related_fqns:
+            assert why.get(f), f"missing why for Related {f}"
+
+
+# ── Stage 4 (MV-D55): dormant HistorySignal seam ─────────────────────────────
+
+
+def test_history_signal_is_a_dormant_seam_that_mines_nothing():
+    hs = HistorySignal(question="which revenue do you mean?", term="revenue")
+    base = _mine()
+    withh = _mine(history=[hs])
+    assert {c.page_id for c in base} == {c.page_id for c in withh}
