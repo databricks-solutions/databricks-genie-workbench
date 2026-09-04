@@ -673,3 +673,35 @@ def test_every_subdomain_carries_a_boundary_reason():
     for s in subs:
         reason = s.evidence.get("reason")
         assert isinstance(reason, str) and reason.startswith(_BOUNDARY)
+
+
+# ── Stage-4.1c: default_namer reaches the wheel-native client, injected identity ──
+
+
+def test_default_namer_calls_common_client_not_backend(monkeypatch):
+    # The namer reaches common.llm.call_llm_core (monkeypatched — NOT backend) and
+    # returns the LLM-authored name; identity `w` is injected, never resolved here.
+    from genie_space_optimizer.common import llm as common_llm
+
+    seen = {}
+
+    def _ok_core(w, *, messages, model=None, max_tokens=None, **kwargs):
+        seen["w"] = w
+        return "Commercial\n(extra line ignored)", None
+
+    monkeypatch.setattr(common_llm, "call_llm_core", _ok_core)
+    sentinel = object()
+    namer = cluster.default_namer(company="ACME", w=sentinel)
+    assert namer(["finance.sales.orders"], "finance.sales.orders", None) == "Commercial"
+    assert seen["w"] is sentinel  # the injected identity was passed straight through
+
+
+def test_default_namer_degrades_to_none_when_llm_raises(monkeypatch):
+    from genie_space_optimizer.common import llm as common_llm
+
+    def _boom(w, *, messages, model=None, max_tokens=None, **kwargs):
+        raise RuntimeError("serving endpoint unreachable")
+
+    monkeypatch.setattr(common_llm, "call_llm_core", _boom)
+    namer = cluster.default_namer(w=object())
+    assert namer(["finance.sales.orders"], "finance.sales.orders", None) is None

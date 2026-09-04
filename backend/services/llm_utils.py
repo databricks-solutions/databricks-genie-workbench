@@ -1,109 +1,27 @@
-"""Shared LLM utilities for calling serving endpoints and parsing responses."""
+"""Shared backend-side LLM JSON helpers + config resolver.
+
+The LLM transport is the single wheel-native client
+(:func:`genie_space_optimizer.common.llm.call_llm_core`, MV-D65) — backend
+callers pass their OBO ``WorkspaceClient`` into it directly. This module keeps
+only the transport-free helpers: JSON extraction/repair for LLM responses and
+the model-name resolver.
+"""
 
 import json
 import logging
-import os
-import time
 
-import httpx
-
-from backend.services.auth import get_workspace_client
+from genie_space_optimizer.common.config import get_llm_endpoint
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRIES = 4
-_RETRY_BACKOFF_BASE = 2  # seconds
-_RETRYABLE_STATUSES = {429, 502, 503}
-
 
 def get_llm_model() -> str:
-    """Get the configured LLM model name."""
-    return os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    """Return the configured LLM serving-endpoint name.
 
-
-def call_serving_endpoint(
-    messages: list[dict],
-    model: str | None = None,
-    max_tokens: int | None = None,
-    timeout: float = 600,
-) -> str:
-    """Call the LLM serving endpoint using httpx with explicit timeout.
-
-    Uses httpx instead of the SDK's api_client.do() to avoid opaque retry
-    behavior on 429 (rate limit) responses that can cause silent 5-minute hangs.
-
-    Args:
-        messages: List of chat messages in OpenAI format
-        model: Model name to use. Defaults to LLM_MODEL env var.
-        max_tokens: Optional max tokens for response.
-        timeout: Per-request timeout in seconds (default 600s / 10 min).
-
-    Returns:
-        The assistant's response content
-
-    Raises:
-        RuntimeError: If rate limited (429) or other HTTP error
-        ValueError: If response format is unexpected or content is empty
+    Delegates to the single resolver :func:`get_llm_endpoint`
+    (``GSO_LLM_ENDPOINT`` → ``LLM_MODEL`` → default) so backend and wheel agree.
     """
-    if model is None:
-        model = get_llm_model()
-
-    client = get_workspace_client()
-    host = client.config.host.rstrip("/")
-
-    # Use SDK auth machinery to get proper headers for any auth type
-    # (PAT, oauth-m2m service principal, OBO user token, etc.)
-    auth_headers = client.config.authenticate()
-
-    url = f"{host}/serving-endpoints/{model}/invocations"
-    body: dict = {"messages": messages}
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
-
-    logger.info(f"Calling serving endpoint: {model}")
-
-    for attempt in range(_MAX_RETRIES + 1):
-        resp = httpx.post(
-            url,
-            json=body,
-            headers=auth_headers,
-            timeout=timeout,
-        )
-
-        if resp.status_code in _RETRYABLE_STATUSES:
-            if attempt >= _MAX_RETRIES:
-                logger.error("Serving endpoint returned %d after %d retries, giving up", resp.status_code, _MAX_RETRIES)
-                raise RuntimeError(f"Serving endpoint returned {resp.status_code} after {_MAX_RETRIES} retries.")
-            retry_after = resp.headers.get("Retry-After")
-            delay = float(retry_after) if retry_after else _RETRY_BACKOFF_BASE * (2 ** attempt)
-            logger.warning("%d from serving endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, _MAX_RETRIES)
-            time.sleep(delay)
-            continue
-        break
-
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"Serving endpoint returned {resp.status_code}: {resp.text[:500]}"
-        )
-
-    response = resp.json()
-
-    # Response is in OpenAI-compatible format
-    if not isinstance(response, dict):
-        raise ValueError(f"Unexpected response type: {type(response)}")
-
-    if "choices" not in response:
-        logger.error(f"Response missing 'choices': {response}")
-        raise ValueError(f"Response missing 'choices' key: {list(response.keys())}")
-
-    if not response["choices"]:
-        raise ValueError("Response has empty 'choices' list")
-
-    content = response["choices"][0]["message"]["content"]
-    if not content:
-        raise ValueError("LLM returned empty content")
-
-    return content
+    return get_llm_endpoint()
 
 
 def _repair_json(content: str) -> str:

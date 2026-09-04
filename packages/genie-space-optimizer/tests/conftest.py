@@ -36,7 +36,7 @@ def patch_llm_client(mock_openai_completion):
     mock_client.chat.completions.create.return_value = mock_openai_completion
 
     with patch(
-        "genie_space_optimizer.optimization.llm_client.get_openai_client",
+        "genie_space_optimizer.common.llm.get_openai_client",
         return_value=mock_client,
     ):
         yield mock_client

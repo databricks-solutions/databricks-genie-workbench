@@ -43,9 +43,12 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from genie_space_optimizer.ontology import er, similarity, transforms
+
+if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
 
@@ -1142,22 +1145,21 @@ def mine_pages(
 # ── Default LLM drafter (lazy backend import; degrades to the stub) ─────────
 
 
-def default_page_drafter(model: str | None = None) -> Callable[[dict], str]:
-    """A body drafter backed by ``call_serving_endpoint`` — the ONLY LLM path, for
-    body PROSE only (never structure/identifiers/the page_id). Lazily imports the
-    backend LLM client so this module stays importable on a job cluster without
-    ``backend`` on the path; on any failure it returns ``""`` so ``_draft_body`` falls
-    back to the deterministic stub + ``certify=false`` (MV-D43). The precedent is
+def default_page_drafter(
+    model: str | None = None, w: "WorkspaceClient | None" = None,
+) -> Callable[[dict], str]:
+    """A body drafter backed by the wheel-native LLM client
+    (:func:`genie_space_optimizer.common.llm.call_llm_core`) — the ONLY LLM path,
+    for body PROSE only (never structure/identifiers/the page_id). The identity
+    ``w`` is INJECTED (the job passes its ``run_as`` client; the app its OBO
+    client). On any failure it returns ``""`` so ``_draft_body`` falls back to the
+    deterministic stub + ``certify=false`` (MV-D43). The precedent is
     ``cluster.default_namer`` / ``er.default_adjudicator``."""
 
     def _draft(facts: dict) -> str:
         try:
-            from backend.services.llm_utils import call_serving_endpoint
-            chosen = model
-            if chosen:
-                from backend.services.model_catalog import validate_chat_model
-                chosen = validate_chat_model(chosen)
-        except Exception:  # noqa: BLE001 — backend/LLM not reachable here → stub
+            from genie_space_optimizer.common.llm import call_llm_core
+        except Exception:  # noqa: BLE001 — client unavailable here → stub
             return ""
         prompt = (
             "You write the BODY PROSE of a governed Genie ontology Page. You are given "
@@ -1172,10 +1174,12 @@ def default_page_drafter(model: str | None = None) -> Callable[[dict], str]:
             f"Rules: {facts.get('rules')}\nAllowed identifiers (Sources): {facts.get('sources')}\n"
         )
         try:
-            resp = call_serving_endpoint([{"role": "user", "content": prompt}], model=chosen, max_tokens=400)
+            text, _ = call_llm_core(
+                w, messages=[{"role": "user", "content": prompt}], model=model, max_tokens=400,
+            )
         except Exception as exc:  # noqa: BLE001 — degrade, never block the run
             logger.info("ontology page drafting call failed: %s", exc)
             return ""
-        return (resp or "").strip()
+        return (text or "").strip()
 
     return _draft

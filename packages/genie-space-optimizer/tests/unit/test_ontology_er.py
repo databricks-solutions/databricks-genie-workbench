@@ -113,15 +113,15 @@ def test_adjudicator_yes_merges_the_near_tie():
 
 
 def test_default_adjudicator_reached_only_on_band_via_mocked_endpoint(monkeypatch):
-    import backend.services.llm_utils as llm_utils
+    from genie_space_optimizer.common import llm as common_llm
 
     calls = {"n": 0}
 
-    def fake_call(messages, model=None, max_tokens=None, timeout=600):
+    def fake_call(w, *, messages, model=None, max_tokens=None, **kwargs):
         calls["n"] += 1
-        return "NO: distinct"
+        return "NO: distinct", None
 
-    monkeypatch.setattr(llm_utils, "call_serving_endpoint", fake_call)
+    monkeypatch.setattr(common_llm, "call_llm_core", fake_call)
     v = er.run_er(
         _band_candidates(), backend=similarity.InProcessCosineBackend(),
         vectors={}, adjudicator=er.default_adjudicator(),

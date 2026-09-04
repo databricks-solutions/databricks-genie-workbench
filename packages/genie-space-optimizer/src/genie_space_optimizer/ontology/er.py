@@ -11,14 +11,14 @@ scopes, page-name candidates}, run INSIDE the Phase-2 materializer (no new job):
   3. Score         — two signals per pair via the ONE ``similarity`` backend:
      string/keyword (edit + token) and embedding (cosine over GTE vectors).
   4. Adjudicate    — auto-merge high, auto-reject/distinct low, escalate ONLY the
-     near-tie band to the LLM (``call_serving_endpoint``) for a yes/no + reason.
+     near-tie band to the LLM (``common.llm.call_llm_core``) for a yes/no + reason.
   5. Confidence gate — dedup_gate-pattern thresholds decide the band boundaries.
 
 Degrade, never block (MV-D43): if the similarity or LLM path is unavailable the
 engine falls back / skips the escalation and still emits exact/string verdicts;
-the run never fails on adjudication unavailability. Pure/offline: no ``backend.*``
-import at module scope — the default LLM adjudicator lazy-imports it and degrades
-if it is absent (e.g. on the job cluster).
+the run never fails on adjudication unavailability. Pure/offline: no external call
+at module scope — the default LLM adjudicator lazy-imports the wheel-native client
+and degrades if the endpoint is unreachable (identity is injected by the caller).
 """
 
 from __future__ import annotations
@@ -27,10 +27,13 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Callable, Literal, Sequence
 
 from genie_space_optimizer.ontology import transforms
 from genie_space_optimizer.ontology.similarity import SimilarityBackend
+
+if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
 
@@ -353,23 +356,22 @@ def run_er(
 # ── Default LLM adjudicator (lazy backend import; degrades if unavailable) ──
 
 
-def default_adjudicator(model: str | None = None) -> Adjudicator:
-    """Return a near-tie adjudicator backed by ``call_serving_endpoint``.
+def default_adjudicator(
+    model: str | None = None, w: "WorkspaceClient | None" = None,
+) -> Adjudicator:
+    """Return a near-tie adjudicator backed by the wheel-native LLM client
+    (:func:`genie_space_optimizer.common.llm.call_llm_core`).
 
-    Lazily imports the backend LLM client so this module stays importable on a
-    job cluster without ``backend`` on the path; if the import or call fails the
-    adjudicator returns ``(None, None)`` (degrade → the near-tie stays unmerged).
-    The LLM is the ONLY external call, and it is reached ONLY for near-tie pairs.
+    The identity ``w`` is INJECTED (the job passes its ``run_as`` client). If the
+    import or call fails the adjudicator returns ``(None, None)`` (degrade → the
+    near-tie stays unmerged). The LLM is the ONLY external call, and it is reached
+    ONLY for near-tie pairs.
     """
 
     def _adjudicate(a: DedupeCandidate, b: DedupeCandidate) -> tuple[bool | None, str | None]:
         try:
-            from backend.services.llm_utils import call_serving_endpoint
-            chosen = model
-            if chosen:
-                from backend.services.model_catalog import validate_chat_model
-                chosen = validate_chat_model(chosen)
-        except Exception:  # noqa: BLE001 — backend/LLM not reachable here → degrade
+            from genie_space_optimizer.common.llm import call_llm_core
+        except Exception:  # noqa: BLE001 — client unavailable here → degrade
             return None, None
         prompt = (
             "You decide whether two data-catalog entities refer to the SAME concept "
@@ -379,13 +381,13 @@ def default_adjudicator(model: str | None = None) -> Adjudicator:
             f"Entity B ({b.kind}): {b.name}\n  context: {b.text}\n"
         )
         try:
-            resp = call_serving_endpoint(
-                [{"role": "user", "content": prompt}], model=chosen, max_tokens=120,
+            resp_text, _ = call_llm_core(
+                w, messages=[{"role": "user", "content": prompt}], model=model, max_tokens=120,
             )
         except Exception as e:  # noqa: BLE001 — degrade, never block the run
             logger.info("ontology ER LLM adjudication call failed: %s", e)
             return None, None
-        text = (resp or "").strip()
+        text = (resp_text or "").strip()
         head = text.split(":", 1)
         reason = head[1].strip() if len(head) > 1 else text
         if text.upper().startswith("YES"):

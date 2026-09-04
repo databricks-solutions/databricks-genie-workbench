@@ -329,10 +329,17 @@ def test_anchor_identity_map_collapses_two_refs_to_one_concept():
     assert routing[0].canonical_id == "dedupe_anchored"
 
 
-def test_default_page_drafter_degrades_to_empty_when_backend_absent():
-    # On a job cluster without `backend` importable, the drafter returns "" so the
-    # engine falls back to the deterministic stub (MV-D43) — never raises.
-    drafter = pages.default_page_drafter()
+def test_default_page_drafter_degrades_to_empty_when_llm_raises(monkeypatch):
+    # The wheel-native client (common.llm.call_llm_core) is always importable; a
+    # raising call degrades to "" so the engine falls back to the deterministic stub
+    # (MV-D43) — never raises. Identity is injected, never resolved in the wheel.
+    from genie_space_optimizer.common import llm as common_llm
+
+    def _boom(w, *, messages, model=None, max_tokens=None, **kwargs):
+        raise RuntimeError("serving endpoint unreachable")
+
+    monkeypatch.setattr(common_llm, "call_llm_core", _boom)
+    drafter = pages.default_page_drafter(w=object())
     assert drafter({"archetype": "Routing", "concept": "x", "description": "",
                     "definition": "", "rules": [], "sources": []}) == ""
 
@@ -434,6 +441,42 @@ def test_governed_coded_column_with_measure_is_certify_eligible_taxonomy():
     assert tax[0].corroboration == 2          # the MV + the coded table
     assert tax[0].evidence["governed"] is True
     assert tax[0].certify is True             # governed code list + corroborated + synonyms + llm
+
+
+def test_default_page_drafter_certifies_governed_coded_column_via_common_client(monkeypatch):
+    # Stage-4.1c acceptance: the REAL default_page_drafter reaches the wheel-native
+    # client (common.llm.call_llm_core, monkeypatched — NOT backend); a healthy body
+    # → body_source=llm → for a governed coded col + measure on one concept, certify=true.
+    from genie_space_optimizer.common import llm as common_llm
+
+    def _ok_core(w, *, messages, model=None, max_tokens=None, **kwargs):
+        # A stubbed-OK client: echo the detector's Description/Definition (which already
+        # carry the backticked identifier) back as a gate-passing body.
+        prompt = messages[0]["content"]
+
+        def _after(label: str) -> str:
+            for line in prompt.splitlines():
+                if line.startswith(label):
+                    return line[len(label):].strip()
+            return ""
+
+        return (f"Description: {_after('Description: ')}\n\n"
+                f"Definition:\n  {_after('Definition: ')}"), None
+
+    monkeypatch.setattr(common_llm, "call_llm_core", _ok_core)
+
+    measure = MeasureSignal(mv_fqn="ops.air.cabin_mv", name="cabin", expression="SUM(x)",
+                            comment="cabin class; fare cabin; CBN", source_fqns=("ops.air.flights",))
+    col = ColumnSignal(table_fqn="ops.air.flights", column="cabin",
+                       comment="cabin class code; fare cabin; CBN",
+                       distinct_values=("F", "J", "Y"), governed=True)
+    members = ["ops.air.cabin_mv", "ops.air.flights", "ops.air.cabin"]
+    drafter = pages.default_page_drafter(w=object())  # injected identity (fake, unused)
+    cands = pages.mine_pages(measures=[measure], columns=[col], members=members, drafter=drafter)
+    tax = [c for c in cands if c.archetype == "Taxonomy"]
+    assert len(tax) == 1
+    assert tax[0].evidence["body_source"] == "llm"  # the LLM path was exercised
+    assert tax[0].certify is True                    # governed + corroborated + synonyms + llm_ok
 
 
 def test_non_governed_coded_column_with_measure_is_not_certified():

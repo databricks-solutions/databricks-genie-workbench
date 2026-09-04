@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from genie_space_optimizer.common import llm as common_llm
 from genie_space_optimizer.optimization import llm_client
 
 
@@ -34,7 +35,7 @@ def test_call_llm_passes_timeout_to_openai_client(monkeypatch):
         chat=SimpleNamespace(completions=fake_completions),
         api_key="dapi-test-token",
     )
-    monkeypatch.setattr(llm_client, "get_openai_client", lambda w: fake_client)
+    monkeypatch.setattr(common_llm, "get_openai_client", lambda w: fake_client)
 
     content, _ = llm_client.call_llm(
         _fake_workspace_client(),
@@ -80,7 +81,7 @@ def test_call_llm_normalizes_structured_content_blocks(
         chat=SimpleNamespace(completions=fake_completions),
         api_key="dapi-test-token",
     )
-    monkeypatch.setattr(llm_client, "get_openai_client", lambda w: fake_client)
+    monkeypatch.setattr(common_llm, "get_openai_client", lambda w: fake_client)
 
     content, _ = llm_client.call_llm(
         _fake_workspace_client(),

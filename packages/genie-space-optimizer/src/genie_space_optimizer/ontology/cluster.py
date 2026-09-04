@@ -55,9 +55,12 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
 
 from genie_space_optimizer.ontology import er, transforms
+
+if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
 
@@ -371,19 +374,20 @@ def _cluster_name(
     return _anchor_name(anchor_fqn, assets)
 
 
-def default_namer(model: str | None = None, company: str | None = None) -> Namer:
-    """Namer backed by ``call_serving_endpoint`` (lazy backend import; degrades to
-    None if the backend/LLM is unreachable on the job cluster). Company prior + member
-    identifiers ONLY — the Context Pack vocabulary prior is Phase 4."""
+def default_namer(
+    model: str | None = None, company: str | None = None,
+    w: "WorkspaceClient | None" = None,
+) -> Namer:
+    """Namer backed by the wheel-native LLM client
+    (:func:`genie_space_optimizer.common.llm.call_llm_core`); degrades to None if the
+    LLM is unreachable. The identity ``w`` is INJECTED (the job passes its ``run_as``
+    client). Company prior + member identifiers ONLY — the Context Pack vocabulary
+    prior is Phase 4."""
 
     def _name(identifiers: list[str], anchor: str | None, comp: str | None) -> str | None:
         try:
-            from backend.services.llm_utils import call_serving_endpoint
-            chosen = model
-            if chosen:
-                from backend.services.model_catalog import validate_chat_model
-                chosen = validate_chat_model(chosen)
-        except Exception:  # noqa: BLE001 — backend/LLM not reachable here -> degrade
+            from genie_space_optimizer.common.llm import call_llm_core
+        except Exception:  # noqa: BLE001 — client unavailable here -> degrade
             return None
         prior = comp if comp is not None else company
         prompt = (
@@ -395,11 +399,13 @@ def default_namer(model: str | None = None, company: str | None = None) -> Namer
             f"Member assets: {', '.join(identifiers[:40])}\n"
         )
         try:
-            resp = call_serving_endpoint([{"role": "user", "content": prompt}], model=chosen, max_tokens=24)
+            text, _ = call_llm_core(
+                w, messages=[{"role": "user", "content": prompt}], model=model, max_tokens=24,
+            )
         except Exception as exc:  # noqa: BLE001 — degrade, never block the run
             logger.info("ontology cluster naming call failed: %s", exc)
             return None
-        return (resp or "").strip().splitlines()[0].strip() or None
+        return (text or "").strip().splitlines()[0].strip() or None
 
     return _name
 

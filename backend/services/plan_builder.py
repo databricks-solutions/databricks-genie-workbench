@@ -21,8 +21,10 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from backend.services.auth import run_in_context
-from backend.services.llm_utils import call_serving_endpoint, parse_json_from_llm_response, get_llm_model
+from genie_space_optimizer.common.llm import call_llm_core
+
+from backend.services.auth import get_workspace_client, run_in_context
+from backend.services.llm_utils import parse_json_from_llm_response, get_llm_model
 from backend.services.create_agent_tools import _test_sql
 
 logger = logging.getLogger(__name__)
@@ -175,11 +177,12 @@ def _call_llm_section(prompt: str, max_tokens: int, section_name: str, model: st
     ThreadPoolExecutor in generate_plan can catch and log it per-section.
     """
     try:
-        response = call_serving_endpoint(
-            [{"role": "user", "content": prompt}],
+        response = call_llm_core(
+            get_workspace_client(),
+            messages=[{"role": "user", "content": prompt}],
             model=model or get_llm_model(),
             max_tokens=max_tokens,
-        )
+        )[0]
         return parse_json_from_llm_response(response)
     except Exception as e:
         logger.exception("%s generation failed", section_name)

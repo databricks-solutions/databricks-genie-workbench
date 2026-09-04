@@ -1,136 +1,42 @@
-"""Shared OpenAI-based LLM client for Databricks Foundation Model API.
+"""Optimization-pipeline LLM client — a thin wrapper over the shared client.
 
-All LLM calls in the optimization pipeline should go through this module
-so that ``mlflow.openai.autolog()`` can instrument them uniformly —
-capturing token usage, cost, and latency on every span.
+The single low-level transport now lives in
+:mod:`genie_space_optimizer.common.llm` (MV-D65). This module re-exports it and
+adds the optimization-only concerns: ``fit_messages`` prompt packing and the
+``_gso_prompt_pack_stats`` attached to each response. GSO callers import
+``call_llm`` / ``get_openai_client`` from here exactly as before — behavior is
+unchanged.
 
-The ``openai.OpenAI`` client is configured to point at the Databricks
-serving-endpoints URL and uses bearer-token auth extracted from
-``WorkspaceClient``.
+All LLM calls in the optimization pipeline should go through this module so
+that ``mlflow.openai.autolog()`` can instrument them uniformly — capturing
+token usage, cost, and latency on every span.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import time
 from typing import TYPE_CHECKING, Any
 
 from genie_space_optimizer.common.config import (
     LLM_MAX_RETRIES,
     LLM_TEMPERATURE,
-    get_llm_endpoint,
+)
+
+# Re-export the shared low-level client so existing import sites
+# (``from ...llm_client import get_openai_client`` / ``call_llm``) keep working.
+from genie_space_optimizer.common.llm import (  # noqa: F401
+    _message_content_text,
+    _openai_client_cache,
+    _resolve_bearer_token,
+    call_llm_core,
+    eval_llm_timeout_seconds,
+    get_openai_client,
 )
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
-
-_LLM_TIMEOUT_SECONDS_DEFAULT = 600
-
-
-def eval_llm_timeout_seconds() -> int:
-    """Per-request HTTP timeout for judge LLM calls.
-
-    Defaults to 600s (production-on). Override via env when debugging.
-    Floors at 30s to avoid pathological zero/negative values.
-    """
-    raw = os.getenv("GENIE_SPACE_OPTIMIZER_EVAL_LLM_TIMEOUT_SECONDS", "").strip()
-    if not raw:
-        return _LLM_TIMEOUT_SECONDS_DEFAULT
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid GENIE_SPACE_OPTIMIZER_EVAL_LLM_TIMEOUT_SECONDS=%r; using %d",
-            raw,
-            _LLM_TIMEOUT_SECONDS_DEFAULT,
-        )
-        return _LLM_TIMEOUT_SECONDS_DEFAULT
-    return max(30, value)
-
-
-_openai_client_cache: dict[str, Any] = {}
-
-
-def _message_content_text(content: Any) -> str:
-    """Normalize OpenAI-compatible message content into plain text.
-
-    Databricks serving endpoints may return either the traditional string or
-    structured content blocks.  Joining block text without a separator keeps
-    JSON responses valid when an endpoint splits one document across blocks.
-    """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, (list, tuple)):
-        return "".join(_message_content_text(part) for part in content)
-    if isinstance(content, dict):
-        for key in ("text", "content", "value"):
-            if key in content:
-                return _message_content_text(content[key])
-        return ""
-
-    for attribute in ("text", "content", "value"):
-        value = getattr(content, attribute, None)
-        if value is not None and value is not content:
-            return _message_content_text(value)
-    return str(content)
-
-
-def _resolve_bearer_token(wc: "WorkspaceClient") -> str:
-    """Extract a bearer token from the workspace client's auth chain.
-
-    Tries ``config.token`` first (covers PAT / env-var auth).  Falls back
-    to ``config.authenticate()`` which invokes the SDK's full credential
-    chain — OAuth M2M, Azure MI, Google SA, etc. — and returns fresh
-    ``Authorization`` headers.
-    """
-    token = wc.config.token
-    if token:
-        return token
-
-    try:
-        headers = wc.config.authenticate()
-        auth_value = headers.get("Authorization", "")
-        if auth_value.lower().startswith("bearer "):
-            return auth_value[len("Bearer "):]
-    except Exception:
-        pass
-
-    raise RuntimeError(
-        "Cannot resolve a bearer token from the WorkspaceClient. "
-        "Ensure DATABRICKS_TOKEN is set or that OAuth/service-principal "
-        "credentials are configured."
-    )
-
-
-def get_openai_client(w: "WorkspaceClient | None") -> Any:
-    """Return an OpenAI client pointing at the Databricks FMAPI endpoint.
-
-    Caches the client by host but **refreshes the bearer token on every
-    call** so that OAuth token rotation is handled transparently.
-
-    ``mlflow.openai.autolog()`` must be called once before first use
-    to enable automatic token/cost tracking on all spans.
-    """
-    from databricks.sdk import WorkspaceClient as _WC
-    from openai import OpenAI
-
-    wc = w if w is not None else _WC()
-    host = wc.config.host.rstrip("/")
-    token = _resolve_bearer_token(wc)
-
-    if host not in _openai_client_cache:
-        _openai_client_cache[host] = OpenAI(
-            api_key=token,
-            base_url=f"{host}/serving-endpoints",
-        )
-    else:
-        _openai_client_cache[host].api_key = token
-    return _openai_client_cache[host]
 
 
 def call_llm(
@@ -148,8 +54,9 @@ def call_llm(
     Returns ``(content_text, response_object)`` on success.
     Raises the last exception if all retries are exhausted.
 
-    This is the low-level building block — callers are responsible for
-    JSON parsing, prompt linking, span wrapping, etc.
+    Packs the messages with :func:`fit_messages` (the wide-schema prompt
+    budget) before delegating to :func:`common.llm.call_llm_core`, and attaches
+    ``_gso_prompt_pack_stats`` to the response for downstream telemetry.
 
     ``temperature`` is accepted for backwards-compatible call sites but is
     not sent to Databricks, because some supported reasoning/frontier
@@ -166,49 +73,15 @@ def call_llm(
         })
     logger.info("GSO LLM request packed: %s", pack_stats)
 
-    client = get_openai_client(w)
-    model = get_llm_endpoint()
-
-    call_kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "timeout": eval_llm_timeout_seconds(),
-    }
-    # Do not send temperature: Claude Opus 4.7/4.8 and some GPT 5.x endpoints reject it.
-    if max_tokens is not None:
-        call_kwargs["max_tokens"] = max_tokens
-    if response_format is not None:
-        call_kwargs["response_format"] = response_format
-
-    last_err: Exception | None = None
-    retried_without_response_format = False
-    total_attempts = max_retries + (1 if response_format is not None else 0)
-    for attempt in range(total_attempts):
-        try:
-            response = client.chat.completions.create(**call_kwargs)
-            if not response.choices:
-                raise ValueError("LLM response had no choices")
-            content = _message_content_text(response.choices[0].message.content).strip()
-            if not content:
-                raise ValueError("LLM response content is empty")
-            try:
-                response._gso_prompt_pack_stats = pack_stats
-            except Exception:
-                pass
-            return content, response
-        except Exception as exc:
-            if response_format is not None and not retried_without_response_format:
-                message = str(exc).lower()
-                if "response_format" in message or "json" in message:
-                    logger.info(
-                        "LLM endpoint rejected response_format; retrying without it: %s",
-                        exc,
-                    )
-                    call_kwargs.pop("response_format", None)
-                    retried_without_response_format = True
-                    continue
-            last_err = exc
-            if attempt < total_attempts - 1:
-                time.sleep(2**attempt)
-
-    raise last_err  # type: ignore[misc]
+    content, response = call_llm_core(
+        w,
+        messages=messages,
+        max_tokens=max_tokens,
+        response_format=response_format,
+        max_retries=max_retries,
+    )
+    try:
+        response._gso_prompt_pack_stats = pack_stats
+    except Exception:
+        pass
+    return content, response

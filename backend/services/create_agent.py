@@ -666,7 +666,8 @@ class CreateGenieAgent:
         Sends the error message and the failing config section to the LLM,
         which returns a corrected config.  Returns None if repair fails.
         """
-        from backend.services.llm_utils import call_serving_endpoint, parse_json_from_llm_response
+        from genie_space_optimizer.common.llm import call_llm_core
+        from backend.services.llm_utils import parse_json_from_llm_response
         try:
             # Send both sections — use a generous limit so the LLM sees the full config
             repair_context = {
@@ -685,11 +686,12 @@ class CreateGenieAgent:
                 "(with both 'instructions' and 'data_sources' sections intact).\n"
                 "Return ONLY valid JSON: {\"instructions\": {...}, \"data_sources\": {...}}"
             )
-            response = call_serving_endpoint(
-                [{"role": "user", "content": prompt}],
+            response = call_llm_core(
+                get_workspace_client(),
+                messages=[{"role": "user", "content": prompt}],
                 model=model or get_llm_model(),
                 max_tokens=16000,
-            )
+            )[0]
             repaired = parse_json_from_llm_response(response)
             # Merge repaired sections back into original config
             fixed = {**config}

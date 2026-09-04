@@ -56,6 +56,18 @@ def _log(msg: str, **kw: Any) -> None:
     print(f"{_TASK_LABEL} {msg}{(' ' + extra) if extra else ''}")
 
 
+# MLflow OpenAI autolog — token/cost/latency spans on every ontology LLM call
+# (drafter / namer / adjudicator, MV-D65). Best-effort: a failure here just means
+# no tracing; the run continues (degrade-not-hang, MV-D43).
+try:
+    import mlflow  # noqa: E402
+
+    mlflow.openai.autolog()
+    _log("mlflow.openai.autolog enabled for ontology LLM calls")
+except Exception as _e:  # noqa: BLE001 — tracing is optional, never blocks the run
+    _log("mlflow.openai.autolog unavailable; ontology LLM calls run untraced", error=str(_e))
+
+
 # COMMAND ----------
 
 dbutils.widgets.text("metastore_id", "")
@@ -639,6 +651,10 @@ class SparkSystemTableReader:
 # to anchor-derived names — MV-D43).
 from genie_space_optimizer.ontology import cluster, er, pages, similarity  # noqa: E402
 
+# The run_as identity (MV-D50) injected into the LLM enrichers — the wheel never
+# resolves identity itself (MV-D65). Needs CAN QUERY on the LLM_MODEL endpoint.
+_ont_llm_w = make_workspace_client()
+
 try:
     from genie_space_optimizer.optimization.mv_scoring import FoundationModelEmbeddingClient
     _embedder = FoundationModelEmbeddingClient(make_workspace_client())
@@ -665,12 +681,12 @@ run = materialize.run_materialize(
     run_id=run_id,
     similarity_backend=similarity.get_similarity_backend(None),  # in-process (Lakebase Search off)
     embedder=_embedder,
-    adjudicator=er.default_adjudicator(),
-    namer=cluster.default_namer(),  # LLM cluster naming; degrades to anchor names
+    adjudicator=er.default_adjudicator(w=_ont_llm_w),
+    namer=cluster.default_namer(w=_ont_llm_w),  # LLM cluster naming; degrades to anchor names
     # L5 Page mining (Phase 3c) — deterministic detectors + LLM BODY PROSE only
     # (degrades to a deterministic stub + certify=false, MV-D43). Routing ask_genie
     # confirmation degrades to unvalidated (no concept→Agent map wired here).
-    page_drafter=pages.default_page_drafter(),
+    page_drafter=pages.default_page_drafter(w=_ont_llm_w),
     routing_validator=None,
     # Stage 3 curation policy (MV-D57) — from job_parameters, in-code defaults above.
     facet_denylist=facet_denylist,
