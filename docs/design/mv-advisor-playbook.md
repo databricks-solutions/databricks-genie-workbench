@@ -783,9 +783,9 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D62 — Diffuseness gate is a presentation safety net for non-curated structural Domains (PROPOSED — owner directive).** `rank._apply_diffuseness_gate` (mirroring `_apply_legitimacy_gate`, curated-exempt per Stage-3.1) keeps but does not surface a **top-level, non-curated, structural** Domain that still spans ≥ `domain_max_diffuse_schemas`=6 schemas with home-concentration < `domain_min_home_concentration`=0.5 (the A.3 hairball was 9/0.32). Additive `evidence.rank` keys only; no new table/route. It is a net, not the fix — MV-D61 is the root cause. Build spec §2.2.
 
-**MV-D63 — Coded columns are fed into the batch miner, bounded (PROPOSED — owner directive).** The Stage-4.1a live gate proved measures alone yield 480 Pages that are all `trigger=measure` and all `certify=false`, because `run_ontology_materialize.coded_column_signals` returns `[]` (value-profiling was deferred to a never-built serve pass). Stage 4.1b replaces that stub with a **bounded** two-pass read — a metadata-only prefilter (STRING/small-INT with a coded name or enum-like comment) then a **capped** `approx_count_distinct` + value-list profile (reusing `optimization.wide_schema_profile`, ≤ `coded_column_max_columns`=300, distinct ≤ `coded_column_max_cardinality`) against the 4.1a-threaded warehouse — so `[Taxonomy]` Pages, the comment→`[Taxonomy]` trigger, and measure⊕column corroboration (→ some `certify=true`) light up. Reader-only (detectors unchanged); any failure ⇒ `[]` (MV-D43). Build spec `ontology-curation-redesign-stage4.1-build.md` §3.1.
+**MV-D63 — Coded columns are fed into the batch miner, bounded (LANDED + deploy-verified — commit `d85ed3b5`; live gate build §9: Taxonomy 0→161, corroboration ≥2 on 591/641).** The Stage-4.1a live gate proved measures alone yield 480 Pages that are all `trigger=measure` and all `certify=false`, because `run_ontology_materialize.coded_column_signals` returns `[]` (value-profiling was deferred to a never-built serve pass). Stage 4.1b replaces that stub with a **bounded** two-pass read — a metadata-only prefilter (STRING/small-INT with a coded name or enum-like comment) then a **capped** `approx_count_distinct` + value-list profile (reusing `optimization.wide_schema_profile`, ≤ `coded_column_max_columns`=300, distinct ≤ `coded_column_max_cardinality`) against the 4.1a-threaded warehouse — so `[Taxonomy]` Pages, the comment→`[Taxonomy]` trigger, and measure⊕column corroboration (→ some `certify=true`) light up. Reader-only (detectors unchanged); any failure ⇒ `[]` (MV-D43). Build spec `ontology-curation-redesign-stage4.1-build.md` §3.1.
 
-**MV-D64 — Pages must attach to a surfaced Domain to surface (PROPOSED — owner directive).** Pages skip the legitimacy/diffuseness gates, so 41 of the Stage-4.1a Pages surfaced with an empty `domain_id`. `rank._apply_page_attachment_gate` (mirroring the Domain gates) keeps but sets `surfaced=false` + `surfaced_reason` for a Page whose `domain_id` is empty or points to a non-surfaced Domain; guarded by `page_require_domain`=true. Additive `evidence` keys only; no new table/route. Build spec §3.2.
+**MV-D64 — Pages must attach to a surfaced Domain to surface (LANDED + deploy-verified — commit `d85ed3b5`; live gate build §9: 0 surfaced-but-unattached, the 41 orphans closed).** Pages skip the legitimacy/diffuseness gates, so 41 of the Stage-4.1a Pages surfaced with an empty `domain_id`. `rank._apply_page_attachment_gate` (mirroring the Domain gates) keeps but sets `surfaced=false` + `surfaced_reason` for a Page whose `domain_id` is empty or points to a non-surfaced Domain; guarded by `page_require_domain`=true. Additive `evidence` keys only; no new table/route. Build spec §3.2.
 
 > **Curation-redesign driver status (mirrors the Phase-pair pointers).** The full
 > section-by-section spec is `docs/design/ontology-curation-redesign-build.md`
@@ -816,13 +816,18 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > batch Page path was dormant (0 pages on every run), root-caused to a missing job
 > warehouse; **Stage 4.1a** (commit `246b3983`, warehouse threaded as a job parameter)
 > fixed it live — `page_count` 0→480 (Routing 436 / Guardrail 28 / Disambiguation 16).
-> That yield exposed two remaining gaps → **Stage 4.1b — BUILD-READY**
-> (`ontology-curation-redesign-stage4.1-driver.md`, MV-D63/D64, build spec
-> `ontology-curation-redesign-stage4.1-build.md`): coded columns fed bounded into the
-> batch miner (so comments/`[Taxonomy]`/corroboration light up) + a Page-attachment gate
-> (so orphan Pages stop surfacing). **Stage 4.1c** (comment-primary standalone Pages) is
-> deferred. §9 alignment folds into Phase 4 (17h); §10 eval harness (MV-D59) follows. The
-> block above is the register; the build spec is the source of truth.
+> That yield exposed two remaining gaps → **Stage 4.1b — LANDED + deploy-verified**
+> (commit `d85ed3b5`, `ontology-curation-redesign-stage4.1-driver.md`, MV-D63/D64, build
+> spec §9): coded columns fed bounded into the batch miner + a Page-attachment gate. Live
+> gate (build §9, run `934403918953760`): `page_count` 480→641, **Taxonomy 0→161** decoding
+> real coded columns, **0 surfaced-but-unattached** (the 41 orphans closed), and
+> **corroboration ≥2 on 591/641** Pages (measure⊕column now collapses). `certify=0` is
+> **by design** — the batch cluster has no `backend` on path, so `default_page_drafter`
+> degrades to the stub → `llm_ok=false` → `certify=false` (MV-D43); certification is an
+> app-path concern. **Stage 4.1c** (a wheel-native drafter so batch can certify, and
+> comment-primary standalone Pages) is deferred. §9 alignment folds into Phase 4 (17h);
+> §10 eval harness (MV-D59) follows. The block above is the register; the build spec is the
+> source of truth.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

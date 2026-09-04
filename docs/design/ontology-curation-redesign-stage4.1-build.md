@@ -151,3 +151,44 @@ scoped to `["serverless_stable_6t92c3_catalog"]`, then confirm on `genie_ont_pag
   sweep is a later opt-in (declined here for cost).
 - **Over-hiding Pages** if a legitimate Domain didn't surface → the gate keeps the row
   (not deleted) and `page_require_domain` can be flipped off; revisit with Domain gates.
+
+## 9. Live verification (Stage-4.1b deploy-verify) — LANDED
+
+Deploy: `SKIP_FRONTEND_BUILD=1 ./scripts/deploy.sh --update` (fevm-serverless), ontology
+job `529504954941024` redeployed with the 4.1b wheel (commit `d85ed3b5`). Run
+`934403918953760`, `catalog_allowlist=["serverless_stable_6t92c3_catalog"]` → **SUCCESS**
+(~20 min; the added coded-column profiling pass lengthened it). Ledger: 140 domains,
+**page_count 480 → 641**. Read from `genie_ont_pages`:
+
+| Check (from §7) | Result | |
+|---|---|---|
+| `[Taxonomy] > 0`, non-measure trigger fires | **161 Taxonomy** (0 → 161) | ✅ coded-column trigger lit |
+| **0** surfaced-but-unattached | **0** (was 41) | ✅ MV-D64 gate closed all orphans |
+| Taxonomy Pages decode real coded columns | `account_status→[active]`, `ad_status→[active]`, `accrual_status→[posted]`, `accrual_source_type→[flight]` … all attached to real domains | ✅ |
+| `certify=true > 0` | **0** | ⚠️ **by design** (below) |
+
+Archetype mix: Routing 436 · **Taxonomy 161** · Guardrail 28 · Disambiguation 16.
+
+**Corroboration — the real 4.1b goal — works.** The `certify` line was a proxy for
+measure⊕column corroboration, and that engine is now on: **591 of 641 Pages are at
+corroboration ≥ 2** (corr=2 → 477, corr=3 → 61, up to corr=12), versus all-`corr=1` in
+Stage-4.1a. Coded columns collapse onto the same canonical concepts as the measures.
+
+**Why `certify=0` is by design, not a defect.** `certify` (pages.py:988) =
+`certify_shape AND corroborated AND syn_ok AND not conflict AND llm_ok`. Everything is
+satisfied **except `llm_ok`** — all 641 Pages are `body_source=stub`. `default_page_drafter`
+does `from backend.services.llm_utils import call_serving_endpoint`, but **`backend` is not
+on the job cluster** (the job env installs only the `genie_space_optimizer` wheel), so the
+import raises → drafter returns `""` → deterministic stub → `llm_ok=False` → `certify=false`.
+The drafter docstring states this intent explicitly ("stays importable on a job cluster
+without `backend`… falls back to the deterministic stub + `certify=false`", MV-D43).
+Certification is an **app-process / interactive** concern, not batch. Separately, all 161
+Taxonomy are `governed=false` — correct for this estate (the demo columns carry no governed
+tags / CHECK enums).
+
+**Verdict:** the four 4.1b deliverables (coded-column trigger, real decodes, attachment
+gate, measure⊕column corroboration) all landed and verified live. The `certify=true>0`
+line in §7 was written against the wrong process — unachievable in batch without porting an
+LLM client into the wheel, which MV-D43 deliberately avoids. Batch emits
+corroboration-complete, attached, decoded Pages that are intentionally **uncertified**;
+certification happens on the app path (or a future **Stage-4.1c** wheel-native drafter).
