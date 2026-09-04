@@ -833,12 +833,14 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > `da561361`): the three ontology enrichers now use the wheel-native `common.llm` client
 > with an **injected** identity — but the 4.1c deploy-verify (run `775414490043851`) drafted
 > **all 641 Pages** in batch → ~68 min → **task timeout → FAILED**. The client consolidation
-> stays; the "draft all" posture is replaced by **Stage 4.1d — BUILD-READY (Step 1)**
-> (`ontology-curation-redesign-stage4.1d-driver.md`, MV-D66, build spec
-> `ontology-curation-redesign-stage4.1d-build.md`): **deterministic** `certify` (drop
-> `llm_ok`) + a hard-capped "super sure" auto-draft in batch (Step 1), `body_source`
-> preservation across re-materialize (Step 2), and curator-driven single/bulk drafting
-> (Steps 3–4). §9 alignment folds into Phase 4 (17h);
+> stays; the "draft all" posture is replaced by **Stage 4.1d — BUILD-READY** (MV-D66, build
+> spec `ontology-curation-redesign-stage4.1d-build.md`), sequenced across four step drivers:
+> **Step 1** `…-stage4.1d-driver.md` — **deterministic** `certify` (drop `llm_ok`) + a
+> hard-capped "super sure" auto-draft in batch; **Step 2** `…-stage4.1d-step2-driver.md` —
+> `body_source` preservation across re-materialize; **Step 3** `…-stage4.1d-step3-driver.md`
+> — on-demand single-Page "Draft with AI" (app, OBO); **Step 4**
+> `…-stage4.1d-step4-driver.md` — bulk "Draft this sub-domain with AI" (app, OBO). Build
+> Step 1 first (unblocks the timeout); Steps 2→3→4 in order. §9 alignment folds into Phase 4 (17h);
 > §10 eval harness (MV-D59) follows. The block above is the register; the build spec is the
 > source of truth.
 
