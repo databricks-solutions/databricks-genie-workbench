@@ -338,6 +338,7 @@ def run_materialize(
     domain_require_connection: bool = transforms.DOMAIN_REQUIRE_CONNECTION,
     domain_max_diffuse_schemas: int = transforms.DOMAIN_MAX_DIFFUSE_SCHEMAS,
     domain_min_home_concentration: float = transforms.DOMAIN_MIN_HOME_CONCENTRATION,
+    page_require_domain: bool = True,
 ) -> dict[str, Any]:
     """Materialize the governed-tag graph + taxonomy snapshots for one metastore
     (MV-D49 grain), then resolve identity (L3 ER) and MERGE the identity map +
@@ -516,6 +517,7 @@ def run_materialize(
             require_connection=domain_require_connection,
             max_diffuse_schemas=domain_max_diffuse_schemas,
             min_home_concentration=domain_min_home_concentration,
+            page_require_domain=page_require_domain,
         )
         report = rank.mark_surfaced(
             expanded["domain_rows"], page_rows, _gather_suppressions(reader, metastore_id),

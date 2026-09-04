@@ -311,6 +311,27 @@ def _apply_diffuseness_gate(
         evidence["surfaced"] = False
 
 
+_PAGE_UNATTACHED_REASON = "page not attached to a surfaced domain"
+
+
+def _apply_page_attachment_gate(row: dict[str, Any], surfaced_domain_ids: set[str]) -> None:
+    """The Page-attachment gate (MV-D64), applied to a Page row in place AFTER
+    ``_score_row`` set its tentative ``evidence["surfaced"]``: a Page whose ``domain_id``
+    is empty — or points to a Domain that did NOT surface this run — is KEPT but
+    ``surfaced=false`` with a ``surfaced_reason`` hint, never shown orphaned (spec §3.2).
+    ``surfaced_domain_ids`` are the Domains that cleared their own gates this run
+    (computed from the just-scored ``domain_rows``); Domains are scored first, so this
+    set is known before the Page pass. Rides ``evidence`` — no new column (MV-D49) — and
+    never deletes the row (the metastore re-MERGE carries the full set, §8)."""
+    dom = str(row.get("domain_id") or "")
+    if dom and dom in surfaced_domain_ids:
+        return
+    ev = _load_evidence(row)
+    ev["surfaced"] = False
+    ev["surfaced_reason"] = _PAGE_UNATTACHED_REASON
+    row["evidence"] = json.dumps(ev, sort_keys=True)
+
+
 def _domain_assets(row: dict[str, Any], evidence: Mapping[str, Any], members_by_domain: Mapping[str, Sequence[str]]) -> list[str]:
     """A Domain proposal's scoring assets: its member FQNs (17e membership) plus the
     lineage anchor / shared spine carried in evidence (the load-bearing spine)."""
@@ -402,6 +423,7 @@ def score_proposals(
     require_connection: bool = transforms.DOMAIN_REQUIRE_CONNECTION,
     max_diffuse_schemas: int = transforms.DOMAIN_MAX_DIFFUSE_SCHEMAS,
     min_home_concentration: float = transforms.DOMAIN_MIN_HOME_CONCENTRATION,
+    page_require_domain: bool = True,
 ) -> None:
     """Score + firewall every Domain / Sub-Domain / Page proposal **in place**.
 
@@ -413,6 +435,11 @@ def score_proposals(
     carries the full set (§8). The legitimacy bar defaults come from config (MV-D57);
     a param-less call uses the shipped moderate defaults. The ledger pass
     (:func:`mark_surfaced`) runs after this.
+
+    Domains are scored FIRST so the Page-attachment gate (MV-D64) can read the set of
+    Domains that surfaced this run: a Page whose ``domain_id`` is empty or names a
+    non-surfaced Domain is kept but ``surfaced=false`` (spec §3.2). ``page_require_domain``
+    (config, default True) gates the whole rule so it can be disabled.
     """
     members = members_by_domain or {}
     sig = signals or RankSignals()
@@ -425,8 +452,16 @@ def score_proposals(
             min_tables=min_tables, min_schemas=min_schemas, require_connection=require_connection,
             max_diffuse_schemas=max_diffuse_schemas, min_home_concentration=min_home_concentration,
         )
+    # The Domains that cleared their own gates this run (empty when nothing surfaced) —
+    # the attach-to targets for the Page gate. Computed after the Domain pass, before the
+    # Page pass (MV-D64).
+    surfaced_domain_ids = {
+        str(row.get("domain_id") or "") for row in domain_rows if _load_evidence(row).get("surfaced")
+    }
     for row in page_rows:
         _score_row(row, kind="page", assets=_page_assets(row), signals=sig, oracle=oracle)
+        if page_require_domain:
+            _apply_page_attachment_gate(row, surfaced_domain_ids)
 
 
 # ── Ledger read → surfaced (MV-D26) + run report ────────────────────────────

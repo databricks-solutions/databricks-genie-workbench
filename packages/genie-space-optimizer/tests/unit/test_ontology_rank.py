@@ -400,6 +400,93 @@ def test_sub_threshold_confidence_band_is_none():
     assert transforms.confidence_band(b)["band"] is None
 
 
+# ── Stage 4.1b: Page-attachment gate (MV-D64) ───────────────────────────────
+
+
+def _page_row(page_id, domain_id, *, source_fqns=("c.s.a",), archetype="Routing", evidence=None):
+    return {
+        "metastore_id": "ms1",
+        "page_id": page_id,
+        "workspace_id": "ws1",
+        "domain_id": domain_id,
+        "archetype": archetype,
+        "title": f"[{archetype}] x",
+        "body": "b",
+        "synonyms": [],
+        "related_fqns": [],
+        "source_fqns": list(source_fqns),
+        "certify": False,
+        "evidence": json.dumps(evidence or {}, sort_keys=True),
+        "score": 0.0,
+        "run_id": "r1",
+        "as_of": "2026-08-31T00:00:00+00:00",
+    }
+
+
+def _score_dom_and_page(dom, page, *, members, signals, **kw):
+    # Legitimacy bar off (orthogonal) so the minimal domain fixtures score cleanly.
+    rank.score_proposals([dom], [page], members_by_domain=members, signals=signals,
+                         min_tables=1, min_schemas=1, require_connection=False, **kw)
+
+
+def test_page_attached_to_surfaced_domain_surfaces():
+    dom = _domain_row("sug_dom")
+    page = _page_row("pg_1", "sug_dom")
+    _score_dom_and_page(dom, page, members={"sug_dom": ["c.s.a"]}, signals=_governed_signals("c.s.a"))
+    assert _ev(dom)["surfaced"] is True
+    p = _ev(page)
+    assert p["surfaced"] is True
+    assert "surfaced_reason" not in p
+
+
+def test_page_with_empty_domain_is_kept_not_surfaced_with_reason():
+    dom = _domain_row("sug_dom")
+    page = _page_row("pg_1", "")  # empty domain_id — the 41-orphan defect (spec §1)
+    _score_dom_and_page(dom, page, members={"sug_dom": ["c.s.a"]}, signals=_governed_signals("c.s.a"))
+    p = _ev(page)
+    # It WOULD have surfaced (tier cleared, not blocked) — the gate is what hides it.
+    assert p["rank"]["tier"] is not None and p["rank"]["blocked"] is False
+    assert p["surfaced"] is False
+    assert p["surfaced_reason"] == "page not attached to a surfaced domain"
+
+
+def test_page_attached_to_non_surfaced_domain_is_not_surfaced():
+    # The Domain the Page names is sub-threshold (ungoverned member only) → does not
+    # surface; the Page itself scores high on its own governed Source, but the gate hides
+    # it because its home Domain did not surface this run.
+    dom = _domain_row("sug_weak")
+    page = _page_row("pg_1", "sug_weak", source_fqns=("c.s.a",))
+    signals = rank.RankSignals(
+        governance={"c.s.weak": "ungoverned", "c.s.a": "governed"},
+        usage={"c.s.a": 0.9}, centrality={"c.s.a": 0.9},
+    )
+    _score_dom_and_page(dom, page, members={"sug_weak": ["c.s.weak"]}, signals=signals)
+    assert _ev(dom)["surfaced"] is False        # sub-threshold Domain
+    p = _ev(page)
+    assert p["rank"]["tier"] is not None         # the Page itself scored above threshold
+    assert p["surfaced"] is False
+    assert p["surfaced_reason"] == "page not attached to a surfaced domain"
+
+
+def test_page_require_domain_false_disables_the_gate():
+    dom = _domain_row("sug_dom")
+    page = _page_row("pg_1", "")  # empty domain — would be hidden by the gate
+    _score_dom_and_page(dom, page, members={"sug_dom": ["c.s.a"]},
+                        signals=_governed_signals("c.s.a"), page_require_domain=False)
+    p = _ev(page)
+    assert p["surfaced"] is True                 # gate disabled → tentative surfaced stands
+    assert "surfaced_reason" not in p
+
+
+def test_page_gate_never_deletes_the_row():
+    # An unattached Page is KEPT (metastore re-MERGE carries the full set, §8) — only its
+    # surfaced flag flips.
+    page = _page_row("pg_keep", "")
+    rows = [page]
+    rank.score_proposals([], rows, signals=_governed_signals("c.s.a"))
+    assert rows == [page] and len(rows) == 1     # same row object, not dropped
+
+
 def test_ledger_match_is_by_kind_and_id_not_workspace():
     """The suppression match keys on (proposal_kind, proposal_id) at metastore grain;
     workspace_id is provenance and never part of the match (MV-D49)."""

@@ -892,3 +892,117 @@ def test_merge_projects_proposal_rows_to_schema():
     sql = spark.sqls[-1]
     assert "surfaced_count" not in sql
     assert "score" in sql
+
+
+# ── Stage 4.1b: coded-column batch feed (MV-D63) ────────────────────────────
+# The pure prefilter / cap / assembly is tested here (the job reader's SparkSystemTableReader
+# runs on import, so its warehouse I/O is exercised on deploy-verify — §7 — not offline;
+# any failure in that I/O degrades to [] by construction).
+
+from genie_space_optimizer.ontology import coded_columns  # noqa: E402
+
+
+def _col_row(cat, sch, tbl, col, dtype="string", comment=""):
+    return {"table_catalog": cat, "table_schema": sch, "table_name": tbl,
+            "column_name": col, "data_type": dtype, "comment": comment}
+
+
+def test_coded_prefilter_keeps_coded_and_drops_free_text_and_wrong_type():
+    rows = [
+        _col_row("c", "s", "orders", "status"),                    # coded: name suffix _status
+        _col_row("c", "s", "orders", "order_type"),                # coded: name suffix _type
+        _col_row("c", "s", "orders", "code"),                      # coded: whole word
+        _col_row("c", "s", "orders", "region", comment="one of NA, EMEA, APAC"),  # coded: enum comment
+        _col_row("c", "s", "orders", "description", comment="free text notes about the order"),  # free text → drop
+        _col_row("c", "s", "orders", "amount", dtype="double"),    # wrong type → drop
+        _col_row("c", "s", "orders", "created_at", dtype="timestamp", comment="one of, two, three"),  # wrong type → drop
+    ]
+    refs = {c.ref for c in coded_columns.select_candidates(rows, max_columns=100)}
+    assert refs == {"c.s.orders.status", "c.s.orders.order_type", "c.s.orders.code", "c.s.orders.region"}
+
+
+def test_coded_candidate_domain_id_is_schema_home():
+    cand = coded_columns.CandidateColumn(table_fqn="cat.sch.tbl", column="status")
+    assert cand.domain_id == "cat.sch"          # provenance only (never a page key)
+
+
+def test_coded_cap_is_honored_and_deterministic():
+    rows = [_col_row("c", "s", "t", f"col{i}_code") for i in range(50)]
+    cands = coded_columns.select_candidates(rows, max_columns=10)
+    refs = [c.ref for c in cands]
+    assert len(refs) == 10
+    assert refs == sorted(refs)                 # deterministic sorted-FQN order
+    # stable across repeated calls
+    assert [c.ref for c in coded_columns.select_candidates(rows, max_columns=10)] == refs
+
+
+def test_coded_high_cardinality_dropped_low_kept_and_values_bounded():
+    cands = [
+        coded_columns.CandidateColumn("c.s.t", "status", comment="code"),
+        coded_columns.CandidateColumn("c.s.t", "free_code"),
+    ]
+
+    def profiler(cand):
+        if cand.column == "status":
+            return 3, ["P", "O", "F", "O"]      # dupes collapse; sorted; ≤ ceiling → kept
+        return 5000, [str(i) for i in range(5000)]  # wide → dropped
+
+    sigs = coded_columns.build_column_signals(cands, profiler=profiler, max_cardinality=40)
+    assert {s.ref for s in sigs} == {"c.s.t.status"}
+    assert sigs[0].distinct_values == ("F", "O", "P")   # de-duped + sorted deterministic
+
+
+def test_coded_value_list_truncated_to_ceiling():
+    cand = [coded_columns.CandidateColumn("c.s.t", "bucket", comment="codes")]
+    sigs = coded_columns.build_column_signals(
+        cand, profiler=lambda c: (30, [f"v{i:02d}" for i in range(30)]),
+        max_cardinality=40, max_values=24,
+    )
+    assert len(sigs[0].distinct_values) == 24   # collected ≤ MAX_DISTINCT_VALUES
+
+
+def test_coded_governed_flag_from_governed_refs():
+    cands = [
+        coded_columns.CandidateColumn("c.s.t", "status", comment="code"),
+        coded_columns.CandidateColumn("c.s.t", "kind", comment="code"),
+    ]
+    sigs = coded_columns.build_column_signals(
+        cands, profiler=lambda c: (2, ["A", "B"]), governed_refs={"c.s.t.status"},
+    )
+    by_ref = {s.ref: s for s in sigs}
+    assert by_ref["c.s.t.status"].governed is True
+    assert by_ref["c.s.t.kind"].governed is False
+
+
+def test_coded_column_signals_warehouseless_returns_empty():
+    rows = [_col_row("c", "s", "t", "status")]
+
+    def profiler(cand):
+        raise AssertionError("must not profile without a warehouse")
+
+    assert coded_columns.coded_column_signals(rows, warehouse_id="", profiler=profiler) == []
+
+
+def test_coded_column_signals_profiling_exception_degrades_to_empty():
+    rows = [_col_row("c", "s", "t", "status")]
+
+    def profiler(cand):
+        raise RuntimeError("warehouse unreachable")
+
+    # ANY failure ⇒ [] (MV-D43): the run still succeeds, mining zero taxonomy pages.
+    assert coded_columns.coded_column_signals(rows, warehouse_id="wh1", profiler=profiler) == []
+
+
+def test_coded_column_signals_end_to_end_emits_signal():
+    rows = [
+        _col_row("c", "s", "orders", "status"),
+        _col_row("c", "s", "orders", "description", comment="free text"),  # dropped by prefilter
+    ]
+    sigs = coded_columns.coded_column_signals(
+        rows, warehouse_id="wh1", profiler=lambda c: (3, ["O", "F", "P"]),
+        governed_refs={"c.s.orders.status"},
+    )
+    assert len(sigs) == 1
+    s = sigs[0]
+    assert s.ref == "c.s.orders.status" and s.governed is True
+    assert s.distinct_values == ("F", "O", "P") and s.domain_id == "c.s"

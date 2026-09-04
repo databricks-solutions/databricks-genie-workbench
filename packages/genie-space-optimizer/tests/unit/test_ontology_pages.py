@@ -417,6 +417,40 @@ def test_comment_on_present_coded_column_corroborates_not_duplicates():
     assert tax[0].corroboration == 2  # coded column + commented asset
 
 
+def test_governed_coded_column_with_measure_is_certify_eligible_taxonomy():
+    # Stage-4.1b acceptance (items 1 & 3): the same concept ("cabin") is backed by a
+    # measure AND a governed coded column → exactly 2 independent artifacts (the MV + the
+    # coded table, no agents) → corroboration()==2, and because the code list is governed
+    # the [Taxonomy] Page is certify-eligible.
+    measure = MeasureSignal(mv_fqn="ops.air.cabin_mv", name="cabin", expression="SUM(x)",
+                            comment="cabin class; fare cabin; CBN", source_fqns=("ops.air.flights",))
+    col = ColumnSignal(table_fqn="ops.air.flights", column="cabin",
+                       comment="cabin class code; fare cabin; CBN",
+                       distinct_values=("F", "J", "Y"), governed=True)
+    members = ["ops.air.cabin_mv", "ops.air.flights", "ops.air.cabin"]
+    cands = pages.mine_pages(measures=[measure], columns=[col], members=members, drafter=_good_drafter)
+    tax = [c for c in cands if c.archetype == "Taxonomy"]
+    assert len(tax) == 1
+    assert tax[0].corroboration == 2          # the MV + the coded table
+    assert tax[0].evidence["governed"] is True
+    assert tax[0].certify is True             # governed code list + corroborated + synonyms + llm
+
+
+def test_non_governed_coded_column_with_measure_is_not_certified():
+    # The contrast: identical shape but the code list is NOT governed → certify=false even
+    # at corroboration()==2 (page-archetypes.md — only a governed code list certifies).
+    measure = MeasureSignal(mv_fqn="ops.air.cabin_mv", name="cabin", expression="SUM(x)",
+                            comment="cabin class; fare cabin; CBN", source_fqns=("ops.air.flights",))
+    col = ColumnSignal(table_fqn="ops.air.flights", column="cabin",
+                       comment="cabin class code; fare cabin; CBN",
+                       distinct_values=("F", "J", "Y"), governed=False)
+    members = ["ops.air.cabin_mv", "ops.air.flights", "ops.air.cabin"]
+    cands = pages.mine_pages(measures=[measure], columns=[col], members=members, drafter=_good_drafter)
+    tax = [c for c in cands if c.archetype == "Taxonomy"]
+    assert len(tax) == 1 and tax[0].corroboration == 2
+    assert tax[0].certify is False
+
+
 # ── Stage 4 (MV-D55): source-majority attachment ────────────────────────────
 
 

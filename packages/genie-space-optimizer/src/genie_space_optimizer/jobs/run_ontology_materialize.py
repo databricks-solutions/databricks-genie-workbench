@@ -45,6 +45,11 @@ spark = cast(Any, globals().get("spark"))
 
 _TASK_LABEL = "[TASK ONTOLOGY]"
 
+# TABLESAMPLE size for coded-column value profiling (MV-D63). Comfortably above the
+# cardinality ceiling so a genuinely wide column profiles wide (→ dropped) while a small
+# code list is fully captured.
+_CODED_COLUMN_SAMPLE_ROWS = 200
+
 
 def _log(msg: str, **kw: Any) -> None:
     extra = " ".join(f"{k}={v}" for k, v in kw.items())
@@ -81,6 +86,11 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text("domain_max_diffuse_schemas", "6")
 dbutils.widgets.text("domain_min_home_concentration", "0.5")
+# Stage 4.1b coded-column batch feed + Page-attachment gate (MV-D63/64) — job_parameters
+# with in-code defaults so a param-less run (nightly, older launcher) still works (MV-D43).
+dbutils.widgets.text("coded_column_max_columns", "300")
+dbutils.widgets.text("coded_column_max_cardinality", "40")
+dbutils.widgets.text("page_require_domain", "true")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -142,6 +152,15 @@ join_col_max_schemas = _parse_int("domain_join_col_max_schemas", _ss.MAX_SCHEMAS
 join_col_denylist = frozenset(_parse_str_list("domain_join_col_denylist", list(_ss.GENERIC_JOIN_COLUMN_DENYLIST)))
 max_diffuse_schemas = _parse_int("domain_max_diffuse_schemas", 6)
 min_home_concentration = _parse_float("domain_min_home_concentration", 0.5)
+
+# Stage 4.1b (MV-D63/64) — coded-column bounds + the Page-attachment gate toggle, each
+# parsed defensively → in-code default (MV-D43). Cardinality default = the miner's own
+# _TAXONOMY_MAX_CARDINALITY (kept aligned via the wheel constant).
+from genie_space_optimizer.ontology import coded_columns as _cc  # noqa: E402
+
+coded_column_max_columns = _parse_int("coded_column_max_columns", _cc.CODED_COLUMN_MAX_COLUMNS)
+coded_column_max_cardinality = _parse_int("coded_column_max_cardinality", _cc.CODED_COLUMN_MAX_CARDINALITY)
+page_require_domain = (dbutils.widgets.get("page_require_domain").strip().lower() or "true") != "false"
 
 
 def _resolve_metastore_id() -> str:
@@ -209,12 +228,23 @@ class SparkSystemTableReader:
         join_col_max_schemas: int = None,
         join_col_denylist: frozenset[str] = None,
         warehouse_id: str = "",
+        coded_column_max_columns: int = None,
+        coded_column_max_cardinality: int = None,
     ) -> None:
+        from genie_space_optimizer.ontology import coded_columns as cc
         from genie_space_optimizer.ontology import schema_signals as ss
         self._schema_denylist = list(schema_denylist or ["information_schema"])
-        # SQL warehouse for the metric-view YAML DESCRIBE (measure_signals); empty ⇒ MV
-        # detection short-circuits to OUTCOME_NO_WAREHOUSE and measures degrade to [].
+        # SQL warehouse for the metric-view YAML DESCRIBE (measure_signals) AND the coded-
+        # column value profiling (coded_column_signals, MV-D63); empty ⇒ both short-circuit
+        # (MV detection → OUTCOME_NO_WAREHOUSE, coded columns → []) and degrade to [].
         self._warehouse_id = warehouse_id or ""
+        # Coded-column batch feed bounds (MV-D57/D63), in-code defaults from the wheel.
+        self._coded_max_columns = (
+            int(coded_column_max_columns) if coded_column_max_columns is not None else cc.CODED_COLUMN_MAX_COLUMNS
+        )
+        self._coded_max_cardinality = (
+            int(coded_column_max_cardinality) if coded_column_max_cardinality is not None else cc.CODED_COLUMN_MAX_CARDINALITY
+        )
         self._join_suffixes = tuple(join_col_suffixes) if join_col_suffixes else ss.JOIN_COLUMN_SUFFIXES
         self._join_max_schemas = (
             int(join_col_max_schemas) if join_col_max_schemas is not None else ss.MAX_SCHEMAS_PER_SHARED_COLUMN
@@ -421,10 +451,102 @@ class SparkSystemTableReader:
         ]
 
     def coded_column_signals(self, allowlist: list[str]) -> list[Any]:
-        """Low-cardinality coded columns ([Taxonomy] signals). Deferred to the serve
-        pass (17g) — column value-profiling is not read here — so this degrades to []
-        (no [Taxonomy] pages) rather than issue a profiling sweep in the offline slice."""
-        return []
+        """Low-cardinality coded columns ([Taxonomy] signals) via a BOUNDED two-pass read
+        (MV-D63). Pass 1 is a metadata-only prefilter over the SAME allowlist-scoped,
+        denylist-filtered ``information_schema.columns`` read ``comment_signals`` issues
+        (+ ``data_type``): keep STRING/CHAR/small-INT columns that look coded (name or
+        enum-like comment). Pass 2 profiles at most ``self._coded_max_columns`` survivors
+        (sorted FQN) against ``self._warehouse_id`` by REUSING the ``wide_schema_profile``
+        builders (``approx_count_distinct`` + value-list), keeping a column iff its
+        distinct count is within ``self._coded_max_cardinality``. The pure prefilter /
+        cap / assembly is ``ontology.coded_columns``; this method is the warehouse I/O.
+        ``self._warehouse_id == ""`` ⇒ [] (no profiling); ANY failure ⇒ [] (MV-D43)."""
+        if not allowlist or not self._warehouse_id:
+            return []
+        try:
+            from genie_space_optimizer.ontology import coded_columns, schema_signals
+        except Exception as e:  # noqa: BLE001 — wheel/imports unavailable → mine zero
+            _log("coded-column imports unavailable; mining zero taxonomy pages", error=str(e))
+            return []
+        col_rows = schema_signals.filter_denylisted_schemas(
+            self._per_catalog(
+                allowlist, "columns",
+                "table_catalog, table_schema, table_name, column_name, data_type, comment",
+                "coded_columns",
+            ),
+            denylist=self._schema_denylist,
+        )
+        governed_refs = self._governed_coded_refs(allowlist)
+        w = make_workspace_client()
+
+        def _profiler(cand: Any) -> tuple[Any, list[str]]:
+            return self._profile_coded_column(w, cand)
+
+        return coded_columns.coded_column_signals(
+            col_rows, warehouse_id=self._warehouse_id, profiler=_profiler,
+            governed_refs=governed_refs,
+            max_columns=self._coded_max_columns, max_cardinality=self._coded_max_cardinality,
+        )
+
+    def _governed_coded_refs(self, allowlist: list[str]) -> set[str]:
+        """Best-effort set of coded-column refs (``cat.sch.tbl.col``) that carry a
+        GOVERNED tag — the ``governed=True`` half of MV-D63 (the CHECK-constraint enum
+        half stays a later best-effort). Reads column-level tag assignments per catalog
+        and keeps only those whose ``tag_name`` is in ``system.tags.governed_tags``. Any
+        missing grant / unreadable relation degrades to ``set()`` (governed=False)."""
+        try:
+            governed_names = {str(t.get("tag_name")) for t in self.governed_tags() if t.get("tag_name")}
+            if not governed_names:
+                return set()
+            rows = self._per_catalog(
+                allowlist, "column_tags",
+                "catalog_name, schema_name, table_name, column_name, tag_name",
+                "column_tags",
+            )
+            return {
+                f"{r.get('catalog_name')}.{r.get('schema_name')}.{r.get('table_name')}.{r.get('column_name')}"
+                for r in rows
+                if str(r.get("tag_name")) in governed_names
+                and r.get("catalog_name") and r.get("schema_name") and r.get("table_name") and r.get("column_name")
+            }
+        except Exception as e:  # noqa: BLE001 — governed enrichment is best-effort
+            _log("governed coded-column tags read skipped", error=str(e))
+            return set()
+
+    def _profile_coded_column(self, w: Any, cand: Any) -> tuple[Any, list[str]]:
+        """Profile one candidate against the warehouse, REUSING the ``wide_schema_profile``
+        builders (MV-D63, "reuse don't fork"): an ``approx_count_distinct`` aggregate for
+        the cardinality gate + a ``collect_set`` value list, each a TABLESAMPLE-bounded
+        statement executed as the job ``run_as`` identity (MV-D50). Returns
+        ``(distinct_count, values)``; ``(None, [])`` when the cardinality read did not
+        succeed, so the column is dropped rather than kept without a bound."""
+        import uuid as _uuid
+
+        from genie_space_optimizer.optimization import wide_schema_profile as wsp
+
+        parts = str(cand.table_fqn).split(".")
+        if len(parts) != 3:
+            return None, []
+        asset_key = (parts[0], parts[1], parts[2])
+        asset = {"asset_key": asset_key, "asset_type": "table"}
+        column = {"name": cand.column, "column_key": (*asset_key, cand.column), "data_type": cand.data_type or "string"}
+        run_id = _uuid.uuid4().hex
+
+        agg = wsp._aggregate_item(asset, [column], sample_size=_CODED_COLUMN_SAMPLE_ROWS)
+        ares = wsp._execute(w, self._warehouse_id, agg, run_id=run_id)
+        distinct = None
+        if ares.state == "succeeded" and ares.rows:
+            for spec in agg.metrics:
+                if spec.metric == "cardinality":
+                    raw = ares.rows[0].get(spec.alias)
+                    distinct = int(raw) if raw is not None else None
+                    break
+        if distinct is None:
+            return None, []
+        vitem = wsp._value_list_item(asset, column, sample_size=_CODED_COLUMN_SAMPLE_ROWS)
+        vres = wsp._execute(w, self._warehouse_id, vitem, run_id=run_id)
+        values = wsp._parse_values(vres.rows[0].get("values")) if (vres.state == "succeeded" and vres.rows) else []
+        return distinct, values
 
     def comment_signals(self, allowlist: list[str]) -> list[Any]:
         """Business terms carried in table/column COMMENTs as :class:`pages.CommentSignal`s
@@ -532,6 +654,8 @@ run = materialize.run_materialize(
         join_col_max_schemas=join_col_max_schemas,
         join_col_denylist=join_col_denylist,
         warehouse_id=warehouse_id,
+        coded_column_max_columns=coded_column_max_columns,
+        coded_column_max_cardinality=coded_column_max_cardinality,
     ),
     writer,
     metastore_id=metastore_id,
@@ -556,6 +680,8 @@ run = materialize.run_materialize(
     # Stage 3.2 Gate-B (MV-D62) — the diffuseness presentation net (spec §2.2/§3).
     domain_max_diffuse_schemas=max_diffuse_schemas,
     domain_min_home_concentration=min_home_concentration,
+    # Stage 4.1b Page-attachment gate (MV-D64) — hide a Page with no surfaced home.
+    page_require_domain=page_require_domain,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))
