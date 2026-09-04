@@ -5,7 +5,7 @@ spine) with a long-running agent (Claude Code / Cursor Goal Mode). Run it on the
 **`ontology`** branch. The prompt is bounded so the agent builds only the
 offline-verifiable slice and stops at the deploy gate.
 
-- **Spec (source of truth):** `docs/design/ontology-phase1-build.md`
+- **Spec (source of truth):** `docs/design/implemented/ontology-phase1-build.md`
 - **Design context:** `docs/design/ontology-engine-architecture.md`
 - **Decisions register:** `docs/design/mv-advisor-playbook.md` (MV-D36–D46)
 - **Visual contract:** `docs/design/mockups/17.0a/b/c-*.html` (+ the source
@@ -26,7 +26,7 @@ GOAL: Build Phase 1 of the Ontology page — the read-only spine — exactly as
 specified. Work only on the current branch (ontology).
 
 SPEC (source of truth, follow section-by-section):
-  docs/design/ontology-phase1-build.md   ← §1 scope, §3 layout, §4 contracts,
+  docs/design/implemented/ontology-phase1-build.md   ← §1 scope, §3 layout, §4 contracts,
   §5 TS mirrors, §6 routes, §7 DDL, §8 readers, §9 frontend, §10 grants, §11 tests, §12 DoD
 DESIGN CONTEXT: docs/design/ontology-engine-architecture.md
 DECISIONS: docs/design/mv-advisor-playbook.md (MV-D36–D46)

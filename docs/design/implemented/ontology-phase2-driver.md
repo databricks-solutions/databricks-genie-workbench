@@ -6,8 +6,8 @@ Goal Mode). Run it on the **`ontology`** branch, on top of the shipped Phase-1 s
 The prompt is bounded so the agent builds only the **offline-verifiable** slice and
 stops at the deploy gate.
 
-- **Spec (source of truth):** `docs/design/ontology-phase2-build.md`
-- **Phase-1 baseline (already shipped):** `docs/design/ontology-phase1-build.md`
+- **Spec (source of truth):** `docs/design/implemented/ontology-phase2-build.md`
+- **Phase-1 baseline (already shipped):** `docs/design/implemented/ontology-phase1-build.md`
 - **Design context:** `docs/design/ontology-engine-architecture.md` (§2 thin-page,
   §7 data model, the **L7 persistence** + **L8 serving** subsections)
 - **Decisions register:** `docs/design/mv-advisor-playbook.md` (Prompt 17c; MV-D39 /
@@ -31,8 +31,8 @@ GOAL: Build the OFFLINE slice of Phase 2 of the Ontology page — batch
 materialization + Lakebase mirror + reader swap — exactly as specified. Work only on
 the current branch (ontology), atop the shipped Phase-1 spine.
 
-SPEC (source of truth, follow §1–§12): docs/design/ontology-phase2-build.md
-BASELINE (do NOT regress): docs/design/ontology-phase1-build.md
+SPEC (source of truth, follow §1–§12): docs/design/implemented/ontology-phase2-build.md
+BASELINE (do NOT regress): docs/design/implemented/ontology-phase1-build.md
 DESIGN CONTEXT: docs/design/ontology-engine-architecture.md (§2, §7, L7, L8)
 DECISIONS: docs/design/mv-advisor-playbook.md (Prompt 17c; MV-D39/D41/D42/D43/D45)
 VISUAL: reuse mockups 17.0b + 17.0c; add ONLY a freshness chip + a "Refresh

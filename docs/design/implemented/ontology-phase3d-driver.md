@@ -8,8 +8,8 @@ MV-D49). This phase adds the frontend, so acceptance runs **both** the Python su
 and the frontend vitest. It ends at the **STOP proposal-quality checkpoint** — the
 agent must not proceed to 17h/17i.
 
-- **Spec (source of truth):** `docs/design/ontology-phase3d-build.md`
-- **Re-grain prerequisite (already shipped — MV-D49 in `203c8b79`):** `docs/design/ontology-regrain-build.md`
+- **Spec (source of truth):** `docs/design/implemented/ontology-phase3d-build.md`
+- **Re-grain prerequisite (already shipped — MV-D49 in `203c8b79`):** `docs/design/implemented/ontology-regrain-build.md`
 - **Baselines (already shipped):** `ontology-phase3c-build.md` (Pages) +
   `ontology-phase3b-build.md` (Domains + `reassign`/`conflict`) + `3a` + `2` + `1`
 - **Design context:** `docs/design/ontology-engine-architecture.md` (§5 — the **L6

@@ -1,5 +1,16 @@
 # Ontology engine architecture (MV-D36 · MV-D37 · MV-D38)
 
+> **Layer status (2026-09).** L0 preflight, L1 readers, L2 signal graph, L3 ER/dedupe,
+> L4 clustering, L5 Page miners, L6 rank/trust, L7 persistence + Lakebase mirror, L8 UI
+> serving — **LIVE + deploy-verified** (Phases 1–3d + metastore re-grain + OBO-first +
+> Curation-redesign Stages 1–4.1b; drivers archived under `docs/design/implemented/`).
+> **In flight:** the L5/L6 LLM enrichers still import the app `backend` client, so batch
+> Pages are uncertified — **Stage-4.1c** (MV-D65) makes the LLM path wheel-native.
+> **Not yet built:** L2 graph *visualization* (Estate Graph, MV-D48, `ontology-phase3e-*`),
+> **L9 consented `SET TAG` apply** (`ontology-phase5-apply-*`), the external-enrichment tier
+> (Phase 4 / 17h, §9), and the eval harness (MV-D59, §10). Canonical build order: the
+> **Ontology Build Queue** in `mv-advisor-playbook.md`.
+>
 > Status: canonical architecture for the standalone Ontology page and its
 > detection engine. This is the build spec the 17.x Ontology track implements
 > (Prompt 17a onward). It memorializes the design that MV-D36 (standalone
@@ -7,7 +18,7 @@
 > enrichment tier) decided. Companion docs: `mv-advisor-playbook.md` (the MV-D
 > register + prompt sequence), `page-archetypes.md` (the curation standard —
 > archetypes, Domain/Sub-Domain draft format, permission tiers, dedupe), and
-> `mv-advisor-gap-report.md` §2.9 (reuse anchors, verified against HEAD).
+> `reference/mv-advisor-gap-report.md` §2.9 (reuse anchors, verified against HEAD).
 >
 > **Building this? Start with the slice, not the whole engine.** The build
 > decisions are closed (MV-D39–D47, incl. Lakebase Search + AI Gateway MCP context
@@ -15,7 +26,7 @@
 > the **read-only spine** — preflight → OBO inventory → tag/lineage taxonomy →
 > serve frames 17.0a/b/c, with no proposal engine, no external enrichment, and no
 > writes — fully specified (contracts, DDL, routes, tests) in
-> `docs/design/ontology-phase1-build.md`. This doc is the design it is a slice of;
+> `docs/design/implemented/ontology-phase1-build.md`. This doc is the design it is a slice of;
 > §12 of that spec lists what each later phase pulls in.
 
 ## 1. The mental model
@@ -1047,7 +1058,7 @@ MERGE makes a single scheduled runner safe; duplicate installs converge).
 `workspace_id` is retained only as **provenance** (which install triggered a run;
 which workspace an Agent lives in) — never as a partition key. The shipped 17d/17e
 code is still `workspace_id`-keyed and is reconciled to this grain by the dedicated
-re-grain phase (`ontology-regrain-build.md`) before 17f.
+re-grain phase (`implemented/ontology-regrain-build.md`) before 17f.
 
 Named `genie_ont_*` to sit beside `genie_opt_mv_*` in the same GSO
 catalog/schema, written by the job, mirrored to Lakebase for the page:
@@ -1166,6 +1177,6 @@ Three further component decisions bound the install footprint and enrichment:
 **Build sequencing.** With these closed, the engine is buildable in phases. The
 first Goal-Mode slice is the read-only spine (preflight → OBO inventory →
 tag/lineage taxonomy → serve 17.0a/b/c), specified in
-`ontology-phase1-build.md`; clustering sophistication (MV-D39 Leiden via `leidenalg`),
+`implemented/ontology-phase1-build.md`; clustering sophistication (MV-D39 Leiden via `leidenalg`),
 Lakebase Search dedupe (MV-D40), the nightly batch (MV-D41), external enrichment
 (MV-D44/D46), and the `SET TAG` apply (L9) land in later phases.

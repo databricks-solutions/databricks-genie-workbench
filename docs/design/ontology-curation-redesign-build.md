@@ -1,7 +1,11 @@
 # Ontology — Curation Redesign: Domains, Sub-Domains, Pages (signals-first, build spec)
 
-**Status:** build-ready by stage (Stage 1 first; offline slice + deploy-gated
-verification) · **Owner directive:** MV-D51–MV-D60 (see `mv-advisor-playbook.md`,
+**Status:** **Stages 1 → 4.1b LANDED + deploy-verified** (archived drivers under
+`docs/design/implemented/`). **Next: Stage-4.1c** (wheel-native LLM client, MV-D65 —
+unblocks batch `certify`). **§9 industry alignment (17h) and §10 eval harness (MV-D59)
+remain in this spec only — no standalone driver yet.** Build order of record is the
+**Ontology Build Queue** in `mv-advisor-playbook.md` (after the Curation-redesign driver
+status). · **Owner directive:** MV-D51–MV-D60 (see `mv-advisor-playbook.md`,
 **Decisions register**), inheriting MV-D35 / MV-D37 / MV-D38 / MV-D39 / MV-D43 /
 MV-D45 / MV-D49 / MV-D50 unchanged. **Design source of truth:**
 `ontology-engine-architecture.md` (§3–§6). **Builds on:** the shipped 17d (signal
@@ -253,6 +257,13 @@ Stage 1 (signals + facet split + rules-first grouping + map-not-merge) → Stage
 alignment folds into Phase 4. Each stage: **offline code + tests first**, then a
 **deploy-gated** live run + review before the next. Stage 1 ships first because it
 fixes the root cause the live inventory exposes.
+
+**Status (2026-09):** Stages **1, 2, 3, 3.1, 3.2, 4, 4.1a, 4.1b — LANDED +
+deploy-verified** (drivers archived under `docs/design/implemented/`; live evidence in
+§A.1–§A.4 and playbook §9). **Stage-4.1c** (MV-D65, wheel-native LLM client) is the next
+build — it unblocks batch `certify`. **§9 (17h) and §10 (MV-D59) are still spec-only** —
+each needs a Goal-Mode driver drafted before it can be built. Canonical order: the
+**Ontology Build Queue** in `mv-advisor-playbook.md`.
 
 ## 14. Definition of Done (per stage)
 - `./scripts/test.sh` green incl. the stage's new tests; `npm run lint` + `tsc` +

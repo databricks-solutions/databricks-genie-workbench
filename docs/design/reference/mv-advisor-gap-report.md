@@ -1,6 +1,6 @@
 # Metric View Advisor — Repo Gap Report
 
-**Purpose.** `docs/design/metric-view-suggestion-engine-pov.md` (the POV) describes an
+**Purpose.** `docs/design/reference/metric-view-suggestion-engine-pov.md` (the POV) describes an
 architecture. This document describes the repository *as it exists today*, quotes the
 code verbatim, and states for every Part 7 assumption in the POV whether it MATCHES,
 CONFLICTS, or DOES-NOT-EXIST-YET.
@@ -1886,7 +1886,7 @@ entitlement probe and the DDL path get tested at all given they cannot run offli
 
 Self-dated addendum. Audits the coverage this branch added (Prompts 1–13.5 plus 12b),
 closes gaps, and records the write-to-read exposure sweep. The sweep's matrix lives at
-`docs/design/mv-advisor-exposure-matrix.md`, pinned by `test_exposure_matrix.py`.
+`docs/design/reference/mv-advisor-exposure-matrix.md`, pinned by `test_exposure_matrix.py`.
 
 **Exposure sweep — first run, clean on the two historical near-misses.** 49 MV columns
 classified: `genie_opt_mv_candidates` (23), `genie_opt_mv_consents` (12),

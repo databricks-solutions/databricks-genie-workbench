@@ -8,8 +8,8 @@ buildout), inheriting MV-D35 / MV-D36 / MV-D39 / MV-D41 / MV-D45 (see
 `ontology-engine-architecture.md` §5 (the L2 fused signal graph + L4 clustering
 this visualizes). This doc is a *buildable slice* — it persists and serves a graph
 the engine **already builds in-memory and discards**; it invents no new signal.
-**Builds on:** `ontology-phase3a-build.md` (the L2 signal graph + identity map) and
-`ontology-phase3b-build.md` (L4 clustering → `domain_id` per node), both shipped on
+**Builds on:** `implemented/ontology-phase3a-build.md` (the L2 signal graph + identity map) and
+`implemented/ontology-phase3b-build.md` (L4 clustering → `domain_id` per node), both shipped on
 the `ontology` branch, plus 17f/17g (Pages + rank/serve).
 
 This prompt is lettered **17k to avoid renumbering the existing 17h–17j**, but its

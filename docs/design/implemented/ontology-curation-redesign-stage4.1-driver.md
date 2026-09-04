@@ -6,7 +6,7 @@ wiring) have landed** (commit `246b3983`). Additive-only: a reader-only change p
 new rank gate — no new route, frame, or DDL. The agent produces offline code + green
 tests and **stops before deploy**.
 
-- **Spec (source of truth):** `docs/design/ontology-curation-redesign-stage4.1-build.md`
+- **Spec (source of truth):** `docs/design/implemented/ontology-curation-redesign-stage4.1-build.md`
   (honor the umbrella `ontology-curation-redesign-build.md` §8, §11–§14)
 - **Decisions:** `docs/design/mv-advisor-playbook.md` — **MV-D63** (coded-column batch
   feed), **MV-D64** (Page-attachment gate); honor MV-D35 / D43 / D45 / D49 / D50 / D57.
@@ -20,7 +20,7 @@ tests and **stops before deploy**.
 GOAL: Stage 4.1b — feed bounded coded columns in batch + add a Page-attachment gate.
 Additive-only. Offline code + green tests; STOP before deploy.
 
-SPEC (source of truth): docs/design/ontology-curation-redesign-stage4.1-build.md (umbrella
+SPEC (source of truth): docs/design/implemented/ontology-curation-redesign-stage4.1-build.md (umbrella
 …-build.md §8, §11–§14). DECISIONS: mv-advisor-playbook.md MV-D63, MV-D64; honor
 MV-D35/D43/D49/D50/D57. Read before coding.
 

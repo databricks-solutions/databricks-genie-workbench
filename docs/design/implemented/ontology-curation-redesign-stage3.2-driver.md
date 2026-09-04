@@ -6,7 +6,7 @@ long-running agent (Claude Code / Cursor Goal Mode). Run on the **`ontology`** b
 config only**; frontend is optional/additive. The agent builds + tests offline, then
 **STOPS** before deploy.
 
-- **Spec (source of truth):** `docs/design/ontology-curation-redesign-stage3.2-build.md`
+- **Spec (source of truth):** `docs/design/implemented/ontology-curation-redesign-stage3.2-build.md`
   (honor the consolidated build §5.1 / §7 / §A.3 it extends)
 - **Live evidence:** the Step-0 probe in the spec's Appendix + consolidated §A.3
   (the diffuse `Airline Demo Mvm Maintenance` hairball, 9 schemas / 0.32 home).
@@ -35,7 +35,7 @@ extends each — it invents nothing new.
 GOAL: Build Stage 3.2 — dissolve the diffuse cross-schema FK hairball at its ROOT + add
 Gate-B net. Branch: ontology, atop LANDED Stage 3.1. ADDITIVE, wheel/job/config. NO DEPLOY.
 
-SPEC (source of truth): docs/design/ontology-curation-redesign-stage3.2-build.md
+SPEC (source of truth): docs/design/implemented/ontology-curation-redesign-stage3.2-build.md
 DECISIONS: mv-advisor-playbook.md MV-D61/62 (honor MV-D35/43/45/49/50/52/53/56/57).
 Evidence: spec Appendix (Step-0 probe) + build §A.3.
 BASELINE (no regress): Stage 1/2/3/3.1 + 17g/17f/re-grain/3b/3a. RULES: AGENTS.md.

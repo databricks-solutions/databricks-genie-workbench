@@ -9,8 +9,8 @@ human eyeballs the mockups and picks the library first.
 
 - **Spec (source of truth):** `docs/design/ontology-phase3e-build.md` (Step A =
   §1/§3/§4/§6/§7/§8/§9-StepA/§11; the **bakeoff** = §5; Step B is deferred)
-- **Baselines (already shipped):** `ontology-phase3a-build.md` (L2 graph),
-  `ontology-phase3b-build.md` (L4 clustering → `domain_id`), 17f/17g
+- **Baselines (already shipped):** `implemented/ontology-phase3a-build.md` (L2 graph),
+  `implemented/ontology-phase3b-build.md` (L4 clustering → `domain_id`), 17f/17g
 - **Design context:** `docs/design/ontology-engine-architecture.md` §5 (the fused
   signal graph this visualizes)
 - **Decisions register:** `docs/design/mv-advisor-playbook.md` (**Prompt 17k**;
