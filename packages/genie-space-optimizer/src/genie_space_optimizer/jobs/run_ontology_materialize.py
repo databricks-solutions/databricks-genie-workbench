@@ -60,6 +60,10 @@ dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("schema", "genie_space_optimizer")
 dbutils.widgets.text("catalog_allowlist", "[]")
 dbutils.widgets.text("run_id", "")
+# Warehouse for the metric-view YAML read (measure_signals → estate_metric_view_yamls).
+# Serverless Spark Connect cannot expose MV metadata, so DESCRIBE ... AS JSON needs a SQL
+# warehouse; threaded as a job parameter (the env var is not set on serverless jobs).
+dbutils.widgets.text("warehouse_id", "")
 # Stage 3 curation policy (MV-D57) — job_parameters with in-code defaults so a
 # param-less run (nightly, or an older launcher) still works (MV-D43).
 dbutils.widgets.text("domain_facet_denylist", "[]")
@@ -84,6 +88,7 @@ trigger = dbutils.widgets.get("trigger").strip() or "nightly"
 catalog = dbutils.widgets.get("catalog").strip() or os.environ.get("GSO_CATALOG", "")
 schema = dbutils.widgets.get("schema").strip() or os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
 run_id = dbutils.widgets.get("run_id").strip() or None
+warehouse_id = dbutils.widgets.get("warehouse_id").strip() or os.environ.get("GSO_WAREHOUSE_ID", "")
 try:
     allowlist = [str(c).strip() for c in json.loads(dbutils.widgets.get("catalog_allowlist") or "[]") if str(c).strip()]
 except (TypeError, ValueError):
@@ -203,9 +208,13 @@ class SparkSystemTableReader:
         join_col_suffixes: tuple[str, ...] = None,
         join_col_max_schemas: int = None,
         join_col_denylist: frozenset[str] = None,
+        warehouse_id: str = "",
     ) -> None:
         from genie_space_optimizer.ontology import schema_signals as ss
         self._schema_denylist = list(schema_denylist or ["information_schema"])
+        # SQL warehouse for the metric-view YAML DESCRIBE (measure_signals); empty ⇒ MV
+        # detection short-circuits to OUTCOME_NO_WAREHOUSE and measures degrade to [].
+        self._warehouse_id = warehouse_id or ""
         self._join_suffixes = tuple(join_col_suffixes) if join_col_suffixes else ss.JOIN_COLUMN_SUFFIXES
         self._join_max_schemas = (
             int(join_col_max_schemas) if join_col_max_schemas is not None else ss.MAX_SCHEMAS_PER_SHARED_COLUMN
@@ -340,7 +349,7 @@ class SparkSystemTableReader:
             from genie_space_optimizer.optimization.mv_advisor import estate_metric_view_yamls
             yamls = estate_metric_view_yamls(
                 spark, mv_fqns, w=make_workspace_client(),
-                warehouse_id=os.environ.get("GSO_WAREHOUSE_ID", ""),
+                warehouse_id=self._warehouse_id or os.environ.get("GSO_WAREHOUSE_ID", ""),
             )
         except Exception as e:  # noqa: BLE001 — a failed MV-YAML read yields no membership
             _log("mv_membership read skipped", error=str(e))
@@ -400,7 +409,7 @@ class SparkSystemTableReader:
         try:
             yamls = estate_metric_view_yamls(
                 spark, mv_fqns, w=make_workspace_client(),
-                warehouse_id=os.environ.get("GSO_WAREHOUSE_ID", ""),
+                warehouse_id=self._warehouse_id or os.environ.get("GSO_WAREHOUSE_ID", ""),
             )
             fields = metric_view_fields(yamls)
         except Exception as e:  # noqa: BLE001 — a failed estate read is not evidence of none
@@ -522,6 +531,7 @@ run = materialize.run_materialize(
         join_col_suffixes=join_col_suffixes,
         join_col_max_schemas=join_col_max_schemas,
         join_col_denylist=join_col_denylist,
+        warehouse_id=warehouse_id,
     ),
     writer,
     metastore_id=metastore_id,

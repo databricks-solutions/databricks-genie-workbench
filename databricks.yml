@@ -278,6 +278,10 @@ resources:
           default: "[]"
         - name: run_id
           default: ""
+        # SQL warehouse for the metric-view YAML DESCRIBE (measure_signals). Sourced from
+        # the same var the optimization jobs use; empty ⇒ measures degrade to [] (MV-D43).
+        - name: warehouse_id
+          default: ${var.warehouse_id}
       tasks:
         - task_key: ontology_materialize
           notebook_task:
@@ -289,6 +293,7 @@ resources:
               schema: "{{job.parameters.schema}}"
               catalog_allowlist: "{{job.parameters.catalog_allowlist}}"
               run_id: "{{job.parameters.run_id}}"
+              warehouse_id: "{{job.parameters.warehouse_id}}"
           environment_key: default
           timeout_seconds: 3600
           max_retries: 0
