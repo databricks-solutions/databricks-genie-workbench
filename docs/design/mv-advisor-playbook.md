@@ -69,7 +69,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D64 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D65 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -422,7 +422,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D64)
+## Decisions register (MV-D1–MV-D65)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. MV-D33 (the semantic-model graph, reviewer-approved directly) is decided at Prompt 12e. MV-D34 (create-at-approval) and MV-D35 (facts lead, score ranks) were reviewer-approved at the THIRD smoke review after a process autopsy found three waves of display patches had never owned the acceptance journey end-to-end — both are implemented at Prompt 15.8, and the autopsy's process fix (the fidelity gate) is now a rules-file discipline. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -787,6 +787,8 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D64 — Pages must attach to a surfaced Domain to surface (LANDED + deploy-verified — commit `d85ed3b5`; live gate build §9: 0 surfaced-but-unattached, the 41 orphans closed).** Pages skip the legitimacy/diffuseness gates, so 41 of the Stage-4.1a Pages surfaced with an empty `domain_id`. `rank._apply_page_attachment_gate` (mirroring the Domain gates) keeps but sets `surfaced=false` + `surfaced_reason` for a Page whose `domain_id` is empty or points to a non-surfaced Domain; guarded by `page_require_domain`=true. Additive `evidence` keys only; no new table/route. Build spec §3.2.
 
+**MV-D65 — Single wheel-native LLM client, identity injected (PROPOSED — owner directive).** The Stage-4.1b live gate (build §9) proved batch Pages are corroboration-complete but **all `certify=false`**, because the three ontology LLM enrichers (`pages.default_page_drafter`, `cluster.default_namer`, `er.default_adjudicator`) do a `wheel → backend` import (`from backend.services.llm_utils import call_serving_endpoint`) that raises on the job cluster where `backend` is absent → stub → `llm_ok=False`. This inverts the allowed dependency direction (`backend → wheel`) and ignores the wheel's own superior client (`optimization.llm_client.call_llm`: openai SDK + `mlflow.openai.autolog()` + retries + per-call token refresh). Stage-4.1c **(Step 1)** extracts that client to a single `genie_space_optimizer.common.llm` (`get_openai_client` + `call_llm_core`, packing-free; `optimization.llm_client` re-exports and keeps `fit_messages` in a thin wrapper), repoints the three enrichers at it with an **injected** `WorkspaceClient` (OBO in app, `run_as` in job), and wires the job to pass the client + call `autolog()` — flipping `llm_ok=True` so corroborated Pages can `certify=true` and restoring LLM Domain-naming/ER-adjudication in batch. **(Step 2)** migrates `backend`'s callers (`plan_builder`, `create_agent`) onto `call_llm_core` and retires the httpx `call_serving_endpoint`, leaving `backend` only the JSON helpers — one client, one config resolver (`get_llm_endpoint()`), identity injected. Degrade-not-hang preserved (MV-D43); no `wheel → backend` import may remain (layering guard test); no new dependency. Build spec `ontology-curation-redesign-stage4.1c-build.md`, driver `…-stage4.1c-driver.md`.
+
 > **Curation-redesign driver status (mirrors the Phase-pair pointers).** The full
 > section-by-section spec is `docs/design/ontology-curation-redesign-build.md`
 > (§5 Stage 1 → §10 harness); each stage has a Goal-Mode launcher. **Stage 1**
@@ -824,8 +826,14 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > **corroboration ≥2 on 591/641** Pages (measure⊕column now collapses). `certify=0` is
 > **by design** — the batch cluster has no `backend` on path, so `default_page_drafter`
 > degrades to the stub → `llm_ok=false` → `certify=false` (MV-D43); certification is an
-> app-path concern. **Stage 4.1c** (a wheel-native drafter so batch can certify, and
-> comment-primary standalone Pages) is deferred. §9 alignment folds into Phase 4 (17h);
+> app-path concern → **Stage 4.1c — BUILD-READY**
+> (`ontology-curation-redesign-stage4.1c-driver.md`, MV-D65, build spec
+> `ontology-curation-redesign-stage4.1c-build.md`): repoint the three ontology LLM
+> enrichers (pages/cluster/er) off the `wheel → backend` import onto a single wheel-native
+> `common.llm` client with an **injected** identity (OBO in app, `run_as` in job) so batch
+> Pages can finally `certify=true` (Step 1), then migrate `backend`'s callers onto the same
+> client and retire the httpx `call_serving_endpoint` (Step 2). Comment-primary standalone
+> Pages stay deferred. §9 alignment folds into Phase 4 (17h);
 > §10 eval harness (MV-D59) follows. The block above is the register; the build spec is the
 > source of truth.
 
