@@ -37,6 +37,9 @@ def fake_store(monkeypatch):
             "domain_join_col_denylist": kw.get("domain_join_col_denylist"),
             "domain_max_diffuse_schemas": kw.get("domain_max_diffuse_schemas", 6),
             "domain_min_home_concentration": kw.get("domain_min_home_concentration", 0.5),
+            # Stage 4.1d bounded auto-drafting (MV-D66) — additive, keyword-only.
+            "page_autodraft_min_corroboration": kw.get("page_autodraft_min_corroboration", 3),
+            "page_autodraft_max_pages": kw.get("page_autodraft_max_pages", 50),
             "industry_alignment": kw.get("industry_alignment"),
         }
         return store[ws]
@@ -142,6 +145,28 @@ async def test_stage32_policy_round_trips_and_old_row_reads_defaults(fake_store)
         "id", "user_id", "workspace_id", "category_id", "tenant_id", "account_id"]
     assert d.domain_max_diffuse_schemas == 6
     assert d.domain_min_home_concentration == 0.5
+
+
+async def test_stage41d_autodraft_config_round_trips_and_old_row_reads_defaults(fake_store):
+    # An explicit Stage-4.1d bounded-auto-draft policy round-trips (MV-D66)…
+    saved = await ont_settings.save_settings(
+        OntologySettings(
+            catalog_allowlist=["airline"],
+            page_autodraft_min_corroboration=4,
+            page_autodraft_max_pages=25,
+        )
+    )
+    assert saved.page_autodraft_min_corroboration == 4
+    assert saved.page_autodraft_max_pages == 25
+    reread = await ont_settings.get_settings()
+    assert reread.page_autodraft_min_corroboration == 4
+    assert reread.page_autodraft_max_pages == 25
+
+    # …and an old row missing the Stage-4.1d columns reads the shipped defaults.
+    fake_store["ws1"] = {"company_name": "Acme", "catalog_allowlist": ["finance"]}
+    d = await ont_settings.get_settings()
+    assert d.page_autodraft_min_corroboration == 3
+    assert d.page_autodraft_max_pages == 50
 
 
 def test_settings_router_wire_shape(monkeypatch):

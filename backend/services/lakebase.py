@@ -374,6 +374,15 @@ async def _ensure_schema():
                 "ALTER TABLE genie.genie_ont_settings "
                 "ADD COLUMN IF NOT EXISTS domain_min_home_concentration DOUBLE PRECISION NOT NULL DEFAULT 0.5"
             )
+            # Stage 4.1d (MV-D66) — bounded batch auto-drafting cap.
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS page_autodraft_min_corroboration INT NOT NULL DEFAULT 3"
+            )
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS page_autodraft_max_pages INT NOT NULL DEFAULT 50"
+            )
         _lakebase_available = True
         logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables + 1 ontology table)")
     except Exception as e:
@@ -1139,7 +1148,8 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
                 "domain_require_connection, domain_schema_denylist, "
                 "domain_join_col_suffixes, domain_join_col_max_schemas, "
                 "domain_join_col_denylist, domain_max_diffuse_schemas, "
-                "domain_min_home_concentration, industry_alignment, updated_at "
+                "domain_min_home_concentration, page_autodraft_min_corroboration, "
+                "page_autodraft_max_pages, industry_alignment, updated_at "
                 "FROM genie.genie_ont_settings WHERE workspace_id = $1",
                 workspace_id,
             )
@@ -1176,6 +1186,9 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
             "domain_join_col_denylist": _json(row["domain_join_col_denylist"], None),
             "domain_max_diffuse_schemas": row["domain_max_diffuse_schemas"],
             "domain_min_home_concentration": row["domain_min_home_concentration"],
+            # Stage 4.1d (MV-D66) — bounded auto-draft cap; ints pass through (NOT NULL DEFAULT).
+            "page_autodraft_min_corroboration": row["page_autodraft_min_corroboration"],
+            "page_autodraft_max_pages": row["page_autodraft_max_pages"],
             "industry_alignment": _json(row["industry_alignment"], None),
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
@@ -1200,6 +1213,8 @@ async def ont_upsert_settings(
     domain_join_col_denylist: list[str] | None = None,
     domain_max_diffuse_schemas: int = 6,
     domain_min_home_concentration: float = 0.5,
+    page_autodraft_min_corroboration: int = 3,
+    page_autodraft_max_pages: int = 50,
     industry_alignment: dict | None = None,
 ) -> dict:
     """Upsert the Ontology settings row for a workspace. Fails closed. The Stage-3 /
@@ -1229,6 +1244,8 @@ async def ont_upsert_settings(
         "domain_join_col_denylist": join_denylist,
         "domain_max_diffuse_schemas": int(domain_max_diffuse_schemas),
         "domain_min_home_concentration": float(domain_min_home_concentration),
+        "page_autodraft_min_corroboration": int(page_autodraft_min_corroboration),
+        "page_autodraft_max_pages": int(page_autodraft_max_pages),
         "industry_alignment": industry,
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -1246,8 +1263,9 @@ async def ont_upsert_settings(
                  domain_require_connection, domain_schema_denylist,
                  domain_join_col_suffixes, domain_join_col_max_schemas,
                  domain_join_col_denylist, domain_max_diffuse_schemas,
-                 domain_min_home_concentration, industry_alignment, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+                 domain_min_home_concentration, page_autodraft_min_corroboration,
+                 page_autodraft_max_pages, industry_alignment, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
             ON CONFLICT (workspace_id) DO UPDATE SET
                 company_name             = EXCLUDED.company_name,
                 catalog_allowlist        = EXCLUDED.catalog_allowlist,
@@ -1262,6 +1280,8 @@ async def ont_upsert_settings(
                 domain_join_col_denylist = EXCLUDED.domain_join_col_denylist,
                 domain_max_diffuse_schemas = EXCLUDED.domain_max_diffuse_schemas,
                 domain_min_home_concentration = EXCLUDED.domain_min_home_concentration,
+                page_autodraft_min_corroboration = EXCLUDED.page_autodraft_min_corroboration,
+                page_autodraft_max_pages = EXCLUDED.page_autodraft_max_pages,
                 industry_alignment       = EXCLUDED.industry_alignment,
                 updated_at               = NOW()
             """,
@@ -1279,6 +1299,8 @@ async def ont_upsert_settings(
             json.dumps(join_denylist),
             record["domain_max_diffuse_schemas"],
             record["domain_min_home_concentration"],
+            record["page_autodraft_min_corroboration"],
+            record["page_autodraft_max_pages"],
             json.dumps(industry),
         )
     return record

@@ -211,11 +211,17 @@ def test_two_artifact_concept_is_certify_eligible():
 # ── Identifier gate ─────────────────────────────────────────────────────────
 
 
-def test_invented_identifier_degrades_to_stub():
-    routing = _by_archetype(_mine(drafter=_invented_drafter))["Routing"][0]
+def test_invented_identifier_drafted_body_rejected_keeps_stub():
+    # A SELECTED Page whose auto-drafted body invents an identifier is rejected by the
+    # identifier gate → keeps the deterministic stub (body_source="stub", MV-D43).
+    # min_corroboration=1 forces the concept into the auto-draft set so the rejection is
+    # exercised. certify is DETERMINISTIC (MV-D66) — independent of the body source.
+    routing = _by_archetype(
+        _mine(drafter=_invented_drafter, page_autodraft_min_corroboration=1)
+    )["Routing"][0]
     assert routing.evidence["body_source"] == "stub"
     assert "ghost_column" not in routing.body
-    assert routing.certify is False  # LLM output rejected → not certified
+    assert routing.certify is True  # corroborated + shape + synonyms + no conflict
 
 
 def test_source_fqns_all_exist_in_members():
@@ -273,14 +279,31 @@ def test_certify_true_only_for_corroborated_formula_archetypes():
     assert got["Taxonomy"][0].certify is False  # non-governed code list
 
 
+def test_certify_is_deterministic_without_any_llm():
+    # MV-D66: certify is a DETERMINISTIC recommendation — a corroborated, shape-authoritative,
+    # synonym-covered, non-conflicting concept certifies with NO LLM at all (drafter=None),
+    # and its body carries the deterministic stub.
+    got = _by_archetype(_mine(drafter=None))
+    assert got["Routing"][0].certify is True
+    assert got["Guardrail"][0].certify is True
+    assert got["Disambiguation"][0].certify is True
+    assert got["Taxonomy"][0].certify is False  # non-governed code list
+    for arch in ("Routing", "Guardrail", "Disambiguation"):
+        assert got[arch][0].evidence["body_source"] == "stub"  # undrafted → stub
+
+
 # ── Degrade (MV-D43) ─────────────────────────────────────────────────────────
 
 
-def test_llm_down_yields_stub_bodies_and_certify_false():
-    for c in _mine(drafter=_boom_drafter):
+def test_llm_down_yields_stub_bodies_run_succeeds():
+    # A raising drafter ⇒ every Page keeps the deterministic stub and the run still
+    # produces candidates (MV-D43). min_corroboration=1 forces the auto-draft path so the
+    # degrade is actually exercised. certify is DETERMINISTIC — decoupled from prose.
+    cands = _mine(drafter=_boom_drafter, page_autodraft_min_corroboration=1)
+    assert cands  # run succeeded
+    for c in cands:
         assert c.evidence["body_source"] == "stub"
-        assert c.certify is False
-        assert c.body  # a real deterministic body, run succeeds
+        assert c.body  # a real deterministic body
 
 
 def test_routing_validation_degrades_to_unvalidated_when_genie_unreachable():
@@ -440,13 +463,15 @@ def test_governed_coded_column_with_measure_is_certify_eligible_taxonomy():
     assert len(tax) == 1
     assert tax[0].corroboration == 2          # the MV + the coded table
     assert tax[0].evidence["governed"] is True
-    assert tax[0].certify is True             # governed code list + corroborated + synonyms + llm
+    assert tax[0].certify is True             # deterministic: governed + corroborated + synonyms
 
 
-def test_default_page_drafter_certifies_governed_coded_column_via_common_client(monkeypatch):
-    # Stage-4.1c acceptance: the REAL default_page_drafter reaches the wheel-native
-    # client (common.llm.call_llm_core, monkeypatched — NOT backend); a healthy body
-    # → body_source=llm → for a governed coded col + measure on one concept, certify=true.
+def test_default_page_drafter_autodrafts_governed_coded_column_via_common_client(monkeypatch):
+    # Stage-4.1d: a SELECTED certify Page is auto-drafted through the REAL
+    # default_page_drafter → the wheel-native client (common.llm.call_llm_core,
+    # monkeypatched — NOT backend); a gate-passing body → body_source="llm_auto".
+    # certify is deterministic and independent of the draft. (min_corroboration=2 selects
+    # this corroboration-2 concept.)
     from genie_space_optimizer.common import llm as common_llm
 
     def _ok_core(w, *, messages, model=None, max_tokens=None, **kwargs):
@@ -472,11 +497,12 @@ def test_default_page_drafter_certifies_governed_coded_column_via_common_client(
                        distinct_values=("F", "J", "Y"), governed=True)
     members = ["ops.air.cabin_mv", "ops.air.flights", "ops.air.cabin"]
     drafter = pages.default_page_drafter(w=object())  # injected identity (fake, unused)
-    cands = pages.mine_pages(measures=[measure], columns=[col], members=members, drafter=drafter)
+    cands = pages.mine_pages(measures=[measure], columns=[col], members=members,
+                             drafter=drafter, page_autodraft_min_corroboration=2)
     tax = [c for c in cands if c.archetype == "Taxonomy"]
     assert len(tax) == 1
-    assert tax[0].evidence["body_source"] == "llm"  # the LLM path was exercised
-    assert tax[0].certify is True                    # governed + corroborated + synonyms + llm_ok
+    assert tax[0].evidence["body_source"] == "llm_auto"  # the auto-draft path was exercised
+    assert tax[0].certify is True                         # deterministic: governed + corroborated + synonyms
 
 
 def test_non_governed_coded_column_with_measure_is_not_certified():
@@ -557,3 +583,90 @@ def test_history_signal_is_a_dormant_seam_that_mines_nothing():
     base = _mine()
     withh = _mine(history=[hs])
     assert {c.page_id for c in base} == {c.page_id for c in withh}
+
+
+# ── Stage 4.1d (MV-D66): bounded auto-drafting ───────────────────────────────
+
+
+def _autodraft_measures(n: int):
+    """``n`` distinct certify-eligible Routing concepts, each corroboration 3 (its MV +
+    two serving Agents) with the worked-example synonym-rich comment."""
+    ms, members = [], []
+    for i in range(n):
+        mv, tbl = f"finance.d{i}.rev_mv", f"finance.d{i}.orders"
+        a1, a2 = f"Agent{i}a · 0{i}aa", f"Agent{i}b · 0{i}bb"
+        ms.append(MeasureSignal(
+            mv_fqn=mv, name=f"metric_{i}", expression="SUM(x)",
+            comment="TR; net sales; revenue booked", source_fqns=(tbl,),
+            agent_fqns=(a1, a2), domain_id=f"sug_d{i}"))
+        members += [mv, tbl, a1, a2]
+    return ms, members
+
+
+def test_autodraft_caps_selection_and_marks_llm_auto():
+    # ≤ page_autodraft_max_pages Pages are drafted; the rest keep the stub; the drafter is
+    # invoked at most max_pages times; the selection is deterministic across re-runs.
+    ms, members = _autodraft_measures(5)
+    calls = {"n": 0}
+
+    def _counting(facts):
+        calls["n"] += 1
+        return _good_drafter(facts)
+
+    cands = pages.mine_pages(
+        measures=ms, members=members, drafter=_counting,
+        page_autodraft_min_corroboration=3, page_autodraft_max_pages=2,
+    )
+    auto = [c for c in cands if c.evidence.get("body_source") == "llm_auto"]
+    stub_routing = [c for c in cands if c.archetype == "Routing" and c.evidence["body_source"] == "stub"]
+    assert len(auto) == 2          # hard cap respected
+    assert calls["n"] == 2          # drafter invoked at most max_pages times
+    assert len(stub_routing) == 3   # the long tail keeps the deterministic stub
+    assert all(c.certify for c in auto)  # only certify Pages are drafted
+
+    rerun = pages.mine_pages(
+        measures=ms, members=members, drafter=lambda f: _good_drafter(f),
+        page_autodraft_min_corroboration=3, page_autodraft_max_pages=2,
+    )
+    assert {c.page_id for c in auto} == {
+        c.page_id for c in rerun if c.evidence.get("body_source") == "llm_auto"
+    }
+
+
+def test_autodraft_max_pages_zero_drafts_nothing():
+    ms, members = _autodraft_measures(3)
+    calls = {"n": 0}
+
+    def _counting(facts):
+        calls["n"] += 1
+        return _good_drafter(facts)
+
+    cands = pages.mine_pages(measures=ms, members=members, drafter=_counting, page_autodraft_max_pages=0)
+    assert calls["n"] == 0  # zero page LLM calls
+    assert all(c.evidence["body_source"] == "stub" for c in cands)
+
+
+def test_autodraft_raising_drafter_keeps_stub_and_run_succeeds():
+    ms, members = _autodraft_measures(3)
+    cands = pages.mine_pages(
+        measures=ms, members=members, drafter=_boom_drafter,
+        page_autodraft_min_corroboration=3, page_autodraft_max_pages=50,
+    )
+    assert cands  # run succeeded
+    assert all(c.evidence["body_source"] == "stub" for c in cands)  # degrade, MV-D43
+
+
+def test_autodraft_skips_pages_below_min_corroboration():
+    # A corroboration-2 certify Page is never auto-drafted at min=3; a corroboration-3 is.
+    ms3, members3 = _autodraft_measures(1)  # corroboration 3
+    m2 = MeasureSignal(mv_fqn="finance.lo.rev_mv", name="lonely", expression="SUM(x)",
+                       comment="TR; net sales; revenue booked", source_fqns=("finance.lo.t",),
+                       agent_fqns=("Solo · 09aa",), domain_id="sug_lo")  # corroboration 2
+    members = members3 + ["finance.lo.rev_mv", "finance.lo.t", "Solo · 09aa"]
+    cands = pages.mine_pages(
+        measures=ms3 + [m2], members=members, drafter=_good_drafter,
+        page_autodraft_min_corroboration=3, page_autodraft_max_pages=50,
+    )
+    by_corr = {c.corroboration: c.evidence["body_source"] for c in cands if c.archetype == "Routing"}
+    assert by_corr.get(3) == "llm_auto"
+    assert by_corr.get(2) == "stub"

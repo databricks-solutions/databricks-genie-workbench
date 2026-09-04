@@ -147,6 +147,16 @@ async def get_settings() -> OntologySettings:
             float(row["domain_min_home_concentration"])
             if row.get("domain_min_home_concentration") is not None else 0.5
         ),
+        # Stage 4.1d (MV-D66) — additive/defaulted: an old row (missing columns / NULL)
+        # falls through to the shipped bounded-drafting defaults.
+        page_autodraft_min_corroboration=(
+            int(row["page_autodraft_min_corroboration"])
+            if row.get("page_autodraft_min_corroboration") is not None else 3
+        ),
+        page_autodraft_max_pages=(
+            int(row["page_autodraft_max_pages"])
+            if row.get("page_autodraft_max_pages") is not None else 50
+        ),
         industry_alignment=_industry_alignment(row.get("industry_alignment")),
     )
 
@@ -175,6 +185,8 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
         domain_join_col_denylist=join_denylist,
         domain_max_diffuse_schemas=int(settings.domain_max_diffuse_schemas),
         domain_min_home_concentration=float(settings.domain_min_home_concentration),
+        page_autodraft_min_corroboration=int(settings.page_autodraft_min_corroboration),
+        page_autodraft_max_pages=int(settings.page_autodraft_max_pages),
         industry_alignment=industry.model_dump(mode="json"),
     )
     # NOTE: we deliberately do NOT auto-grant BROWSE to the app SP here. The app's
@@ -194,5 +206,7 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
         domain_join_col_denylist=join_denylist,
         domain_max_diffuse_schemas=int(settings.domain_max_diffuse_schemas),
         domain_min_home_concentration=float(settings.domain_min_home_concentration),
+        page_autodraft_min_corroboration=int(settings.page_autodraft_min_corroboration),
+        page_autodraft_max_pages=int(settings.page_autodraft_max_pages),
         industry_alignment=industry,
     )

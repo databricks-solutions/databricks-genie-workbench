@@ -44,6 +44,8 @@ _PHASE1_FIELDS = {
         "domain_schema_denylist", "domain_join_col_suffixes",
         "domain_join_col_max_schemas", "domain_join_col_denylist",
         "domain_max_diffuse_schemas", "domain_min_home_concentration",
+        # Stage 4.1d bounded auto-drafting (MV-D66).
+        "page_autodraft_min_corroboration", "page_autodraft_max_pages",
     },
 }
 
@@ -192,6 +194,8 @@ def test_trigger_launches_when_idle(monkeypatch):
         "facet_denylist", "min_tables", "min_schemas", "require_connection",
         "schema_denylist", "join_col_suffixes", "join_col_max_schemas",
         "join_col_denylist", "max_diffuse_schemas", "min_home_concentration",
+        # Stage 4.1d bounded auto-drafting (MV-D66).
+        "page_autodraft_min_corroboration", "page_autodraft_max_pages",
     }
 
 

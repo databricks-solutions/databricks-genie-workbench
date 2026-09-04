@@ -103,6 +103,11 @@ dbutils.widgets.text("domain_min_home_concentration", "0.5")
 dbutils.widgets.text("coded_column_max_columns", "300")
 dbutils.widgets.text("coded_column_max_cardinality", "40")
 dbutils.widgets.text("page_require_domain", "true")
+# Stage 4.1d bounded auto-drafting (MV-D66) — the "super sure" cap: certify + corroboration
+# ≥ MIN, top-N by confidence. A param-less run applies the shipped defaults (aligned with
+# pages.PAGE_AUTODRAFT_*). max_pages=0 ⇒ a pure-stub (zero page-LLM) batch.
+dbutils.widgets.text("page_autodraft_min_corroboration", "3")
+dbutils.widgets.text("page_autodraft_max_pages", "50")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -173,6 +178,10 @@ from genie_space_optimizer.ontology import coded_columns as _cc  # noqa: E402
 coded_column_max_columns = _parse_int("coded_column_max_columns", _cc.CODED_COLUMN_MAX_COLUMNS)
 coded_column_max_cardinality = _parse_int("coded_column_max_cardinality", _cc.CODED_COLUMN_MAX_CARDINALITY)
 page_require_domain = (dbutils.widgets.get("page_require_domain").strip().lower() or "true") != "false"
+# Stage 4.1d (MV-D66) — bounded auto-draft cap, parsed defensively → in-code default
+# (aligned with the wheel's pages.PAGE_AUTODRAFT_* constants).
+page_autodraft_min_corroboration = _parse_int("page_autodraft_min_corroboration", 3)
+page_autodraft_max_pages = _parse_int("page_autodraft_max_pages", 50)
 
 
 def _resolve_metastore_id() -> str:
@@ -698,6 +707,9 @@ run = materialize.run_materialize(
     domain_min_home_concentration=min_home_concentration,
     # Stage 4.1b Page-attachment gate (MV-D64) — hide a Page with no surfaced home.
     page_require_domain=page_require_domain,
+    # Stage 4.1d bounded auto-drafting (MV-D66) — the super-sure cap for batch LLM prose.
+    page_autodraft_min_corroboration=page_autodraft_min_corroboration,
+    page_autodraft_max_pages=page_autodraft_max_pages,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))

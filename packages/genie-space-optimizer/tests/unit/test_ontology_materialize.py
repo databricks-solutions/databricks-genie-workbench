@@ -209,6 +209,50 @@ def test_page_mining_error_records_failed_but_keeps_earlier_snapshots(monkeypatc
     assert "page miner boom" in (writer.runs["rP"]["error"] or "")
 
 
+def _autodraft_reader_measures(n: int):
+    """``n`` distinct certify-eligible Routing concepts (corroboration 3 each)."""
+    from genie_space_optimizer.ontology.pages import MeasureSignal
+
+    return [
+        MeasureSignal(
+            mv_fqn=f"finance.d{i}.rev_mv", name=f"metric_{i}", expression="SUM(x)",
+            comment="TR; net sales; revenue booked", source_fqns=(f"finance.d{i}.orders",),
+            agent_fqns=(f"Agent{i}a · 0{i}aa", f"Agent{i}b · 0{i}bb"), domain_id=f"sug_d{i}",
+        )
+        for i in range(n)
+    ]
+
+
+def test_page_autodraft_bounded_by_max_pages_regardless_of_page_count(monkeypatch):
+    # MV-D66: the batch drafter is invoked at most page_autodraft_max_pages times, no
+    # matter how many certify Pages the estate yields — this is the timeout fix.
+    writer = _FakeWriter()
+    calls = {"n": 0}
+
+    def _counting(facts):
+        calls["n"] += 1
+        return _page_drafter(facts)
+
+    reader = _page_reader(measures=_autodraft_reader_measures(4))
+    run = _run(
+        reader, writer, run_id="r1", page_drafter=_counting,
+        page_autodraft_min_corroboration=3, page_autodraft_max_pages=1,
+    )
+    assert run["state"] == "succeeded"
+    routing = [v for v in writer.tables["genie_ont_pages"].values() if v["archetype"] == "Routing"]
+    assert len(routing) == 4          # four certify Pages exist…
+    assert calls["n"] == 1            # …but the drafter is called at most max_pages (=1) times
+
+
+def test_page_autodraft_param_less_run_uses_defaults():
+    # An older launcher passing no page_autodraft params still runs — the wheel applies
+    # the shipped defaults (round-trip to defaults, MV-D57 pattern).
+    writer = _FakeWriter()
+    run = _run(_page_reader(), writer, run_id="r1", page_drafter=_page_drafter)
+    assert run["state"] == "succeeded"
+    assert run["page_count"] == len(writer.tables["genie_ont_pages"])
+
+
 def test_mirror_vs_live_parity_tree_and_tag_graph():
     catalog_rows, assign_rows = _fixture_rows()
     metric_views, agents = ["finance.rep.untagged_mv"], ["Sales · 01ef"]

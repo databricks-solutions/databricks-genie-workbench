@@ -145,6 +145,8 @@ def _launch(
     join_col_denylist: list[str] | None = None,
     max_diffuse_schemas: int = 6,
     min_home_concentration: float = 0.5,
+    page_autodraft_min_corroboration: int = 3,
+    page_autodraft_max_pages: int = 50,
 ) -> str | None:
     """Trigger the materialize job via run_now. Returns the job run id, or None.
 
@@ -178,6 +180,9 @@ def _launch(
             "domain_join_col_denylist": json.dumps(list(join_col_denylist or [])),
             "domain_max_diffuse_schemas": str(int(max_diffuse_schemas)),
             "domain_min_home_concentration": str(float(min_home_concentration)),
+            # Stage 4.1d bounded auto-drafting (MV-D66).
+            "page_autodraft_min_corroboration": str(int(page_autodraft_min_corroboration)),
+            "page_autodraft_max_pages": str(int(page_autodraft_max_pages)),
         },
     )
     return str(getattr(waiter, "run_id", "")) or None
@@ -211,6 +216,8 @@ async def trigger() -> OntologyRefreshStatus:
             join_col_denylist=settings.domain_join_col_denylist,
             max_diffuse_schemas=settings.domain_max_diffuse_schemas,
             min_home_concentration=settings.domain_min_home_concentration,
+            page_autodraft_min_corroboration=settings.page_autodraft_min_corroboration,
+            page_autodraft_max_pages=settings.page_autodraft_max_pages,
         )
     except Exception as e:  # noqa: BLE001 — surface plainly, never 500 the button
         logger.warning("ontology refresh launch failed: %s", e)

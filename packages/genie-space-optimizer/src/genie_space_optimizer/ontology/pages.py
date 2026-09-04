@@ -42,7 +42,7 @@ import hashlib
 import logging
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from genie_space_optimizer.ontology import er, similarity, transforms
@@ -72,6 +72,12 @@ _MIN_SYNONYM_CLASSES = 3       # of the four classes
 _CORROBORATION_FULL = 2
 # Coded-column cardinality ceiling for a [Taxonomy] page (a code list, not free text).
 _TAXONOMY_MAX_CARDINALITY = 40
+# Bounded batch auto-drafting (MV-D66): the batch LLM-drafts only the "super sure" set —
+# certify-eligible + corroboration ≥ MIN, top by confidence, hard-capped at MAX. Everyone
+# else carries the deterministic stub; the on-demand / bulk prose (Steps 3–4) is pulled by
+# the curator. MAX=0 ⇒ a pure-stub (zero-LLM) batch. Both are config-overridable (MV-D57).
+PAGE_AUTODRAFT_MIN_CORROBORATION = 3
+PAGE_AUTODRAFT_MAX_PAGES = 50
 
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 # A rule sentence that opens with one of these bare pronouns is chunk-unsafe — it
@@ -985,10 +991,14 @@ def _finalize(
     conflict = contradicts_instructions(spec, concept.measures, instructions)
     routing_validated = _validate_routing(spec, routing_validator)
 
-    # Certify (§6): authoritative shape AND ≥2 corroboration AND synonyms cover AND no
-    # contradiction AND a trustworthy (LLM- or stub-, identifier-valid) draft. A single
-    # artifact, a synonym-short concept, a conflict, or an LLM-down draft is certify=false.
-    certify = bool(spec.certify_shape and corroborated and syn_ok and not conflict and llm_ok)
+    # Certify (§6, MV-D66): a DETERMINISTIC curator recommendation — authoritative shape
+    # AND ≥2 corroboration AND synonyms cover AND no contradiction. Independent of body
+    # source: the stub already passes every safety gate (identifier / chunk-safe /
+    # specificity), so ``llm_ok`` is prose polish, not correctness, and no longer gates the
+    # recommendation. ``llm_ok`` still rides ``evidence.body_source`` and still scales
+    # ``confidence`` (below). A single artifact, a synonym-short concept, or a conflict is
+    # certify=false. Nothing auto-certifies — a human approves (consent ledger, Phase 5).
+    certify = bool(spec.certify_shape and corroborated and syn_ok and not conflict)
 
     confidence = spec.confidence
     if not corroborated:
@@ -1080,6 +1090,40 @@ def _definition_index(measures: Sequence[MeasureSignal]) -> dict[str, frozenset[
     return {f: frozenset(defs) for f, defs in out.items()}
 
 
+def _autodraft(
+    cand: PageCandidate,
+    spec: "_DraftSpec",
+    universe: frozenset[str],
+    drafter: Callable[[dict], str],
+    oracle: Any | None,
+) -> PageCandidate | None:
+    """Pass C (MV-D66): try to upgrade a selected certify Page's deterministic stub to an
+    LLM-drafted body. Calls the injected ``drafter`` on ``spec.facts()``; if it returns a
+    non-empty body that passes the SAME identifier / chunk-safe / specificity / leakage
+    gates ``_finalize`` runs, returns a new candidate with that body and
+    ``evidence.body_source="llm_auto"``. Otherwise returns ``None`` — keep the stub
+    (degrade, MV-D43): a missing/raising drafter or a gate-failing body never blocks the
+    run. ``certify`` / ``confidence`` are unchanged (computed deterministically in Pass A)."""
+    try:
+        body = drafter(spec.facts())
+    except Exception as exc:  # noqa: BLE001 — LLM down → keep stub, run still succeeds
+        logger.info("ontology page auto-draft failed for %s (%s); keeping stub", spec.title, exc)
+        return None
+    body = (body or "").strip()
+    if not body:
+        return None
+    ok, _invented = identifier_gate(body, spec.source_fqns, universe)
+    if not ok:
+        return None
+    if not (chunk_safe_gate(body) and specificity_gate(body)):
+        return None
+    if oracle is not None and getattr(oracle, "contains_page_leak", None) is not None:
+        if oracle.contains_page_leak(body)[0]:
+            return None
+    cand.evidence["body_source"] = "llm_auto"
+    return replace(cand, body=body)
+
+
 def mine_pages(
     *,
     measures: Sequence[MeasureSignal] = (),
@@ -1094,6 +1138,8 @@ def mine_pages(
     drafter: Callable[[dict], str] | None = None,
     routing_validator: Callable[[str, str], bool] | None = None,
     oracle: Any | None = None,
+    page_autodraft_min_corroboration: int = PAGE_AUTODRAFT_MIN_CORROBORATION,
+    page_autodraft_max_pages: int = PAGE_AUTODRAFT_MAX_PAGES,
 ) -> list[PageCandidate]:
     """Mine archetype Page proposals for every canonical concept in the metastore.
 
@@ -1101,12 +1147,25 @@ def mine_pages(
     artifacts that resolve to the same concept (across sub-domains) — measures, coded
     columns AND business-term comments (MV-D55) — run the deterministic detectors, attach
     each Page to the domain of the MAJORITY of its Source assets (via ``asset_domain``,
-    an empty map falling back to the signal home), draft + validate each candidate,
-    dedupe best-effort, and return concept-anchored ``PageCandidate``s (stable
-    ``page_id``s). ``history`` is the DORMANT :class:`HistorySignal` seam — accepted so
-    the trigger surface is named, consumed by no detector (mines nothing). Per-concept
-    and per-candidate errors are logged and skipped (MV-D43); the caller MERGEs the
-    result metastore-scoped. Deterministic and offline."""
+    an empty map falling back to the signal home), and return concept-anchored
+    ``PageCandidate``s (stable ``page_id``s).
+
+    Drafting is BOUNDED (MV-D66): the LLM is called for at most
+    ``page_autodraft_max_pages`` Pages, never per-candidate. **Pass A** finalizes EVERY
+    candidate deterministically (``drafter=None`` → stub body, ``llm_ok=False``) — because
+    ``certify`` no longer needs ``llm_ok`` (§3.1), every strong Page already gets its
+    correct ``certify`` / ``confidence`` / stub ``body`` / ``evidence``
+    (``body_source="stub"``). **Pass B** selects the "super sure" set — ``certify`` AND
+    ``corroboration ≥ page_autodraft_min_corroboration``, sorted by ``confidence`` desc
+    (the pre-L6 ranking proxy — ``score`` is written later by the materializer), tie-break
+    ``page_id``, capped at ``page_autodraft_max_pages``. **Pass C** drafts only those (see
+    :func:`_autodraft`). ``drafter=None`` or ``page_autodraft_max_pages=0`` ⇒ a fully
+    deterministic all-stub run; ``certify`` still lights up, so offline tests need no LLM.
+
+    ``history`` is the DORMANT :class:`HistorySignal` seam — accepted so the trigger
+    surface is named, consumed by no detector (mines nothing). Per-concept and
+    per-candidate errors are logged and skipped (MV-D43); the caller MERGEs the result
+    metastore-scoped. Deterministic and offline."""
     _ = history  # dormant seam (MV-D55): named, not mined — no Genie-history detector.
     asset_domain = dict(asset_domain or {})
     index = _identity_index(identity_verdicts)
@@ -1115,7 +1174,9 @@ def mine_pages(
     coded_by_fqn = _coded_column_index(columns)
     def_by_fqn = _definition_index(measures)
 
+    # ── Pass A: deterministic finalize-all (no LLM). certify/confidence/evidence correct.
     out: dict[str, PageCandidate] = {}
+    specs_by_page_id: dict[str, "_DraftSpec"] = {}
     for concept in concepts:
         try:
             specs = detect_concept(
@@ -1129,15 +1190,30 @@ def mine_pages(
             try:
                 cand = _finalize(
                     spec, concept, universe, instructions, workspace_id=workspace_id,
-                    drafter=drafter, routing_validator=routing_validator, oracle=oracle,
+                    drafter=None, routing_validator=routing_validator, oracle=oracle,
                 )
             except Exception as exc:  # noqa: BLE001 — skip this candidate, keep the run
                 logger.info("ontology page finalize failed for %s (%s)", spec.title, exc)
                 continue
             if cand is not None:
                 out[cand.page_id] = cand
+                specs_by_page_id[cand.page_id] = spec
 
     candidates = sorted(out.values(), key=lambda c: (c.archetype, c.page_id))
+
+    # ── Pass B + C: bounded auto-drafting of the "super sure" set (MV-D66).
+    if drafter is not None and page_autodraft_max_pages > 0:
+        eligible = [
+            c for c in candidates
+            if c.certify and int(c.evidence.get("corroboration", 0)) >= page_autodraft_min_corroboration
+        ]
+        eligible.sort(key=lambda c: (-c.confidence, c.page_id))
+        for cand in eligible[:page_autodraft_max_pages]:
+            upgraded = _autodraft(cand, specs_by_page_id[cand.page_id], universe, drafter, oracle)
+            if upgraded is not None:
+                out[cand.page_id] = upgraded
+        candidates = sorted(out.values(), key=lambda c: (c.archetype, c.page_id))
+
     flag_duplicates(candidates)
     return candidates
 

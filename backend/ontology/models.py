@@ -165,6 +165,12 @@ class OntologySettings(BaseModel):
     domain_join_col_denylist: list[str] = Field(default_factory=lambda: list(DEFAULT_DOMAIN_JOIN_COL_DENYLIST))
     domain_max_diffuse_schemas: int = 6
     domain_min_home_concentration: float = 0.5
+    # ── Stage 4.1d (MV-D66): bounded batch auto-drafting — additive + defaulted, threaded
+    # to the job as params; a param-less run applies the shipped defaults. The batch
+    # LLM-drafts only the "super sure" set (certify + corroboration ≥ min, top-N by score);
+    # everyone else carries the deterministic stub. max_pages=0 ⇒ a pure-stub batch. ──
+    page_autodraft_min_corroboration: int = 3
+    page_autodraft_max_pages: int = 50
     industry_alignment: IndustryAlignment = Field(default_factory=IndustryAlignment)
 
 
