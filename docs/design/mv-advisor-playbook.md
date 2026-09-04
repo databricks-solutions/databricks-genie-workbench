@@ -69,7 +69,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D62 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D64 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -422,7 +422,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D62)
+## Decisions register (MV-D1–MV-D64)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. MV-D33 (the semantic-model graph, reviewer-approved directly) is decided at Prompt 12e. MV-D34 (create-at-approval) and MV-D35 (facts lead, score ranks) were reviewer-approved at the THIRD smoke review after a process autopsy found three waves of display patches had never owned the acceptance journey end-to-end — both are implemented at Prompt 15.8, and the autopsy's process fix (the fidelity gate) is now a rules-file discipline. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -783,6 +783,10 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D62 — Diffuseness gate is a presentation safety net for non-curated structural Domains (PROPOSED — owner directive).** `rank._apply_diffuseness_gate` (mirroring `_apply_legitimacy_gate`, curated-exempt per Stage-3.1) keeps but does not surface a **top-level, non-curated, structural** Domain that still spans ≥ `domain_max_diffuse_schemas`=6 schemas with home-concentration < `domain_min_home_concentration`=0.5 (the A.3 hairball was 9/0.32). Additive `evidence.rank` keys only; no new table/route. It is a net, not the fix — MV-D61 is the root cause. Build spec §2.2.
 
+**MV-D63 — Coded columns are fed into the batch miner, bounded (PROPOSED — owner directive).** The Stage-4.1a live gate proved measures alone yield 480 Pages that are all `trigger=measure` and all `certify=false`, because `run_ontology_materialize.coded_column_signals` returns `[]` (value-profiling was deferred to a never-built serve pass). Stage 4.1b replaces that stub with a **bounded** two-pass read — a metadata-only prefilter (STRING/small-INT with a coded name or enum-like comment) then a **capped** `approx_count_distinct` + value-list profile (reusing `optimization.wide_schema_profile`, ≤ `coded_column_max_columns`=300, distinct ≤ `coded_column_max_cardinality`) against the 4.1a-threaded warehouse — so `[Taxonomy]` Pages, the comment→`[Taxonomy]` trigger, and measure⊕column corroboration (→ some `certify=true`) light up. Reader-only (detectors unchanged); any failure ⇒ `[]` (MV-D43). Build spec `ontology-curation-redesign-stage4.1-build.md` §3.1.
+
+**MV-D64 — Pages must attach to a surfaced Domain to surface (PROPOSED — owner directive).** Pages skip the legitimacy/diffuseness gates, so 41 of the Stage-4.1a Pages surfaced with an empty `domain_id`. `rank._apply_page_attachment_gate` (mirroring the Domain gates) keeps but sets `surfaced=false` + `surfaced_reason` for a Page whose `domain_id` is empty or points to a non-surfaced Domain; guarded by `page_require_domain`=true. Additive `evidence` keys only; no new table/route. Build spec §3.2.
+
 > **Curation-redesign driver status (mirrors the Phase-pair pointers).** The full
 > section-by-section spec is `docs/design/ontology-curation-redesign-build.md`
 > (§5 Stage 1 → §10 harness); each stage has a Goal-Mode launcher. **Stage 1**
@@ -805,13 +809,20 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > rationale. Live gate (build §A.4): the maintenance twin is gone (top-level Domains
 > 61→12), the curated maintenance Domain absorbed its FK as corroboration (closing §A.3
 > Fix 2), the curated-3 still surface, and Gate-B's curated-exemption held; root cause did
-> the work (`rank.diffuse=false` everywhere). **Stage 4 — BUILD-READY**
-> (`ontology-curation-redesign-stage4-driver.md`, MV-D55, build spec §8): the 3c Page
-> engine, broadened — new triggers (table/column comments + recurring Genie-history
-> disambiguations), source-majority attachment, and a per-asset "why"; additive +
-> read-only, offline-tested then deploy-gated. §9 alignment folds into Phase 4 (17h);
-> §10 eval harness (MV-D59) follows. The block above is the register; the build spec is
-> the source of truth.
+> the work (`rank.diffuse=false` everywhere). **Stage 4 — LANDED (offline) + Stage-4.1a
+> deploy-verified** (`ontology-curation-redesign-stage4-driver.md`, MV-D55, build spec §8):
+> the 3c Page engine, broadened — table/column comments live, Genie-history dormant,
+> source-majority attachment, per-asset "why". The Stage-4 deploy-verify exposed that the
+> batch Page path was dormant (0 pages on every run), root-caused to a missing job
+> warehouse; **Stage 4.1a** (commit `246b3983`, warehouse threaded as a job parameter)
+> fixed it live — `page_count` 0→480 (Routing 436 / Guardrail 28 / Disambiguation 16).
+> That yield exposed two remaining gaps → **Stage 4.1b — BUILD-READY**
+> (`ontology-curation-redesign-stage4.1-driver.md`, MV-D63/D64, build spec
+> `ontology-curation-redesign-stage4.1-build.md`): coded columns fed bounded into the
+> batch miner (so comments/`[Taxonomy]`/corroboration light up) + a Page-attachment gate
+> (so orphan Pages stop surfacing). **Stage 4.1c** (comment-primary standalone Pages) is
+> deferred. §9 alignment folds into Phase 4 (17h); §10 eval harness (MV-D59) follows. The
+> block above is the register; the build spec is the source of truth.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
