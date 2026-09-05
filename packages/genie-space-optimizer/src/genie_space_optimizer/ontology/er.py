@@ -47,6 +47,20 @@ Method = Literal["exact", "string", "embedding", "llm"]
 MERGE_THRESHOLD = 0.90
 ESCALATE_LOW = 0.72
 
+# Bounded batch adjudication (MV-D68 — the pages pattern, MV-D66, generalized to ER).
+# The near-tie band is the ONLY LLM path in ER; over a large tag inventory it was the
+# last UNBOUNDED + SEQUENTIAL enricher (the batch-timeout sink after naming/pages were
+# bounded). In batch it is now capped + fanned out so ER's LLM cost is a small CONSTANT,
+# not O(estate): the strongest near-ties (score desc) that clear ``MIN_SCORE`` are
+# adjudicated up to ``MAX_PAIRS`` via a bounded pool; every other near-tie degrades to
+# ``escalate`` — left DISTINCT and surfaced as a curator dedupe proposal (never a silent
+# LLM auto-merge). These are the shipped OPERATIONAL bounds (the job threads them);
+# ``run_er``'s own defaults stay unbounded/sequential so the pure function and every
+# existing verdict remain byte-identical.
+ER_ADJUDICATE_MAX_PAIRS = 30
+ER_ADJUDICATE_MIN_SCORE = 0.85
+ER_ADJUDICATE_MAX_WORKERS = 4
+
 # An adjudicator answers a near-tie: (decision, reason). decision True=merge,
 # False=reject, None=could-not-adjudicate (degrade -> escalate, unmerged).
 Adjudicator = Callable[["DedupeCandidate", "DedupeCandidate"], "tuple[bool | None, str | None]"]
@@ -234,6 +248,9 @@ def run_er(
     vectors: dict[str, Sequence[float]] | None = None,
     adjudicator: Adjudicator | None = None,
     correspondences: list[Correspondence] | None = None,
+    adjudicate_max_pairs: int | None = None,
+    adjudicate_min_score: float = ESCALATE_LOW,
+    adjudicate_max_workers: int = 1,
 ) -> list[DedupeVerdict]:
     """Resolve candidates into canonical entities. Returns one DedupeVerdict per
     canonical group (singletons included), most-merged first.
@@ -242,6 +259,16 @@ def run_er(
     drop the embedding signal for that candidate (string signal still applies).
     ``adjudicator`` is called ONLY for near-tie-band pairs; if it is None or raises,
     those pairs degrade to unmerged/escalate (never a hard failure, MV-D43).
+
+    Bounded batch adjudication (MV-D68): the near-tie band is collected first, then only
+    the strongest pairs (score desc) that clear ``adjudicate_min_score`` are LLM-
+    adjudicated, up to ``adjudicate_max_pairs``, fanned out over a pool of
+    ``adjudicate_max_workers`` (a PURE fan-out — the union/merge writes stay sequential).
+    Every near-tie NOT selected (below the floor, beyond the cap, or when no adjudicator
+    is supplied) degrades to ``escalate``: left DISTINCT and surfaced as a curator dedupe
+    proposal rather than silently merged. The defaults (``max_pairs=None`` /
+    ``min_score=ESCALATE_LOW`` / ``max_workers=1``) reproduce the pre-MV-D68 behavior
+    exactly — the job threads the shipped operational caps.
 
     Map-not-merge (MV-D60): a would-be merge whose two candidates sit in DIFFERENT
     bounded contexts is NOT collapsed — the two stay distinct entities, and (when the
@@ -273,6 +300,10 @@ def run_er(
         if cur is None or rank[verdict] > rank[cur[0]] or (rank[verdict] == rank[cur[0]] and score > cur[2]):
             band_outcome[ref] = (verdict, method, score, reason)
 
+    # Phase 1 — deterministic pass (no LLM): auto-merge (exact / >= MERGE_THRESHOLD) and
+    # auto-distinct (< ESCALATE_LOW) inline; COLLECT the near-tie band for Phase 2 so the
+    # LLM calls can be capped + fanned out rather than issued one-by-one in-loop.
+    band_pairs: list[tuple[str, str, float, Method]] = []
     for a_ref, b_ref in candidate_pairs(block(survivors)):
         a, b = by_ref[a_ref], by_ref[b_ref]
         # Exact name match is a merge with no scoring needed.
@@ -295,29 +326,62 @@ def run_er(
                 uf.union(a_ref, b_ref)
                 merge_edge[frozenset((a_ref, b_ref))] = (method, best, None)
         elif best >= ESCALATE_LOW:
-            # Near-tie band — the ONLY pairs the LLM ever sees.
-            decision, reason = (None, None)
-            if adjudicator is not None:
-                try:
-                    decision, reason = adjudicator(a, b)
-                except Exception as e:  # noqa: BLE001 — degrade, never block the run
-                    logger.info("ontology ER adjudication failed (%s); leaving pair unmerged", e)
-                    decision, reason = None, None
-            if decision is True:
-                if _cross_context(a, b):
-                    _map_not_merge(a, b, "llm", best)  # distinct entities, mapped (MV-D60)
-                else:
-                    uf.union(a_ref, b_ref)
-                    merge_edge[frozenset((a_ref, b_ref))] = ("llm", best, reason)
-            elif decision is False:
-                _note_band(a_ref, "reject", "llm", best, reason)
-                _note_band(b_ref, "reject", "llm", best, reason)
-            else:  # None -> could not adjudicate (LLM down): escalate, unmerged
-                _note_band(a_ref, "escalate", method, best, None)
-                _note_band(b_ref, "escalate", method, best, None)
+            band_pairs.append((a_ref, b_ref, best, method))  # near-tie — defer to Phase 2
         else:
             _note_band(a_ref, "distinct", method, best, None)
             _note_band(b_ref, "distinct", method, best, None)
+
+    # Phase 2 — bounded batch adjudication (MV-D68). Rank the near-ties (score desc, then
+    # refs for a deterministic tiebreak) and split into the LLM-adjudicated selection
+    # (has an adjudicator, clears ``adjudicate_min_score``, within ``adjudicate_max_pairs``)
+    # and the deferred remainder. The selection's LLM calls are a PURE fan-out via
+    # ``run_bounded`` (union/merge writes stay sequential below); the deferred pairs
+    # degrade to ``escalate`` — DISTINCT + surfaced as a curator dedupe proposal.
+    band_pairs.sort(key=lambda t: (-t[2], t[0], t[1]))
+    selected: list[tuple[str, str, float, Method]] = []
+    deferred: list[tuple[str, str, float, Method]] = []
+    for bp in band_pairs:
+        if (
+            adjudicator is not None
+            and bp[2] >= adjudicate_min_score
+            and (adjudicate_max_pairs is None or len(selected) < adjudicate_max_pairs)
+        ):
+            selected.append(bp)
+        else:
+            deferred.append(bp)
+
+    def _adjudicate_pair(bp: tuple[str, str, float, Method]) -> tuple[bool | None, str | None]:
+        a_ref, b_ref, _best, _method = bp
+        try:
+            return adjudicator(by_ref[a_ref], by_ref[b_ref])  # type: ignore[misc]
+        except Exception as e:  # noqa: BLE001 — degrade, never block the run
+            logger.info("ontology ER adjudication failed (%s); leaving pair unmerged", e)
+            return None, None
+
+    decisions = (
+        transforms.run_bounded(selected, _adjudicate_pair, max_workers=adjudicate_max_workers)
+        if selected else []
+    )
+    for (a_ref, b_ref, best, method), (decision, reason) in zip(selected, decisions):
+        a, b = by_ref[a_ref], by_ref[b_ref]
+        if decision is True:
+            if _cross_context(a, b):
+                _map_not_merge(a, b, "llm", best)  # distinct entities, mapped (MV-D60)
+            else:
+                uf.union(a_ref, b_ref)
+                merge_edge[frozenset((a_ref, b_ref))] = ("llm", best, reason)
+        elif decision is False:
+            _note_band(a_ref, "reject", "llm", best, reason)
+            _note_band(b_ref, "reject", "llm", best, reason)
+        else:  # None -> could not adjudicate (LLM down): escalate, unmerged
+            _note_band(a_ref, "escalate", method, best, None)
+            _note_band(b_ref, "escalate", method, best, None)
+
+    # Deferred near-ties (below floor / beyond cap / no adjudicator): escalate — left
+    # distinct, surfaced for curator review rather than silently merged.
+    for a_ref, b_ref, best, method in deferred:
+        _note_band(a_ref, "escalate", method, best, None)
+        _note_band(b_ref, "escalate", method, best, None)
 
     # 6) Assemble canonical groups.
     groups: dict[str, list[str]] = {}

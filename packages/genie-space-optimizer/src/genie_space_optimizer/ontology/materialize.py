@@ -343,6 +343,10 @@ def run_materialize(
     page_autodraft_max_pages: int = pages.PAGE_AUTODRAFT_MAX_PAGES,
     page_autodraft_max_workers: int = pages.PAGE_AUTODRAFT_MAX_WORKERS,
     rename_max_workers: int = cluster.RENAME_MAX_WORKERS,
+    rename_max_domains: int | None = None,
+    er_adjudicate_max_pairs: int | None = None,
+    er_adjudicate_min_score: float = er.ESCALATE_LOW,
+    er_adjudicate_max_workers: int = 1,
 ) -> dict[str, Any]:
     """Materialize the governed-tag graph + taxonomy snapshots for one metastore
     (MV-D49 grain), then resolve identity (L3 ER) and MERGE the identity map +
@@ -439,7 +443,14 @@ def run_materialize(
                 vectors = {c.ref: v for c, v in zip(candidates, vecs) if v}
             except Exception as e:  # noqa: BLE001 — degrade to string-only ER
                 logger.info("ontology ER embedding failed (%s); string-only", e)
-        er_verdicts = er.run_er(candidates, backend=backend, vectors=vectors, adjudicator=adjudicator)
+        er_verdicts = er.run_er(
+            candidates, backend=backend, vectors=vectors, adjudicator=adjudicator,
+            # Bounded batch adjudication (MV-D68): cap + fan out the near-tie LLM calls so
+            # ER's cost is a small constant; deferred near-ties degrade to escalate.
+            adjudicate_max_pairs=er_adjudicate_max_pairs,
+            adjudicate_min_score=er_adjudicate_min_score,
+            adjudicate_max_workers=er_adjudicate_max_workers,
+        )
         counts_by_ref = {t["tag_key"]: int(t.get("assignment_count") or 0) for t in graph_struct.get("tags", [])}
         collisions = transforms.collisions_from_er_verdicts(er_verdicts, counts_by_ref)
         identity_rows = transforms.identity_map_rows(
@@ -538,7 +549,7 @@ def run_materialize(
         # before the re-MERGE persists them. Bounded fan-out; degrades per Domain (MV-D43).
         cluster.rename_surfaced(
             proposals, expanded["domain_rows"], namer=namer, company=company,
-            max_workers=rename_max_workers,
+            max_workers=rename_max_workers, max_domains=rename_max_domains,
         )
         writer.merge(ddl.TABLE_ONT_DOMAINS, expanded["domain_rows"], DOMAIN_KEYS, metastore_id)
         writer.merge(ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id)

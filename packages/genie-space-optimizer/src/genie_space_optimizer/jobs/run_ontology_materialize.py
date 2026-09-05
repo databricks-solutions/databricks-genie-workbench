@@ -111,6 +111,13 @@ dbutils.widgets.text("page_autodraft_max_pages", "50")
 # Stage 4.1e (MV-D67) — bounded worker cap for the LLM enrichers (surfaced-Domain renames +
 # super-sure Page drafts). k<=1 ⇒ sequential; the shipped default keeps fan-out small.
 dbutils.widgets.text("enrich_max_workers", "4")
+# Stage 4.1f (MV-D68) — the pages pattern generalized to the last two unbounded LLM paths.
+# ER near-tie adjudication: LLM only the top-N (score desc) near-ties clearing the floor,
+# capped; the rest degrade to `escalate` (curator dedupe proposals). Domain renames: LLM
+# only the top-N surfaced create Domains. Both keep the batch LLM cost a small CONSTANT.
+dbutils.widgets.text("er_adjudicate_max_pairs", "30")
+dbutils.widgets.text("er_adjudicate_min_score", "0.85")
+dbutils.widgets.text("rename_max_domains", "10")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -186,6 +193,11 @@ page_require_domain = (dbutils.widgets.get("page_require_domain").strip().lower(
 page_autodraft_min_corroboration = _parse_int("page_autodraft_min_corroboration", 3)
 page_autodraft_max_pages = _parse_int("page_autodraft_max_pages", 50)
 enrich_max_workers = _parse_int("enrich_max_workers", 4)
+# Stage 4.1f (MV-D68) — ER near-tie cap + rename cap, parsed defensively → in-code default
+# (aligned with the wheel's er.ER_ADJUDICATE_* / cluster.RENAME_MAX_DOMAINS constants).
+er_adjudicate_max_pairs = _parse_int("er_adjudicate_max_pairs", 30)
+er_adjudicate_min_score = _parse_float("er_adjudicate_min_score", 0.85)
+rename_max_domains = _parse_int("rename_max_domains", 10)
 
 
 def _resolve_metastore_id() -> str:
@@ -717,6 +729,13 @@ run = materialize.run_materialize(
     # Stage 4.1e (MV-D67) — bound the LLM enricher fan-out (renames + super-sure drafts).
     page_autodraft_max_workers=enrich_max_workers,
     rename_max_workers=enrich_max_workers,
+    # Stage 4.1f (MV-D68) — cap the last two unbounded LLM paths so the batch LLM budget is
+    # a small constant: top-N surfaced Domain renames + top-N near-tie ER adjudications
+    # (fanned out); every deferred near-tie degrades to a curator dedupe proposal.
+    rename_max_domains=rename_max_domains,
+    er_adjudicate_max_pairs=er_adjudicate_max_pairs,
+    er_adjudicate_min_score=er_adjudicate_min_score,
+    er_adjudicate_max_workers=enrich_max_workers,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))

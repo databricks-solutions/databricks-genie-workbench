@@ -141,6 +141,89 @@ def test_adjudicator_down_degrades_to_escalate_unmerged():
     assert seg.verdict == "escalate"
 
 
+# ── Bounded batch adjudication (MV-D68) ─────────────────────────────────────
+# Two independent near-tie pairs, blocked by a unique per-pair token, with cosine driven
+# by fixture vectors: P ~0.88, Q ~0.78 (both in the [0.72, 0.90) band). Text tokens are
+# disjoint so the keyword signal never overtakes cosine.
+def _two_band_pairs():
+    return [
+        C("m.p1a", "measure", "grpx aaa", "north wind rst"),
+        C("m.p1b", "measure", "grpx bbb", "south rain zzz"),
+        C("m.p2a", "measure", "grpy ccc", "cat dog fish"),
+        C("m.p2b", "measure", "grpy ddd", "tree lamp desk"),
+    ]
+
+
+_TWO_BAND_VECS = {
+    "m.p1a": [1.0, 0.0], "m.p1b": [0.88, 0.475],    # cosine ~0.88 (stronger near-tie)
+    "m.p2a": [1.0, 0.0], "m.p2b": [0.78, 0.6258],   # cosine ~0.78 (weaker near-tie)
+}
+
+
+def test_adjudicate_cap_limits_llm_calls_and_defers_rest_to_escalate():
+    cands = _two_band_pairs()
+    calls = []
+
+    def adj(a, b):
+        calls.append(tuple(sorted((a.ref, b.ref))))
+        return (True, "same")
+
+    v = er.run_er(
+        cands, backend=similarity.InProcessCosineBackend(), vectors=_TWO_BAND_VECS,
+        adjudicator=adj, adjudicate_max_pairs=1, adjudicate_min_score=er.ESCALATE_LOW,
+    )
+    # Only the STRONGEST near-tie (P, ~0.88) is LLM-adjudicated; the cap defers the rest.
+    assert calls == [("m.p1a", "m.p1b")]
+    assert _canonical_of(v, "m.p1a") == _canonical_of(v, "m.p1b")  # P merged (yes)
+    # Q is beyond the cap → escalate: left DISTINCT (a curator dedupe proposal), never a
+    # silent LLM merge.
+    assert _canonical_of(v, "m.p2a") != _canonical_of(v, "m.p2b")
+    q = next(x for x in v if "m.p2a" in x.members)
+    assert q.verdict == "escalate"
+
+
+def test_adjudicate_min_score_floor_defers_low_band():
+    cands = _two_band_pairs()
+    calls = []
+
+    def adj(a, b):
+        calls.append(tuple(sorted((a.ref, b.ref))))
+        return (True, "same")
+
+    # Floor at 0.85: only P (~0.88) clears it; Q (~0.78) is below the floor → deferred.
+    v = er.run_er(
+        cands, backend=similarity.InProcessCosineBackend(), vectors=_TWO_BAND_VECS,
+        adjudicator=adj, adjudicate_max_pairs=10, adjudicate_min_score=0.85,
+    )
+    assert calls == [("m.p1a", "m.p1b")]
+    assert _canonical_of(v, "m.p1a") == _canonical_of(v, "m.p1b")
+    q = next(x for x in v if "m.p2a" in x.members)
+    assert q.verdict == "escalate"
+
+
+def test_adjudicate_concurrency_matches_sequential():
+    cands = _two_band_pairs()
+
+    def adj(a, b):
+        return (True, "same")
+
+    def _summary(vs):
+        return sorted((tuple(x.members), x.verdict, x.method) for x in vs)
+
+    seq = er.run_er(
+        cands, backend=similarity.InProcessCosineBackend(), vectors=_TWO_BAND_VECS,
+        adjudicator=adj, adjudicate_max_pairs=10, adjudicate_min_score=er.ESCALATE_LOW,
+        adjudicate_max_workers=1,
+    )
+    conc = er.run_er(
+        cands, backend=similarity.InProcessCosineBackend(), vectors=_TWO_BAND_VECS,
+        adjudicator=adj, adjudicate_max_pairs=10, adjudicate_min_score=er.ESCALATE_LOW,
+        adjudicate_max_workers=4,
+    )
+    # Same written verdicts regardless of worker count (run_bounded preserves order).
+    assert _summary(seq) == _summary(conc)
+
+
 # ── Backend selection / degrade parity ──────────────────────────────────────
 
 

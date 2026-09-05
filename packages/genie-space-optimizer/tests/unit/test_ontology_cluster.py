@@ -779,3 +779,37 @@ def test_rename_surfaced_worker_count_invariant():
     n4 = cluster.rename_surfaced(props, rows4, namer=_namer, max_workers=4)
     assert n1 == n4 == 6
     assert {r["domain_id"]: r["name"] for r in rows1} == {r["domain_id"]: r["name"] for r in rows4}
+
+
+# ── Stage 4.1f (MV-D68): tiny batch cap on LLM renames (top-N by score) ─────
+
+
+def test_rename_surfaced_caps_to_top_n_by_score():
+    # Four surfaced create Domains with distinct scores; max_domains=2 LLM-renames ONLY
+    # the two highest-scoring — the batch naming LLM cost is a small constant; the rest
+    # keep their deterministic anchor name (a curator renames them on demand).
+    props = [
+        _prop({"cat.alpha.a", "cat.alpha.b"}, name="anchor-alpha", tag_decision="create"),
+        _prop({"cat.bravo.a", "cat.bravo.b"}, name="anchor-bravo", tag_decision="create"),
+        _prop({"cat.charlie.a", "cat.charlie.b"}, name="anchor-charlie", tag_decision="create"),
+        _prop({"cat.delta.a", "cat.delta.b"}, name="anchor-delta", tag_decision="create"),
+    ]
+    scores = {props[0].domain_id: 0.9, props[1].domain_id: 0.8,
+              props[2].domain_id: 0.4, props[3].domain_id: 0.2}
+    rows = [
+        {"domain_id": p.domain_id, "name": p.name, "surfaced": True, "score": scores[p.domain_id]}
+        for p in props
+    ]
+    calls = []
+
+    def _namer(identifiers, anchor, company):
+        calls.append(identifiers[0].split(".")[1])
+        return identifiers[0].split(".")[1].capitalize()
+
+    n = cluster.rename_surfaced(props, rows, namer=_namer, max_workers=1, max_domains=2)
+    by_id = {r["domain_id"]: r for r in rows}
+    assert n == 2 and len(calls) == 2                              # only the cap fired
+    assert by_id[props[0].domain_id]["name"] == "Alpha"           # score 0.9 → renamed
+    assert by_id[props[1].domain_id]["name"] == "Bravo"           # score 0.8 → renamed
+    assert by_id[props[2].domain_id]["name"] == "anchor-charlie"  # 0.4 → deterministic
+    assert by_id[props[3].domain_id]["name"] == "anchor-delta"    # 0.2 → deterministic

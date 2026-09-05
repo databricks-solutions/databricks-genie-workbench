@@ -114,6 +114,11 @@ Namer = Callable[[list[str], "str | None", "str | None"], "str | None"]
 
 # Bounded worker cap for the post-gate LLM rename fan-out (MV-D67). k<=1 ⇒ sequential.
 RENAME_MAX_WORKERS = 4
+# Tiny batch cap on LLM domain renames (MV-D68 — the pages pattern generalized). Only the
+# top-N surfaced, non-tag-bound Domains (score desc) are LLM-renamed; the rest keep their
+# deterministic anchor name and get a curator "Rename with AI" on demand. Keeps the batch
+# naming LLM cost a small CONSTANT (0 when ``namer`` is None). The job threads this.
+RENAME_MAX_DOMAINS = 10
 
 
 @dataclass(frozen=True)
@@ -706,17 +711,23 @@ def rename_surfaced(
     namer: Namer | None,
     company: str | None = None,
     max_workers: int = RENAME_MAX_WORKERS,
+    max_domains: int | None = None,
 ) -> int:
-    """LLM-rename ONLY surfaced, non-tag-bound ("create") Domains, AFTER the L6 gate (MV-D67).
+    """LLM-rename ONLY the top surfaced, non-tag-bound ("create") Domains, AFTER the L6 gate
+    (MV-D67, capped per MV-D68).
 
     Clustering now names every proposal deterministically (anchor-derived); this upgrades
     just the handful of Domains that ``rank.mark_surfaced`` kept, so the injected ``namer``
     fires ``O(#surfaced)`` times instead of once per raw cluster (the batch-timeout hog).
-    Tag-bound (``reuse``/``reassign``) Domains keep their governed vocabulary and
-    non-surfaced Domains are never LLM-named. Mutates ``domain_rows[i]["name"]`` in place —
-    the frozen ``proposals`` are left untouched; ``domain_rows`` is what the final re-MERGE
-    writes, and the deterministic name written earlier is the safe fallback. Bounded fan-out;
-    the outcome is deterministic regardless of worker count. ``namer=None`` ⇒ no-op (a fully
+    ``max_domains`` caps it further to the top-N by ``score`` (desc) — the "super sure"
+    surfaced Domains — so the batch naming LLM cost is a small CONSTANT; the remainder keep
+    their deterministic anchor name (and get a curator "Rename with AI" on demand). ``None``
+    ⇒ rename every surfaced create Domain (the pre-MV-D68 behavior). Tag-bound
+    (``reuse``/``reassign``) Domains keep their governed vocabulary and non-surfaced Domains
+    are never LLM-named. Mutates ``domain_rows[i]["name"]`` in place — the frozen
+    ``proposals`` are left untouched; ``domain_rows`` is what the final re-MERGE writes, and
+    the deterministic name written earlier is the safe fallback. Bounded fan-out; the outcome
+    is deterministic regardless of worker count. ``namer=None`` ⇒ no-op (a fully
     deterministic run). A per-Domain empty/leaky/raising namer degrades to the deterministic
     name (MV-D43). Returns the number of Domains renamed."""
     if namer is None:
@@ -729,7 +740,11 @@ def rename_surfaced(
         and row.get("domain_id") in prop_by_id
         and prop_by_id[row["domain_id"]].tag_decision == "create"
     ]
-    targets.sort(key=lambda rp: rp[1].domain_id)  # deterministic order
+    # Rank by score (desc) so the cap keeps the strongest Domains; domain_id breaks ties
+    # for a deterministic selection + order regardless of worker count.
+    targets.sort(key=lambda rp: (-float(rp[0].get("score") or 0.0), rp[1].domain_id))
+    if max_domains is not None and max_domains >= 0:
+        targets = targets[:max_domains]
 
     def _propose(rp: tuple[dict[str, Any], DomainProposal]) -> str | None:
         _row, p = rp
