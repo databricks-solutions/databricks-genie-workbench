@@ -69,7 +69,7 @@
 
 ## Before you start (manual steps, 10 minutes)
 
-1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D67 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
+1. **Commit the design doc AND this playbook into the repo** so Cursor can reference both in every prompt. The playbook is the defining source of the MV-D decision numbering (MV-D1–MV-D68 today, appended to as later prompts take architecture calls); if it is not in the repo, agents cannot resolve the citations and will (correctly) refuse to stamp them:
    ```bash
    git checkout main && git pull
    git checkout -b feature/metric-view-advisor
@@ -422,7 +422,7 @@ Do not write or modify any feature code in this prompt.
 
 ---
 
-## Decisions register (MV-D1–MV-D67)
+## Decisions register (MV-D1–MV-D68)
 
 The recon surfaced five structural conflicts, not naming drift. These decisions resolve them and are baked into the revised prompts below. MV-D1 changes the user-facing flow and needs explicit sign-off. MV-D7 was added during Prompt 1 execution, MV-D8 with the generation quality standard, MV-D9 from the Prompt 2 readiness check, MV-D10 during Prompt 3 execution, MV-D11 and MV-D12 during Prompt 4 execution, MV-D13 during Prompt 5 execution, MV-D14 during Prompt 5.5 execution, MV-D15 during Prompt 6 execution, MV-D16 during Prompt 7 execution, and MV-D17 (decided during Prompt 6c execution) and MV-D18 during the Prompt 7 review. MV-D19 was recorded OPEN when Prompts 6a and 6b were drafted and is decided during Prompt 6a — like MV-D17 before it, it is flagged here so no earlier prompt quietly settles it by accident. MV-D20 and MV-D21 were recorded OPEN from the Prompt 9 gap check and are decided during Prompt 9, flagged the same way so the "add four routes" framing does not quietly settle the executor-identity and state-access questions by default. MV-D22 was recorded during Prompt 9 execution — it supersedes MV-D15's regeneration clause once the persistence picture showed regeneration was neither achievable nor meaningful. MV-D23 was recorded OPEN immediately after Prompt 9 landed, from a review asking whether the advisor can serve a space that has never been optimized, and is decided during Prompt 13.5 — flagged here, like MV-D17 and MV-D19 before it, because every persistence surface Prompts 1–9 built is keyed on `run_id` and the four prompts between this note and 13.5 would otherwise harden that assumption into the UI without anyone choosing it. MV-D24 was recorded OPEN at the Prompt 10 mockup review, from four user questions about the create path the suggest-only screen invites but cannot complete — it is decided during Prompt 13.5 alongside MV-D23, flagged the same way. MV-D25 was recorded OPEN before Prompt 12, from the question of whether the engine can suggest metric views from schema and profiling alone, with no SQL corpus — it is NOT decided on this branch (owner: the create-agent branch, after Prompt 16), and is registered here so no prompt on this branch quietly builds a speculative candidate producer. MV-D26, MV-D27, and MV-D28 were recorded OPEN at the Prompt 17 redraft (the Ontology Pages track) and are decided during Prompts 17a, 17c, and 17b respectively — flagged here, per the standing pattern, so no earlier prompt settles persistence, the instruction write path, or web enrichment by default. MV-D29 was recorded and decided at Prompt 15.2 (render source vs canonical form). MV-D30 and MV-D31 were recorded OPEN from the first human UI smoke run (2026-08-24, eight findings) and are decided at Prompts 15.3 and 15.4 — the smoke run is the checkpoint that exists to produce exactly these. MV-D32 was recorded OPEN from the SECOND smoke run (2026-08-25, nine findings) and is decided at Prompt 15.7 — the confidence-semantics and cold-start-quality question. MV-D33 (the semantic-model graph, reviewer-approved directly) is decided at Prompt 12e. MV-D34 (create-at-approval) and MV-D35 (facts lead, score ranks) were reviewer-approved at the THIRD smoke review after a process autopsy found three waves of display patches had never owned the acceptance journey end-to-end — both are implemented at Prompt 15.8, and the autopsy's process fix (the fidelity gate) is now a rules-file discipline. Later decisions append here — this register is the defining namespace, and the playbook copy committed at docs/design/mv-advisor-playbook.md must be refreshed whenever it changes.
 
@@ -787,6 +787,10 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D64 — Pages must attach to a surfaced Domain to surface (LANDED + deploy-verified — commit `d85ed3b5`; live gate build §9: 0 surfaced-but-unattached, the 41 orphans closed).** Pages skip the legitimacy/diffuseness gates, so 41 of the Stage-4.1a Pages surfaced with an empty `domain_id`. `rank._apply_page_attachment_gate` (mirroring the Domain gates) keeps but sets `surfaced=false` + `surfaced_reason` for a Page whose `domain_id` is empty or points to a non-surfaced Domain; guarded by `page_require_domain`=true. Additive `evidence` keys only; no new table/route. Build spec §3.2.
 
+**MV-D68 — Bounded batch LLM extends to ER + naming caps: the last unbounded enrichers become small constants (LANDED + deploy-verified — commit `90fdff6c`; run `31641283089969` succeeded in **20.8 min**, timeout resolved).** The 4.1e deploy-verify (run `594755422545565`) proved gate-bounded naming + the 3600→5400 headroom were still not enough — the job ran **90.2 min → TIMEDOUT** at the new cap. The run ledger settled the diagnosis: the successful **4.1b** run (LLM enrichers were no-ops pre-4.1c) finished in **19.5 min incl. coded-column profiling**, so non-LLM I/O is cheap; **4.1c** (LLM actually wired) jumped to **68 min**. The delta is real LLM latency on `databricks-claude-opus-4-6`, and after 4.1d/4.1e bounded page-drafting + naming, **ER near-tie adjudication was the last enricher still both UNBOUNDED and SEQUENTIAL** — `er.run_er` escalated every near-tie among ~2147 tag candidates to a serial opus call. Stage-4.1f generalizes the MV-D66 pages pattern to the final two paths: **(ER)** `run_er` collects the near-tie band, LLM-adjudicates only the top-N (score desc) clearing `er_adjudicate_min_score`=0.85 up to `er_adjudicate_max_pairs`=30 via `transforms.run_bounded`, and every deferred near-tie degrades to `escalate` — left DISTINCT + surfaced as a curator dedupe proposal (never a silent opus merge); **(naming)** `cluster.rename_surfaced` gains `rename_max_domains`=10, LLM-renaming only the top-N surfaced create Domains by score, the rest keeping deterministic anchor names. `run_er`'s own defaults stay unbounded/sequential so the pure function + every existing verdict are byte-identical (the job threads the caps); +4 offline tests; 427 ontology green. The batch LLM budget is now a small CONSTANT, not O(estate) — it structurally can't time out. No new DDL/route/dependency; degrade-not-hang (MV-D43). Implemented directly (no separate build/driver doc); tests in `test_ontology_er.py` + `test_ontology_cluster.py`.
+>
+> **Strategic pivot (post-4.1f).** The batch proposal engine is now fast, deterministic, and lands a defensible reviewable set (17 surfaced Domains, 641 Pages, `certify` working). Further engine tuning (super-sure auto-draft yield, attachment %) is diminishing-returns backlog. The critical-path value is closing the curator loop: **Phase 5 / 17i (consented `SET TAG` apply)** — the missing write-back that turns "propose + copy-paste" into an actual ontology builder — is the next build.
+
 **MV-D67 — Bounded batch LLM extends to NAMING: name only gate-survivors, deterministic elsewhere, bounded concurrency (PROPOSED — owner directive; completes MV-D66's Step-1 timeout fix).** The 4.1d-Step-1 deploy-verify (run `737477992104319`) proved page-draft bounding alone does **not** fix the timeout — the job still ran **60.2 min → TIMEDOUT**, identical to 4.1c. Cutting page drafts 641→50 barely moved the wall ⇒ the real cost is **LLM domain naming**: `cluster._cluster_name` calls the namer once per **non-tag-bound cluster**, and it runs **inside `cluster.cluster`, before the legitimacy/diffuseness gate** (`rank.mark_surfaced`), so hundreds of soon-to-be-pruned *noise* domains each cost a slow `databricks-claude-opus-4-6` call. Stage-4.1e (**4.1e-namegate**) clusters with deterministic anchor names, then LLM-renames **only** `surfaced`, non-tag-bound domains after the gate and before the final re-MERGE — naming LLM calls fall from *O(raw clusters)* to *O(surfaced)*, hundreds→dozens; (**4.1e-concurrency**) runs the surfaced renames + the ≤`page_autodraft_max_pages` super-sure drafts under a bounded `ThreadPoolExecutor` (stdlib, default 4; snapshot worker-count-invariant); (**4.1e-headroom**) bumps the `ontology_materialize` task `timeout_seconds` 3600→5400 as insurance. No change to *which* domains surface (gate logic untouched); tag-bound naming and ER unchanged; no new DDL/route/dependency; degrade-not-hang (MV-D43); identity injected (MV-D65). Build spec `ontology-curation-redesign-stage4.1e-build.md`, driver `…-stage4.1e-driver.md`.
 
 **MV-D66 — Batch drafting is BOUNDED: deterministic certify + a capped "super sure" auto-draft, with curator-driven single/bulk drafting for the rest (PROPOSED — owner directive; bounds MV-D65; page-draft bounding LANDED offline, but the Step-1 timeout fix is completed by MV-D67).** The 4.1c deploy-verify (run `775414490043851`) proved the wheel-native client works in batch but drafted **all 641 Pages** sequentially → ~68 min → **task timeout (3600s) → FAILED** (no snapshot). Mass-drafting the estate every refresh is the wrong lever, and `certify` was over-coupled to prose (it required `llm_ok`, yet it is only a curator **recommendation** — "Ready to certify" — and the stub already passes every safety gate). Stage-4.1d **(Step 1)** decouples certify to a **deterministic** product (`certify_shape AND corroborated AND syn_ok AND not conflict`; drop `llm_ok`, which still marks `body_source` + scales confidence), and restructures `mine_pages` into a two-pass so the batch LLM-drafts **only** the "super sure" set — certify-eligible + `corroboration ≥ page_autodraft_min_corroboration` (default 3), **top N by `score`**, hard-capped at `page_autodraft_max_pages` (default 50) — everyone else keeping the deterministic stub. **(Step 2)** a `body_source` marker (rides `evidence`; `stub|llm_auto|llm_ondemand|llm_bulk|human`) so the snapshot MERGE **preserves** curator/on-demand bodies across refreshes (only `stub`/`llm_auto` refresh) + a `facts_hash` staleness flag. **(Step 3)** an app OBO `POST /api/ontology/pages/{id}/draft-body` "Draft with AI" for one Page; **(Step 4)** an app OBO bulk "Draft this sub-domain with AI" grouped by `domain_id` (Pages already carry the sub-domain id), bounded concurrency, human-initiated. This **keeps MV-D65's client consolidation + injected identity** and replaces only its "draft all" posture; no auto-certification (a human approves → consent → Phase 5); no new DDL/dependency; degrade-not-hang (MV-D43). Build spec `ontology-curation-redesign-stage4.1d-build.md`, Step-1 driver `…-stage4.1d-driver.md`.
@@ -840,41 +844,43 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > **Step 1** `…-stage4.1d-driver.md` — **deterministic** `certify` (drop `llm_ok`) + a
 > hard-capped "super sure" auto-draft in batch (**LANDED `4dbc9d95`; but deploy-verify run
 > `737477992104319` still TIMEDOUT at 60 min — page-draft bounding did NOT fix the wall**);
-> **Stage 4.1e — BUILD-READY (the real Step-1 timeout fix)** `…-stage4.1e-driver.md`, MV-D67,
-> build spec `…-stage4.1e-build.md`: LLM domain **naming** was the hog (it fires per raw
-> cluster, before the gate, on slow opus) — 4.1e names **only gate-survivors** + adds bounded
-> concurrency + bumps the task timeout 3600→5400s. **Build 4.1e NEXT** (it unblocks the
-> timeout). Then **Step 2** `…-stage4.1d-step2-driver.md` —
-> `body_source` preservation across re-materialize; **Step 3** `…-stage4.1d-step3-driver.md`
-> — on-demand single-Page "Draft with AI" (app, OBO); **Step 4**
-> `…-stage4.1d-step4-driver.md` — bulk "Draft this sub-domain with AI" (app, OBO).
-> Steps 2→3→4 in order. §9 alignment folds into Phase 4 (17h);
-> §10 eval harness (MV-D59) follows. The block above is the register; the build spec is the
-> source of truth.
+> **Stage 4.1e — LANDED (commit `873776ff`) but STILL TIMED OUT** (MV-D67): gate-bounded
+> naming + timeout 3600→5400s were not enough — deploy-verify run `594755422545565` ran
+> **90.2 min → TIMEDOUT**. **Stage 4.1f — LANDED + deploy-verified (the real fix)** (commit
+> `90fdff6c`, MV-D68): ER near-tie adjudication was the last unbounded+sequential opus path;
+> 4.1f caps it to top-30 pairs + top-10 surfaced renames via `run_bounded`, deferred
+> near-ties → curator dedupe proposals. Run `31641283089969` **succeeded in 20.8 min**,
+> `certify` works — **the batch-timeout saga is closed.** The remaining 4.1d steps are the
+> curator-enrichment loop: **Step 2** `…-stage4.1d-step2-driver.md` — `body_source`
+> preservation across re-materialize; **Step 3** `…-stage4.1d-step3-driver.md` — on-demand
+> single-Page "Draft with AI" (app, OBO); **Step 4** `…-stage4.1d-step4-driver.md` — bulk
+> "Draft this sub-domain with AI" (app, OBO). **BUILD PHASE 5 (17i) NEXT** — the consented
+> `SET TAG` apply is the value-unlock that closes the curator loop; the 4.1d enrichment
+> steps + §9 alignment (Phase 4/17h) + §10 eval harness (MV-D59) follow. The block above is
+> the register; the build spec is the source of truth.
 
 > **★ ONTOLOGY BUILD QUEUE — roadmap of record (read this first).** Landed work is
 > archived under `docs/design/implemented/`; older mv-advisor origin analysis under
 > `docs/design/reference/`. Only the specs below remain at the `docs/design/` root because
 > they are still to build. **Order (dependency-driven, not thematic):**
 >
+> **Batch engine COMPLETE** (Stages 1–3.2, 4, 4.1a–4.1f all LANDED + deploy-verified; the
+> timeout saga closed by 4.1f/MV-D68). The queue below is now curator-loop + roadmap:
+>
 > | # | Chunk | Artifacts | Prereq | Risk |
 > |---|---|---|---|---|
-> | 1 | **Stage-4.1c** — single wheel-native LLM client, injected identity (MV-D65); unblocks `certify=true` | build+driver ready | — | low |
-> | 2 | **Phase 3e Step A / 17k** — Estate-Graph snapshot + `/graph` route + 3 bakeoff mockups (MV-D48); the read-only diagnostic lens on the estate | build+driver ready | 17g (done) | **lowest** (read-only) |
-> | — | *human bakeoff — eyeball mockups, pick the graph library (§5.4 + MV-D48)* | — | 3e Step A | — |
-> | 3 | **§10 eval/trust harness** (MV-D59) — the scoreboard that gates every later signal/threshold change | needs driver | 4.1c | low |
-> | 4 | **Phase 5 / 17i** — consented `SET TAG` apply (L9); the governed-tag write tier | build+driver ready | 4.1c (trustworthy data) | **high** (writes tags) |
-> | 5 | **Phase 3e Step B / 17k** — the graph component itself | after lib pick | bakeoff | low |
+> | 1 | **Phase 5 / 17i** — consented `SET TAG` apply (L9); the governed-tag write-back that turns propose+copy-paste into a real ontology builder | build+driver ready | 17g + MV-D49/D50 (done) | **high** (writes tags) |
+> | 2 | **Stage-4.1d Steps 2→3→4** — `body_source` preservation + on-demand single/bulk "Draft with AI" (app, OBO); the curator enrichment loop | drivers ready | 4.1f (done) | low |
+> | 3 | **UX papercuts** — auto-reload Drafts/Taxonomy after refresh completes; render Page `body` on the card | needs tiny driver | — | low |
+> | 4 | **Phase 3e / 17k** — Estate-Graph snapshot + `/graph` route + 3 bakeoff mockups (MV-D48); read-only diagnostic lens | build+driver ready (human bakeoff gate) | 17g (done) | **lowest** (read-only) |
+> | 5 | **§10 eval/trust harness** (MV-D59) — the scoreboard that gates later signal/threshold change | needs driver | — | low |
 > | 6 | **§9 / 17h** — industry-reference alignment (MV-D58); align discovered domains to Vibe models | needs driver | §10 harness | med |
 >
-> **Why 3e is #2, not later:** it depends only on 17g (shipped), is fully independent of
-> 4.1c/§10/17i/§9, is the lowest-risk chunk (read-only, additive, `uv.lock` untouched), and
-> is the diagnostic lens that makes the remaining curation tuning legible. Its human bakeoff
-> is a serial gate, so starting Step A early lets the library pick run in parallel. (4.1c
-> stays #1 only because it is tiny and unblocks the certify/trust signal that 17i needs; if
-> *seeing* the estate outranks *certifying* it, 3e Step A is a legitimate #1. Both touch
-> `materialize.py`, so run them sequentially, not literally in parallel.) **Drafting queue
-> (author the two missing drivers):** §10 harness first, then §9 alignment.
+> **Why Phase 5 is #1:** the engine now lands a trustworthy set, so the critical path is
+> *acting on it* — without the apply, the curator finishes tag assignment by hand elsewhere,
+> which is the gap between "discovery aid" and "ontology builder." 3e (read-only map) and the
+> 4.1d enrichment steps are legitimate parallel picks if *seeing/enriching* outranks *applying*.
+> **Drafting queue (author the missing drivers):** UX papercuts, then §10 harness, then §9 alignment.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
