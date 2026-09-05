@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-GAP_REPORT = REPO_ROOT / "docs" / "design" / "mv-advisor-gap-report.md"
+GAP_REPORT = REPO_ROOT / "docs" / "design" / "reference" / "mv-advisor-gap-report.md"
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED: package-layout (scripts/gap_report_counts.py) -->"
 END_MARKER = "<!-- END GENERATED: package-layout -->"

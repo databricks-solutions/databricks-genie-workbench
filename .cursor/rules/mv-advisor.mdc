@@ -18,7 +18,7 @@ READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
       defined today.
 - If any item in (3) cannot be located in the current codebase, STOP after
   the PLAN and report it as a blocker. Do not scaffold a stand-in.
-- If the PLAN contradicts docs/design/mv-advisor-gap-report.md or the POV
+- If the PLAN contradicts docs/design/reference/mv-advisor-gap-report.md or the POV
   doc, STOP and report the contradiction before editing.
 - After edits, output a VERIFY section: run the test suite and linter for the
   touched packages, and confirm (by search) that every symbol you referenced
@@ -43,8 +43,8 @@ READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
   it, do not read it as guidance.
 
 FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
-- Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
-  AS AMENDED BY docs/design/mv-advisor-gap-report.md. Where they disagree,
+- Design sources of truth: docs/design/reference/metric-view-suggestion-engine-pov.md
+  AS AMENDED BY docs/design/reference/mv-advisor-gap-report.md. Where they disagree,
   the gap report wins.
 - Never invent API endpoints, table names, task names, wheel entrypoints,
   or config keys. Read existing code first. If a name is not in the repo,

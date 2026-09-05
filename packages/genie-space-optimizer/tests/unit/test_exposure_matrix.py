@@ -37,7 +37,7 @@ from genie_space_optimizer.optimization.ddl import (
 
 # tests/unit/<file> -> parents[4] is the repo root (matches test_gap_report_counts).
 REPO_ROOT = Path(__file__).resolve().parents[4]
-MATRIX = REPO_ROOT / "docs" / "design" / "mv-advisor-exposure-matrix.md"
+MATRIX = REPO_ROOT / "docs" / "design" / "reference" / "mv-advisor-exposure-matrix.md"
 
 _LEGEND = {"SERVED", "DELIBERATELY INTERNAL", "GAP"}
 
