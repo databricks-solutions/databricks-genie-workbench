@@ -1,5 +1,33 @@
 # Ontology — Phase 5 (17i) Goal-Mode driver
 
+## ⚙️ Parallel-build lane header — Lane A (READ FIRST)
+
+You run in an **isolated git worktree** off the `ontology` HEAD (`isolation: worktree`,
+`worktree.baseRef: "head"`). Sibling lanes edit the repo concurrently. Keep merges clean:
+
+- **OWNS (edit freely):** `backend/ontology/services/apply.py` (new statement builder + OBO
+  execute), `backend/ontology/routers/apply.py` (**pre-seeded empty seam — fill it**),
+  `backend/ontology/routers/preflight.py` (membership_write probe),
+  `frontend/src/ontology/components/{ApplyPreview.tsx (new),DomainDraftCard.tsx}`,
+  `frontend/src/ontology/__tests__/applyPreview.test.tsx`, apply cases under
+  `packages/genie-space-optimizer/tests/unit/`.
+- **SHARED — append your block at the END, never reflow existing lines:**
+  `packages/genie-space-optimizer/src/genie_space_optimizer/ontology/ddl.py`
+  (`APPLY_TABLES` + `genie_ont_applied` DDL), `backend/ontology/models.py` (`Apply*`),
+  `frontend/src/ontology/{api.ts,types.ts}` (`Apply*` mirrors),
+  `backend/ontology/services/mirror.py` (add an approved-consents read fn),
+  `backend/tests/test_ontology_firewall.py` (append the single-writer-carve assertions).
+- **OFF-LIMITS (do NOT touch):** `backend/main.py` + `backend/ontology/routers/__init__.py`
+  — the `apply`/`graph` routers are **already imported + registered** by the pre-seed carve,
+  so the prompt's "register in main.py" is **already done**; only fill `routers/apply.py`.
+  Also never touch `docs/design/mv-advisor-playbook.md`, nor sibling-owned `ontology/layout.py`,
+  `ontology/pages.py`, `routers/graph.py`.
+- **MERGE-ORDER:** `§10,§9 (docs) → 4.1d-Step2 (B) → 3e (C) → Phase5 (A)`. **You are A — merged last.**
+- Offline only (pytest + vitest). No deploy, no job run, no live governed-tag write. Commit on
+  your worktree branch, report diff + test summary, then STOP.
+
+---
+
 Copy-paste launcher for building **Phase 5 of the Ontology page** (L9 — the single
 consented `SET TAG` apply) with a long-running agent (Claude Code / Cursor Goal Mode).
 Run it on the **`ontology`** branch, on top of the shipped 17g drafts+decision ledger

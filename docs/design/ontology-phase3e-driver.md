@@ -1,5 +1,34 @@
 # Ontology — Phase 3e Goal-Mode driver
 
+## ⚙️ Parallel-build lane header — Lane C (READ FIRST)
+
+You run in an **isolated git worktree** off the `ontology` HEAD (`isolation: worktree`,
+`worktree.baseRef: "head"`). Sibling lanes edit the repo concurrently. Keep merges clean:
+
+- **OWNS (edit freely):**
+  `packages/genie-space-optimizer/src/genie_space_optimizer/ontology/layout.py` (new),
+  `backend/ontology/routers/graph.py` (**pre-seeded empty seam — fill it**),
+  `docs/design/mockups/17.0{h,i,j}-*-dark.html` (new), `scripts/setup_synced_tables.py`.
+- **SHARED — append/edit only your named region, never reflow neighbours:**
+  `…/ontology/ddl.py` — add `genie_ont_graph_snapshot` DDL + append to `SNAPSHOT_TABLES` **only**
+  (leave `build_snapshot_merge_sql` to Lane B, `APPLY_TABLES` to Lane A);
+  `…/ontology/materialize.py` — the graph-feed + `genie_ont_graph_snapshot` MERGE section
+  **only** (leave `SparkSnapshotWriter.merge`'s pages-preserve wiring to Lane B);
+  `backend/ontology/models.py` (`OntologyGraph{,Node,Edge,Level}`, append),
+  `backend/ontology/services/mirror.py` (`read_graph_snapshot`, new fn),
+  `frontend/src/ontology/types.ts` (`OntologyGraph` mirror, append),
+  `backend/tests/test_ontology_firewall.py` (append graph-firewall assertions).
+- **OFF-LIMITS (do NOT touch):** `backend/main.py` + `backend/ontology/routers/__init__.py`
+  — the `graph` router is **already imported + registered** by the pre-seed carve, so the
+  WORKFLOW line's "`+ __init__ + main.py`" is **already done**; only fill `routers/graph.py`.
+  Also never touch `docs/design/mv-advisor-playbook.md`, nor sibling-owned
+  `ontology/pages.py`, `routers/apply.py`, `services/apply.py`.
+- **MERGE-ORDER:** `§10,§9 (docs) → 4.1d-Step2 (B) → 3e (C) → Phase5 (A)`. **You are C — merged after B, before A.**
+- Offline only. No deploy, no job run, no live write. Commit on your worktree branch, report
+  diff + test summary, then STOP (the bakeoff pick + Step B are human gates).
+
+---
+
 Copy-paste launcher for building **Phase 3e of the Ontology page** — the **Estate
 Graph / "Ontology Map"** — with a long-running agent (Claude Code / Cursor Goal
 Mode). Run it on the **`ontology`** branch, on top of the shipped Phase-1…3d spine.

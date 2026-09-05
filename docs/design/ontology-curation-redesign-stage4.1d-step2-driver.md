@@ -1,5 +1,27 @@
 # Ontology — Stage 4.1d Goal-Mode driver (Step 2: `body_source` preservation across re-materialize)
 
+## ⚙️ Parallel-build lane header — Lane B (READ FIRST)
+
+You run in an **isolated git worktree** off the `ontology` HEAD (`isolation: worktree`,
+`worktree.baseRef: "head"`). Sibling lanes edit the repo concurrently. This lane is
+**wheel-only** — the smallest surface, so it merges first among the code lanes.
+
+- **OWNS (edit freely):**
+  `packages/genie-space-optimizer/src/genie_space_optimizer/ontology/pages.py` (`facts_hash`),
+  `packages/genie-space-optimizer/tests/unit/{test_ontology_ddl.py,test_ontology_materialize.py}`.
+- **SHARED — edit only your named region, never reflow neighbours:**
+  `…/ontology/ddl.py` — add the two OPTIONAL params to `build_snapshot_merge_sql` **only**
+  (do NOT touch `APPLY_TABLES` or `SNAPSHOT_TABLES` / table DDL — those are sibling regions);
+  `…/ontology/materialize.py` — wire preserve params inside `SparkSnapshotWriter.merge` **only**
+  (the graph-feed section near the signal-graph build is Lane C's).
+- **OFF-LIMITS (do NOT touch):** all of `backend/`, all of `frontend/`, `backend/main.py`,
+  `docs/design/mv-advisor-playbook.md`, and sibling-owned `ontology/layout.py`.
+- **MERGE-ORDER:** `§10,§9 (docs) → 4.1d-Step2 (B) → 3e (C) → Phase5 (A)`. **You are B — first code lane.**
+- Offline only. No deploy, no job run. Commit on your worktree branch, report diff + test
+  summary, then STOP.
+
+---
+
 Copy-paste launcher for **Stage 4.1d Step 2** with a long-running agent. Run on the
 **`ontology`** branch **after Step 1 landed** (deterministic certify + capped super-sure
 auto-draft). Step 1 introduced `evidence.body_source ∈ {stub, llm_auto}`; Steps 3–4 will add

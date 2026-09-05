@@ -83,7 +83,9 @@ from backend.watch.routers import (
 )
 from backend.watch.services.system_tables import warm_cost_overview_cache
 from backend.ontology.routers import (
+    ontology_apply_router,
     ontology_drafts_router,
+    ontology_graph_router,
     ontology_inventory_router,
     ontology_preflight_router,
     ontology_refresh_router,
@@ -243,6 +245,11 @@ app.include_router(ontology_tags_router)
 app.include_router(ontology_settings_router)
 app.include_router(ontology_refresh_router)
 app.include_router(ontology_drafts_router)
+# Pre-seeded empty seams (no routes until their lanes land) — registered here so
+# the Phase-5 apply lane and Phase-3e graph lane add handlers to their own router
+# files without contending on this shared block.
+app.include_router(ontology_apply_router)
+app.include_router(ontology_graph_router)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

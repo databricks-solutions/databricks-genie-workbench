@@ -862,25 +862,46 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > **★ ONTOLOGY BUILD QUEUE — roadmap of record (read this first).** Landed work is
 > archived under `docs/design/implemented/`; older mv-advisor origin analysis under
 > `docs/design/reference/`. Only the specs below remain at the `docs/design/` root because
-> they are still to build. **Order (dependency-driven, not thematic):**
+> they are still to build.
 >
 > **Batch engine COMPLETE** (Stages 1–3.2, 4, 4.1a–4.1f all LANDED + deploy-verified; the
-> timeout saga closed by 4.1f/MV-D68). The queue below is now curator-loop + roadmap:
+> timeout saga closed by 4.1f/MV-D68). The remaining work is the curator loop + roadmap, and
+> most of it **parallelizes** — see the two waves below.
 >
-> | # | Chunk | Artifacts | Prereq | Risk |
+> **Parallel-build infra (prereqs, LANDED on `ontology`).** So concurrent lanes don't clobber
+> each other: (1) a pre-seed **carve** registers the empty `apply`/`graph` router seams in
+> `backend/main.py` + `routers/__init__.py`, so no two lanes contend on the shared registration
+> block; (2) each Wave-1 code driver carries an **OWNS / OFF-LIMITS / MERGE-ORDER** lane header;
+> (3) `scripts/ontology_verify.sh` is the one-command deploy→trigger→poll→acceptance gate; and
+> (4) `.claude/agents/ontology-lane-builder.md` (`isolation: worktree`, with
+> `worktree.baseRef:"head"` in `.claude/settings.local.json`) runs each lane in its own worktree
+> off `ontology` HEAD. Launch Wave 1 as **one** Claude Code prompt that spawns the lanes in parallel.
+>
+> **Wave 1 — parallel (isolated worktrees; merge order D,E → B → C → A):**
+>
+> | Lane | Chunk | Driver | Surface | Risk |
 > |---|---|---|---|---|
-> | 1 | **Phase 5 / 17i** — consented `SET TAG` apply (L9); the governed-tag write-back that turns propose+copy-paste into a real ontology builder | build+driver ready | 17g + MV-D49/D50 (done) | **high** (writes tags) |
-> | 2 | **Stage-4.1d Steps 2→3→4** — `body_source` preservation + on-demand single/bulk "Draft with AI" (app, OBO); the curator enrichment loop | drivers ready | 4.1f (done) | low |
-> | 3 | **UX papercuts** — auto-reload Drafts/Taxonomy after refresh completes; render Page `body` on the card | needs tiny driver | — | low |
-> | 4 | **Phase 3e / 17k** — Estate-Graph snapshot + `/graph` route + 3 bakeoff mockups (MV-D48); read-only diagnostic lens | build+driver ready (human bakeoff gate) | 17g (done) | **lowest** (read-only) |
-> | 5 | **§10 eval/trust harness** (MV-D59) — the scoreboard that gates later signal/threshold change | needs driver | — | low |
-> | 6 | **§9 / 17h** — industry-reference alignment (MV-D58); align discovered domains to Vibe models | needs driver | §10 harness | med |
+> | A | **Phase 5 / 17i** — consented `SET TAG` apply (L9), offline slice | `ontology-phase5-apply-driver.md` | wheel+backend+frontend | offline low; **live apply is a human gate** |
+> | B | **Stage-4.1d Step 2** — `body_source` preservation across re-materialize | `…-stage4.1d-step2-driver.md` | wheel-only | low |
+> | C | **Phase 3e / 17k Step A** — estate-graph snapshot + `/graph` route + 3 bakeoff mockups (MV-D48) | `ontology-phase3e-driver.md` | wheel+backend+frontend | lowest (read-only); **bakeoff pick is a human gate** |
+> | D | **§10 eval/trust harness driver** (MV-D59) — author the missing driver | (new docs file) | docs-only | none |
+> | E | **§9 / 17h alignment driver** (MV-D58) — author the missing driver | (new docs file) | docs-only | none |
 >
-> **Why Phase 5 is #1:** the engine now lands a trustworthy set, so the critical path is
-> *acting on it* — without the apply, the curator finishes tag assignment by hand elsewhere,
-> which is the gap between "discovery aid" and "ontology builder." 3e (read-only map) and the
-> 4.1d enrichment steps are legitimate parallel picks if *seeing/enriching* outranks *applying*.
-> **Drafting queue (author the missing drivers):** UX papercuts, then §10 harness, then §9 alignment.
+> D and E write only new driver docs (no code) → merge first. Then wheel-only **B**, then **C**,
+> then **A**. After each **code** lane merges, run `scripts/ontology_verify.sh`. The shared
+> append-only files (`ddl.py`, `models.py`, `types.ts`, `mirror.py`, `materialize.py`,
+> `test_ontology_firewall.py`) are partitioned by the lane headers into disjoint regions, so the
+> merges are trivial. **Human gates that stay OUT of the autonomous lanes:** Phase-5 *live*
+> `SET TAG` apply, and the Phase-3e library bakeoff pick.
+>
+> **Wave 2 — serial (all contend on `PageDraftCard.tsx` / `drafts.py`, so one at a time):**
+> Stage-4.1d **Step 3** (on-demand "Draft with AI", OBO) → **Step 4** (bulk draft) →
+> **UX papercuts** (auto-reload Drafts/Taxonomy after a refresh completes; render Page `body`
+> on the card).
+>
+> **Why this shape:** the batch engine now lands a trustworthy set, so the critical path is
+> *acting on / seeing / enriching* it — three independent surfaces that run concurrently. The
+> only serial tail is the shared draft-card UI (Wave 2).
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
