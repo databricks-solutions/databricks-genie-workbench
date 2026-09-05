@@ -708,12 +708,14 @@ def test_merge_sql_delete_unmatched_false_is_upsert_only():
 
 def test_ddl_shape_exactly_nine_tables_no_deferred_tokens():
     rendered = ddl.all_ddl("maincat", "gso_schema")
+    # Phase 5 (17i): add APPLY_TABLES (1 audit table for the backend apply).
     assert set(rendered) == (
         set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES)
-        | set(ddl.PAGE_TABLES) | set(ddl.PHASE3_TABLES)
+        | set(ddl.PAGE_TABLES) | set(ddl.PHASE3_TABLES) | set(ddl.APPLY_TABLES)
     )
-    # 4 snapshot + 2 proposal + 1 page (now written) + 2 still-empty (consents/suppressions).
-    assert len(rendered) == 9
+    # 4 snapshot + 2 proposal + 1 page (now written) + 2 still-empty (consents/suppressions)
+    # + 1 apply audit = 10 total (Phase 5 adds the audit table).
+    assert len(rendered) == 10
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():
         assert stmt.startswith("CREATE TABLE IF NOT EXISTS maincat.gso_schema.")

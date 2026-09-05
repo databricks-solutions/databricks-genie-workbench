@@ -31,6 +31,9 @@ _FORBIDDEN = [
     "manage_uc_tags",
 ]
 
+# Phase 5 (17i): single-writer carve — these tokens are allowed ONLY in apply.py.
+_APPLY_ALLOWED = ["set tag", "unset tag", "create governed tag"]
+
 # Phase-4 external-context substrate must not be pulled forward. (Phase 3a
 # unlocks the Lakebase Search similarity tokens, but ONLY inside similarity.py —
 # see test_lakebase_search_tokens_confined_to_similarity below.)
@@ -51,9 +54,33 @@ def test_ontology_packages_have_python_files():
 
 @pytest.mark.parametrize("path", _PY_FILES, ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_no_write_path_in_ontology_module(path: pathlib.Path):
+    """Phase 5 (17i): governed-tag write tokens are allowed in services/apply.py ONLY
+    (single-writer carve); all other modules must not contain them. Always-forbidden tokens
+    (alter, drop, manage_uc_tags) must never appear anywhere."""
     text = path.read_text().lower()
-    hits = [tok for tok in _FORBIDDEN if tok in text]
-    assert not hits, f"{path.name} contains banned governed-tag write token(s): {hits}"
+
+    # services/apply.py carries the write path (by design); skip the all-forbidden check for it.
+    if path.name == "apply.py" and "services" in str(path):
+        # Verify that services/apply.py HAS the write path (positive guard).
+        for tok in _APPLY_ALLOWED:
+            assert tok in text, f"services/apply.py must contain '{tok}' (single-writer invariant)"
+        # But still forbid the always-forbidden tokens everywhere.
+        always_forbidden = [t for t in _FORBIDDEN if t not in _APPLY_ALLOWED]
+        hits = [tok for tok in always_forbidden if tok in text]
+        assert not hits, f"services/apply.py contains always-forbidden token(s): {hits}"
+        return  # done; all checks passed for services/apply.py
+
+    # For all other modules, the apply-allowed tokens must not appear.
+    hits = [tok for tok in _APPLY_ALLOWED if tok in text]
+    assert not hits, (
+        f"{path.name} contains apply-only write token(s): {hits} "
+        "(single-writer carve: only services/apply.py may have these)"
+    )
+
+    # Always-forbidden tokens must not appear anywhere.
+    always_forbidden = [t for t in _FORBIDDEN if t not in _APPLY_ALLOWED]
+    hits = [tok for tok in always_forbidden if tok in text]
+    assert not hits, f"{path.name} contains always-forbidden governed-tag token(s): {hits}"
 
 
 @pytest.mark.parametrize("path", _PY_FILES, ids=lambda p: f"{p.parent.name}/{p.name}")
@@ -76,8 +103,8 @@ def test_lakebase_search_tokens_confined_to_similarity(path: pathlib.Path):
 
 def test_backend_router_verbs_are_read_only_plus_settings_put_refresh_and_decision_post():
     """Only mutating verbs: settings PUT (our config), refresh POST (job trigger), and
-    the Phase-3d decision POST (app-state ledger, OBO). None writes Unity Catalog
-    governance; PATCH/DELETE are forbidden everywhere."""
+    the Phase-3d decision POST (app-state ledger, OBO), and Phase-5 apply POST.
+    None writes Unity Catalog governance; PATCH/DELETE are forbidden everywhere."""
     routers_dir = _BACKEND_ONTOLOGY / "routers"
     put_files, post_files = [], []
     for path in sorted(routers_dir.glob("*.py")):
@@ -89,8 +116,10 @@ def test_backend_router_verbs_are_read_only_plus_settings_put_refresh_and_decisi
         assert ".patch(" not in text, f"{path.name} defines a PATCH route"
         assert ".delete(" not in text, f"{path.name} defines a DELETE route"
     assert put_files == ["settings.py"], f"unexpected PUT routes: {put_files}"
-    # drafts.py adds the ONLY new POST (POST /decision); refresh.py keeps its job POST.
-    assert post_files == ["drafts.py", "refresh.py"], f"unexpected POST routes: {post_files}"
+    # Phase-5 (17i): apply.py adds POST /apply/preview + /apply/execute.
+    assert sorted(post_files) == ["apply.py", "drafts.py", "refresh.py"], (
+        f"unexpected POST routes: {post_files}"
+    )
 
 
 def test_wheel_writes_snapshots_proposals_pages_never_consents_suppressions():
@@ -179,3 +208,23 @@ def test_leakage_oracle_has_page_body_scan_not_a_second_scanner():
     assert "_check_string_against_corpus" in body_src
     # No-op with no corpus (the normal ontology run has no benchmark corpus in scope).
     assert leakage.LeakageOracle().contains_page_leak("any `finance.x.y` body") == (False, "")
+
+
+def test_phase5_applied_audit_table_not_written_by_materialize():
+    """Phase 5 (17i) firewall: genie_ont_applied audit table is NOT written by the batch
+    materializer. The backend apply service is the ONLY writer."""
+    from genie_space_optimizer.ontology import ddl  # noqa: F401
+
+    mat_src = (_WHEEL_ONTOLOGY / "materialize.py").read_text().lower()
+
+    # genie_ont_applied must not be written by the materializer.
+    assert "genie_ont_applied" not in mat_src, (
+        "materialize.py must not reference genie_ont_applied "
+        "(backend apply.py is the only writer)"
+    )
+
+    # Verify the table is in the DDL (created empty at startup).
+    assert hasattr(ddl, "TABLE_ONT_APPLIED")
+    assert ddl.TABLE_ONT_APPLIED == "genie_ont_applied"
+    assert hasattr(ddl, "APPLY_TABLES")
+    assert ddl.TABLE_ONT_APPLIED in ddl.APPLY_TABLES

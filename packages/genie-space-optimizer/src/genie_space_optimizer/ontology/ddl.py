@@ -201,6 +201,35 @@ PHASE3_TABLES: tuple[str, ...] = (
     "genie_ont_suppressions",
 )
 
+# ── Phase 5 (17i): apply audit table — the ONLY table written by the backend apply ─
+
+_GENIE_ONT_APPLIED_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_applied (
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, apply_id) is the PK',
+    apply_id      STRING     COMMENT 'ap_<sha256(proposal_id|shape|target_fqn|tag_value)> — idempotent PK',
+    workspace_id  STRING     COMMENT 'provenance — which install attributed the write; NOT a key',
+    proposal_kind STRING     COMMENT 'domain | subdomain | reassign (never page)',
+    proposal_id   STRING     COMMENT 'The consented proposal this write realized',
+    shape         STRING     COMMENT 'create_tag | set_tag | unset_tag',
+    statement     STRING     COMMENT 'The exact executed governed-tag statement',
+    target_fqn    STRING     COMMENT 'Asset the membership landed on (or the tag, for create_tag)',
+    tag_key       STRING,
+    tag_value     STRING,
+    prev_value    STRING     COMMENT 'Captured pre-state for a future undo (17j); NULL when none',
+    state         STRING     COMMENT 'applied | failed | blocked',
+    applied_by    STRING     COMMENT 'OBO email — the consenting human (MV-D50)',
+    applied_at    TIMESTAMP,
+    error         STRING     COMMENT 'Failure detail when state = failed',
+    run_ref       STRING     COMMENT 'The materialize run_id the proposal came from'
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
+
+TABLE_ONT_APPLIED = "genie_ont_applied"
+
+APPLY_TABLES: tuple[str, ...] = (
+    TABLE_ONT_APPLIED,
+)
+
 _ONT_ALL_DDL: dict[str, str] = {
     TABLE_ONT_RUNS: _GENIE_ONT_RUNS_DDL,
     TABLE_ONT_TAG_GRAPH: _GENIE_ONT_TAG_GRAPH_DDL,
@@ -211,6 +240,7 @@ _ONT_ALL_DDL: dict[str, str] = {
     "genie_ont_pages": _GENIE_ONT_PAGES_DDL,
     "genie_ont_consents": _GENIE_ONT_CONSENTS_DDL,
     "genie_ont_suppressions": _GENIE_ONT_SUPPRESSIONS_DDL,
+    TABLE_ONT_APPLIED: _GENIE_ONT_APPLIED_DDL,
 }
 
 

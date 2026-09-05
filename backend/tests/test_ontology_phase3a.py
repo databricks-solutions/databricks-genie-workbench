@@ -38,6 +38,13 @@ _PHASE3D_MODELS = {
 # DomainDraft, and the STORED+DORMANT industry-alignment config on OntologySettings.
 _STAGE3_MODELS = {"ConfidenceBand", "IndustryAlignment"}
 
+# Phase 5 (17i) APPEND-ONLY apply models (MV-D37 consented governed-tag write).
+# (ApplyShape is a type alias, not a BaseModel, so it's not in the defined set.)
+_PHASE5_MODELS = {
+    "ApplyItem", "ApplyPlan", "ApplyExecuteRequest",
+    "ApplyOutcome", "ApplyResult",
+}
+
 
 def test_no_new_api_model_added_in_phase3a():
     defined = {
@@ -48,8 +55,8 @@ def test_no_new_api_model_added_in_phase3a():
     assert _EXPECTED_MODELS <= defined, (
         f"a frozen model was removed/renamed: {_EXPECTED_MODELS - defined}"
     )
-    # … and the ONLY additions are the append-only Phase-3d + Stage-3 models.
-    allowed = _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS
+    # … and the ONLY additions are the append-only Phase-3d, Stage-3, and Phase-5 models.
+    allowed = _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE5_MODELS
     assert defined == allowed, (
         f"unexpected model surface change: {defined ^ allowed}"
     )
