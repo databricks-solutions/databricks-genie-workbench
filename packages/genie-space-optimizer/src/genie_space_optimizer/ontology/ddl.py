@@ -235,6 +235,8 @@ def build_snapshot_merge_sql(
     update_cols: list[str],
     metastore_id: str,
     delete_unmatched: bool = True,
+    preserve_cols: list[str] = (),
+    preserve_when: str = "",
 ) -> str:
     """Build the idempotent MERGE for a snapshot table (§7.2, re-grained MV-D49).
 
@@ -250,6 +252,11 @@ def build_snapshot_merge_sql(
     unique per run, so a source-diff delete would wipe every *prior* run's header —
     the opposite of a ledger. Snapshot/proposal tables keep the default (True) because
     their keys are stable across runs, so the delete correctly prunes stale entities.
+
+    ``preserve_cols`` and ``preserve_when`` (Step 2, MV-D66): when both are set, emit
+    a guarded WHEN MATCHED AND {preserve_when} clause that updates all columns EXCEPT
+    those in preserve_cols; the general WHEN MATCHED clause (if any) handles the rest.
+    Purely additive: unset params ⇒ byte-identical SQL.
     """
     target = f"{catalog}.{schema}.{table}"
     on = " AND ".join(f"t.{c} = s.{c}" for c in key_cols)
@@ -262,6 +269,13 @@ def build_snapshot_merge_sql(
         f"USING {source_view} AS s",
         f"ON {on}",
     ]
+    # Step 2 (MV-D66): emit guarded preservation clause first, then general clause.
+    if preserve_cols and preserve_when and update_cols:
+        # Update all columns EXCEPT those in preserve_cols for matching preserved rows.
+        preserved_update_cols = [c for c in update_cols if c not in preserve_cols]
+        if preserved_update_cols:
+            preserved_set_clause = ", ".join(f"t.{c} = s.{c}" for c in preserved_update_cols)
+            clauses.append(f"WHEN MATCHED AND {preserve_when} THEN UPDATE SET {preserved_set_clause}")
     if update_cols:
         set_clause = ", ".join(f"t.{c} = s.{c}" for c in update_cols)
         clauses.append(f"WHEN MATCHED THEN UPDATE SET {set_clause}")
