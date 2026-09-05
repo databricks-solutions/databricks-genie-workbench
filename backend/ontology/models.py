@@ -310,3 +310,55 @@ class DecisionResponse(BaseModel):
     ok: bool
     recorded: Literal["consent", "suppression"]
     as_of: str
+
+
+# ── Phase 5 (17i): apply models (APPEND-ONLY) ──────────────────────────────────────
+# The governed-tag membership apply (the ONLY write path). The Phase-1/2/3a-c models
+# above are FROZEN (byte-identical). These new models mirror 1:1 into types.ts.
+
+ApplyShape = Literal["create_tag", "set_tag", "unset_tag"]
+
+
+class ApplyItem(BaseModel):
+    proposal_id: str                 # the consented proposal this realizes (domain_id/reassign id)
+    proposal_kind: Literal["domain", "subdomain", "reassign"]  # never "page"
+    shape: ApplyShape
+    target_fqn: str                  # the asset the membership lands on (or the tag, for create_tag)
+    tag_key: str
+    tag_value: str | None = None     # None for a bare create_tag
+    current_value: str | None = None # for the diff ("moves" vs "adds"); None if unknown/absent
+    statement: str                   # the exact SQL (server-owned; NOT rendered verbatim to curators)
+    executable: bool                 # False → blocked → copy-ready
+    blocked_reason: str | None = None
+    required_grants: list[str] = Field(default_factory=list)  # copy-ready grant lines when blocked
+
+
+class ApplyPlan(BaseModel):
+    items: list[ApplyItem] = Field(default_factory=list)
+    executable_count: int
+    blocked_count: int
+    plan_hash: str                   # fingerprint of the ordered statements — execute must echo it
+    source: Literal["mirror", "live", "cold"]
+    as_of: str
+
+
+class ApplyExecuteRequest(BaseModel):
+    plan_hash: str                   # must equal the preview's — else 409 (stale plan)
+    confirm: bool                    # must be True — the explicit second consent
+    proposal_ids: list[str] | None = None  # optional filter (default: the whole plan)
+
+
+class ApplyOutcome(BaseModel):
+    proposal_id: str
+    shape: ApplyShape
+    target_fqn: str
+    ok: bool
+    state: Literal["applied", "failed", "blocked"]
+    error: str | None = None
+
+
+class ApplyResult(BaseModel):
+    applied: list[ApplyOutcome] = Field(default_factory=list)
+    failed: list[ApplyOutcome] = Field(default_factory=list)
+    blocked: list[ApplyOutcome] = Field(default_factory=list)   # missing grant → copy-ready
+    as_of: str
