@@ -331,6 +331,41 @@ def test_consents_suppressions_never_written_pages_now_written():
     assert writer.tables["genie_ont_pages"] == {}
 
 
+# ── Stage 4.1e (MV-D67): naming runs AFTER the gate, over survivors only ────
+
+def test_naming_is_gate_bounded_and_applied_on_surfaced_only():
+    # The injected namer fires only for surfaced Domains (post-gate), never per raw
+    # cluster: every LLM name maps to exactly one namer call, and only surfaced rows
+    # carry it. Deterministic anchor names are written first and upgraded on re-MERGE.
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    calls = {"n": 0}
+
+    def _namer(identifiers, anchor, company):
+        calls["n"] += 1
+        return "Revenue"
+
+    run = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1", namer=_namer)
+    assert run["state"] == "succeeded"
+    domains = list(writer.tables["genie_ont_domains"].values())
+    renamed = [r for r in domains if r["name"] == "Revenue"]
+    assert calls["n"] == len(renamed)                 # one call per rename (not per cluster)
+    assert all(r.get("surfaced") for r in renamed)    # only gate-survivors are LLM-named
+
+
+def test_naming_namer_raise_degrades_run_succeeds():
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+
+    def _boom_namer(identifiers, anchor, company):
+        raise RuntimeError("llm down")
+
+    run = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1", namer=_boom_namer)
+    assert run["state"] == "succeeded"                                  # degrade, MV-D43
+    domains = list(writer.tables["genie_ont_domains"].values())
+    assert domains and all(r["name"] for r in domains)                 # deterministic names retained
+
+
 # ── Empty-scope guard (MV-D49 safety): no scope never wipes a good snapshot ──
 
 def test_empty_allowlist_is_skipped_and_preserves_snapshot():

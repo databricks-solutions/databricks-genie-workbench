@@ -78,6 +78,8 @@ _TAXONOMY_MAX_CARDINALITY = 40
 # the curator. MAX=0 ⇒ a pure-stub (zero-LLM) batch. Both are config-overridable (MV-D57).
 PAGE_AUTODRAFT_MIN_CORROBORATION = 3
 PAGE_AUTODRAFT_MAX_PAGES = 50
+# Bounded worker cap for the Pass-C super-sure draft fan-out (MV-D67). k<=1 ⇒ sequential.
+PAGE_AUTODRAFT_MAX_WORKERS = 4
 
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 # A rule sentence that opens with one of these bare pronouns is chunk-unsafe — it
@@ -1140,6 +1142,7 @@ def mine_pages(
     oracle: Any | None = None,
     page_autodraft_min_corroboration: int = PAGE_AUTODRAFT_MIN_CORROBORATION,
     page_autodraft_max_pages: int = PAGE_AUTODRAFT_MAX_PAGES,
+    page_autodraft_max_workers: int = PAGE_AUTODRAFT_MAX_WORKERS,
 ) -> list[PageCandidate]:
     """Mine archetype Page proposals for every canonical concept in the metastore.
 
@@ -1208,8 +1211,15 @@ def mine_pages(
             if c.certify and int(c.evidence.get("corroboration", 0)) >= page_autodraft_min_corroboration
         ]
         eligible.sort(key=lambda c: (-c.confidence, c.page_id))
-        for cand in eligible[:page_autodraft_max_pages]:
-            upgraded = _autodraft(cand, specs_by_page_id[cand.page_id], universe, drafter, oracle)
+        selected = eligible[:page_autodraft_max_pages]
+        # Fan out only the pure LLM drafter calls under a bounded pool (MV-D67); apply the
+        # results by page_id so the written snapshot is identical for any worker count.
+        upgrades = transforms.run_bounded(
+            selected,
+            lambda c: _autodraft(c, specs_by_page_id[c.page_id], universe, drafter, oracle),
+            max_workers=page_autodraft_max_workers,
+        )
+        for cand, upgraded in zip(selected, upgrades):
             if upgraded is not None:
                 out[cand.page_id] = upgraded
         candidates = sorted(out.values(), key=lambda c: (c.archetype, c.page_id))

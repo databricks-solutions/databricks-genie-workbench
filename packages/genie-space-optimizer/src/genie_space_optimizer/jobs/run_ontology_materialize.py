@@ -108,6 +108,9 @@ dbutils.widgets.text("page_require_domain", "true")
 # pages.PAGE_AUTODRAFT_*). max_pages=0 ⇒ a pure-stub (zero page-LLM) batch.
 dbutils.widgets.text("page_autodraft_min_corroboration", "3")
 dbutils.widgets.text("page_autodraft_max_pages", "50")
+# Stage 4.1e (MV-D67) — bounded worker cap for the LLM enrichers (surfaced-Domain renames +
+# super-sure Page drafts). k<=1 ⇒ sequential; the shipped default keeps fan-out small.
+dbutils.widgets.text("enrich_max_workers", "4")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -182,6 +185,7 @@ page_require_domain = (dbutils.widgets.get("page_require_domain").strip().lower(
 # (aligned with the wheel's pages.PAGE_AUTODRAFT_* constants).
 page_autodraft_min_corroboration = _parse_int("page_autodraft_min_corroboration", 3)
 page_autodraft_max_pages = _parse_int("page_autodraft_max_pages", 50)
+enrich_max_workers = _parse_int("enrich_max_workers", 4)
 
 
 def _resolve_metastore_id() -> str:
@@ -710,6 +714,9 @@ run = materialize.run_materialize(
     # Stage 4.1d bounded auto-drafting (MV-D66) — the super-sure cap for batch LLM prose.
     page_autodraft_min_corroboration=page_autodraft_min_corroboration,
     page_autodraft_max_pages=page_autodraft_max_pages,
+    # Stage 4.1e (MV-D67) — bound the LLM enricher fan-out (renames + super-sure drafts).
+    page_autodraft_max_workers=enrich_max_workers,
+    rename_max_workers=enrich_max_workers,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))

@@ -633,6 +633,44 @@ def test_autodraft_caps_selection_and_marks_llm_auto():
     }
 
 
+def test_autodraft_concurrency_matches_sequential_and_caps_in_flight():
+    # MV-D67: fanning the drafter out under a bounded pool drafts the SAME set as k=1
+    # (deterministic selection) and never runs more than max_workers concurrently.
+    import threading
+    import time
+    ms, members = _autodraft_measures(6)
+
+    def _make_drafter():
+        state = {"in_flight": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def _d(facts):
+            with lock:
+                state["in_flight"] += 1
+                state["peak"] = max(state["peak"], state["in_flight"])
+            try:
+                time.sleep(0.02)  # force overlap so the pool actually parallelizes
+                return _good_drafter(facts)
+            finally:
+                with lock:
+                    state["in_flight"] -= 1
+        return _d, state
+
+    seq_d, _ = _make_drafter()
+    seq = pages.mine_pages(measures=ms, members=members, drafter=seq_d,
+                           page_autodraft_min_corroboration=3, page_autodraft_max_pages=4,
+                           page_autodraft_max_workers=1)
+    par_d, par_state = _make_drafter()
+    par = pages.mine_pages(measures=ms, members=members, drafter=par_d,
+                           page_autodraft_min_corroboration=3, page_autodraft_max_pages=4,
+                           page_autodraft_max_workers=3)
+
+    seq_auto = {c.page_id for c in seq if c.evidence.get("body_source") == "llm_auto"}
+    par_auto = {c.page_id for c in par if c.evidence.get("body_source") == "llm_auto"}
+    assert seq_auto == par_auto and len(par_auto) == 4  # identical selection, cap respected
+    assert 2 <= par_state["peak"] <= 3                   # concurrent, never > max_workers
+
+
 def test_autodraft_max_pages_zero_drafts_nothing():
     ms, members = _autodraft_measures(3)
     calls = {"n": 0}

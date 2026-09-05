@@ -724,3 +724,25 @@ def identity_map_rows(
                 "as_of": as_of,
             })
     return rows
+
+
+def run_bounded(
+    items: "Iterable[Any]",
+    fn: Callable[[Any], Any],
+    *,
+    max_workers: int | None,
+) -> list[Any]:
+    """Apply ``fn`` to each item under a BOUNDED thread pool, returning results in the
+    SAME order as ``items`` — deterministic regardless of worker count (MV-D67). Used to
+    fan out the pure LLM calls in the batch enrichers (surfaced-Domain renames, super-sure
+    Page drafts) so wall-clock drops without changing the written snapshot. ``max_workers``
+    of ``None``/``<=1`` (or ``<2`` items) runs inline (the ``k=1`` == sequential contract).
+    ``fn`` must be side-effect-free with respect to shared state; per-item degradation is the
+    caller's responsibility (MV-D43)."""
+    seq = list(items)
+    if max_workers is None or max_workers <= 1 or len(seq) <= 1:
+        return [fn(it) for it in seq]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        return list(ex.map(fn, seq))  # ex.map preserves input order

@@ -341,6 +341,8 @@ def run_materialize(
     page_require_domain: bool = True,
     page_autodraft_min_corroboration: int = pages.PAGE_AUTODRAFT_MIN_CORROBORATION,
     page_autodraft_max_pages: int = pages.PAGE_AUTODRAFT_MAX_PAGES,
+    page_autodraft_max_workers: int = pages.PAGE_AUTODRAFT_MAX_WORKERS,
+    rename_max_workers: int = cluster.RENAME_MAX_WORKERS,
 ) -> dict[str, Any]:
     """Materialize the governed-tag graph + taxonomy snapshots for one metastore
     (MV-D49 grain), then resolve identity (L3 ER) and MERGE the identity map +
@@ -459,8 +461,11 @@ def run_materialize(
         # + membership. Deterministic + offline; naming degrades (MV-D43). The snapshot
         # writes above are already committed, so a clustering error records `failed`
         # without corrupting them.
+        # MV-D67: cluster with DETERMINISTIC names (namer=None). The LLM namer is deferred
+        # to `cluster.rename_surfaced` below, run only over gate-survivors — naming per raw
+        # cluster (pre-gate) was the batch-timeout hog.
         proposals = cluster.cluster(
-            signal_graph, identity=er_verdicts, namer=namer, company=company,
+            signal_graph, identity=er_verdicts, namer=None, company=company,
             facet_denylist=facet_denylist,
         )
         expanded = build_domain_rows(
@@ -492,6 +497,7 @@ def run_materialize(
             drafter=page_drafter, routing_validator=routing_validator, oracle=page_oracle,
             page_autodraft_min_corroboration=page_autodraft_min_corroboration,
             page_autodraft_max_pages=page_autodraft_max_pages,
+            page_autodraft_max_workers=page_autodraft_max_workers,
         )
         page_rows = build_page_rows(
             page_cands, metastore_id=metastore_id, workspace_id=workspace_id,
@@ -525,6 +531,14 @@ def run_materialize(
         )
         report = rank.mark_surfaced(
             expanded["domain_rows"], page_rows, _gather_suppressions(reader, metastore_id),
+        )
+        # MV-D67: LLM-name ONLY the Domains that passed the gate (naming was the batch
+        # timeout hog — it fired per raw cluster pre-gate on a slow model). Deterministic
+        # names were written in the first domain MERGE above; upgrade the surfaced few here,
+        # before the re-MERGE persists them. Bounded fan-out; degrades per Domain (MV-D43).
+        cluster.rename_surfaced(
+            proposals, expanded["domain_rows"], namer=namer, company=company,
+            max_workers=rename_max_workers,
         )
         writer.merge(ddl.TABLE_ONT_DOMAINS, expanded["domain_rows"], DOMAIN_KEYS, metastore_id)
         writer.merge(ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id)

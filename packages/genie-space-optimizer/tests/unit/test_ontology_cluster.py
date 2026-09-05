@@ -705,3 +705,77 @@ def test_default_namer_degrades_to_none_when_llm_raises(monkeypatch):
     monkeypatch.setattr(common_llm, "call_llm_core", _boom)
     namer = cluster.default_namer(w=object())
     assert namer(["finance.sales.orders"], "finance.sales.orders", None) is None
+
+
+# ── Stage 4.1e (MV-D67): gate-bounded LLM naming (rename_surfaced) ──────────
+
+
+def _rows_for(props, surfaced_ids):
+    """Build the mutable domain_rows dicts the materializer hands to rename_surfaced."""
+    return [
+        {"domain_id": p.domain_id, "name": p.name, "surfaced": p.domain_id in surfaced_ids}
+        for p in props
+    ]
+
+
+def test_rename_surfaced_only_touches_surfaced_create_domains():
+    # The namer fires O(#surfaced-create), never per raw cluster: a pruned create Domain
+    # and a tag-bound (reuse) Domain are both left with their pre-gate names.
+    create_a = _prop({"cat.alpha.a", "cat.alpha.b"}, name="anchor-a", tag_decision="create")
+    create_b = _prop({"cat.bravo.a", "cat.bravo.b"}, name="anchor-b", tag_decision="create")
+    reuse = _prop({"cat.gov.a", "cat.gov.b"}, name="Governed", tag_decision="reuse", tag_key="Gov")
+    props = [create_a, create_b, reuse]
+    rows = _rows_for(props, {create_a.domain_id, reuse.domain_id})  # create_b pruned
+    calls = []
+
+    def _namer(identifiers, anchor, company):
+        calls.append(tuple(identifiers))
+        return "Revenue"
+
+    n = cluster.rename_surfaced(props, rows, namer=_namer, company="Acme", max_workers=1)
+    by_id = {r["domain_id"]: r for r in rows}
+    assert n == 1 and len(calls) == 1                       # exactly one surfaced-create
+    assert by_id[create_a.domain_id]["name"] == "Revenue"   # surfaced create → renamed
+    assert by_id[create_b.domain_id]["name"] == "anchor-b"  # pruned → untouched
+    assert by_id[reuse.domain_id]["name"] == "Governed"     # tag-bound → untouched
+
+
+def test_rename_surfaced_is_noop_without_namer():
+    p = _prop({"cat.alpha.a", "cat.alpha.b"}, name="anchor", tag_decision="create")
+    rows = _rows_for([p], {p.domain_id})
+    assert cluster.rename_surfaced([p], rows, namer=None) == 0
+    assert rows[0]["name"] == "anchor"  # deterministic run, no LLM
+
+
+def test_rename_surfaced_degrades_on_raise_and_leak():
+    p_boom = _prop({"cat.alpha.a", "cat.alpha.b"}, name="anchor-boom", tag_decision="create")
+    p_leak = _prop({"cat.bravo.a", "cat.bravo.b"}, name="anchor-leak", tag_decision="create")
+    props = [p_boom, p_leak]
+    rows = _rows_for(props, {p_boom.domain_id, p_leak.domain_id})
+
+    def _namer(identifiers, anchor, company):
+        if any("alpha" in i for i in identifiers):
+            raise RuntimeError("llm down")
+        return "cat.bravo.a"  # echoes a raw identifier → rejected by name_leaks
+
+    assert cluster.rename_surfaced(props, rows, namer=_namer, max_workers=1) == 0
+    by_id = {r["domain_id"]: r for r in rows}
+    assert by_id[p_boom.domain_id]["name"] == "anchor-boom"  # raise → keep deterministic
+    assert by_id[p_leak.domain_id]["name"] == "anchor-leak"  # leak → keep deterministic
+
+
+def test_rename_surfaced_worker_count_invariant():
+    words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+    props = [_prop({f"cat.{w}.a", f"cat.{w}.b"}, name=f"anchor-{w}", tag_decision="create")
+             for w in words]
+    surfaced = {p.domain_id for p in props}
+
+    def _namer(identifiers, anchor, company):
+        return identifiers[0].split(".")[1].capitalize()  # clean, non-leaking, deterministic
+
+    rows1 = _rows_for(props, surfaced)
+    rows4 = _rows_for(props, surfaced)
+    n1 = cluster.rename_surfaced(props, rows1, namer=_namer, max_workers=1)
+    n4 = cluster.rename_surfaced(props, rows4, namer=_namer, max_workers=4)
+    assert n1 == n4 == 6
+    assert {r["domain_id"]: r["name"] for r in rows1} == {r["domain_id"]: r["name"] for r in rows4}

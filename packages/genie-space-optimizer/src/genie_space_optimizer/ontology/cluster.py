@@ -112,6 +112,9 @@ REASSIGN_MARGIN = 0.30
 # or None to fall back to a deterministic anchor-derived name (MV-D43 degrade).
 Namer = Callable[[list[str], "str | None", "str | None"], "str | None"]
 
+# Bounded worker cap for the post-gate LLM rename fan-out (MV-D67). k<=1 ⇒ sequential.
+RENAME_MAX_WORKERS = 4
+
 
 @dataclass(frozen=True)
 class DomainProposal:
@@ -694,6 +697,59 @@ def _derive_subdomains(
         )
 
     return None
+
+
+def rename_surfaced(
+    proposals: Sequence[DomainProposal],
+    domain_rows: list[dict[str, Any]],
+    *,
+    namer: Namer | None,
+    company: str | None = None,
+    max_workers: int = RENAME_MAX_WORKERS,
+) -> int:
+    """LLM-rename ONLY surfaced, non-tag-bound ("create") Domains, AFTER the L6 gate (MV-D67).
+
+    Clustering now names every proposal deterministically (anchor-derived); this upgrades
+    just the handful of Domains that ``rank.mark_surfaced`` kept, so the injected ``namer``
+    fires ``O(#surfaced)`` times instead of once per raw cluster (the batch-timeout hog).
+    Tag-bound (``reuse``/``reassign``) Domains keep their governed vocabulary and
+    non-surfaced Domains are never LLM-named. Mutates ``domain_rows[i]["name"]`` in place —
+    the frozen ``proposals`` are left untouched; ``domain_rows`` is what the final re-MERGE
+    writes, and the deterministic name written earlier is the safe fallback. Bounded fan-out;
+    the outcome is deterministic regardless of worker count. ``namer=None`` ⇒ no-op (a fully
+    deterministic run). A per-Domain empty/leaky/raising namer degrades to the deterministic
+    name (MV-D43). Returns the number of Domains renamed."""
+    if namer is None:
+        return 0
+    prop_by_id = {p.domain_id: p for p in proposals}
+    targets = [
+        (row, prop_by_id[row["domain_id"]])
+        for row in domain_rows
+        if row.get("surfaced")
+        and row.get("domain_id") in prop_by_id
+        and prop_by_id[row["domain_id"]].tag_decision == "create"
+    ]
+    targets.sort(key=lambda rp: rp[1].domain_id)  # deterministic order
+
+    def _propose(rp: tuple[dict[str, Any], DomainProposal]) -> str | None:
+        _row, p = rp
+        identifiers = sorted(p.members)
+        try:
+            proposed = namer(identifiers, p.evidence.get("anchor"), company)
+        except Exception as exc:  # noqa: BLE001 — degrade, keep the deterministic name
+            logger.info("ontology surfaced rename failed for %s (%s)", p.domain_id, exc)
+            return None
+        if proposed and not name_leaks(proposed, identifiers):
+            return proposed.strip()
+        return None
+
+    proposed_names = transforms.run_bounded(targets, _propose, max_workers=max_workers)
+    renamed = 0
+    for (row, _p), newname in zip(targets, proposed_names):
+        if newname:
+            row["name"] = newname
+            renamed += 1
+    return renamed
 
 
 def cluster(

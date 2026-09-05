@@ -295,7 +295,9 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
           environment_key: default
-          timeout_seconds: 3600
+          # MV-D67: headroom over the prior 3600s cap that the pre-gate LLM naming tail blew.
+          # With naming bounded to gate-survivors the run should finish well under this.
+          timeout_seconds: 5400
           max_retries: 0
       environments:
         - environment_key: default
