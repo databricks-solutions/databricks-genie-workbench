@@ -80,6 +80,47 @@ class OntologyTaxonomy(BaseModel):
     as_of: str
 
 
+# ── Phase 3e (17h): the Estate Graph / "Ontology Map" (append-only, MV-D48) ──
+# Served read-only from the pre-laid-out genie_ont_graph_snapshot; 1:1 with the
+# layout.build_graph_snapshot blob. Keep in sync with frontend/src/ontology/types.ts.
+GraphState = Literal["fresh", "stale", "cold"]
+
+
+class OntologyGraphNode(BaseModel):
+    id: str
+    label: str
+    kind: str  # tag | measure | metric_view | agent | table | domain | ungrouped …
+    domain_id: str | None = None
+    x: float = 0.0
+    y: float = 0.0
+    size: float = 1.0
+    cost: float | None = None
+    member_count: int | None = None  # domain-level rollup nodes only
+
+
+class OntologyGraphEdge(BaseModel):
+    src: str
+    dst: str
+    kind: str
+    weight: float | None = None
+
+
+class OntologyGraphLevel(BaseModel):
+    nodes: list[OntologyGraphNode] = Field(default_factory=list)
+    edges: list[OntologyGraphEdge] = Field(default_factory=list)
+    truncated: bool = False
+
+
+class OntologyGraph(BaseModel):
+    domains: OntologyGraphLevel = Field(default_factory=OntologyGraphLevel)
+    assets: OntologyGraphLevel = Field(default_factory=OntologyGraphLevel)
+    layout: str = "none"
+    node_count: int = 0
+    edge_count: int = 0
+    state: GraphState = "cold"
+    as_of: str | None = None
+
+
 class GovernedTag(BaseModel):
     tag_key: str
     allowed_values: list[str] = Field(default_factory=list)

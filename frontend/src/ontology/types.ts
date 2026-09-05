@@ -215,3 +215,42 @@ export interface DecisionResponse {
   recorded: "consent" | "suppression"
   as_of: string
 }
+
+// ── Phase 3e (17h): the Estate Graph / "Ontology Map" (append-only, MV-D48) ──
+// 1:1 with backend/ontology/models.py OntologyGraph*.
+export type GraphState = "fresh" | "stale" | "cold"
+
+export interface OntologyGraphNode {
+  id: string
+  label: string
+  kind: string
+  domain_id?: string | null
+  x: number
+  y: number
+  size: number
+  cost?: number | null
+  member_count?: number | null
+}
+
+export interface OntologyGraphEdge {
+  src: string
+  dst: string
+  kind: string
+  weight?: number | null
+}
+
+export interface OntologyGraphLevel {
+  nodes: OntologyGraphNode[]
+  edges: OntologyGraphEdge[]
+  truncated: boolean
+}
+
+export interface OntologyGraph {
+  domains: OntologyGraphLevel
+  assets: OntologyGraphLevel
+  layout: string
+  node_count: number
+  edge_count: number
+  state: GraphState
+  as_of?: string | null
+}

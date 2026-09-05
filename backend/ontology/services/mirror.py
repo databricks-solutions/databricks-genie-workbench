@@ -169,6 +169,44 @@ async def read_taxonomy_tree(metastore_id: str) -> dict[str, Any] | None:
         return None
 
 
+async def read_graph_snapshot(metastore_id: str) -> dict[str, Any] | None:
+    """The estate-graph snapshot blob + as_of for a metastore (Phase 3e, MV-D48), or None.
+
+    Reads the single pre-laid-out ``genie_ont_graph_snapshot`` row (synced-pool first,
+    Delta-via-warehouse fallback — MV-D43). Returns ``{"graph": <parsed blob>, "as_of":
+    <iso str|None>}``, or None when absent/unreadable; never raises to the caller (the
+    route degrades to a typed empty graph)."""
+    pool = _synced_pool()
+    if pool is not None:
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f'SELECT graph, as_of FROM "{_gso._GSO_PG_SCHEMA}"."genie_ont_graph_snapshot_synced" '
+                    "WHERE metastore_id = $1",
+                    metastore_id,
+                )
+            blob = row["graph"] if row else None
+            as_of = row["as_of"] if row else None
+        except Exception:
+            logger.info("mirror synced read failed for graph snapshot", exc_info=True)
+            return None
+    else:
+        import asyncio
+        rows = await asyncio.to_thread(
+            _delta_query,
+            f"SELECT graph, as_of FROM {_gso_fqn('genie_ont_graph_snapshot')} WHERE metastore_id = '{metastore_id}'",
+        )
+        blob = rows[0].get("graph") if rows else None
+        as_of = rows[0].get("as_of") if rows else None
+    if not blob:
+        return None
+    try:
+        parsed = json.loads(blob) if isinstance(blob, str) else blob
+    except (ValueError, TypeError):
+        return None
+    return {"graph": parsed, "as_of": str(as_of) if as_of is not None else None}
+
+
 async def read_tag_graph(metastore_id: str) -> dict[str, Any] | None:
     """Reconstruct the tag-graph structure from the mirror rows, or None.
 

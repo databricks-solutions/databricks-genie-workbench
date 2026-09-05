@@ -22,7 +22,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Protocol
 
-from genie_space_optimizer.ontology import cluster, ddl, er, graph, pages, rank, similarity, transforms
+from genie_space_optimizer.ontology import cluster, ddl, er, graph, layout, pages, rank, similarity, transforms
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ DOMAIN_KEYS = ["metastore_id", "domain_id"]
 MEMBER_KEYS = ["metastore_id", "domain_id", "asset_fqn"]
 # Page proposals (Phase 3c) — concept-anchored derived PK, metastore-scoped (§7).
 PAGE_KEYS = ["metastore_id", "page_id"]
+GRAPH_SNAPSHOT_KEYS = ["metastore_id"]
 
 
 class MaterializeReader(Protocol):
@@ -565,6 +566,18 @@ def run_materialize(
             preserve_cols=["body", "evidence"],
             preserve_when="get_json_object(t.evidence,'$.body_source') IN ('llm_ondemand','llm_bulk','human')",
         )
+
+        # L7 estate-graph feed (Phase 3e, MV-D48) — the ADDITIVE-LAST step: lay out the
+        # fused signal graph mapped to 17e's domains + 17g's scores, and MERGE the single
+        # pre-computed snapshot the Ontology Map serves (read-only, off the request path).
+        # Additive/idempotent like ranking: a layout error records `failed` without
+        # corrupting the snapshots committed above (MV-D43). An empty graph → an empty
+        # snapshot, run still succeeds.
+        graph_row = layout.build_graph_snapshot(
+            signal_graph, asset_domain, node_scores=None,
+            metastore_id=metastore_id, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
+        )
+        writer.merge(ddl.TABLE_ONT_GRAPH_SNAPSHOT, [graph_row], GRAPH_SNAPSHOT_KEYS, metastore_id)
 
         counts = {**snap["counts"], "domain_count": len(proposals)}
         run_row = {

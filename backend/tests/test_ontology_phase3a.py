@@ -38,6 +38,12 @@ _PHASE3D_MODELS = {
 # DomainDraft, and the STORED+DORMANT industry-alignment config on OntologySettings.
 _STAGE3_MODELS = {"ConfidenceBand", "IndustryAlignment"}
 
+# Phase 3e (17h) additive, append-only models: the Estate Graph / Ontology Map
+# served read-only from genie_ont_graph_snapshot (MV-D48).
+_PHASE3E_MODELS = {
+    "OntologyGraph", "OntologyGraphNode", "OntologyGraphEdge", "OntologyGraphLevel",
+}
+
 
 def test_no_new_api_model_added_in_phase3a():
     defined = {
@@ -49,7 +55,7 @@ def test_no_new_api_model_added_in_phase3a():
         f"a frozen model was removed/renamed: {_EXPECTED_MODELS - defined}"
     )
     # … and the ONLY additions are the append-only Phase-3d + Stage-3 models.
-    allowed = _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS
+    allowed = _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE3E_MODELS
     assert defined == allowed, (
         f"unexpected model surface change: {defined ^ allowed}"
     )

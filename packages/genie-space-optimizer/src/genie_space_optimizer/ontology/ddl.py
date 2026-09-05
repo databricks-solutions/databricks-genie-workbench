@@ -65,6 +65,22 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_taxonomy_snapshot (
 ) USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
+# Estate-graph snapshot (Phase 3e / Ontology Map, MV-D48/D49): one pre-laid-out
+# graph blob per metastore, served read-only to the map. Rides a JSON blob (no
+# per-node/edge DDL); the layout is computed in the batch, never on the request path.
+_GENIE_ONT_GRAPH_SNAPSHOT_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_graph_snapshot (
+    metastore_id  STRING     COMMENT 'Derived PK (MV-D49) — one graph snapshot per metastore',
+    workspace_id  STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
+    graph         STRING     COMMENT 'JSON blob: domains + assets levels (nodes, edges, truncated) plus layout/node_count/edge_count',
+    node_count    INT        COMMENT 'Asset-level node count (pre-truncation)',
+    edge_count    INT        COMMENT 'Asset-level edge count',
+    layout        STRING     COMMENT 'Layout algorithm used (e.g. fr) or none/layoutless on degrade',
+    run_id        STRING     COMMENT 'FK to genie_ont_runs.run_id',
+    as_of         TIMESTAMP  COMMENT 'Materialization time'
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
+
 # ── Empty Phase-3 tables (schema only; NOT written in Phase 2) ──────────────
 
 _GENIE_ONT_DOMAINS_DDL = """\
@@ -167,12 +183,15 @@ TABLE_ONT_RUNS = "genie_ont_runs"
 TABLE_ONT_TAG_GRAPH = "genie_ont_tag_graph"
 TABLE_ONT_TAXONOMY_SNAPSHOT = "genie_ont_taxonomy_snapshot"
 TABLE_ONT_IDENTITY = "genie_ont_identity"
+# Phase 3e (17h): the estate-graph snapshot, WRITTEN as the additive-last L7 feed.
+TABLE_ONT_GRAPH_SNAPSHOT = "genie_ont_graph_snapshot"
 
 SNAPSHOT_TABLES: tuple[str, ...] = (
     TABLE_ONT_RUNS,
     TABLE_ONT_TAG_GRAPH,
     TABLE_ONT_TAXONOMY_SNAPSHOT,
     TABLE_ONT_IDENTITY,
+    TABLE_ONT_GRAPH_SNAPSHOT,
 )
 
 # Proposal tables — WRITTEN starting Phase 3b (17e): the clustering engine MERGEs
@@ -206,6 +225,7 @@ _ONT_ALL_DDL: dict[str, str] = {
     TABLE_ONT_TAG_GRAPH: _GENIE_ONT_TAG_GRAPH_DDL,
     TABLE_ONT_TAXONOMY_SNAPSHOT: _GENIE_ONT_TAXONOMY_SNAPSHOT_DDL,
     TABLE_ONT_IDENTITY: _GENIE_ONT_IDENTITY_DDL,
+    TABLE_ONT_GRAPH_SNAPSHOT: _GENIE_ONT_GRAPH_SNAPSHOT_DDL,
     "genie_ont_domains": _GENIE_ONT_DOMAINS_DDL,
     "genie_ont_members": _GENIE_ONT_MEMBERS_DDL,
     "genie_ont_pages": _GENIE_ONT_PAGES_DDL,

@@ -51,6 +51,9 @@ TABLES = [
     ("genie_ont_runs",               ["run_id"]),
     ("genie_ont_tag_graph",          ["metastore_id", "tag_key"]),
     ("genie_ont_taxonomy_snapshot",  ["metastore_id"]),
+    # Phase-3e estate-graph snapshot (Ontology Map). One pre-laid-out blob per
+    # metastore (MV-D48/D49); served read-only by GET /api/ontology/graph.
+    ("genie_ont_graph_snapshot",     ["metastore_id"]),
     # Phase-3a identity map (canonical entity -> members). Derived PK.
     ("genie_ont_identity",           ["metastore_id", "canonical_id", "member_ref"]),
     # Phase-3b Domain / Sub-Domain proposals + their asset membership. Derived PKs

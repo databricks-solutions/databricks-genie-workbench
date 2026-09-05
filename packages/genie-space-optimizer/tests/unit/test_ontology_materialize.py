@@ -339,10 +339,12 @@ def test_consents_suppressions_never_written_pages_now_written():
     _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
     written = set(writer.tables)
     # Phase 3c now MERGEs genie_ont_pages too (even when the estate mines zero Pages —
-    # the empty MERGE clears stale rows). Only the 17g ledger tables stay empty.
+    # the empty MERGE clears stale rows); Phase 3e adds the graph snapshot (MV-D48).
+    # Only the 17g ledger tables stay empty.
     assert written == {
         "genie_ont_tag_graph", "genie_ont_taxonomy_snapshot", "genie_ont_identity",
         "genie_ont_domains", "genie_ont_members", "genie_ont_pages",
+        "genie_ont_graph_snapshot",
     }
     for t in ddl.PHASE3_TABLES:
         assert t not in written
@@ -726,14 +728,15 @@ def test_merge_sql_delete_unmatched_false_is_upsert_only():
     assert "WHEN NOT MATCHED BY SOURCE AND t.metastore_id = 'ms1' THEN DELETE" in default_sql
 
 
-def test_ddl_shape_exactly_nine_tables_no_deferred_tokens():
+def test_ddl_shape_all_tables_no_deferred_tokens():
     rendered = ddl.all_ddl("maincat", "gso_schema")
     assert set(rendered) == (
         set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES)
         | set(ddl.PAGE_TABLES) | set(ddl.PHASE3_TABLES)
     )
-    # 4 snapshot + 2 proposal + 1 page (now written) + 2 still-empty (consents/suppressions).
-    assert len(rendered) == 9
+    # 5 snapshot (+ graph_snapshot, Phase 3e) + 2 proposal + 1 page (now written)
+    # + 2 still-empty (consents/suppressions).
+    assert len(rendered) == 10
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():
         assert stmt.startswith("CREATE TABLE IF NOT EXISTS maincat.gso_schema.")
