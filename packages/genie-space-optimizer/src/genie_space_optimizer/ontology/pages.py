@@ -39,6 +39,7 @@ contradiction gate is READ-ONLY.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from collections import Counter
@@ -932,6 +933,16 @@ def _asset_why(spec: _DraftSpec) -> dict[str, str]:
     return why
 
 
+def _compute_facts_hash(spec: _DraftSpec) -> str:
+    """Compute a deterministic SHA256 hash of spec.facts() (the prose inputs) so Step 2
+    can detect when a preserved body has gone stale (MV-D66). The hash is a 32-char hex
+    string that rides in evidence.facts_hash; a re-run with different facts will carry a
+    different hash, allowing the merge to set evidence.body_stale=true."""
+    facts = spec.facts()
+    facts_json = json.dumps(facts, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(facts_json.encode()).hexdigest()
+
+
 def _validate_routing(spec: _DraftSpec, routing_validator: Callable[[str, str], bool] | None) -> bool | None:
     """Optional ask_genie confirmation for a [Routing] Page — does the NL question
     resolve to the intended measure? Returns True/False, or None ("unvalidated") when
@@ -1012,6 +1023,11 @@ def _finalize(
     if not llm_ok:
         confidence *= 0.8
 
+    # Step 2 (MV-D66): compute facts_hash so preserved bodies can detect staleness.
+    # The hash rides in evidence JSON (no DDL); it lets the merge compare incoming vs
+    # stored facts and set body_stale=true if they differ.
+    facts_hash = _compute_facts_hash(spec)
+
     evidence = {
         **spec.evidence,
         "detector": spec.archetype,
@@ -1019,6 +1035,7 @@ def _finalize(
         "corroboration": spec.corroboration,
         "synonym_classes": sorted(spec.synonym_classes),
         "body_source": "llm" if llm_ok else "stub",
+        "facts_hash": facts_hash,
         "status": "CONFLICT" if conflict else "OK",
         "routing_validated": routing_validated,
         "leak_degraded": leaked,

@@ -514,7 +514,14 @@ def run_materialize(
             page_cands, metastore_id=metastore_id, workspace_id=workspace_id,
             run_id=run_id, as_of=as_of,
         )
-        writer.merge(ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id)
+        # Step 2 (MV-D66): preserve curator-authored bodies across re-materialize.
+        # For curator rows (body_source ∈ {llm_ondemand, llm_bulk, human}), keep the
+        # existing body + evidence; for batch-owned rows (stub/llm_auto), refresh normally.
+        writer.merge(
+            ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id,
+            preserve_cols=["body"],
+            preserve_when="get_json_object(t.evidence,'$.body_source') IN ('llm_ondemand','llm_bulk','human')",
+        )
 
         # L6 rank & trust gate (Phase 3d) — the ADDITIVE-LAST step (§8). Score +
         # firewall the just-written Domain/Page rows, READ the suppression ledger
@@ -552,7 +559,12 @@ def run_materialize(
             max_workers=rename_max_workers, max_domains=rename_max_domains,
         )
         writer.merge(ddl.TABLE_ONT_DOMAINS, expanded["domain_rows"], DOMAIN_KEYS, metastore_id)
-        writer.merge(ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id)
+        # Step 2 (MV-D66): re-merge pages with preserved bodies for curator rows.
+        writer.merge(
+            ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id,
+            preserve_cols=["body"],
+            preserve_when="get_json_object(t.evidence,'$.body_source') IN ('llm_ondemand','llm_bulk','human')",
+        )
 
         counts = {**snap["counts"], "domain_count": len(proposals)}
         run_row = {
@@ -669,7 +681,16 @@ class SparkSnapshotWriter:
         )
         self.spark.sql(sql)
 
-    def merge(self, table: str, rows: list[dict[str, Any]], key_cols: list[str], metastore_id: str) -> None:
+    def merge(
+        self, table: str, rows: list[dict[str, Any]], key_cols: list[str], metastore_id: str,
+        preserve_cols: list[str] = (), preserve_when: str = "",
+    ) -> None:
+        """Merge source rows into a snapshot table (idempotent MERGE).
+
+        Step 2 (MV-D66): when preserve_cols and preserve_when are both set, emit
+        a guarded clause that preserves specified columns for rows matching the
+        predicate. Example: preserve body for curator rows.
+        """
         view = f"_ont_src_{table}"
         if rows:
             struct = self.spark.table(f"{self.catalog}.{self.schema}.{table}").schema
@@ -687,5 +708,6 @@ class SparkSnapshotWriter:
             catalog=self.catalog, schema=self.schema, table=table,
             source_view=view, key_cols=key_cols, update_cols=update_cols,
             metastore_id=metastore_id,
+            preserve_cols=preserve_cols, preserve_when=preserve_when,
         )
         self.spark.sql(sql)
