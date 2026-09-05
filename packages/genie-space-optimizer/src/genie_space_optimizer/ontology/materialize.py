@@ -519,7 +519,7 @@ def run_materialize(
         # existing body + evidence; for batch-owned rows (stub/llm_auto), refresh normally.
         writer.merge(
             ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id,
-            preserve_cols=["body"],
+            preserve_cols=["body", "evidence"],
             preserve_when="get_json_object(t.evidence,'$.body_source') IN ('llm_ondemand','llm_bulk','human')",
         )
 
@@ -562,7 +562,7 @@ def run_materialize(
         # Step 2 (MV-D66): re-merge pages with preserved bodies for curator rows.
         writer.merge(
             ddl.TABLE_ONT_PAGES, page_rows, PAGE_KEYS, metastore_id,
-            preserve_cols=["body"],
+            preserve_cols=["body", "evidence"],
             preserve_when="get_json_object(t.evidence,'$.body_source') IN ('llm_ondemand','llm_bulk','human')",
         )
 

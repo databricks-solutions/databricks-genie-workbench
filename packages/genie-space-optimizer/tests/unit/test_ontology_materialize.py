@@ -66,14 +66,34 @@ class _FakeWriter:
     def upsert_run(self, row):
         self.runs[row["run_id"]] = dict(row)
 
-    def merge(self, table, rows, key_cols, metastore_id):
+    def merge(self, table, rows, key_cols, metastore_id, preserve_cols=(), preserve_when=""):
+        # Faithful to build_snapshot_merge_sql (MV-D66): when preserve_cols + preserve_when
+        # are set, a matched row whose STORED body_source is curator-authored
+        # (llm_ondemand/llm_bulk/human) keeps its preserved columns; every other matched
+        # row refreshes all columns. Unset params ⇒ plain overwrite (byte-identical path).
+        import json as _json
+        _CURATOR = {"llm_ondemand", "llm_bulk", "human"}
         store = self.tables.setdefault(table, {})
         src_keys = {tuple(r[k] for k in key_cols) for r in rows}
         for k in list(store):
             if store[k].get("metastore_id") == metastore_id and k not in src_keys:
                 del store[k]
         for r in rows:
-            store[tuple(r[k] for k in key_cols)] = dict(r)
+            key = tuple(r[k] for k in key_cols)
+            target = store.get(key)
+            if target is not None and preserve_cols and preserve_when:
+                try:
+                    src = _json.loads(target.get("evidence", "{}")).get("body_source", "")
+                except Exception:
+                    src = ""
+                if src in _CURATOR:
+                    merged = dict(r)
+                    for col in preserve_cols:
+                        if col in target:
+                            merged[col] = target[col]
+                    store[key] = merged
+                    continue
+            store[key] = dict(r)
 
 
 def _run(reader, writer, *, run_id, metastore_id="ms1", workspace_id="ws1", **kw):
@@ -1090,133 +1110,49 @@ def test_coded_column_signals_end_to_end_emits_signal():
 # ── Step 2 (MV-D66): Body preservation across re-materialize ─────────────────
 
 
-class _FakeWriterWithPreservation(_FakeWriter):
-    """In-memory Delta MERGE semantics with Step 2 preservation support.
-
-    Simulates the guarded WHEN MATCHED AND {preserve_when} clause logic for testing
-    curator body preservation without running actual Spark SQL.
-    """
-
-    def merge(self, table, rows, key_cols, metastore_id, preserve_cols=(), preserve_when=""):
-        """MERGE with optional preservation: preserve specified cols for matching rows."""
-        store = self.tables.setdefault(table, {})
-        src_keys = {tuple(r[k] for k in key_cols) for r in rows}
-
-        # Delete NOT-MATCHED-BY-SOURCE rows (same as base).
-        for k in list(store):
-            if store[k].get("metastore_id") == metastore_id and k not in src_keys:
-                del store[k]
-
-        # MERGE logic: for each incoming row, decide update behavior.
-        for src_row in rows:
-            key = tuple(src_row[k] for k in key_cols)
-            if key in store:
-                target_row = store[key]
-                # If preserve_when matches, preserve those cols; else update all.
-                if preserve_cols and preserve_when and preserve_when in ("matched",):
-                    # Simplified: if preserve_when == "matched", preserve the cols.
-                    # In reality, preserve_when is a SQL predicate (e.g. get_json_object
-                    # check). For this test, we check a magic marker in the target's
-                    # evidence JSON that indicates a curator row.
-                    try:
-                        import json
-                        evidence = json.loads(target_row.get("evidence", "{}"))
-                        body_source = evidence.get("body_source", "")
-                        if body_source in ("llm_ondemand", "llm_bulk", "human"):
-                            # Preserve these cols.
-                            preserved_row = dict(src_row)
-                            for col in preserve_cols:
-                                if col in target_row:
-                                    preserved_row[col] = target_row[col]
-                            store[key] = preserved_row
-                        else:
-                            store[key] = dict(src_row)
-                    except Exception:
-                        # If JSON parsing fails, just update all cols.
-                        store[key] = dict(src_row)
-                else:
-                    # No preservation, update all.
-                    store[key] = dict(src_row)
-            else:
-                # INSERT.
-                store[key] = dict(src_row)
-
-
 def test_step2_preserve_curator_body():
-    """Step 2 (MV-D66): curator bodies are preserved across re-merge."""
-    reader = _PageReader(*_fixture_rows(), measures=(), columns=(), instructions=())
-    writer = _FakeWriterWithPreservation()
+    """A curator-authored body AND its body_source survive re-materialize (MV-D66).
 
-    # Run 1: batch drafts stub body.
-    run_row_1 = _run(reader, writer, run_id="run1")
-    assert run_row_1["state"] == "succeeded"
-    # Check that page was created with stub body.
-    pages_1 = writer.tables.get("genie_ont_pages", {})
-    assert len(pages_1) > 0, "No pages created in run 1"
-    page_key = list(pages_1.keys())[0]
-    page_row_1 = pages_1[page_key]
-    assert "stub" in page_row_1.get("body", "").lower() or len(page_row_1.get("body", "")) > 0
+    The batch snapshot MERGE preserves body + evidence for rows whose stored
+    body_source is curator-authored (llm_ondemand/llm_bulk/human), so curator work
+    is durable across unlimited refreshes."""
     import json
-    ev1 = json.loads(page_row_1["evidence"])
-    assert ev1.get("body_source") in ("stub", "llm"), f"Unexpected body_source: {ev1.get('body_source')}"
-    # facts_hash should be present (Step 2).
-    assert "facts_hash" in ev1, "facts_hash not in evidence"
-    old_facts_hash = ev1.get("facts_hash")
-    old_body = page_row_1["body"]
 
-    # Simulate curator editing: mutate the evidence to mark body as curator-drafted.
-    # This is a simplified simulation; real curator bodies come from Steps 3–4.
-    ev1["body_source"] = "llm_ondemand"  # Curator body marker.
-    ev1["body_stale"] = False
-    page_row_1["evidence"] = json.dumps(ev1)
-    page_row_1["body"] = "Curator-edited body: this should survive the re-merge."
-    pages_1[page_key] = page_row_1
+    writer = _FakeWriter()
+    _run(_page_reader(), writer, run_id="run1", page_drafter=_page_drafter)
+    pages = writer.tables["genie_ont_pages"]
+    assert pages, "run 1 produced no pages"
+    key = next(iter(pages))
+    ev = json.loads(pages[key]["evidence"])
+    assert ev["body_source"] in ("stub", "llm_auto")  # batch-owned initially
+    assert "facts_hash" in ev  # BUILD A: staleness marker rides evidence (no DDL)
 
-    # Run 2: batch re-runs, would normally overwrite body.
-    # With preserve logic, curator body should survive.
-    run_row_2 = _run(reader, writer, run_id="run2")
-    assert run_row_2["state"] == "succeeded"
+    # Simulate a curator draft landing (Steps 3-4 will write these for real).
+    ev["body_source"] = "llm_ondemand"
+    pages[key]["evidence"] = json.dumps(ev)
+    pages[key]["body"] = "Curator-authored body - must survive re-materialize."
 
-    pages_2 = writer.tables.get("genie_ont_pages", {})
-    assert len(pages_2) > 0
-    page_row_2 = pages_2[page_key]
-    # Curator body should be preserved.
-    assert page_row_2["body"] == "Curator-edited body: this should survive the re-merge."
-    ev2 = json.loads(page_row_2["evidence"])
-    assert ev2.get("body_source") == "llm_ondemand", "Curator body_source should be preserved"
-    # facts_hash will be from run 2 (it's always updated).
-    new_facts_hash = ev2.get("facts_hash")
-    assert new_facts_hash is not None, "facts_hash not in run 2"
-    # If facts didn't change, hash should be the same.
-    if old_facts_hash == new_facts_hash:
-        # No staleness expected.
-        assert ev2.get("body_stale") != True, "body_stale should not be true if facts unchanged"
+    # Re-run: the batch carries a fresh (stub/llm_auto) body, but the curator row
+    # must be preserved (body + body_source both durable).
+    _run(_page_reader(), writer, run_id="run2", page_drafter=_page_drafter)
+    row = writer.tables["genie_ont_pages"][key]
+    assert row["body"] == "Curator-authored body - must survive re-materialize."
+    assert json.loads(row["evidence"])["body_source"] == "llm_ondemand"
 
 
 def test_step2_refresh_stub_body():
-    """Step 2 (MV-D66): stub and llm_auto bodies are refreshed each run."""
-    reader = _PageReader(*_fixture_rows(), measures=(), columns=(), instructions=())
-    writer = _FakeWriterWithPreservation()
+    """Batch-owned bodies (stub/llm_auto) refresh normally across re-run (MV-D66)."""
+    import json
 
-    # Run 1: batch drafts stub body.
-    _run(reader, writer, run_id="run1")
-    pages_1 = writer.tables.get("genie_ont_pages", {})
-    page_key = list(pages_1.keys())[0] if pages_1 else None
-    if page_key:
-        page_row_1 = pages_1[page_key]
-        import json
-        ev1 = json.loads(page_row_1["evidence"])
-        assert ev1.get("body_source") in ("stub", "llm"), f"Unexpected body_source: {ev1.get('body_source')}"
-        old_body = page_row_1["body"]
+    writer = _FakeWriter()
+    _run(_page_reader(), writer, run_id="run1", page_drafter=_page_drafter)
+    pages = writer.tables["genie_ont_pages"]
+    assert pages, "run 1 produced no pages"
+    key = next(iter(pages))
+    assert json.loads(pages[key]["evidence"])["body_source"] in ("stub", "llm_auto")
 
-        # Run 2: batch re-runs.
-        _run(reader, writer, run_id="run2")
-        pages_2 = writer.tables.get("genie_ont_pages", {})
-        page_row_2 = pages_2[page_key]
-
-        # Stub/llm_auto bodies are refreshed (might be same if deterministic).
-        # The key is that the evidence is always updated with new facts_hash.
-        ev2 = json.loads(page_row_2["evidence"])
-        # Both should have facts_hash.
-        assert "facts_hash" in ev1, "facts_hash missing in run 1"
-        assert "facts_hash" in ev2, "facts_hash missing in run 2"
+    # A batch-owned row is NOT curator-marked, so a re-merge overwrites its body.
+    pages[key]["body"] = "SENTINEL should be overwritten"
+    _run(_page_reader(), writer, run_id="run2", page_drafter=_page_drafter)
+    row = writer.tables["genie_ont_pages"][key]
+    assert row["body"] != "SENTINEL should be overwritten"  # refreshed, not preserved
