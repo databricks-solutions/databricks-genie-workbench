@@ -81,6 +81,12 @@ dbutils.widgets.text("run_id", "")
 # Serverless Spark Connect cannot expose MV metadata, so DESCRIBE ... AS JSON needs a SQL
 # warehouse; threaded as a job parameter (the env var is not set on serverless jobs).
 dbutils.widgets.text("warehouse_id", "")
+# LLM endpoint for the batch enrichers (page-body drafts, cluster naming, ER adjudication).
+# Threaded as a job parameter like the optimization jobs (run_optimize / run_intake) because
+# the env var is NOT set on serverless jobs; empty ⇒ the wheel's default endpoint. The job
+# run_as identity needs CAN QUERY on this endpoint, else the drafts degrade to stub +
+# certify=false (MV-D43 degrade-not-hang; MV-D65 injected identity).
+dbutils.widgets.text("llm_model", "")
 # Stage 3 curation policy (MV-D57) — job_parameters with in-code defaults so a
 # param-less run (nightly, or an older launcher) still works (MV-D43).
 dbutils.widgets.text("domain_facet_denylist", "[]")
@@ -126,6 +132,11 @@ catalog = dbutils.widgets.get("catalog").strip() or os.environ.get("GSO_CATALOG"
 schema = dbutils.widgets.get("schema").strip() or os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
 run_id = dbutils.widgets.get("run_id").strip() or None
 warehouse_id = dbutils.widgets.get("warehouse_id").strip() or os.environ.get("GSO_WAREHOUSE_ID", "")
+# Set LLM_MODEL before the enrichers resolve get_llm_endpoint() below (mirrors the
+# optimization jobs). Empty ⇒ leave env untouched so the wheel default applies (MV-D43).
+llm_model = dbutils.widgets.get("llm_model").strip()
+if llm_model:
+    os.environ["LLM_MODEL"] = llm_model
 try:
     allowlist = [str(c).strip() for c in json.loads(dbutils.widgets.get("catalog_allowlist") or "[]") if str(c).strip()]
 except (TypeError, ValueError):

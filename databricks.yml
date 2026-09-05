@@ -282,6 +282,10 @@ resources:
         # the same var the optimization jobs use; empty ⇒ measures degrade to [] (MV-D43).
         - name: warehouse_id
           default: ${var.warehouse_id}
+        # LLM endpoint for the batch enrichers (page-body drafts, cluster naming, ER
+        # adjudication). Same source the optimization jobs use; empty ⇒ wheel default.
+        - name: llm_model
+          default: ${var.llm_model}
       tasks:
         - task_key: ontology_materialize
           notebook_task:
@@ -294,6 +298,7 @@ resources:
               catalog_allowlist: "{{job.parameters.catalog_allowlist}}"
               run_id: "{{job.parameters.run_id}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
+              llm_model: "{{job.parameters.llm_model}}"
           environment_key: default
           # MV-D67: headroom over the prior 3600s cap that the pre-gate LLM naming tail blew.
           # With naming bounded to gate-survivors the run should finish well under this.
