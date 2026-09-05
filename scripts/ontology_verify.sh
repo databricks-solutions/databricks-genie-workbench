@@ -89,8 +89,10 @@ echo "  job_id=$JOB_ID  scan_scope=$ALLOWLIST  out=$OUT"
 
 # ── Step 3: trigger scoped, poll to terminal ───────────────────────────────
 say "Trigger materialize (catalog_allowlist=$ALLOWLIST)"
-RUN_ID=$(databricks jobs run-now "$JOB_ID" --no-wait --profile "$PROFILE" \
-    --json "{\"job_parameters\":{\"catalog_allowlist\":\"$(printf '%s' "$ALLOWLIST" | sed 's/"/\\"/g')\"}}" \
+# NB: current Databricks CLI rejects a positional job_id alongside --json; job_id must
+# ride INSIDE the JSON payload.
+RUN_ID=$(databricks jobs run-now --no-wait --profile "$PROFILE" \
+    --json "{\"job_id\":$JOB_ID,\"job_parameters\":{\"catalog_allowlist\":\"$(printf '%s' "$ALLOWLIST" | sed 's/"/\\"/g')\"}}" \
     | python3 -c 'import json,sys;print(json.load(sys.stdin)["run_id"])')
 echo "  run_id=$RUN_ID"
 LIFE=""; RESULT=""
@@ -112,10 +114,10 @@ if [ -n "$SQL_FILE" ]; then
     STMT=$(sed "s/\${OUT}/$OUT/g; s/\${SCOPE}/$SCOPE/g" "$SQL_FILE")
 else
     STMT="SELECT
-      (SELECT COUNT(*) FROM ${OUT}.genie_ont_runs WHERE status='completed') AS completed_runs,
+      (SELECT COUNT(*) FROM ${OUT}.genie_ont_runs WHERE state='succeeded') AS completed_runs,
       (SELECT COUNT(*) FROM ${OUT}.genie_ont_domains) AS domains,
       (SELECT COUNT(*) FROM ${OUT}.genie_ont_pages)   AS pages,
-      ((SELECT COUNT(*) FROM ${OUT}.genie_ont_runs WHERE status='completed') > 0
+      ((SELECT COUNT(*) FROM ${OUT}.genie_ont_runs WHERE state='succeeded') > 0
         AND (SELECT COUNT(*) FROM ${OUT}.genie_ont_domains) > 0) AS ok"
 fi
 RESP=$(sql_exec "$STMT")
