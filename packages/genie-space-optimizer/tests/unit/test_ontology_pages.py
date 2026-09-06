@@ -796,3 +796,110 @@ def test_markdown_llm_body_now_passes_gates_and_marks_llm_auto(monkeypatch):
     tax = [c for c in cands if c.archetype == "Taxonomy"]
     assert len(tax) == 1
     assert tax[0].evidence["body_source"] == "llm_auto"  # markdown body rescued by 4.1h
+
+
+# ── Stage 4.1i (MV-D70): deterministic Definition-identifier + reject observability ──
+# A probe over the 4.1h deployed prompt found 23/24 eligible-but-stub Pages failed
+# specificity for ONE reason: opus paraphrased the backticked id out of the Definition
+# line (Rules complied). 4.1i reassembles the draft (keep LLM Description + Rules) and
+# falls the Definition back to the evidence-derived spec.definition (already identifier-
+# bearing + in-universe) when the drafted one has no backtick — deterministic, no gate
+# loosened — and records why any draft is rejected (evidence.autodraft_reject).
+
+
+def _mine_one(drafter, **over):
+    """Mine the single certify Routing concept (corroboration 3) with ``drafter``, super-sure
+    selected. Returns the Routing candidate."""
+    ms, members = _autodraft_measures(1)
+    kw = dict(measures=ms, members=members, drafter=drafter,
+              page_autodraft_min_corroboration=3, page_autodraft_max_pages=50)
+    kw.update(over)
+    cands = pages.mine_pages(**kw)
+    return next(c for c in cands if c.archetype == "Routing")
+
+
+def test_no_backtick_definition_falls_back_deterministically_keeps_llm_rules():
+    # Acceptance (1): a no-backtick Definition but valid (backticked, in-universe) Rules →
+    # body_source="llm_auto", definition_source="deterministic", the Definition now carries
+    # spec's backticked id, and the drafted Rules survive.
+    def _no_bt_def(facts):
+        return (
+            "Description: Metric zero, the governed revenue roll-up.\n\n"
+            "Definition:\nMetric zero is the total revenue booked for the period.\n\n"
+            "Rules:\n"
+            "- Route metric zero to `finance.d0.rev_mv` for the answer.\n"
+        )
+
+    routing = _mine_one(_no_bt_def)
+    assert routing.evidence["body_source"] == "llm_auto"
+    assert routing.evidence["definition_source"] == "deterministic"
+    assert "autodraft_reject" not in routing.evidence
+    # The reassembled Definition carries a real backticked id (spec.definition substituted).
+    assert any(pages._backticked(l) for l in pages._definition_lines(routing.body))
+    assert "`finance.d0.rev_mv`" in routing.body
+    # The drafted Rule survived; the paraphrased (no-backtick) definition text did not.
+    assert "Route metric zero to `finance.d0.rev_mv`" in routing.body
+    assert "total revenue booked for the period" not in routing.body
+
+
+def test_backticked_definition_is_preserved_as_llm():
+    # Acceptance (2): a Definition that already has a backtick is kept verbatim →
+    # definition_source="llm".
+    def _bt_def(facts):
+        return (
+            "Description: Metric zero desc.\n\n"
+            "Definition:\nMetric zero is answered from `finance.d0.rev_mv`, the governed view.\n\n"
+            "Rules:\n"
+            "- Route metric zero to `finance.d0.rev_mv`.\n"
+        )
+
+    routing = _mine_one(_bt_def)
+    assert routing.evidence["body_source"] == "llm_auto"
+    assert routing.evidence["definition_source"] == "llm"
+    assert "answered from `finance.d0.rev_mv`, the governed view" in routing.body
+
+
+def test_out_of_universe_rule_identifier_keeps_stub_and_records_reject():
+    # Acceptance (3): a backticked out-of-universe id in a Rule fails the identifier gate on
+    # the reassembled body → stays stub, autodraft_reject="identifier".
+    def _oob_rule(facts):
+        return (
+            "Description: d.\n\n"
+            "Definition:\nAnswer from `finance.d0.rev_mv`.\n\n"
+            "Rules:\n"
+            "- Route metric zero via `finance.d0.ghost` for the answer.\n"
+        )
+
+    routing = _mine_one(_oob_rule)
+    assert routing.evidence["body_source"] == "stub"
+    assert routing.evidence["autodraft_reject"] == "identifier"
+
+
+def test_empty_and_raising_drafter_keeps_stub_and_records_empty_reject():
+    # Acceptance (4): an empty (or raising) drafter on a selected page → stays stub,
+    # autodraft_reject="empty".
+    empty = _mine_one(lambda facts: "")
+    assert empty.evidence["body_source"] == "stub"
+    assert empty.evidence["autodraft_reject"] == "empty"
+
+    raising = _mine_one(_boom_drafter)
+    assert raising.evidence["body_source"] == "stub"
+    assert raising.evidence["autodraft_reject"] == "empty"
+
+
+def test_default_page_drafter_prompt_carries_worked_example(monkeypatch):
+    # Acceptance (5): the prompt restates the Definition-identifier rule with a worked example
+    # whose Definition names its primary Source in backticks.
+    from genie_space_optimizer.common import llm as common_llm
+
+    captured: dict = {}
+
+    def _capture(w, *, messages, model=None, max_tokens=None, **kwargs):
+        captured["prompt"] = messages[0]["content"]
+        return "Description: x\n\nDefinition:\n  Use `s.t.u`.\n\nRules:\n- Use `s.t.u`.", None
+
+    monkeypatch.setattr(common_llm, "call_llm_core", _capture)
+    drafter = pages.default_page_drafter(w=object())
+    drafter({"archetype": "Routing", "concept": "c", "description": "d", "definition": "def",
+             "rules": ["r"], "sources": ["s.t.u"], "related": []})
+    assert "computed from `" in captured["prompt"]

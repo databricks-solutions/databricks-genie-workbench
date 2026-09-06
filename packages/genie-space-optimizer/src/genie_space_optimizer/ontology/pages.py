@@ -1149,6 +1149,32 @@ def _definition_index(measures: Sequence[MeasureSignal]) -> dict[str, frozenset[
     return {f: frozenset(defs) for f, defs in out.items()}
 
 
+def _canonical_body(drafted: str, spec: "_DraftSpec") -> tuple[str, str]:
+    """Reassemble an LLM draft into the canonical plain-text skeleton (MV-D70),
+    guaranteeing the Definition axis of ``specificity_gate`` WITHOUT loosening it. Keeps the
+    LLM ``Description`` + ``Rules`` verbatim, but when ``_definition_lines(drafted)`` carries
+    NO backticked identifier (opus's dominant 4.1h failure mode — it paraphrases the id away)
+    it substitutes ``spec.definition``, which is evidence-derived and already cites a real,
+    in-universe identifier. The substituted id is genuine, so the gate stays honest.
+
+    Returns ``(body, definition_source)`` with ``definition_source`` ∈ {"llm","deterministic"}:
+    "llm" when the drafted Definition is kept, "deterministic" when it falls back."""
+    desc_lines = _section_lines(drafted, "description", bullets_only=False)
+    description = " ".join(desc_lines).strip() or spec.description
+    def_lines = _definition_lines(drafted)
+    if any(_backticked(l) for l in def_lines):
+        definition, definition_source = " ".join(def_lines).strip(), "llm"
+    else:
+        definition, definition_source = spec.definition, "deterministic"
+    lines = [f"Description: {description}", "", "Definition:", f"  {definition}"]
+    rule_lines = _rule_lines(drafted)
+    if rule_lines:
+        lines.append("")
+        lines.append("Rules:")
+        lines.extend(f"  - {r}" for r in rule_lines)
+    return "\n".join(lines), definition_source
+
+
 def _autodraft(
     cand: PageCandidate,
     spec: "_DraftSpec",
@@ -1156,31 +1182,52 @@ def _autodraft(
     drafter: Callable[[dict], str],
     oracle: Any | None,
 ) -> PageCandidate | None:
-    """Pass C (MV-D66): try to upgrade a selected certify Page's deterministic stub to an
-    LLM-drafted body. Calls the injected ``drafter`` on ``spec.facts()``; if it returns a
-    non-empty body that passes the SAME identifier / chunk-safe / specificity / leakage
-    gates ``_finalize`` runs, returns a new candidate with that body and
-    ``evidence.body_source="llm_auto"``. Otherwise returns ``None`` — keep the stub
-    (degrade, MV-D43): a missing/raising drafter or a gate-failing body never blocks the
-    run. ``certify`` / ``confidence`` are unchanged (computed deterministically in Pass A)."""
+    """Pass C (MV-D66 + MV-D70): try to upgrade a selected certify Page's deterministic stub
+    to an LLM-drafted body. Calls the injected ``drafter`` on ``spec.facts()``, reassembles
+    the draft into the canonical plain-text skeleton (:func:`_canonical_body`) — keeping the
+    LLM ``Description`` + ``Rules`` but guaranteeing the Definition carries a real, in-universe
+    backticked identifier (falling back to ``spec.definition`` when opus paraphrased it away) —
+    then runs the SAME identifier / chunk-safe / specificity / leakage gates ``_finalize``
+    runs, on the REASSEMBLED body.
+
+    On success returns a new candidate with that body, ``evidence.body_source="llm_auto"`` and
+    ``evidence.definition_source`` ∈ {"llm","deterministic"}, clearing any ``autodraft_reject``.
+    Otherwise returns ``None`` — keep the stub (degrade, MV-D43) — and records the first failing
+    reason in ``evidence.autodraft_reject`` (Prong 3 observability; ``empty`` covers a
+    missing/raising/empty drafter). Only an attempted (selected super-sure) Page carries the
+    marker. ``certify`` / ``confidence`` are unchanged (computed deterministically in Pass A)."""
     try:
         body = drafter(spec.facts())
     except Exception as exc:  # noqa: BLE001 — LLM down → keep stub, run still succeeds
         logger.info("ontology page auto-draft failed for %s (%s); keeping stub", spec.title, exc)
+        cand.evidence["autodraft_reject"] = "empty"
         return None
     body = (body or "").strip()
     if not body:
+        cand.evidence["autodraft_reject"] = "empty"
         return None
-    ok, _invented = identifier_gate(body, spec.source_fqns, universe)
+
+    reassembled, definition_source = _canonical_body(body, spec)
+
+    ok, _invented = identifier_gate(reassembled, spec.source_fqns, universe)
     if not ok:
+        cand.evidence["autodraft_reject"] = "identifier"
         return None
-    if not (chunk_safe_gate(body) and specificity_gate(body)):
+    if not chunk_safe_gate(reassembled):
+        cand.evidence["autodraft_reject"] = "chunk_safe"
+        return None
+    if not specificity_gate(reassembled):
+        cand.evidence["autodraft_reject"] = "specificity"
         return None
     if oracle is not None and getattr(oracle, "contains_page_leak", None) is not None:
-        if oracle.contains_page_leak(body)[0]:
+        if oracle.contains_page_leak(reassembled)[0]:
+            cand.evidence["autodraft_reject"] = "leakage"
             return None
+
     cand.evidence["body_source"] = "llm_auto"
-    return replace(cand, body=body)
+    cand.evidence["definition_source"] = definition_source
+    cand.evidence.pop("autodraft_reject", None)
+    return replace(cand, body=reassembled)
 
 
 def mine_pages(
@@ -1331,6 +1378,13 @@ def default_page_drafter(
             "table/column/measure, and never backtick anything not in the list.\n"
             "- Each rule must name its metric/table inline; never open a rule with a bare "
             "pronoun (it/this/that/they).\n\n"
+            "WORKED EXAMPLE — note the backticked Source in the Definition line (this is the "
+            "one part most often dropped; the Definition MUST contain at least one backticked "
+            "Allowed identifier):\n"
+            "Description: Total cost is the governed spend roll-up for the period.\n"
+            "Definition: Total cost is the governed roll-up computed from `catalog.schema.mv`.\n"
+            "Rules:\n"
+            "- Answer total cost from `catalog.schema.mv`; never re-aggregate its source tables.\n\n"
             f"Archetype: {facts.get('archetype')}\nConcept: {facts.get('concept')}\n"
             f"Description (source): {facts.get('description')}\n"
             f"Definition (source): {facts.get('definition')}\n"
