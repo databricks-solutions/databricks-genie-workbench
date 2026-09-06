@@ -903,21 +903,28 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > **Bakeoff pick (human gate, DECIDED): `cytoscape.js`** (mockup `17.0j`) is the estate-graph
 > render library. This unblocks Phase-3e **Step B** (the graph tab), folded into Wave-2 Lane 3.
 >
-> **Wave 2 — parallel (isolated worktrees; three DISJOINT subtrees → conflict-free merges).**
-> Re-planned after Wave 1: the remaining work splits cleanly into one wheel lane, one
-> `backend/ontology` lane, and one `frontend/src/ontology` lane. No file is touched by two lanes;
-> the only coupling is the frozen draft-body API contract (Lane 2 implements, Lane 3 mirrors).
-> Launcher: `ontology-wave2-launcher.md` (one Claude Code prompt spawns all three via the
-> `ontology-lane-builder` subagent). **BUILD-READY.**
+> **Wave 2 — LANDED + integrated + deploy-verified on `ontology`** (three disjoint-subtree lanes,
+> merged 1 → 2 → 3; conflict-free by construction). Integration commit `762a61b4`; the deferred
+> Step-4 bulk UI + a `reason` surface closed after in `4e1832b7`.
 >
-> | Lane | Chunk | Driver | Subtree it OWNS | Merge |
-> |---|---|---|---|---|
-> | 1 | **§10 eval/trust harness** (MV-D59) — build the offline scorer (P/R/F degrades to N/A until §9) | `ontology-eval-harness-driver.md` | `…/ontology/eval_harness.py` (+wheel test) | any (first) |
-> | 2 | **Stage-4.1d Steps 3+4 backend** — OBO `draft-body` single + `draft-bodies` bulk routes + `draft_body.py` (MV-D66) | `ontology-stage4.1d-step34-backend-driver.md` | `backend/ontology/**` (+backend test) | before 3 |
-> | 3 | **Stage-4.1d Steps 3+4 frontend + Phase-3e Step B (cytoscape graph tab) + UX papercuts** | `ontology-frontend-batch-driver.md` | `frontend/src/ontology/**` (+FE lockfile) | last |
+> | Lane | Chunk | Merge commit | Subtree |
+> |---|---|---|---|
+> | 1 | **§10 eval/trust harness** (MV-D59) — offline scorer (P/R/F N/A until §9) | `7090cb4e` | `…/ontology/eval_harness.py` |
+> | 2 | **Stage-4.1d Steps 3+4 backend** — OBO `draft-body` single + `draft-bodies` bulk + `draft_body.py` (MV-D66) | `4799da24` | `backend/ontology/**` |
+> | 3 | **Stage-4.1d Steps 3+4 frontend + Phase-3e Step B (cytoscape graph tab, `17.0j`) + UX papercuts** | `ba5ecb77` | `frontend/src/ontology/**` |
 >
-> Merge order 1 → 2 → 3; after the final merge run `./scripts/test.sh` + the frontend gate. Lane 3
-> is authorized to add exactly `cytoscape` + `react-cytoscapejs` + `cytoscape-fcose` (exact-pinned).
+> Deps added by Lane 3 (exact-pinned): `cytoscape@3.29.2`, `react-cytoscapejs@2.0.0`,
+> `cytoscape-fcose@2.2.0`. Two integration fixes were needed (subagent green-reports were
+> unreliable): a leaked-worktree recovery of Lane 3's dep commit, and extending the phase3a
+> frozen-surface guard's allowed set for Lane 2's 4 driver-authorized models (`762a61b4`).
+>
+> **Stage-4.1d COMPLETE** — Step 4 bulk UI closed in `4e1832b7` (DomainDraftCard "Draft pages
+> with AI" on `kind=subdomain`, DraftsView start→poll→refetch; single-draft `reason` surfaced;
+> vitest 498 green). **Deploy-verified** (full `deploy.sh --update`, fevm-serverless): app RUNNING,
+> materialize `529504954941024` re-ran **green in 2.2 min** (no regression from the wheel merges);
+> serve tables — **140 domains** (74 sub-domains → bulk button), **641 pages all with bodies**
+> (26 `llm_auto`), estate-graph snapshot **2879 nodes / 1557 edges** (layout `fr`) → the cytoscape
+> Graph tab renders. Manual browser eyeball of the buttons + Graph tab is the only remaining check.
 >
 > **Human gates that stay OUT of the autonomous lanes:** Phase-5 *live* `SET TAG` apply (+ its
 > `execute` identity resolution + `ApplyPreview.tsx`), and the eval-harness / draft-body live
