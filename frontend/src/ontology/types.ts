@@ -262,6 +262,9 @@ export interface DraftBodyResponse {
   body: string
   body_source: string
   as_of: string
+  // Backend attaches a plain reason only when ok=false (backward-compatible; the
+  // frozen contract omitted it). Surfaced on the card so a failure explains itself.
+  reason?: string | null
 }
 
 export interface BulkDraftStart {

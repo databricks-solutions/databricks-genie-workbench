@@ -4,24 +4,87 @@
  * optimistic removal of a card once its decision is recorded. Prop-driven cards do the
  * rendering; this view holds the list state and the API wiring.
  */
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CheckCircle2, FolderTree, FileText } from "lucide-react"
-import { postDecision } from "@/ontology/api"
+import { getDrafts, pollBulkDraft, postDecision, startBulkDraft } from "@/ontology/api"
 import type { DecisionAction, DomainDraft, OntologyDrafts, PageDraft } from "@/ontology/types"
-import { DomainDraftCard } from "@/ontology/components/DomainDraftCard"
+import { DomainDraftCard, type BulkDraftState } from "@/ontology/components/DomainDraftCard"
 import { PageDraftCard } from "@/ontology/components/PageDraftCard"
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const BULK_POLL_MS = 1500
+const DEFAULT_BULK: BulkDraftState = { running: false, done: 0, total: 0, error: null, summary: null }
 
 export function DraftsView({ drafts }: { drafts: OntologyDrafts }) {
   const [domains, setDomains] = useState<DomainDraft[]>(drafts.domains)
   const [pages, setPages] = useState<PageDraft[]>(drafts.pages)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Bulk "Draft this sub-domain with AI" progress, keyed by sub-domain id
+  // (== DomainDraft.proposal_id == the Pages' domain_id). Step 4, MV-D66.
+  const [bulk, setBulk] = useState<Record<string, BulkDraftState>>({})
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   // Re-sync when a fresh payload arrives (e.g. after a Refresh).
   useEffect(() => {
     setDomains(drafts.domains)
     setPages(drafts.pages)
   }, [drafts])
+
+  const patchBulk = (id: string, patch: Partial<BulkDraftState>) =>
+    setBulk((prev) => ({
+      ...prev,
+      [id]: { ...DEFAULT_BULK, ...prev[id], ...patch },
+    }))
+
+  // Start → poll to completion → re-fetch drafts so the freshly-drafted bodies
+  // (body_source="llm_bulk") land in the Page list. The status payload carries no
+  // body, so the refetch is how "results land" on the cards (MV-D43: never hangs).
+  const bulkDraft = async (subdomainId: string) => {
+    if (bulk[subdomainId]?.running) return
+    if (
+      !window.confirm(
+        "Draft every page in this sub-domain with AI? This makes one AI call per page.",
+      )
+    )
+      return
+    patchBulk(subdomainId, { running: true, done: 0, total: 0, error: null, summary: null })
+    try {
+      const { task_id, total } = await startBulkDraft(subdomainId)
+      patchBulk(subdomainId, { total })
+      for (;;) {
+        await sleep(BULK_POLL_MS)
+        if (!mounted.current) return
+        const st = await pollBulkDraft(subdomainId, task_id)
+        patchBulk(subdomainId, { done: st.done, total: st.total })
+        if (!st.running) {
+          const ok = st.results.filter((r) => r.ok).length
+          const skipped = st.results.length - ok
+          patchBulk(subdomainId, {
+            running: false,
+            summary: `Drafted ${ok} page${ok === 1 ? "" : "s"}${skipped ? `, ${skipped} skipped` : ""}.`,
+          })
+          break
+        }
+      }
+      const fresh = await getDrafts()
+      if (!mounted.current) return
+      setDomains(fresh.domains)
+      setPages(fresh.pages)
+    } catch (e) {
+      if (!mounted.current) return
+      patchBulk(subdomainId, {
+        running: false,
+        error: e instanceof Error ? e.message : "Couldn't draft this sub-domain — please try again.",
+      })
+    }
+  }
 
   const decide = async (
     kind: DomainDraft["kind"] | "page",
@@ -85,6 +148,8 @@ export function DraftsView({ drafts }: { drafts: OntologyDrafts }) {
                   setDomains((prev) => prev.filter((x) => x.proposal_id !== d.proposal_id)),
                 )
               }
+              onBulkDraft={d.kind === "subdomain" ? () => bulkDraft(d.proposal_id) : undefined}
+              bulk={bulk[d.proposal_id]}
             />
           ))}
         </section>

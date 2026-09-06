@@ -117,6 +117,44 @@ describe("DomainDraftCard — zero-burden render (17.0d)", () => {
     expect(html).toContain("disabled")
   })
 
+  it("shows 'Draft pages with AI' on a sub-domain card, but not on a domain card (Step 4 MV-D66)", () => {
+    const sub = renderToStaticMarkup(
+      <DomainDraftCard draft={domain({ kind: "subdomain" })} onDecide={noop} onBulkDraft={noop} />,
+    )
+    expect(sub).toContain("Draft pages with AI")
+    assertZeroBurden(sub)
+
+    // A top-level domain (not a sub-domain) has no bulk-draft action.
+    const dom = renderToStaticMarkup(
+      <DomainDraftCard draft={domain({ kind: "domain" })} onDecide={noop} onBulkDraft={noop} />,
+    )
+    expect(dom).not.toContain("Draft pages with AI")
+  })
+
+  it("renders bulk-draft progress and the completion summary (Step 4 MV-D66)", () => {
+    const running = renderToStaticMarkup(
+      <DomainDraftCard
+        draft={domain({ kind: "subdomain" })}
+        onDecide={noop}
+        onBulkDraft={noop}
+        bulk={{ running: true, done: 1, total: 3, error: null, summary: null }}
+      />,
+    )
+    expect(running).toContain("Drafting…")
+    expect(running).toContain("1/3")
+
+    const done = renderToStaticMarkup(
+      <DomainDraftCard
+        draft={domain({ kind: "subdomain" })}
+        onDecide={noop}
+        onBulkDraft={noop}
+        bulk={{ running: false, done: 3, total: 3, error: null, summary: "Drafted 3 pages." }}
+      />,
+    )
+    expect(done).toContain("Drafted 3 pages.")
+    assertZeroBurden(done)
+  })
+
   it("renders the honest confidence band + signals + gap, never a percent (MV-D56/D35)", () => {
     const html = renderToStaticMarkup(
       <DomainDraftCard

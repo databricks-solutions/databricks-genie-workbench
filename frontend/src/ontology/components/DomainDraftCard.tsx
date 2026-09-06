@@ -8,10 +8,20 @@
  * (17i). No DDL, grants, table names, or backend jargon appears in the copy.
  */
 import { useState } from "react"
-import { Check, Copy, FolderTree, Sparkles, X } from "lucide-react"
+import { Check, Copy, FolderTree, Loader2, Sparkles, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { DecisionAction, DomainDraft, EvidenceChip } from "@/ontology/types"
+
+// Bulk "Draft this sub-domain with AI" progress, owned by DraftsView and passed
+// down. Only meaningful for a kind="subdomain" card (Stage 4.1d Step 4, MV-D66).
+export interface BulkDraftState {
+  running: boolean
+  done: number
+  total: number
+  error: string | null
+  summary: string | null
+}
 
 const TIER_LABEL = { high: "High priority", medium: "Worth a look", low: "Lower priority" } as const
 
@@ -81,13 +91,21 @@ export function DomainDraftCard({
   draft,
   onDecide,
   busy = false,
+  onBulkDraft,
+  bulk,
 }: {
   draft: DomainDraft
   onDecide: (action: DecisionAction) => void
   busy?: boolean
+  // Step 4 (MV-D66): draft every Page in this sub-domain. Only wired for
+  // kind="subdomain" cards; DraftsView owns the start/poll/refetch cycle.
+  onBulkDraft?: () => void
+  bulk?: BulkDraftState
 }) {
   const [copied, setCopied] = useState(false)
   const isReassign = draft.tag_decision === "reassign"
+  const isSubdomain = draft.kind === "subdomain"
+  const bulkRunning = bulk?.running ?? false
 
   const handleCopy = async () => {
     try {
@@ -205,11 +223,34 @@ export function DomainDraftCard({
         <Button size="sm" variant="outline" onClick={handleCopy}>
           <Copy className="h-4 w-4" /> {copied ? "Copied" : "Copy for Discover"}
         </Button>
+        {/* Step 4 (MV-D66): draft every Page in this sub-domain with AI. */}
+        {isSubdomain && onBulkDraft && (
+          <Button size="sm" variant="secondary" disabled={bulkRunning} onClick={onBulkDraft}>
+            {bulkRunning ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="mr-1 h-4 w-4" />
+            )}
+            {bulkRunning
+              ? `Drafting… ${bulk?.done ?? 0}/${bulk?.total ?? 0}`
+              : "Draft pages with AI"}
+          </Button>
+        )}
         {/* Apply-for-me is disabled until 17i. */}
         <Button size="sm" variant="secondary" disabled title="Coming soon">
           <Sparkles className="h-4 w-4" /> Apply for me
         </Button>
       </div>
+
+      {/* Bulk-draft outcome: a plain summary on success, or the error. */}
+      {isSubdomain && bulk?.summary && !bulk.running && (
+        <p className="text-xs text-muted">{bulk.summary}</p>
+      )}
+      {isSubdomain && bulk?.error && (
+        <div className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger-foreground">
+          {bulk.error}
+        </div>
+      )}
     </div>
   )
 }

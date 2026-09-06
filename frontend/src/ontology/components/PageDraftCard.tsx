@@ -84,7 +84,7 @@ export function PageDraftCard({
       if (resp.ok) {
         setDraftedBody(resp.body)
       } else {
-        setDraftError("Drafting failed — try again")
+        setDraftError(resp.reason || "Drafting failed — try again")
       }
     } catch (e) {
       setDraftError(e instanceof Error ? e.message : "Failed to draft body")
