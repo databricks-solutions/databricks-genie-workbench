@@ -3,11 +3,13 @@
  * reason, shows prominent Synonyms, Related / Sources chips, a certify recommendation,
  * a do-it-yourself checklist + a Copy-for-Discover button, and Approve / Dismiss.
  * Apply-for-me is DISABLED (17i). No DDL, table names, or backend jargon in the copy.
+ * Step 3 (MV-D66): adds a "Draft with AI" button that calls draftPageBody on the page.
  */
-import { useState } from "react"
-import { BadgeCheck, Check, Copy, FileText, Sparkles, X } from "lucide-react"
+import { useCallback, useState } from "react"
+import { BadgeCheck, Check, Copy, FileText, Loader2, Sparkles, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { draftPageBody } from "@/ontology/api"
 import type { DecisionAction, PageDraft } from "@/ontology/types"
 import { EvidenceChips, TierBadge } from "@/ontology/components/DomainDraftCard"
 
@@ -60,6 +62,9 @@ export function PageDraftCard({
   busy?: boolean
 }) {
   const [copied, setCopied] = useState(false)
+  const [draftedBody, setDraftedBody] = useState<string | null>(null)
+  const [drafting, setDrafting] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
 
   const handleCopy = async () => {
     try {
@@ -70,6 +75,23 @@ export function PageDraftCard({
       // Clipboard unavailable — no-op.
     }
   }
+
+  const handleDraft = useCallback(async () => {
+    setDrafting(true)
+    setDraftError(null)
+    try {
+      const resp = await draftPageBody(draft.proposal_id)
+      if (resp.ok) {
+        setDraftedBody(resp.body)
+      } else {
+        setDraftError("Drafting failed — try again")
+      }
+    } catch (e) {
+      setDraftError(e instanceof Error ? e.message : "Failed to draft body")
+    } finally {
+      setDrafting(false)
+    }
+  }, [draft.proposal_id])
 
   return (
     <div className="rounded-xl border border-default bg-surface p-4 space-y-3">
@@ -93,6 +115,25 @@ export function PageDraftCard({
 
       {/* Reason leads the card. */}
       <p className="text-sm text-secondary">{draft.reason}</p>
+
+      {/* Drafted body (Step 3 MV-D66): show on success, deterministic stub otherwise */}
+      {draftedBody ? (
+        <div className="rounded-lg border border-default bg-elevated/50 px-3 py-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Drafted description</p>
+          <p className="mt-1 text-sm text-secondary">{draftedBody}</p>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-default/50 bg-elevated/25 px-3 py-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Description</p>
+          <p className="mt-1 text-sm text-secondary">{draft.body}</p>
+        </div>
+      )}
+
+      {draftError && (
+        <div className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger-foreground">
+          {draftError}
+        </div>
+      )}
 
       <EvidenceChips chips={draft.evidence} />
 
@@ -118,7 +159,7 @@ export function PageDraftCard({
           How to add this yourself
         </summary>
         <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-secondary">
-          <li>In Discover, add a page for “{draft.title}”.</li>
+          <li>In Discover, add a page for "{draft.title}".</li>
           <li>Paste the description and synonyms (use Copy for Discover).</li>
           {draft.certify && <li>Certify the page so Genie treats it as trusted.</li>}
         </ol>
@@ -134,8 +175,13 @@ export function PageDraftCard({
         <Button size="sm" variant="outline" onClick={handleCopy}>
           <Copy className="h-4 w-4" /> {copied ? "Copied" : "Copy for Discover"}
         </Button>
-        <Button size="sm" variant="secondary" disabled title="Coming soon">
-          <Sparkles className="h-4 w-4" /> Apply for me
+        <Button size="sm" variant="secondary" disabled={drafting} onClick={handleDraft} title={draftedBody ? "Body drafted" : undefined}>
+          {drafting ? (
+            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+          ) : (
+            <Sparkles className="mr-1 h-4 w-4" />
+          )}
+          {drafting ? "Drafting…" : draftedBody ? "Drafted" : "Draft with AI"}
         </Button>
       </div>
     </div>

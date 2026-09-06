@@ -150,10 +150,9 @@ describe("PageDraftCard — zero-burden render (17.0e)", () => {
     assertZeroBurden(html)
   })
 
-  it("keeps Apply-for-me disabled (17i)", () => {
+  it("renders the Draft with AI button (Step 3 MV-D66)", () => {
     const html = renderToStaticMarkup(<PageDraftCard draft={page()} onDecide={noop} />)
-    expect(html).toContain("Apply for me")
-    expect(html).toContain("disabled")
+    expect(html).toContain("Draft with AI")
   })
 
   it("renders the one-line why under Sources/Related (MV-D55)", () => {
@@ -171,5 +170,19 @@ describe("PageDraftCard — zero-burden render (17.0e)", () => {
     expect(html).toContain("Backs this metric")
     expect(html).toContain("Serving Genie Agent that answers questions")
     assertZeroBurden(html)
+  })
+
+  it("renders the page body (Step 3 MV-D66)", () => {
+    const html = renderToStaticMarkup(
+      <PageDraftCard
+        draft={page({
+          body: "Description: total revenue is the net booked sales.",
+        })}
+        onDecide={noop}
+      />,
+    )
+    expect(html).toContain("Description: total revenue is the net booked sales.")
+    expect(html).toContain("Description")
+    expect(html).toContain("Draft with AI")
   })
 })

@@ -3,9 +3,13 @@
 // Modeled on frontend/src/lib/api.ts (fetch-with-timeout + typed ApiError).
 
 import type {
+  BulkDraftStart,
+  BulkDraftStatus,
   DecisionRequest,
   DecisionResponse,
+  DraftBodyResponse,
   OntologyDrafts,
+  OntologyGraph,
   OntologyInventory,
   OntologyPreflight,
   OntologyRefreshStatus,
@@ -92,3 +96,20 @@ export const postDecision = (decision: DecisionRequest) =>
     method: "POST",
     body: JSON.stringify(decision),
   })
+
+// ── Stage 4.1d: Draft with AI (MV-D66) ────────────────────────────────────
+export const draftPageBody = (pageId: string) =>
+  fetchJson<DraftBodyResponse>(`/pages/${pageId}/draft-body`, {
+    method: "POST",
+  })
+
+export const startBulkDraft = (domainId: string) =>
+  fetchJson<BulkDraftStart>(`/subdomains/${domainId}/draft-bodies`, {
+    method: "POST",
+  })
+
+export const pollBulkDraft = (domainId: string, taskId: string) =>
+  fetchJson<BulkDraftStatus>(`/subdomains/${domainId}/draft-bodies/status?task_id=${taskId}`)
+
+// ── Phase 3e Step B: Estate Graph (MV-D48) ────────────────────────────────
+export const getGraph = () => fetchJson<OntologyGraph>("/graph")

@@ -6,10 +6,11 @@
  * Settings (our own config). Fresh components — does not import the mockup scaffold.
  */
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, Building2, FolderTree, Lightbulb, Loader2, Lock, Settings as SettingsIcon, Tags } from "lucide-react"
+import { AlertTriangle, Building2, FolderTree, Lightbulb, Loader2, Lock, Network, Settings as SettingsIcon, Tags } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
   getDrafts,
+  getGraph,
   getInventory,
   getPreflight,
   getSettings,
@@ -18,6 +19,7 @@ import {
 } from "@/ontology/api"
 import type {
   OntologyDrafts,
+  OntologyGraph,
   OntologyInventory,
   OntologyPreflight,
   OntologySettings,
@@ -30,8 +32,9 @@ import { TagsLensView } from "@/ontology/components/TagsLens"
 import { SettingsForm } from "@/ontology/components/SettingsForm"
 import { FreshnessControls } from "@/ontology/components/FreshnessControls"
 import { DraftsView } from "@/ontology/components/DraftsView"
+import { EstateGraph } from "@/ontology/components/EstateGraph"
 
-type OntologyTab = "taxonomy" | "tags" | "drafts" | "settings"
+type OntologyTab = "taxonomy" | "tags" | "drafts" | "graph" | "settings"
 
 function LoadingRow({ label }: { label: string }) {
   return (
@@ -79,6 +82,7 @@ export default function OntologyPage() {
   const [taxonomy, setTaxonomy] = useState<OntologyTaxonomy | null>(null)
   const [tags, setTags] = useState<TagLens | null>(null)
   const [drafts, setDrafts] = useState<OntologyDrafts | null>(null)
+  const [graph, setGraph] = useState<OntologyGraph | null>(null)
 
   const [loadingHead, setLoadingHead] = useState(true)
   const [loadingBody, setLoadingBody] = useState(false)
@@ -114,12 +118,13 @@ export default function OntologyPage() {
     if (!canRender || emptyScope) return
     let cancelled = false
     setLoadingBody(true)
-    Promise.all([getTaxonomy(), getTags(), getDrafts()])
-      .then(([tx, tg, dr]) => {
+    Promise.all([getTaxonomy(), getTags(), getDrafts(), getGraph()])
+      .then(([tx, tg, dr, gr]) => {
         if (cancelled) return
         setTaxonomy(tx)
         setTags(tg)
         setDrafts(dr)
+        setGraph(gr)
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load taxonomy")
@@ -136,6 +141,7 @@ export default function OntologyPage() {
     { id: "taxonomy", label: "Taxonomy", icon: <FolderTree className="h-4 w-4" /> },
     { id: "tags", label: "Tags", icon: <Tags className="h-4 w-4" /> },
     { id: "drafts", label: "Drafts", icon: <Lightbulb className="h-4 w-4" /> },
+    { id: "graph", label: "Graph", icon: <Network className="h-4 w-4" /> },
     { id: "settings", label: "Settings", icon: <SettingsIcon className="h-4 w-4" /> },
   ]
 
@@ -207,7 +213,7 @@ export default function OntologyPage() {
 
             {/* Freshness chip + Refresh button (Phase 2). The page is admin-gated,
                 so the refresh action is available; the chip is always informative. */}
-            {(tab === "taxonomy" || tab === "tags" || tab === "drafts") && canRender && !emptyScope && (
+            {(tab === "taxonomy" || tab === "tags" || tab === "drafts" || tab === "graph") && canRender && !emptyScope && (
               <div className="flex justify-end">
                 <FreshnessControls isAdmin={true} onOpenSettings={() => setTab("settings")} />
               </div>
@@ -246,6 +252,18 @@ export default function OntologyPage() {
                 <LoadingRow label="Ranking domain & page suggestions…" />
               ) : (
                 <DraftsView drafts={drafts} />
+              )
+            )}
+
+            {tab === "graph" && (
+              emptyScope ? (
+                <EmptyScopeNotice />
+              ) : !canRender ? (
+                <GrantGateNotice />
+              ) : loadingBody || !graph ? (
+                <LoadingRow label="Building the estate graph…" />
+              ) : (
+                <EstateGraph graph={graph} />
               )
             )}
           </>

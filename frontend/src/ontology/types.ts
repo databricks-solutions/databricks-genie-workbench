@@ -254,3 +254,30 @@ export interface OntologyGraph {
   state: GraphState
   as_of?: string | null
 }
+
+// ── Stage 4.1d: Draft endpoints (MV-D66) ───────────────────────────────────
+export interface DraftBodyResponse {
+  ok: boolean
+  page_id: string
+  body: string
+  body_source: string
+  as_of: string
+}
+
+export interface BulkDraftStart {
+  task_id: string
+  total: number
+}
+
+export interface BulkDraftResult {
+  page_id: string
+  ok: boolean
+  reason?: string | null
+}
+
+export interface BulkDraftStatus {
+  done: number
+  total: number
+  running: boolean
+  results: BulkDraftResult[]
+}
