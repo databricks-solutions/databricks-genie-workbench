@@ -562,37 +562,77 @@ def identifier_gate(body: str, source_fqns: Sequence[str], universe: frozenset[s
     return (not invented), invented
 
 
+# Section parsing tolerant of markdown decoration (## / ** / #) and bullet styles
+# (-, *, +, 1.). The deterministic stub emits plain 'Definition:' / 'Rules:' labels, but
+# an LLM drafter (default_page_drafter) tends to wrap them as '**Definition:**' or
+# '## Rules:'. Normalizing here keeps the retrieval gates (specificity / chunk-safe)
+# honest regardless of cosmetic formatting WITHOUT loosening what they require — a real
+# backticked identifier still has to be present. Backticks and inner text are preserved.
+_SECTION_LABELS = frozenset({"description", "definition", "rules"})
+_MD_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
+def _md_unwrap(line: str) -> str:
+    """Strip leading ATX-heading / blockquote markers and surrounding bold/italic
+    emphasis so a decorated label ('## Definition:', '**Rules:**') is recognizable.
+    Preserves backticks and inner text."""
+    s = line.strip()
+    s = re.sub(r"^[>\s]*#{1,6}\s+", "", s)   # '## ' heading prefix
+    s = re.sub(r"^[*_]+", "", s)              # leading bold/italic run
+    s = re.sub(r"[*_]+$", "", s)              # trailing bold/italic run
+    return s.strip()
+
+
+def _section_label(line: str) -> str | None:
+    """Return 'description'/'definition'/'rules' when this line is a (possibly
+    markdown-decorated) section header — the label alone, optionally followed by ':'.
+    A content line that merely contains a colon is NOT a header."""
+    s = _md_unwrap(line).rstrip(":").strip().lower()
+    return s if s in _SECTION_LABELS else None
+
+
+def _section_lines(body: str, want: str, *, bullets_only: bool) -> list[str]:
+    """Non-empty content lines of the ``want`` section, markdown bullet markers stripped.
+    The section ends at the next recognized section header. ``bullets_only`` keeps only
+    bullet lines (the historical Rules behavior); False keeps every non-empty line (the
+    historical Definition behavior). An inline 'Label: text' header contributes its text
+    when not bullets_only."""
+    out: list[str] = []
+    in_section = False
+    for raw in (body or "").splitlines():
+        label = _section_label(raw)
+        if label is not None:
+            if label == want:
+                in_section = True
+                if not bullets_only:
+                    unwrapped = _md_unwrap(raw)
+                    inline = unwrapped[len(want):].lstrip(": ").strip() \
+                        if unwrapped.lower().startswith(want) else ""
+                    if inline:
+                        out.append(inline)
+                continue
+            if in_section:
+                break                     # next section header ends this one
+            continue
+        if not in_section:
+            continue
+        stripped = raw.strip()
+        if bullets_only and not _MD_BULLET_RE.match(stripped):
+            continue
+        content = _MD_BULLET_RE.sub("", stripped).strip()
+        if content:
+            out.append(content)
+    return out
+
+
 def _rule_lines(body: str) -> list[str]:
     """The Rules-section bullet sentences of a body (for chunk-safe/specificity)."""
-    out: list[str] = []
-    in_rules = False
-    for raw in (body or "").splitlines():
-        line = raw.strip()
-        if line.lower().startswith("rules:"):
-            in_rules = True
-            continue
-        if in_rules:
-            if line.endswith(":") and not line.startswith("-"):
-                break                    # next section
-            if line.startswith("-"):
-                out.append(line.lstrip("- ").strip())
-    return out
+    return _section_lines(body, "rules", bullets_only=True)
 
 
 def _definition_lines(body: str) -> list[str]:
-    out: list[str] = []
-    in_def = False
-    for raw in (body or "").splitlines():
-        line = raw.strip()
-        if line.lower().startswith("definition:"):
-            in_def = True
-            continue
-        if in_def:
-            if line.endswith(":") and not line.startswith("-"):
-                break
-            if line:
-                out.append(line.lstrip("- ").strip())
-    return out
+    """The Definition-section sentences of a body (for specificity)."""
+    return _section_lines(body, "definition", bullets_only=False)
 
 
 def chunk_safe_gate(body: str) -> bool:
@@ -1264,17 +1304,38 @@ def default_page_drafter(
             from genie_space_optimizer.common.llm import call_llm_core
         except Exception:  # noqa: BLE001 — client unavailable here → stub
             return ""
+        # Allowed identifiers = the page's Sources (guaranteed ⊆ the member universe for a
+        # certify page, so identifier_gate can't flag them). Related FQNs are NOT offered
+        # to the model because they are not guaranteed to be in the universe.
+        allowed = list(facts.get("sources") or [])
+        # The output MUST satisfy the retrieval gates deterministically (specificity =
+        # a backticked identifier in the Definition AND in every Rules bullet; chunk-safe =
+        # no leading pronoun; identifier = only Allowed identifiers). The gate parsers key
+        # off literal 'Description:'/'Definition:'/'Rules:' line labels, so markdown headers
+        # would make the sections parse empty (4.1h) — hence the strict PLAIN-TEXT contract.
         prompt = (
-            "You write the BODY PROSE of a governed Genie ontology Page. You are given "
-            "the archetype, concept, a one-line description, a definition, rules, and "
-            "the exact backticked identifiers to use. Rewrite them as a clear Page body "
-            "with 'Description:', 'Definition:', and (if any) 'Rules:' sections. Every "
-            "rule must name its metric/table inline (chunk-safe) and keep every "
-            "backticked identifier EXACTLY as given — never invent a table, column, or "
-            "measure, and never add identifiers not listed.\n\n"
+            "You write ONLY the body PROSE of a governed Genie ontology Page. Output PLAIN "
+            "TEXT in EXACTLY this shape — three sections, each label on its OWN line, "
+            "verbatim, in this order:\n"
+            "Description: <one or two sentences>\n"
+            "Definition: <one or two sentences>\n"
+            "Rules:\n"
+            "- <rule one>\n"
+            "- <rule two>\n\n"
+            "HARD FORMAT RULES (a violation makes the Page unusable):\n"
+            "- Use NO markdown whatsoever: no '#', no '*', no '**', no headings, no bold, "
+            "no numbered lists. Rules bullets start with '- ' only.\n"
+            "- The 'Definition:' line AND every '- ' rule bullet MUST each contain at least "
+            "one Allowed identifier below, wrapped in `backticks`, EXACTLY as given.\n"
+            "- Use ONLY the Allowed identifiers; never invent, abbreviate, or rename a "
+            "table/column/measure, and never backtick anything not in the list.\n"
+            "- Each rule must name its metric/table inline; never open a rule with a bare "
+            "pronoun (it/this/that/they).\n\n"
             f"Archetype: {facts.get('archetype')}\nConcept: {facts.get('concept')}\n"
-            f"Description: {facts.get('description')}\nDefinition: {facts.get('definition')}\n"
-            f"Rules: {facts.get('rules')}\nAllowed identifiers (Sources): {facts.get('sources')}\n"
+            f"Description (source): {facts.get('description')}\n"
+            f"Definition (source): {facts.get('definition')}\n"
+            f"Rules (source): {facts.get('rules')}\n"
+            f"Allowed identifiers: {allowed}\n"
         )
         try:
             text, _ = call_llm_core(

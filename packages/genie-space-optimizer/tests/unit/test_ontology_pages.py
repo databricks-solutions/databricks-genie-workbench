@@ -485,8 +485,8 @@ def test_default_page_drafter_autodrafts_governed_coded_column_via_common_client
                     return line[len(label):].strip()
             return ""
 
-        return (f"Description: {_after('Description: ')}\n\n"
-                f"Definition:\n  {_after('Definition: ')}"), None
+        return (f"Description: {_after('Description (source): ')}\n\n"
+                f"Definition:\n  {_after('Definition (source): ')}"), None
 
     monkeypatch.setattr(common_llm, "call_llm_core", _ok_core)
 
@@ -708,3 +708,91 @@ def test_autodraft_skips_pages_below_min_corroboration():
     by_corr = {c.corroboration: c.evidence["body_source"] for c in cands if c.archetype == "Routing"}
     assert by_corr.get(3) == "llm_auto"
     assert by_corr.get(2) == "stub"
+
+
+# ── Stage 4.1h (MV-D69): drafter↔gate format contract ────────────────────────
+# Live-verify (Stage 4.1b/4.1g) found 0 llm_auto despite 26 eligible pages: opus emits
+# markdown ('## Definition:', '**Rules:**'), the gate parsers keyed off literal
+# 'Definition:'/'Rules:' labels so the sections parsed empty → specificity_gate=False →
+# _autodraft kept the stub. 4.1h = a strict PLAIN-TEXT prompt contract + markdown-tolerant
+# parsers (without loosening WHAT the gates require: a real backticked identifier).
+
+
+def test_gate_parsers_tolerate_markdown_decoration():
+    md = (
+        "## Description:\nDecodes flight status.\n\n"
+        "**Definition:**\nMaps codes in `a.b.c` to human-readable states.\n\n"
+        "## Rules:\n1. Use `a.b.c` for the status column.\n"
+    )
+    assert pages._definition_lines(md) == ["Maps codes in `a.b.c` to human-readable states."]
+    assert pages._rule_lines(md) == ["Use `a.b.c` for the status column."]
+    assert pages.specificity_gate(md) is True
+    assert pages.chunk_safe_gate(md) is True
+
+
+def test_plain_stub_format_still_parses_identically():
+    # Regression guard: the tolerant parsers must not change the plain stub behavior.
+    plain = "Description: d\n\nDefinition:\n  Use `a.b.c` here.\n\nRules:\n  - Route `a.b.c` on."
+    assert pages._definition_lines(plain) == ["Use `a.b.c` here."]
+    assert pages._rule_lines(plain) == ["Route `a.b.c` on."]
+    assert pages.specificity_gate(plain) is True
+
+
+def test_specificity_still_fails_without_backticked_identifier_even_in_markdown():
+    # Tolerance parses the section, but the identifier requirement is NOT loosened.
+    md = "## Definition:\nCabin is a taxonomy of human states.\n\n## Rules:\n- Use `a.b.c` for cabin."
+    assert pages._definition_lines(md)  # parsed (tolerant)
+    assert pages.specificity_gate(md) is False  # no backticked id in Definition
+
+
+def test_chunk_safe_gate_flags_bare_pronoun_in_markdown_bullet():
+    assert pages.chunk_safe_gate("## Rules:\n* It should never be averaged.") is False
+    assert pages.chunk_safe_gate("## Rules:\n1. Route `x` to `y`.") is True
+
+
+def test_default_page_drafter_prompt_forbids_markdown_and_offers_only_sources(monkeypatch):
+    from genie_space_optimizer.common import llm as common_llm
+
+    captured: dict = {}
+
+    def _capture(w, *, messages, model=None, max_tokens=None, **kwargs):
+        captured["prompt"] = messages[0]["content"]
+        return "Description: x\n\nDefinition:\n  Use `s.t.u` here.\n\nRules:\n- Use `s.t.u`.", None
+
+    monkeypatch.setattr(common_llm, "call_llm_core", _capture)
+    drafter = pages.default_page_drafter(w=object())
+    drafter({"archetype": "Routing", "concept": "c", "description": "d", "definition": "def",
+             "rules": ["r"], "sources": ["s.t.u"], "related": ["x.y.z"]})
+    p = captured["prompt"]
+    assert "NO markdown" in p
+    assert "Definition:" in p and "Rules:" in p
+    assert "Allowed identifier" in p
+    assert "backtick" in p.lower()
+    assert "s.t.u" in p          # the page's Source is offered as an allowed identifier
+    assert "x.y.z" not in p      # Related FQNs are withheld (not guaranteed in the universe)
+
+
+def test_markdown_llm_body_now_passes_gates_and_marks_llm_auto(monkeypatch):
+    # The 4.1h end-to-end regression: a markdown-decorated LLM body (what opus actually
+    # produced live) now clears the gates via the tolerant parsers → body_source="llm_auto"
+    # (before 4.1h this degraded to stub — the 0-llm_auto defect).
+    from genie_space_optimizer.common import llm as common_llm
+
+    def _md_core(w, *, messages, model=None, max_tokens=None, **kwargs):
+        return ("## Description:\nDecodes the cabin column.\n\n"
+                "## Definition:\nCabin maps codes in `ops.air.flights` to states.\n\n"
+                "## Rules:\n1. Use `ops.air.flights` as the source for cabin."), None
+
+    monkeypatch.setattr(common_llm, "call_llm_core", _md_core)
+    measure = MeasureSignal(mv_fqn="ops.air.cabin_mv", name="cabin", expression="SUM(x)",
+                            comment="cabin class; fare cabin; CBN", source_fqns=("ops.air.flights",))
+    col = ColumnSignal(table_fqn="ops.air.flights", column="cabin",
+                       comment="cabin class code; fare cabin; CBN",
+                       distinct_values=("F", "J", "Y"), governed=True)
+    members = ["ops.air.cabin_mv", "ops.air.flights", "ops.air.cabin"]
+    drafter = pages.default_page_drafter(w=object())
+    cands = pages.mine_pages(measures=[measure], columns=[col], members=members,
+                             drafter=drafter, page_autodraft_min_corroboration=2)
+    tax = [c for c in cands if c.archetype == "Taxonomy"]
+    assert len(tax) == 1
+    assert tax[0].evidence["body_source"] == "llm_auto"  # markdown body rescued by 4.1h
