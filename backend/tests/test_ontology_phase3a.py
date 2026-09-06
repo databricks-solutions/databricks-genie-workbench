@@ -51,6 +51,14 @@ _PHASE5_MODELS = {
     "ApplyOutcome", "ApplyResult",
 }
 
+# Stage 4.1d (Steps 3–4, MV-D66) APPEND-ONLY curator "Draft with AI" models — the
+# on-demand single-Page + bulk sub-domain body drafting responses. They ride the
+# existing genie_ont_pages surface (body_source/facts_hash on evidence JSON — no DDL,
+# MV-D49); nothing removed or renamed.
+_STAGE41D_MODELS = {
+    "DraftBodyResponse", "BulkDraftStart", "BulkDraftResult", "BulkDraftStatus",
+}
+
 
 def test_no_new_api_model_added_in_phase3a():
     defined = {
@@ -61,9 +69,11 @@ def test_no_new_api_model_added_in_phase3a():
     assert _EXPECTED_MODELS <= defined, (
         f"a frozen model was removed/renamed: {_EXPECTED_MODELS - defined}"
     )
-    # … and the ONLY additions are the append-only Phase-3d, Stage-3, Phase-3e, Phase-5 models.
+    # … and the ONLY additions are the append-only Phase-3d, Stage-3, Phase-3e, Phase-5,
+    # and Stage-4.1d models.
     allowed = (
-        _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE3E_MODELS | _PHASE5_MODELS
+        _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE3E_MODELS
+        | _PHASE5_MODELS | _STAGE41D_MODELS
     )
     assert defined == allowed, (
         f"unexpected model surface change: {defined ^ allowed}"
