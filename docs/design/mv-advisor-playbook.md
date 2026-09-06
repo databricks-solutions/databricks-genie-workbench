@@ -926,10 +926,25 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > (26 `llm_auto`), estate-graph snapshot **2879 nodes / 1557 edges** (layout `fr`) → the cytoscape
 > Graph tab renders. Manual browser eyeball of the buttons + Graph tab is the only remaining check.
 >
-> **Human gates that stay OUT of the autonomous lanes:** Phase-5 *live* `SET TAG` apply (+ its
-> `execute` identity resolution + `ApplyPreview.tsx`), and the eval-harness / draft-body live
-> deploy-verify passes. **Blocked (not launchable):** §9 industry alignment (MV-D58) — waits on the
-> Phase-4 Context Pack seam.
+> **Human gates that stay OUT of the autonomous lanes:** Phase-5 *live* `SET TAG` apply, and the
+> eval-harness / draft-body live deploy-verify passes. **Blocked (not launchable):** §9 industry
+> alignment (MV-D58) — waits on the Phase-4 Context Pack seam.
+>
+> **Phase 5 (17i) — offline finish LANDED on `ontology`** (subsystem's only governed-tag writer;
+> additive, no dep, `uv.lock`/npm-lock untouched — MV-D45). Closed the offline slice's remaining
+> gaps: (a) `mirror.read_approved_consents/read_domain_members/read_tag_members` — hydrate a bare
+> consent key from its `genie_ont_domains` proposal row at the metastore grain (MV-D49), page
+> consents excluded (MV-D27), reassign source-set scoped to the consented proposal's members;
+> (b) `routers/apply.py` identity resolution — `metastore_id`/`workspace_id` via `ont_settings`,
+> `applied_by` via the OBO forwarded-identity email (MV-D50), and the 409 plan_hash consent gate now
+> surfaces instead of degrading; (c) `ApplyPreview.tsx` — the "Apply approved changes" panel
+> (dry-run preview → explicit confirm → execute), zero-burden copy that never renders the SQL
+> (MV-D23), reached from a `DraftsView` header button; `Apply*` mirrors in `types.ts`/`api.ts`.
+> Gates: backend `./scripts/test.sh` **2807 green** (14 new apply cases + single-writer carve
+> intact), frontend **tsc/lint clean + 505 vitest** (7 new). **STOP checkpoint (human gate):** the
+> live `deploy.sh --update` + the in-app approve→preview→apply→verify pass is deliberately NOT run
+> here — a human reviews apply-safety (dry-run purity, consent gate, OBO attribution, single-writer
+> carve, degrade-to-copy-ready) before the first live governed-tag write.
 >
 > **Why this shape:** the batch engine lands a trustworthy set, so the critical path is
 > *acting on / seeing / enriching* it. Splitting horizontally (wheel / backend / frontend) makes

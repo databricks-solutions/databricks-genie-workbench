@@ -5,9 +5,11 @@
  * rendering; this view holds the list state and the API wiring.
  */
 import { useEffect, useRef, useState } from "react"
-import { CheckCircle2, FolderTree, FileText } from "lucide-react"
+import { CheckCircle2, FolderTree, FileText, Wand2 } from "lucide-react"
 import { getDrafts, pollBulkDraft, postDecision, startBulkDraft } from "@/ontology/api"
 import type { DecisionAction, DomainDraft, OntologyDrafts, PageDraft } from "@/ontology/types"
+import { Button } from "@/components/ui/button"
+import { ApplyPreview } from "@/ontology/components/ApplyPreview"
 import { DomainDraftCard, type BulkDraftState } from "@/ontology/components/DomainDraftCard"
 import { PageDraftCard } from "@/ontology/components/PageDraftCard"
 
@@ -23,6 +25,9 @@ export function DraftsView({ drafts }: { drafts: OntologyDrafts }) {
   // Bulk "Draft this sub-domain with AI" progress, keyed by sub-domain id
   // (== DomainDraft.proposal_id == the Pages' domain_id). Step 4, MV-D66.
   const [bulk, setBulk] = useState<Record<string, BulkDraftState>>({})
+  // Phase 5 (17i): the estate-level "Apply approved changes" panel — the ONLY
+  // governed-tag write surface. Preview is a dry-run; nothing writes until confirmed.
+  const [showApply, setShowApply] = useState(false)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -128,6 +133,17 @@ export function DraftsView({ drafts }: { drafts: OntologyDrafts }) {
       {error && (
         <div className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger-foreground">
           {error}
+        </div>
+      )}
+
+      {/* Estate-level apply: preview + confirm the changes from everything approved so far. */}
+      {showApply ? (
+        <ApplyPreview onClose={() => setShowApply(false)} />
+      ) : (
+        <div className="flex justify-end">
+          <Button variant="secondary" size="sm" onClick={() => setShowApply(true)}>
+            <Wand2 className="h-4 w-4" /> Apply approved changes
+          </Button>
         </div>
       )}
 

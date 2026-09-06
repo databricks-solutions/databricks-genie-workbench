@@ -13,26 +13,37 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from backend.ontology import models
 from backend.ontology.services import apply as apply_service
+from backend.ontology.services import ont_settings
 from backend.services.auth import get_workspace_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ontology")
 
 
+def _obo_email(request: Request) -> str:
+    """The applying human's email (OBO attribution, MV-D50). Prefers the Apps
+    forwarded-identity headers (cheap, no round trip); falls back to the OBO SDK
+    identity; ``"unknown"`` only if both are unavailable. Mirrors ``drafts._obo_email``."""
+    for header in ("x-forwarded-email", "x-forwarded-preferred-username"):
+        value = request.headers.get(header)
+        if value and value.strip():
+            return value.strip()
+    try:
+        return (get_workspace_client().current_user.me().user_name or "").strip() or "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 @router.post("/apply/preview")
 async def preview_apply() -> dict:
     """Dry-run apply: build plan from approved consents, return statements + diff + plan_hash.
-    Writes nothing. OBO (uses viewer's identity to resolve metastore scope, but apply itself
-    is still dry-run)."""
+    Writes nothing. Reads the app's metastore scope (MV-D49)."""
     try:
-        client = get_workspace_client()
-        # TODO: resolve metastore_id from scope or workspace context
-        metastore_id = "default_metastore"  # placeholder
-
+        metastore_id = ont_settings._metastore_id()
         plan = await apply_service.build_apply_plan(metastore_id)
         return plan.model_dump(mode="json")
     except Exception as e:
@@ -50,7 +61,7 @@ async def preview_apply() -> dict:
 
 
 @router.post("/apply/execute")
-async def execute_apply(req: models.ApplyExecuteRequest) -> dict:
+async def execute_apply(req: models.ApplyExecuteRequest, request: Request) -> dict:
     """Execute the consented apply: run statements under OBO, audit to genie_ont_applied,
     flip consent approved→applied. plan_hash + confirm=true gate. Per-statement fail-soft.
     """
@@ -58,11 +69,12 @@ async def execute_apply(req: models.ApplyExecuteRequest) -> dict:
         raise HTTPException(status_code=400, detail="confirm must be true")
 
     try:
-        client = get_workspace_client()
-        # TODO: resolve metastore_id, workspace_id, applied_by email
-        metastore_id = "default_metastore"
-        workspace_id = "default_workspace"
-        applied_by = "user@example.com"
+        # Resolve the metastore scope (MV-D49), the provenance workspace, and the
+        # applying human (OBO attribution, MV-D50). The UC write itself runs under
+        # OBO inside execute_apply_plan (require_obo_workspace_client).
+        metastore_id = ont_settings._metastore_id()
+        workspace_id = ont_settings._workspace_id()
+        applied_by = _obo_email(request)
 
         # Rebuild plan to verify plan_hash (consent gate).
         plan = await apply_service.build_apply_plan(metastore_id)
@@ -80,6 +92,9 @@ async def execute_apply(req: models.ApplyExecuteRequest) -> dict:
             applied_by=applied_by,
         )
         return result.model_dump(mode="json")
+    except HTTPException:
+        # The consent gate (409 plan_hash mismatch) must surface, not degrade.
+        raise
     except Exception as e:
         logger.exception("execute_apply failed: %s", e)
         # Degrade-not-hang: return empty result.

@@ -531,3 +531,89 @@ async def read_page_drafts(metastore_id: str) -> list[dict[str, Any]]:
         drafts.append(_assemble_page_draft(row, tier))
     drafts.sort(key=lambda d: (-_TIER_RANK.get(d["tier"], 0), d["title"], d["proposal_id"]))
     return drafts
+
+
+# ── Phase 5 (17i): apply-plan readers (consents + members, metastore grain) ──
+# The apply plan builder consumes APPROVED consents. A consent row stores only the
+# key ``(metastore_id, proposal_kind, proposal_id)`` (decisions.py) — it carries no
+# tag fields — so we HYDRATE each consent from its proposal row in
+# ``genie_ont_domains`` (``proposal_id == domain_id`` for domain / subdomain /
+# reassign). Page consents are copy-ready-only (MV-D27) and never returned. Consents
+# are app-written live via the warehouse (not part of the batch snapshot), so they
+# are read via ``_delta_query`` (SP), not the synced pool. Members ride the batch
+# snapshot, so they use ``_read_table`` (synced-first). Never raises: [] on failure.
+
+
+async def read_approved_consents(metastore_id: str) -> list[dict[str, Any]]:
+    """APPROVED domain / subdomain / reassign consents for a metastore, each hydrated
+    with the tag fields of its proposal row (name / tag_decision / tag_key / tag_value /
+    conflict_tag). Page consents are excluded (MV-D27). A consent whose proposal has
+    aged out of the current snapshot is skipped (no orphan write). [] on any failure."""
+    import asyncio
+
+    consents = await asyncio.to_thread(
+        _delta_query,
+        f"SELECT proposal_kind, proposal_id FROM {_gso_fqn('genie_ont_consents')} "
+        f"WHERE metastore_id = '{metastore_id}' AND state = 'approved' "
+        f"AND proposal_kind IN ('domain', 'subdomain', 'reassign')",
+    )
+    if not consents:
+        return []
+    domain_rows = await _read_table("genie_ont_domains", metastore_id)
+    by_id = {str(r.get("domain_id") or ""): r for r in domain_rows}
+    hydrated: list[dict[str, Any]] = []
+    for c in consents:
+        pid = str(c.get("proposal_id") or "")
+        row = by_id.get(pid)
+        if row is None:
+            logger.info("approved consent %s has no current proposal row; skipping", pid)
+            continue
+        evidence = _evidence_of(row)
+        conflict = (evidence.get("conflict") or {}).get("existing_tag")
+        hydrated.append(
+            {
+                "proposal_kind": str(c.get("proposal_kind") or ""),
+                "proposal_id": pid,
+                "name": str(row.get("name") or row.get("tag_value") or ""),
+                "tag_decision": str(row.get("tag_decision") or "create"),
+                "tag_key": str(row.get("tag_key") or ""),
+                "tag_value": str(row["tag_value"]) if row.get("tag_value") else None,
+                "conflict_tag": str(conflict) if conflict else "",
+            }
+        )
+    return hydrated
+
+
+async def read_domain_members(metastore_id: str, domain_id: str) -> list[dict[str, Any]]:
+    """The member assets of a domain proposal (``genie_ont_members`` where
+    ``domain_id == proposal_id``). Returns ``[{"asset_fqn": ...}]``. [] on any failure."""
+    rows = await _read_table("genie_ont_members", metastore_id)
+    return [
+        {"asset_fqn": str(m.get("asset_fqn") or "")}
+        for m in rows
+        if str(m.get("domain_id") or "") == domain_id and m.get("asset_fqn")
+    ]
+
+
+async def read_tag_members(metastore_id: str, conflict_tag: str) -> list[dict[str, Any]]:
+    """The assets a reassign moves: members of the domain proposal(s) whose evidence
+    flags ``conflict.existing_tag == conflict_tag``. Conservative source set — only
+    surfaced-proposal members, never the whole tag — so a reassign never touches assets
+    outside the proposal that was consented to. Returns ``[{"asset_fqn": ...}]``. [] on
+    any failure."""
+    if not conflict_tag:
+        return []
+    domain_rows = await _read_table("genie_ont_domains", metastore_id)
+    conflicted_ids = {
+        str(r.get("domain_id") or "")
+        for r in domain_rows
+        if (_evidence_of(r).get("conflict") or {}).get("existing_tag") == conflict_tag
+    }
+    if not conflicted_ids:
+        return []
+    member_rows = await _read_table("genie_ont_members", metastore_id)
+    return [
+        {"asset_fqn": str(m.get("asset_fqn") or "")}
+        for m in member_rows
+        if str(m.get("domain_id") or "") in conflicted_ids and m.get("asset_fqn")
+    ]

@@ -3,6 +3,9 @@
 // Modeled on frontend/src/lib/api.ts (fetch-with-timeout + typed ApiError).
 
 import type {
+  ApplyExecuteRequest,
+  ApplyPlan,
+  ApplyResult,
   BulkDraftStart,
   BulkDraftStatus,
   DecisionRequest,
@@ -113,3 +116,12 @@ export const pollBulkDraft = (domainId: string, taskId: string) =>
 
 // ── Phase 3e Step B: Estate Graph (MV-D48) ────────────────────────────────
 export const getGraph = () => fetchJson<OntologyGraph>("/graph")
+
+// ── Phase 5 (17i): consented apply (dry-run preview → confirmed execute) ────
+export const applyPreview = () => fetchJson<ApplyPlan>("/apply/preview", { method: "POST" })
+
+export const applyExecute = (req: ApplyExecuteRequest) =>
+  fetchJson<ApplyResult>("/apply/execute", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })

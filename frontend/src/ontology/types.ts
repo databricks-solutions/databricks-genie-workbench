@@ -284,3 +284,54 @@ export interface BulkDraftStatus {
   running: boolean
   results: BulkDraftResult[]
 }
+
+// ── Phase 5 (17i): consented governed-tag apply (MV-D37/D49/D26/D50) ────────
+// Mirrors backend/ontology/models.py 1:1. `statement` is server-owned SQL — it is
+// NEVER rendered verbatim to a curator (MV-D23 zero-burden); the UI describes each
+// item in plain language.
+export type ApplyShape = "create_tag" | "set_tag" | "unset_tag"
+
+export interface ApplyItem {
+  proposal_id: string
+  proposal_kind: "domain" | "subdomain" | "reassign"
+  shape: ApplyShape
+  target_fqn: string
+  tag_key: string
+  tag_value?: string | null
+  current_value?: string | null
+  statement: string
+  executable: boolean
+  blocked_reason?: string | null
+  required_grants: string[]
+}
+
+export interface ApplyPlan {
+  items: ApplyItem[]
+  executable_count: number
+  blocked_count: number
+  plan_hash: string
+  source: "mirror" | "live" | "cold"
+  as_of: string
+}
+
+export interface ApplyExecuteRequest {
+  plan_hash: string
+  confirm: boolean
+  proposal_ids?: string[] | null
+}
+
+export interface ApplyOutcome {
+  proposal_id: string
+  shape: ApplyShape
+  target_fqn: string
+  ok: boolean
+  state: "applied" | "failed" | "blocked"
+  error?: string | null
+}
+
+export interface ApplyResult {
+  applied: ApplyOutcome[]
+  failed: ApplyOutcome[]
+  blocked: ApplyOutcome[]
+  as_of: string
+}
