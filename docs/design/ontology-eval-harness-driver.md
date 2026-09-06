@@ -1,11 +1,29 @@
 # Ontology — Evaluation & trust harness Goal-Mode driver (MV-D59)
 
+## ⚙️ Parallel-build lane header — Lane 1 of Wave 2 (READ FIRST)
+
+You run in an **isolated git worktree** off the `ontology` HEAD (`isolation: worktree`,
+`worktree.baseRef: "head"`). Two sibling lanes edit the repo concurrently. This lane owns a
+whole disjoint subtree (the wheel eval module), so merges are conflict-free — keep it that way:
+
+- **OWNS (create/edit freely):**
+  `packages/genie-space-optimizer/src/genie_space_optimizer/ontology/eval_harness.py` (new),
+  `packages/genie-space-optimizer/tests/unit/test_ontology_eval_harness.py` (new).
+- **SHARED:** none. Keep the typed report a **local dataclass in `eval_harness.py`** — do not
+  edit any existing model surface.
+- **OFF-LIMITS (do NOT touch):** all of `backend/`, all of `frontend/`, **every other wheel
+  module** (`pages.py`/`rank.py`/`cluster.py`/`er.py`/`materialize.py`/`ddl.py` — reuse the
+  wheel-native LLM client **by import only**, MV-D65), and `docs/design/mv-advisor-playbook.md`.
+- **MERGE-ORDER:** independent — no cross-lane file overlap; merge in any order (nominally first).
+- **Launch:** via the `ontology-lane-builder` subagent — see `ontology-wave2-launcher.md`.
+
+---
+
 Copy-paste launcher for building the **offline evaluation & trust harness** (MV-D59)
 for the ontology curation engine, with a long-running agent (Claude Code / Cursor Goal
 Mode). Run it on the **`ontology`** branch, on top of the shipped signals-first stages
-(1 → 4.1x — all LANDED + deploy-verified) and the metastore re-grain (MV-D49). This is
-**future work** — it is **not** a lane in the current parallel batch, so it carries **no
-lane header**; build it as a single self-contained slice.
+(1 → 4.1x — all LANDED + deploy-verified) and the metastore re-grain (MV-D49). It is a
+**self-contained, wheel-only slice** (Lane 1 above); it competes with no sibling for files.
 
 The harness is a **read-only, offline scorer**. It consumes a materialized run's snapshot
 tables and emits one comparable report per run. Its purpose is to **gate every subsequent

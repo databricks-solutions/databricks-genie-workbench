@@ -890,31 +890,44 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > `worktree.baseRef:"head"` in `.claude/settings.local.json`) runs each lane in its own worktree
 > off `ontology` HEAD. Launch Wave 1 as **one** Claude Code prompt that spawns the lanes in parallel.
 >
-> **Wave 1 — parallel (isolated worktrees; merge order D,E → B → C → A):**
+> **Wave 1 — LANDED + integrated on `ontology`** (all five lanes merged; offline suite green):
 >
-> | Lane | Chunk | Driver | Surface | Risk |
+> | Lane | Chunk | Commit |
+> |---|---|---|
+> | A | **Phase 5 / 17i** — consented `SET TAG` apply (L9), **offline slice** (backend `apply.py` service + `apply/preview`+`apply/execute` routes; `execute` identity TODOs + `ApplyPreview.tsx` + *live* apply remain human-gated) | `9e1a82c4` |
+> | B | **Stage-4.1d Step 2** — `body_source` preservation across re-materialize | `7bc610c9` (+ `7ff0626a` repair) |
+> | C | **Phase 3e / 17k Step A** — estate-graph snapshot + `/api/ontology/graph` route + 3 bakeoff mockups (MV-D48) | `dfef61ff` |
+> | D | **§10 eval/trust harness driver** (MV-D59) — authored | `a4556a7e` |
+> | E | **§9 / 17h alignment driver** (MV-D58) — authored | `14bd30ea` |
+>
+> **Bakeoff pick (human gate, DECIDED): `cytoscape.js`** (mockup `17.0j`) is the estate-graph
+> render library. This unblocks Phase-3e **Step B** (the graph tab), folded into Wave-2 Lane 3.
+>
+> **Wave 2 — parallel (isolated worktrees; three DISJOINT subtrees → conflict-free merges).**
+> Re-planned after Wave 1: the remaining work splits cleanly into one wheel lane, one
+> `backend/ontology` lane, and one `frontend/src/ontology` lane. No file is touched by two lanes;
+> the only coupling is the frozen draft-body API contract (Lane 2 implements, Lane 3 mirrors).
+> Launcher: `ontology-wave2-launcher.md` (one Claude Code prompt spawns all three via the
+> `ontology-lane-builder` subagent). **BUILD-READY.**
+>
+> | Lane | Chunk | Driver | Subtree it OWNS | Merge |
 > |---|---|---|---|---|
-> | A | **Phase 5 / 17i** — consented `SET TAG` apply (L9), offline slice | `ontology-phase5-apply-driver.md` | wheel+backend+frontend | offline low; **live apply is a human gate** |
-> | B | **Stage-4.1d Step 2** — `body_source` preservation across re-materialize | `…-stage4.1d-step2-driver.md` | wheel-only | low |
-> | C | **Phase 3e / 17k Step A** — estate-graph snapshot + `/graph` route + 3 bakeoff mockups (MV-D48) | `ontology-phase3e-driver.md` | wheel+backend+frontend | lowest (read-only); **bakeoff pick is a human gate** |
-> | D | **§10 eval/trust harness driver** (MV-D59) — author the missing driver | (new docs file) | docs-only | none |
-> | E | **§9 / 17h alignment driver** (MV-D58) — author the missing driver | (new docs file) | docs-only | none |
+> | 1 | **§10 eval/trust harness** (MV-D59) — build the offline scorer (P/R/F degrades to N/A until §9) | `ontology-eval-harness-driver.md` | `…/ontology/eval_harness.py` (+wheel test) | any (first) |
+> | 2 | **Stage-4.1d Steps 3+4 backend** — OBO `draft-body` single + `draft-bodies` bulk routes + `draft_body.py` (MV-D66) | `ontology-stage4.1d-step34-backend-driver.md` | `backend/ontology/**` (+backend test) | before 3 |
+> | 3 | **Stage-4.1d Steps 3+4 frontend + Phase-3e Step B (cytoscape graph tab) + UX papercuts** | `ontology-frontend-batch-driver.md` | `frontend/src/ontology/**` (+FE lockfile) | last |
 >
-> D and E write only new driver docs (no code) → merge first. Then wheel-only **B**, then **C**,
-> then **A**. After each **code** lane merges, run `scripts/ontology_verify.sh`. The shared
-> append-only files (`ddl.py`, `models.py`, `types.ts`, `mirror.py`, `materialize.py`,
-> `test_ontology_firewall.py`) are partitioned by the lane headers into disjoint regions, so the
-> merges are trivial. **Human gates that stay OUT of the autonomous lanes:** Phase-5 *live*
-> `SET TAG` apply, and the Phase-3e library bakeoff pick.
+> Merge order 1 → 2 → 3; after the final merge run `./scripts/test.sh` + the frontend gate. Lane 3
+> is authorized to add exactly `cytoscape` + `react-cytoscapejs` + `cytoscape-fcose` (exact-pinned).
 >
-> **Wave 2 — serial (all contend on `PageDraftCard.tsx` / `drafts.py`, so one at a time):**
-> Stage-4.1d **Step 3** (on-demand "Draft with AI", OBO) → **Step 4** (bulk draft) →
-> **UX papercuts** (auto-reload Drafts/Taxonomy after a refresh completes; render Page `body`
-> on the card).
+> **Human gates that stay OUT of the autonomous lanes:** Phase-5 *live* `SET TAG` apply (+ its
+> `execute` identity resolution + `ApplyPreview.tsx`), and the eval-harness / draft-body live
+> deploy-verify passes. **Blocked (not launchable):** §9 industry alignment (MV-D58) — waits on the
+> Phase-4 Context Pack seam.
 >
-> **Why this shape:** the batch engine now lands a trustworthy set, so the critical path is
-> *acting on / seeing / enriching* it — three independent surfaces that run concurrently. The
-> only serial tail is the shared draft-card UI (Wave 2).
+> **Why this shape:** the batch engine lands a trustworthy set, so the critical path is
+> *acting on / seeing / enriching* it. Splitting horizontally (wheel / backend / frontend) makes
+> the three lanes own non-overlapping trees, which removes the shared-file merge risk Wave 1 had to
+> manage with append-only regions — here the merges are trivially clean.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 
