@@ -362,3 +362,41 @@ class ApplyResult(BaseModel):
     failed: list[ApplyOutcome] = Field(default_factory=list)
     blocked: list[ApplyOutcome] = Field(default_factory=list)   # missing grant → copy-ready
     as_of: str
+
+
+# ── Stage 4.1d (Steps 3–4): on-demand + bulk body drafting (APPEND-ONLY) ──────
+# Human-initiated curator "Draft with AI" for a single Page or a whole sub-domain.
+# Uses the wheel-native LLM client (MV-D65), runs the SAME gates as the batch
+# drafter, and UPDATEs genie_ont_pages via the SQL warehouse (MV-D49: body_source/
+# facts_hash/body_stale ride the evidence JSON). Returns typed responses.
+
+
+class DraftBodyResponse(BaseModel):
+    """Response from a single Page draft."""
+    ok: bool
+    page_id: str
+    body: str
+    body_source: Literal["llm_ondemand", "llm_bulk", "unknown"]
+    as_of: str
+    reason: str | None = None  # error reason only when ok=false
+
+
+class BulkDraftStart(BaseModel):
+    """Response from starting a bulk (sub-domain) draft task."""
+    task_id: str
+    total: int
+
+
+class BulkDraftResult(BaseModel):
+    """Per-page result in a bulk draft status."""
+    page_id: str
+    ok: bool
+    reason: str | None = None
+
+
+class BulkDraftStatus(BaseModel):
+    """Status of a bulk draft task (polled via task_id)."""
+    done: int
+    total: int
+    running: bool
+    results: list[BulkDraftResult] = Field(default_factory=list)

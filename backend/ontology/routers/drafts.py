@@ -22,13 +22,16 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 
 from backend.ontology.models import (
+    BulkDraftStart,
+    BulkDraftStatus,
     DecisionRequest,
     DecisionResponse,
     DomainDraft,
+    DraftBodyResponse,
     OntologyDrafts,
     PageDraft,
 )
-from backend.ontology.services import decisions, mirror, ont_settings, refresh
+from backend.ontology.services import decisions, draft_body, mirror, ont_settings, refresh
 from backend.services.auth import get_workspace_client
 
 logger = logging.getLogger(__name__)
@@ -99,3 +102,66 @@ async def post_decision(req: DecisionRequest, request: Request) -> dict:
         decided_by=decided_by,
     )
     return DecisionResponse(ok=True, recorded=recorded, as_of=decisions.now_iso()).model_dump(mode="json")
+
+
+# ── Stage 4.1d (Steps 3–4): on-demand + bulk body drafting (APPEND-ONLY) ──────
+
+
+@router.post("/pages/{page_id}/draft-body")
+async def post_draft_body(page_id: str, request: Request) -> dict:
+    """Draft a single Page body with the LLM under OBO (MV-D65, MV-D50).
+
+    Returns DraftBodyResponse {ok, page_id, body, body_source, as_of, reason}.
+    """
+    ms = ont_settings._metastore_id()
+    w = get_workspace_client()
+    result = await asyncio.to_thread(
+        draft_body.draft_one,
+        page_id,
+        metastore_id=ms,
+        w=w,
+    )
+    return DraftBodyResponse(**result).model_dump(mode="json")
+
+
+@router.post("/subdomains/{domain_id}/draft-bodies")
+async def post_bulk_draft(domain_id: str, request: Request) -> dict:
+    """Start a bulk draft task for all Pages in a sub-domain under OBO (async).
+
+    Returns BulkDraftStart {task_id, total}. Results are polled via the status endpoint.
+    """
+    ms = ont_settings._metastore_id()
+    w = get_workspace_client()
+    task_id, total, _ = await asyncio.to_thread(
+        draft_body.draft_subdomain,
+        domain_id,
+        metastore_id=ms,
+        w=w,
+        max_workers=4,
+    )
+    return BulkDraftStart(task_id=task_id, total=total).model_dump(mode="json")
+
+
+@router.get("/subdomains/{domain_id}/draft-bodies/status")
+async def get_bulk_draft_status(domain_id: str, task_id: str, request: Request) -> dict:
+    """Poll the status of a bulk draft task.
+
+    Returns BulkDraftStatus {done, total, running, results} where results is
+    [{page_id, ok, reason}]. Results are persisted in-process; they are best-effort
+    and expire when the app restarts.
+    """
+    status = draft_body.get_bulk_draft_status(task_id)
+    if status is None:
+        # Task not found or expired; return an empty/terminal status
+        return BulkDraftStatus(done=0, total=0, running=False, results=[]).model_dump(mode="json")
+
+    results = [
+        {"page_id": r.get("page_id"), "ok": r.get("ok"), "reason": r.get("reason")}
+        for r in (status.get("results") or [])
+    ]
+    return BulkDraftStatus(
+        done=status.get("done", 0),
+        total=status.get("total", 0),
+        running=status.get("running", False),
+        results=results,
+    ).model_dump(mode="json")
