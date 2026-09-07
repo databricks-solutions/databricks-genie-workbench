@@ -18,6 +18,8 @@ import fcose from "cytoscape-fcose"
 import CytoscapeComponent from "react-cytoscapejs"
 import type { GraphOrigin, OntologyGraph, OntologyGraphExpand } from "@/ontology/types"
 import { groupTops, mergeExpand, nodeFacts, viewCaption, viewElements, type CyEl, type Lod } from "@/ontology/estateGraphModel"
+import { graphTokens, recolorMap, type GraphTokens } from "@/ontology/graphTokens"
+import { useTheme } from "@/hooks/useTheme"
 import { expandNode, getGraph } from "@/ontology/api"
 import { GraphInspector, type ExpandState } from "./GraphInspector"
 import { GraphSearch } from "./GraphSearch"
@@ -68,25 +70,34 @@ const ICON_STYLE = {
 const FONT_DISPLAY = "Cabinet Grotesk, Inter, system-ui, sans-serif"
 const FONT_BODY = "General Sans, Inter, system-ui, sans-serif"
 
-// Crisp label plate instead of the old heavy text-outline halo (§1A defect #1):
-// a translucent sunken chip under every label keeps text readable over edges and
-// fills at any zoom without warping the glyphs.
-const LABEL_PLATE = {
-  "text-outline-width": 0,
-  "text-background-color": "#0D1321",
-  "text-background-opacity": 0.82,
-  "text-background-padding": 3,
-  "text-background-shape": "round-rectangle",
-} as const
-
-const STYLESHEET = [
+/**
+ * Theme-aware stylesheet factory (Map v3.2, MV-D79). Every colour/opacity that differs
+ * between light and dark comes from `graphTokens(resolvedTheme)`; structural values
+ * (shapes, radii, sizes, fonts, z-index) are theme-independent. On dark the tokens
+ * reproduce the pre-MV-D79 constants exactly, so the dark render is byte-identical to
+ * the baseline (the whole point of the token contract). Icons stay module-level: their
+ * light glyphs sit on saturated node fills in BOTH themes, so only the label PLATE flips.
+ */
+function buildStylesheet(t: GraphTokens) {
+  // Crisp label plate instead of a heavy text-outline halo — a translucent chip under
+  // every label keeps text readable over edges/fills at any zoom without warping glyphs.
+  // Paper chip + dark text on light; near-black chip + light text on dark (the flip that
+  // fixes the MV-D78 washout).
+  const LABEL_PLATE = {
+    "text-outline-width": 0,
+    "text-background-color": t.plateBg,
+    "text-background-opacity": t.plateOpacity,
+    "text-background-padding": 3,
+    "text-background-shape": "round-rectangle",
+  } as const
+  return [
   {
     selector: 'node[ntype="container"]',
     style: {
       shape: "round-rectangle",
       "corner-radius": 14,
       "background-color": "data(color)",
-      "background-opacity": 0.06,
+      "background-opacity": t.containerFillOpacity,
       "border-color": "data(color)",
       "border-width": 1.5,
       "border-opacity": 0.6,
@@ -94,7 +105,7 @@ const STYLESHEET = [
       "font-family": FONT_DISPLAY,
       "font-size": 13,
       "font-weight": 700,
-      color: "#F8FAFC",
+      color: t.containerText,
       "text-valign": "top",
       "text-halign": "center",
       "text-margin-y": -8,
@@ -112,7 +123,7 @@ const STYLESHEET = [
       shape: "round-rectangle",
       "corner-radius": 10,
       "background-color": "data(color)",
-      "background-opacity": 0.05,
+      "background-opacity": t.subcontainerFillOpacity,
       "border-color": "data(color)",
       "border-width": 1,
       "border-opacity": 0.5,
@@ -120,7 +131,7 @@ const STYLESHEET = [
       "font-family": FONT_BODY,
       "font-size": 10.5,
       "font-weight": 600,
-      color: "#CBD5E1",
+      color: t.subcontainerText,
       "text-valign": "top",
       "text-halign": "center",
       "text-margin-y": -5,
@@ -138,15 +149,15 @@ const STYLESHEET = [
       "background-color": "data(color)",
       "background-opacity": 0.92,
       "border-width": 2,
-      "border-color": "#F8FAFC",
-      "border-opacity": 0.22,
+      "border-color": t.domainRim,
+      "border-opacity": t.domainRimOpacity,
       width: "data(px)",
       height: "data(px)",
       label: "data(label)",
       "font-family": FONT_BODY,
       "font-size": 11.5,
       "font-weight": 600,
-      color: "#E2E8F0",
+      color: t.domainText,
       "line-height": 1.25,
       "text-valign": "bottom",
       "text-halign": "center",
@@ -163,15 +174,15 @@ const STYLESHEET = [
       "background-color": "data(color)",
       "background-opacity": 0.9,
       "border-width": 1.5,
-      "border-color": "#F8FAFC",
-      "border-opacity": 0.18,
+      "border-color": t.subdomainRim,
+      "border-opacity": t.subdomainRimOpacity,
       width: "data(px)",
       height: "data(px)",
       label: "data(label)",
       "font-family": FONT_BODY,
       "font-size": 10,
       "font-weight": 500,
-      color: "#CBD5E1",
+      color: t.subdomainText,
       "text-valign": "bottom",
       "text-halign": "center",
       "text-margin-y": 5,
@@ -190,7 +201,7 @@ const STYLESHEET = [
       "font-family": FONT_BODY,
       "font-size": 10,
       "font-weight": 600,
-      color: "#CBD5E1",
+      color: t.assetText,
       // Declutter guard only for far zoom-out — at the default drilled zoom the
       // names are the point of drilling in (§2 defect #3: no more nameless dots).
       "min-zoomed-font-size": 7,
@@ -214,7 +225,7 @@ const STYLESHEET = [
       label: "data(label)",
       "font-family": FONT_BODY,
       "font-size": 8.5,
-      color: "#CBD5E1",
+      color: t.snippetText,
       "text-valign": "bottom",
       "text-halign": "center",
       "text-margin-y": 3,
@@ -235,7 +246,7 @@ const STYLESHEET = [
       label: "data(label)",
       "font-family": FONT_BODY,
       "font-size": 8.5,
-      color: "#CBD5E1",
+      color: t.snippetText,
       "text-valign": "bottom",
       "text-halign": "center",
       "text-margin-y": 3,
@@ -250,7 +261,7 @@ const STYLESHEET = [
   { selector: 'node[kind="view"]', style: { ...ICON_STYLE, "background-image": ICONS.table } },
   {
     selector: 'node[kind="metric_view"]',
-    style: { "border-color": "#22D3EE", "border-width": 2, "border-opacity": 1, ...ICON_STYLE, "background-image": ICONS.metric_view },
+    style: { "border-color": t.metricViewRim, "border-width": 2, "border-opacity": 1, ...ICON_STYLE, "background-image": ICONS.metric_view },
   },
   {
     selector: 'node[kind="dashboard"]',
@@ -260,9 +271,9 @@ const STYLESHEET = [
   {
     selector: 'node[kind="agent"], node[kind="genie_agent"]',
     style: {
-      "background-color": "#0D1321",
+      "background-color": t.agentFill,
       "background-opacity": 1,
-      "border-color": "#A78BFA",
+      "border-color": t.agentRim,
       "border-width": 2,
       "border-opacity": 1,
       ...ICON_STYLE,
@@ -281,11 +292,11 @@ const STYLESHEET = [
   },
   {
     selector: 'node[origin="proposed"][ntype="domain"]',
-    style: { "border-style": "dashed", "border-color": "#CBD5E1", "border-opacity": 0.8 },
+    style: { "border-style": "dashed", "border-color": t.proposedRim, "border-opacity": 0.8 },
   },
   {
     selector: 'node[origin="proposed"][ntype="subdomain"]',
-    style: { "border-style": "dashed", "border-color": "#CBD5E1", "border-opacity": 0.8 },
+    style: { "border-style": "dashed", "border-color": t.proposedRim, "border-opacity": 0.8 },
   },
   // Ungrouped is neither Applied nor Suggested — it's the honest leftover bucket.
   // Neutral hollow + dotted rim, distinct from the provenance encodings (placed
@@ -293,13 +304,13 @@ const STYLESHEET = [
   {
     selector: "node[?isUngrouped]",
     style: {
-      "background-color": "#64748B",
-      "background-opacity": 0.18,
-      "border-color": "#64748B",
+      "background-color": t.ungroupedFill,
+      "background-opacity": t.ungroupedFillOpacity,
+      "border-color": t.ungroupedBorder,
       "border-style": "dotted",
       "border-width": 1.5,
       "border-opacity": 0.8,
-      color: "#94A3B8",
+      color: t.ungroupedText,
     },
   },
   {
@@ -307,7 +318,7 @@ const STYLESHEET = [
     style: {
       shape: "round-rectangle",
       "corner-radius": 4,
-      "background-color": "#1E293B",
+      "background-color": t.moreFill,
       "border-color": "data(color)",
       "border-width": 1,
       "border-style": "dashed",
@@ -315,7 +326,7 @@ const STYLESHEET = [
       label: "data(label)",
       "font-family": FONT_BODY,
       "font-size": 9,
-      color: "#94A3B8",
+      color: t.moreText,
       "text-valign": "center",
       "text-halign": "center",
       width: 52,
@@ -325,19 +336,19 @@ const STYLESHEET = [
   // Edges: weight = line weight (§1A encoding); hue = relationship type.
   {
     selector: "edge",
-    style: { width: 1.2, "line-color": "#475569", "curve-style": "bezier", opacity: 0.45 },
+    style: { width: 1.2, "line-color": t.edge, "curve-style": "bezier", opacity: t.edgeOpacity },
   },
   { selector: "edge[w]", style: { width: "data(w)" } },
-  { selector: 'edge[etype="coquery"]', style: { "line-color": "#818CF8", "line-style": "dashed", opacity: 0.65 } },
-  { selector: 'edge[etype="lineage"]', style: { "line-color": "#64748B" } },
+  { selector: 'edge[etype="coquery"]', style: { "line-color": t.edgeCoquery, "line-style": "dashed", opacity: 0.65 } },
+  { selector: 'edge[etype="lineage"]', style: { "line-color": t.edgeLineage } },
   // Satellite edges (measure / Page links) — hairline, distinct hue, always shown.
-  { selector: 'edge[etype="snippet"]', style: { width: 1, "line-color": "#38BDF8", "line-style": "dotted", opacity: 0.55, "curve-style": "bezier" } },
+  { selector: 'edge[etype="snippet"]', style: { width: 1, "line-color": t.edgeSnippet, "line-style": "dotted", opacity: 0.55, "curve-style": "bezier" } },
   { selector: "node.faded", style: { opacity: 0.12 } },
   { selector: "edge.faded", style: { opacity: 0.05 } },
   // Hover micro-state: a light rim; selection: a cyan focus ring. Both ease via the
   // canvas-wide transition below.
-  { selector: "node.hover", style: { "border-color": "#E2E8F0", "border-width": 2.5, "border-opacity": 0.55 } },
-  { selector: "node.focused", style: { "border-color": "#22D3EE", "border-width": 3, "border-opacity": 1, "border-style": "solid" } },
+  { selector: "node.hover", style: { "border-color": t.hoverRim, "border-width": 2.5, "border-opacity": 0.55 } },
+  { selector: "node.focused", style: { "border-color": t.focusRing, "border-width": 3, "border-opacity": 1, "border-style": "solid" } },
   // Smooth fade in/out for focus+context (§1B). Scoped to the classes that actually
   // change — a blanket transition on every node/edge stalls the shared animation
   // loop at this element count.
@@ -346,6 +357,7 @@ const STYLESHEET = [
   // clusters still emerge from connectivity) but off-screen until a node is tapped.
   { selector: "edge.hidden", style: { visibility: "hidden" } },
 ]
+}
 
 function layoutFor(lod: Lod) {
   // Seeded compound fcose = the Group-in-a-Box pattern: physics refines within/between
@@ -522,6 +534,15 @@ export function EstateGraph({
   const [subCrumb, setSubCrumb] = useState<string | null>(null)
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null)
 
+  // Theme-token visual system (MV-D79): the canvas can't read CSS vars, so its palette is
+  // an explicit token set selected by the resolved app theme. `useTheme` is idempotent with
+  // the app's own instance (it just re-reads the same localStorage/class); we only consume
+  // `resolvedTheme` to build the stylesheet + recolour the model-emitted hues per theme.
+  const { resolvedTheme } = useTheme()
+  const tokens = useMemo(() => graphTokens(resolvedTheme), [resolvedTheme])
+  const stylesheet = useMemo(() => buildStylesheet(tokens), [tokens])
+  const recolor = useMemo(() => recolorMap(tokens), [tokens])
+
   // Non-applied graph cache. Applied always mirrors the prop (OntologyPage fetches it as the
   // default); Proposed is fetched lazily the first time the toggle asks for it.
   const [cache, setCache] = useState<Partial<Record<GraphOrigin, OntologyGraph>>>({})
@@ -630,8 +651,16 @@ export function EstateGraph({
   }, [baseEls, expands])
 
   const elements = useMemo(
-    () => mergedEls.map((el) => (el.position ? { data: el.data, position: el.position } : { data: el.data })),
-    [mergedEls],
+    () =>
+      mergedEls.map((el) => {
+        // Recolour the model's dark-constant hue to the theme palette (MV-D79). Identity
+        // on dark ⇒ the dark render is unchanged; on light every hue shifts to its
+        // AA-clearing 600-shade sibling. Only `color` is rewritten; the model stays pure.
+        const c = el.data.color
+        const data = typeof c === "string" && recolor.has(c) ? { ...el.data, color: recolor.get(c) } : el.data
+        return el.position ? { data, position: el.position } : { data }
+      }),
+    [mergedEls, recolor],
   )
   const layout = useMemo(() => layoutFor(lod), [lod])
 
@@ -751,7 +780,7 @@ export function EstateGraph({
   if (!activeGraph) {
     if (graphError) {
       return (
-        <div className="dark flex items-start gap-2.5 rounded-xl border border-danger/30 bg-surface px-4 py-3.5">
+        <div className="flex items-start gap-2.5 rounded-xl border border-danger/30 bg-surface px-4 py-3.5">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-danger-foreground" />
           <div>
             <p className="text-sm font-semibold text-primary">Couldn&apos;t load the map</p>
@@ -767,7 +796,7 @@ export function EstateGraph({
       )
     }
     return (
-      <div className="dark flex items-center gap-2 rounded-xl border border-default bg-surface px-4 py-6 text-sm text-secondary">
+      <div className="flex items-center gap-2 rounded-xl border border-default bg-surface px-4 py-6 text-sm text-secondary">
         <Loader2 className="h-4 w-4 animate-spin text-accent" /> Building the suggested map…
       </div>
     )
@@ -776,7 +805,7 @@ export function EstateGraph({
   // ── Honest-empty (MV-D43) with a one-tap nudge to Proposed when applied is bare (MV-D74) ──
   if (isEmpty) {
     return (
-      <div className="dark flex items-start gap-2.5 rounded-xl border border-info/30 bg-surface px-4 py-3.5">
+      <div className="flex items-start gap-2.5 rounded-xl border border-info/30 bg-surface px-4 py-3.5">
         <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-info-foreground" />
         <div>
           <p className="text-sm font-semibold text-primary">No data in the estate graph</p>
@@ -799,14 +828,11 @@ export function EstateGraph({
   }
 
   return (
-    // Fixed dark "observatory" scope (Map v3.1, MV-D78): the map is a dark instrument
-    // panel regardless of the app's light/dark theme. Every node fill, glow, white icon,
-    // dark label plate and edge hue in the stylesheet was tuned for the dark canvas
-    // (#0D1321); rendering them on the light theme's `--bg-sunken` (#f1f5f9) washed the
-    // whole map out (the "1990s"/empty-pill report). A local `.dark` class re-scopes the
-    // CSS variables + Tailwind `dark:` variants for this subtree only — the surrounding
-    // workbench chrome keeps the user's chosen theme.
-    <div className="dark rounded-xl border border-default bg-surface text-primary overflow-hidden">
+    // Theme-aware map (Map v3.2, MV-D79): the panel follows the app's light/dark theme like
+    // every other Operate surface. The canvas can't read CSS vars, so its palette comes from
+    // `graphTokens(resolvedTheme)` (built into `stylesheet` above) — replacing the MV-D78
+    // forced-`.dark` shortcut, which fixed the washout by dropping light mode entirely.
+    <div className="rounded-xl border border-default bg-surface text-primary overflow-hidden">
       {/* Controls: source toggle + LOD toggle + breadcrumb / search / counts */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-default bg-elevated/40 px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
@@ -914,7 +940,7 @@ export function EstateGraph({
           style={{
             height: "560px",
             backgroundColor: "var(--bg-sunken)",
-            backgroundImage: "radial-gradient(circle at 1px 1px, rgba(148, 163, 184, 0.07) 1px, transparent 0)",
+            backgroundImage: `radial-gradient(circle at 1px 1px, ${tokens.dotGrid} 1px, transparent 0)`,
             backgroundSize: "22px 22px",
           }}
         >
@@ -938,13 +964,13 @@ export function EstateGraph({
               {/* The key remounts the canvas on view changes; the wrapper's fade-in
                   makes each remount (drill, LOD, origin, expand) arrive softly. */}
               <div
-                key={`${origin}:${lod}:${focusTop ?? "all"}:${activeGraph.as_of ?? ""}:${expandVersion}`}
+                key={`${resolvedTheme}:${origin}:${lod}:${focusTop ?? "all"}:${activeGraph.as_of ?? ""}:${expandVersion}`}
                 className="animate-fade-in"
                 style={{ width: "100%", height: "100%" }}
               >
               <CytoscapeComponent
                 elements={elements}
-                stylesheet={STYLESHEET}
+                stylesheet={stylesheet}
                 layout={layout}
                 style={{ width: "100%", height: "100%" }}
                 minZoom={0.05}

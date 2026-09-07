@@ -144,9 +144,12 @@ function onCyReady(cy: unknown) {
 }
 
 // Same page framing as OntologyPage so what the loop sees == prod. The app theme is
-// toggled on <html> exactly like the real app; ?theme=light reproduces the production
-// light-mode rendering (the map must hold up regardless of app theme), dark is default.
+// driven through the REAL `useTheme` mechanism (localStorage key + `.dark` on <html>) so
+// EstateGraph's own `useTheme()` resolves to the same theme (MV-D79) instead of the raw
+// class fighting the hook's mount effect. `?theme=light` reproduces production light mode
+// (the map must hold up regardless of app theme); dark is default.
 const theme = params.get("theme") === "light" ? "light" : "dark"
+localStorage.setItem("genierx-theme", theme)
 document.documentElement.classList.toggle("dark", theme === "dark")
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
