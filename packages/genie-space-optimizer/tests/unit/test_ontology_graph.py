@@ -320,3 +320,133 @@ def test_snapshot_blob_is_byte_identical_across_runs():
                                     metastore_id="m", workspace_id="w", run_id="r",
                                     as_of="2026-01-01T00:00:00+00:00")
     assert a["graph"] == b["graph"]
+
+
+# --- Ontology Map north-star: Data Lane (MV-D82) — org root, canonical parent,
+#     attach_level, verb + rel_class ---
+
+def _assets_by_id(blob):
+    return {n["id"]: n for n in blob["assets"]["nodes"]}
+
+
+def test_mv_membership_gives_asset_a_containment_parent():
+    """Build B: a table that is the TARGET of an mv_membership edge attaches to that
+    metric view — parent_id = the mv: source, attach_level = "asset"."""
+    sig = {
+        "nodes": [
+            {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+            {"id": "asset:c.rev.fact", "kind": "table"},
+        ],
+        "edges": [{"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"}],
+    }
+    blob = _snap(sig, {"c.rev.fact": "d1"}, domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    fact = _assets_by_id(blob)["asset:c.rev.fact"]
+    assert fact["parent_id"] == "mv:c.m.rev_mv"
+    assert fact["attach_level"] == "asset"
+
+
+def test_table_read_by_two_mvs_keeps_only_strongest_parent_surplus_stays_edge():
+    """Build B (canonical-parent) + Build C: a table read by two MVs keeps ONE tree
+    parent (higher weight wins); both memberships remain edges with verb "reads"."""
+    sig = {
+        "nodes": [
+            {"id": "mv:c.m.a_mv", "kind": "metric_view"},
+            {"id": "mv:c.m.b_mv", "kind": "metric_view"},
+            {"id": "asset:c.rev.fact", "kind": "table"},
+        ],
+        "edges": [
+            {"src": "mv:c.m.a_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership", "weight": 0.9},
+            {"src": "mv:c.m.b_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership", "weight": 0.5},
+        ],
+    }
+    blob = _snap(sig, {"c.rev.fact": "d1"}, domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    fact = _assets_by_id(blob)["asset:c.rev.fact"]
+    assert fact["parent_id"] == "mv:c.m.a_mv"  # higher weight wins the single parent
+    assert fact["attach_level"] == "asset"
+    # Neither membership was deleted; the surplus (b_mv) survives as a verb edge.
+    memberships = [e for e in blob["assets"]["edges"] if e["kind"] == "mv_membership"]
+    assert len(memberships) == 2
+    surplus = [e for e in memberships if e["src"] == "mv:c.m.b_mv"]
+    assert len(surplus) == 1 and surplus[0]["verb"] == "reads"
+
+
+def test_no_containment_asset_attaches_to_domain_subdomain_or_null():
+    """Build B fallback: no containment → attach to the domain. A sub-domain asset →
+    "subdomain", a top-level-domain asset → "domain", an ungrouped asset → parent null."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.rev.book", "kind": "table"},    # s1 (sub-domain under dom)
+            {"id": "asset:c.ops.log", "kind": "table"},     # d0 (top-level domain)
+            {"id": "asset:c.x.orphan", "kind": "table"},    # ungrouped (unmapped)
+        ],
+        "edges": [],
+    }
+    blob = _snap(sig, {"c.rev.book": "s1", "c.ops.log": "d0"}, domain_meta=_subdomain_meta())
+    a = _assets_by_id(blob)
+    assert (a["asset:c.rev.book"]["attach_level"], a["asset:c.rev.book"]["parent_id"]) == ("subdomain", "s1")
+    assert (a["asset:c.ops.log"]["attach_level"], a["asset:c.ops.log"]["parent_id"]) == ("domain", "d0")
+    assert (a["asset:c.x.orphan"]["attach_level"], a["asset:c.x.orphan"]["parent_id"]) == ("domain", None)
+
+
+def test_join_key_edge_verb_and_rel_class_cross_and_within_top_domain():
+    """Build C: a join_key edge carries verb "shares"; rel_class is "xdom" across two
+    top domains and "shared" within one (sub-domains sharing a parent Domain)."""
+    # Cross: c.rev.fact's top domain is "dom" (via s1); c.ops.log's is "d0" → xdom.
+    cross = _snap(
+        {"nodes": [{"id": "asset:c.rev.fact", "kind": "table"},
+                   {"id": "asset:c.ops.log", "kind": "table"}],
+         "edges": [{"src": "asset:c.rev.fact", "dst": "asset:c.ops.log", "kind": "join_key"}]},
+        {"c.rev.fact": "s1", "c.ops.log": "d0"}, domain_meta=_subdomain_meta(),
+    )
+    e = cross["assets"]["edges"][0]
+    assert e["verb"] == "shares" and e["rel_class"] == "xdom"
+
+    # Within: two sub-domains (s1, s2) both roll up to the same top domain "dom" → shared.
+    within = _snap(
+        {"nodes": [{"id": "asset:c.rev.book", "kind": "table"},
+                   {"id": "asset:c.rev.fare", "kind": "table"}],
+         "edges": [{"src": "asset:c.rev.book", "dst": "asset:c.rev.fare", "kind": "join_key"}]},
+        {"c.rev.book": "s1", "c.rev.fare": "s2"}, domain_meta=_subdomain_meta(),
+    )
+    e2 = within["assets"]["edges"][0]
+    assert e2["verb"] == "shares" and e2["rel_class"] == "shared"
+
+
+def test_org_root_present_when_non_empty_and_absent_when_empty():
+    """Build A: a non-empty graph emits a single ``org`` root keyed by metastore_id; an
+    empty graph omits the root key entirely and still yields a valid blob (MV-D43)."""
+    blob = _snap({"nodes": [{"id": "asset:c.rev.book", "kind": "table"}], "edges": []},
+                 {"c.rev.book": "s1"}, domain_meta=_subdomain_meta())
+    assert blob["root"] == {"id": "m", "label": "Estate", "kind": "org"}
+
+    pytest.importorskip("igraph")
+    row = layout.build_graph_snapshot(
+        {"nodes": [], "edges": []}, {},
+        metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
+    )
+    empty = json.loads(row["graph"])
+    assert "root" not in empty
+    assert empty["domains"]["nodes"] == [] and empty["assets"]["nodes"] == []
+
+
+def test_data_lane_keys_are_byte_identical_across_runs():
+    """Determinism: a graph exercising containment + cross-domain edges (so root,
+    parent_id, attach_level, verb, rel_class are all populated) is byte-identical twice."""
+    pytest.importorskip("igraph")
+    sig = {
+        "nodes": [
+            {"id": "mv:c.m.a_mv", "kind": "metric_view"},
+            {"id": "asset:c.rev.fact", "kind": "table"},
+            {"id": "asset:c.ops.log", "kind": "table"},
+        ],
+        "edges": [
+            {"src": "mv:c.m.a_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership", "weight": 0.9},
+            {"src": "asset:c.rev.fact", "dst": "asset:c.ops.log", "kind": "join_key"},
+        ],
+    }
+    kw = dict(metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00")
+    a = layout.build_graph_snapshot(sig, {"c.rev.fact": "s1", "c.ops.log": "d0"},
+                                    domain_meta=_subdomain_meta(), **kw)
+    b = layout.build_graph_snapshot(sig, {"c.rev.fact": "s1", "c.ops.log": "d0"},
+                                    domain_meta=_subdomain_meta(), **kw)
+    assert a["graph"] == b["graph"]

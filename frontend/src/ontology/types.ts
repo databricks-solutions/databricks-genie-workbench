@@ -239,6 +239,8 @@ export interface OntologyGraphNode {
   member_count?: number | null
   // Map v2 §2.1/§2.4 (MV-D74): provenance marker threaded onto every rollup node.
   origin?: string | null
+  // Northstar Data Lane (MV-D82): containment attach point — "asset" | "subdomain" | "domain".
+  attach_level?: string | null
 }
 
 export interface OntologyGraphEdge {
@@ -246,6 +248,9 @@ export interface OntologyGraphEdge {
   dst: string
   kind: string
   weight?: number | null
+  // Northstar Data Lane (MV-D82): plain-language verb + within/cross class ("shared" | "xdom").
+  verb?: string | null
+  rel_class?: string | null
 }
 
 export interface OntologyGraphLevel {
@@ -262,6 +267,9 @@ export interface OntologyGraph {
   edge_count: number
   state: GraphState
   as_of?: string | null
+  // Northstar Data Lane (MV-D82): the single `org` estate root above the Domains.
+  // Optional so a pre-MV-D82 / cold graph (no root) still parses.
+  root?: OntologyGraphNode | null
 }
 
 // Map v2 §2.3/§2.4 (MV-D73): expand-on-demand "business snippet" layer. Returns the

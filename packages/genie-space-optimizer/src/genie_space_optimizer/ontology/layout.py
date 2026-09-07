@@ -36,6 +36,58 @@ TOP_N_BY_CENTRALITY = 2000
 MAX_SNIPPET_MEASURES = 50
 MAX_SNIPPET_PAGES = 50
 
+# Ontology Map north-star — Data Lane (MV-D82). Containment precedence for the
+# canonical single-parent rule (Build B): an asset that is the TARGET of several
+# containment edges keeps exactly ONE tree parent — the strongest kind wins
+# (mv_membership ⊃ agent_scope), ties break by higher weight then source id asc.
+# Every surplus containment stays a typed verb cross-link (Build C).
+_CONTAINMENT_RANK = {"mv_membership": 2, "agent_scope": 1}
+
+# Plain-language verb per signal-edge kind (Build C, §3.4 / MV-D23). An unlisted
+# kind degrades to the raw kind string (never blank) so the map stays honest.
+_VERB_BY_KIND = {
+    "mv_membership": "reads",
+    "lineage_adjacency": "reads",
+    "agent_scope": "uses",
+    "join_key": "shares",
+    "co_query": "also queried with",
+    "semantic_sim": "similar to",
+}
+
+
+def _verb_of(kind: str) -> str:
+    """The plain-language verb for a signal-edge ``kind`` (MV-D82 §3.4).
+
+    Falls back to the raw kind for an unlisted edge kind (e.g. ``schema_affinity``,
+    ``tag_assignment``) — reveal-don't-invent, never a blank verb."""
+    return _VERB_BY_KIND.get(kind, kind)
+
+
+def _walk_to_top_domain(domain_id: str | None, domain_meta: dict[str, dict[str, Any]]) -> str | None:
+    """Follow ``parent_id`` up the domain_meta chain to the top-level domain id.
+
+    A sub-domain (``parent_id`` set) resolves to its ancestor Domain; a top-level
+    domain (or an id absent from meta, e.g. ``ungrouped``) resolves to itself; a
+    ``None`` domain resolves to ``None``. Cycle-guarded + bounded so a malformed
+    meta chain degrades to its last seen id instead of hanging (MV-D43)."""
+    seen: set[str] = set()
+    cur = domain_id
+    while cur is not None and cur not in seen:
+        seen.add(cur)
+        meta = domain_meta.get(cur)
+        parent = meta.get("parent_id") if meta else None
+        if not parent:
+            return cur
+        cur = parent
+    return cur
+
+
+def _rel_class_of(top_a: str | None, top_b: str | None) -> str:
+    """``"shared"`` when both endpoints resolve to the SAME (non-null) top domain,
+    else ``"xdom"`` (MV-D82 §3.4). Two unresolved endpoints are ``xdom`` — they do
+    not share a real domain."""
+    return "shared" if (top_a is not None and top_a == top_b) else "xdom"
+
 
 def _fqn_of(node_id: str) -> str:
     """Strip the ``prefix:`` from a signal-graph node id (``asset:c.s.t`` → ``c.s.t``).
@@ -205,18 +257,31 @@ def build_graph_snapshot(
             "cost": float(cost) if cost is not None else None,
         })
 
-    # Build asset-level edges (same as input, but only for present nodes).
+    # Top-domain resolver for an asset-level node id (Build C rel_class). Resolves the
+    # node's domain via node_domain_id (raw id, then bare fqn — the MV-D71 prefix fix)
+    # and walks domain_meta parents to the top Domain.
+    def _top_of_asset(node_id: str) -> str | None:
+        did = node_domain_id.get(node_id) or node_domain_id.get(_fqn_of(node_id))
+        return _walk_to_top_domain(did, domain_meta)
+
+    # Build asset-level edges (same as input, but only for present nodes). Each edge
+    # now carries a plain-language ``verb`` and a ``shared``/``xdom`` ``rel_class`` from
+    # its endpoints' top domains (Build C, MV-D82) — additive; the src/dst/kind/weight
+    # shape is unchanged for a reader that ignores the new keys.
     asset_node_ids = {n["id"] for n in asset_nodes}
     asset_edges = []
     for edge in edges:
         src_id = edge.get("src")
         dst_id = edge.get("dst")
         if src_id in asset_node_ids and dst_id in asset_node_ids:
+            kind = edge.get("kind", "unknown")
             asset_edges.append({
                 "src": src_id,
                 "dst": dst_id,
-                "kind": edge.get("kind", "unknown"),
+                "kind": kind,
                 "weight": edge.get("weight"),
+                "verb": _verb_of(kind),
+                "rel_class": _rel_class_of(_top_of_asset(src_id), _top_of_asset(dst_id)),
             })
 
     # Cap asset nodes to top-N by centrality (size).
@@ -230,6 +295,38 @@ def build_graph_snapshot(
     else:
         top_ids = {n["id"] for n in asset_nodes}
         truncated = False
+
+    # Build B — canonical containment parent + attach_level per asset (MV-D82). From the
+    # (post-cap) edges where the asset is the TARGET, pick the strongest containment by
+    # precedence (mv_membership ⊃ agent_scope; tie → higher weight → source id asc):
+    # parent_id = that mv:/agent: source, attach_level="asset". If none, attach to the
+    # domain: a sub-domain (its domain_id has a parent_id) → "subdomain", a top-level
+    # domain → "domain"; ungrouped/absent domain → parent_id null, "domain". Exactly ONE
+    # parent — a table read by >1 MV keeps only the strongest; surplus memberships stay
+    # verb edges (Build C). Additive keys on the existing asset-node dicts.
+    incoming_containment: dict[str, list[dict[str, Any]]] = {}
+    for edge in asset_edges:
+        if edge["kind"] in _CONTAINMENT_RANK:
+            incoming_containment.setdefault(edge["dst"], []).append(edge)
+    for node in asset_nodes:
+        cands = incoming_containment.get(node["id"])
+        if cands:
+            best = min(cands, key=lambda e: (
+                -_CONTAINMENT_RANK[e["kind"]],
+                -(e.get("weight") or 0.0),
+                e["src"],
+            ))
+            node["parent_id"] = best["src"]
+            node["attach_level"] = "asset"
+        else:
+            did = node.get("domain_id")
+            if did is not None:
+                meta = domain_meta.get(did)
+                node["parent_id"] = did
+                node["attach_level"] = "subdomain" if (meta and meta.get("parent_id")) else "domain"
+            else:
+                node["parent_id"] = None
+                node["attach_level"] = "domain"
 
     # Roll up to domain level: one node per (domain_id | null), edges aggregated.
     domain_dict: dict[str | None, dict[str, Any]] = {}
@@ -311,11 +408,19 @@ def build_graph_snapshot(
             edge_key = (src_domain or "ungrouped", dst_domain or "ungrouped", edge.get("kind"))
             if edge_key not in seen_domain_edges:
                 seen_domain_edges.add(edge_key)
+                d_src = src_domain or "ungrouped"
+                d_dst = dst_domain or "ungrouped"
+                kind = edge.get("kind", "unknown")
                 domain_edges.append({
-                    "src": src_domain or "ungrouped",
-                    "dst": dst_domain or "ungrouped",
-                    "kind": edge.get("kind", "unknown"),
+                    "src": d_src,
+                    "dst": d_dst,
+                    "kind": kind,
                     "weight": edge.get("weight"),
+                    "verb": _verb_of(kind),
+                    "rel_class": _rel_class_of(
+                        _walk_to_top_domain(d_src, domain_meta),
+                        _walk_to_top_domain(d_dst, domain_meta),
+                    ),
                 })
 
     # Sub-domain rollup edges (MV-D73 §2.2): aggregate asset edges to the sub-domain
@@ -340,11 +445,17 @@ def build_graph_snapshot(
         if edge_key in seen_sub_edges:
             continue
         seen_sub_edges.add(edge_key)
+        kind = edge.get("kind", "unknown")
         subdomain_edges.append({
             "src": src_sub,
             "dst": dst_sub,
-            "kind": edge.get("kind", "unknown"),
+            "kind": kind,
             "weight": edge.get("weight"),
+            "verb": _verb_of(kind),
+            "rel_class": _rel_class_of(
+                _walk_to_top_domain(src_sub, domain_meta),
+                _walk_to_top_domain(dst_sub, domain_meta),
+            ),
         })
 
     # Bounded expand-on-demand "business-snippet" index (MV-D73 §2.3): re-key measures to
@@ -359,8 +470,12 @@ def build_graph_snapshot(
         for sub_id, pgs in (snippets_in.get("pages") or {}).items():
             snippets_out.setdefault(sub_id, {})["pages"] = list(pgs)[:MAX_SNIPPET_PAGES]
 
-    # Build the snapshot blob.
+    # Build the snapshot blob. Build A (MV-D82): a single ``org`` root node keyed by the
+    # metastore so a tree renderer has one estate root above the Domains. Emitted only on
+    # the non-empty path (the empty/degrade returns above omit it — MV-D43); top-level
+    # domain rollups keep parent_id=None (NOT rewired to root — degrade path stays intact).
     snapshot_blob = {
+        "root": {"id": metastore_id, "label": "Estate", "kind": "org"},
         "domains": {
             "nodes": domain_nodes,
             "edges": domain_edges,

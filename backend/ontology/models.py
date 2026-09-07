@@ -103,6 +103,10 @@ class OntologyGraphNode(BaseModel):
     # cluster). Additive + defaulted None so a pre-MV-D73 blob (no origin) keeps
     # rendering; Pydantic now preserves the blob's origin instead of dropping it.
     origin: str | None = None
+    # Ontology Map north-star, Data Lane (MV-D82): where an asset attaches in the
+    # containment tree — "asset" (under an mv:/agent: parent), "subdomain", or "domain".
+    # Additive + defaulted None so a pre-MV-D82 blob still renders (MV-D43).
+    attach_level: str | None = None
 
 
 class OntologyGraphEdge(BaseModel):
@@ -110,6 +114,12 @@ class OntologyGraphEdge(BaseModel):
     dst: str
     kind: str
     weight: float | None = None
+    # Ontology Map north-star, Data Lane (MV-D82): plain-language verb for the edge
+    # kind (e.g. "reads"/"uses"/"shares") and its within/cross class — "shared" (both
+    # endpoints in one top domain) vs "xdom". Additive + defaulted None (pre-MV-D82
+    # blobs and expand edges without them still parse; MV-D43).
+    verb: str | None = None
+    rel_class: str | None = None
 
 
 class OntologyGraphLevel(BaseModel):
@@ -126,6 +136,10 @@ class OntologyGraph(BaseModel):
     edge_count: int = 0
     state: GraphState = "cold"
     as_of: str | None = None
+    # Ontology Map north-star, Data Lane (MV-D82): the single ``org`` estate root above
+    # the Domains. Additive + defaulted None so a pre-MV-D82 / empty / cold blob (no root
+    # key) still parses and renders as today (MV-D43).
+    root: OntologyGraphNode | None = None
 
 
 class GovernedTag(BaseModel):

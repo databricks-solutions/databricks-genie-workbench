@@ -120,6 +120,10 @@ async def get_ontology_graph(origin: str = "applied") -> OntologyGraph:
         return OntologyGraph(state="cold")
 
     blob = _filter_by_origin(snap["graph"], view)
+    # Node ``attach_level`` and edge ``verb``/``rel_class`` (MV-D82) flow through _level
+    # automatically (Pydantic reads the extra blob keys); the ``org`` root is passed
+    # explicitly here — absent on a pre-MV-D82 / empty blob, so root stays None (MV-D43).
+    root_blob = blob.get("root")
     return OntologyGraph(
         domains=_level(blob.get("domains", {})),
         assets=_level(blob.get("assets", {})),
@@ -128,6 +132,7 @@ async def get_ontology_graph(origin: str = "applied") -> OntologyGraph:
         edge_count=int(blob.get("edge_count", 0)),
         state="fresh",
         as_of=snap.get("as_of"),
+        root=OntologyGraphNode(**root_blob) if isinstance(root_blob, dict) else None,
     )
 
 
