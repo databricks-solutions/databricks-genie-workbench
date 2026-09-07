@@ -254,9 +254,11 @@ frontend/src/ontology/{EstateGraph.tsx,estateGraphModel.ts,api.ts,types.ts,compo
 OntologyPage.tsx, docs/design/mockups/17.0h-ontology-estate-graph-sigma-dark.html, and AGENTS.md.
 
 MANDATE:
-- BUILD §2 (the local visual feedback loop) FIRST: a dev-only Vite harness that mounts EstateGraph
-  with REAL captured fixtures (graph.applied/proposed/focused + mv/subdomain/slow/failing expands),
-  an injectable mock seam for getGraph/expandNode (NO new runtime dep), loading the real
+- BUILD §2 (the local visual feedback loop) FIRST: a dev-only Vite harness that mounts EstateGraph.
+  The REAL fixtures are ALREADY captured in frontend/src/ontology/harness/fixtures/ (see its
+  README: graph.applied/proposed + mv/subdomain expands) — LOAD these; do NOT hit the live API.
+  Derive the focused view in-memory (focusTop) from graph.applied; synthesize slow/failing in the
+  mock seam. Add an injectable mock seam for getGraph/expandNode (NO new runtime dep), loading the real
   public/fonts, and a headless-browser screenshot step (use the user-playwright MCP / agent-browser
   — zero-dep — or an exact-pinned DEV-only Playwright). Confirm you can screenshot every state
   offline before touching visuals.
@@ -275,9 +277,11 @@ preserved. Do NOT deploy, run the job, write governed tags, or edit the playbook
 
 GATES (offline, each phase + at end): cd frontend && npm ci && npm run lint && npx tsc -b &&
 npm run test — all green; lockfile runtime-graph byte-identical (dev-only Playwright, if added, is
-exact-pinned + documented). Commit on `ontology` per phase with a screenshot set. When the §5 rubric
+exact-pinned + documented). Commit CODE on `ontology` per phase (capture a screenshot set each
+phase but do NOT commit it — `harness/shots/` is git-ignored). When the §5 rubric
 is all-green, STOP and report: files changed, git diff --stat, test summary, and the final
-screenshot set. A human runs deploy-verify on fevm-serverless.
+screenshot set (SHOW/attach it — `harness/shots/` is git-ignored, so commit CODE only, not the
+PNGs). A human runs deploy-verify on fevm-serverless.
 ```
 
 ---
