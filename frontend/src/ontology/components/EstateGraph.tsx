@@ -362,6 +362,13 @@ export function EstateGraph({ graph }: { graph: OntologyGraph }) {
   })
 
   const cyRef = useRef<CyCore | null>(null)
+  // react-cytoscapejs@2.0.0 invokes the `cy` prop on EVERY update, not just mount
+  // (updateCytoscape → `t.cy(n)`), so the wiring below must be idempotent per instance:
+  // re-running `cy.ready(() => cy.fit())` + re-binding viewport listeners on each render
+  // makes fit re-emit pan/zoom → refreshMini → setMini → re-render → … "Maximum update
+  // depth exceeded" (React #185). A new instance only appears on remount (the `key`
+  // already changes on origin/lod/focus/expand), so gate init on instance identity.
+  const initedCyRef = useRef<CyCore | null>(null)
 
   // Applied mirrors the prop; other origins come from the lazy cache.
   const activeGraph = origin === "applied" ? graph : cache[origin]
@@ -691,6 +698,12 @@ export function EstateGraph({ graph }: { graph: OntologyGraph }) {
                 pixelRatio={1}
                 cy={(cy: CyCore) => {
                   cyRef.current = cy
+                  // Idempotency guard: wire this cytoscape instance exactly once. On plain
+                  // re-renders react-cytoscapejs calls this again with the SAME instance —
+                  // returning early avoids the fit→pan/zoom→setMini→re-render feedback loop
+                  // (React #185). Remounts (key change) yield a new instance → re-wire.
+                  if (initedCyRef.current === cy) return
+                  initedCyRef.current = cy
                   cy.removeListener("tap")
                   cy.removeListener("layoutstop")
                   cy.removeListener("pan")
