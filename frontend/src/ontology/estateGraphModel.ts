@@ -6,7 +6,7 @@
  * `EstateGraph.tsx` so the component file only exports the component (react-refresh) and
  * so the element builder is unit-testable without mounting cytoscape.
  */
-import type { OntologyGraph, OntologyGraphNode } from "@/ontology/types"
+import type { OntologyGraph, OntologyGraphExpand, OntologyGraphNode } from "@/ontology/types"
 
 export type Lod = "domains" | "subdomains" | "assets"
 
@@ -53,6 +53,10 @@ export interface TopDomain {
   memberCount: number
   subIds: string[]
   ungrouped: boolean
+  // Provenance (MV-D74): "applied" (governed-tag current state) vs "proposed" (engine
+  // cluster → rendered dashed + "Suggested"). Taken from the top-level node; a top seen
+  // only through its children inherits the first child's origin until the top appears.
+  origin: string | null
 }
 
 /**
@@ -75,9 +79,12 @@ export function groupTops(nodes: OntologyGraphNode[]): Map<string, TopDomain> {
         memberCount: 0,
         subIds: [],
         ungrouped,
+        origin: d.origin ?? null,
       }
       tops.set(topId, t)
     }
+    // The actual top-level node (no parent_id) is authoritative for the top's origin.
+    if (!d.parent_id && d.origin != null) t.origin = d.origin
     t.memberCount += d.member_count ?? 0
     if (d.parent_id) t.subIds.push(d.id)
   }
@@ -175,6 +182,7 @@ export function buildElements(
         {
           id: t.id, label: t.name, ntype: "domain", color: t.color,
           count: t.memberCount, px: sizePx(t.memberCount, 30, 9, 8),
+          origin: t.origin,
         },
         topCenter(t.id),
       )
@@ -206,6 +214,7 @@ export function buildElements(
           id: d.id, parent: `top:${top}`, label: d.label, ntype: "subdomain",
           color: tops.get(top)!.color, count: d.member_count ?? 0,
           px: sizePx(d.member_count ?? 1, 16, 6, 6),
+          origin: d.origin ?? tops.get(top)!.origin,
         },
         seedNear(topCenter(top), d.id, 90),
       )
@@ -218,6 +227,7 @@ export function buildElements(
         {
           id: `self:${t.id}`, parent: `top:${t.id}`, label: t.name, ntype: "subdomain",
           color: t.color, count: t.memberCount, px: sizePx(t.memberCount || 1, 16, 6, 6),
+          origin: t.origin,
         },
         seedNear(topCenter(t.id), `self:${t.id}`, 40),
       )
@@ -296,6 +306,7 @@ export function buildElements(
         id: `sub:${subId}`, parent: `top:${topId}`, label: sub?.label ?? subId,
         ntype: "subcontainer", color: tops.get(topId)?.color ?? UNGROUPED_COLOR,
         count: sub?.member_count ?? 0,
+        origin: sub?.origin ?? tops.get(topId)?.origin ?? null,
       },
     })
   }
@@ -312,6 +323,96 @@ export function buildElements(
   return els
 }
 
+/**
+ * The LOD gate the Map v2 renderer applies (MV-D75): the **Assets LOD requires a focused
+ * domain**, so without one it yields NO elements — the "pick a business area" state — rather
+ * than the all-domains-at-once asset mush. Every other case delegates to `buildElements`.
+ * Kept pure + exported so the gate is unit-testable without mounting cytoscape.
+ */
+export function viewElements(
+  graph: OntologyGraph,
+  lod: Lod,
+  focusTop: string | null,
+  opts: BuildOpts = {},
+): CyEl[] {
+  if (lod === "assets" && !focusTop) return []
+  return buildElements(graph, lod, focusTop, opts)
+}
+
+// Satellite "snippet" accents (MV-D75): measures read as one hue, Pages another, so the
+// expand-on-demand layer is visually distinct from the domain palette.
+export const MEASURE_COLOR = "#38BDF8"
+export const PAGE_COLOR = "#FBBF24"
+
+/** ntype for an expand-layer child: measure | page | (fallback) snippet. */
+function satelliteNtype(kind: string): "measure" | "page" | "snippet" {
+  if (kind === "measure") return "measure"
+  if (kind === "page") return "page"
+  return "snippet"
+}
+
+/**
+ * Merge an expand-on-demand payload (§2.3, MV-D73) into an existing element list, PURELY.
+ *
+ * Appends each measure/Page child as a satellite node parented into `parentId` (the tapped
+ * node's container, so satellites nest with their MV/sub-domain) and each `mv_measure` /
+ * `page_source` edge — with two invariants the renderer relies on:
+ *  - **dedup:** a node/edge already present (by id) is never re-added, so re-tapping or
+ *    re-expanding the same parent is idempotent.
+ *  - **emitted-only guard:** an edge is dropped unless BOTH endpoints exist in the merged
+ *    node set, so a satellite edge can never dangle (the "nonexistent source" crash guard).
+ *
+ * Side-effect-free: returns a new array; the inputs are not mutated. Deterministic seed
+ * positions keep the map stable across re-renders (mental-map preservation, MV-D72).
+ */
+export function mergeExpand(
+  elements: CyEl[],
+  expand: OntologyGraphExpand,
+  parentId: string,
+): CyEl[] {
+  const nodeIds = new Set<string>()
+  const edgeIds = new Set<string>()
+  for (const el of elements) {
+    if (el.group === "nodes") nodeIds.add(String(el.data.id))
+    else edgeIds.add(String(el.data.id))
+  }
+
+  const out = [...elements]
+  // Deterministic center for this parent's satellites (id-hashed → stable, no RNG).
+  const center = seedNear({ x: 0, y: 0 }, parentId, 400)
+  for (const n of expand.nodes) {
+    if (nodeIds.has(n.id)) continue
+    nodeIds.add(n.id)
+    const ntype = satelliteNtype(n.kind)
+    out.push({
+      group: "nodes",
+      data: {
+        id: n.id,
+        parent: parentId,
+        label: n.label,
+        ntype,
+        kind: n.kind,
+        color: ntype === "page" ? PAGE_COLOR : MEASURE_COLOR,
+        px: ntype === "page" ? 12 : 9,
+        parentNodeId: parentId,
+      },
+      position: seedNear(center, n.id, 60),
+    })
+  }
+  for (const e of expand.edges) {
+    const id = `xe_${e.src}__${e.dst}`
+    if (edgeIds.has(id)) continue
+    // Emitted-only guard: never reference a node that isn't in the merged set.
+    if (!nodeIds.has(e.src) || !nodeIds.has(e.dst)) continue
+    edgeIds.add(id)
+    out.push({
+      group: "edges",
+      data: { id, source: e.src, target: e.dst, etype: "snippet", w: 1 },
+    })
+  }
+  return out
+}
+
 /** Insert compound container parent nodes for exactly the tops that have children. */
 function prependContainers(els: CyEl[], tops: Map<string, TopDomain>, usedTops: Set<string>) {
   const containers: CyEl[] = []
@@ -320,7 +421,7 @@ function prependContainers(els: CyEl[], tops: Map<string, TopDomain>, usedTops: 
     if (!t) continue
     containers.push({
       group: "nodes",
-      data: { id: `top:${t.id}`, label: t.name, ntype: "container", color: t.color, count: t.memberCount },
+      data: { id: `top:${t.id}`, label: t.name, ntype: "container", color: t.color, count: t.memberCount, origin: t.origin },
     })
   }
   els.unshift(...containers)
@@ -355,6 +456,13 @@ export function nodeFacts(data: Record<string, unknown>): NodeFacts {
   }
   if (ntype === "more") {
     return { title: label, chip: "More assets", lines: ["Zoom in or open this business area to see the rest."], drillTopId: null }
+  }
+  // Expand-on-demand satellites (MV-D73/D75) — plain language, zero jargon (MV-D23).
+  if (ntype === "measure") {
+    return { title: label, chip: "Measure", lines: ["A number this metric view reports."], drillTopId: null }
+  }
+  if (ntype === "page") {
+    return { title: label, chip: "Page", lines: ["A guidance note attached to this area."], drillTopId: null }
   }
   // asset
   const kind = String(data.kind ?? "table")

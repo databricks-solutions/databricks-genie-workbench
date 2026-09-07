@@ -220,6 +220,11 @@ export interface DecisionResponse {
 // 1:1 with backend/ontology/models.py OntologyGraph*.
 export type GraphState = "fresh" | "stale" | "cold"
 
+// Provenance of a rollup node (MV-D74, Map v2 §3). `applied` = backed by a governed-tag
+// assignment (authoritative current state); `proposed` = a pure engine cluster (rendered
+// dashed + "Suggested"). Optional + defaulted server-side so older snapshots still parse.
+export type GraphOrigin = "applied" | "proposed"
+
 export interface OntologyGraphNode {
   id: string
   label: string
@@ -232,6 +237,8 @@ export interface OntologyGraphNode {
   size: number
   cost?: number | null
   member_count?: number | null
+  // Map v2 §2.1/§2.4 (MV-D74): provenance marker threaded onto every rollup node.
+  origin?: string | null
 }
 
 export interface OntologyGraphEdge {
@@ -255,6 +262,17 @@ export interface OntologyGraph {
   edge_count: number
   state: GraphState
   as_of?: string | null
+}
+
+// Map v2 §2.3/§2.4 (MV-D73): expand-on-demand "business snippet" layer. Returns the
+// children of ONE node, hydrated on click (Bloom `addAndUpdateElementsInGraph` pattern):
+// a metric_view's measures (`kind="measure"`, edge `mv_measure`) and a node's attached
+// Pages (`kind="page"`, edge `page_source`). 1:1 with backend OntologyGraphExpand.
+export interface OntologyGraphExpand {
+  nodes: OntologyGraphNode[]
+  edges: OntologyGraphEdge[]
+  parent_id: string
+  as_of: string | null
 }
 
 // ── Stage 4.1d: Draft endpoints (MV-D66) ───────────────────────────────────
