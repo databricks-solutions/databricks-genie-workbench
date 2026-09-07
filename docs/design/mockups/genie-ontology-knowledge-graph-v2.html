@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Genie Ontology — Knowledge Graph Explorer v2 (Mockup)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  :root {
+    --bg: #F9F7F4;            /* Oat Light */
+    --ink: #1B3139;           /* Navy */
+    --ink-2: #445B66;
+    --muted: #8CA0A8;
+    --panel: #FFFFFF;
+    --grid: #E8E4DC;
+    --accent: #FF3621;        /* Lava — Genie Agents only */
+    --c-org: #0B2026;
+    --c-subdomain: #1B5162;   /* Navy-700 */
+    --c-dashboard: #4359FF;   /* Blue */
+    --c-metricview: #00A972;  /* Green */
+    --c-measure: #FFAB00;     /* Amber */
+    --c-table: #618794;       /* Slate */
+    --c-crossdom: #98102A;    /* Maroon — cross-domain edges */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--ink); overflow: hidden; }
+
+  header {
+    height: 64px; display: flex; align-items: center; gap: 20px;
+    padding: 0 24px; border-bottom: 1px solid var(--grid); background: var(--bg);
+  }
+  header h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
+  header h1 .mark { width: 14px; height: 14px; border-radius: 3px; background: var(--accent); display: inline-block; }
+  header .sub { font-size: 12.5px; color: var(--ink-2); }
+  header .spacer { flex: 1; }
+  .searchbox { position: relative; }
+  .searchbox input {
+    font-family: 'DM Sans', sans-serif; font-size: 13px; padding: 7px 12px 7px 30px;
+    border: 1px solid var(--grid); border-radius: 8px; background: var(--panel); color: var(--ink);
+    width: 230px; outline: none;
+  }
+  .searchbox input:focus { border-color: var(--c-subdomain); }
+  .searchbox svg { position: absolute; left: 9px; top: 8px; opacity: .45; }
+  .btn {
+    font-family: 'DM Sans', sans-serif; font-size: 12.5px; font-weight: 500;
+    padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--grid); background: var(--panel); color: var(--ink);
+  }
+  .btn:hover { border-color: var(--muted); }
+
+  .stage { position: relative; height: calc(100% - 64px); display: flex; }
+  #graph { flex: 1; cursor: grab; }
+  #graph:active { cursor: grabbing; }
+
+  .crumb {
+    position: absolute; top: 14px; left: 18px; font-size: 12.5px; color: var(--ink-2);
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(249,247,244,.85); backdrop-filter: blur(3px);
+    padding: 6px 12px; border-radius: 8px; border: 1px solid var(--grid); z-index: 5;
+  }
+  .crumb b { color: var(--ink); font-weight: 700; }
+  .crumb span.sep { color: var(--muted); }
+
+  .legend {
+    position: absolute; bottom: 16px; left: 18px;
+    background: var(--panel); border: 1px solid var(--grid); border-radius: 10px;
+    padding: 12px 14px; font-size: 12px; box-shadow: 0 2px 10px rgba(27,49,57,.06);
+    max-width: 250px; z-index: 5;
+  }
+  .legend h3 { font-size: 11px; font-weight: 700; margin-bottom: 8px; color: var(--ink-2); }
+  .legend .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer; }
+  .legend .row.dim { opacity: .35; }
+  .legend .dot { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+  .legend .edge-row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+  .legend .edge-sample { width: 26px; height: 0; border-top: 2px solid #C9C2B6; flex: none; }
+  .legend .edge-sample.shared { border-top-style: dashed; border-top-color: var(--c-table); }
+  .legend .edge-sample.xdom { border-top-style: dashed; border-top-color: var(--c-crossdom); }
+  .legend hr { border: none; border-top: 1px solid var(--grid); margin: 9px 0; }
+  .legend .hint { color: var(--muted); margin-top: 8px; line-height: 1.45; }
+
+  .tooltip {
+    position: absolute; pointer-events: none; z-index: 20;
+    background: var(--ink); color: #FDFCFA; border-radius: 10px; padding: 12px 14px;
+    font-size: 12px; line-height: 1.5; max-width: 280px; opacity: 0; transition: opacity .12s;
+    box-shadow: 0 6px 22px rgba(27,49,57,.28);
+  }
+  .tooltip .tt-type { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; opacity: .75; }
+  .tooltip .tt-name { font-size: 13.5px; font-weight: 700; margin: 2px 0 6px; }
+  .tooltip .tt-kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+  .tooltip .tt-kv .k { opacity: .6; }
+  .tooltip .tt-code { font-family: 'DM Mono', monospace; font-size: 11px; background: rgba(255,255,255,.1); padding: 3px 6px; border-radius: 5px; margin-top: 5px; display: inline-block; }
+
+  aside {
+    width: 300px; flex: none; border-left: 1px solid var(--grid);
+    background: var(--panel); padding: 20px; overflow-y: auto;
+  }
+  aside .empty { color: var(--muted); font-size: 13px; line-height: 1.55; margin-top: 8px; }
+  aside .type-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--ink-2); background: var(--bg); border: 1px solid var(--grid);
+    padding: 4px 9px; border-radius: 99px; margin-bottom: 10px;
+  }
+  aside .type-pill .dot { width: 8px; height: 8px; border-radius: 50%; }
+  aside h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 4px; overflow-wrap: anywhere; }
+  aside .desc { font-size: 12.5px; color: var(--ink-2); line-height: 1.5; margin-bottom: 14px; }
+  aside .meta { font-size: 12.5px; border-top: 1px solid var(--grid); }
+  aside .meta .kv { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--grid); }
+  aside .meta .k { color: var(--muted); flex: none; }
+  aside .meta .v { text-align: right; font-weight: 500; overflow-wrap: anywhere; }
+  aside .meta .v.mono { font-family: 'DM Mono', monospace; font-size: 11px; font-weight: 400; }
+  aside h4 { font-size: 11px; font-weight: 700; color: var(--ink-2); margin: 16px 0 6px; letter-spacing: .04em; text-transform: uppercase; }
+  aside .rel { display: flex; align-items: baseline; gap: 7px; font-size: 12.5px; padding: 5px 0; cursor: pointer; }
+  aside .rel:hover .rel-name { text-decoration: underline; }
+  aside .rel .verb { color: var(--muted); font-size: 11px; flex: none; width: 96px; }
+  aside .rel .rel-name { font-weight: 500; }
+  aside .rel .xd { font-size: 9.5px; font-weight: 700; color: var(--c-crossdom); border: 1px solid var(--c-crossdom); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+
+  /* graph elements */
+  .link { fill: none; stroke: #C9C2B6; stroke-width: 1.4; }
+  .xlink { fill: none; stroke-width: 1.5; stroke-dasharray: 5 4; opacity: .85; }
+  .xlink.shared { stroke: var(--c-table); }
+  .xlink.xdom { stroke: var(--c-crossdom); }
+  .link.faded, .node.faded, .xlink.faded, .link-label.faded { opacity: .1; }
+  .link-label {
+    font-size: 9.5px; font-family: 'DM Sans', sans-serif; font-weight: 500;
+    paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
+  }
+  .link-label.shared { fill: var(--ink-2); }
+  .link-label.xdom { fill: var(--c-crossdom); font-weight: 700; }
+  .node { cursor: pointer; }
+  .node circle.core { stroke: #fff; stroke-width: 2; }
+  .node.selected circle.core { stroke: var(--ink); stroke-width: 2.5; }
+  .node.searchhit circle.core { stroke: var(--accent); stroke-width: 3; }
+  .node text.name {
+    font-family: 'DM Sans', sans-serif; fill: var(--ink); font-weight: 500;
+    paint-order: stroke; stroke: var(--bg); stroke-width: 3.5px; stroke-linejoin: round;
+    pointer-events: none;
+  }
+  .node .badge-bg { fill: var(--ink); }
+  .node .badge-txt { fill: #fff; font-size: 8.5px; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="mark"></span>Genie Ontology · Knowledge Graph</h1>
+  <span class="sub">NorthStar Retail Group — two domains, cross-domain lineage</span>
+  <div class="spacer"></div>
+  <div class="searchbox">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#1B3139" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+    <input id="search" type="text" placeholder="Find a node (e.g. dim_item)…">
+  </div>
+  <button class="btn" id="expandAll">Expand all</button>
+  <button class="btn" id="reset">Reset view</button>
+</header>
+
+<div class="stage">
+  <svg id="graph"></svg>
+  <div class="crumb" id="crumb"><b>NorthStar Retail Group</b><span class="sep">·</span><span>click a node to drill down</span></div>
+
+  <div class="legend">
+    <h3>NODE TYPES — click to focus</h3>
+    <div id="legendNodes"></div>
+    <hr>
+    <div class="edge-row"><span class="edge-sample"></span><span>hierarchy (contains / queries / defines / reads)</span></div>
+    <div class="edge-row"><span class="edge-sample shared"></span><span>shared within domain</span></div>
+    <div class="edge-row"><span class="edge-sample xdom"></span><span>cross-domain link</span></div>
+    <div class="hint">Click to drill down or up. Drag any node to reposition it — edges follow. Hover for details. Scroll to zoom, drag empty canvas to pan.</div>
+  </div>
+
+  <aside id="inspector">
+    <div class="empty">Select a node to inspect its metadata, lineage and relationships.<br><br>Maroon dashed edges cross domain boundaries — e.g., Finance reconciling revenue against the same POS fact Merchandising sells from.</div>
+  </aside>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+/* =====================================================================
+   1. DATA MODEL
+   Org → Domains → Sub-domains → assets. Metric views and tables can also
+   hang DIRECTLY under a domain or sub-domain (shared reference assets).
+   Cross-links carry a verb and are auto-classed as within-domain (slate)
+   or cross-domain (maroon) based on each endpoint's domain ancestor.
+   ===================================================================== */
+
+const TYPES = {
+  org:        { label: 'Organization',    hex: '#0B2026', r: 22 },
+  domain:     { label: 'Domain',          hex: '#1B3139', r: 18 },
+  subdomain:  { label: 'Sub-domain',      hex: '#1B5162', r: 14 },
+  agent:      { label: 'Genie Agent',     hex: '#FF3621', r: 11 },
+  dashboard:  { label: 'AI/BI Dashboard', hex: '#4359FF', r: 11 },
+  metricview: { label: 'Metric View',     hex: '#00A972', r: 9  },
+  measure:    { label: 'Measure',         hex: '#FFAB00', r: 6  },
+  table:      { label: 'Table',           hex: '#618794', r: 7  },
+};
+
+const NODES = [
+  { id:'org', type:'org', name:'NorthStar Retail Group', meta:{
+      Domains:'2', Metastore:'northstar-prod', Governance:'Unity Catalog',
+      desc:'Enterprise ontology root. Every certified domain, semantic asset and table below is governed in one metastore.' }},
+
+  /* ================= DOMAIN 1: RETAIL OPERATIONS ================= */
+  { id:'dom-retail', type:'domain', parent:'org', name:'Retail Operations', meta:{
+      Steward:'Data Platform Team', 'Sub-domains':'3', Certified:'Yes',
+      desc:'Item sales, store operations and inventory analytics.' }},
+
+  // table directly under a DOMAIN (shared reference asset)
+  { id:'t-cal', type:'table', parent:'dom-retail', name:'ref_calendar', meta:{
+      Path:'retail.ref.ref_calendar', Rows:'18K', Format:'Delta', Freshness:'1 day ago',
+      desc:'Fiscal calendar reference — owned at domain level, joined by metric views across the org.' }},
+
+  { id:'sd-merch', type:'subdomain', parent:'dom-retail', name:'Merchandising', meta:{
+      Owner:'merch-analytics', Assets:'4', Certified:'Yes',
+      desc:'Item sales, category performance and promotion effectiveness.' }},
+  { id:'sd-ops', type:'subdomain', parent:'dom-retail', name:'Store Operations', meta:{
+      Owner:'store-ops-bi', Assets:'4', Certified:'Yes',
+      desc:'Traffic, conversion, labor and daily store health.' }},
+  { id:'sd-supply', type:'subdomain', parent:'dom-retail', name:'Supply Chain', meta:{
+      Owner:'supply-analytics', Assets:'2', Certified:'In review',
+      desc:'Inventory position, stockouts and days of supply.' }},
+
+  // --- Merchandising
+  { id:'ag-sales', type:'agent', parent:'sd-merch', name:'Sales Insights Agent', meta:{
+      Owner:'merch-analytics', 'Sample questions':'24', 'Ontology coverage':'92%', 'Queries / 28d':'1,840',
+      desc:'Answers natural-language questions on item sales and promo lift, grounded in certified metric views.' }},
+  { id:'db-cat', type:'dashboard', parent:'sd-merch', name:'Category Performance', meta:{
+      Owner:'merch-analytics', 'Viewers / 28d':'312', Refresh:'Hourly',
+      desc:'Category and item-level sales trends for merchandising leads.' }},
+
+  { id:'mv-sales', type:'metricview', parent:'ag-sales', name:'mv_item_sales', meta:{
+      Source:'retail.gold.mv_item_sales', Measures:'3', Dimensions:'store, item, date, channel', Freshness:'42 min ago',
+      desc:'Certified item-level sales semantics: net sales, units, basket size.' }},
+  { id:'mv-promo', type:'metricview', parent:'ag-sales', name:'mv_promotions', meta:{
+      Source:'retail.gold.mv_promotions', Measures:'2', Dimensions:'promo, item, date', Freshness:'1 hr ago',
+      desc:'Promotion lift and redemption semantics.' }},
+
+  { id:'m-netsales', type:'measure', parent:'mv-sales', name:'net_sales', meta:{
+      Expression:'SUM(sales_amt - returns_amt)', Format:'$ #,##0', desc:'Net revenue after returns. Reconciled monthly against Finance recognized_revenue.' }},
+  { id:'m-units', type:'measure', parent:'mv-sales', name:'units_sold', meta:{
+      Expression:'SUM(qty)', Format:'#,##0', desc:'Total units sold.' }},
+  { id:'m-basket', type:'measure', parent:'mv-sales', name:'avg_basket_size', meta:{
+      Expression:'SUM(sales_amt) / COUNT(DISTINCT txn_id)', Format:'$ 0.00', desc:'Average transaction value.' }},
+  { id:'m-lift', type:'measure', parent:'mv-promo', name:'promo_lift', meta:{
+      Expression:'(promo_sales - baseline) / baseline', Format:'0.0%', desc:'Incremental sales vs. baseline.' }},
+  { id:'m-redeem', type:'measure', parent:'mv-promo', name:'redemption_rate', meta:{
+      Expression:'redemptions / offers_issued', Format:'0.0%', desc:'Share of issued offers redeemed.' }},
+
+  { id:'t-salesline', type:'table', parent:'mv-sales', name:'fact_sales_line', meta:{
+      Path:'retail.gold.fact_sales_line', Rows:'2.4B', Format:'Delta', Freshness:'42 min ago',
+      desc:'Line-level POS transactions. Also read cross-domain by Finance revenue recognition.' }},
+  { id:'t-item', type:'table', parent:'mv-sales', name:'dim_item', meta:{
+      Path:'retail.gold.dim_item', Rows:'1.2M', Format:'Delta', Freshness:'6 hr ago',
+      desc:'Conformed item dimension — shared by 4 metric views across 2 domains.' }},
+  { id:'t-store', type:'table', parent:'mv-sales', name:'dim_store', meta:{
+      Path:'retail.gold.dim_store', Rows:'14K', Format:'Delta', Freshness:'6 hr ago',
+      desc:'Conformed store dimension — shared by 2 metric views.' }},
+  { id:'t-promo', type:'table', parent:'mv-promo', name:'fact_promo', meta:{
+      Path:'retail.gold.fact_promo', Rows:'310M', Format:'Delta', Freshness:'1 hr ago',
+      desc:'Offer issuance and redemption events.' }},
+
+  // --- Store Operations (includes a metric view DIRECTLY under the sub-domain)
+  { id:'ag-ops', type:'agent', parent:'sd-ops', name:'Store Ops Agent', meta:{
+      Owner:'store-ops-bi', 'Sample questions':'18', 'Ontology coverage':'87%', 'Queries / 28d':'960',
+      desc:'Conversational access to store traffic, conversion and labor metrics.' }},
+  { id:'db-health', type:'dashboard', parent:'sd-ops', name:'Daily Store Health', meta:{
+      Owner:'store-ops-bi', 'Viewers / 28d':'1,105', Refresh:'15 min',
+      desc:'Single pane for store managers: traffic, conversion, exceptions.' }},
+  { id:'mv-traffic', type:'metricview', parent:'ag-ops', name:'mv_store_traffic', meta:{
+      Source:'retail.gold.mv_store_traffic', Measures:'2', Dimensions:'store, date, daypart', Freshness:'12 min ago',
+      desc:'Foot traffic and conversion by store and daypart.' }},
+  { id:'mv-labor', type:'metricview', parent:'sd-ops', name:'mv_labor', meta:{
+      Source:'retail.gold.mv_labor', Measures:'2', Dimensions:'store, date, role', Freshness:'2 hr ago',
+      desc:'Labor productivity semantics — owned directly at the sub-domain level, not tied to one asset yet.' }},
+
+  { id:'m-foot', type:'measure', parent:'mv-traffic', name:'foot_traffic', meta:{
+      Expression:'SUM(entries)', Format:'#,##0', desc:'Door entries counted by sensors.' }},
+  { id:'m-conv', type:'measure', parent:'mv-traffic', name:'conversion_rate', meta:{
+      Expression:'transactions / entries', Format:'0.0%', desc:'Visitors converting to a purchase.' }},
+  { id:'m-laborh', type:'measure', parent:'mv-labor', name:'labor_hours', meta:{
+      Expression:'SUM(scheduled_hours)', Format:'#,##0', desc:'Scheduled labor hours.' }},
+  { id:'m-splh', type:'measure', parent:'mv-labor', name:'sales_per_labor_hour', meta:{
+      Expression:'net_sales / labor_hours', Format:'$ 0.00', desc:'Productivity metric — composes net_sales from mv_item_sales.' }},
+
+  { id:'t-trafficf', type:'table', parent:'mv-traffic', name:'fact_traffic', meta:{
+      Path:'retail.gold.fact_traffic', Rows:'890M', Format:'Delta', Freshness:'12 min ago',
+      desc:'Sensor entries by store and 15-min interval.' }},
+  { id:'t-labor', type:'table', parent:'mv-labor', name:'fact_labor', meta:{
+      Path:'retail.gold.fact_labor', Rows:'120M', Format:'Delta', Freshness:'2 hr ago',
+      desc:'Scheduled and actual labor by store, day and role.' }},
+
+  // --- Supply Chain
+  { id:'ag-inv', type:'agent', parent:'sd-supply', name:'Inventory Agent', meta:{
+      Owner:'supply-analytics', 'Sample questions':'15', 'Ontology coverage':'78%', 'Queries / 28d':'640',
+      desc:'Stockout risk and replenishment questions across DCs and stores.' }},
+  { id:'mv-inv', type:'metricview', parent:'ag-inv', name:'mv_inventory', meta:{
+      Source:'retail.gold.mv_inventory', Measures:'3', Dimensions:'item, store, dc, date', Freshness:'55 min ago',
+      desc:'On-hand position, stockout rate and days of supply.' }},
+  { id:'m-onhand', type:'measure', parent:'mv-inv', name:'on_hand_units', meta:{
+      Expression:'SUM(on_hand_qty)', Format:'#,##0', desc:'Units currently in stock.' }},
+  { id:'m-stockout', type:'measure', parent:'mv-inv', name:'stockout_rate', meta:{
+      Expression:'oos_item_days / total_item_days', Format:'0.0%', desc:'Item-days out of stock.' }},
+  { id:'m-dos', type:'measure', parent:'mv-inv', name:'days_of_supply', meta:{
+      Expression:'on_hand_qty / avg_daily_units', Format:'0.0', desc:'Coverage at current run rate.' }},
+  { id:'t-invf', type:'table', parent:'mv-inv', name:'fact_inventory', meta:{
+      Path:'retail.gold.fact_inventory', Rows:'1.1B', Format:'Delta', Freshness:'55 min ago',
+      desc:'Daily on-hand snapshots by item and location.' }},
+  { id:'t-dc', type:'table', parent:'mv-inv', name:'dim_dc', meta:{
+      Path:'retail.gold.dim_dc', Rows:'42', Format:'Delta', Freshness:'1 day ago',
+      desc:'Distribution center dimension.' }},
+
+  /* ================= DOMAIN 2: FINANCE ================= */
+  { id:'dom-fin', type:'domain', parent:'org', name:'Finance', meta:{
+      Steward:'Finance Data Office', 'Sub-domains':'2', Certified:'Yes',
+      desc:'Revenue accounting, margin and cost analytics. Reconciles against Retail Operations POS data.' }},
+
+  // metric view directly under a DOMAIN (shared utility semantics)
+  { id:'mv-fx', type:'metricview', parent:'dom-fin', name:'mv_fx_rates', meta:{
+      Source:'finance.ref.mv_fx_rates', Measures:'1', Dimensions:'currency, date', Freshness:'20 min ago',
+      desc:'Currency conversion semantics — owned at domain level, consumed by every Finance metric view.' }},
+  { id:'m-fx', type:'measure', parent:'mv-fx', name:'usd_rate', meta:{
+      Expression:'AVG(rate_to_usd)', Format:'0.0000', desc:'Daily average conversion rate to USD.' }},
+  { id:'t-fx', type:'table', parent:'mv-fx', name:'ref_fx_rates', meta:{
+      Path:'finance.ref.ref_fx_rates', Rows:'2.1M', Format:'Delta', Freshness:'20 min ago',
+      desc:'Daily FX rates from treasury feed.' }},
+
+  { id:'sd-revacct', type:'subdomain', parent:'dom-fin', name:'Revenue Accounting', meta:{
+      Owner:'fin-data-office', Assets:'3', Certified:'Yes',
+      desc:'Recognized revenue, deferrals and POS reconciliation.' }},
+  { id:'sd-margin', type:'subdomain', parent:'dom-fin', name:'Margin & Cost', meta:{
+      Owner:'fin-data-office', Assets:'3', Certified:'Yes',
+      desc:'Gross margin, landed cost and shrink.' }},
+
+  // --- Revenue Accounting
+  { id:'ag-fin', type:'agent', parent:'sd-revacct', name:'Finance Insights Agent', meta:{
+      Owner:'fin-data-office', 'Sample questions':'20', 'Ontology coverage':'85%', 'Queries / 28d':'720',
+      desc:'Natural-language access to recognized revenue and reconciliation status.' }},
+  { id:'mv-revrec', type:'metricview', parent:'ag-fin', name:'mv_revenue_recognition', meta:{
+      Source:'finance.gold.mv_revenue_recognition', Measures:'2', Dimensions:'entity, item, date, currency', Freshness:'1 hr ago',
+      desc:'Recognized revenue semantics. Reads the Retail POS fact cross-domain and converts via mv_fx_rates.' }},
+  { id:'m-recrev', type:'measure', parent:'mv-revrec', name:'recognized_revenue', meta:{
+      Expression:'SUM(rec_amount_usd)', Format:'$ #,##0', desc:'GAAP recognized revenue. Reconciles with Merchandising net_sales.' }},
+  { id:'m-defrev', type:'measure', parent:'mv-revrec', name:'deferred_revenue', meta:{
+      Expression:'SUM(deferred_amount_usd)', Format:'$ #,##0', desc:'Revenue deferred to future periods.' }},
+  { id:'t-gl', type:'table', parent:'mv-revrec', name:'fact_gl_revenue', meta:{
+      Path:'finance.gold.fact_gl_revenue', Rows:'480M', Format:'Delta', Freshness:'1 hr ago',
+      desc:'General ledger revenue postings.' }},
+
+  // --- Margin & Cost
+  { id:'db-pl', type:'dashboard', parent:'sd-margin', name:'P&L Overview', meta:{
+      Owner:'fin-data-office', 'Viewers / 28d':'188', Refresh:'Daily',
+      desc:'Consolidated P&L by entity and category for finance leadership.' }},
+  { id:'mv-margin', type:'metricview', parent:'db-pl', name:'mv_gross_margin', meta:{
+      Source:'finance.gold.mv_gross_margin', Measures:'2', Dimensions:'item, entity, date', Freshness:'3 hr ago',
+      desc:'Gross margin semantics. Joins the conformed dim_item owned by Retail Operations.' }},
+  { id:'m-gm', type:'measure', parent:'mv-margin', name:'gross_margin', meta:{
+      Expression:'(net_sales - cogs) / net_sales', Format:'0.0%', desc:'Margin after cost of goods sold.' }},
+  { id:'m-cogs', type:'measure', parent:'mv-margin', name:'cogs', meta:{
+      Expression:'SUM(landed_cost)', Format:'$ #,##0', desc:'Cost of goods sold at landed cost.' }},
+  { id:'t-cost', type:'table', parent:'mv-margin', name:'fact_costs', meta:{
+      Path:'finance.gold.fact_costs', Rows:'650M', Format:'Delta', Freshness:'3 hr ago',
+      desc:'Landed cost by item, supplier and period.' }},
+];
+
+/* Cross-links. `verb` is the annotation; class (shared vs cross-domain)
+   is derived from the endpoints' domain ancestors. Rendered only when
+   both endpoints are visible. */
+const CROSS_LINKS = [
+  // within Retail Operations
+  { source:'db-cat',    target:'mv-sales',   verb:'also queries' },
+  { source:'db-health', target:'mv-traffic', verb:'also queries' },
+  { source:'db-health', target:'mv-labor',   verb:'also queries' },
+  { source:'mv-traffic',target:'t-store',    verb:'shares dim_store' },
+  { source:'mv-promo',  target:'t-item',     verb:'shares dim_item' },
+  { source:'mv-inv',    target:'t-item',     verb:'shares dim_item' },
+  { source:'mv-sales',  target:'t-cal',      verb:'joins calendar' },
+  { source:'m-splh',    target:'m-netsales', verb:'composes' },
+  // cross-domain: Finance ↔ Retail Operations
+  { source:'mv-revrec', target:'t-salesline',verb:'reads POS fact' },
+  { source:'mv-revrec', target:'t-cal',      verb:'joins calendar' },
+  { source:'mv-margin', target:'t-item',     verb:'shares dim_item' },
+  { source:'m-recrev',  target:'m-netsales', verb:'reconciles with' },
+  // within Finance (MV → MV, domain-level utility)
+  { source:'mv-revrec', target:'mv-fx',      verb:'converts via' },
+  { source:'mv-margin', target:'mv-fx',      verb:'converts via' },
+];
+
+/* =====================================================================
+   2. STATE + VISIBILITY
+   ===================================================================== */
+const byId = Object.fromEntries(NODES.map(n => [n.id, n]));
+NODES.forEach(n => { n.children = []; });
+NODES.forEach(n => { if (n.parent) byId[n.parent].children.push(n.id); });
+
+function domainOf(id) {
+  let p = byId[id];
+  while (p && p.type !== 'domain' && p.parent) p = byId[p.parent];
+  return p && p.type === 'domain' ? p.id : null;
+}
+CROSS_LINKS.forEach(l => {
+  l.cls = domainOf(l.source) !== domainOf(l.target) ? 'xdom' : 'shared';
+});
+
+function hierVerb(child) {
+  const p = byId[child.parent];
+  if (!p) return '';
+  if (['org','domain','subdomain'].includes(p.type)) return 'contains';
+  return { metricview:'queries', measure:'defines', table:'reads' }[child.type] || 'contains';
+}
+
+// Start: org + domains + sub-domains open; asset level visible, MV level collapsed.
+const INITIAL = ['org','dom-retail','dom-fin','sd-merch','sd-ops','sd-supply','sd-revacct','sd-margin'];
+const expanded = new Set(INITIAL);
+const dragOffset = {};   // manual drag displacement per node id, survives re-layouts
+let selectedId = null;
+let focusType = null;
+let searchQ = '';
+
+/* =====================================================================
+   3. VERTICAL TREE RENDERING
+   ===================================================================== */
+const svg = d3.select('#graph');
+const gRoot = svg.append('g');
+const gLinks = gRoot.append('g');
+const gXLinks = gRoot.append('g');
+const gXLabels = gRoot.append('g');
+const gNodes = gRoot.append('g');
+const tooltip = d3.select('#tooltip');
+
+const DX = 108;   // horizontal gap between siblings
+const DY = 118;   // vertical gap between levels
+const tree = d3.tree().nodeSize([DX, DY]).separation((a, b) => a.parent === b.parent ? 1 : 1.25);
+
+const linkPath = d3.linkVertical().x(d => d.x).y(d => d.y);
+
+function xPath(l) {
+  const sx = l.s.x, sy = l.s.y, tx = l.t.x, ty = l.t.y;
+  const mx = (sx + tx) / 2, my = (sy + ty) / 2;
+  const dx = tx - sx, dy = ty - sy;
+  const len = Math.hypot(dx, dy) || 1;
+  const bow = Math.min(90, len * .22) * (l.cls === 'xdom' ? 1.4 : 1);
+  const px = -dy / len, py = dx / len;
+  const cx = mx + px * bow, cy = my + Math.abs(py) * bow + 24;
+  l._mid = { x: (sx + 2*cx + tx) / 4, y: (sy + 2*cy + ty) / 4 };
+  return `M${sx},${sy}Q${cx},${cy} ${tx},${ty}`;
+}
+
+/* Redraw every edge + label from current node coords, no transition.
+   Called continuously while a node is being dragged. */
+function redrawEdges() {
+  gLinks.selectAll('path').attr('d', linkPath);
+  gXLinks.selectAll('path').attr('d', xPath);
+  gXLabels.selectAll('text')
+    .attr('x', l => { xPath(l); return l._mid.x; })
+    .attr('y', l => l._mid.y + 3);
+}
+
+const zoom = d3.zoom().scaleExtent([.3, 2.5]).on('zoom', e => gRoot.attr('transform', e.transform));
+svg.call(zoom);
+svg.on('click', () => { selectedId = null; renderInspector(null); gNodes.selectAll('.node').classed('selected', false); });
+
+function buildTree(id) {
+  const n = byId[id];
+  return {
+    id: n.id, node: n,
+    children: expanded.has(id) && n.children.length ? n.children.map(buildTree) : null,
+  };
+}
+
+let first = true;
+const pos = {};   // last known positions for enter/exit transitions
+
+function update() {
+  const root = d3.hierarchy(buildTree('org'), d => d.children);
+  tree(root);
+  const nodes = root.descendants();
+  const links = root.links();
+  const visIds = new Set(nodes.map(d => d.data.id));
+  const T = d3.transition().duration(420).ease(d3.easeCubicOut);
+
+  nodes.forEach(d => {
+    d.y = d.depth * DY;
+    d._lx = d.x; d._ly = d.y;                 // pure layout position
+    const o = dragOffset[d.data.id];
+    if (o) { d.x += o.dx; d.y += o.dy; }      // re-apply any manual drag
+  });
+
+  /* hierarchy links (vertical) */
+  const lsel = gLinks.selectAll('path').data(links, d => d.target.data.id);
+  /* (path generators linkPath / xPath are module-scope so drag can reuse them) */
+  lsel.exit().transition(T).style('opacity', 0).remove();
+  lsel.enter().append('path').attr('class', 'link')
+      .attr('d', d => {
+        const p = pos[d.source.data.id] || { x: d.source.x, y: d.source.y };
+        return linkPath({ source: p, target: p });
+      })
+      .style('opacity', 0)
+    .merge(lsel)
+      .transition(T).style('opacity', 1).attr('d', linkPath);
+
+  /* cross-links (dashed arcs) */
+  const xdata = CROSS_LINKS.filter(l => visIds.has(l.source) && visIds.has(l.target))
+    .map(l => ({ ...l,
+      s: nodes.find(d => d.data.id === l.source),
+      t: nodes.find(d => d.data.id === l.target) }));
+
+  const xsel = gXLinks.selectAll('path').data(xdata, l => `${l.source}→${l.target}`);
+  xsel.exit().transition(T).style('opacity', 0).remove();
+  xsel.enter().append('path').attr('class', l => `xlink ${l.cls}`).style('opacity', 0)
+    .merge(xsel)
+      .transition(T).style('opacity', .85).attr('d', xPath);
+
+  const xlab = gXLabels.selectAll('text').data(xdata, l => `${l.source}→${l.target}`);
+  xlab.exit().remove();
+  xlab.enter().append('text').attr('class', l => `link-label ${l.cls}`)
+      .attr('text-anchor', 'middle').text(l => l.verb)
+    .merge(xlab)
+      .transition(T)
+      .attr('x', l => { xPath(l); return l._mid.x; })
+      .attr('y', l => l._mid.y + 3);
+
+  /* nodes */
+  const nsel = gNodes.selectAll('g.node').data(nodes, d => d.data.id);
+
+  nsel.exit().transition(T)
+    .attr('transform', d => {
+      const p = d.parent && pos[d.parent.data.id] ? pos[d.parent.data.id] : { x: d.x, y: d.y };
+      return `translate(${p.x},${p.y})`;
+    })
+    .style('opacity', 0).remove();
+
+  const nenter = nsel.enter().append('g').attr('class', 'node')
+    .attr('transform', d => {
+      const p = d.parent && pos[d.parent.data.id] ? pos[d.parent.data.id] : { x: d.x, y: d.y };
+      return `translate(${p.x},${p.y})`;
+    })
+    .style('opacity', 0)
+    .call(d3.drag()
+      .on('start', function (e, d) {
+        hideTooltip();
+        d3.select(this).raise().interrupt();
+        gLinks.selectAll('path').interrupt();
+        gXLinks.selectAll('path').interrupt();
+        gXLabels.selectAll('text').interrupt();
+      })
+      .on('drag', function (e, d) {
+        d.x = e.x; d.y = e.y;
+        dragOffset[d.data.id] = { dx: d.x - d._lx, dy: d.y - d._ly };
+        pos[d.data.id] = { x: d.x, y: d.y };
+        d3.select(this).attr('transform', `translate(${d.x},${d.y})`);
+        redrawEdges();
+      }))
+    .on('click', (e, d) => {
+      if (e.defaultPrevented) return;   // was a drag, not a click
+      e.stopPropagation(); onNodeClick(d.data.node);
+    })
+    .on('mousemove', (e, d) => showTooltip(e, d.data.node))
+    .on('mouseleave', hideTooltip);
+
+  nenter.append('circle').attr('class', 'core')
+    .attr('r', d => TYPES[d.data.node.type].r)
+    .attr('fill', d => TYPES[d.data.node.type].hex);
+  nenter.append('circle').attr('class', 'badge-bg').attr('r', 7)
+    .attr('cx', d => TYPES[d.data.node.type].r * .8).attr('cy', d => -TYPES[d.data.node.type].r * .8);
+  nenter.append('text').attr('class', 'badge-txt').attr('text-anchor', 'middle')
+    .attr('x', d => TYPES[d.data.node.type].r * .8).attr('y', d => -TYPES[d.data.node.type].r * .8 + 3);
+  nenter.append('text').attr('class', 'name').attr('text-anchor', 'middle')
+    .attr('y', d => TYPES[d.data.node.type].r + 14)
+    .attr('font-size', d => ({ org: 14, domain: 13, subdomain: 12 }[d.data.node.type] || (d.depth >= 5 ? 10 : 11)))
+    .attr('font-weight', d => ['org','domain','subdomain'].includes(d.data.node.type) ? 700 : 500)
+    .text(d => d.data.node.name);
+
+  const nmerge = nenter.merge(nsel);
+  nmerge.transition(T).style('opacity', 1).attr('transform', d => `translate(${d.x},${d.y})`);
+  nmerge.select('.badge-bg').style('display', d => (d.data.node.children.length && !expanded.has(d.data.id)) ? null : 'none');
+  nmerge.select('.badge-txt').style('display', d => (d.data.node.children.length && !expanded.has(d.data.id)) ? null : 'none')
+    .text(d => `+${countDescendants(d.data.id)}`);
+
+  nodes.forEach(d => { pos[d.data.id] = { x: d.x, y: d.y }; });
+
+  applyFocus();
+  applySelection();
+  applySearch();
+
+  if (first) { first = false; fitView(nodes, 0); }
+}
+
+function countDescendants(id) {
+  let c = 0;
+  (function w(i){ byId[i].children.forEach(ch => { c++; w(ch); }); })(id);
+  return c;
+}
+
+function fitView(nodes, duration = 400) {
+  const el = document.getElementById('graph');
+  const W = el.clientWidth, H = el.clientHeight;
+  const xs = nodes.map(d => d.x), ys = nodes.map(d => d.y);
+  const minX = Math.min(...xs) - 90, maxX = Math.max(...xs) + 90;
+  const minY = Math.min(...ys) - 60, maxY = Math.max(...ys) + 90;
+  const k = Math.min(2, .92 / Math.max((maxX - minX) / W, (maxY - minY) / H));
+  const tx = W / 2 - k * (minX + maxX) / 2;
+  const ty = H / 2 - k * (minY + maxY) / 2;
+  svg.transition().duration(duration).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
+}
+
+/* =====================================================================
+   4. INTERACTIONS
+   ===================================================================== */
+function onNodeClick(n) {
+  selectedId = n.id;
+  if (n.children.length) {
+    if (expanded.has(n.id)) collapse(n.id); else expanded.add(n.id);
+  }
+  updateCrumb(n);
+  renderInspector(n);
+  update();
+}
+function collapse(id) {
+  expanded.delete(id);
+  (function w(i){ byId[i].children.forEach(ch => { expanded.delete(ch); w(ch); }); })(id);
+}
+function updateCrumb(n) {
+  const path = [];
+  let p = n;
+  while (p) { path.unshift(p.name); p = p.parent ? byId[p.parent] : null; }
+  document.getElementById('crumb').innerHTML =
+    path.map((s, i) => i === path.length - 1 ? `<b>${s}</b>` : `<span>${s}</span>`).join('<span class="sep">›</span>');
+}
+function applySelection() {
+  gNodes.selectAll('.node').classed('selected', d => d.data.id === selectedId);
+}
+
+/* tooltip */
+function showTooltip(e, n) {
+  const t = TYPES[n.type];
+  const kv = Object.entries(n.meta).filter(([k]) => k !== 'desc' && k !== 'Expression')
+    .map(([k, v]) => `<span class="k">${k}</span><span>${v}</span>`).join('');
+  const expr = n.meta.Expression ? `<div class="tt-code">${n.meta.Expression}</div>` : '';
+  tooltip.html(`
+    <div class="tt-type" style="color:${['#1B3139','#0B2026'].includes(t.hex) ? '#9fb3ba' : t.hex}">${t.label}</div>
+    <div class="tt-name">${n.name}</div>
+    <div style="opacity:.85;margin-bottom:6px">${n.meta.desc || ''}</div>
+    <div class="tt-kv">${kv}</div>${expr}`)
+    .style('opacity', 1)
+    .style('left', Math.min(e.clientX + 16, window.innerWidth - 300) + 'px')
+    .style('top', Math.min(e.clientY + 14, window.innerHeight - 200) + 'px');
+}
+function hideTooltip() { tooltip.style('opacity', 0); }
+
+/* inspector */
+function renderInspector(n) {
+  const aside = document.getElementById('inspector');
+  if (!n) {
+    aside.innerHTML = `<div class="empty">Select a node to inspect its metadata, lineage and relationships.<br><br>Maroon dashed edges cross domain boundaries — e.g., Finance reconciling revenue against the same POS fact Merchandising sells from.</div>`;
+    return;
+  }
+  const t = TYPES[n.type];
+  const kv = Object.entries(n.meta).filter(([k]) => k !== 'desc')
+    .map(([k, v]) => `<div class="kv"><span class="k">${k}</span><span class="v ${(k==='Expression'||k==='Path'||k==='Source')?'mono':''}">${v}</span></div>`).join('');
+
+  const rels = [];
+  if (n.parent) rels.push({ verb: 'part of', id: n.parent });
+  n.children.forEach(c => rels.push({ verb: hierVerb(byId[c]), id: c }));
+  CROSS_LINKS.forEach(l => {
+    if (l.source === n.id) rels.push({ verb: l.verb, id: l.target, cls: l.cls });
+    if (l.target === n.id) rels.push({ verb: l.verb + ' ←', id: l.source, cls: l.cls });
+  });
+  const relHtml = rels.map(r =>
+    `<div class="rel" data-target="${r.id}">
+       <span class="verb">${r.verb}</span>
+       <span class="rel-name" style="color:${TYPES[byId[r.id].type].hex}">●</span>
+       <span class="rel-name">${byId[r.id].name}</span>
+       ${r.cls === 'xdom' ? '<span class="xd">X-DOM</span>' : ''}
+     </div>`).join('');
+
+  aside.innerHTML = `
+    <div class="type-pill"><span class="dot" style="background:${t.hex}"></span>${t.label}</div>
+    <h2>${n.name}</h2>
+    <div class="desc">${n.meta.desc || ''}</div>
+    <div class="meta">${kv}</div>
+    <h4>Relationships (${rels.length})</h4>${relHtml}`;
+
+  aside.querySelectorAll('.rel').forEach(el => el.addEventListener('click', () => {
+    const target = byId[el.dataset.target];
+    let p = target;
+    while (p.parent) { expanded.add(p.parent); p = byId[p.parent]; }
+    selectedId = target.id;
+    updateCrumb(target); renderInspector(target); update();
+  }));
+}
+
+/* legend + focus */
+const legendEl = document.getElementById('legendNodes');
+Object.entries(TYPES).forEach(([key, t]) => {
+  const row = document.createElement('div');
+  row.className = 'row'; row.dataset.type = key;
+  row.innerHTML = `<span class="dot" style="background:${t.hex}"></span><span>${t.label}</span>`;
+  row.addEventListener('click', () => {
+    focusType = focusType === key ? null : key;
+    document.querySelectorAll('.legend .row').forEach(r =>
+      r.classList.toggle('dim', focusType && r.dataset.type !== focusType));
+    applyFocus();
+  });
+  legendEl.appendChild(row);
+});
+function applyFocus() {
+  gNodes.selectAll('.node').classed('faded', d => focusType && d.data.node.type !== focusType);
+  gLinks.selectAll('path').classed('faded', d =>
+    focusType && d.source.data.node.type !== focusType && d.target.data.node.type !== focusType);
+  gXLinks.selectAll('path').classed('faded', l =>
+    focusType && byId[l.source].type !== focusType && byId[l.target].type !== focusType);
+  gXLabels.selectAll('text').classed('faded', l =>
+    focusType && byId[l.source].type !== focusType && byId[l.target].type !== focusType);
+}
+
+/* search */
+function applySearch() {
+  gNodes.selectAll('.node').classed('searchhit', d => searchQ && d.data.node.name.toLowerCase().includes(searchQ));
+}
+document.getElementById('search').addEventListener('input', e => {
+  searchQ = e.target.value.trim().toLowerCase();
+  if (searchQ) {
+    NODES.filter(n => n.name.toLowerCase().includes(searchQ)).forEach(n => {
+      let p = n;
+      while (p.parent) { expanded.add(p.parent); p = byId[p.parent]; }
+    });
+  }
+  update();
+});
+
+/* header buttons */
+document.getElementById('expandAll').addEventListener('click', () => {
+  NODES.forEach(n => { if (n.children.length) expanded.add(n.id); });
+  update();
+  const root = d3.hierarchy(buildTree('org'), d => d.children);
+  tree(root); root.descendants().forEach(d => { d.y = d.depth * DY; });
+  fitView(root.descendants());
+});
+document.getElementById('reset').addEventListener('click', () => {
+  expanded.clear(); INITIAL.forEach(i => expanded.add(i));
+  Object.keys(dragOffset).forEach(k => delete dragOffset[k]);
+  selectedId = null; focusType = null; searchQ = '';
+  document.querySelectorAll('.legend .row').forEach(r => r.classList.remove('dim'));
+  document.getElementById('search').value = '';
+  renderInspector(null);
+  update();
+  const root = d3.hierarchy(buildTree('org'), d => d.children);
+  tree(root); root.descendants().forEach(d => { d.y = d.depth * DY; });
+  fitView(root.descendants());
+});
+
+/* go */
+update();
+</script>
+</body>
+</html>
