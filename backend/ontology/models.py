@@ -98,6 +98,11 @@ class OntologyGraphNode(BaseModel):
     size: float = 1.0
     cost: float | None = None
     member_count: int | None = None  # domain-level rollup nodes only
+    # Ontology Map v2 (MV-D73/D74): provenance of a domain/sub-domain rollup —
+    # "applied" (backed by a governed-tag assignment) vs "proposed" (a pure engine
+    # cluster). Additive + defaulted None so a pre-MV-D73 blob (no origin) keeps
+    # rendering; Pydantic now preserves the blob's origin instead of dropping it.
+    origin: str | None = None
 
 
 class OntologyGraphEdge(BaseModel):
@@ -402,3 +407,19 @@ class BulkDraftStatus(BaseModel):
     total: int
     running: bool
     results: list[BulkDraftResult] = Field(default_factory=list)
+
+
+# ── Ontology Map v2 (MV-D73 §2.3/§2.4): expand-on-demand children (APPEND-ONLY) ──
+# The lazy "business-snippet" layer: GET /graph/expand returns ONE node's children
+# (MV measures + attached Pages) sliced from the snapshot blob's ``snippets`` index,
+# so the baked blob stays small (MV-D49). Same node/edge shape as OntologyGraph;
+# ``kind="measure"`` (+ ``mv_measure`` edges) and ``kind="page"`` (+ ``page_source``
+# edges). Mirrors 1:1 into frontend/src/ontology/types.ts (the reserved "measure"
+# kind finally ships). Bounded + degrade-not-hang (MV-D43): a miss ⇒ empty children.
+
+
+class OntologyGraphExpand(BaseModel):
+    nodes: list[OntologyGraphNode] = Field(default_factory=list)
+    edges: list[OntologyGraphEdge] = Field(default_factory=list)
+    parent_id: str
+    as_of: str | None = None
