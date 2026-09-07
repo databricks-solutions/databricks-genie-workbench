@@ -17,7 +17,7 @@ import cytoscape from "cytoscape"
 import fcose from "cytoscape-fcose"
 import CytoscapeComponent from "react-cytoscapejs"
 import type { GraphOrigin, OntologyGraph, OntologyGraphExpand } from "@/ontology/types"
-import { mergeExpand, nodeFacts, viewElements, type CyEl, type Lod } from "@/ontology/estateGraphModel"
+import { groupTops, mergeExpand, nodeFacts, viewCaption, viewElements, type CyEl, type Lod } from "@/ontology/estateGraphModel"
 import { expandNode, getGraph } from "@/ontology/api"
 import { GraphInspector, type ExpandState } from "./GraphInspector"
 import { GraphSearch } from "./GraphSearch"
@@ -359,6 +359,11 @@ function layoutFor(lod: Lod) {
     randomize: false, // start from the seed positions → deterministic, stable
     fit: true,
     padding: 36,
+    // Fixed layout canvas: without it, parts of fcose read the CONTAINER size, which
+    // races mount-time measurement and made the result flip between two stable
+    // layouts on reload (found via the harness position-hash check). The camera
+    // fits this to the real viewport afterwards, so aspect is unaffected.
+    boundingBox: { x1: 0, y1: 0, w: 1280, h: 720 },
     // Domains: few large hubs with two-line captions BELOW them — spread wide so
     // labels never collide with a neighbouring hub. Sub-domains: labelled leaves
     // inside compound boxes — enough separation that sibling labels and the boxes
@@ -727,15 +732,18 @@ export function EstateGraph({
 
   // Counts describe the graph actually on screen (activeGraph, not always the applied
   // prop) and count top-level business areas only — sub-domains are not "Domains".
+  // groupTops also counts a top seen only through its children's parent refs, so this
+  // agrees with the map and the caption.
   const countGraph = activeGraph ?? graph
-  const domainCount = countGraph.domains.nodes.filter(
-    (n) => !n.parent_id && n.kind !== "ungrouped" && n.id !== "ungrouped",
-  ).length
+  const tops = useMemo(() => groupTops(countGraph.domains.nodes), [countGraph])
+  const domainCount = [...tops.values()].filter((t) => !t.ungrouped).length
   const subdomainCount = countGraph.domains.nodes.filter((n) => !!n.parent_id).length
   const assetCount = countGraph.assets.nodes.length
   const truncated = (activeGraph?.domains.truncated || activeGraph?.assets.truncated) ?? false
   const isEmpty = !!activeGraph && activeGraph.domains.nodes.length + activeGraph.assets.nodes.length === 0
   const assetsNeedFocus = lod === "assets" && !focusTop
+  const caption = activeGraph && !assetsNeedFocus ? viewCaption(activeGraph, lod, focusTop, origin) : null
+  const isStale = activeGraph?.state === "stale"
   const facts = selected ? nodeFacts(selected) : null
   const selectedExpandState: ExpandState = selected ? expandStateById[String(selected.id)] ?? "idle" : "idle"
 
@@ -796,13 +804,18 @@ export function EstateGraph({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-default bg-elevated/40 px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
           {/* Applied | Proposed source toggle (MV-D74) */}
-          <div className="inline-flex overflow-hidden rounded-lg border border-default text-xs">
+          <div
+            role="group"
+            aria-label="Map source"
+            className="inline-flex overflow-hidden rounded-lg border border-default text-xs"
+          >
             {ORIGINS.map((o) => (
               <button
                 key={o.id}
                 onClick={() => changeOrigin(o.id)}
                 disabled={loadingGraph && o.id !== origin}
-                className={`border-l border-default px-2.5 py-1 first:border-l-0 transition-colors disabled:opacity-50 ${
+                aria-pressed={origin === o.id}
+                className={`focus-ring border-l border-default px-2.5 py-1 first:border-l-0 transition-colors disabled:opacity-50 ${
                   origin === o.id ? "bg-accent font-semibold text-white" : "text-secondary hover:text-primary"
                 }`}
               >
@@ -815,12 +828,17 @@ export function EstateGraph({
               Suggested
             </span>
           )}
-          <div className="inline-flex overflow-hidden rounded-lg border border-default text-xs">
+          <div
+            role="group"
+            aria-label="Level of detail"
+            className="inline-flex overflow-hidden rounded-lg border border-default text-xs"
+          >
             {LODS.map((l) => (
               <button
                 key={l.id}
                 onClick={() => changeLod(l.id)}
-                className={`border-l border-default px-2.5 py-1 first:border-l-0 transition-colors ${
+                aria-pressed={lod === l.id}
+                className={`focus-ring border-l border-default px-2.5 py-1 first:border-l-0 transition-colors ${
                   lod === l.id ? "bg-accent font-semibold text-white" : "text-secondary hover:text-primary"
                 }`}
               >
@@ -828,6 +846,11 @@ export function EstateGraph({
               </button>
             ))}
           </div>
+          {isStale && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs text-warning-foreground">
+              <AlertTriangle className="h-3 w-3" /> May be out of date
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <GraphSearch
@@ -878,6 +901,8 @@ export function EstateGraph({
             The sunken ground + faint dot grid give the map a drafting-table depth
             distinct from the surrounding panel (§1A whitespace/density). */}
         <div
+          role="application"
+          aria-label="Estate map — interactive graph of business areas and their assets"
           className="relative min-w-0 flex-1"
           style={{
             height: "560px",
@@ -975,6 +1000,17 @@ export function EstateGraph({
                 }}
               />
               </div>
+              {/* Annotation layer (§1D): the one-line story of this view, printed in the
+                  corner like an infographic caption. */}
+              {caption && (
+                <div
+                  className="pointer-events-none absolute left-3 top-3 max-w-xs rounded-lg border border-default px-3 py-2"
+                  style={{ backgroundColor: "var(--bg-elevated)" }}
+                >
+                  <p className="font-display text-[13px] font-bold text-primary">{caption.headline}</p>
+                  {caption.sub && <p className="mt-0.5 text-[11px] leading-snug text-secondary">{caption.sub}</p>}
+                </div>
+              )}
               <div className="pointer-events-none absolute bottom-3 left-3">
                 <GraphMinimap points={mini.points} rects={mini.rects} viewport={mini.viewport} />
               </div>
@@ -983,7 +1019,7 @@ export function EstateGraph({
         </div>
 
         {/* Right-rail inspector (upgrade of the popover; plain language, MV-D23) */}
-        <div className="w-72 shrink-0 border-l border-default bg-elevated/40">
+        <div role="complementary" aria-label="Selection details" className="w-72 shrink-0 border-l border-default bg-elevated/40">
           <GraphInspector
             facts={facts}
             canExpand={isExpandable(selected)}
@@ -995,7 +1031,7 @@ export function EstateGraph({
         </div>
       </div>
 
-      {/* Legend */}
+      {/* Legend — every visual encoding named (§1A "state each encoding in the legend"). */}
       <div className="border-t border-default bg-elevated/50 px-4 py-3">
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
           <span className="inline-flex items-center gap-1.5">
@@ -1005,10 +1041,19 @@ export function EstateGraph({
             <span className="h-2.5 w-3.5 rounded border border-dashed" style={{ borderColor: "#CBD5E1" }} /> Suggested
           </span>
           <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-3.5 rounded border border-dotted" style={{ borderColor: "#64748B", background: "#64748b1f" }} /> Not grouped yet
+          </span>
+          <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "#64748B" }} /> Asset
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full border-2" style={{ borderColor: "#22D3EE" }} /> Metric view
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full border-2" style={{ borderColor: "#A78BFA", backgroundColor: "#0D1321" }} /> Agent
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#38BDF8" }} /> Measure
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#FBBF24" }} /> Page
@@ -1020,6 +1065,10 @@ export function EstateGraph({
             <span className="inline-block h-0 w-6 border-t border-dashed" style={{ borderColor: "#818cf8" }} /> Co-query
           </span>
         </div>
+        <p className="mt-2 text-[11px] text-muted">
+          Circle size = how many assets · colour = business area · solid outline = applied, dashed = suggested ·
+          connections within a box show by default, the rest appear when you tap a node.
+        </p>
       </div>
 
       {/* Graph state */}

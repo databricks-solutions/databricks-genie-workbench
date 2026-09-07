@@ -9,6 +9,7 @@ import {
   mergeExpand,
   nodeFacts,
   trimCommonPrefix,
+  viewCaption,
   viewElements,
 } from "@/ontology/estateGraphModel"
 
@@ -311,6 +312,37 @@ describe("Map v3 §2 — nodeFacts depth (plain language, MV-D23)", () => {
     expect(u.chip).toBe("Not yet grouped")
     expect(u.lines.join(" | ")).toContain("1,911 tables")
     expect(u.drillTopId).toBe("ungrouped")
+  })
+})
+
+describe("Map v3 §1D — viewCaption annotation layer (plain language, MV-D23)", () => {
+  it("domains overview counts areas + organised assets and flags ungrouped honestly", () => {
+    const g = fixture()
+    g.domains.nodes.push({ id: "ungrouped", label: "Ungrouped", kind: "ungrouped", x: 0, y: 0, size: 1, member_count: 1911 })
+    const c = viewCaption(g, "domains", null, "applied")
+    expect(c.headline).toBe("2 business areas · 4 assets organised")
+    expect(c.sub).toBe("1,911 tables are not grouped yet.")
+  })
+
+  it("focused assets caption names the area with its trimmed name and sizes", () => {
+    const c = viewCaption(fixture(), "assets", "rev", "applied")
+    expect(c.headline).toBe("Revenue")
+    expect(c.sub).toContain("3 assets across 2 sub-areas")
+  })
+
+  it("proposed with only Ungrouped reads as nothing-to-suggest (MV-D43 honesty)", () => {
+    const g = fixture()
+    g.domains.nodes = [
+      { id: "ungrouped", label: "Ungrouped", kind: "ungrouped", x: 0, y: 0, size: 1, member_count: 10, origin: "proposed" },
+    ]
+    const c = viewCaption(g, "domains", null, "proposed")
+    expect(c.headline).toBe("No new grouping to suggest")
+  })
+
+  it("proposed with real clusters says they are not applied yet", () => {
+    const c = viewCaption(fixture(), "domains", null, "proposed")
+    expect(c.headline).toBe("2 suggested business areas")
+    expect(c.sub).toContain("nothing here is applied yet")
   })
 })
 

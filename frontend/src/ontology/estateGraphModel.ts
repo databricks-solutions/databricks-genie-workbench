@@ -528,6 +528,73 @@ function prependContainers(
   els.unshift(...containers)
 }
 
+// ── Annotation layer (Map v3 §1D): the one-line story of the current view ──
+export interface ViewCaption {
+  headline: string
+  sub: string | null
+}
+
+/**
+ * Plain-language caption for the current view — what an infographic would print in
+ * its corner so the graphic reads at a glance (MV-D23: no jargon, no ids). Pure:
+ * derived entirely from the graph + view state.
+ */
+export function viewCaption(
+  graph: OntologyGraph,
+  lod: Lod,
+  focusTop: string | null,
+  origin: "applied" | "proposed",
+): ViewCaption {
+  const tops = groupTops(graph.domains.nodes)
+  const real = [...tops.values()].filter((t) => !t.ungrouped)
+  const ungrouped = [...tops.values()].find((t) => t.ungrouped)
+  const shortNames = trimCommonPrefix(real.map((t) => t.name))
+  const assetTotal = real.reduce((s, t) => s + t.memberCount, 0)
+
+  if (origin === "proposed") {
+    if (real.length === 0) {
+      return {
+        headline: "No new grouping to suggest",
+        sub: "Everything the engine can group is already applied — only ungrouped tables remain.",
+      }
+    }
+    return {
+      headline: `${real.length} suggested business ${real.length === 1 ? "area" : "areas"}`,
+      sub: "Dashed shapes are suggestions — nothing here is applied yet.",
+    }
+  }
+
+  if (lod === "assets" && focusTop) {
+    const t = tops.get(focusTop)
+    if (t) {
+      const name = t.ungrouped ? t.name : shortNames.get(t.name) ?? t.name
+      const subCount = t.subIds.length
+      return {
+        headline: name,
+        sub: t.ungrouped
+          ? `${fmtCount(t.memberCount)} tables waiting to be organised.`
+          : `${fmtCount(t.memberCount)} assets${subCount > 0 ? ` across ${subCount} sub-areas` : ""}. Tap anything to see what it is.`,
+      }
+    }
+  }
+
+  if (lod === "subdomains") {
+    const subTotal = real.reduce((s, t) => s + t.subIds.length, 0)
+    return {
+      headline: `${subTotal} sub-areas across ${real.length} business ${real.length === 1 ? "area" : "areas"}`,
+      sub: "Open a box to see the tables and metrics inside it.",
+    }
+  }
+
+  // Domains overview.
+  return {
+    headline: `${real.length} business ${real.length === 1 ? "area" : "areas"} · ${fmtCount(assetTotal)} assets organised`,
+    sub: ungrouped && ungrouped.memberCount > 0
+      ? `${fmtCount(ungrouped.memberCount)} tables are not grouped yet.`
+      : "Every table in scope belongs to a business area.",
+  }
+}
+
 export interface NodeFacts {
   title: string
   chip: string
