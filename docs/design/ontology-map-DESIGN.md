@@ -370,15 +370,25 @@ stop (impeccable).
 
 ## 9. Reconciliations / decisions the northstar changes
 
-- **9-A — Renderer model (THE decision, needs sign-off).** The northstar is a **deterministic hierarchy
-  tree + typed overlay** (d3-tree feel). The shipped renderer is **Cytoscape compound + fcose force LOD**.
-  Meeting the bar means adopting the tree model. Two build paths: **(i)** d3 (`d3-hierarchy` + a thin SVG
-  renderer) — highest fidelity to the mockup, native drag/enter-exit/beziers, but a **new dependency**
-  (MV-D45) and a rewrite of `EstateGraph.tsx`/`estateGraphModel.ts`; **(ii)** Cytoscape + a
-  `dagre`/`elk` tree layout, reusing the existing shell — smaller diff, but the mockup's exact
-  drag-offset / enter-from-parent / bowed-verb-arc feel is harder and still a new layout dep. Recommend
-  **(i) d3** for fidelity; hold the build until the user picks. Either way the LOD segmented control is
-  replaced by expand/collapse-in-place.
+- **9-A — Renderer model — RESOLVED (2026-09-07): d3-hierarchy layout math + a thin React-controlled
+  SVG renderer** (MV-D84). The northstar is a **deterministic hierarchy tree + typed overlay**, authored
+  in the winning idiom (the mockup uses `d3.hierarchy`/`d3.tree`/`linkVertical`/`d3.zoom`/`d3.drag` — zero
+  Cytoscape/force), so it is a **porting spec**, not a reimplementation target. `d3.tree` (Reingold-Tilford
+  tidy tree) is analytic/O(n)/physics-free → **byte-stable screenshots by construction** (the harness
+  requires this; it disqualifies fcose + react-force-graph-2d). Worst-case visible scale (~2k nodes) is
+  inside plain-SVG's comfort zone, and real DOM text/CSS-token theming/a11y are exactly what R1–R20 score
+  (Canvas/WebGL trade these away for scale we don't occupy). **Runner-up: Cytoscape + `cytoscape-dagre`**
+  (only path reusing the shell, but a layered-DAG layout mismatches a tidy-tree spine, and the four
+  signature behaviors — drag-offset persistence, enter-from-parent, bowed verb-labeled arcs, dashed
+  hulls + off-tree tray — fight the grain). **Dep footprint is small:** 4 of 5 runtime modules
+  (`d3-shape`/`d3-zoom`/`d3-drag`/`d3-selection`) are already resolved in the lockfile transitively via
+  `react-force-graph-2d` (which Lane R retires), so the genuinely net-new module is **`d3-hierarchy`**;
+  animations stay CSS transitions (no `d3-transition`, no umbrella `d3`). **The two-renderer spike is
+  skipped** — the gating criteria (fidelity, determinism, theme/a11y) are decided; a spike could only move
+  the perf score, so it is replaced by an **in-path perf gate** (synthetic 2k-node/1.5k-edge worst case,
+  measure pan/zoom in the Playwright loop; levers if needed: zoom-threshold label culling →
+  `content-visibility` subtree culling → Canvas edge layer under SVG nodes, all API-preserving). The LOD
+  segmented control is replaced by expand/collapse-in-place.
 - **9-B — Colour by type, not by domain (supersedes the MV-D79 *fill* palette).** Type is the primary
   hue; domain identity moves to tree position + a subtle domain-hue **tint** on domain/sub-domain rings
   and edges. MV-D79's theme-token machinery + AA gates stay; only the *fill semantics* change.
@@ -409,9 +419,9 @@ anything and do NOT praise; output only the filled scorecard table + a short ran
 Write it to docs/design/reviews/map-<phase>.md. One round.
 ```
 
-## 11. Build phasing (gated on 9-A)
+## 11. Build phasing (9-A resolved → d3/SVG; Lane R BUILD-READY)
 
-Three lanes, parallelizable once the renderer is chosen (wave pattern, disjoint subtrees):
+Three lanes, parallelizable now that the renderer is chosen (wave pattern, disjoint subtrees):
 - **Lane D (data, wheel/backend, MV-D82):** emit the `org` root + asset→asset containment + measures in
   the tree + per-edge verb + within/cross class. Additive to the snapshot; renderer degrades without it.
 - **Lane R (renderer, frontend, MV-D81 + 9-A/B/C):** the deterministic tree, expand/collapse-in-place,
@@ -420,9 +430,11 @@ Three lanes, parallelizable once the renderer is chosen (wave pattern, disjoint 
 - **Lane P (polish):** motion, reduced-motion, scale guards (§6), honest states, accessibility.
 
 ## 12. Open decisions (Director)
-- **9-A renderer choice** (d3 vs Cytoscape-dagre) — needs the user's call before Lane R starts.
-- **Layout dep** (`d3-hierarchy` or `dagre`/`elk`) is an explicit MV-D45 dependency decision, not a
-  silent add.
+- ~~**9-A renderer choice** (d3 vs Cytoscape-dagre)~~ — **RESOLVED 2026-09-07: d3-hierarchy + SVG**
+  (MV-D84, §9-A). Two-renderer spike skipped; replaced by the in-path perf gate.
+- ~~**Layout dep**~~ — **RESOLVED:** adopt `d3-hierarchy` (net-new) + promote the already-transitive
+  `d3-shape`/`d3-zoom`/`d3-drag`/`d3-selection` to direct deps; retire `react-force-graph-2d`, then the
+  Cytoscape trio after the flag flips (MV-D84, carve to MV-D45).
 - **Measure→measure edges** ship only when a real signal exists (expression cross-reference); until then
   omit (R13).
 - **Deep drill breadth** (asset→table children, dashboard→table) tracks the Lane-D data as it lands.
