@@ -262,6 +262,58 @@ describe("Map v3 §1 — canvas captions (display) + Ungrouped flag", () => {
   })
 })
 
+describe("Map v3 §2 — inspector depth: connectivity + location facts on asset nodes", () => {
+  it("threads degree + strongest links + sub-domain location onto each asset", () => {
+    const els = buildElements(fixture(), "assets", null)
+    const byId = new Map(els.map((e) => [e.data.id, e.data]))
+    const bookings = byId.get("asset:c.rev.bookings")!
+    // bookings ↔ pnr is the only edge touching it in the fixture.
+    expect(bookings.deg).toBe(1)
+    expect(bookings.links).toEqual(["pnr"])
+    expect(bookings.subName).toBe("Bookings")
+    expect(bookings.domainShort).toBe("Revenue")
+    // A bare-top asset has no sub-domain.
+    expect(byId.get("asset:c.ops.flights")!.subName).toBeNull()
+  })
+
+  it("containers carry their sub-area names for the inspector", () => {
+    const els = buildElements(fixture(), "subdomains", null)
+    const byId = new Map(els.map((e) => [e.data.id, e.data]))
+    expect(byId.get("top:rev")!.subNames).toEqual(["Bookings", "Fares"])
+    expect(byId.get("top:ops")!.subNames).toEqual([])
+  })
+})
+
+describe("Map v3 §2 — nodeFacts depth (plain language, MV-D23)", () => {
+  it("asset facts: what it is, where it lives, what it works with, cost", () => {
+    const f = nodeFacts({
+      ntype: "asset", id: "asset:c.rev.bookings", label: "bookings", kind: "table",
+      domainShort: "Revenue", subName: "Bookings", deg: 5, links: ["pnr", "fares", "tickets"], cost: 2400,
+    })
+    const blob = f.lines.join(" | ")
+    expect(f.lines[0]).toBe("A data table.")
+    expect(blob).toContain("In Revenue › Bookings")
+    expect(blob).toContain("Works with pnr, fares, tickets and 2 more")
+    expect(blob).toContain("$2.4k / month")
+  })
+
+  it("page facts: archetype prefix becomes a chip + plain-language purpose", () => {
+    const f = nodeFacts({ ntype: "page", id: "page:x", label: "[Guardrail] fare rules" })
+    expect(f.title).toBe("fare rules")
+    expect(f.chip).toBe("Guardrail note")
+    expect(f.lines[0]).toContain("rule")
+  })
+
+  it("business-area facts list sub-areas; Ungrouped reads as not-yet-grouped", () => {
+    const d = nodeFacts({ ntype: "domain", id: "rev", label: "Revenue", count: 3, subNames: ["Bookings", "Fares"] })
+    expect(d.lines.join(" | ")).toContain("Sub-areas: Bookings and Fares")
+    const u = nodeFacts({ ntype: "domain", id: "ungrouped", label: "Ungrouped", count: 1911, isUngrouped: true })
+    expect(u.chip).toBe("Not yet grouped")
+    expect(u.lines.join(" | ")).toContain("1,911 tables")
+    expect(u.drillTopId).toBe("ungrouped")
+  })
+})
+
 describe("viewElements — Assets LOD requires a focused domain (MV-D75)", () => {
   it("yields no elements at the Assets LOD without a focus (the pick-an-area state)", () => {
     const els = viewElements(fixture(), "assets", null)

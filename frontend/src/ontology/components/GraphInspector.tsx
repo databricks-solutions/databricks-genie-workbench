@@ -49,10 +49,18 @@ export function GraphInspector({
       </div>
 
       {facts.lines.length > 0 && (
-        <div className="space-y-1 text-xs text-secondary">
-          {facts.lines.map((line, i) => (
-            <p key={i}>{line}</p>
-          ))}
+        <div className="space-y-1.5 text-xs text-secondary">
+          {/* First line = what this thing IS; the rest are individual facts. */}
+          {facts.lines.map((line, i) =>
+            i === 0 ? (
+              <p key={i} className="leading-snug">{line}</p>
+            ) : (
+              <p key={i} className="flex gap-1.5 leading-snug">
+                <span className="mt-[5px] h-1 w-1 shrink-0 rounded-full bg-accent/70" aria-hidden />
+                <span>{line}</span>
+              </p>
+            ),
+          )}
         </div>
       )}
 

@@ -235,6 +235,7 @@ export function buildElements(
           origin: t.origin,
           display: domainDisplay(shortName(t), t.memberCount, t.ungrouped),
           isUngrouped: t.ungrouped,
+          subNames: t.subIds.map((id) => domainById.get(id)?.label).filter((n): n is string => !!n),
         },
         topCenter(t.id),
       )
@@ -268,6 +269,7 @@ export function buildElements(
           px: sizePx(d.member_count ?? 1, 16, 6, 6),
           origin: d.origin ?? tops.get(top)!.origin,
           isUngrouped: tops.get(top)!.ungrouped,
+          domainShort: shortName(tops.get(top)!),
         },
         seedNear(topCenter(top), d.id, 90),
       )
@@ -290,11 +292,36 @@ export function buildElements(
       if (!emitted.has(e.src) || !emitted.has(e.dst)) continue
       els.push({ group: "edges", data: { id: `se_${e.src}__${e.dst}`, source: e.src, target: e.dst, etype: edgeType(e.kind) } })
     }
-    prependContainers(els, tops, usedTops, shortName)
+    prependContainers(els, tops, usedTops, shortName, (id) => domainById.get(id)?.label ?? null)
     return els
   }
 
   // -------- Assets: three-level compound hierarchy (top → sub → asset) --------
+  // Connectivity facts for the inspector (Map v3 §1D — data already in the snapshot,
+  // revealed not invented): each asset's degree across the WHOLE estate + its top
+  // linked assets by edge weight. Deterministic (weight desc, then id asc).
+  const labelByAsset = new Map(graph.assets.nodes.map((a) => [a.id, a.label]))
+  const neighbors = new Map<string, { id: string; w: number }[]>()
+  const addNeighbor = (a: string, b: string, w: number) => {
+    const list = neighbors.get(a)
+    if (list) list.push({ id: b, w })
+    else neighbors.set(a, [{ id: b, w }])
+  }
+  for (const e of graph.assets.edges) {
+    const w = e.weight ?? 0
+    addNeighbor(e.src, e.dst, w)
+    addNeighbor(e.dst, e.src, w)
+  }
+  const topLinks = (id: string): string[] => {
+    const list = neighbors.get(id)
+    if (!list) return []
+    return [...list]
+      .sort((x, y) => y.w - x.w || (x.id < y.id ? -1 : 1))
+      .slice(0, 3)
+      .map((n) => labelByAsset.get(n.id))
+      .filter((l): l is string => !!l)
+  }
+
   const perGroup = new Map<string, OntologyGraphNode[]>()
   const groupMeta = new Map<string, { topId: string; subId: string | null }>()
   for (const a of graph.assets.nodes) {
@@ -331,12 +358,15 @@ export function buildElements(
     const groupCenter = subId ? seedNear(topCenter(topId), subId, 130) : topCenter(topId)
     const sorted = [...list].sort((x, y) => (y.size ?? 0) - (x.size ?? 0))
     const shown = sorted.slice(0, cap)
+    const subName = subId ? domainById.get(subId)?.label ?? null : null
     shown.forEach((a, i) => {
       pushNode(
         {
           id: a.id, parent: gkey, label: a.label, ntype: "asset", kind: a.kind,
           color: assetColor(a.kind, color), px: 8 + Math.min(a.size ?? 1, 3) * 5,
           cost: a.cost ?? null, domainName: topName,
+          domainShort: shortName(tops.get(topId)!), subName,
+          deg: neighbors.get(a.id)?.length ?? 0, links: topLinks(a.id),
         },
         onRing(groupCenter.x, groupCenter.y, 22 + shown.length * 1.4, shown.length, i),
       )
@@ -362,6 +392,7 @@ export function buildElements(
         count: sub?.member_count ?? 0,
         origin: sub?.origin ?? tops.get(topId)?.origin ?? null,
         isUngrouped: tops.get(topId)?.ungrouped ?? false,
+        domainShort: tops.has(topId) ? shortName(tops.get(topId)!) : null,
       },
     })
   }
@@ -374,7 +405,7 @@ export function buildElements(
     })
   }
   els.unshift(...subContainers)
-  prependContainers(els, tops, usedTops, shortName)
+  prependContainers(els, tops, usedTops, shortName, (id) => domainById.get(id)?.label ?? null)
   return els
 }
 
@@ -474,11 +505,15 @@ function prependContainers(
   tops: Map<string, TopDomain>,
   usedTops: Set<string>,
   shortName: (t: TopDomain) => string,
+  subNameOf?: (subId: string) => string | null,
 ) {
   const containers: CyEl[] = []
   for (const topId of usedTops) {
     const t = tops.get(topId)
     if (!t) continue
+    const subNames = subNameOf
+      ? t.subIds.map((id) => subNameOf(id)).filter((n): n is string => !!n)
+      : []
     containers.push({
       group: "nodes",
       data: {
@@ -486,6 +521,7 @@ function prependContainers(
         count: t.memberCount, origin: t.origin, isUngrouped: t.ungrouped,
         // Container title: trimmed name + at-a-glance size (§1D one-line caption).
         display: t.memberCount > 0 ? `${shortName(t)} · ${fmtCount(t.memberCount)}` : shortName(t),
+        subNames,
       },
     })
   }
@@ -499,24 +535,58 @@ export interface NodeFacts {
   drillTopId: string | null
 }
 
+/** Natural-language list: "a", "a and b", "a, b and c". */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ""
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
+
+// Page archetypes ("[Guardrail] fare rules" labels) → what that note DOES, in plain
+// language (MV-D23). These describe the product's page kinds, not invented data.
+const PAGE_ARCHETYPES: Record<string, string> = {
+  Routing: "Points questions at the right data.",
+  Disambiguation: "Clears up a term that could mean two things.",
+  Guardrail: "A rule answers in this area must respect.",
+  Taxonomy: "How this area's terms relate to each other.",
+}
+
 /**
- * Plain-language facts for the detail popover. Zero jargon (MV-D23) — no ids, no SQL.
+ * Plain-language facts for the inspector rail. Zero jargon (MV-D23) — no ids, no SQL.
  * Returns a `drillTopId` when the node is a domain/container the user can open into.
+ * Everything shown is already in the snapshot/expand contract (Map v3 §3): counts,
+ * grouping, connectivity (degree + strongest links), cost when present.
  */
 export function nodeFacts(data: Record<string, unknown>): NodeFacts {
   const ntype = String(data.ntype ?? "")
   const label = String(data.label ?? "")
   const count = typeof data.count === "number" ? data.count : null
   const cost = typeof data.cost === "number" ? data.cost : null
+  const subNames = Array.isArray(data.subNames) ? (data.subNames as string[]) : []
   const lines: string[] = []
 
   if (ntype === "domain" || ntype === "container") {
-    if (count != null) lines.push(`${count} ${count === 1 ? "asset" : "assets"} in this business area`)
+    const ungrouped = data.isUngrouped === true
+    if (ungrouped) {
+      if (count != null) lines.push(`${fmtCount(count)} ${count === 1 ? "table" : "tables"} not organised into any business area yet`)
+      lines.push("Grouping them makes questions in this area easier to answer.")
+      const id = ntype === "container" ? String(data.id).replace(/^top:/, "") : String(data.id)
+      return { title: label, chip: "Not yet grouped", lines, drillTopId: id }
+    }
+    lines.push("A business area of the estate.")
+    if (count != null) lines.push(`${fmtCount(count)} ${count === 1 ? "asset" : "assets"} in this area`)
+    if (subNames.length > 0) {
+      const shownSubs = subNames.slice(0, 4)
+      const rest = subNames.length - shownSubs.length
+      lines.push(`Sub-areas: ${joinNames(shownSubs)}${rest > 0 ? ` and ${rest} more` : ""}`)
+    }
+    if (cost != null && cost > 0) lines.push(`About ${fmtMoney(cost)} / month`)
     const id = ntype === "container" ? String(data.id).replace(/^top:/, "") : String(data.id)
     return { title: label, chip: "Business area", lines, drillTopId: id }
   }
   if (ntype === "subdomain" || ntype === "subcontainer") {
-    if (count != null) lines.push(`${count} ${count === 1 ? "asset" : "assets"} grouped here`)
+    const domainShort = data.domainShort ? String(data.domainShort) : null
+    if (domainShort && domainShort !== label) lines.push(`Part of ${domainShort}`)
+    if (count != null) lines.push(`${fmtCount(count)} ${count === 1 ? "asset" : "assets"} grouped here`)
     return { title: label, chip: "Sub-area", lines, drillTopId: null }
   }
   if (ntype === "more") {
@@ -527,13 +597,47 @@ export function nodeFacts(data: Record<string, unknown>): NodeFacts {
     return { title: label, chip: "Measure", lines: ["A number this metric view reports."], drillTopId: null }
   }
   if (ntype === "page") {
-    return { title: label, chip: "Page", lines: ["A guidance note attached to this area."], drillTopId: null }
+    const m = label.match(/^\[([A-Za-z]+)\]\s*(.*)$/)
+    const archetype = m?.[1] ?? null
+    const clean = m?.[2] || label
+    const what = (archetype && PAGE_ARCHETYPES[archetype]) || "A guidance note attached to this area."
+    return {
+      title: clean,
+      chip: archetype ? `${archetype} note` : "Page",
+      lines: [what],
+      drillTopId: null,
+    }
   }
   // asset
   const kind = String(data.kind ?? "table")
-  const kindLabel = kind === "metric_view" ? "Metric view" : kind === "agent" ? "Genie agent" : kind === "view" ? "View" : "Table"
-  const domainName = data.domainName ? String(data.domainName) : null
-  if (domainName) lines.push(`In ${domainName}`)
-  if (cost != null && cost > 0) lines.push(`About $${cost >= 1000 ? `${(cost / 1000).toFixed(1)}k` : cost.toFixed(0)} / month`)
+  const kindLabel = kind === "metric_view" ? "Metric view" : kind === "agent" || kind === "genie_agent" ? "Genie agent" : kind === "view" ? "View" : kind === "dashboard" ? "Dashboard" : "Table"
+  const what =
+    kind === "metric_view"
+      ? "A curated set of business measures."
+      : kind === "agent" || kind === "genie_agent"
+        ? "Answers questions about this area in plain language."
+        : kind === "dashboard"
+          ? "A chart page built on this area's data."
+          : "A data table."
+  lines.push(what)
+  const domainShort = data.domainShort ? String(data.domainShort) : data.domainName ? String(data.domainName) : null
+  const subName = data.subName ? String(data.subName) : null
+  if (domainShort) lines.push(subName ? `In ${domainShort} › ${subName}` : `In ${domainShort}`)
+  const deg = typeof data.deg === "number" ? data.deg : 0
+  const links = Array.isArray(data.links) ? (data.links as string[]) : []
+  if (deg > 0 && links.length > 0) {
+    const rest = deg - links.length
+    lines.push(
+      rest > 0
+        ? `Works with ${links.join(", ")} and ${fmtCount(rest)} more`
+        : `Works with ${joinNames(links)}`,
+    )
+  }
+  if (cost != null && cost > 0) lines.push(`About ${fmtMoney(cost)} / month`)
   return { title: label, chip: kindLabel, lines, drillTopId: null }
+}
+
+/** $2.4k-style money for fact lines. */
+function fmtMoney(cost: number): string {
+  return `$${cost >= 1000 ? `${(cost / 1000).toFixed(1)}k` : cost.toFixed(0)}`
 }

@@ -191,7 +191,9 @@ const STYLESHEET = [
       "font-size": 9,
       "font-weight": 500,
       color: "#94A3B8",
-      "min-zoomed-font-size": 11, // declutter: hide asset labels until zoomed in
+      // Declutter guard only for far zoom-out — at the default drilled zoom the
+      // names are the point of drilling in (§2 defect #3: no more nameless dots).
+      "min-zoomed-font-size": 6,
       "text-valign": "bottom",
       "text-halign": "center",
       "text-margin-y": 4,
@@ -354,7 +356,7 @@ function layoutFor(lod: Lod) {
     // labels never collide with a neighbouring hub. Sub-domains: labelled leaves
     // inside compound boxes — enough separation that sibling labels and the boxes
     // themselves never overlap (§1A no-overlap at default zoom).
-    nodeSeparation: lod === "domains" ? 160 : lod === "subdomains" ? 130 : 90,
+    nodeSeparation: lod === "domains" ? 160 : lod === "subdomains" ? 130 : 100,
     // Long leash for edges that CROSS compound boxes so a connected sub-domain is
     // never dragged into a neighbouring domain's box (box-overlap fix); short
     // intra-box edges keep siblings clustered.
@@ -366,7 +368,7 @@ function layoutFor(lod: Lod) {
             const tp = edge.target().data("parent")
             return sp && tp && sp === tp ? 90 : 320
           },
-    nodeRepulsion: lod === "domains" ? 18000 : lod === "subdomains" ? 16000 : 7500,
+    nodeRepulsion: lod === "domains" ? 18000 : lod === "subdomains" ? 16000 : 9500,
     packComponents: true,
     // A touch more breathing room between sibling compound boxes than fcose's default.
     nestingFactor: 0.15,
@@ -391,6 +393,13 @@ interface CyNode extends CyCollection {
   ancestors(): CyCollection
   descendants(): CyCollection
 }
+interface CyEdge extends CyCollection {
+  source(): CyNode
+  target(): CyNode
+}
+interface CyEdgeCollection extends CyCollection {
+  forEach(fn: (e: CyEdge) => void): void
+}
 interface CyNodeCollection extends CyCollection {
   length: number
   forEach(fn: (n: CyNode) => void): void
@@ -411,7 +420,7 @@ interface CyCore {
   batch(fn: () => void): void
   elements(): CyCollection
   nodes(selector?: string): CyNodeCollection
-  edges(selector?: string): CyCollection
+  edges(selector?: string): CyEdgeCollection
   extent(): CyExtent
   on(events: string, selector: string, handler: (evt: { target: CyNode }) => void): void
   on(events: string, handler: (evt: { target: CyNode | CyCore }) => void): void
@@ -453,6 +462,23 @@ export interface EstateGraphProps {
   initialLod?: Lod
   initialFocus?: { topId: string; name: string } | null
   onCyReady?: (cy: unknown) => void
+}
+
+/**
+ * Progressive edge disclosure (Map v3 §1B/D). At the compound LODs, edges WITHIN a
+ * box are shown by default — they give a drilled view its internal structure (the
+ * old all-hidden policy is what made Assets boxes read as empty, §0 defect #3) —
+ * while box-crossing edges stay in the simulation but hidden until a node is
+ * tapped (edge-on-demand). Domains is the aggregate overview: all edges visible.
+ */
+function applyEdgeVisibility(cy: CyCore, lod: Lod) {
+  if (lod === "domains") return
+  cy.edges('[etype != "snippet"]').forEach((e) => {
+    const sp = e.source().data().parent
+    const tp = e.target().data().parent
+    if (sp && tp && sp === tp) e.removeClass("hidden")
+    else e.addClass("hidden")
+  })
 }
 
 // A node is expandable (§2.3) when it's a metric view (→ measures) or a sub-domain (→ Pages).
@@ -867,9 +893,10 @@ export function EstateGraph({
                   cy.removeListener("pan")
                   cy.removeListener("zoom")
                   cy.ready(() => {
-                    // Edge-on-demand: hide FK/lineage/co-query edges at deep LODs (kept in the
-                    // sim so clusters emerge). Satellite edges stay visible so an expand shows.
-                    if (lod !== "domains") cy.edges('[etype != "snippet"]').addClass("hidden")
+                    // Progressive disclosure: intra-box edges visible, box-crossing edges
+                    // on-demand (kept in the sim so clusters emerge). Satellite edges stay
+                    // visible so an expand always shows.
+                    applyEdgeVisibility(cy, lod)
                     cy.fit(undefined, 28)
                     refreshMini(cy)
                   })
@@ -882,7 +909,7 @@ export function EstateGraph({
                       setSelected(null)
                       cy.batch(() => {
                         cy.elements().removeClass("faded focused")
-                        if (lod !== "domains") cy.edges('[etype != "snippet"]').addClass("hidden")
+                        applyEdgeVisibility(cy, lod)
                       })
                     }
                   })
