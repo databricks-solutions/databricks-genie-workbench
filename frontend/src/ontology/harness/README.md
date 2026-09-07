@@ -18,7 +18,7 @@ that drop query strings). Parameters (see `main.tsx`):
 
 | Param | Values | Meaning |
 |---|---|---|
-| `scene` | `default` `mv` `stale` `empty` `loading` `error` `slow-expand` `fail-expand` | which fixture/failure variant backs the mock API |
+| `scene` | `default` `mv` `stale` `empty` `loading` `error` `slow-expand` `fail-expand` `stress` | which fixture/failure variant backs the mock API (`stress` ≈ 2,950 nodes / 1,560 edges for §1C smoothness checks) |
 | `origin` | `applied` (default) `proposed` | initial source toggle |
 | `lod` | `domains` (default) `subdomains` `assets` | initial level of detail |
 | `focus` | a top-domain id, or `auto` (first real top) | drill-down focus (required for `lod=assets`) |
@@ -38,7 +38,11 @@ Useful states for a full screenshot set:
 ```
 
 Dev hooks for drivers: `window.__ontologyHarness = { scene, origin, lod, ready,
-cy, tapByLabel(q) }` — `ready` flips true on the first `layoutstop`.
+layoutMs, nodeCount, cy, tapByLabel(q) }`. `ready` is set as soon as the instance
+is wired — react-cytoscapejs runs the synchronous seeded layout BEFORE invoking
+the `cy` callback, so `layoutstop` can never be a mount hook. Determinism can be
+regression-checked by hashing `cy.nodes()` positions across reloads (the layout
+runs in a fixed bounding box precisely so this hash is stable).
 
 ## Offline one-file build (no vite / no registry / no installed browser toolchain)
 
