@@ -59,6 +59,11 @@ _STAGE41D_MODELS = {
     "DraftBodyResponse", "BulkDraftStart", "BulkDraftResult", "BulkDraftStatus",
 }
 
+# Ontology Map v2 (MV-D73 §2.3/§2.4) APPEND-ONLY model: the expand-on-demand children
+# payload for GET /graph/expand. (The additive ``origin`` field on OntologyGraphNode is
+# a field, not a new model; nothing removed or renamed.)
+_MAPV2_MODELS = {"OntologyGraphExpand"}
+
 
 def test_no_new_api_model_added_in_phase3a():
     defined = {
@@ -73,7 +78,7 @@ def test_no_new_api_model_added_in_phase3a():
     # and Stage-4.1d models.
     allowed = (
         _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE3E_MODELS
-        | _PHASE5_MODELS | _STAGE41D_MODELS
+        | _PHASE5_MODELS | _STAGE41D_MODELS | _MAPV2_MODELS
     )
     assert defined == allowed, (
         f"unexpected model surface change: {defined ^ allowed}"
