@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # Larger estates cap at this to keep the asset LOD interactive.
 TOP_N_BY_CENTRALITY = 2000
 
+# Bounded per-parent "business-snippet" index (MV-D73 §2.3): the expand-on-demand
+# source is baked in the deterministic batch (no request-path warehouse), so cap the
+# MV measures and sub-domain Pages per parent to keep the snapshot blob small (MV-D49).
+MAX_SNIPPET_MEASURES = 50
+MAX_SNIPPET_PAGES = 50
+
 
 def _fqn_of(node_id: str) -> str:
     """Strip the ``prefix:`` from a signal-graph node id (``asset:c.s.t`` → ``c.s.t``).
@@ -49,6 +55,7 @@ def build_graph_snapshot(
     node_scores: dict[str, float] | None = None,
     *,
     domain_meta: dict[str, dict[str, Any]] | None = None,
+    snippets_in: dict[str, Any] | None = None,
     metastore_id: str,
     workspace_id: str,
     run_id: str,
@@ -65,9 +72,17 @@ def build_graph_snapshot(
     - ``signal_graph``: ``{"nodes": [...], "edges": [...]`` from 17d.
     - ``node_domain_id``: ``{node_id → domain_id}`` from 17e clustering.
     - ``node_scores``: Optional ``{node_id → score}`` from 17g ranking (for sizing).
-    - ``domain_meta``: Optional ``{domain_id → {name, parent_id}}`` from 17e/17f domain
-      rows — labels the rollup nodes with human names and links Sub-Domain → Domain
-      so the map can render the hierarchy (MV-D71). Absent → raw ids, flat.
+    - ``domain_meta``: Optional ``{domain_id → {name, parent_id, origin}}`` from 17e/17f
+      domain rows — labels the rollup nodes with human names, links Sub-Domain → Domain
+      so the map can render the hierarchy (MV-D71), and stamps ``origin`` on each rollup
+      (``applied`` when the domain is backed by a governed-tag decision, else
+      ``proposed``; MV-D73 §2.1). Absent → raw ids, flat, ``proposed``.
+    - ``snippets_in``: Optional expand-on-demand "business-snippet" index (MV-D73 §2.3),
+      baked in the deterministic batch (no request-path warehouse). Shape
+      ``{"measures": {mv_fqn → [{ref,name,expression,fmt}]},
+      "pages": {domain_id → [{page_id,title,archetype,domain_id}]}}``. Measures re-key to
+      the ``mv:<fqn>`` hub node id, pages key to the sub-domain rollup ``domain_id``; both
+      are capped per parent. Absent → the ``snippets`` blob key is omitted (byte-stable).
     - ``metastore_id``: The storage grain (MV-D49).
     - ``workspace_id``: Provenance (which install ran this).
     - ``run_id``: FK to genie_ont_runs.run_id.
@@ -95,7 +110,7 @@ def build_graph_snapshot(
         return {
             "metastore_id": metastore_id,
             "workspace_id": workspace_id,
-            "graph": json.dumps({"domains": {"nodes": [], "edges": []}, "assets": {"nodes": [], "edges": []}}),
+            "graph": json.dumps({"domains": {"nodes": [], "edges": []}, "assets": {"nodes": [], "edges": []}, "subdomains": {"edges": []}}),
             "node_count": 0,
             "edge_count": len(edges),
             "layout": "none",
@@ -112,7 +127,7 @@ def build_graph_snapshot(
         return {
             "metastore_id": metastore_id,
             "workspace_id": workspace_id,
-            "graph": json.dumps({"domains": {"nodes": [], "edges": []}, "assets": {"nodes": [], "edges": []}}),
+            "graph": json.dumps({"domains": {"nodes": [], "edges": []}, "assets": {"nodes": [], "edges": []}, "subdomains": {"edges": []}}),
             "node_count": len(nodes),
             "edge_count": len(edges),
             "layout": "unavailable",
@@ -233,6 +248,11 @@ def build_graph_snapshot(
             else:
                 label = "Ungrouped"
                 kind = "ungrouped"
+            # Provenance (MV-D73 §2.1): a rollup is ``applied`` only when its domain is
+            # backed by a governed-tag decision (threaded onto meta in materialize from
+            # ``tag_decision``); every meta-less cluster and the Ungrouped blob is
+            # ``proposed`` (a pure engine suggestion, not current governed state).
+            origin = (meta.get("origin") if meta else None) or "proposed"
             # Assign a rolled-up position: average of member positions.
             domain_dict[domain_id] = {
                 "id": domain_id or "ungrouped",
@@ -241,6 +261,7 @@ def build_graph_snapshot(
                 "domain_id": domain_id,
                 "parent_id": parent_id,
                 "parent_name": (parent_meta.get("name") if parent_meta else None) or parent_id,
+                "origin": origin,
                 "x": node["x"],
                 "y": node["y"],
                 "size": node["size"],
@@ -297,6 +318,47 @@ def build_graph_snapshot(
                     "weight": edge.get("weight"),
                 })
 
+    # Sub-domain rollup edges (MV-D73 §2.2): aggregate asset edges to the sub-domain
+    # grain so the Sub-domains LOD is not edge-empty. A sub-domain is a domain_id whose
+    # meta carries a parent_id (kind == "subdomain"); ``present_subs`` is the set that
+    # actually survived to a rollup node (emitted-only guard — never emit an edge whose
+    # endpoint sub-domain is absent). Cross-sub only, deduped by (src_sub, dst_sub, kind).
+    present_subs = {d["id"] for d in domain_nodes if d.get("parent_id")}
+    asset_sub: dict[str, str] = {}
+    for node in asset_nodes:
+        did = node.get("domain_id")
+        if did and did in present_subs:
+            asset_sub[node["id"]] = did
+    subdomain_edges = []
+    seen_sub_edges: set[tuple[str, str, Any]] = set()
+    for edge in asset_edges:
+        src_sub = asset_sub.get(edge["src"])
+        dst_sub = asset_sub.get(edge["dst"])
+        if not src_sub or not dst_sub or src_sub == dst_sub:
+            continue
+        edge_key = (src_sub, dst_sub, edge.get("kind"))
+        if edge_key in seen_sub_edges:
+            continue
+        seen_sub_edges.add(edge_key)
+        subdomain_edges.append({
+            "src": src_sub,
+            "dst": dst_sub,
+            "kind": edge.get("kind", "unknown"),
+            "weight": edge.get("weight"),
+        })
+
+    # Bounded expand-on-demand "business-snippet" index (MV-D73 §2.3): re-key measures to
+    # the mv:<fqn> hub node id and pages to their sub-domain rollup domain_id, capping each
+    # list per parent. Baked deterministically here (no request-path warehouse); absent
+    # snippets_in ⇒ the key is omitted so the blob stays byte-stable with today.
+    snippets_out: dict[str, dict[str, Any]] | None = None
+    if snippets_in is not None:
+        snippets_out = {}
+        for mv_fqn, measures in (snippets_in.get("measures") or {}).items():
+            snippets_out[f"mv:{mv_fqn}"] = {"measures": list(measures)[:MAX_SNIPPET_MEASURES]}
+        for sub_id, pgs in (snippets_in.get("pages") or {}).items():
+            snippets_out.setdefault(sub_id, {})["pages"] = list(pgs)[:MAX_SNIPPET_PAGES]
+
     # Build the snapshot blob.
     snapshot_blob = {
         "domains": {
@@ -309,10 +371,15 @@ def build_graph_snapshot(
             "edges": asset_edges,
             "truncated": truncated,
         },
+        "subdomains": {
+            "edges": subdomain_edges,
+        },
         "layout": layout_algo,
         "node_count": len(nodes),
         "edge_count": len(edges),
     }
+    if snippets_out is not None:
+        snapshot_blob["snippets"] = snippets_out
 
     return {
         "metastore_id": metastore_id,

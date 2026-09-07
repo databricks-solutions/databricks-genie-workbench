@@ -92,10 +92,10 @@ def test_tag_value_threads_onto_assignment_edge_additively():
 
 # --- L7 estate-graph rollup: prefix key fix + hierarchy enrichment (MV-D71) ---
 
-def _snap(signal_graph, node_domain_id, domain_meta=None):
+def _snap(signal_graph, node_domain_id, domain_meta=None, snippets_in=None):
     pytest.importorskip("igraph")
     row = layout.build_graph_snapshot(
-        signal_graph, node_domain_id, domain_meta=domain_meta,
+        signal_graph, node_domain_id, domain_meta=domain_meta, snippets_in=snippets_in,
         metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
     )
     return json.loads(row["graph"])
@@ -154,3 +154,169 @@ def test_unmapped_assets_still_fall_back_to_ungrouped():
     assert dom[0]["id"] == "ungrouped"
     assert dom[0]["kind"] == "ungrouped"
     assert dom[0]["label"] == "Ungrouped"
+
+
+# --- Ontology Map v2 (MV-D73): origin, sub-domain edges, snippets index ---
+
+def test_rollup_origin_applied_proposed_and_ungrouped():
+    """MV-D73 §2.1: a governed-tag-backed domain (materialize threads origin=applied
+    from tag_decision reuse/reassign) rolls up ``applied``; a pure engine cluster
+    (origin=proposed, tag_decision=create) rolls up ``proposed``; the Ungrouped blob
+    (no meta) is always ``proposed``."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.fin.ledger", "kind": "table"},   # applied domain d1
+            {"id": "asset:c.mkt.leads", "kind": "table"},    # proposed domain d2
+            {"id": "asset:c.x.orphan", "kind": "table"},     # ungrouped
+        ],
+        "edges": [],
+    }
+    blob = _snap(
+        sig,
+        {"c.fin.ledger": "d1", "c.mkt.leads": "d2"},
+        domain_meta={
+            "d1": {"name": "Finance", "parent_id": None, "origin": "applied"},
+            "d2": {"name": "Marketing", "parent_id": None, "origin": "proposed"},
+        },
+    )
+    dom = {n["id"]: n for n in blob["domains"]["nodes"]}
+    assert dom["d1"]["origin"] == "applied"
+    assert dom["d2"]["origin"] == "proposed"
+    assert dom["ungrouped"]["origin"] == "proposed"
+
+
+def test_meta_without_origin_defaults_to_proposed():
+    """A meta dict predating MV-D73 (no ``origin`` key) degrades to ``proposed`` —
+    never silently ``applied`` (honest current-state, MV-D74)."""
+    sig = {"nodes": [{"id": "asset:c.fin.ledger", "kind": "table"}], "edges": []}
+    blob = _snap(sig, {"c.fin.ledger": "d1"},
+                 domain_meta={"d1": {"name": "Finance", "parent_id": None}})
+    assert blob["domains"]["nodes"][0]["origin"] == "proposed"
+
+
+def _subdomain_meta():
+    # Two sub-domains under one Domain, plus a bare top-level Domain (no parent).
+    return {
+        "dom": {"name": "Revenue", "parent_id": None, "origin": "applied"},
+        "s1": {"name": "Bookings", "parent_id": "dom", "origin": "applied"},
+        "s2": {"name": "Fares", "parent_id": "dom", "origin": "proposed"},
+        "d0": {"name": "Ops", "parent_id": None, "origin": "proposed"},
+    }
+
+
+def test_subdomain_cross_edge_emitted_once_and_deduped():
+    """MV-D73 §2.2: two assets in different sub-domains with cross edges aggregate to
+    exactly one deduped subdomains.edges entry per (src_sub, dst_sub, kind)."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.rev.bookings", "kind": "table"},   # s1
+            {"id": "asset:c.rev.pnr", "kind": "table"},        # s1
+            {"id": "asset:c.rev.fares", "kind": "table"},      # s2
+        ],
+        "edges": [
+            {"src": "asset:c.rev.bookings", "dst": "asset:c.rev.fares", "kind": "join_key"},
+            {"src": "asset:c.rev.pnr", "dst": "asset:c.rev.fares", "kind": "join_key"},  # same (s1,s2,join_key) -> deduped
+        ],
+    }
+    blob = _snap(sig, {"c.rev.bookings": "s1", "c.rev.pnr": "s1", "c.rev.fares": "s2"},
+                 domain_meta=_subdomain_meta())
+    subs = blob["subdomains"]["edges"]
+    assert len(subs) == 1
+    assert (subs[0]["src"], subs[0]["dst"], subs[0]["kind"]) == ("s1", "s2", "join_key")
+
+
+def test_subdomain_intra_edge_and_absent_endpoint_are_dropped():
+    """An intra-sub edge yields no sub-domain edge; an edge to an asset that maps to a
+    top-level Domain (not a sub-domain) has an absent endpoint and is dropped (no
+    dangling endpoint)."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.rev.bookings", "kind": "table"},   # s1
+            {"id": "asset:c.rev.pnr", "kind": "table"},        # s1 (intra)
+            {"id": "asset:c.ops.log", "kind": "table"},        # d0 top-level domain, no sub
+        ],
+        "edges": [
+            {"src": "asset:c.rev.bookings", "dst": "asset:c.rev.pnr", "kind": "join_key"},  # intra-sub
+            {"src": "asset:c.rev.bookings", "dst": "asset:c.ops.log", "kind": "lineage_adjacency"},  # endpoint has no sub
+        ],
+    }
+    blob = _snap(sig, {"c.rev.bookings": "s1", "c.rev.pnr": "s1", "c.ops.log": "d0"},
+                 domain_meta=_subdomain_meta())
+    assert blob["subdomains"]["edges"] == []
+
+
+def test_snippets_index_present_and_capped():
+    """MV-D73 §2.3: snippets_in re-keys measures to the mv:<fqn> hub and pages to the
+    sub-domain domain_id, capping each list at the module bound."""
+    measures = [{"ref": f"c.m.rev_mv.m{i}", "name": f"m{i}", "expression": "SUM(x)", "fmt": "$#,##0"}
+                for i in range(layout.MAX_SNIPPET_MEASURES + 5)]
+    pages = [{"page_id": f"p{i}", "title": f"Page {i}", "archetype": "metric", "domain_id": "s1"}
+             for i in range(layout.MAX_SNIPPET_PAGES + 3)]
+    sig = {"nodes": [{"id": "asset:c.rev.bookings", "kind": "table"}], "edges": []}
+    blob = _snap(
+        sig, {"c.rev.bookings": "s1"}, domain_meta=_subdomain_meta(),
+        snippets_in={"measures": {"c.m.rev_mv": measures}, "pages": {"s1": pages}},
+    )
+    snip = blob["snippets"]
+    assert len(snip["mv:c.m.rev_mv"]["measures"]) == layout.MAX_SNIPPET_MEASURES
+    assert snip["mv:c.m.rev_mv"]["measures"][0] == {
+        "ref": "c.m.rev_mv.m0", "name": "m0", "expression": "SUM(x)", "fmt": "$#,##0",
+    }
+    assert len(snip["s1"]["pages"]) == layout.MAX_SNIPPET_PAGES
+    assert snip["s1"]["pages"][0]["page_id"] == "p0"
+
+
+def test_snippets_key_absent_when_snippets_in_absent():
+    """Absent snippets_in ⇒ the blob omits the snippets key (byte-stable with today)."""
+    sig = {"nodes": [{"id": "asset:c.rev.bookings", "kind": "table"}], "edges": []}
+    blob = _snap(sig, {"c.rev.bookings": "s1"}, domain_meta=_subdomain_meta())
+    assert "snippets" not in blob
+    # subdomains is always a valid (possibly empty) key.
+    assert blob["subdomains"]["edges"] == []
+
+
+def test_empty_signal_graph_yields_valid_blob_with_empty_new_keys():
+    """MV-D43: an empty graph still yields a valid blob; the new keys are empty/absent
+    and the run succeeds."""
+    pytest.importorskip("igraph")
+    row = layout.build_graph_snapshot(
+        {"nodes": [], "edges": []}, {}, snippets_in={"measures": {}, "pages": {}},
+        metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
+    )
+    blob = json.loads(row["graph"])
+    assert blob["subdomains"]["edges"] == []
+    assert "snippets" not in blob
+    assert blob["domains"]["nodes"] == [] and blob["assets"]["nodes"] == []
+
+
+def test_snapshot_blob_is_byte_identical_across_runs():
+    """Determinism (fixed seed, no new RNG): the same input built twice is byte-for-byte
+    identical, snippets included."""
+    pytest.importorskip("igraph")
+    sig = {
+        "nodes": [
+            {"id": "asset:c.rev.bookings", "kind": "table"},
+            {"id": "asset:c.rev.fares", "kind": "metric_view"},
+        ],
+        "edges": [{"src": "asset:c.rev.bookings", "dst": "asset:c.rev.fares", "kind": "join_key"}],
+    }
+    args = dict(
+        node_domain_id={"c.rev.bookings": "s1", "c.rev.fares": "s2"},
+        domain_meta=_subdomain_meta(),
+        snippets_in={"measures": {"c.m.rev_mv": [{"ref": "c.m.rev_mv.m0", "name": "m0",
+                     "expression": "SUM(x)", "fmt": ""}]}, "pages": {"s1": [
+                     {"page_id": "p0", "title": "T", "archetype": "metric", "domain_id": "s1"}]}},
+        metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
+    )
+    a = layout.build_graph_snapshot({"nodes": sig["nodes"], "edges": sig["edges"]},
+                                    args.pop("node_domain_id"), **args)
+    b = layout.build_graph_snapshot({"nodes": sig["nodes"], "edges": sig["edges"]},
+                                    {"c.rev.bookings": "s1", "c.rev.fares": "s2"},
+                                    domain_meta=_subdomain_meta(),
+                                    snippets_in={"measures": {"c.m.rev_mv": [{"ref": "c.m.rev_mv.m0",
+                                                 "name": "m0", "expression": "SUM(x)", "fmt": ""}]},
+                                                 "pages": {"s1": [{"page_id": "p0", "title": "T",
+                                                 "archetype": "metric", "domain_id": "s1"}]}},
+                                    metastore_id="m", workspace_id="w", run_id="r",
+                                    as_of="2026-01-01T00:00:00+00:00")
+    assert a["graph"] == b["graph"]
