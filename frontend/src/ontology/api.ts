@@ -11,8 +11,10 @@ import type {
   DecisionRequest,
   DecisionResponse,
   DraftBodyResponse,
+  GraphOrigin,
   OntologyDrafts,
   OntologyGraph,
+  OntologyGraphExpand,
   OntologyInventory,
   OntologyPreflight,
   OntologyRefreshStatus,
@@ -115,7 +117,16 @@ export const pollBulkDraft = (domainId: string, taskId: string) =>
   fetchJson<BulkDraftStatus>(`/subdomains/${domainId}/draft-bodies/status?task_id=${taskId}`)
 
 // ── Phase 3e Step B: Estate Graph (MV-D48) ────────────────────────────────
-export const getGraph = () => fetchJson<OntologyGraph>("/graph")
+// Map v2 (MV-D74): `origin` selects applied (governed-tag current state, default) vs
+// proposed (engine clusters). The default keeps existing callers (getGraph()) working.
+export const getGraph = (origin: GraphOrigin = "applied") =>
+  fetchJson<OntologyGraph>(`/graph?origin=${origin}`)
+
+// Map v2 §2.3 (MV-D73): expand one node into its measures/Pages, hydrated on click.
+export const expandNode = (node: string, origin: GraphOrigin = "applied") =>
+  fetchJson<OntologyGraphExpand>(
+    `/graph/expand?node=${encodeURIComponent(node)}&origin=${origin}`,
+  )
 
 // ── Phase 5 (17i): consented apply (dry-run preview → confirmed execute) ────
 export const applyPreview = () => fetchJson<ApplyPlan>("/apply/preview", { method: "POST" })
