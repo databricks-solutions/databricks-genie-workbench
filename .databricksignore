@@ -11,6 +11,9 @@
 .vscode/
 .cursor/
 .idea/
+# Agent tooling scratch homes (codex/omnigent) — never runtime, can be 100s of MB
+.codex/
+.codex-tmp/
 *.pyc
 __pycache__/
 .mypy_cache/

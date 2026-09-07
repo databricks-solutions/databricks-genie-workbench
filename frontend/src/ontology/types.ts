@@ -225,6 +225,8 @@ export interface OntologyGraphNode {
   label: string
   kind: string
   domain_id?: string | null
+  parent_id?: string | null
+  parent_name?: string | null
   x: number
   y: number
   size: number

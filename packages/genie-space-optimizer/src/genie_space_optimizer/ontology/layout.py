@@ -31,11 +31,24 @@ logger = logging.getLogger(__name__)
 TOP_N_BY_CENTRALITY = 2000
 
 
+def _fqn_of(node_id: str) -> str:
+    """Strip the ``prefix:`` from a signal-graph node id (``asset:c.s.t`` → ``c.s.t``).
+
+    Signal-graph nodes are prefixed by kind (``asset:``/``tag:``/``mv:``/``agent:``/
+    ``schema:``) while the ``node_domain_id`` map is keyed by the bare asset FQN
+    (see ``cluster._fqn_of`` and the ``asset_domain`` map in ``materialize``). The
+    domain lookup below tries the raw id first, then the de-prefixed FQN so both
+    key schemes resolve. Nodes without a prefix pass through unchanged.
+    """
+    return node_id.split(":", 1)[1] if ":" in node_id else node_id
+
+
 def build_graph_snapshot(
     signal_graph: dict[str, Any],
     node_domain_id: dict[str, str],
     node_scores: dict[str, float] | None = None,
     *,
+    domain_meta: dict[str, dict[str, Any]] | None = None,
     metastore_id: str,
     workspace_id: str,
     run_id: str,
@@ -52,6 +65,9 @@ def build_graph_snapshot(
     - ``signal_graph``: ``{"nodes": [...], "edges": [...]`` from 17d.
     - ``node_domain_id``: ``{node_id → domain_id}`` from 17e clustering.
     - ``node_scores``: Optional ``{node_id → score}`` from 17g ranking (for sizing).
+    - ``domain_meta``: Optional ``{domain_id → {name, parent_id}}`` from 17e/17f domain
+      rows — labels the rollup nodes with human names and links Sub-Domain → Domain
+      so the map can render the hierarchy (MV-D71). Absent → raw ids, flat.
     - ``metastore_id``: The storage grain (MV-D49).
     - ``workspace_id``: Provenance (which install ran this).
     - ``run_id``: FK to genie_ont_runs.run_id.
@@ -68,6 +84,7 @@ def build_graph_snapshot(
     """
     node_domain_id = node_domain_id or {}
     node_scores = node_scores or {}
+    domain_meta = domain_meta or {}
 
     nodes = signal_graph.get("nodes", [])
     edges = signal_graph.get("edges", [])
@@ -157,7 +174,9 @@ def build_graph_snapshot(
         size = _compute_node_size(node, node_scores.get(node_id, 0.0))
         node_sizes[node_id] = size
 
-        domain_id = node_domain_id.get(node_id)
+        # Try the raw node id first, then the de-prefixed FQN — signal-graph nodes
+        # are ``asset:<fqn>`` while node_domain_id is keyed by the bare FQN (MV-D71).
+        domain_id = node_domain_id.get(node_id) or node_domain_id.get(_fqn_of(node_id))
         cost = node.get("cost")
 
         asset_nodes.append({
@@ -202,12 +221,26 @@ def build_graph_snapshot(
     for node in asset_nodes:
         domain_id = node.get("domain_id")
         if domain_id not in domain_dict:
+            # Enrich the rollup node from the run's domain rows (MV-D71): human name
+            # + parent linkage so the estate map can render the Domain → Sub-Domain →
+            # Asset hierarchy. Falls back to the raw id when meta is absent.
+            meta = domain_meta.get(domain_id) if domain_id else None
+            parent_id = meta.get("parent_id") if meta else None
+            parent_meta = domain_meta.get(parent_id) if parent_id else None
+            if domain_id:
+                label = (meta.get("name") if meta else None) or domain_id
+                kind = "subdomain" if parent_id else "domain"
+            else:
+                label = "Ungrouped"
+                kind = "ungrouped"
             # Assign a rolled-up position: average of member positions.
             domain_dict[domain_id] = {
                 "id": domain_id or "ungrouped",
-                "label": domain_id or "Ungrouped",
-                "kind": "domain" if domain_id else "ungrouped",
+                "label": label,
+                "kind": kind,
                 "domain_id": domain_id,
+                "parent_id": parent_id,
+                "parent_name": (parent_meta.get("name") if parent_meta else None) or parent_id,
                 "x": node["x"],
                 "y": node["y"],
                 "size": node["size"],

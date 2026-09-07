@@ -7,7 +7,11 @@ Covers the opt-in structural edge kinds added in Stage 1 (``join_key`` populated
 
 from __future__ import annotations
 
-from genie_space_optimizer.ontology import graph
+import json
+
+import pytest
+
+from genie_space_optimizer.ontology import graph, layout
 
 
 def test_lineage_only_call_is_byte_identical_scaffold():
@@ -84,3 +88,69 @@ def test_tag_value_threads_onto_assignment_edge_additively():
         "kind": "tag_assignment", "source": "tag_assignment",
         "as_of": "2026-08-31T00:00:00+00:00",
     }
+
+
+# --- L7 estate-graph rollup: prefix key fix + hierarchy enrichment (MV-D71) ---
+
+def _snap(signal_graph, node_domain_id, domain_meta=None):
+    pytest.importorskip("igraph")
+    row = layout.build_graph_snapshot(
+        signal_graph, node_domain_id, domain_meta=domain_meta,
+        metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
+    )
+    return json.loads(row["graph"])
+
+
+def test_prefixed_asset_nodes_colored_by_bare_fqn_map():
+    """MV-D71 regression: signal-graph asset nodes are ``asset:<fqn>`` but the
+    node→domain map is keyed by the BARE fqn. The rollup must resolve the prefix
+    so assets get a real domain (not the single ``Ungrouped`` blob)."""
+    sig = {
+        "nodes": [{"id": "asset:c.fin.ledger", "kind": "table"},
+                  {"id": "asset:c.fin.gl", "kind": "table"}],
+        "edges": [{"src": "asset:c.fin.ledger", "dst": "asset:c.fin.gl",
+                   "kind": "lineage_adjacency"}],
+    }
+    blob = _snap(sig, {"c.fin.ledger": "d1", "c.fin.gl": "d1"},
+                 domain_meta={"d1": {"name": "Finance", "parent_id": None}})
+
+    # Every asset resolved to the real domain — nothing fell through to Ungrouped.
+    assert {n["domain_id"] for n in blob["assets"]["nodes"]} == {"d1"}
+    # Exactly one rollup node, labelled with the human name, kind "domain".
+    dom = blob["domains"]["nodes"]
+    assert len(dom) == 1
+    assert dom[0]["id"] == "d1"
+    assert dom[0]["label"] == "Finance"
+    assert dom[0]["kind"] == "domain"
+    assert dom[0]["member_count"] == 2
+    assert dom[0]["parent_id"] is None
+
+
+def test_subdomain_rollup_carries_parent_linkage():
+    """A sub-domain (parent_id set) rolls up as kind ``subdomain`` and threads the
+    resolved parent name so the map can nest Sub-Domain under Domain."""
+    sig = {
+        "nodes": [{"id": "asset:c.rev.bookings", "kind": "table"}],
+        "edges": [],
+    }
+    blob = _snap(sig, {"c.rev.bookings": "d2"}, domain_meta={
+        "d1": {"name": "Revenue", "parent_id": None},
+        "d2": {"name": "Bookings", "parent_id": "d1"},
+    })
+    dom = {n["id"]: n for n in blob["domains"]["nodes"]}
+    assert dom["d2"]["kind"] == "subdomain"
+    assert dom["d2"]["label"] == "Bookings"
+    assert dom["d2"]["parent_id"] == "d1"
+    assert dom["d2"]["parent_name"] == "Revenue"
+
+
+def test_unmapped_assets_still_fall_back_to_ungrouped():
+    """Assets with no domain in the map (and no meta) keep the Ungrouped rollup —
+    the fix must not fabricate domains for genuinely unassigned assets."""
+    sig = {"nodes": [{"id": "asset:c.x.orphan", "kind": "table"}], "edges": []}
+    blob = _snap(sig, {}, domain_meta={})
+    dom = blob["domains"]["nodes"]
+    assert len(dom) == 1
+    assert dom[0]["id"] == "ungrouped"
+    assert dom[0]["kind"] == "ungrouped"
+    assert dom[0]["label"] == "Ungrouped"

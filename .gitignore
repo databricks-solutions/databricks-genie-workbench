@@ -10,6 +10,7 @@
 # directory cannot be re-included once excluded, hence `.cursor/*` above.
 !.cursor/rules/
 .codex/
+.codex-tmp/
 .agents/
 .superpowers/
 docs/superpowers/

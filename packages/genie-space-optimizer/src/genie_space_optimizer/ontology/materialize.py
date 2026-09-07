@@ -573,8 +573,15 @@ def run_materialize(
         # Additive/idempotent like ranking: a layout error records `failed` without
         # corrupting the snapshots committed above (MV-D43). An empty graph → an empty
         # snapshot, run still succeeds.
+        # Domain meta (MV-D71): {domain_id → {name, parent_id}} from the rows just
+        # MERGEd, so the estate map labels rollup nodes with human names and links
+        # Sub-Domain → Domain for the hierarchy LOD.
+        domain_meta = {
+            r["domain_id"]: {"name": r.get("name"), "parent_id": r.get("parent_id")}
+            for r in expanded["domain_rows"]
+        }
         graph_row = layout.build_graph_snapshot(
-            signal_graph, asset_domain, node_scores=None,
+            signal_graph, asset_domain, node_scores=None, domain_meta=domain_meta,
             metastore_id=metastore_id, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
         )
         writer.merge(ddl.TABLE_ONT_GRAPH_SNAPSHOT, [graph_row], GRAPH_SNAPSHOT_KEYS, metastore_id)

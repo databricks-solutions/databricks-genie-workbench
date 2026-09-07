@@ -89,8 +89,10 @@ GraphState = Literal["fresh", "stale", "cold"]
 class OntologyGraphNode(BaseModel):
     id: str
     label: str
-    kind: str  # tag | measure | metric_view | agent | table | domain | ungrouped …
+    kind: str  # tag | measure | metric_view | agent | table | domain | subdomain | ungrouped …
     domain_id: str | None = None
+    parent_id: str | None = None  # domain rollup nodes: Sub-Domain → Domain link (MV-D71)
+    parent_name: str | None = None  # resolved human name of parent_id (MV-D71)
     x: float = 0.0
     y: float = 0.0
     size: float = 1.0
