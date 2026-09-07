@@ -282,7 +282,14 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
 
   for (const a of graph.assets.nodes) {
     const dom = a.domain_id ? domainById.get(a.domain_id) : undefined
-    const ungrouped = !dom || isUngroupedDomain(dom) || (a.domain_id ? ungroupedIds.has(a.domain_id) : true)
+    // Tray = no applied group: missing domain, the ungrouped bucket, OR a domain that is
+    // only *proposed* (its grouping is not applied yet, so the asset is still loose — the
+    // proposal hull draws over it in the tray, §3.5).
+    const ungrouped =
+      !dom ||
+      isUngroupedDomain(dom) ||
+      (a.domain_id ? ungroupedIds.has(a.domain_id) : true) ||
+      dom.origin === "proposed"
     if (ungrouped) {
       trayItems.push({ id: a.id, label: a.label, type: typeForKind(a.kind), kind: a.kind })
       assetDomain.set(a.id, null)
@@ -320,7 +327,7 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
   for (const n of nodes) {
     if (n.parentId && !nodeById.has(n.parentId)) n.parentId = rootId
   }
-  const childrenByParent = indexChildren(nodes, assetDomain, domainById)
+  const childrenByParent = indexChildren(nodes)
   computeDescendantCounts(root, childrenByParent)
 
   // ── Typed cross-edges (overlay) ──────────────────────────────────────────
@@ -371,11 +378,7 @@ function stableChildCompare(a: EstateNode, b: EstateNode): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-function indexChildren(
-  nodes: EstateNode[],
-  _assetDomain: Map<string, string | null>,
-  _domainById: Map<string, OntologyGraphNode>,
-): Map<string, EstateNode[]> {
+function indexChildren(nodes: EstateNode[]): Map<string, EstateNode[]> {
   const byParent = new Map<string, EstateNode[]>()
   for (const n of nodes) {
     if (!n.parentId) continue

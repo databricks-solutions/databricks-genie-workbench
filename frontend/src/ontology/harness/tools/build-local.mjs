@@ -86,37 +86,27 @@ ${read(file)}
 });
 `
 
-// prop-types shim (react-cytoscapejs's prod-only dev-validation dependency): every
-// checker is an inert function — exactly what prop-types' own production shims do.
-const propTypesShim = `
-define("prop-types", [], function () {
-  var shim = function () { return null };
-  shim.isRequired = shim;
-  var out = { __esModule: true };
-  ;["array","bigint","bool","func","number","object","string","symbol","any","element",
-    "elementType","node","instanceOf","oneOf","oneOfType","arrayOf","objectOf","shape",
-    "exact","checkPropTypes","resetWarningCache"].forEach(function (k) {
-    out[k] = (k === "checkPropTypes" || k === "resetWarningCache") ? shim
-      : (k[0] === k[0].toLowerCase() && ["instanceOf","oneOf","oneOfType","arrayOf","objectOf","shape","exact"].indexOf(k) >= 0)
-        ? function () { return shim } : shim;
-  });
-  out.default = out;
-  return out;
-});
-`
-
+// The renderer is d3/SVG now (MV-D84) — vendor the d3 UMD dists (they detect the CJS
+// wrapper and require their siblings; the loader resolves define/require lazily, so order
+// is irrelevant as long as every transitive module is defined). No cytoscape, no prop-types.
 const vendorDefs = [
   vendor("react", "react/cjs/react.production.js"),
   vendor("react/jsx-runtime", "react/cjs/react-jsx-runtime.production.js"),
   vendor("scheduler", "scheduler/cjs/scheduler.production.js"),
   vendor("react-dom", "react-dom/cjs/react-dom.production.js"),
   vendor("react-dom/client", "react-dom/cjs/react-dom-client.production.js"),
-  vendor("cytoscape", "cytoscape/dist/cytoscape.min.js"),
-  vendor("layout-base", "layout-base/layout-base.js"),
-  vendor("cose-base", "cose-base/cose-base.js"),
-  vendor("cytoscape-fcose", "cytoscape-fcose/cytoscape-fcose.js"),
-  propTypesShim,
-  vendor("react-cytoscapejs", "react-cytoscapejs/dist/react-cytoscape.js"),
+  vendor("d3-hierarchy", "d3-hierarchy/dist/d3-hierarchy.min.js"),
+  vendor("d3-path", "d3-path/dist/d3-path.min.js"),
+  vendor("d3-shape", "d3-shape/dist/d3-shape.min.js"),
+  vendor("d3-color", "d3-color/dist/d3-color.min.js"),
+  vendor("d3-timer", "d3-timer/dist/d3-timer.min.js"),
+  vendor("d3-ease", "d3-ease/dist/d3-ease.min.js"),
+  vendor("d3-dispatch", "d3-dispatch/dist/d3-dispatch.min.js"),
+  vendor("d3-interpolate", "d3-interpolate/dist/d3-interpolate.min.js"),
+  vendor("d3-selection", "d3-selection/dist/d3-selection.min.js"),
+  vendor("d3-transition", "d3-transition/dist/d3-transition.min.js"),
+  vendor("d3-drag", "d3-drag/dist/d3-drag.min.js"),
+  vendor("d3-zoom", "d3-zoom/dist/d3-zoom.min.js"),
   vendor("lucide-react", "lucide-react/dist/umd/lucide-react.min.js"),
 ].join("\n")
 

@@ -1,35 +1,20 @@
 /**
- * Ontology Map v3 — dev-only mock API seam (§2.2/§2.3, MV-D77).
+ * Ontology Map — dev-only mock API seam (MV-D77). Fixture-backed `getGraph`, injected into
+ * `EstateGraph` via the `EstateGraphApi` prop. NO live calls; NO new dependency (MV-D45).
  *
- * Fixture-backed implementations of the two runtime calls the map makes
- * (`getGraph`, `expandNode`), injected into `EstateGraph` through the
- * `EstateGraphApi` prop. NO new dependency (MV-D45) and NO live API calls:
- * the payloads are the real responses captured once from the deployed app
- * (see `fixtures/README.md`). Slow / failing variants are synthesized here
- * (delay / reject) so the loading & degraded states (MV-D43) can be tuned.
- *
- * This file lives under the dev-only harness and is never imported by the
- * prod bundle (nothing under `src/ontology/harness/` is reachable from
- * `index.html` / `App.tsx`).
+ * The captured `graph.applied.json` / `graph.proposed.json` payloads predate Lane D (no
+ * `root` / `attach_level` / edge `verb`+`rel_class`), so they exercise the renderer's
+ * **degrade** path (MV-D43). The synthesized `northstar` scene carries the full Lane-D
+ * contract so the rich tree (org root, agent⊃mv⊃{measure,table}, typed verb cross-links,
+ * tray + proposals) is tunable offline. Harness-only; never imported by the prod bundle.
  */
 import type { EstateGraphApi } from "@/ontology/components/EstateGraph"
-import type {
-  GraphOrigin,
-  OntologyGraph,
-  OntologyGraphExpand,
-  OntologyGraphNode,
-} from "@/ontology/types"
+import type { GraphOrigin, OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
 import appliedRaw from "./fixtures/graph.applied.json?raw"
 import proposedRaw from "./fixtures/graph.proposed.json?raw"
-import expandMvRaw from "./fixtures/expand.mv.json?raw"
-import expandSubdomainRaw from "./fixtures/expand.subdomain.json?raw"
 
-// Parsed once at module load; every accessor below hands out fresh deep copies so a
-// scene can mutate its copy (e.g. `stale`, `mv`) without polluting another scene.
 const APPLIED = JSON.parse(appliedRaw) as OntologyGraph
 const PROPOSED = JSON.parse(proposedRaw) as OntologyGraph
-const EXPAND_MV = JSON.parse(expandMvRaw) as OntologyGraphExpand
-const EXPAND_SUBDOMAIN = JSON.parse(expandSubdomainRaw) as OntologyGraphExpand
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T
@@ -47,7 +32,7 @@ export function emptyGraph(): OntologyGraph {
   return {
     domains: { nodes: [], edges: [], truncated: false },
     assets: { nodes: [], edges: [], truncated: false },
-    layout: "fr",
+    layout: "tree",
     node_count: 0,
     edge_count: 0,
     state: "cold",
@@ -61,51 +46,88 @@ export function staleGraph(): OntologyGraph {
   return g
 }
 
-/**
- * The captured estate has no metric view in its asset level, but the MV expand fixture
- * was captured against a real metric view in the same workspace. This augment reveals
- * that real asset (id = the expand fixture's own `parent_id`) inside the first focused
- * sub-domain so the measures-satellite state is tunable offline. Harness-only.
- */
-export function mvDemoGraph(): OntologyGraph {
-  const g = appliedGraph()
-  const firstSub = g.domains.nodes.find((n) => n.parent_id)
-  const mv: OntologyGraphNode = {
-    id: EXPAND_MV.parent_id,
-    label: "cost attribution",
-    kind: "metric_view",
-    domain_id: firstSub?.id ?? null,
+function node(p: Partial<OntologyGraphNode> & { id: string }): OntologyGraphNode {
+  return {
+    label: p.id,
+    kind: "table",
+    domain_id: null,
     parent_id: null,
     parent_name: null,
     x: 0,
     y: 0,
-    size: 2,
+    size: 1,
     cost: null,
     member_count: null,
     origin: null,
+    ...p,
   }
-  g.assets.nodes = [...g.assets.nodes, mv]
-  return g
 }
 
 /**
- * Prod-density stress graph (~2,890 nodes / ~1,560 edges — the §1C bar): the applied
- * fixture with each asset cloned deterministically into its own domain, plus cloned
- * intra-domain edges. Harness-only synthesis for smoothness/perf tuning — clearly not
- * estate truth, never shown as such (the harness banner names the scene).
+ * Hand-authored Lane-D-shaped estate: an org root, two domains, a sub-domain, an agent that
+ * contains a metric view (which contains a measure + a table), shared reference tables, typed
+ * verb cross-links (shared + xdom), an ungrouped tray, and a proposed grouping over the tray.
  */
+export function northstarGraph(): OntologyGraph {
+  const domains: OntologyGraphNode[] = [
+    node({ id: "d_fin", label: "Acme Finance", kind: "domain", member_count: 42, origin: "applied" }),
+    node({ id: "d_ops", label: "Acme Operations", kind: "domain", member_count: 31, origin: "applied" }),
+    node({ id: "s_rev", label: "Revenue Accounting", kind: "subdomain", parent_id: "d_fin", parent_name: "Acme Finance", member_count: 12, origin: "applied" }),
+    node({ id: "sug_loyalty", label: "Loyalty", kind: "domain", member_count: 3, origin: "proposed" }),
+    node({ id: "ungrouped", label: "Ungrouped", kind: "ungrouped", member_count: 5, origin: "proposed" }),
+  ]
+  const assets: OntologyGraphNode[] = [
+    node({ id: "agent:finance", label: "Finance Agent", kind: "genie_agent", domain_id: "s_rev", attach_level: "subdomain", origin: "applied", cost: 1800 }),
+    node({ id: "mv:net_sales", label: "net sales", kind: "metric_view", domain_id: "s_rev", parent_id: "agent:finance", attach_level: "asset", origin: "applied" }),
+    node({ id: "measure:net_sales", label: "net_sales", kind: "measure", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied" }),
+    node({ id: "table:fact_sales", label: "fact_sales_line", kind: "table", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied" }),
+    node({ id: "table:ref_calendar", label: "ref_calendar", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+    node({ id: "dash:ops", label: "Ops Overview", kind: "dashboard", domain_id: "d_ops", attach_level: "domain", origin: "applied" }),
+    node({ id: "table:ops_events", label: "ops_events", kind: "table", domain_id: "d_ops", attach_level: "domain", origin: "applied" }),
+    // tray (ungrouped)
+    node({ id: "table:u_ffp", label: "ffp_member", kind: "table", domain_id: "ungrouped" }),
+    node({ id: "table:u_tier", label: "tier_status", kind: "table", domain_id: "ungrouped" }),
+    node({ id: "table:u_promo", label: "promo_ledger", kind: "table", domain_id: "ungrouped" }),
+    // proposed grouping members
+    node({ id: "table:p_loyal1", label: "loyalty_txn", kind: "table", domain_id: "sug_loyalty" }),
+    node({ id: "table:p_loyal2", label: "loyalty_bal", kind: "table", domain_id: "sug_loyalty" }),
+  ]
+  const edges: OntologyGraphEdge[] = [
+    { src: "table:fact_sales", dst: "table:ref_calendar", kind: "join_key", weight: 3, verb: "joins calendar", rel_class: "shared" },
+    { src: "table:fact_sales", dst: "table:ops_events", kind: "co_query", weight: 1, verb: "also queried with", rel_class: "xdom" },
+    { src: "mv:net_sales", dst: "table:ops_events", kind: "lineage_adjacency", weight: 1, verb: "reads", rel_class: "xdom" },
+  ]
+  return {
+    root: node({ id: "org:acme", label: "Acme", kind: "org", member_count: 73 }),
+    domains: { nodes: domains, edges: [], truncated: false },
+    assets: { nodes: assets, edges, truncated: false },
+    layout: "tree",
+    node_count: domains.length + assets.length + 1,
+    edge_count: edges.length,
+    state: "fresh",
+    as_of: null,
+  }
+}
+
+/** Prod-density stress graph (~2,900 nodes / ~1,560 edges) for the §6 perf gate. */
 export function stressGraph(): OntologyGraph {
-  const g = appliedGraph()
-  // Snapshots, NOT aliases — we push into g.assets.* while iterating these.
+  const g = northstarGraph()
   const baseAssets = [...g.assets.nodes]
   const baseEdges = [...g.assets.edges]
-  const copies = Math.ceil((2892 - g.domains.nodes.length - baseAssets.length) / baseAssets.length)
+  const copies = Math.ceil(2900 / baseAssets.length)
   for (let c = 1; c <= copies; c++) {
     for (const a of baseAssets) {
-      g.assets.nodes.push({ ...a, id: `${a.id}__s${c}`, label: `${a.label}_${c}` })
+      const domain_id = a.domain_id && a.domain_id !== "ungrouped" ? a.domain_id : "d_ops"
+      g.assets.nodes.push({
+        ...a,
+        id: `${a.id}__s${c}`,
+        label: `${a.label}_${c}`,
+        domain_id,
+        parent_id: a.parent_id ? `${a.parent_id}__s${c}` : null,
+      })
     }
   }
-  const targetEdges = 1557
+  const targetEdges = 1560
   let c = 1
   while (g.assets.edges.length < targetEdges && c <= copies) {
     for (const e of baseEdges) {
@@ -114,43 +136,30 @@ export function stressGraph(): OntologyGraph {
     }
     c++
   }
-  g.node_count = g.domains.nodes.length + g.assets.nodes.length
+  g.node_count = g.domains.nodes.length + g.assets.nodes.length + 1
   g.edge_count = g.domains.edges.length + g.assets.edges.length
   return g
 }
 
-/** First non-Ungrouped top-level domain — the deterministic default drill target. */
-export function autoFocusTop(g: OntologyGraph): { topId: string; name: string } | null {
-  const top = g.domains.nodes.find((n) => !n.parent_id && n.kind !== "ungrouped" && n.id !== "ungrouped")
-  return top ? { topId: top.id, name: top.label } : null
-}
-
 export type MockScene =
-  | "default" // applied + proposed fixtures as captured
-  | "mv" // applied augmented with the real metric view (measures expand)
+  | "default" // captured applied fixture (degrade path)
+  | "northstar" // synthesized full Lane-D contract
   | "stale" // applied fixture flagged stale
-  | "empty" // empty applied graph (honest-empty state)
-  | "loading" // getGraph(proposed) never resolves
-  | "error" // getGraph(proposed) rejects
-  | "slow-expand" // expandNode resolves after a long delay
-  | "fail-expand" // expandNode rejects
-  | "stress" // ~2,892 nodes / ~1,557 edges (§1C prod-density smoothness check)
+  | "empty" // honest-empty
+  | "loading" // getGraph never resolves
+  | "error" // getGraph rejects
+  | "stress" // ~2,900 nodes (perf gate)
+  | "proposed" // northstar viewed with proposals
 
 export interface MockOptions {
   scene?: MockScene
-  /** Delay for the slow variants (default 4000ms). */
-  delayMs?: number
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((res) => setTimeout(res, ms))
-}
-
-/** The graph the harness should hand `EstateGraph` as its `graph` prop for a scene. */
+/** The graph the harness hands `EstateGraph` as its `graph` prop for a scene. */
 export function graphForScene(scene: MockScene): OntologyGraph {
   if (scene === "empty") return emptyGraph()
   if (scene === "stale") return staleGraph()
-  if (scene === "mv") return mvDemoGraph()
+  if (scene === "northstar" || scene === "proposed") return northstarGraph()
   if (scene === "stress") return stressGraph()
   return appliedGraph()
 }
@@ -158,32 +167,11 @@ export function graphForScene(scene: MockScene): OntologyGraph {
 /** Fixture-backed `EstateGraphApi` for one scene. */
 export function createMockApi(opts: MockOptions = {}): EstateGraphApi {
   const scene = opts.scene ?? "default"
-  const delayMs = opts.delayMs ?? 4000
-
   const getGraph = async (origin: GraphOrigin): Promise<OntologyGraph> => {
     if (scene === "loading") return new Promise<OntologyGraph>(() => {}) // never settles
     if (scene === "error") throw new Error("The estate snapshot could not be read.")
-    return origin === "proposed" ? proposedGraph() : graphForScene(scene)
+    if (origin === "proposed") return proposedGraph()
+    return graphForScene(scene)
   }
-
-  const expandNode = async (node: string): Promise<OntologyGraphExpand> => {
-    if (scene === "fail-expand") {
-      await sleep(250)
-      throw new Error("Couldn't load the details right now.")
-    }
-    if (scene === "slow-expand") await sleep(delayMs)
-    // Metric views expand to measures; everything else (sub-domain rollups) to Pages.
-    const payload = clone(node.startsWith("mv:") ? EXPAND_MV : EXPAND_SUBDOMAIN)
-    // Re-anchor the captured payload onto the node that was actually tapped, so any
-    // sub-domain shows a realistic expand (the live API returns children of that node).
-    const capturedParent = payload.parent_id
-    payload.parent_id = node
-    for (const e of payload.edges) {
-      if (e.src === capturedParent) e.src = node
-      if (e.dst === capturedParent) e.dst = node
-    }
-    return payload
-  }
-
-  return { getGraph, expandNode }
+  return { getGraph }
 }

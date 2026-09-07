@@ -14,7 +14,6 @@
  */
 import { hierarchy, tree, type HierarchyNode } from "d3-hierarchy"
 import type {
-  EstateCrossEdge,
   EstateModel,
   EstateNode,
   EstateProposal,
