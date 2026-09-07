@@ -1,5 +1,26 @@
 # Ontology Map north-star — **Lane R (tree renderer)** Goal-Mode driver (MV-D81 / D83 / D84)
 
+## 🚀 How to launch (Claude Code, on `ontology`)
+
+This driver is the **build spec the subagent obeys** — it does **not** itself create the worktree.
+Worktree isolation comes from the launch: `.claude/settings.local.json` (`{"worktree":{"baseRef":
+"head"}}`) + the `ontology-lane-builder` agent (`isolation: worktree`) are already in place. On a
+clean `ontology` working tree, paste this **launch prompt** into Claude Code (NOT the Driver-prompt
+block below — that one is for the subagent):
+
+```text
+Launch ONE ontology-lane-builder subagent (isolation: worktree, branched from the current ontology
+HEAD). Give it exactly this driver: docs/design/ontology-map-laneR-renderer-driver.md — tell it to
+read the driver in full and obey its OWNS / OFF-LIMITS / MERGE-ORDER header literally.
+```
+
+The subagent gets its own temporary worktree off your local `ontology` HEAD, runs the Driver prompt
+(below) end-to-end offline, and STOPs before deploy. **The §8 Reviewer is a SEPARATE run** (fresh
+context) — do not fold it into this subagent (MV-D80). If you instead paste the Driver-prompt block
+into a plain session, it edits your working tree directly on `ontology` (no isolation).
+
+---
+
 ## ⚙️ Parallel-build lane header (READ FIRST)
 
 You run in an **isolated git worktree** off the `ontology` HEAD (`isolation: worktree`,
