@@ -65,6 +65,36 @@ human). Wait for `window.__ontologyHarness.ready === true` (or ~2s idle — the
 layout is deterministic, `randomize:false`), then capture. Because layout is
 seeded and stable, shots double as visual-regression baselines.
 
+## The visual loop: `tools/` (MV-D80 §11)
+
+The Director/Developer/Reviewer/Gatekeeper loop (build spec `ontology-map-v3-fable-build.md`
+§11) runs on three dev-only scripts over the `{scene × theme}` matrix in `tools/matrix.mjs`
+(the single source of truth — keep it in sync with `DESIGN.md` §6). None of them add a
+package dependency: they resolve Playwright from wherever it already lives (a local
+devDependency, else the `npx` cache — see `tools/_pw.mjs`), so `package-lock.json` stays
+byte-identical. If Playwright is missing, the error prints the one-liner
+(`npx playwright@1.58 install chromium` — lands in the npx cache, still no lockfile change).
+
+```bash
+cd frontend && npm run dev            # harness must be running for shoot
+npm run map:shots -- --out baselines  # (re)set the committed baseline set (tracked)
+npm run map:shots -- --phase p1       # capture a phase → shots/p1/ (git-ignored)
+npm run map:contact -- --dir shots/p1 # tile → shots/p1/contact.png (rows=scenes,cols=themes)
+npm run map:diff -- --current shots/p1 # per-cell pixel diff vs baselines/ → heatmaps; exit≠0 if any cell ≥ threshold
+```
+
+- **`shoot.mjs`** drives headless Chromium across all 20 cells, waiting on
+  `__ontologyHarness.ready` (card scenes soft-wait), writing `<scene>.<theme>.png` + `meta.json`.
+- **`contact.mjs`** inlines the PNGs into an HTML grid and screenshots it — one montage, no
+  image-processing dep.
+- **`diff.mjs`** decodes both PNGs on a `<canvas>` in the browser, diffs per pixel, writes a red
+  heatmap per cell + `diff.json`, and exits non-zero over `--threshold` (default 0.2%) so it gates.
+
+**`baselines/` is TRACKED** (the regression reference); `shots/` is git-ignored (per-run output).
+Because the layout is seeded/deterministic, an independent re-shoot diffs at 0% — so baselines are
+trustworthy and a non-zero diff means a real visual change. Update baselines deliberately
+(`map:shots -- --out baselines`) only when a change is intended.
+
 ## Mock seam
 
 `mockApi.ts` builds an `EstateGraphApi` (the injectable seam on `EstateGraph`)

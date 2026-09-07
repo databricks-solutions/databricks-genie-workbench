@@ -9,7 +9,10 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "map:shots": "node src/ontology/harness/tools/shoot.mjs",
+    "map:contact": "node src/ontology/harness/tools/contact.mjs",
+    "map:diff": "node src/ontology/harness/tools/diff.mjs"
   },
   "dependencies": {
     "@databricks/aibi-client": "1.0.3-alpha.0",

@@ -1,0 +1,210 @@
+{
+  "base": "http://localhost:5173",
+  "when": "2026-09-07T12:44:03.961Z",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "cells": [
+    {
+      "scene": "domains",
+      "theme": "light",
+      "q": "lod=domains&theme=light",
+      "file": "domains.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 53,
+      "nodes": 2892
+    },
+    {
+      "scene": "domains",
+      "theme": "dark",
+      "q": "lod=domains&theme=dark",
+      "file": "domains.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 48,
+      "nodes": 2892
+    },
+    {
+      "scene": "subdomains",
+      "theme": "light",
+      "q": "lod=subdomains&theme=light",
+      "file": "subdomains.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 64,
+      "nodes": 2892
+    },
+    {
+      "scene": "subdomains",
+      "theme": "dark",
+      "q": "lod=subdomains&theme=dark",
+      "file": "subdomains.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 67,
+      "nodes": 2892
+    },
+    {
+      "scene": "assets",
+      "theme": "light",
+      "q": "lod=assets&focus=auto&theme=light",
+      "file": "assets.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 101,
+      "nodes": 2892
+    },
+    {
+      "scene": "assets",
+      "theme": "dark",
+      "q": "lod=assets&focus=auto&theme=dark",
+      "file": "assets.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 104,
+      "nodes": 2892
+    },
+    {
+      "scene": "assets+select",
+      "theme": "light",
+      "q": "lod=assets&focus=auto&select=ticket_coupon&theme=light",
+      "file": "assets+select.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 107,
+      "nodes": 2892
+    },
+    {
+      "scene": "assets+select",
+      "theme": "dark",
+      "q": "lod=assets&focus=auto&select=ticket_coupon&theme=dark",
+      "file": "assets+select.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 100,
+      "nodes": 2892
+    },
+    {
+      "scene": "mv-expand",
+      "theme": "light",
+      "q": "scene=mv&lod=assets&focus=auto&select=cost+attribution&theme=light",
+      "file": "mv-expand.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 105,
+      "nodes": 2892
+    },
+    {
+      "scene": "mv-expand",
+      "theme": "dark",
+      "q": "scene=mv&lod=assets&focus=auto&select=cost+attribution&theme=dark",
+      "file": "mv-expand.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 101,
+      "nodes": 2892
+    },
+    {
+      "scene": "proposed",
+      "theme": "light",
+      "q": "origin=proposed&theme=light",
+      "file": "proposed.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 48,
+      "nodes": 2892
+    },
+    {
+      "scene": "proposed",
+      "theme": "dark",
+      "q": "origin=proposed&theme=dark",
+      "file": "proposed.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 47,
+      "nodes": 2892
+    },
+    {
+      "scene": "stale",
+      "theme": "light",
+      "q": "scene=stale&theme=light",
+      "file": "stale.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 48,
+      "nodes": 2892
+    },
+    {
+      "scene": "stale",
+      "theme": "dark",
+      "q": "scene=stale&theme=dark",
+      "file": "stale.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 48,
+      "nodes": 2892
+    },
+    {
+      "scene": "empty",
+      "theme": "light",
+      "q": "scene=empty&theme=light",
+      "file": "empty.light.png",
+      "card": true,
+      "ready": false,
+      "layoutMs": null,
+      "nodes": 0
+    },
+    {
+      "scene": "empty",
+      "theme": "dark",
+      "q": "scene=empty&theme=dark",
+      "file": "empty.dark.png",
+      "card": true,
+      "ready": false,
+      "layoutMs": null,
+      "nodes": 0
+    },
+    {
+      "scene": "error",
+      "theme": "light",
+      "q": "scene=error&origin=proposed&theme=light",
+      "file": "error.light.png",
+      "card": true,
+      "ready": false,
+      "layoutMs": null,
+      "nodes": 2892
+    },
+    {
+      "scene": "error",
+      "theme": "dark",
+      "q": "scene=error&origin=proposed&theme=dark",
+      "file": "error.dark.png",
+      "card": true,
+      "ready": false,
+      "layoutMs": null,
+      "nodes": 2892
+    },
+    {
+      "scene": "stress",
+      "theme": "light",
+      "q": "scene=stress&lod=assets&focus=auto&theme=light",
+      "file": "stress.light.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 276,
+      "nodes": 2954
+    },
+    {
+      "scene": "stress",
+      "theme": "dark",
+      "q": "scene=stress&lod=assets&focus=auto&theme=dark",
+      "file": "stress.dark.png",
+      "card": false,
+      "ready": true,
+      "layoutMs": 254,
+      "nodes": 2954
+    }
+  ]
+}
