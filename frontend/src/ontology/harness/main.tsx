@@ -46,6 +46,7 @@ const SCENES: MockScene[] = [
   "error",
   "slow-expand",
   "fail-expand",
+  "stress",
 ]
 const LODS: Lod[] = ["domains", "subdomains", "assets"]
 const ORIGINS: GraphOrigin[] = ["applied", "proposed"]
@@ -96,17 +97,22 @@ declare global {
       origin: string
       lod: string
       ready: boolean
+      layoutMs: number | null
+      nodeCount: number
       cy: HarnessCy | null
       tapByLabel: (q: string) => boolean
     }
   }
 }
 
+const mountedAt = performance.now()
 const harness = {
   scene,
   origin,
   lod,
   ready: false,
+  layoutMs: null as number | null,
+  nodeCount: graph.node_count,
   cy: null as HarnessCy | null,
   tapByLabel(q: string): boolean {
     const cy = harness.cy
@@ -127,20 +133,14 @@ const harness = {
 window.__ontologyHarness = harness
 
 function onCyReady(cy: unknown) {
+  // onCyReady is invoked AFTER react-cytoscapejs has already run the synchronous
+  // seeded layout (updateCytoscape → layout.run() → cy callback), so the map is
+  // ready the moment we get the instance.
   const c = cy as HarnessCy
   harness.cy = c
-  harness.ready = false
-  c.one("layoutstop", () => {
-    harness.ready = true
-    if (select) setTimeout(() => harness.tapByLabel(select), 60)
-  })
-  // Some tiny scenes settle before the listener attaches; belt & braces.
-  setTimeout(() => {
-    if (!harness.ready) {
-      harness.ready = true
-      if (select) harness.tapByLabel(select)
-    }
-  }, 2500)
+  harness.ready = true
+  if (harness.layoutMs == null) harness.layoutMs = Math.round(performance.now() - mountedAt)
+  if (select) setTimeout(() => harness.tapByLabel(select), 120)
 }
 
 // Same page framing as OntologyPage so what the loop sees == prod.

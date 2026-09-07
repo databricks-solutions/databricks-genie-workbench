@@ -21,7 +21,7 @@ import { mergeExpand, nodeFacts, viewElements, type CyEl, type Lod } from "@/ont
 import { expandNode, getGraph } from "@/ontology/api"
 import { GraphInspector, type ExpandState } from "./GraphInspector"
 import { GraphSearch } from "./GraphSearch"
-import { GraphMinimap, type MiniPoint, type MiniViewport } from "./GraphMinimap"
+import { GraphMinimap, type MiniPoint, type MiniRect, type MiniViewport } from "./GraphMinimap"
 
 // Register the fcose layout once. cytoscape.use throws if already registered (HMR).
 try {
@@ -334,7 +334,14 @@ const STYLESHEET = [
   { selector: 'edge[etype="snippet"]', style: { width: 1, "line-color": "#38BDF8", "line-style": "dotted", opacity: 0.55, "curve-style": "bezier" } },
   { selector: "node.faded", style: { opacity: 0.12 } },
   { selector: "edge.faded", style: { opacity: 0.05 } },
+  // Hover micro-state: a light rim; selection: a cyan focus ring. Both ease via the
+  // canvas-wide transition below.
+  { selector: "node.hover", style: { "border-color": "#E2E8F0", "border-width": 2.5, "border-opacity": 0.55 } },
   { selector: "node.focused", style: { "border-color": "#22D3EE", "border-width": 3, "border-opacity": 1, "border-style": "solid" } },
+  // Smooth fade in/out for focus+context (§1B). Scoped to the classes that actually
+  // change — a blanket transition on every node/edge stalls the shared animation
+  // loop at this element count.
+  { selector: "node.faded, edge.faded", style: { "transition-property": "opacity", "transition-duration": "150ms" } },
   // Edge-on-demand: `visibility:hidden` keeps the edge in the fcose simulation (so
   // clusters still emerge from connectivity) but off-screen until a node is tapped.
   { selector: "edge.hidden", style: { visibility: "hidden" } },
@@ -388,6 +395,7 @@ interface CyCollection {
 interface CyNode extends CyCollection {
   data(): Record<string, unknown>
   position(): { x: number; y: number }
+  boundingBox(): CyExtent
   closedNeighborhood(): CyCollection
   connectedEdges(): CyCollection
   ancestors(): CyCollection
@@ -417,6 +425,11 @@ interface CyCore {
   ready(fn: () => void): void
   fit(eles?: unknown, padding?: number): void
   center(eles?: unknown): void
+  zoom(): number
+  zoom(level: number): void
+  stop(clearQueue?: boolean, jumpToEnd?: boolean): void
+  animate(options: Record<string, unknown>): void
+  resize(): void
   batch(fn: () => void): void
   elements(): CyCollection
   nodes(selector?: string): CyNodeCollection
@@ -517,8 +530,9 @@ export function EstateGraph({
 
   const [search, setSearch] = useState("")
   const [searchHint, setSearchHint] = useState<string | null>(null)
-  const [mini, setMini] = useState<{ points: MiniPoint[]; viewport: MiniViewport | null }>({
+  const [mini, setMini] = useState<{ points: MiniPoint[]; rects: MiniRect[]; viewport: MiniViewport | null }>({
     points: [],
+    rects: [],
     viewport: null,
   })
 
@@ -637,18 +651,37 @@ export function EstateGraph({
     [expandStateById, origin, api],
   )
 
+  // rAF-coalesced minimap refresh: pan/zoom (and the eased camera animations below)
+  // emit events every frame — collapsing them to one state update per frame keeps the
+  // React side cheap at prod density and can never re-enter the #185 update loop.
+  const miniRafRef = useRef<number | null>(null)
   const refreshMini = useCallback((cy: CyCore) => {
-    const points: MiniPoint[] = []
-    cy.nodes().forEach((n) => {
-      const nt = String(n.data().ntype ?? "")
-      if (nt === "container" || nt === "subcontainer") return
-      const p = n.position()
-      if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
-        points.push({ x: p.x, y: p.y, color: String(n.data().color ?? "#64748B") })
-      }
+    if (miniRafRef.current != null) return
+    miniRafRef.current = requestAnimationFrame(() => {
+      miniRafRef.current = null
+      const points: MiniPoint[] = []
+      const rects: MiniRect[] = []
+      cy.nodes().forEach((n) => {
+        const nt = String(n.data().ntype ?? "")
+        if (nt === "container" || nt === "subcontainer") {
+          const b = n.boundingBox()
+          rects.push({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2, color: String(n.data().color ?? "#64748B") })
+          return
+        }
+        const p = n.position()
+        if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
+          points.push({ x: p.x, y: p.y, color: String(n.data().color ?? "#64748B") })
+        }
+      })
+      const e = cy.extent()
+      setMini({ points, rects, viewport: { x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 } })
     })
-    const e = cy.extent()
-    setMini({ points, viewport: { x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 } })
+  }, [])
+
+  // Eased camera framing (Map v3 §1B): every reframe animates instead of jump-cutting.
+  const animateFit = useCallback((cy: CyCore, eles: unknown, padding: number) => {
+    cy.stop(true)
+    cy.animate({ fit: { eles, padding }, duration: 450, easing: "ease-in-out-cubic" })
   }, [])
 
   const handleSelect = useCallback(
@@ -669,9 +702,13 @@ export function EstateGraph({
         cy.nodes().removeClass("focused")
         node.addClass("focused")
       })
+      // Focus + context (§1B): smoothly frame the selection — a container frames
+      // itself (its box already holds the context), a leaf frames its neighborhood.
+      const frameEles = nt === "container" || nt === "subcontainer" ? node : node.closedNeighborhood()
+      animateFit(cy, frameEles, 90)
       if (isExpandable(data)) triggerExpand(data)
     },
-    [triggerExpand],
+    [triggerExpand, animateFit],
   )
 
   const runSearch = () => {
@@ -684,9 +721,8 @@ export function EstateGraph({
       return
     }
     setSearchHint(null)
-    const node = matches.first()
-    cy.center(node)
-    handleSelect(cy, node)
+    // handleSelect frames the hit with the eased camera — no separate jump-cut center.
+    handleSelect(cy, matches.first())
   }
 
   // Counts describe the graph actually on screen (activeGraph, not always the applied
@@ -867,8 +903,14 @@ export function EstateGraph({
             </div>
           ) : (
             <>
-              <CytoscapeComponent
+              {/* The key remounts the canvas on view changes; the wrapper's fade-in
+                  makes each remount (drill, LOD, origin, expand) arrive softly. */}
+              <div
                 key={`${origin}:${lod}:${focusTop ?? "all"}:${activeGraph.as_of ?? ""}:${expandVersion}`}
+                className="animate-fade-in"
+                style={{ width: "100%", height: "100%" }}
+              >
+              <CytoscapeComponent
                 elements={elements}
                 stylesheet={STYLESHEET}
                 layout={layout}
@@ -892,17 +934,31 @@ export function EstateGraph({
                   cy.removeListener("layoutstop")
                   cy.removeListener("pan")
                   cy.removeListener("zoom")
-                  cy.ready(() => {
-                    // Progressive disclosure: intra-box edges visible, box-crossing edges
-                    // on-demand (kept in the sim so clusters emerge). Satellite edges stay
-                    // visible so an expand always shows.
-                    applyEdgeVisibility(cy, lod)
-                    cy.fit(undefined, 28)
-                    refreshMini(cy)
-                  })
+                  cy.removeListener("mouseover")
+                  cy.removeListener("mouseout")
+                  // react-cytoscapejs runs `layout.run()` BEFORE invoking this callback
+                  // (updateCytoscape → layout → cy(n)), and the seeded fcose layout is
+                  // synchronous (`animate:false`) — so by the time we're wiring, the map
+                  // is already laid out. Set up disclosure + the eased arrival directly.
+                  applyEdgeVisibility(cy, lod)
+                  // Re-measure before framing: cytoscape caches the container size at
+                  // construction, which can race font/flex/class layout — a stale 0-size
+                  // cache makes every fit() a silent no-op and every camera animation a
+                  // stuck NaN tween (found via the §2 harness loop).
+                  cy.resize()
+                  // Eased arrival (§1B): start slightly wide, glide into the fitted frame
+                  // instead of jump-cutting. Runs once per mount (drill-down / LOD /
+                  // origin / expand changes remount via `key`).
+                  cy.fit(undefined, 32)
+                  cy.zoom(cy.zoom() * 0.85)
+                  animateFit(cy, cy.elements(), 32)
+                  refreshMini(cy)
                   cy.on("layoutstop", () => refreshMini(cy))
                   cy.on("pan", () => refreshMini(cy))
                   cy.on("zoom", () => refreshMini(cy))
+                  // Hover micro-state (§1B): a light rim on the hovered node.
+                  cy.on("mouseover", "node", (evt: { target: CyNode }) => evt.target.addClass("hover"))
+                  cy.on("mouseout", "node", (evt: { target: CyNode }) => evt.target.removeClass("hover"))
                   cy.on("tap", "node", (evt: { target: CyNode }) => handleSelect(cy, evt.target))
                   cy.on("tap", (evt: { target: CyNode | CyCore }) => {
                     if (evt.target === cy) {
@@ -911,13 +967,16 @@ export function EstateGraph({
                         cy.elements().removeClass("faded focused")
                         applyEdgeVisibility(cy, lod)
                       })
+                      // Background tap restores the overview frame, eased.
+                      animateFit(cy, cy.elements(), 32)
                     }
                   })
                   onCyReady?.(cy)
                 }}
               />
+              </div>
               <div className="pointer-events-none absolute bottom-3 left-3">
-                <GraphMinimap points={mini.points} viewport={mini.viewport} />
+                <GraphMinimap points={mini.points} rects={mini.rects} viewport={mini.viewport} />
               </div>
             </>
           )}

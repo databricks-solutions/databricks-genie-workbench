@@ -18,15 +18,26 @@ export interface MiniViewport {
   y2: number
 }
 
+/** Bounding box of a domain/sub-domain container, so the minimap shows structure. */
+export interface MiniRect {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: string
+}
+
 const W = 168
 const H = 112
 const PAD = 6
 
 export function GraphMinimap({
   points,
+  rects = [],
   viewport,
 }: {
   points: MiniPoint[]
+  rects?: MiniRect[]
   viewport?: MiniViewport | null
 }) {
   if (points.length === 0) {
@@ -52,6 +63,10 @@ export function GraphMinimap({
     if (y > maxY) maxY = y
   }
   for (const p of points) extend(p.x, p.y)
+  for (const r of rects) {
+    extend(r.x1, r.y1)
+    extend(r.x2, r.y2)
+  }
   if (viewport) {
     extend(viewport.x1, viewport.y1)
     extend(viewport.x2, viewport.y2)
@@ -70,6 +85,21 @@ export function GraphMinimap({
       role="img"
       aria-label="Map overview"
     >
+      {rects.map((r, i) => (
+        <rect
+          key={`r${i}`}
+          x={sx(r.x1)}
+          y={sy(r.y1)}
+          width={Math.max((r.x2 - r.x1) * scale, 2)}
+          height={Math.max((r.y2 - r.y1) * scale, 2)}
+          fill={r.color}
+          fillOpacity={0.08}
+          stroke={r.color}
+          strokeOpacity={0.5}
+          strokeWidth={0.75}
+          rx={1.5}
+        />
+      ))}
       {points.map((p, i) => (
         <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={1.6} fill={p.color} fillOpacity={0.85} />
       ))}

@@ -88,6 +88,37 @@ export function mvDemoGraph(): OntologyGraph {
   return g
 }
 
+/**
+ * Prod-density stress graph (~2,890 nodes / ~1,560 edges — the §1C bar): the applied
+ * fixture with each asset cloned deterministically into its own domain, plus cloned
+ * intra-domain edges. Harness-only synthesis for smoothness/perf tuning — clearly not
+ * estate truth, never shown as such (the harness banner names the scene).
+ */
+export function stressGraph(): OntologyGraph {
+  const g = appliedGraph()
+  // Snapshots, NOT aliases — we push into g.assets.* while iterating these.
+  const baseAssets = [...g.assets.nodes]
+  const baseEdges = [...g.assets.edges]
+  const copies = Math.ceil((2892 - g.domains.nodes.length - baseAssets.length) / baseAssets.length)
+  for (let c = 1; c <= copies; c++) {
+    for (const a of baseAssets) {
+      g.assets.nodes.push({ ...a, id: `${a.id}__s${c}`, label: `${a.label}_${c}` })
+    }
+  }
+  const targetEdges = 1557
+  let c = 1
+  while (g.assets.edges.length < targetEdges && c <= copies) {
+    for (const e of baseEdges) {
+      if (g.assets.edges.length >= targetEdges) break
+      g.assets.edges.push({ ...e, src: `${e.src}__s${c}`, dst: `${e.dst}__s${c}` })
+    }
+    c++
+  }
+  g.node_count = g.domains.nodes.length + g.assets.nodes.length
+  g.edge_count = g.domains.edges.length + g.assets.edges.length
+  return g
+}
+
 /** First non-Ungrouped top-level domain — the deterministic default drill target. */
 export function autoFocusTop(g: OntologyGraph): { topId: string; name: string } | null {
   const top = g.domains.nodes.find((n) => !n.parent_id && n.kind !== "ungrouped" && n.id !== "ungrouped")
@@ -103,6 +134,7 @@ export type MockScene =
   | "error" // getGraph(proposed) rejects
   | "slow-expand" // expandNode resolves after a long delay
   | "fail-expand" // expandNode rejects
+  | "stress" // ~2,892 nodes / ~1,557 edges (§1C prod-density smoothness check)
 
 export interface MockOptions {
   scene?: MockScene
@@ -119,6 +151,7 @@ export function graphForScene(scene: MockScene): OntologyGraph {
   if (scene === "empty") return emptyGraph()
   if (scene === "stale") return staleGraph()
   if (scene === "mv") return mvDemoGraph()
+  if (scene === "stress") return stressGraph()
   return appliedGraph()
 }
 
