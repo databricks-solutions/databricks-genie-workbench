@@ -143,8 +143,11 @@ function onCyReady(cy: unknown) {
   if (select) setTimeout(() => harness.tapByLabel(select), 120)
 }
 
-// Same page framing as OntologyPage so what the loop sees == prod.
-document.documentElement.classList.add("dark")
+// Same page framing as OntologyPage so what the loop sees == prod. The app theme is
+// toggled on <html> exactly like the real app; ?theme=light reproduces the production
+// light-mode rendering (the map must hold up regardless of app theme), dark is default.
+const theme = params.get("theme") === "light" ? "light" : "dark"
+document.documentElement.classList.toggle("dark", theme === "dark")
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <div className="bg-pattern min-h-screen">

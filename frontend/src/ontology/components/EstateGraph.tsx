@@ -188,12 +188,12 @@ const STYLESHEET = [
       height: "data(px)",
       label: "data(label)",
       "font-family": FONT_BODY,
-      "font-size": 9,
-      "font-weight": 500,
-      color: "#94A3B8",
+      "font-size": 10,
+      "font-weight": 600,
+      color: "#CBD5E1",
       // Declutter guard only for far zoom-out — at the default drilled zoom the
       // names are the point of drilling in (§2 defect #3: no more nameless dots).
-      "min-zoomed-font-size": 6,
+      "min-zoomed-font-size": 7,
       "text-valign": "bottom",
       "text-halign": "center",
       "text-margin-y": 4,
@@ -368,7 +368,7 @@ function layoutFor(lod: Lod) {
     // labels never collide with a neighbouring hub. Sub-domains: labelled leaves
     // inside compound boxes — enough separation that sibling labels and the boxes
     // themselves never overlap (§1A no-overlap at default zoom).
-    nodeSeparation: lod === "domains" ? 160 : lod === "subdomains" ? 130 : 100,
+    nodeSeparation: lod === "domains" ? 160 : lod === "subdomains" ? 130 : 124,
     // Long leash for edges that CROSS compound boxes so a connected sub-domain is
     // never dragged into a neighbouring domain's box (box-overlap fix); short
     // intra-box edges keep siblings clustered.
@@ -380,7 +380,7 @@ function layoutFor(lod: Lod) {
             const tp = edge.target().data("parent")
             return sp && tp && sp === tp ? 90 : 320
           },
-    nodeRepulsion: lod === "domains" ? 18000 : lod === "subdomains" ? 16000 : 9500,
+    nodeRepulsion: lod === "domains" ? 18000 : lod === "subdomains" ? 16000 : 13000,
     packComponents: true,
     // A touch more breathing room between sibling compound boxes than fcose's default.
     nestingFactor: 0.15,
@@ -751,7 +751,7 @@ export function EstateGraph({
   if (!activeGraph) {
     if (graphError) {
       return (
-        <div className="flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3.5">
+        <div className="dark flex items-start gap-2.5 rounded-xl border border-danger/30 bg-surface px-4 py-3.5">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-danger-foreground" />
           <div>
             <p className="text-sm font-semibold text-primary">Couldn&apos;t load the map</p>
@@ -767,7 +767,7 @@ export function EstateGraph({
       )
     }
     return (
-      <div className="flex items-center gap-2 rounded-xl border border-default bg-surface px-4 py-6 text-sm text-secondary">
+      <div className="dark flex items-center gap-2 rounded-xl border border-default bg-surface px-4 py-6 text-sm text-secondary">
         <Loader2 className="h-4 w-4 animate-spin text-accent" /> Building the suggested map…
       </div>
     )
@@ -776,7 +776,7 @@ export function EstateGraph({
   // ── Honest-empty (MV-D43) with a one-tap nudge to Proposed when applied is bare (MV-D74) ──
   if (isEmpty) {
     return (
-      <div className="flex items-start gap-2.5 rounded-xl border border-info/30 bg-info/5 px-4 py-3.5">
+      <div className="dark flex items-start gap-2.5 rounded-xl border border-info/30 bg-surface px-4 py-3.5">
         <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-info-foreground" />
         <div>
           <p className="text-sm font-semibold text-primary">No data in the estate graph</p>
@@ -799,7 +799,14 @@ export function EstateGraph({
   }
 
   return (
-    <div className="rounded-xl border border-default bg-surface overflow-hidden">
+    // Fixed dark "observatory" scope (Map v3.1, MV-D78): the map is a dark instrument
+    // panel regardless of the app's light/dark theme. Every node fill, glow, white icon,
+    // dark label plate and edge hue in the stylesheet was tuned for the dark canvas
+    // (#0D1321); rendering them on the light theme's `--bg-sunken` (#f1f5f9) washed the
+    // whole map out (the "1990s"/empty-pill report). A local `.dark` class re-scopes the
+    // CSS variables + Tailwind `dark:` variants for this subtree only — the surrounding
+    // workbench chrome keeps the user's chosen theme.
+    <div className="dark rounded-xl border border-default bg-surface text-primary overflow-hidden">
       {/* Controls: source toggle + LOD toggle + breadcrumb / search / counts */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-default bg-elevated/40 px-4 py-2.5">
         <div className="flex flex-wrap items-center gap-2">

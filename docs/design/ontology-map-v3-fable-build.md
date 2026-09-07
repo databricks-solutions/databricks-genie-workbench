@@ -295,3 +295,32 @@ PNGs). A human runs deploy-verify on fevm-serverless.
   document a WebGL follow-up (new dep → separate decision), don't add it here.
 - **Playbook:** proposed **MV-D76** (visual bar) + **MV-D77** (feedback loop) — add the BUILD-READY
   pointer + register entries on greenlight (mirrors prior stages).
+
+---
+
+## §9. v3.1 — light-mode gap remediation (MV-D78) — LANDED
+
+**What the deploy-verify eyeball found.** v3 landed green, but on the live app the map read
+"1990s / washed-out / empty grey pills". Root cause (found by re-running the §2 loop): the harness
+forces `document.documentElement.classList.add("dark")` (`main.tsx`), so every fill (0.06 opacity),
+white icon, glow and dark label plate in the stylesheet was tuned for the dark canvas `#0D1321` — but
+production `OntologyPage` inherits the **app theme**, and the user's workbench is in **light** mode,
+where `--bg-sunken` is `#f1f5f9`. Same code, opposite ground → the map washed out. It was never a
+layout/data defect; it was a theme-scope defect the dark-only harness could not surface.
+
+**Decision (MV-D78): the map is a fixed dark "observatory" panel, theme-independent.** All three
+bakeoff mockups (`17.0h/i/j`) are dark by design; a dark instrument panel embedded in a light app is
+the intended, deliberate look (cf. Neo4j Bloom). `EstateGraph`'s root (and its loading/empty/error
+cards) now carry a local `.dark` class, which re-scopes the CSS variables **and** Tailwind `dark:`
+variants for that subtree only — the surrounding workbench chrome keeps the user's chosen theme.
+
+**Also in v3.1 (verified via the loop, both themes):** bigger, higher-contrast asset nodes
+(`px 14+…`), asset labels `font-size 10 / weight 600 / #CBD5E1` with `min-zoomed-font-size 7` (no more
+nameless dots), and a touch more Assets-LOD separation/repulsion so the FK fans read as hub-spoke
+structure, not "random lines". Edges are already validated-only (FK/lineage/co-query from the
+snapshot; cross-box hidden until tap — MV-D43), so "sensible lines" was a contrast problem, now fixed.
+
+**Loop note (MV-D77 hardened):** the harness gained a `?theme=light|dark` param (default dark) so the
+loop can reproduce the production light-mode rendering — the one state the dark-only harness hid.
+Screenshots driven headless via the `user-playwright` MCP against `npm run dev`; zero runtime-dep
+change (lockfiles byte-identical).

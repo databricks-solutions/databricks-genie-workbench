@@ -363,7 +363,7 @@ export function buildElements(
       pushNode(
         {
           id: a.id, parent: gkey, label: a.label, ntype: "asset", kind: a.kind,
-          color: assetColor(a.kind, color), px: 8 + Math.min(a.size ?? 1, 3) * 5,
+          color: assetColor(a.kind, color), px: 14 + Math.min(a.size ?? 1, 4) * 6,
           cost: a.cost ?? null, domainName: topName,
           domainShort: shortName(tops.get(topId)!), subName,
           deg: neighbors.get(a.id)?.length ?? 0, links: topLinks(a.id),
