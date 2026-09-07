@@ -62,63 +62,92 @@ animations are CSS transitions (`prefers-reduced-motion`-aware). Must install wi
 
 ---
 
+## 🔁 Live inner loop (localhost harness — frontend-only, vision-driven)
+
+The subagent is authorized (and expected) to **iterate against a live localhost render** — this is
+the "Developer" inner loop of the MV-D80 DDRG pattern, made vision-driven:
+
+1. `npm run dev` in `frontend/` starts **Vite serving the harness** at `http://localhost:5173`
+   (entry `harness/main.tsx`), driven entirely by `harness/mockApi.ts` **fixtures**. This is
+   **NOT** `uvicorn` / the full app — it needs **no Databricks, OBO, Lakebase, or serving
+   endpoint** and does not violate the repo's no-local-server rule (`AGENTS.md`). Scenes/themes
+   are selected via the harness URL params + `localStorage` (see `harness/README.md`).
+2. Edit renderer/layout/tokens → the harness **hot-reloads** on `:5173`.
+3. `npm run map:shots` (→ `map:contact`) captures the theme × scene matrix and builds
+   `contact.png`. **The subagent then READS the contact sheet PNG itself** (image input),
+   critiques it against the §8 rubric (R1–R20) + the northstar mockup, and edits again. Loop
+   until the render matches the mockup's bar.
+4. Determinism holds throughout: `shoot` waits on `window.__ontologyHarness.ready` (synchronous
+   seeded layout), so screenshots are stable and `map:diff` is meaningful.
+
+**Role separation (do NOT collapse):** this self-critique loop is the **Developer** improving its
+own work. The **final §8 scoring stays a SEPARATE Reviewer** agent/context (fresh eyes, did not
+write the code) writing `docs/design/reviews/map-laneR.md` — per MV-D80. The inner loop makes the
+Developer's output good; the Reviewer decides if it passes. Still **STOP before deploy** — the
+localhost harness is the only "live" surface the subagent touches; the real app deploy-verify is
+human-gated.
+
+---
+
 ## Driver prompt (paste verbatim into the subagent)
 
 ```text
 GOAL: Ontology Map RENDERER LANE (MV-D81/D83/D84). Replace the Cytoscape-fcose-LOD core with a
 DETERMINISTIC d3.tree tidy tree + typed verb overlay + off-tree Ungrouped tray + dashed proposal hulls,
-dual-theme via graphTokens, behind the MV-D80 harness. Frontend-only; offline; branch ontology. Consumes
-the landed Lane-D contract; DEGRADES when absent (MV-D43).
+dual-theme (graphTokens), behind the MV-D80 harness. Frontend-only; branch ontology. Consumes the landed
+Lane-D contract; DEGRADES when absent (MV-D43).
 
-SPEC (truth): docs/design/ontology-map-DESIGN.md §0/§3/§4/§5/§6/§8/§9. DECISIONS: MV-D81/D83/D84; honor
+SPEC (truth): docs/design/ontology-map-DESIGN.md §0/§3/§4/§5/§8/§9. DECISIONS: MV-D81/D83/D84; honor
 MV-D79/D80/D74/D23/D35/D43/D45. RULES: AGENTS.md. READ FIRST: the mockup
-genie-ontology-knowledge-graph-v2.html (porting spec — d3.hierarchy/tree/linkVertical/zoom/drag),
-EstateGraph.tsx + estateGraphModel.ts, graphTokens.ts, harness/README.md.
+genie-ontology-knowledge-graph-v2.html (porting spec), EstateGraph.tsx + estateGraphModel.ts,
+graphTokens.ts, harness/README.md.
 
 DEPS (exact pins; MV-D45 carve): add d3-hierarchy + promote d3-shape/-zoom/-drag/-selection to direct
-(+@types/d3-*, dev); REMOVE react-force-graph-2d now, the cytoscape trio + cytoscape-shims.d.ts once SVG is
-green. NO d3-transition/umbrella d3 — CSS only. npm ci WITHOUT --legacy-peer-deps.
+(+@types/d3-*, dev); REMOVE react-force-graph-2d now, the cytoscape trio + shims once SVG is green. NO
+d3-transition/umbrella d3 — CSS only. npm ci WITHOUT --legacy-peer-deps.
 
-P-A ontologyTreeLayout.ts (NEW, PURE — no DOM/d3-selection; unit+snapshot testable): (blob, expandedSet,
+P-A ontologyTreeLayout.ts (NEW, PURE — no DOM/d3-selection; unit-testable): (blob, expandedSet,
 dragOffsets, cfg) -> {nodes, spineLinks, crossLinks, trayItems, proposalHulls, bounds}. Visible hierarchy
 from root+parent_id+expandedSet; children sorted by STABLE key (attach_level,name,id) => byte-stable.
-d3.hierarchy->tree().nodeSize; dragOffsets as post-layout deltas; cross-link quadratic-bezier ctrl pts (bow
-by rel_class, xdom wider) + label midpoints; Ungrouped tray = fixed off-tree column right of bounds.
-Degrade: no root/parent_id -> today's shape.
+d3.hierarchy->tree().nodeSize; dragOffsets as post-layout deltas; cross-link bezier ctrl pts (bow by
+rel_class, xdom wider) + label mids; Ungrouped tray = fixed off-tree column right of bounds. Degrade: no
+root/parent_id -> today's shape.
 
-P-B EstateGraph.tsx -> SVG: layered <g>s (spine edges, cross-links, edge labels, nodes, tray+proposal
-overlay) React-rendered from P-A. d3 via TWO refs: d3.zoom on <svg> (transform) + d3.drag on nodes
+P-B EstateGraph.tsx -> SVG: layered <g>s (spine, cross-links, labels, nodes, tray+proposals)
+React-rendered from P-A. d3 via TWO refs: d3.zoom on <svg> (transform) + d3.drag on nodes
 (offsets ref + persisted store; commit on end; defaultPrevented => drag vs drill-click). Expand/collapse-
-in-place (+N badge); NO LOD control; CSS enter-from-parent + reduced-motion.
+in-place (+N badge); NO LOD control; CSS enter-from-parent.
 
 P-C graphTokens.ts §9-B colour-by-TYPE (agent/mv/measure/table/dashboard hues; domain identity = tree
-position + subtle ring/edge tint), dual light+dark at parity, AA gates kept. Port chrome over P-A:
-GraphInspector (relationships = links that expand-path+select; technical detail behind a "Technical
-details" disclosure, MV-D23), breadcrumb, GraphSearch (search-to-reveal), legend type-focus, GraphMinimap,
-Fit/Expand-all/Reset. Nodes: tabindex/role/aria-expanded + focus ring. Applied|Proposed|Both toggle drives
-tray/proposals (MV-D74).
+position + ring/edge tint), dual light+dark, AA kept. Port chrome over P-A: GraphInspector
+(relationships = links that expand-path+select; technical detail behind a disclosure, MV-D23), breadcrumb,
+GraphSearch (search-to-reveal), legend type-focus, GraphMinimap, Fit/Expand-all/Reset.
+Nodes: tabindex/role/aria-expanded + focus ring. Applied|Proposed|Both toggle drives tray/proposals (MV-D74).
 
 P-D tray+proposals (MV-D83 §3.5/§4.7): solid tree = Applied only; Ungrouped is NOT a tree node — it lives
 in the tray (divider + "Ungrouped · N", neutral dotted nodes, +N-more cap). Proposals = dashed "Suggested:
 <name>" hulls over the tray + confidence BAND (never %, MV-D35); reassignment = dashed halo + arrow.
-Approve opens the inspector + stub-animates members tray->tree as a solid group (live Phase-5 apply out of
-scope). Empty tray => all organized.
+Approve opens the inspector + stub-animates members tray->tree as a solid group (Phase-5 apply out of
+scope). Empty tray => all-organized.
 
-P-E PERF GATE (replaces the spike): harness stress scene 2000 nodes/1552 edges all expanded;
-measure pan/zoom in the loop. If < ~50fps: zoom-threshold label culling, then content-visibility subtree
-culling.
+P-E PERF GATE (replaces the spike): harness stress scene 2000 nodes/1552 edges all expanded; measure
+pan/zoom. If < ~50fps: zoom-threshold label culling, then content-visibility subtree culling.
 
-GUARDRAILS: deterministic (stable sort => byte-identical layout); degrade-not-hang; NO dep beyond the d3
-set; NEVER touch backend/wheel/types.ts/playbook.
+INNER LOOP (localhost, frontend-only — NOT uvicorn, no Databricks): npm run dev (Vite harness @:5173,
+fixtures) -> edit -> map:shots -> map:contact -> READ the contact PNG yourself (vision) +
+self-critique vs §8/the mockup, repeat until it matches. Developer role; FINAL §8 scoring is a SEPARATE
+Reviewer (MV-D80).
+
+GUARDRAILS: deterministic (stable sort => byte-identical layout); degrade-not-hang; NO dep beyond d3;
+NEVER touch backend/wheel/types.ts/playbook.
 
 ACCEPTANCE (offline): vitest — ontologyTreeLayout unit+snapshot (stable sort, drag deltas, bow by
 rel_class, tray, degrade) + EstateGraph render/interaction (expand/collapse, drag!=click, search-reveal);
-tsc+eslint clean; lockfile validates; no cytoscape import remains; MV-D80 loop map:shots (light+dark ×
-scenes incl. tray/proposals/stress) -> contact -> diff, then a SEPARATE Reviewer scores §8 R1–R20 to
-docs/design/reviews/map-laneR.md (no P0/P1); P-E passes.
+tsc+eslint clean; lockfile validates; no cytoscape import left; the SEPARATE Reviewer scores §8 R1–R20
+to docs/design/reviews/map-laneR.md (no P0/P1); P-E passes.
 
-WORKFLOW: Do NOT deploy. When offline-green + Reviewer PASS, STOP and report the worktree branch,
-git diff --stat, test/gate summary, and Reviewer verdict; a human runs deploy-verify.
+WORKFLOW: Do NOT deploy. When offline-green + Reviewer PASS, STOP and report branch, git diff --stat,
+gate summary, Reviewer verdict; a human runs deploy-verify.
 ```
 
 ---
