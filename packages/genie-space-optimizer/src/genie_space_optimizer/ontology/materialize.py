@@ -573,15 +573,42 @@ def run_materialize(
         # Additive/idempotent like ranking: a layout error records `failed` without
         # corrupting the snapshots committed above (MV-D43). An empty graph → an empty
         # snapshot, run still succeeds.
-        # Domain meta (MV-D71): {domain_id → {name, parent_id}} from the rows just
-        # MERGEd, so the estate map labels rollup nodes with human names and links
-        # Sub-Domain → Domain for the hierarchy LOD.
+        # Domain meta (MV-D71 + MV-D73 §2.1): {domain_id → {name, parent_id, origin}}
+        # from the rows just MERGEd, so the estate map labels rollup nodes with human
+        # names, links Sub-Domain → Domain for the hierarchy LOD, and stamps provenance —
+        # ``applied`` iff the domain is backed by a governed-tag decision (reuse/reassign),
+        # else ``proposed`` (a pure engine cluster).
         domain_meta = {
-            r["domain_id"]: {"name": r.get("name"), "parent_id": r.get("parent_id")}
+            r["domain_id"]: {
+                "name": r.get("name"),
+                "parent_id": r.get("parent_id"),
+                "origin": "applied" if r.get("tag_decision") in ("reuse", "reassign") else "proposed",
+            }
             for r in expanded["domain_rows"]
+        }
+        # Business-snippet index (MV-D73 §2.3): the bounded expand-on-demand source, baked
+        # here in the deterministic batch (no request-path warehouse). Measures grouped by
+        # mv_fqn (re-keyed to the mv:<fqn> hub node in layout); Pages grouped by their home
+        # sub-domain (domain_id). Sorted so the blob is byte-stable across runs.
+        measures_by_mv: dict[str, list[dict[str, Any]]] = {}
+        for m in page_in["measures"]:
+            measures_by_mv.setdefault(m.mv_fqn, []).append(
+                {"ref": m.ref, "name": m.name, "expression": m.expression, "fmt": m.fmt}
+            )
+        pages_by_domain: dict[str, list[dict[str, Any]]] = {}
+        for c in page_cands:
+            if not c.domain_id:
+                continue
+            pages_by_domain.setdefault(c.domain_id, []).append(
+                {"page_id": c.page_id, "title": c.title, "archetype": c.archetype, "domain_id": c.domain_id}
+            )
+        snippets_in = {
+            "measures": {k: measures_by_mv[k] for k in sorted(measures_by_mv)},
+            "pages": {k: pages_by_domain[k] for k in sorted(pages_by_domain)},
         }
         graph_row = layout.build_graph_snapshot(
             signal_graph, asset_domain, node_scores=None, domain_meta=domain_meta,
+            snippets_in=snippets_in,
             metastore_id=metastore_id, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
         )
         writer.merge(ddl.TABLE_ONT_GRAPH_SNAPSHOT, [graph_row], GRAPH_SNAPSHOT_KEYS, metastore_id)
