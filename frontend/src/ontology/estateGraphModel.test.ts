@@ -1,462 +1,262 @@
 import { describe, expect, it } from "vitest"
-import type { OntologyGraph, OntologyGraphExpand } from "@/ontology/types"
 import {
-  buildElements,
-  colorForTop,
-  domainDisplay,
-  fmtCount,
-  groupTops,
-  mergeExpand,
-  nodeFacts,
+  buildEstateModel,
+  classForEdge,
   trimCommonPrefix,
-  viewCaption,
-  viewElements,
+  typeForKind,
+  verbForEdge,
 } from "@/ontology/estateGraphModel"
+import type { OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
 
-// Fixture: two top domains (Revenue, Ops); Revenue has two sub-domains (Bookings,
-// Fares); Ops is a bare top with no subs. Assets belong to the sub-domains.
-function fixture(): OntologyGraph {
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+
+function node(p: Partial<OntologyGraphNode> & { id: string }): OntologyGraphNode {
   return {
-    domains: {
-      nodes: [
-        { id: "rev", label: "Revenue", kind: "domain", x: 0, y: 0, size: 1, member_count: 0 },
-        { id: "bk", label: "Bookings", kind: "subdomain", parent_id: "rev", parent_name: "Revenue", x: 0, y: 0, size: 1, member_count: 2 },
-        { id: "fa", label: "Fares", kind: "subdomain", parent_id: "rev", parent_name: "Revenue", x: 0, y: 0, size: 1, member_count: 1 },
-        { id: "ops", label: "Operations", kind: "domain", x: 0, y: 0, size: 1, member_count: 1 },
-      ],
-      edges: [{ src: "bk", dst: "fa", kind: "lineage" }],
-      truncated: false,
-    },
-    assets: {
-      nodes: [
-        { id: "asset:c.rev.bookings", label: "bookings", kind: "table", domain_id: "bk", x: 0, y: 0, size: 3 },
-        { id: "asset:c.rev.pnr", label: "pnr", kind: "table", domain_id: "bk", x: 0, y: 0, size: 2 },
-        { id: "asset:c.rev.fares", label: "fares", kind: "metric_view", domain_id: "fa", x: 0, y: 0, size: 2 },
-        { id: "asset:c.ops.flights", label: "flights", kind: "table", domain_id: "ops", x: 0, y: 0, size: 1 },
-      ],
-      edges: [{ src: "asset:c.rev.bookings", dst: "asset:c.rev.pnr", kind: "coquery", weight: 0.5 }],
-      truncated: false,
-    },
-    layout: "fcose",
-    node_count: 8,
-    edge_count: 2,
-    state: "fresh",
+    label: p.id,
+    kind: "table",
+    domain_id: null,
+    parent_id: null,
+    parent_name: null,
+    x: 0,
+    y: 0,
+    size: 1,
+    cost: null,
+    member_count: null,
+    origin: null,
+    ...p,
   }
 }
 
-describe("groupTops (MV-D71 hierarchy fold)", () => {
-  it("folds sub-domains into their parent and sums member counts", () => {
-    const tops = groupTops(fixture().domains.nodes)
-    expect([...tops.keys()].sort()).toEqual(["ops", "rev"])
-    expect(tops.get("rev")!.name).toBe("Revenue")
-    expect(tops.get("rev")!.subIds.sort()).toEqual(["bk", "fa"])
-    expect(tops.get("rev")!.memberCount).toBe(3) // 2 + 1
-    expect(tops.get("ops")!.subIds).toEqual([]) // bare top
-  })
-})
-
-describe("colorForTop", () => {
-  it("is stable and deterministic per id", () => {
-    expect(colorForTop("rev")).toBe(colorForTop("rev"))
-  })
-})
-
-describe("buildElements — Domains LOD", () => {
-  it("emits one hub per top domain and aggregates edges to the top level", () => {
-    const els = buildElements(fixture(), "domains", null)
-    const nodes = els.filter((e) => e.group === "nodes")
-    expect(nodes.map((n) => n.data.id).sort()).toEqual(["ops", "rev"])
-    expect(nodes.every((n) => n.data.ntype === "domain")).toBe(true)
-    // bk→fa is intra-Revenue, so it collapses to a self-loop and is dropped.
-    expect(els.filter((e) => e.group === "edges")).toHaveLength(0)
-  })
-})
-
-describe("buildElements — Sub-domains LOD", () => {
-  it("nests sub-domains under compound containers and self-nodes bare tops", () => {
-    const els = buildElements(fixture(), "subdomains", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    // Containers exist for both tops.
-    expect(byId.has("top:rev")).toBe(true)
-    expect(byId.has("top:ops")).toBe(true)
-    expect(byId.get("top:rev")!.ntype).toBe("container")
-    // Sub-domains nest under their container.
-    expect(byId.get("bk")!.parent).toBe("top:rev")
-    expect(byId.get("fa")!.parent).toBe("top:rev")
-    // Bare top gets a self leaf so its container isn't empty.
-    expect(byId.get("self:ops")!.parent).toBe("top:ops")
-    // The bk→fa sub-domain edge survives.
-    expect(els.some((e) => e.group === "edges" && e.data.source === "bk" && e.data.target === "fa")).toBe(true)
-  })
-})
-
-describe("buildElements — Assets LOD (three-level nesting)", () => {
-  it("nests assets under their sub-domain container, which nests under the top", () => {
-    const els = buildElements(fixture(), "assets", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    // Assets sit inside their sub-domain container (grouping preserved on drill-in).
-    expect(byId.get("asset:c.rev.bookings")!.parent).toBe("sub:bk")
-    expect(byId.get("asset:c.rev.fares")!.parent).toBe("sub:fa")
-    // An asset whose domain is a bare top (no sub) nests directly under the top.
-    expect(byId.get("asset:c.ops.flights")!.parent).toBe("top:ops")
-    // Sub-domain containers exist and are nested inside their top container.
-    expect(byId.get("sub:bk")!.ntype).toBe("subcontainer")
-    expect(byId.get("sub:bk")!.parent).toBe("top:rev")
-    expect(byId.get("sub:fa")!.parent).toBe("top:rev")
-    // metric_view keeps its kind for accent styling.
-    expect(byId.get("asset:c.rev.fares")!.kind).toBe("metric_view")
-    // Top containers that actually hold assets are emitted.
-    expect(byId.has("top:rev")).toBe(true)
-    expect(byId.has("top:ops")).toBe(true)
-    // Asset co-query edge survives among visible assets.
-    expect(els.some((e) => e.group === "edges" && e.data.etype === "coquery")).toBe(true)
-  })
-
-  it("caps assets per sub-domain group and emits a '+N more' chip in that group", () => {
-    // bk holds two assets (bookings, pnr); cap 1 → one shown + a more chip, both under sub:bk.
-    const els = buildElements(fixture(), "assets", null, { perContainerCap: 1 })
-    const bk = els.filter((e) => e.data.parent === "sub:bk" && e.data.ntype === "asset")
-    expect(bk).toHaveLength(1) // capped
-    expect(els.some((e) => e.data.ntype === "more" && e.data.parent === "sub:bk")).toBe(true)
-  })
-
-  it("scopes to a single top domain when focusTop is set (drill-down)", () => {
-    const els = buildElements(fixture(), "assets", "ops")
-    const containers = els.filter((e) => e.data.ntype === "container")
-    expect(containers.map((c) => c.data.id)).toEqual(["top:ops"])
-    // Only top:ops content (ops is a bare top → its asset parents directly to it).
-    const parents = new Set(els.map((e) => e.data.parent).filter(Boolean))
-    expect([...parents]).toEqual(["top:ops"])
-  })
-
-  it("gives every leaf a deterministic seed position and is reproducible", () => {
-    const a = buildElements(fixture(), "assets", null)
-    const b = buildElements(fixture(), "assets", null)
-    expect(a).toEqual(b) // same input → identical elements (stable mental map)
-    const assets = a.filter((e) => e.data.ntype === "asset")
-    expect(assets.length).toBeGreaterThan(0)
-    expect(
-      assets.every((e) => e.position && Number.isFinite(e.position.x) && Number.isFinite(e.position.y)),
-    ).toBe(true)
-  })
-})
-
-describe("buildElements — edge safety + Domains overview (crash + focus fixes)", () => {
-  it("never emits an edge whose endpoint was filtered out of the view", () => {
-    const g = fixture()
-    // A cross-top edge to a node that will NOT be emitted under an 'ops' focus.
-    g.assets.edges.push({ src: "asset:c.rev.bookings", dst: "asset:c.ops.flights", kind: "coquery" })
-    const els = buildElements(g, "assets", "ops")
-    const nodeIds = new Set(els.filter((e) => e.group === "nodes").map((e) => e.data.id))
-    for (const e of els.filter((e) => e.group === "edges")) {
-      expect(nodeIds.has(e.data.source as string)).toBe(true)
-      expect(nodeIds.has(e.data.target as string)).toBe(true)
-    }
-  })
-
-  it("Domains LOD ignores focusTop and always shows the whole estate", () => {
-    const els = buildElements(fixture(), "domains", "rev")
-    const hubs = els.filter((e) => e.data.ntype === "domain")
-    expect(hubs.map((h) => h.data.id).sort()).toEqual(["ops", "rev"])
-    // Domain hubs carry deterministic centers, and two tops don't collapse onto one point.
-    const pos = hubs.map((h) => h.position!)
-    expect(pos.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true)
-    expect(pos[0].x !== pos[1].x || pos[0].y !== pos[1].y).toBe(true)
-  })
-})
-
-describe("origin provenance threading (MV-D74)", () => {
-  // Two tops: Revenue is applied (governed-tag backed), Ops is a proposed engine cluster.
-  function originFixture(): OntologyGraph {
-    return {
-      domains: {
-        nodes: [
-          { id: "rev", label: "Revenue", kind: "domain", x: 0, y: 0, size: 1, member_count: 1, origin: "applied" },
-          { id: "bk", label: "Bookings", kind: "subdomain", parent_id: "rev", parent_name: "Revenue", x: 0, y: 0, size: 1, member_count: 1, origin: "applied" },
-          { id: "ops", label: "Operations", kind: "domain", x: 0, y: 0, size: 1, member_count: 1, origin: "proposed" },
-        ],
-        edges: [],
-        truncated: false,
-      },
-      assets: { nodes: [], edges: [], truncated: false },
-      layout: "fcose",
-      node_count: 3,
-      edge_count: 0,
-      state: "fresh",
-    }
+/** Full northstar-shaped graph: org root, domain→subdomain, MV⊃table, typed edges, tray. */
+function northstarGraph(): OntologyGraph {
+  const domains: OntologyGraphNode[] = [
+    node({ id: "d_fin", label: "Acme Finance", kind: "domain", origin: "applied" }),
+    node({ id: "d_ops", label: "Acme Operations", kind: "domain", origin: "applied" }),
+    node({ id: "s_rev", label: "Revenue", kind: "subdomain", parent_id: "d_fin", origin: "applied" }),
+    node({ id: "ungrouped", label: "Ungrouped", kind: "ungrouped", member_count: 3, origin: "proposed" }),
+  ]
+  const assets: OntologyGraphNode[] = [
+    node({ id: "agent:a1", label: "Finance Agent", kind: "genie_agent", domain_id: "s_rev", attach_level: "subdomain", origin: "applied" }),
+    node({ id: "mv:net_sales", label: "net sales", kind: "metric_view", domain_id: "s_rev", parent_id: "agent:a1", attach_level: "asset", origin: "applied" }),
+    node({ id: "measure:ns", label: "net_sales", kind: "measure", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied" }),
+    node({ id: "table:sales", label: "fact_sales", kind: "table", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied" }),
+    node({ id: "table:cal", label: "ref_calendar", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+    node({ id: "table:ops1", label: "ops_events", kind: "table", domain_id: "d_ops", attach_level: "domain", origin: "applied" }),
+    // tray assets (ungrouped)
+    node({ id: "table:u1", label: "orphan_a", kind: "table", domain_id: "ungrouped" }),
+    node({ id: "table:u2", label: "orphan_b", kind: "table", domain_id: "ungrouped" }),
+    node({ id: "table:u3", label: "orphan_c", kind: "table", domain_id: null }),
+  ]
+  const edges: OntologyGraphEdge[] = [
+    { src: "table:sales", dst: "table:cal", kind: "join_key", weight: 2, verb: "joins calendar", rel_class: "shared" },
+    { src: "table:sales", dst: "table:ops1", kind: "co_query", weight: 1, verb: "also queried with", rel_class: "xdom" },
+  ]
+  return {
+    root: node({ id: "org:acme", label: "Acme", kind: "org", member_count: 9 }),
+    domains: { nodes: domains, edges: [], truncated: false },
+    assets: { nodes: assets, edges, truncated: false },
+    layout: "tree",
+    node_count: 14,
+    edge_count: 2,
+    state: "fresh",
+    as_of: null,
   }
+}
 
-  it("groupTops carries each top's origin from its top-level node", () => {
-    const tops = groupTops(originFixture().domains.nodes)
-    expect(tops.get("rev")!.origin).toBe("applied")
-    expect(tops.get("ops")!.origin).toBe("proposed")
-  })
+/** Pre-Lane-D (degrade): no root, no attach_level, no verb/rel_class. */
+function degradeGraph(): OntologyGraph {
+  const domains: OntologyGraphNode[] = [
+    node({ id: "d_fin", label: "Alaska Airlines Commercial", kind: "domain", origin: "applied" }),
+    node({ id: "d_ops", label: "Alaska Airlines Operations", kind: "domain", origin: "applied" }),
+    node({ id: "s_tk", label: "Ticketing", kind: "subdomain", parent_id: "d_fin", origin: "applied" }),
+  ]
+  const assets: OntologyGraphNode[] = [
+    node({ id: "t1", label: "ticket_coupon", kind: "table", domain_id: "s_tk" }),
+    node({ id: "t2", label: "flight_leg", kind: "table", domain_id: "d_ops" }),
+  ]
+  const edges: OntologyGraphEdge[] = [{ src: "t1", dst: "t2", kind: "join_key", weight: null }]
+  return {
+    domains: { nodes: domains, edges: [], truncated: false },
+    assets: { nodes: assets, edges, truncated: false },
+    layout: "fr",
+    node_count: 5,
+    edge_count: 1,
+    state: "fresh",
+    as_of: null,
+  }
+}
 
-  it("Domains LOD stamps origin so proposed rollups render dashed/Suggested and applied do not", () => {
-    const els = buildElements(originFixture(), "domains", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    expect(byId.get("rev")!.origin).toBe("applied")
-    expect(byId.get("ops")!.origin).toBe("proposed")
-    // The renderer keys the dashed border off origin="proposed"; only the engine cluster carries it.
-    const proposed = els.filter((e) => e.group === "nodes" && e.data.origin === "proposed")
-    expect(proposed.map((e) => e.data.id)).toEqual(["ops"])
-  })
-
-  it("Sub-domains LOD threads origin onto containers and sub-domain nodes", () => {
-    const els = buildElements(originFixture(), "subdomains", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    expect(byId.get("top:rev")!.origin).toBe("applied")
-    expect(byId.get("bk")!.origin).toBe("applied")
-    expect(byId.get("top:ops")!.origin).toBe("proposed")
+// ── typeForKind ────────────────────────────────────────────────────────────
+describe("typeForKind", () => {
+  it("maps backend kinds to tree node types", () => {
+    expect(typeForKind("metric_view")).toBe("metric_view")
+    expect(typeForKind("genie_agent")).toBe("agent")
+    expect(typeForKind("agent")).toBe("agent")
+    expect(typeForKind("dashboard")).toBe("dashboard")
+    expect(typeForKind("measure")).toBe("measure")
+    expect(typeForKind("view")).toBe("table")
+    expect(typeForKind("table")).toBe("table")
+    expect(typeForKind("weird")).toBe("table")
   })
 })
 
-describe("Map v3 §1 — canvas captions (display) + Ungrouped flag", () => {
-  it("trimCommonPrefix strips a shared leading word sequence, keeps full names otherwise", () => {
-    const t = trimCommonPrefix(["Alaska Airlines Commercial", "Alaska Airlines Ops", "Alaska Airlines Ifec"])
-    expect(t.get("Alaska Airlines Commercial")).toBe("Commercial")
-    expect(t.get("Alaska Airlines Ops")).toBe("Ops")
-    // No shared prefix → untouched.
-    const u = trimCommonPrefix(["Revenue", "Operations"])
-    expect(u.get("Revenue")).toBe("Revenue")
-    // A single name is never trimmed.
-    expect(trimCommonPrefix(["Alaska Airlines Commercial"]).get("Alaska Airlines Commercial")).toBe(
-      "Alaska Airlines Commercial",
+// ── verb + class derivation (degrade) vs explicit (Lane D) ───────────────────
+describe("verbForEdge", () => {
+  it("honors an explicit Lane-D verb", () => {
+    expect(verbForEdge({ src: "a", dst: "b", kind: "join_key", verb: "joins calendar" })).toBe("joins calendar")
+  })
+  it("derives a plain verb from the signal kind when absent", () => {
+    expect(verbForEdge({ src: "a", dst: "b", kind: "mv_membership" })).toBe("reads")
+    expect(verbForEdge({ src: "a", dst: "b", kind: "agent_scope" })).toBe("uses")
+    expect(verbForEdge({ src: "a", dst: "b", kind: "join_key" })).toBe("shares key with")
+    expect(verbForEdge({ src: "a", dst: "b", kind: "co_query" })).toBe("also queried with")
+  })
+})
+
+describe("classForEdge", () => {
+  const domainOf = (id: string) => (id === "x" ? "d1" : id === "y" ? "d2" : "d1")
+  it("honors explicit rel_class", () => {
+    expect(classForEdge({ src: "x", dst: "y", kind: "k", rel_class: "shared" }, domainOf)).toBe("shared")
+  })
+  it("derives xdom when endpoints live in different domains", () => {
+    expect(classForEdge({ src: "x", dst: "y", kind: "k" }, domainOf)).toBe("xdom")
+  })
+  it("derives shared within one domain", () => {
+    expect(classForEdge({ src: "x", dst: "z", kind: "k" }, domainOf)).toBe("shared")
+  })
+})
+
+// ── trimCommonPrefix ─────────────────────────────────────────────────────────
+describe("trimCommonPrefix", () => {
+  it("trims the shared leading words across sibling domains", () => {
+    const m = trimCommonPrefix(["Alaska Airlines Commercial", "Alaska Airlines Operations"])
+    expect(m.get("Alaska Airlines Commercial")).toBe("Commercial")
+    expect(m.get("Alaska Airlines Operations")).toBe("Operations")
+  })
+  it("leaves names untouched if trimming would empty one", () => {
+    const m = trimCommonPrefix(["Acme", "Acme Finance"])
+    expect(m.get("Acme")).toBe("Acme")
+  })
+})
+
+// ── buildEstateModel — northstar path ────────────────────────────────────────
+describe("buildEstateModel (northstar)", () => {
+  const model = buildEstateModel(northstarGraph())
+
+  it("is not degraded when a root is present", () => {
+    expect(model.degraded).toBe(false)
+    expect(model.root?.type).toBe("org")
+    expect(model.root?.id).toBe("org:acme")
+  })
+
+  it("nests domains under the root and subdomains under their domain", () => {
+    const kidsOfRoot = model.childrenByParent.get("org:acme")!.map((n) => n.id)
+    expect(kidsOfRoot).toContain("d_fin")
+    expect(kidsOfRoot).toContain("d_ops")
+    const kidsOfFin = model.childrenByParent.get("d_fin")!.map((n) => n.id)
+    expect(kidsOfFin).toContain("s_rev")
+  })
+
+  it("honors Lane-D asset→asset containment (agent ⊃ mv ⊃ {measure, table})", () => {
+    const kidsOfAgent = model.childrenByParent.get("agent:a1")!.map((n) => n.id)
+    expect(kidsOfAgent).toContain("mv:net_sales")
+    const kidsOfMv = model.childrenByParent.get("mv:net_sales")!.map((n) => n.id)
+    expect(kidsOfMv).toEqual(expect.arrayContaining(["measure:ns", "table:sales"]))
+  })
+
+  it("attaches a shared reference asset directly to its domain", () => {
+    const cal = model.nodes.find((n) => n.id === "table:cal")!
+    expect(cal.parentId).toBe("d_fin")
+    expect(cal.attachLevel).toBe("domain")
+  })
+
+  it("routes ungrouped assets to the tray, never into the tree", () => {
+    const trayIds = model.trayItems.map((t) => t.id)
+    expect(trayIds).toEqual(expect.arrayContaining(["table:u1", "table:u2", "table:u3"]))
+    expect(model.nodes.find((n) => n.id === "table:u1")).toBeUndefined()
+  })
+
+  it("classifies cross-edges (shared vs xdom) and carries the verb", () => {
+    const shared = model.crossEdges.find((e) => e.verb === "joins calendar")!
+    expect(shared.relClass).toBe("shared")
+    const xdom = model.crossEdges.find((e) => e.verb === "also queried with")!
+    expect(xdom.relClass).toBe("xdom")
+  })
+
+  it("computes descendant counts up the tree", () => {
+    expect(model.root!.descendantCount).toBeGreaterThan(0)
+    const mv = model.nodes.find((n) => n.id === "mv:net_sales")!
+    expect(mv.descendantCount).toBe(2) // measure + table
+  })
+})
+
+// ── buildEstateModel — degrade path ──────────────────────────────────────────
+describe("buildEstateModel (degrade)", () => {
+  const model = buildEstateModel(degradeGraph(), { estateName: "Alaska" })
+
+  it("synthesizes an org root and flags degraded", () => {
+    expect(model.degraded).toBe(true)
+    expect(model.root?.type).toBe("org")
+    expect(model.root?.label).toBe("Alaska")
+  })
+
+  it("keeps assets as leaves under their domain/subdomain", () => {
+    const t1 = model.nodes.find((n) => n.id === "t1")!
+    expect(t1.parentId).toBe("s_tk")
+    expect(t1.attachLevel).toBe("subdomain")
+    const t2 = model.nodes.find((n) => n.id === "t2")!
+    expect(t2.parentId).toBe("d_ops")
+    expect(t2.attachLevel).toBe("domain")
+  })
+
+  it("derives verb + class for edges with no Lane-D annotation", () => {
+    const e = model.crossEdges[0]
+    expect(e.verb).toBe("shares key with")
+    expect(e.relClass).toBe("xdom") // t1 in d_fin, t2 in d_ops
+  })
+})
+
+// ── proposals + tray sources (§3.4) ──────────────────────────────────────────
+describe("buildEstateModel proposals", () => {
+  it("derives proposals from proposed-origin nodes when no drafts given (band null)", () => {
+    const g = northstarGraph()
+    g.domains.nodes.push(
+      node({ id: "sug_new", label: "Suggested Area", kind: "domain", origin: "proposed" }),
     )
-    // A name that IS the prefix keeps at least its last word (never empty).
-    const v = trimCommonPrefix(["Alaska Airlines", "Alaska Airlines Cargo"])
-    expect(v.get("Alaska Airlines")).toBe("Alaska Airlines")
+    g.assets.nodes.push(node({ id: "table:u1b", label: "x", kind: "table", domain_id: "sug_new" }))
+    const model = buildEstateModel(g)
+    const p = model.proposals.find((p) => p.id === "sug_new")!
+    expect(p.band).toBeNull()
+    expect(p.name).toBe("Suggested Area")
   })
 
-  it("domainDisplay renders a two-line caption with a formatted count", () => {
-    expect(domainDisplay("Commercial", 48, false)).toBe("Commercial\n48 assets")
-    expect(domainDisplay("Ungrouped", 1911, true)).toBe("Ungrouped\n1,911 tables")
-    expect(domainDisplay("Empty", 0, false)).toBe("Empty")
-    expect(fmtCount(1911)).toBe("1,911")
-  })
-
-  it("Domains LOD hubs carry display captions and the Ungrouped flag", () => {
-    const g = fixture()
-    g.domains.nodes.push({
-      id: "ungrouped", label: "Ungrouped", kind: "ungrouped", x: 0, y: 0, size: 1, member_count: 7,
+  it("prefers OntologyDrafts (real confidence band) when provided", () => {
+    const model = buildEstateModel(northstarGraph(), {
+      drafts: {
+        domains: [
+          {
+            proposal_id: "p1",
+            kind: "domain",
+            name: "Loyalty",
+            description: "",
+            tag_decision: "create",
+            conflict_tag: null,
+            subdomains: [],
+            members: [{ fqn: "table:u1", asset_type: "table" }],
+            why: "",
+            evidence: [],
+            tier: "high",
+            confidence: { band: "High", signals_present: ["usage"], gap: "" },
+          },
+        ],
+        pages: [],
+        source: "live",
+        as_of: "",
+      },
+      taxonomy: null,
     })
-    const els = buildElements(g, "domains", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    expect(byId.get("rev")!.display).toBe("Revenue\n3 assets")
-    expect(byId.get("rev")!.isUngrouped).toBe(false)
-    expect(byId.get("ungrouped")!.display).toBe("Ungrouped\n7 tables")
-    expect(byId.get("ungrouped")!.isUngrouped).toBe(true)
-  })
-
-  it("containers carry a trimmed title-with-count caption; label keeps the full name", () => {
-    const g = fixture()
-    // Give the two tops a shared prefix so the trim path is exercised end-to-end.
-    g.domains.nodes[0].label = "Acme Corp Revenue"
-    g.domains.nodes[1].parent_name = "Acme Corp Revenue"
-    g.domains.nodes[2].parent_name = "Acme Corp Revenue"
-    g.domains.nodes[3].label = "Acme Corp Operations"
-    const els = buildElements(g, "subdomains", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    expect(byId.get("top:rev")!.label).toBe("Acme Corp Revenue")
-    expect(byId.get("top:rev")!.display).toBe("Revenue · 3")
-    expect(byId.get("top:ops")!.display).toBe("Operations · 1")
-  })
-})
-
-describe("Map v3 §2 — inspector depth: connectivity + location facts on asset nodes", () => {
-  it("threads degree + strongest links + sub-domain location onto each asset", () => {
-    const els = buildElements(fixture(), "assets", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    const bookings = byId.get("asset:c.rev.bookings")!
-    // bookings ↔ pnr is the only edge touching it in the fixture.
-    expect(bookings.deg).toBe(1)
-    expect(bookings.links).toEqual(["pnr"])
-    expect(bookings.subName).toBe("Bookings")
-    expect(bookings.domainShort).toBe("Revenue")
-    // A bare-top asset has no sub-domain.
-    expect(byId.get("asset:c.ops.flights")!.subName).toBeNull()
-  })
-
-  it("containers carry their sub-area names for the inspector", () => {
-    const els = buildElements(fixture(), "subdomains", null)
-    const byId = new Map(els.map((e) => [e.data.id, e.data]))
-    expect(byId.get("top:rev")!.subNames).toEqual(["Bookings", "Fares"])
-    expect(byId.get("top:ops")!.subNames).toEqual([])
-  })
-})
-
-describe("Map v3 §2 — nodeFacts depth (plain language, MV-D23)", () => {
-  it("asset facts: what it is, where it lives, what it works with, cost", () => {
-    const f = nodeFacts({
-      ntype: "asset", id: "asset:c.rev.bookings", label: "bookings", kind: "table",
-      domainShort: "Revenue", subName: "Bookings", deg: 5, links: ["pnr", "fares", "tickets"], cost: 2400,
-    })
-    const blob = f.lines.join(" | ")
-    expect(f.lines[0]).toBe("A data table.")
-    expect(blob).toContain("In Revenue › Bookings")
-    expect(blob).toContain("Works with pnr, fares, tickets and 2 more")
-    expect(blob).toContain("$2.4k / month")
-  })
-
-  it("page facts: archetype prefix becomes a chip + plain-language purpose", () => {
-    const f = nodeFacts({ ntype: "page", id: "page:x", label: "[Guardrail] fare rules" })
-    expect(f.title).toBe("fare rules")
-    expect(f.chip).toBe("Guardrail note")
-    expect(f.lines[0]).toContain("rule")
-  })
-
-  it("business-area facts list sub-areas; Ungrouped reads as not-yet-grouped", () => {
-    const d = nodeFacts({ ntype: "domain", id: "rev", label: "Revenue", count: 3, subNames: ["Bookings", "Fares"] })
-    expect(d.lines.join(" | ")).toContain("Sub-areas: Bookings and Fares")
-    const u = nodeFacts({ ntype: "domain", id: "ungrouped", label: "Ungrouped", count: 1911, isUngrouped: true })
-    expect(u.chip).toBe("Not yet grouped")
-    expect(u.lines.join(" | ")).toContain("1,911 tables")
-    expect(u.drillTopId).toBe("ungrouped")
-  })
-})
-
-describe("Map v3 §1D — viewCaption annotation layer (plain language, MV-D23)", () => {
-  it("domains overview counts areas + organised assets and flags ungrouped honestly", () => {
-    const g = fixture()
-    g.domains.nodes.push({ id: "ungrouped", label: "Ungrouped", kind: "ungrouped", x: 0, y: 0, size: 1, member_count: 1911 })
-    const c = viewCaption(g, "domains", null, "applied")
-    expect(c.headline).toBe("2 business areas · 4 assets organised")
-    expect(c.sub).toBe("1,911 tables are not grouped yet.")
-  })
-
-  it("focused assets caption names the area with its trimmed name and sizes", () => {
-    const c = viewCaption(fixture(), "assets", "rev", "applied")
-    expect(c.headline).toBe("Revenue")
-    expect(c.sub).toContain("3 assets across 2 sub-areas")
-  })
-
-  it("proposed with only Ungrouped reads as nothing-to-suggest (MV-D43 honesty)", () => {
-    const g = fixture()
-    g.domains.nodes = [
-      { id: "ungrouped", label: "Ungrouped", kind: "ungrouped", x: 0, y: 0, size: 1, member_count: 10, origin: "proposed" },
-    ]
-    const c = viewCaption(g, "domains", null, "proposed")
-    expect(c.headline).toBe("No new grouping to suggest")
-  })
-
-  it("proposed with real clusters says they are not applied yet", () => {
-    const c = viewCaption(fixture(), "domains", null, "proposed")
-    expect(c.headline).toBe("2 suggested business areas")
-    expect(c.sub).toContain("nothing here is applied yet")
-  })
-})
-
-describe("viewElements — Assets LOD requires a focused domain (MV-D75)", () => {
-  it("yields no elements at the Assets LOD without a focus (the pick-an-area state)", () => {
-    const els = viewElements(fixture(), "assets", null)
-    expect(els).toHaveLength(0)
-    expect(els.some((e) => e.data.ntype === "asset")).toBe(false)
-  })
-
-  it("delegates to buildElements once a domain is focused", () => {
-    const gated = viewElements(fixture(), "assets", "ops")
-    const direct = buildElements(fixture(), "assets", "ops")
-    expect(gated).toEqual(direct)
-    expect(gated.some((e) => e.data.ntype === "asset")).toBe(true)
-  })
-
-  it("does not gate the Domains / Sub-domains overviews", () => {
-    expect(viewElements(fixture(), "domains", null).length).toBeGreaterThan(0)
-    expect(viewElements(fixture(), "subdomains", null).length).toBeGreaterThan(0)
-  })
-})
-
-describe("mergeExpand — expand-on-demand satellites (MV-D73)", () => {
-  function expandPayload(): OntologyGraphExpand {
-    return {
-      parent_id: "asset:c.rev.fares",
-      as_of: "2026-09-06",
-      nodes: [
-        { id: "measure:revenue", label: "revenue", kind: "measure", x: 0, y: 0, size: 1 },
-        { id: "page:fares-guardrail", label: "Fares guardrail", kind: "page", x: 0, y: 0, size: 1 },
-      ],
-      edges: [
-        { src: "asset:c.rev.fares", dst: "measure:revenue", kind: "mv_measure" },
-        { src: "asset:c.rev.fares", dst: "page:fares-guardrail", kind: "page_source" },
-      ],
-    }
-  }
-
-  it("appends measure + Page satellites under the given parent container", () => {
-    const base = buildElements(fixture(), "assets", "rev")
-    const merged = mergeExpand(base, expandPayload(), "sub:fa")
-    const byId = new Map(merged.map((e) => [e.data.id, e.data]))
-    expect(byId.get("measure:revenue")!.ntype).toBe("measure")
-    expect(byId.get("measure:revenue")!.parent).toBe("sub:fa")
-    expect(byId.get("page:fares-guardrail")!.ntype).toBe("page")
-    expect(byId.get("page:fares-guardrail")!.parent).toBe("sub:fa")
-    // Both satellite edges survive because their endpoints are present.
-    expect(merged.filter((e) => e.group === "edges" && e.data.etype === "snippet")).toHaveLength(2)
-  })
-
-  it("is idempotent — re-merging the same payload adds nothing (dedupe)", () => {
-    const base = buildElements(fixture(), "assets", "rev")
-    const once = mergeExpand(base, expandPayload(), "sub:fa")
-    const twice = mergeExpand(once, expandPayload(), "sub:fa")
-    expect(twice).toEqual(once)
-  })
-
-  it("never emits a dangling edge (emitted-only guard)", () => {
-    const base = buildElements(fixture(), "assets", "rev")
-    const payload = expandPayload()
-    // An edge to a node that is NOT in the payload nor the base → must be dropped.
-    payload.edges.push({ src: "measure:revenue", dst: "measure:ghost", kind: "mv_measure" })
-    const merged = mergeExpand(base, payload, "sub:fa")
-    const nodeIds = new Set(merged.filter((e) => e.group === "nodes").map((e) => e.data.id))
-    for (const e of merged.filter((e) => e.group === "edges")) {
-      expect(nodeIds.has(e.data.source as string)).toBe(true)
-      expect(nodeIds.has(e.data.target as string)).toBe(true)
-    }
-    expect(nodeIds.has("measure:ghost")).toBe(false)
-  })
-
-  it("is pure (does not mutate the input array) and deterministic", () => {
-    const base = buildElements(fixture(), "assets", "rev")
-    const beforeLen = base.length
-    const a = mergeExpand(base, expandPayload(), "sub:fa")
-    const b = mergeExpand(base, expandPayload(), "sub:fa")
-    expect(base).toHaveLength(beforeLen) // input untouched
-    expect(a).toEqual(b) // same input → identical output (byte-stable)
-  })
-})
-
-describe("nodeFacts — satellite copy is plain language (MV-D23/D73)", () => {
-  it("describes a measure and a Page with no jargon", () => {
-    const m = nodeFacts({ ntype: "measure", id: "measure:revenue", label: "revenue" })
-    expect(m.chip).toBe("Measure")
-    expect(m.drillTopId).toBeNull()
-    const p = nodeFacts({ ntype: "page", id: "page:x", label: "Fares guardrail" })
-    expect(p.chip).toBe("Page")
-    const blob = (JSON.stringify(m) + JSON.stringify(p)).toLowerCase()
-    for (const bad of ["select", "set tag", "sql", "measure:", "page:"]) {
-      expect(blob).not.toContain(bad)
-    }
-  })
-})
-
-describe("nodeFacts — plain language, zero jargon (MV-D23)", () => {
-  const FORBIDDEN = ["SET TAG", "SELECT", "sql", "canonical_id", "metastore", "asset:", "top:"]
-
-  it("describes a domain with a drill target and no jargon", () => {
-    const f = nodeFacts({ ntype: "domain", id: "rev", label: "Revenue", count: 3 })
-    expect(f.chip).toBe("Business area")
-    expect(f.drillTopId).toBe("rev")
-    const blob = JSON.stringify(f).toLowerCase()
-    for (const bad of FORBIDDEN) expect(blob).not.toContain(bad.toLowerCase())
-  })
-
-  it("describes an asset by human kind, no id leakage", () => {
-    const f = nodeFacts({ ntype: "asset", id: "asset:c.rev.fares", label: "fares", kind: "metric_view", domainName: "Revenue", cost: 2400 })
-    expect(f.title).toBe("fares")
-    expect(f.chip).toBe("Metric view")
-    expect(f.drillTopId).toBeNull()
-    expect(f.lines.join(" ")).toContain("Revenue")
-    const blob = JSON.stringify(f).toLowerCase()
-    for (const bad of FORBIDDEN) expect(blob).not.toContain(bad.toLowerCase())
+    const p = model.proposals[0]
+    expect(p.band).toBe("High")
+    expect(p.memberIds).toContain("table:u1")
   })
 })

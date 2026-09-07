@@ -1,31 +1,48 @@
 /**
- * Ontology Map v2 (MV-D75) — docked right-rail inspector. Upgrades the old floating popover
- * into a persistent rail: plain-language facts (MV-D23, via `nodeFacts`), a drill action for
- * business areas, and a "View measures / Pages" expand action for metric views + sub-domains
- * (calls the §2.3 expand route). Every state is handled (loading / error / done, MV-D43).
- * Presentational — it holds no cytoscape or fetch state; the map owns those.
+ * Ontology Map north-star (MV-D81/D83) — docked right-rail inspector. Shows a selected
+ * node's type pill, name, plain-language description, plain metadata, and a **navigable
+ * Relationships list** (each row expands the path to + selects its target, §5/R15).
+ * Technical detail (expressions / FQNs) lives behind an opt-in disclosure (MV-D23 / §9-C).
+ * A selected proposal shows its confidence band + Approve / Dismiss (§3.5, Phase-5 apply).
+ * Presentational — holds no layout or fetch state; the map owns those.
  */
-import { ChevronRight, Loader2, Sparkles, X } from "lucide-react"
-import type { NodeFacts } from "@/ontology/estateGraphModel"
+import { ChevronRight, Sparkles, X } from "lucide-react"
 
-export type ExpandState = "idle" | "loading" | "error" | "done"
+export interface InspectorRelationship {
+  targetId: string
+  label: string
+  /** "part of" | "contains" | a typed cross-link verb, etc. */
+  verb: string
+  xdom: boolean
+}
+
+export interface InspectorData {
+  title: string
+  typeLabel: string
+  description: string
+  /** Plain-language metadata lines (no jargon). */
+  facts: string[]
+  /** Technical detail (Expression / Path / Source) — behind the disclosure (§9-C). */
+  technical: string[]
+  relationships: InspectorRelationship[]
+  isProposal?: boolean
+  band?: "High" | "Medium" | "Low" | null
+}
 
 export function GraphInspector({
-  facts,
-  canExpand,
-  expandState,
-  onExpand,
-  onDrill,
+  data,
+  onSelectRelationship,
   onClose,
+  onApprove,
+  onDismiss,
 }: {
-  facts: NodeFacts | null
-  canExpand: boolean
-  expandState: ExpandState
-  onExpand: () => void
-  onDrill: (topId: string, name: string) => void
+  data: InspectorData | null
+  onSelectRelationship: (targetId: string) => void
   onClose: () => void
+  onApprove?: () => void
+  onDismiss?: () => void
 }) {
-  if (!facts) {
+  if (!data) {
     return (
       <div className="flex h-full flex-col items-start justify-center gap-1 px-4 text-xs text-muted">
         <p className="font-medium text-secondary">Nothing selected</p>
@@ -38,71 +55,94 @@ export function GraphInspector({
     <div className="flex h-full flex-col gap-3 p-3.5">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="text-sm font-semibold text-primary break-words">{facts.title}</p>
+          <p className="text-sm font-semibold text-primary break-words">{data.title}</p>
           <span className="mt-1 inline-block rounded-full bg-accent/15 px-2 py-0.5 text-xs text-accent">
-            {facts.chip}
+            {data.typeLabel}
           </span>
+          {data.isProposal && data.band && (
+            <span className="ml-1.5 mt-1 inline-block rounded-full border border-default px-2 py-0.5 text-[11px] text-secondary">
+              {data.band} confidence
+            </span>
+          )}
         </div>
         <button onClick={onClose} aria-label="Close inspector" className="shrink-0 text-muted hover:text-primary">
           <X className="h-4 w-4" />
         </button>
       </div>
 
-      {facts.lines.length > 0 && (
+      {data.description && <p className="text-xs leading-snug text-secondary">{data.description}</p>}
+
+      {data.facts.length > 0 && (
         <div className="space-y-1.5 text-xs text-secondary">
-          {/* First line = what this thing IS; the rest are individual facts. */}
-          {facts.lines.map((line, i) =>
-            i === 0 ? (
-              <p key={i} className="leading-snug">{line}</p>
-            ) : (
-              <p key={i} className="flex gap-1.5 leading-snug">
-                <span className="mt-[5px] h-1 w-1 shrink-0 rounded-full bg-accent/70" aria-hidden />
-                <span>{line}</span>
-              </p>
-            ),
-          )}
+          {data.facts.map((line, i) => (
+            <p key={i} className="flex gap-1.5 leading-snug">
+              <span className="mt-[5px] h-1 w-1 shrink-0 rounded-full bg-accent/70" aria-hidden />
+              <span>{line}</span>
+            </p>
+          ))}
         </div>
       )}
 
-      <div className="mt-auto space-y-2">
-        {facts.drillTopId && (
-          <button
-            onClick={() => onDrill(facts.drillTopId!, facts.title)}
-            className="flex w-full items-center justify-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
-          >
-            View its assets <ChevronRight className="h-3.5 w-3.5" />
-          </button>
-        )}
+      {data.relationships.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Relationships</p>
+          <ul className="space-y-0.5">
+            {data.relationships.map((r, i) => (
+              <li key={`${r.targetId}-${i}`}>
+                <button
+                  onClick={() => onSelectRelationship(r.targetId)}
+                  className="flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left text-xs text-secondary hover:bg-elevated hover:text-primary"
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="text-muted">{r.verb} </span>
+                    {r.label}
+                  </span>
+                  {r.xdom && (
+                    <span className="shrink-0 rounded bg-danger/15 px-1 text-[10px] font-semibold text-danger-foreground">
+                      X-DOM
+                    </span>
+                  )}
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
-        {canExpand && (
-          <div>
-            <button
-              onClick={onExpand}
-              disabled={expandState === "loading" || expandState === "done"}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent/20 disabled:opacity-60"
-            >
-              {expandState === "loading" ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
-                </>
-              ) : expandState === "done" ? (
-                <>
-                  <Sparkles className="h-3.5 w-3.5" /> Measures &amp; Pages shown
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-3.5 w-3.5" /> View measures &amp; Pages
-                </>
-              )}
-            </button>
-            {expandState === "error" && (
-              <p className="mt-1.5 text-[11px] text-danger-foreground">
-                Couldn&apos;t load the details right now. Try again in a moment.
-              </p>
-            )}
+      {data.technical.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer select-none text-muted hover:text-secondary">
+            Technical details
+          </summary>
+          <div className="mt-1.5 space-y-1 font-mono text-[11px] text-muted">
+            {data.technical.map((line, i) => (
+              <p key={i} className="break-all">{line}</p>
+            ))}
           </div>
-        )}
-      </div>
+        </details>
+      )}
+
+      {data.isProposal && (onApprove || onDismiss) && (
+        <div className="mt-auto flex gap-2">
+          {onApprove && (
+            <button
+              onClick={onApprove}
+              className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Approve
+            </button>
+          )}
+          {onDismiss && (
+            <button
+              onClick={onDismiss}
+              className="flex-1 rounded-lg border border-default px-3 py-1.5 text-xs font-semibold text-secondary hover:bg-elevated"
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

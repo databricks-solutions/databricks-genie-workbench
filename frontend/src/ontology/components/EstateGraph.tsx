@@ -1,1119 +1,923 @@
 /**
- * Ontology Map v2 (MV-D48, MV-D72, MV-D74, MV-D75). Renders the OntologyGraph as an
- * aggregate-first, compound-container cytoscape canvas with a modern shell:
- *  - an **Applied | Proposed** source toggle (default Applied, MV-D74) — proposed rollups
- *    render dashed + a "Suggested" chip so they never read as current state;
- *  - a Domains | Sub-domains | Assets LOD toggle; the **Assets LOD requires a focused
- *    domain** (drill in, not the all-assets mush, MV-D75) + a breadcrumb;
- *  - **expand-on-demand**: tapping a metric view / sub-domain fetches its measures & Pages
- *    as satellite nodes (§2.3);
- *  - a docked **right-rail inspector** (plain language, MV-D23), **search-to-focus**, a
- *    **minimap**, per-type icons, semantic colour, curved edges revealed on select.
- * Degrades to honest loading / empty / error / stale states throughout (MV-D43).
+ * Ontology Map north-star (MV-D81/D83/D84, §9-A) — deterministic d3 tidy-tree renderer.
+ *
+ * Replaces the Cytoscape-fcose-LOD core with a React-controlled SVG: a pure `d3.tree`
+ * layout (`ontologyTreeLayout`), a typed verb overlay, an off-tree Ungrouped tray, and
+ * dashed proposal hulls, dual-theme via `graphTokens`. d3 is used ONLY imperatively via two
+ * refs — `d3.zoom` on the <svg> and `d3.drag` on nodes — never for rendering (React owns the
+ * DOM). Expand/collapse happens in place (no LOD control). Degrades to the shallow contract
+ * (MV-D43) when Lane-D fields are absent. Honest loading / empty / error / stale states.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { AlertTriangle, Loader2, MousePointerClick } from "lucide-react"
-import cytoscape from "cytoscape"
-import fcose from "cytoscape-fcose"
-import CytoscapeComponent from "react-cytoscapejs"
-import type { GraphOrigin, OntologyGraph, OntologyGraphExpand } from "@/ontology/types"
-import { groupTops, mergeExpand, nodeFacts, viewCaption, viewElements, type CyEl, type Lod } from "@/ontology/estateGraphModel"
-import { graphTokens, recolorMap, type GraphTokens } from "@/ontology/graphTokens"
+import { AlertTriangle, Loader2, Maximize2, RotateCcw, Sparkles } from "lucide-react"
+import { drag as d3drag } from "d3-drag"
+import { select } from "d3-selection"
+import { zoom as d3zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom"
+import type {
+  GraphOrigin,
+  OntologyDrafts,
+  OntologyGraph,
+  OntologyTaxonomy,
+} from "@/ontology/types"
+import {
+  buildEstateModel,
+  fmtCount,
+  fmtMoney,
+  type EstateModel,
+  type NodeType,
+} from "@/ontology/estateGraphModel"
+import {
+  DEFAULT_LAYOUT,
+  ancestorPath,
+  contentBounds,
+  initialExpanded,
+  layoutHash,
+  layoutTree,
+  type LaidNode,
+  type Layout,
+  type Point,
+} from "@/ontology/ontologyTreeLayout"
+import { bandColor, domainTintFor, graphTokens } from "@/ontology/graphTokens"
 import { useTheme } from "@/hooks/useTheme"
-import { expandNode, getGraph } from "@/ontology/api"
-import { GraphInspector, type ExpandState } from "./GraphInspector"
+import { GraphInspector, type InspectorData } from "./GraphInspector"
 import { GraphSearch } from "./GraphSearch"
-import { GraphMinimap, type MiniPoint, type MiniRect, type MiniViewport } from "./GraphMinimap"
+import { GraphMinimap, type MiniPoint, type MiniRect } from "./GraphMinimap"
 
-// Register the fcose layout once. cytoscape.use throws if already registered (HMR).
-try {
-  cytoscape.use(fcose)
-} catch {
-  /* already registered */
-}
-
-const LODS: { id: Lod; label: string }[] = [
-  { id: "domains", label: "Domains" },
-  { id: "subdomains", label: "Sub-domains" },
-  { id: "assets", label: "Assets" },
-]
-
-const ORIGINS: { id: GraphOrigin; label: string }[] = [
-  { id: "applied", label: "Applied" },
-  { id: "proposed", label: "Proposed" },
-]
-
-// Per-type inline-SVG icons (MV-D75) as data URIs — NO new dependency (MV-D45). A light
-// stroke reads on the coloured node fills. `%23` is an escaped '#' so the URI stays valid.
-function svgIcon(inner: string): string {
-  return `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23F8FAFC' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>${inner}</svg>")`
-}
-const ICONS = {
-  table: svgIcon("<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M3 10h18M9 4v16'/>"),
-  metric_view: svgIcon("<path d='M4 20V10M10 20V4M16 20v-8M22 20H2'/>"),
-  agent: svgIcon("<path d='M12 3v4M8 21h8M12 15v6'/><rect x='5' y='7' width='14' height='8' rx='3'/>"),
-  dashboard: svgIcon("<rect x='3' y='3' width='7' height='7' rx='1'/><rect x='14' y='3' width='7' height='7' rx='1'/><rect x='14' y='14' width='7' height='7' rx='1'/><rect x='3' y='14' width='7' height='7' rx='1'/>"),
-  measure: svgIcon("<path d='M4 9h16M4 15h16M10 3 8 21M16 3l-2 18'/>"),
-  page: svgIcon("<path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><path d='M14 2v6h6M8 13h8M8 17h5'/>"),
-}
-const ICON_STYLE = {
-  "background-fit": "none",
-  "background-width": "55%",
-  "background-height": "55%",
-  "background-clip": "none",
-  "background-image-opacity": 0.9,
-} as const
-
-// ── Visual system (Map v3 §1A, MV-D76) ──────────────────────────────────────
-// The shipped webfonts, loaded by index.css and measured by the canvas renderer.
-// Cabinet Grotesk = display (container titles); General Sans = everything else.
-const FONT_DISPLAY = "Cabinet Grotesk, Inter, system-ui, sans-serif"
-const FONT_BODY = "General Sans, Inter, system-ui, sans-serif"
-
-/**
- * Theme-aware stylesheet factory (Map v3.2, MV-D79). Every colour/opacity that differs
- * between light and dark comes from `graphTokens(resolvedTheme)`; structural values
- * (shapes, radii, sizes, fonts, z-index) are theme-independent. On dark the tokens
- * reproduce the pre-MV-D79 constants exactly, so the dark render is byte-identical to
- * the baseline (the whole point of the token contract). Icons stay module-level: their
- * light glyphs sit on saturated node fills in BOTH themes, so only the label PLATE flips.
- */
-function buildStylesheet(t: GraphTokens) {
-  // Crisp label plate instead of a heavy text-outline halo — a translucent chip under
-  // every label keeps text readable over edges/fills at any zoom without warping glyphs.
-  // Paper chip + dark text on light; near-black chip + light text on dark (the flip that
-  // fixes the MV-D78 washout).
-  const LABEL_PLATE = {
-    "text-outline-width": 0,
-    "text-background-color": t.plateBg,
-    "text-background-opacity": t.plateOpacity,
-    "text-background-padding": 3,
-    "text-background-shape": "round-rectangle",
-  } as const
-  return [
-  {
-    selector: 'node[ntype="container"]',
-    style: {
-      shape: "round-rectangle",
-      "corner-radius": 14,
-      "background-color": "data(color)",
-      "background-opacity": t.containerFillOpacity,
-      "border-color": "data(color)",
-      "border-width": 1.5,
-      "border-opacity": 0.6,
-      label: "data(label)",
-      "font-family": FONT_DISPLAY,
-      "font-size": 13,
-      "font-weight": 700,
-      color: t.containerText,
-      "text-valign": "top",
-      "text-halign": "center",
-      "text-margin-y": -8,
-      ...LABEL_PLATE,
-      padding: 26,
-      "z-index": 1,
-    },
-  },
-  {
-    // Sub-domain container nested inside its top domain. SOLID by default —
-    // provenance styling is origin-driven only (§1E; old defect #2 was dashing
-    // every subcontainer regardless of origin).
-    selector: 'node[ntype="subcontainer"]',
-    style: {
-      shape: "round-rectangle",
-      "corner-radius": 10,
-      "background-color": "data(color)",
-      "background-opacity": t.subcontainerFillOpacity,
-      "border-color": "data(color)",
-      "border-width": 1,
-      "border-opacity": 0.5,
-      label: "data(label)",
-      "font-family": FONT_BODY,
-      "font-size": 10.5,
-      "font-weight": 600,
-      color: t.subcontainerText,
-      "text-valign": "top",
-      "text-halign": "center",
-      "text-margin-y": -5,
-      ...LABEL_PLATE,
-      padding: 16,
-      "z-index": 2,
-    },
-  },
-  {
-    // Domain hub (Domains LOD): a filled disc with a soft rim; the two-line
-    // caption (`display` = name + member count) sits BELOW on a plate so long
-    // names never truncate into the fill (§1A defect: warped centered labels).
-    selector: 'node[ntype="domain"]',
-    style: {
-      "background-color": "data(color)",
-      "background-opacity": 0.92,
-      "border-width": 2,
-      "border-color": t.domainRim,
-      "border-opacity": t.domainRimOpacity,
-      width: "data(px)",
-      height: "data(px)",
-      label: "data(label)",
-      "font-family": FONT_BODY,
-      "font-size": 11.5,
-      "font-weight": 600,
-      color: t.domainText,
-      "line-height": 1.25,
-      "text-valign": "bottom",
-      "text-halign": "center",
-      "text-margin-y": 7,
-      "text-wrap": "wrap",
-      "text-max-width": 150,
-      ...LABEL_PLATE,
-      "z-index": 10,
-    },
-  },
-  {
-    selector: 'node[ntype="subdomain"]',
-    style: {
-      "background-color": "data(color)",
-      "background-opacity": 0.9,
-      "border-width": 1.5,
-      "border-color": t.subdomainRim,
-      "border-opacity": t.subdomainRimOpacity,
-      width: "data(px)",
-      height: "data(px)",
-      label: "data(label)",
-      "font-family": FONT_BODY,
-      "font-size": 10,
-      "font-weight": 500,
-      color: t.subdomainText,
-      "text-valign": "bottom",
-      "text-halign": "center",
-      "text-margin-y": 5,
-      "text-wrap": "wrap",
-      "text-max-width": 110,
-      ...LABEL_PLATE,
-    },
-  },
-  {
-    selector: 'node[ntype="asset"]',
-    style: {
-      "background-color": "data(color)",
-      width: "data(px)",
-      height: "data(px)",
-      label: "data(label)",
-      "font-family": FONT_BODY,
-      "font-size": 10,
-      "font-weight": 600,
-      color: t.assetText,
-      // Declutter guard only for far zoom-out — at the default drilled zoom the
-      // names are the point of drilling in (§2 defect #3: no more nameless dots).
-      "min-zoomed-font-size": 7,
-      "text-valign": "bottom",
-      "text-halign": "center",
-      "text-margin-y": 4,
-      ...LABEL_PLATE,
-    },
-  },
-  // Two-line hub caption (name + count) wherever the model provides one.
-  { selector: "node[display]", style: { label: "data(display)" } },
-  // Expand-on-demand satellites (MV-D73/D75): small "snippet" chips off their parent.
-  {
-    selector: 'node[ntype="measure"]',
-    style: {
-      shape: "round-rectangle",
-      "corner-radius": 3,
-      "background-color": "data(color)",
-      width: "data(px)",
-      height: "data(px)",
-      label: "data(label)",
-      "font-family": FONT_BODY,
-      "font-size": 8.5,
-      color: t.snippetText,
-      "text-valign": "bottom",
-      "text-halign": "center",
-      "text-margin-y": 3,
-      "min-zoomed-font-size": 8,
-      ...LABEL_PLATE,
-      ...ICON_STYLE,
-      "background-image": ICONS.measure,
-    },
-  },
-  {
-    selector: 'node[ntype="page"]',
-    style: {
-      shape: "round-rectangle",
-      "corner-radius": 3,
-      "background-color": "data(color)",
-      width: "data(px)",
-      height: "data(px)",
-      label: "data(label)",
-      "font-family": FONT_BODY,
-      "font-size": 8.5,
-      color: t.snippetText,
-      "text-valign": "bottom",
-      "text-halign": "center",
-      "text-margin-y": 3,
-      "min-zoomed-font-size": 8,
-      ...LABEL_PLATE,
-      ...ICON_STYLE,
-      "background-image": ICONS.page,
-    },
-  },
-  // Per-type icons + accents on the asset dots (§1A: type = icon + shape).
-  { selector: 'node[kind="table"]', style: { ...ICON_STYLE, "background-image": ICONS.table } },
-  { selector: 'node[kind="view"]', style: { ...ICON_STYLE, "background-image": ICONS.table } },
-  {
-    selector: 'node[kind="metric_view"]',
-    style: { "border-color": t.metricViewRim, "border-width": 2, "border-opacity": 1, ...ICON_STYLE, "background-image": ICONS.metric_view },
-  },
-  {
-    selector: 'node[kind="dashboard"]',
-    style: { ...ICON_STYLE, "background-image": ICONS.dashboard },
-  },
-  // Agents render hollow (sunken fill + violet rim) like the mockup's evidence set.
-  {
-    selector: 'node[kind="agent"], node[kind="genie_agent"]',
-    style: {
-      "background-color": t.agentFill,
-      "background-opacity": 1,
-      "border-color": t.agentRim,
-      "border-width": 2,
-      "border-opacity": 1,
-      ...ICON_STYLE,
-      "background-image": ICONS.agent,
-    },
-  },
-  // Provenance (MV-D74, §1E): driven by `origin` ONLY. Proposed rollups — dashed
-  // at every level; applied stays solid/current-state.
-  {
-    selector: 'node[origin="proposed"][ntype="container"]',
-    style: { "border-style": "dashed", "border-opacity": 0.75 },
-  },
-  {
-    selector: 'node[origin="proposed"][ntype="subcontainer"]',
-    style: { "border-style": "dashed", "border-opacity": 0.7 },
-  },
-  {
-    selector: 'node[origin="proposed"][ntype="domain"]',
-    style: { "border-style": "dashed", "border-color": t.proposedRim, "border-opacity": 0.8 },
-  },
-  {
-    selector: 'node[origin="proposed"][ntype="subdomain"]',
-    style: { "border-style": "dashed", "border-color": t.proposedRim, "border-opacity": 0.8 },
-  },
-  // Ungrouped is neither Applied nor Suggested — it's the honest leftover bucket.
-  // Neutral hollow + dotted rim, distinct from the provenance encodings (placed
-  // after them so it wins for the Ungrouped rollup).
-  {
-    selector: "node[?isUngrouped]",
-    style: {
-      "background-color": t.ungroupedFill,
-      "background-opacity": t.ungroupedFillOpacity,
-      "border-color": t.ungroupedBorder,
-      "border-style": "dotted",
-      "border-width": 1.5,
-      "border-opacity": 0.8,
-      color: t.ungroupedText,
-    },
-  },
-  {
-    selector: 'node[ntype="more"]',
-    style: {
-      shape: "round-rectangle",
-      "corner-radius": 4,
-      "background-color": t.moreFill,
-      "border-color": "data(color)",
-      "border-width": 1,
-      "border-style": "dashed",
-      "border-opacity": 0.7,
-      label: "data(label)",
-      "font-family": FONT_BODY,
-      "font-size": 9,
-      color: t.moreText,
-      "text-valign": "center",
-      "text-halign": "center",
-      width: 52,
-      height: 18,
-    },
-  },
-  // Edges: weight = line weight (§1A encoding); hue = relationship type.
-  {
-    selector: "edge",
-    style: { width: 1.2, "line-color": t.edge, "curve-style": "bezier", opacity: t.edgeOpacity },
-  },
-  { selector: "edge[w]", style: { width: "data(w)" } },
-  { selector: 'edge[etype="coquery"]', style: { "line-color": t.edgeCoquery, "line-style": "dashed", opacity: 0.65 } },
-  { selector: 'edge[etype="lineage"]', style: { "line-color": t.edgeLineage } },
-  // Satellite edges (measure / Page links) — hairline, distinct hue, always shown.
-  { selector: 'edge[etype="snippet"]', style: { width: 1, "line-color": t.edgeSnippet, "line-style": "dotted", opacity: 0.55, "curve-style": "bezier" } },
-  { selector: "node.faded", style: { opacity: 0.12 } },
-  { selector: "edge.faded", style: { opacity: 0.05 } },
-  // Hover micro-state: a light rim; selection: a cyan focus ring. Both ease via the
-  // canvas-wide transition below.
-  { selector: "node.hover", style: { "border-color": t.hoverRim, "border-width": 2.5, "border-opacity": 0.55 } },
-  { selector: "node.focused", style: { "border-color": t.focusRing, "border-width": 3, "border-opacity": 1, "border-style": "solid" } },
-  // Smooth fade in/out for focus+context (§1B). Scoped to the classes that actually
-  // change — a blanket transition on every node/edge stalls the shared animation
-  // loop at this element count.
-  { selector: "node.faded, edge.faded", style: { "transition-property": "opacity", "transition-duration": "150ms" } },
-  // Edge-on-demand: `visibility:hidden` keeps the edge in the fcose simulation (so
-  // clusters still emerge from connectivity) but off-screen until a node is tapped.
-  { selector: "edge.hidden", style: { visibility: "hidden" } },
-]
-}
-
-function layoutFor(lod: Lod) {
-  // Seeded compound fcose = the Group-in-a-Box pattern: physics refines within/between
-  // the domain boxes so clusters emerge, but `randomize:false` starts from the model's
-  // deterministic id-hashed seed positions, so the map looks the same every render AND
-  // every page load (mental-map preservation) instead of jittering.
-  return {
-    name: "fcose",
-    animate: false,
-    quality: lod === "assets" ? "default" : "proof",
-    randomize: false, // start from the seed positions → deterministic, stable
-    fit: true,
-    padding: 36,
-    // Fixed layout canvas: without it, parts of fcose read the CONTAINER size, which
-    // races mount-time measurement and made the result flip between two stable
-    // layouts on reload (found via the harness position-hash check). The camera
-    // fits this to the real viewport afterwards, so aspect is unaffected.
-    boundingBox: { x1: 0, y1: 0, w: 1280, h: 720 },
-    // Domains: few large hubs with two-line captions BELOW them — spread wide so
-    // labels never collide with a neighbouring hub. Sub-domains: labelled leaves
-    // inside compound boxes — enough separation that sibling labels and the boxes
-    // themselves never overlap (§1A no-overlap at default zoom).
-    nodeSeparation: lod === "domains" ? 160 : lod === "subdomains" ? 130 : 124,
-    // Long leash for edges that CROSS compound boxes so a connected sub-domain is
-    // never dragged into a neighbouring domain's box (box-overlap fix); short
-    // intra-box edges keep siblings clustered.
-    idealEdgeLength:
-      lod === "domains"
-        ? 190
-        : (edge: { source(): { data(k: string): unknown }; target(): { data(k: string): unknown } }) => {
-            const sp = edge.source().data("parent")
-            const tp = edge.target().data("parent")
-            return sp && tp && sp === tp ? 90 : 320
-          },
-    nodeRepulsion: lod === "domains" ? 18000 : lod === "subdomains" ? 16000 : 13000,
-    packComponents: true,
-    // A touch more breathing room between sibling compound boxes than fcose's default.
-    nestingFactor: 0.15,
-    gravity: lod === "domains" ? 0.2 : 0.25,
-    gravityCompound: lod === "assets" ? 1.2 : 0.8,
-    tile: true,
-  }
-}
-
-// Minimal structural types for the bits of the cytoscape API this component uses. The
-// library ships no types (see cytoscape-shims.d.ts, MV-D45); these keep tsc/lint honest
-// without an `any` and without a new @types dependency.
-interface CyCollection {
-  addClass(cls: string): void
-  removeClass(cls: string): void
-}
-interface CyNode extends CyCollection {
-  data(): Record<string, unknown>
-  position(): { x: number; y: number }
-  boundingBox(): CyExtent
-  closedNeighborhood(): CyCollection
-  connectedEdges(): CyCollection
-  ancestors(): CyCollection
-  descendants(): CyCollection
-}
-interface CyEdge extends CyCollection {
-  source(): CyNode
-  target(): CyNode
-}
-interface CyEdgeCollection extends CyCollection {
-  forEach(fn: (e: CyEdge) => void): void
-}
-interface CyNodeCollection extends CyCollection {
-  length: number
-  forEach(fn: (n: CyNode) => void): void
-  filter(fn: (n: CyNode) => boolean): CyNodeCollection
-  first(): CyNode
-}
-interface CyExtent {
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-}
-interface CyCore {
-  removeListener(ev: string): void
-  ready(fn: () => void): void
-  fit(eles?: unknown, padding?: number): void
-  center(eles?: unknown): void
-  zoom(): number
-  zoom(level: number): void
-  stop(clearQueue?: boolean, jumpToEnd?: boolean): void
-  animate(options: Record<string, unknown>): void
-  resize(): void
-  batch(fn: () => void): void
-  elements(): CyCollection
-  nodes(selector?: string): CyNodeCollection
-  edges(selector?: string): CyEdgeCollection
-  extent(): CyExtent
-  on(events: string, selector: string, handler: (evt: { target: CyNode }) => void): void
-  on(events: string, handler: (evt: { target: CyNode | CyCore }) => void): void
-}
-
-interface ExpandRecord {
-  nodeId: string
-  parentId: string
-  data: OntologyGraphExpand
-}
-
-/**
- * Injectable API seam (Map v3 §2.2, MV-D77): the two runtime calls the map makes, threaded
- * as an optional prop so the dev-only harness can substitute fixture-backed implementations
- * (NO new dependency, MV-D45). Prod never passes it and keeps the real `api.ts` functions.
- */
+/** Injectable data seam (the harness supplies a fixture-backed mock). */
 export interface EstateGraphApi {
   getGraph: (origin: GraphOrigin) => Promise<OntologyGraph>
-  expandNode: (node: string, origin: GraphOrigin) => Promise<OntologyGraphExpand>
 }
 
-// Module-level singleton so the default prop value is referentially stable across renders
-// (it participates in hook dependency arrays).
-const REAL_API: EstateGraphApi = { getGraph, expandNode }
+/** Handle exposed to the dev harness for the deterministic screenshot loop. */
+export interface EstateGraphHandle {
+  ready: boolean
+  nodeCount: number
+  layoutHash: string
+  tapByLabel: (q: string) => boolean
+  positions: () => { id: string; x: number; y: number }[]
+}
+
+type Provenance = "applied" | "proposed" | "both"
+
+const PROVENANCE: { id: Provenance; label: string }[] = [
+  { id: "applied", label: "Applied" },
+  { id: "proposed", label: "Proposed" },
+  { id: "both", label: "Both" },
+]
+
+const TYPE_LABEL: Record<NodeType, string> = {
+  org: "Organization",
+  domain: "Business area",
+  subdomain: "Sub-area",
+  agent: "Genie Agent",
+  dashboard: "Dashboard",
+  metric_view: "Metric View",
+  measure: "Measure",
+  table: "Table",
+}
+
+const LEGEND: { type: NodeType; label: string }[] = [
+  { type: "domain", label: "Business area" },
+  { type: "agent", label: "Genie Agent" },
+  { type: "dashboard", label: "Dashboard" },
+  { type: "metric_view", label: "Metric View" },
+  { type: "measure", label: "Measure" },
+  { type: "table", label: "Table" },
+]
+
+// Per-type inline-SVG glyph paths (NO new dependency, MV-D45). A single stroke reads on the
+// saturated fills in both themes; the label plate carries the theme flip.
+const GLYPHS: Record<NodeType, string> = {
+  org: "M12 3 3 8v8l9 5 9-5V8z",
+  domain: "M4 7h16M4 12h16M4 17h16",
+  subdomain: "M6 8h12M6 12h12M9 16h9",
+  agent: "M12 3v3M8 21h8M9 10h.01M15 10h.01",
+  dashboard: "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
+  metric_view: "M4 20V10M10 20V4M16 20v-8M22 20H2",
+  measure: "M4 9h16M4 15h16M10 3 8 21M16 3l-2 18",
+  table: "M3 4h18v16H3zM3 10h18M9 4v16",
+}
 
 /**
- * Props. Everything beyond `graph` is optional and additive:
- *  - `api` — the injectable data seam above (harness/testing only).
- *  - `initialOrigin` / `initialLod` / `initialFocus` — deep-link style initial view state,
- *    used by the harness to make every state URL-addressable (and therefore screenshotable)
- *    without simulated clicks. Defaults reproduce the exact pre-v3 behaviour.
- *  - `onCyReady` — dev hook: receives the cytoscape instance once per mount (inside the
- *    idempotency guard), so the harness can drive taps/asserts. Unused in prod.
+ * Canvas caption declutter (R12d): ellipsize an over-long name so plated sibling labels
+ * never collide or hard-clip mid-word ("Revenue Accountin_"). The full name stays in the
+ * inspector, breadcrumb, and a hover `<title>`, so nothing is lost.
  */
-export interface EstateGraphProps {
-  graph: OntologyGraph
-  api?: EstateGraphApi
-  initialOrigin?: GraphOrigin
-  initialLod?: Lod
-  initialFocus?: { topId: string; name: string } | null
-  onCyReady?: (cy: unknown) => void
+const LABEL_MAX = 16
+function clampLabel(s: string): string {
+  return s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX - 1).trimEnd()}…` : s
 }
 
-/**
- * Progressive edge disclosure (Map v3 §1B/D). At the compound LODs, edges WITHIN a
- * box are shown by default — they give a drilled view its internal structure (the
- * old all-hidden policy is what made Assets boxes read as empty, §0 defect #3) —
- * while box-crossing edges stay in the simulation but hidden until a node is
- * tapped (edge-on-demand). Domains is the aggregate overview: all edges visible.
- */
-function applyEdgeVisibility(cy: CyCore, lod: Lod) {
-  if (lod === "domains") return
-  cy.edges('[etype != "snippet"]').forEach((e) => {
-    const sp = e.source().data().parent
-    const tp = e.target().data().parent
-    if (sp && tp && sp === tp) e.removeClass("hidden")
-    else e.addClass("hidden")
-  })
-}
-
-// A node is expandable (§2.3) when it's a metric view (→ measures) or a sub-domain (→ Pages).
-function isExpandable(data: Record<string, unknown> | null): boolean {
-  if (!data) return false
-  const ntype = String(data.ntype ?? "")
-  if (ntype === "subdomain" || ntype === "subcontainer") return true
-  return ntype === "asset" && String(data.kind ?? "") === "metric_view"
+function describe(node: LaidNode): string {
+  switch (node.type) {
+    case "org":
+      return "The whole estate — every governed business area lives under here."
+    case "domain":
+      return "A business area of the estate."
+    case "subdomain":
+      return "A sub-area within its business area."
+    case "agent":
+      return "Answers questions about this area in plain language."
+    case "dashboard":
+      return "A chart page built on this area's data."
+    case "metric_view":
+      return "A curated set of business measures."
+    case "measure":
+      return "A number a metric view reports."
+    default:
+      return "A data table."
+  }
 }
 
 export function EstateGraph({
   graph,
-  api = REAL_API,
+  api,
   initialOrigin = "applied",
-  initialLod = "domains",
-  initialFocus = null,
-  onCyReady,
-}: EstateGraphProps) {
-  const [origin, setOrigin] = useState<GraphOrigin>(initialOrigin)
-  const [lod, setLod] = useState<Lod>(initialLod)
-  const [focusTop, setFocusTop] = useState<string | null>(initialFocus?.topId ?? null)
-  const [focusName, setFocusName] = useState<string | null>(initialFocus?.name ?? null)
-  const [subCrumb, setSubCrumb] = useState<string | null>(null)
-  const [selected, setSelected] = useState<Record<string, unknown> | null>(null)
-
-  // Theme-token visual system (MV-D79): the canvas can't read CSS vars, so its palette is
-  // an explicit token set selected by the resolved app theme. `useTheme` is idempotent with
-  // the app's own instance (it just re-reads the same localStorage/class); we only consume
-  // `resolvedTheme` to build the stylesheet + recolour the model-emitted hues per theme.
+  drafts = null,
+  taxonomy = null,
+  estateName = null,
+  onReady,
+}: {
+  graph: OntologyGraph
+  api?: EstateGraphApi
+  initialOrigin?: GraphOrigin
+  drafts?: OntologyDrafts | null
+  taxonomy?: OntologyTaxonomy | null
+  estateName?: string | null
+  onReady?: (handle: EstateGraphHandle) => void
+}) {
   const { resolvedTheme } = useTheme()
-  const tokens = useMemo(() => graphTokens(resolvedTheme), [resolvedTheme])
-  const stylesheet = useMemo(() => buildStylesheet(tokens), [tokens])
-  const recolor = useMemo(() => recolorMap(tokens), [tokens])
+  const theme = resolvedTheme === "light" ? "light" : "dark"
+  const tokens = graphTokens(theme)
 
-  // Non-applied graph cache. Applied always mirrors the prop (OntologyPage fetches it as the
-  // default); Proposed is fetched lazily the first time the toggle asks for it.
-  const [cache, setCache] = useState<Partial<Record<GraphOrigin, OntologyGraph>>>({})
-  const [loadingGraph, setLoadingGraph] = useState(false)
-  const [graphError, setGraphError] = useState<string | null>(null)
+  const [provenance, setProvenance] = useState<Provenance>(initialOrigin === "proposed" ? "proposed" : "applied")
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  const [searchHits, setSearchHits] = useState<Set<string>>(new Set())
+  const [typeFocus, setTypeFocus] = useState<NodeType | null>(null)
+  const [hint, setHint] = useState<string | null>(null)
 
-  // Expand-on-demand state (keyed by tapped node id, deduped in mergeExpand).
-  const [expands, setExpands] = useState<ExpandRecord[]>([])
-  const [expandStateById, setExpandStateById] = useState<Record<string, ExpandState>>({})
-  const [expandVersion, setExpandVersion] = useState(0)
-
-  const [search, setSearch] = useState("")
-  const [searchHint, setSearchHint] = useState<string | null>(null)
-  const [mini, setMini] = useState<{ points: MiniPoint[]; rects: MiniRect[]; viewport: MiniViewport | null }>({
-    points: [],
-    rects: [],
-    viewport: null,
-  })
-
-  const cyRef = useRef<CyCore | null>(null)
-  // react-cytoscapejs@2.0.0 invokes the `cy` prop on EVERY update, not just mount
-  // (updateCytoscape → `t.cy(n)`), so the wiring below must be idempotent per instance:
-  // re-running `cy.ready(() => cy.fit())` + re-binding viewport listeners on each render
-  // makes fit re-emit pan/zoom → refreshMini → setMini → re-render → … "Maximum update
-  // depth exceeded" (React #185). A new instance only appears on remount (the `key`
-  // already changes on origin/lod/focus/expand), so gate init on instance identity.
-  const initedCyRef = useRef<CyCore | null>(null)
-
-  // Applied mirrors the prop; other origins come from the lazy cache.
-  const activeGraph = origin === "applied" ? graph : cache[origin]
-
-  // Lazily fetch the proposed graph (or any uncached origin) when the toggle asks for it.
-  // The setState calls live inside this async helper (not directly in the effect body) so
-  // the effect only synchronises with an external system (the graph fetch), mirroring the
-  // OntologyPage load pattern.
-  const loadOrigin = useCallback(
-    async (which: GraphOrigin) => {
-      setLoadingGraph(true)
-      setGraphError(null)
-      try {
-        const g = await api.getGraph(which)
-        setCache((prev) => ({ ...prev, [which]: g }))
-      } catch (e) {
-        setGraphError(e instanceof Error ? e.message : "Couldn't load the map")
-      } finally {
-        setLoadingGraph(false)
-      }
-    },
-    [api],
-  )
-
+  // Data seam (MV-D43 honest states): the app passes a `graph` prop and owns its own
+  // loading/error shell (OntologyPage), so with no `api` we render the prop directly. When
+  // an `api` IS injected (the harness), we fetch per-provenance and surface loading/error.
+  const [fetched, setFetched] = useState<OntologyGraph | null>(null)
+  const [fetchState, setFetchState] = useState<"idle" | "loading" | "error">(api ? "loading" : "idle")
   useEffect(() => {
-    if (origin === "applied" || cache[origin]) return
-    void loadOrigin(origin)
-  }, [origin, cache, loadOrigin])
-
-  const resetView = useCallback(() => {
-    setSelected(null)
-    setExpands([])
-    setExpandStateById({})
-    setSubCrumb(null)
-  }, [])
-
-  const changeOrigin = (next: GraphOrigin) => {
-    if (next === origin) return
-    setOrigin(next)
-    resetView()
-  }
-
-  const changeLod = (next: Lod) => {
-    setLod(next)
-    resetView()
-    // Domains is the aggregate overview — leaving a drill-down focus set there would hide
-    // tops; clear it so the overview always shows the whole estate.
-    if (next === "domains") {
-      setFocusTop(null)
-      setFocusName(null)
-    }
-  }
-
-  const drillInto = (topId: string, name: string) => {
-    setFocusTop(topId)
-    setFocusName(name)
-    setLod("assets")
-    resetView()
-  }
-
-  const clearFocus = () => {
-    setFocusTop(null)
-    setFocusName(null)
-    setLod("domains")
-    resetView()
-  }
-
-  // Elements: pure model build, then fold each expand payload in (deduped, dangling-safe).
-  const baseEls = useMemo<CyEl[]>(() => {
-    if (!activeGraph) return []
-    // viewElements enforces the Assets-LOD-requires-focus gate (MV-D75).
-    return viewElements(activeGraph, lod, focusTop)
-  }, [activeGraph, lod, focusTop])
-
-  const mergedEls = useMemo<CyEl[]>(() => {
-    let els = baseEls
-    for (const ex of expands) els = mergeExpand(els, ex.data, ex.parentId)
-    return els
-  }, [baseEls, expands])
-
-  const elements = useMemo(
-    () =>
-      mergedEls.map((el) => {
-        // Recolour the model's dark-constant hue to the theme palette (MV-D79). Identity
-        // on dark ⇒ the dark render is unchanged; on light every hue shifts to its
-        // AA-clearing 600-shade sibling. Only `color` is rewritten; the model stays pure.
-        const c = el.data.color
-        const data = typeof c === "string" && recolor.has(c) ? { ...el.data, color: recolor.get(c) } : el.data
-        return el.position ? { data, position: el.position } : { data }
-      }),
-    [mergedEls, recolor],
-  )
-  const layout = useMemo(() => layoutFor(lod), [lod])
-
-  const triggerExpand = useCallback(
-    (data: Record<string, unknown>) => {
-      const nodeId = String(data.id)
-      const parentId = String(data.parent ?? data.id)
-      const state = expandStateById[nodeId]
-      if (state === "loading" || state === "done") return
-      setExpandStateById((prev) => ({ ...prev, [nodeId]: "loading" }))
-      api
-        .expandNode(nodeId, origin)
-        .then((exp) => {
-          setExpands((prev) => [...prev.filter((e) => e.nodeId !== nodeId), { nodeId, parentId, data: exp }])
-          setExpandStateById((prev) => ({ ...prev, [nodeId]: "done" }))
-          setExpandVersion((v) => v + 1) // force a relayout so satellites settle
-        })
-        .catch(() => {
-          setExpandStateById((prev) => ({ ...prev, [nodeId]: "error" }))
-        })
-    },
-    [expandStateById, origin, api],
-  )
-
-  // rAF-coalesced minimap refresh: pan/zoom (and the eased camera animations below)
-  // emit events every frame — collapsing them to one state update per frame keeps the
-  // React side cheap at prod density and can never re-enter the #185 update loop.
-  const miniRafRef = useRef<number | null>(null)
-  const refreshMini = useCallback((cy: CyCore) => {
-    if (miniRafRef.current != null) return
-    miniRafRef.current = requestAnimationFrame(() => {
-      miniRafRef.current = null
-      const points: MiniPoint[] = []
-      const rects: MiniRect[] = []
-      cy.nodes().forEach((n) => {
-        const nt = String(n.data().ntype ?? "")
-        if (nt === "container" || nt === "subcontainer") {
-          const b = n.boundingBox()
-          rects.push({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2, color: String(n.data().color ?? "#64748B") })
-          return
-        }
-        const p = n.position()
-        if (Number.isFinite(p.x) && Number.isFinite(p.y)) {
-          points.push({ x: p.x, y: p.y, color: String(n.data().color ?? "#64748B") })
+    if (!api) return
+    let alive = true
+    setFetchState("loading")
+    api
+      .getGraph(provenance === "proposed" ? "proposed" : "applied")
+      .then((g) => {
+        if (alive) {
+          setFetched(g)
+          setFetchState("idle")
         }
       })
-      const e = cy.extent()
-      setMini({ points, rects, viewport: { x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 } })
+      .catch(() => {
+        if (alive) setFetchState("error")
+      })
+    return () => {
+      alive = false
+    }
+  }, [api, provenance])
+  const effectiveGraph = fetched ?? graph
+
+  const model: EstateModel = useMemo(
+    () => buildEstateModel(effectiveGraph, { drafts, taxonomy, estateName }),
+    [effectiveGraph, drafts, taxonomy, estateName],
+  )
+
+  const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(model))
+  // Reset the open set when the underlying estate changes.
+  const modelKey = useMemo(() => `${model.nodes.length}:${model.root?.id ?? ""}`, [model])
+  const lastKey = useRef(modelKey)
+  if (lastKey.current !== modelKey) {
+    lastKey.current = modelKey
+    // Defer state set out of render via a microtask-free direct set is unsafe; use effect.
+  }
+  useEffect(() => {
+    setExpanded(initialExpanded(model))
+    setSelectedId(null)
+    setUncapped(new Set())
+  }, [model])
+
+  // Manual drag offsets — persisted deltas applied post-layout (R17). A tick bumps relayout.
+  const offsetsRef = useRef<Map<string, Point>>(new Map())
+  const [dragTick, setDragTick] = useState(0)
+
+  // Parents whose per-parent child cap has been lifted via their `+N more` chip (§6/R3).
+  const [uncapped, setUncapped] = useState<Set<string>>(new Set())
+
+  const layout: Layout = useMemo(
+    () =>
+      layoutTree(model, expanded, offsetsRef.current, DEFAULT_LAYOUT, {
+        focusId: selectedId,
+        uncapped,
+      }),
+    // dragTick is a deliberate relayout trigger; offsetsRef is mutated in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [model, expanded, dragTick, selectedId, uncapped],
+  )
+
+  const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout])
+  const showTree = provenance !== "proposed"
+  const showProposals = provenance !== "applied"
+
+  // Honest states (MV-D43). Computed early so the fit effect can gate on them.
+  const isEmpty = layout.nodes.length <= 1 && layout.trayItems.length === 0 && model.proposals.length === 0
+  // The applied tree has no governed structure (only the org root) but the engine has
+  // suggestions: nudge the curator to view them without hiding the tray (MV-D43/D74).
+  const treeBare = layout.nodes.length <= 1
+  const showNudge = treeBare && provenance === "applied" && model.proposals.length > 0
+  const isStale = effectiveGraph.state === "stale"
+
+  // ── Camera (d3.zoom) ───────────────────────────────────────────────────────
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const gRef = useRef<SVGGElement | null>(null)
+  const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null)
+  const [transform, setTransform] = useState({ x: 40, y: 40, k: 0.75 })
+
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    const z = d3zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.3, 2.5])
+      .filter((e: Event) => {
+        // Let node drags win over canvas pan; allow wheel + background pointer.
+        const t = e.target as Element
+        return !(t && t.closest && t.closest("[data-node-id]"))
+      })
+      .on("zoom", (e) => setTransform({ x: e.transform.x, y: e.transform.y, k: e.transform.k }))
+    zoomRef.current = z
+    select(svg).call(z)
+    return () => {
+      select(svg).on(".zoom", null)
+    }
+  }, [])
+
+  const applyTransform = useCallback((t: { x: number; y: number; k: number }) => {
+    const svg = svgRef.current
+    if (!svg || !zoomRef.current) {
+      setTransform(t)
+      return
+    }
+    select(svg).call(zoomRef.current.transform, zoomIdentity.translate(t.x, t.y).scale(t.k))
+  }, [])
+
+  const fit = useCallback(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    // Frame the laid-out CONTENT bbox — nodes + any visible verb-arc extents (R12b), plus
+    // the tray only when it's on screen. Center it and zoom so it fills the viewport with a
+    // modest margin (R12a — no dead canvas, no crammed corner, no arcs off the edge).
+    const b = contentBounds(layout, { tree: showTree, tray: showProposals || !showTree })
+    if (b.width <= 0 || b.height <= 0) return
+    const pad = 40
+    const bw = b.width + pad * 2
+    const bh = b.height + pad * 2
+    const rect = svg.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
+    const k = Math.min(2.2, Math.max(0.28, Math.min(rect.width / bw, rect.height / bh) * 0.98))
+    const x = rect.width / 2 - (b.minX + b.width / 2) * k
+    const y = rect.height / 2 - (b.minY + b.height / 2) * k
+    applyTransform({ x, y, k })
+  }, [layout, showTree, showProposals, applyTransform])
+
+  // Fit once the canvas is actually on screen. Guard against firing during the loading /
+  // error / empty phases (the <svg> isn't mounted then) — otherwise the one-shot fires
+  // against a null svg and never reframes once the graph arrives.
+  const didFit = useRef(false)
+  useEffect(() => {
+    if (didFit.current) return
+    if (fetchState !== "idle" || isEmpty) return
+    if (layout.nodes.length === 0) return
+    const id = requestAnimationFrame(() => {
+      if (!svgRef.current) return
+      didFit.current = true
+      fit()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [fetchState, isEmpty, layout.nodes.length, fit])
+
+  // Reframe once after a reveal has relayed out (see `reveal`). Runs on the post-reveal
+  // layout so the newly-expanded path + its verb arcs are framed (R12b), then clears.
+  useEffect(() => {
+    if (!pendingFit.current) return
+    pendingFit.current = false
+    if (!didFit.current) return // initial fit will cover the first paint
+    const id = requestAnimationFrame(() => {
+      if (svgRef.current) fit()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [layout, fit])
+
+  // ── Drag (d3.drag on nodes) ──────────────────────────────────────────────────
+  useEffect(() => {
+    const g = gRef.current
+    if (!g) return
+    const sel = select(g).selectAll<SVGGElement, unknown>("[data-node-id]")
+    const dragged = d3drag<SVGGElement, unknown>()
+      .on("start", function (e) {
+        e.sourceEvent?.stopPropagation?.()
+      })
+      .on("drag", function (e) {
+        const id = (this as SVGGElement).getAttribute("data-node-id")
+        if (!id) return
+        const cur = offsetsRef.current.get(id) ?? { x: 0, y: 0 }
+        offsetsRef.current.set(id, { x: cur.x + e.dx / transform.k, y: cur.y + e.dy / transform.k })
+        setDragTick((t) => t + 1)
+      })
+    sel.call(dragged)
+    return () => {
+      sel.on(".drag", null)
+    }
+  }, [layout.nodes, transform.k])
+
+  // ── Selection / expand / navigation ─────────────────────────────────────────
+  const toggleExpand = useCallback((id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
     })
   }, [])
 
-  // Eased camera framing (Map v3 §1B): every reframe animates instead of jump-cutting.
-  const animateFit = useCallback((cy: CyCore, eles: unknown, padding: number) => {
-    cy.stop(true)
-    cy.animate({ fit: { eles, padding }, duration: 450, easing: "ease-in-out-cubic" })
-  }, [])
-
-  const handleSelect = useCallback(
-    (cy: CyCore, node: CyNode) => {
-      const data = { ...node.data() }
-      setSelected(data)
-      const nt = String(data.ntype ?? "")
-      if (nt === "subdomain" || nt === "subcontainer") setSubCrumb(String(data.label ?? ""))
-      cy.batch(() => {
-        cy.nodes('[ntype != "container"][ntype != "subcontainer"]').addClass("faded")
-        cy.edges().addClass("faded")
-        node.removeClass("faded")
-        node.closedNeighborhood().removeClass("faded")
-        // Reveal (and un-fade) only the tapped node's own connections — "FK view on demand".
-        node.connectedEdges().removeClass("hidden faded")
-        node.ancestors().removeClass("faded")
-        node.descendants().removeClass("faded")
-        cy.nodes().removeClass("focused")
-        node.addClass("focused")
-      })
-      // Focus + context (§1B): smoothly frame the selection — a container frames
-      // itself (its box already holds the context), a leaf frames its neighborhood.
-      const frameEles = nt === "container" || nt === "subcontainer" ? node : node.closedNeighborhood()
-      animateFit(cy, frameEles, 90)
-      if (isExpandable(data)) triggerExpand(data)
+  const onNodeClick = useCallback(
+    (id: string) => {
+      setSelectedId(id)
+      const n = nodeById.get(id)
+      if (n && (n.collapsed || (model.childrenByParent.get(id)?.length ?? 0) > 0)) toggleExpand(id)
     },
-    [triggerExpand, animateFit],
+    [nodeById, model, toggleExpand],
   )
 
-  const runSearch = () => {
-    const cy = cyRef.current
-    const q = search.trim().toLowerCase()
-    if (!cy || !q) return
-    const matches = cy.nodes().filter((n) => String(n.data().label ?? "").toLowerCase().includes(q))
-    if (matches.length === 0) {
-      setSearchHint("No match on this view")
+  // A reveal (search hit, relationship nav, harness `select`) auto-expands paths and can
+  // grow the tree past the last Fit — request one reframe so the revealed node and its
+  // now-visible verb arcs stay on-canvas (R12b: no arcs spilling off the edge).
+  const pendingFit = useRef(false)
+
+  // Reveal a node: open the whole ancestor path, then select it.
+  const reveal = useCallback(
+    (id: string) => {
+      const path = ancestorPath(model, id)
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        for (const a of path) next.add(a.id)
+        return next
+      })
+      setSelectedId(id)
+      pendingFit.current = true
+    },
+    [model],
+  )
+
+  // ── Search-to-reveal ─────────────────────────────────────────────────────────
+  const runSearch = useCallback(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) {
+      setSearchHits(new Set())
+      setHint(null)
       return
     }
-    setSearchHint(null)
-    // handleSelect frames the hit with the eased camera — no separate jump-cut center.
-    handleSelect(cy, matches.first())
-  }
-
-  // Counts describe the graph actually on screen (activeGraph, not always the applied
-  // prop) and count top-level business areas only — sub-domains are not "Domains".
-  // groupTops also counts a top seen only through its children's parent refs, so this
-  // agrees with the map and the caption.
-  const countGraph = activeGraph ?? graph
-  const tops = useMemo(() => groupTops(countGraph.domains.nodes), [countGraph])
-  const domainCount = [...tops.values()].filter((t) => !t.ungrouped).length
-  const subdomainCount = countGraph.domains.nodes.filter((n) => !!n.parent_id).length
-  const assetCount = countGraph.assets.nodes.length
-  const truncated = (activeGraph?.domains.truncated || activeGraph?.assets.truncated) ?? false
-  const isEmpty = !!activeGraph && activeGraph.domains.nodes.length + activeGraph.assets.nodes.length === 0
-  const assetsNeedFocus = lod === "assets" && !focusTop
-  const caption = activeGraph && !assetsNeedFocus ? viewCaption(activeGraph, lod, focusTop, origin) : null
-  const isStale = activeGraph?.state === "stale"
-  const facts = selected ? nodeFacts(selected) : null
-  const selectedExpandState: ExpandState = selected ? expandStateById[String(selected.id)] ?? "idle" : "idle"
-
-  // ── Loading / error before any graph exists for this origin (MV-D43) ──────
-  if (!activeGraph) {
-    if (graphError) {
-      return (
-        <div className="flex items-start gap-2.5 rounded-xl border border-danger/30 bg-surface px-4 py-3.5">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-danger-foreground" />
-          <div>
-            <p className="text-sm font-semibold text-primary">Couldn&apos;t load the map</p>
-            <p className="mt-1 max-w-prose text-xs text-secondary">{graphError}</p>
-            <button
-              onClick={() => setOrigin("applied")}
-              className="mt-2 rounded-lg border border-default px-2.5 py-1 text-xs text-secondary hover:text-primary"
-            >
-              Back to current view
-            </button>
-          </div>
-        </div>
-      )
+    const hits = model.nodes.filter((n) => n.label.toLowerCase().includes(q))
+    if (!hits.length) {
+      setSearchHits(new Set())
+      setHint("No match in the estate.")
+      return
     }
-    return (
-      <div className="flex items-center gap-2 rounded-xl border border-default bg-surface px-4 py-6 text-sm text-secondary">
-        <Loader2 className="h-4 w-4 animate-spin text-accent" /> Building the suggested map…
-      </div>
-    )
-  }
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      for (const h of hits) for (const a of ancestorPath(model, h.id)) next.add(a.id)
+      return next
+    })
+    setSearchHits(new Set(hits.map((h) => h.id)))
+    setSelectedId(hits[0].id)
+    setHint(hits.length === 1 ? null : `${hits.length} matches`)
+  }, [query, model])
 
-  // ── Honest-empty (MV-D43) with a one-tap nudge to Proposed when applied is bare (MV-D74) ──
-  if (isEmpty) {
-    return (
-      <div className="flex items-start gap-2.5 rounded-xl border border-info/30 bg-surface px-4 py-3.5">
-        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-info-foreground" />
-        <div>
-          <p className="text-sm font-semibold text-primary">No data in the estate graph</p>
-          <p className="mt-1 max-w-prose text-xs text-secondary">
-            {origin === "applied"
-              ? "Nothing has been organised into business areas yet — this is the honest current state. You can preview what the engine suggests."
-              : "The graph is empty — there are no domains or assets to display. Run a refresh to populate the estate."}
-          </p>
-          {origin === "applied" && (
+  const clearSearch = useCallback(() => {
+    setQuery("")
+    setSearchHits(new Set())
+    setHint(null)
+  }, [])
+
+  const expandAll = useCallback(() => {
+    setExpanded(new Set(model.nodes.map((n) => n.id)))
+  }, [model])
+
+  const resetView = useCallback(() => {
+    offsetsRef.current = new Map()
+    setExpanded(initialExpanded(model))
+    setSelectedId(null)
+    setTypeFocus(null)
+    setUncapped(new Set())
+    didFit.current = false
+    setDragTick((t) => t + 1)
+  }, [model])
+
+  // A `+N more` chip lifts its parent's child cap (§6/R3) — reveal the rest in place.
+  const expandMore = useCallback((parentId: string) => {
+    setUncapped((prev) => {
+      const next = new Set(prev)
+      next.add(parentId)
+      return next
+    })
+  }, [])
+
+  // ── Harness handle ───────────────────────────────────────────────────────────
+  const hash = useMemo(() => layoutHash(layout), [layout])
+  useEffect(() => {
+    if (!onReady) return
+    onReady({
+      ready: true,
+      nodeCount: layout.nodes.length,
+      layoutHash: hash,
+      tapByLabel: (q: string) => {
+        const needle = q.toLowerCase()
+        const hit = model.nodes.find((n) => n.label.toLowerCase().includes(needle) || n.id === q)
+        if (hit) {
+          reveal(hit.id)
+          return true
+        }
+        return false
+      },
+      positions: () => layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
+    })
+  }, [onReady, layout, hash, model, reveal])
+
+  // ── Inspector data ─────────────────────────────────────────────────────────
+  const inspector: InspectorData | null = useMemo(() => {
+    if (!selectedId) return null
+    const proposal = model.proposals.find((p) => p.id === selectedId)
+    if (proposal) {
+      return {
+        title: proposal.name,
+        typeLabel: proposal.kind === "domain" ? "Suggested area" : "Suggested sub-area",
+        description: "A grouping the engine suggests for ungrouped assets. Nothing is applied yet.",
+        facts: [`${proposal.memberIds.length} ${proposal.memberIds.length === 1 ? "asset" : "assets"} would move in`],
+        technical: [],
+        relationships: [],
+        isProposal: true,
+        band: proposal.band,
+      }
+    }
+    const n = nodeById.get(selectedId)
+    const mn = model.nodes.find((x) => x.id === selectedId)
+    if (!n || !mn) return null
+    const facts: string[] = []
+    if (mn.memberCount != null && mn.memberCount > 0)
+      facts.push(`${fmtCount(mn.memberCount)} ${mn.memberCount === 1 ? "asset" : "assets"} in this area`)
+    if (mn.cost != null && mn.cost > 0) facts.push(`About ${fmtMoney(mn.cost)} / month`)
+    const rels: InspectorData["relationships"] = []
+    // Hierarchy relationships (part of / contains).
+    if (mn.parentId) {
+      const p = model.nodes.find((x) => x.id === mn.parentId)
+      if (p) rels.push({ targetId: p.id, label: p.label, verb: "part of", xdom: false })
+    }
+    for (const c of model.childrenByParent.get(mn.id) ?? []) {
+      rels.push({ targetId: c.id, label: c.label, verb: "contains", xdom: false })
+    }
+    // Typed cross-links.
+    for (const e of model.crossEdges) {
+      if (e.src === mn.id || e.dst === mn.id) {
+        const otherId = e.src === mn.id ? e.dst : e.src
+        const other = model.nodes.find((x) => x.id === otherId)
+        if (other) rels.push({ targetId: otherId, label: other.label, verb: e.verb, xdom: e.relClass === "xdom" })
+      }
+    }
+    const technical: string[] = []
+    if (mn.type === "table" || mn.type === "metric_view") technical.push(`Path: ${mn.id.replace(/^asset:|^mv:|^table:/, "")}`)
+    return {
+      title: mn.label,
+      typeLabel: TYPE_LABEL[mn.type],
+      description: describe(n),
+      facts,
+      technical,
+      relationships: rels.slice(0, 24),
+    }
+  }, [selectedId, model, nodeById])
+
+  const breadcrumb = useMemo(
+    () => (selectedId ? ancestorPath(model, selectedId) : model.root ? [model.root] : []),
+    [selectedId, model],
+  )
+
+  // Minimap points + rects.
+  const miniPoints: MiniPoint[] = useMemo(
+    () => layout.nodes.map((n) => ({ x: n.x, y: n.y, color: tokens.typeFill[n.type] })),
+    [layout, tokens],
+  )
+  const miniRects: MiniRect[] = useMemo(() => {
+    if (!layout.trayBounds) return []
+    const b = layout.trayBounds
+    return [{ x1: b.minX, y1: b.minY, x2: b.maxX, y2: b.maxY, color: tokens.trayNodeStroke }]
+  }, [layout, tokens])
+
+  const dimmed = useCallback((t: NodeType) => typeFocus != null && typeFocus !== t, [typeFocus])
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col gap-2">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-lg border border-default bg-elevated p-0.5" role="tablist" aria-label="Provenance">
+          {PROVENANCE.map((p) => (
             <button
-              onClick={() => changeOrigin("proposed")}
-              className="mt-2 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              key={p.id}
+              role="tab"
+              aria-selected={provenance === p.id}
+              onClick={() => setProvenance(p.id)}
+              className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                provenance === p.id ? "bg-accent text-white" : "text-secondary hover:text-primary"
+              }`}
             >
-              View suggested
+              {p.label}
             </button>
-          )}
+          ))}
+        </div>
+        <GraphSearch value={query} onChange={setQuery} onSubmit={runSearch} onClear={clearSearch} hint={hint} />
+        <div className="ml-auto flex items-center gap-1">
+          <button onClick={fit} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary" aria-label="Fit">
+            <Maximize2 className="h-3.5 w-3.5" /> Fit
+          </button>
+          <button onClick={expandAll} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary">
+            <Sparkles className="h-3.5 w-3.5" /> Expand all
+          </button>
+          <button onClick={resetView} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary" aria-label="Reset view">
+            <RotateCcw className="h-3.5 w-3.5" /> Reset
+          </button>
         </div>
       </div>
-    )
-  }
 
-  return (
-    // Theme-aware map (Map v3.2, MV-D79): the panel follows the app's light/dark theme like
-    // every other Operate surface. The canvas can't read CSS vars, so its palette comes from
-    // `graphTokens(resolvedTheme)` (built into `stylesheet` above) — replacing the MV-D78
-    // forced-`.dark` shortcut, which fixed the washout by dropping light mode entirely.
-    <div className="rounded-xl border border-default bg-surface text-primary overflow-hidden">
-      {/* Controls: source toggle + LOD toggle + breadcrumb / search / counts */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-default bg-elevated/40 px-4 py-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Applied | Proposed source toggle (MV-D74) */}
-          <div
-            role="group"
-            aria-label="Map source"
-            className="inline-flex overflow-hidden rounded-lg border border-default text-xs"
-          >
-            {ORIGINS.map((o) => (
-              <button
-                key={o.id}
-                onClick={() => changeOrigin(o.id)}
-                disabled={loadingGraph && o.id !== origin}
-                aria-pressed={origin === o.id}
-                className={`focus-ring border-l border-default px-2.5 py-1 first:border-l-0 transition-colors disabled:opacity-50 ${
-                  origin === o.id ? "bg-accent font-semibold text-white" : "text-secondary hover:text-primary"
-                }`}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-          {origin === "proposed" && (
-            <span className="inline-flex items-center rounded-full border border-dashed border-secondary/50 bg-secondary/10 px-2 py-0.5 text-xs text-secondary">
-              Suggested
-            </span>
+      {/* Breadcrumb */}
+      <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1 text-xs text-muted">
+        {breadcrumb.map((n, i) => (
+          <span key={n.id} className="flex items-center gap-1">
+            {i > 0 && <span aria-hidden>▸</span>}
+            <button onClick={() => reveal(n.id)} className={i === breadcrumb.length - 1 ? "text-primary" : "hover:text-secondary"}>
+              {n.displayName}
+            </button>
+          </span>
+        ))}
+      </nav>
+
+      <div className="relative flex gap-2">
+        {/* Canvas */}
+        <div className="relative flex-1 overflow-hidden rounded-xl border border-default bg-sunken" style={{ minHeight: 520 }}>
+          {isStale && (
+            <div className="absolute left-3 top-3 z-10 rounded-md bg-warning/15 px-2 py-1 text-[11px] text-warning-foreground">
+              Snapshot may be out of date
+            </div>
           )}
-          <div
-            role="group"
-            aria-label="Level of detail"
-            className="inline-flex overflow-hidden rounded-lg border border-default text-xs"
-          >
-            {LODS.map((l) => (
+          {/* Cross-link overlay is gated at realistic scale (R4): show the count and point
+              the curator at selection instead of painting a full-width arc hairball. */}
+          {showTree && !selectedId && layout.crossLinkOverflow > 0 && (
+            <div className="absolute right-3 top-3 z-10 rounded-md border border-default bg-elevated/95 px-2 py-1 text-[11px] text-secondary shadow-sm">
+              +{fmtCount(layout.crossLinkOverflow)} links — select a node to trace its relationships
+            </div>
+          )}
+          {showNudge && (
+            <div className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-default bg-elevated/95 px-3 py-1.5 text-xs shadow-sm">
+              <span className="text-secondary">No governed groups yet — the engine has suggestions.</span>
+              <button onClick={() => setProvenance("proposed")} className="rounded-md bg-accent px-2 py-0.5 font-semibold text-white">
+                View suggested
+              </button>
+            </div>
+          )}
+          {fetchState === "loading" ? (
+            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-muted">
+              <Loader2 className="h-6 w-6 animate-spin" />
+              <p className="text-xs">Building the estate graph…</p>
+            </div>
+          ) : fetchState === "error" ? (
+            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-center text-muted">
+              <AlertTriangle className="h-6 w-6 text-warning-foreground" />
+              <p className="text-sm font-medium text-secondary">The estate snapshot could not be read</p>
+              <p className="max-w-xs text-xs">Try refreshing in a moment.</p>
+            </div>
+          ) : isEmpty ? (
+            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-center text-muted">
+              <p className="text-sm font-medium text-secondary">No data in the estate graph yet</p>
+              <p className="max-w-xs text-xs">
+                {provenance === "proposed"
+                  ? "Nothing to suggest — every asset in scope is already organized."
+                  : "Once the estate is scanned, its business areas appear here."}
+              </p>
+              {provenance === "applied" && model.proposals.length > 0 && (
+                <button onClick={() => setProvenance("proposed")} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white">
+                  View suggested groupings
+                </button>
+              )}
+            </div>
+          ) : (
+            <svg
+              ref={svgRef}
+              role="img"
+              aria-label="Estate ontology map"
+              className="h-[520px] w-full cursor-grab active:cursor-grabbing"
+              style={{ background: tokens.ground }}
+            >
+              <defs>
+                <pattern id="ontgrid" width="24" height="24" patternUnits="userSpaceOnUse">
+                  <circle cx="1" cy="1" r="1" fill={tokens.dotGrid} />
+                </pattern>
+              </defs>
+              <rect x="0" y="0" width="100%" height="100%" fill="url(#ontgrid)" />
+              <g ref={gRef} transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
+                {/* Spine links */}
+                {showTree &&
+                  layout.spineLinks.map((l) => {
+                    const tint = domainTintFor(tokens, l.domainId) ?? tokens.spine
+                    const child = nodeById.get(l.targetId)
+                    const fade = child ? dimmed(child.type) : false
+                    return (
+                      <path
+                        key={l.id}
+                        d={l.path}
+                        fill="none"
+                        stroke={tint}
+                        strokeWidth={1.2}
+                        strokeOpacity={fade ? 0.08 : tokens.spineOpacity}
+                      />
+                    )
+                  })}
+
+                {/* Typed cross-links + verb plates */}
+                {showTree &&
+                  layout.crossLinks.map((c) => {
+                    const s = nodeById.get(c.sourceId)
+                    const d = nodeById.get(c.targetId)
+                    const fade = (s && dimmed(s.type)) || (d && dimmed(d.type))
+                    const stroke = c.relClass === "xdom" ? tokens.xdomEdge : tokens.sharedEdge
+                    return (
+                      <g key={c.id} opacity={fade ? 0.08 : 1}>
+                        <path
+                          d={c.path}
+                          fill="none"
+                          stroke={stroke}
+                          strokeWidth={c.relClass === "xdom" ? 1.4 : 1}
+                          strokeDasharray="4 3"
+                          strokeOpacity={c.showLabel ? 0.9 : 0.6}
+                        />
+                        {/* Verb plate — only on the focused node's arcs (R4): no label cloud. */}
+                        {c.showLabel && (
+                          <g transform={`translate(${c.labelAt.x},${c.labelAt.y})`}>
+                            <rect
+                              x={-c.verb.length * 3.1 - 4}
+                              y={-7}
+                              width={c.verb.length * 6.2 + 8}
+                              height={14}
+                              rx={3}
+                              fill={tokens.plateBg}
+                              fillOpacity={tokens.plateOpacity}
+                            />
+                            <text
+                              textAnchor="middle"
+                              dy="3.5"
+                              fontSize={9}
+                              fontWeight={c.relClass === "xdom" ? 700 : 500}
+                              fill={c.relClass === "xdom" ? tokens.verbXdomText : tokens.verbText}
+                            >
+                              {c.verb}
+                            </text>
+                          </g>
+                        )}
+                      </g>
+                    )
+                  })}
+
+                {/* Ungrouped tray + proposal hulls (§3.5) — the "mess" surfaces only under
+                    Proposed/Both; Applied is the solid tree only (§5), so no nameless
+                    ghost discs float beside the northstar tree (R3/R12c). */}
+                {showProposals && layout.trayItems.length > 0 && layout.trayBounds && (
+                  <g>
+                    <line
+                      x1={layout.trayBounds.minX - 20}
+                      y1={layout.trayBounds.minY - 20}
+                      x2={layout.trayBounds.minX - 20}
+                      y2={layout.trayBounds.maxY + 20}
+                      stroke={tokens.trayDivider}
+                      strokeWidth={1}
+                      strokeDasharray="2 4"
+                    />
+                    <text x={layout.trayBounds.minX} y={layout.trayBounds.minY - 26} fontSize={11} fontWeight={600} fill={tokens.trayText}>
+                      Ungrouped · {fmtCount(model.trayItems.length)}
+                    </text>
+                    {showProposals &&
+                      layout.proposalHulls.map((h) => (
+                        <g key={h.id} onClick={() => setSelectedId(h.id)} style={{ cursor: "pointer" }}>
+                          <rect
+                            x={h.x}
+                            y={h.y}
+                            width={h.width}
+                            height={h.height}
+                            rx={12}
+                            fill="none"
+                            stroke={selectedId === h.id ? tokens.selectedRing : tokens.proposalStroke}
+                            strokeWidth={1.4}
+                            strokeDasharray="6 4"
+                          />
+                          <g transform={`translate(${h.x + 6},${h.y - 8})`}>
+                            <rect x={-4} y={-11} width={h.name.length * 6.4 + 60} height={16} rx={3} fill={tokens.plateBg} fillOpacity={tokens.plateOpacity} />
+                            <text fontSize={10} fontWeight={600} fill={tokens.proposalText}>
+                              Suggested: {h.name}
+                            </text>
+                            {h.band && (
+                              <text x={h.name.length * 6.4 + 12} fontSize={9} fill={bandColor(tokens, h.band)}>
+                                {h.band}
+                              </text>
+                            )}
+                          </g>
+                        </g>
+                      ))}
+                    {layout.trayItems.map((t) => (
+                      <g key={t.id} onClick={() => setSelectedId(t.id)} style={{ cursor: "pointer" }}>
+                        <circle cx={t.x} cy={t.y} r={t.radius} fill={tokens.trayNodeFill} stroke={tokens.trayNodeStroke} strokeWidth={1} strokeDasharray="2 2" />
+                      </g>
+                    ))}
+                    {layout.trayOverflow > 0 && (
+                      <text x={layout.trayBounds.minX} y={layout.trayBounds.maxY + 16} fontSize={10} fill={tokens.trayText}>
+                        +{fmtCount(layout.trayOverflow)} more
+                      </text>
+                    )}
+                  </g>
+                )}
+
+                {/* Nodes */}
+                {showTree &&
+                  layout.nodes.map((n) => {
+                    // Synthetic "+N more" truncation chip (§6/R3): a labelled pill, not a
+                    // nameless disc; clicking it lifts its parent's child cap in place.
+                    if (n.isMore) {
+                      const label = `+${fmtCount(n.moreCount)} more`
+                      const w = label.length * 6.4 + 16
+                      return (
+                        <g
+                          key={n.id}
+                          data-node-id={n.id}
+                          transform={`translate(${n.x},${n.y})`}
+                          style={{ cursor: "pointer" }}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`Show ${n.moreCount} more`}
+                          onClick={(e) => {
+                            if ((e.nativeEvent as { defaultPrevented?: boolean }).defaultPrevented) return
+                            if (n.parentId) expandMore(n.parentId)
+                          }}
+                          onKeyDown={(e) => {
+                            if ((e.key === "Enter" || e.key === " ") && n.parentId) {
+                              e.preventDefault()
+                              expandMore(n.parentId)
+                            }
+                          }}
+                        >
+                          <rect
+                            x={-w / 2}
+                            y={-11}
+                            width={w}
+                            height={22}
+                            rx={11}
+                            fill={tokens.plateBg}
+                            fillOpacity={tokens.plateOpacity}
+                            stroke={tokens.trayNodeStroke}
+                            strokeWidth={1}
+                            strokeDasharray="3 2"
+                          />
+                          <text textAnchor="middle" dy="3.5" fontSize={10.5} fontWeight={600} fill={tokens.trayText}>
+                            {label}
+                          </text>
+                        </g>
+                      )
+                    }
+                    const caption = clampLabel(n.displayName)
+                    const fill = tokens.typeFill[n.type]
+                    const tint = domainTintFor(tokens, n.domainId)
+                    const isContainer = n.type === "org" || n.type === "domain" || n.type === "subdomain"
+                    const ring =
+                      selectedId === n.id
+                        ? tokens.selectedRing
+                        : searchHits.has(n.id)
+                          ? tokens.searchRing
+                          : isContainer && tint
+                            ? tint
+                            : tokens.nodeStroke
+                    const fade = dimmed(n.type)
+                    return (
+                      <g
+                        key={n.id}
+                        data-node-id={n.id}
+                        transform={`translate(${n.x},${n.y})`}
+                        opacity={fade ? 0.2 : 1}
+                        style={{ cursor: "pointer" }}
+                        tabIndex={0}
+                        role="treeitem"
+                        aria-expanded={model.childrenByParent.get(n.id)?.length ? !n.collapsed : undefined}
+                        aria-label={`${TYPE_LABEL[n.type]}: ${n.label}`}
+                        onClick={(e) => {
+                          if ((e.nativeEvent as { defaultPrevented?: boolean }).defaultPrevented) return
+                          onNodeClick(n.id)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault()
+                            onNodeClick(n.id)
+                          }
+                        }}
+                      >
+                        <circle
+                          r={n.radius}
+                          fill={fill}
+                          stroke={ring}
+                          strokeWidth={selectedId === n.id || searchHits.has(n.id) ? 2.5 : isContainer ? 2 : 1.25}
+                          strokeOpacity={selectedId === n.id || searchHits.has(n.id) ? 1 : isContainer ? tokens.ringOpacity : 1}
+                        />
+                        <path
+                          d={GLYPHS[n.type]}
+                          fill="none"
+                          stroke={tokens.glyphStroke}
+                          strokeWidth={1.6}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          transform={`translate(-12,-12) scale(${(n.radius * 1.1) / 24})`}
+                          opacity={0.9}
+                        />
+                        {/* Label plate (ellipsized caption; full name in the hover title) */}
+                        <g transform={`translate(0,${n.radius + 12})`}>
+                          <rect
+                            x={-caption.length * 3.2 - 4}
+                            y={-9}
+                            width={caption.length * 6.4 + 8}
+                            height={16}
+                            rx={3}
+                            fill={tokens.plateBg}
+                            fillOpacity={tokens.plateOpacity}
+                          />
+                          <text textAnchor="middle" dy="3" fontSize={n.type === "org" ? 13 : n.type === "domain" ? 12 : 10.5} fontWeight={isContainer ? 600 : 500} fill={tokens.plateText}>
+                            {caption}
+                          </text>
+                        </g>
+                        <title>{n.label}</title>
+                        {/* Collapse +N badge */}
+                        {n.collapsed && n.badge > 0 && (
+                          <g transform={`translate(${n.radius * 0.7},${-n.radius * 0.7})`}>
+                            <circle r={8} fill={tokens.badgeFill} />
+                            <text textAnchor="middle" dy="3" fontSize={8} fontWeight={700} fill={tokens.badgeText}>
+                              +{n.badge > 99 ? "99" : n.badge}
+                            </text>
+                          </g>
+                        )}
+                      </g>
+                    )
+                  })}
+              </g>
+            </svg>
+          )}
+
+          {/* Minimap */}
+          <div className="absolute bottom-3 right-3">
+            <GraphMinimap points={miniPoints} rects={miniRects} />
+          </div>
+
+          {/* Legend (type-focus) */}
+          <div className="absolute left-3 bottom-3 flex flex-wrap gap-1.5 rounded-lg border border-default bg-elevated/90 p-2">
+            {LEGEND.map((l) => (
               <button
-                key={l.id}
-                onClick={() => changeLod(l.id)}
-                aria-pressed={lod === l.id}
-                className={`focus-ring border-l border-default px-2.5 py-1 first:border-l-0 transition-colors ${
-                  lod === l.id ? "bg-accent font-semibold text-white" : "text-secondary hover:text-primary"
+                key={l.type}
+                onClick={() => setTypeFocus((cur) => (cur === l.type ? null : l.type))}
+                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+                  typeFocus === l.type ? "bg-accent/20 text-primary" : "text-secondary hover:text-primary"
                 }`}
+                aria-pressed={typeFocus === l.type}
               >
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: tokens.typeFill[l.type] }} />
                 {l.label}
               </button>
             ))}
           </div>
-          {isStale && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs text-warning-foreground">
-              <AlertTriangle className="h-3 w-3" /> May be out of date
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          <GraphSearch
-            value={search}
-            onChange={(v) => {
-              setSearch(v)
-              setSearchHint(null)
-            }}
-            onSubmit={runSearch}
-            onClear={() => {
-              setSearch("")
-              setSearchHint(null)
-            }}
-            hint={searchHint}
-          />
-          <div className="flex items-center gap-x-4 text-xs text-secondary">
-            <span><span className="font-semibold text-accent">{domainCount}</span> Domains</span>
-            <span><span className="font-semibold text-accent">{subdomainCount}</span> Sub-domains</span>
-            <span><span className="font-semibold text-accent">{assetCount}</span> Assets</span>
-            {truncated && <span className="text-muted">Top 2,000 · centrality</span>}
-          </div>
-        </div>
-      </div>
-
-      {/* Breadcrumb: Estate ▸ Domain ▸ Sub-domain */}
-      <div className="flex items-center gap-1.5 border-b border-default bg-surface px-4 py-1.5 text-xs text-muted">
-        <button onClick={clearFocus} className="hover:text-primary">
-          Estate
-        </button>
-        {focusName && (
-          <>
-            <span aria-hidden>▸</span>
-            <span className="text-secondary">{focusName}</span>
-          </>
-        )}
-        {subCrumb && (
-          <>
-            <span aria-hidden>▸</span>
-            <span className="text-secondary">{subCrumb}</span>
-          </>
-        )}
-      </div>
-
-      {/* Body: canvas + docked right-rail inspector */}
-      <div className="flex">
-        {/* min-w-0 lets the canvas column shrink below the canvas bitmap's intrinsic
-            width — without it the fixed-width inspector rail gets pushed off-screen.
-            The sunken ground + faint dot grid give the map a drafting-table depth
-            distinct from the surrounding panel (§1A whitespace/density). */}
-        <div
-          role="application"
-          aria-label="Estate map — interactive graph of business areas and their assets"
-          className="relative min-w-0 flex-1"
-          style={{
-            height: "560px",
-            backgroundColor: "var(--bg-sunken)",
-            backgroundImage: `radial-gradient(circle at 1px 1px, ${tokens.dotGrid} 1px, transparent 0)`,
-            backgroundSize: "22px 22px",
-          }}
-        >
-          {assetsNeedFocus ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-              <MousePointerClick className="h-6 w-6 text-muted" />
-              <p className="text-sm font-semibold text-primary">Pick a business area to see its assets</p>
-              <p className="max-w-sm text-xs text-secondary">
-                Open a domain from the Domains or Sub-domains view, then its tables and metrics show here — no
-                overwhelming all-at-once map.
-              </p>
-              <button
-                onClick={() => changeLod("domains")}
-                className="mt-1 rounded-lg border border-default px-2.5 py-1 text-xs text-secondary hover:text-primary"
-              >
-                Back to Domains
-              </button>
-            </div>
-          ) : (
-            <>
-              {/* The key remounts the canvas on view changes; the wrapper's fade-in
-                  makes each remount (drill, LOD, origin, expand) arrive softly. */}
-              <div
-                key={`${resolvedTheme}:${origin}:${lod}:${focusTop ?? "all"}:${activeGraph.as_of ?? ""}:${expandVersion}`}
-                className="animate-fade-in"
-                style={{ width: "100%", height: "100%" }}
-              >
-              <CytoscapeComponent
-                elements={elements}
-                stylesheet={stylesheet}
-                layout={layout}
-                style={{ width: "100%", height: "100%" }}
-                minZoom={0.05}
-                maxZoom={3}
-                wheelSensitivity={0.2}
-                boxSelectionEnabled={false}
-                hideEdgesOnViewport
-                textureOnViewport
-                pixelRatio={1}
-                cy={(cy: CyCore) => {
-                  cyRef.current = cy
-                  // Idempotency guard: wire this cytoscape instance exactly once. On plain
-                  // re-renders react-cytoscapejs calls this again with the SAME instance —
-                  // returning early avoids the fit→pan/zoom→setMini→re-render feedback loop
-                  // (React #185). Remounts (key change) yield a new instance → re-wire.
-                  if (initedCyRef.current === cy) return
-                  initedCyRef.current = cy
-                  cy.removeListener("tap")
-                  cy.removeListener("layoutstop")
-                  cy.removeListener("pan")
-                  cy.removeListener("zoom")
-                  cy.removeListener("mouseover")
-                  cy.removeListener("mouseout")
-                  // react-cytoscapejs runs `layout.run()` BEFORE invoking this callback
-                  // (updateCytoscape → layout → cy(n)), and the seeded fcose layout is
-                  // synchronous (`animate:false`) — so by the time we're wiring, the map
-                  // is already laid out. Set up disclosure + the eased arrival directly.
-                  applyEdgeVisibility(cy, lod)
-                  // Re-measure before framing: cytoscape caches the container size at
-                  // construction, which can race font/flex/class layout — a stale 0-size
-                  // cache makes every fit() a silent no-op and every camera animation a
-                  // stuck NaN tween (found via the §2 harness loop).
-                  cy.resize()
-                  // Eased arrival (§1B): start slightly wide, glide into the fitted frame
-                  // instead of jump-cutting. Runs once per mount (drill-down / LOD /
-                  // origin / expand changes remount via `key`).
-                  cy.fit(undefined, 32)
-                  cy.zoom(cy.zoom() * 0.85)
-                  animateFit(cy, cy.elements(), 32)
-                  refreshMini(cy)
-                  cy.on("layoutstop", () => refreshMini(cy))
-                  cy.on("pan", () => refreshMini(cy))
-                  cy.on("zoom", () => refreshMini(cy))
-                  // Hover micro-state (§1B): a light rim on the hovered node.
-                  cy.on("mouseover", "node", (evt: { target: CyNode }) => evt.target.addClass("hover"))
-                  cy.on("mouseout", "node", (evt: { target: CyNode }) => evt.target.removeClass("hover"))
-                  cy.on("tap", "node", (evt: { target: CyNode }) => handleSelect(cy, evt.target))
-                  cy.on("tap", (evt: { target: CyNode | CyCore }) => {
-                    if (evt.target === cy) {
-                      setSelected(null)
-                      cy.batch(() => {
-                        cy.elements().removeClass("faded focused")
-                        applyEdgeVisibility(cy, lod)
-                      })
-                      // Background tap restores the overview frame, eased.
-                      animateFit(cy, cy.elements(), 32)
-                    }
-                  })
-                  onCyReady?.(cy)
-                }}
-              />
-              </div>
-              {/* Annotation layer (§1D): the one-line story of this view, printed in the
-                  corner like an infographic caption. */}
-              {caption && (
-                <div
-                  className="pointer-events-none absolute left-3 top-3 max-w-xs rounded-lg border border-default px-3 py-2"
-                  style={{ backgroundColor: "var(--bg-elevated)" }}
-                >
-                  <p className="font-display text-[13px] font-bold text-primary">{caption.headline}</p>
-                  {caption.sub && <p className="mt-0.5 text-[11px] leading-snug text-secondary">{caption.sub}</p>}
-                </div>
-              )}
-              <div className="pointer-events-none absolute bottom-3 left-3">
-                <GraphMinimap points={mini.points} rects={mini.rects} viewport={mini.viewport} />
-              </div>
-            </>
-          )}
         </div>
 
-        {/* Right-rail inspector (upgrade of the popover; plain language, MV-D23) */}
-        <div role="complementary" aria-label="Selection details" className="w-72 shrink-0 border-l border-default bg-elevated/40">
+        {/* Inspector rail */}
+        <div className="w-64 shrink-0 rounded-xl border border-default bg-elevated">
           <GraphInspector
-            facts={facts}
-            canExpand={isExpandable(selected)}
-            expandState={selectedExpandState}
-            onExpand={() => selected && triggerExpand(selected)}
-            onDrill={drillInto}
-            onClose={() => setSelected(null)}
+            data={inspector}
+            onSelectRelationship={reveal}
+            onClose={() => setSelectedId(null)}
+            onApprove={inspector?.isProposal ? () => setHint("Approve is wired to the Phase-5 apply gate.") : undefined}
+            onDismiss={inspector?.isProposal ? () => setSelectedId(null) : undefined}
           />
         </div>
       </div>
 
-      {/* Legend — every visual encoding named (§1A "state each encoding in the legend"). */}
-      <div className="border-t border-default bg-elevated/50 px-4 py-3">
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-3.5 rounded border" style={{ borderColor: "#818CF8", background: "#818cf814" }} /> Domain (container)
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-3.5 rounded border border-dashed" style={{ borderColor: "#CBD5E1" }} /> Suggested
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-3.5 rounded border border-dotted" style={{ borderColor: "#64748B", background: "#64748b1f" }} /> Not grouped yet
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "#64748B" }} /> Asset
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full border-2" style={{ borderColor: "#22D3EE" }} /> Metric view
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full border-2" style={{ borderColor: "#A78BFA", backgroundColor: "#0D1321" }} /> Agent
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#38BDF8" }} /> Measure
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: "#FBBF24" }} /> Page
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-0 w-6 border-t" style={{ borderColor: "#64748b" }} /> Lineage
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-0 w-6 border-t border-dashed" style={{ borderColor: "#818cf8" }} /> Co-query
-          </span>
-        </div>
-        <p className="mt-2 text-[11px] text-muted">
-          Circle size = how many assets · colour = business area · solid outline = applied, dashed = suggested ·
-          connections within a box show by default, the rest appear when you tap a node.
-        </p>
-      </div>
-
-      {/* Graph state */}
-      <div className="border-t border-default bg-surface px-4 py-3 space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Graph state</p>
-        <div className="text-xs text-secondary">
-          <p>Source: {origin === "applied" ? "Applied (current governed tags)" : "Proposed (suggested by the engine)"}</p>
-          <p>Layout: {activeGraph.layout}</p>
-          <p>State: {activeGraph.state}</p>
-          {activeGraph.as_of && <p>Last updated: {activeGraph.as_of}</p>}
-        </div>
-      </div>
+      {/* Honest source line */}
+      <p className="text-[11px] text-muted">
+        {provenance === "applied"
+          ? "Applied (current governed tags)"
+          : provenance === "proposed"
+            ? "Proposed (engine suggestions — nothing applied yet)"
+            : "Applied tree + proposed groupings"}
+      </p>
     </div>
   )
 }

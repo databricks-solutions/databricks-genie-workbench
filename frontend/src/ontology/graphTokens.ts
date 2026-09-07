@@ -1,191 +1,178 @@
 /**
- * Ontology Map — theme-token visual system (MV-D79, build spec §10).
+ * Ontology Map — theme-token visual system (MV-D79, §4.2, §9-B).
  *
- * Cytoscape renders to <canvas>, which CANNOT read the app's CSS custom properties the
- * way DOM elements can. So the map's colours must be an explicit JS palette selected by
- * the resolved app theme and fed into the stylesheet the renderer builds. This replaces
- * the MV-D78 forced-`.dark` shortcut (which dropped light mode) with a first-class
- * dual-mode system: the map is an Operate surface and obeys `useTheme` like every panel.
+ * The map renders to real SVG/DOM, but colour still comes from an explicit JS token set
+ * selected by the resolved app theme (not raw CSS custom properties) so the layout module
+ * and tests stay pure and the two themes are authored deliberately at parity.
  *
- * Contract for the two literal sets:
- *  - **dark** reproduces the exact pre-MV-D79 constants, so the dark render is unchanged
- *    (the visual-regression baseline diffs at 0% on dark cells; only light mode moves).
- *  - **light** is tuned so every node fill clears WCAG AA (>=3:1) on the light ground and
- *    label text clears >=4.5:1 on the (flipped) paper label plate. The domain palette
- *    keeps the SAME hue family per index across themes (so a domain's identity is stable)
- *    but shifts to the darker, more-saturated 600-shade that pops on a light ground.
+ * §9-B — **colour by node TYPE, not by domain.** Type is the primary hue
+ * (agent = Lava, dashboard = blue, metric_view = green, measure = amber, table = slate;
+ * org/domain/subdomain = ink shades). Domain identity moves to (a) tree position and
+ * (b) a subtle domain-hue **tint** on domain/sub-domain rings + that domain's spine edges
+ * — never on asset fills. **Lava is reserved for Genie Agents.**
  *
- * Note on icons: per-type glyphs sit on SATURATED node fills (not the ground) in both
- * themes, so a single light glyph stroke reads in both — only the label PLATE flips. The
- * module-level ICONS in EstateGraph therefore stay theme-independent (keeps dark identical).
+ * Every type hue clears WCAG AA (≥3:1 fill-vs-ground) and every label clears ≥4.5:1 on the
+ * (theme-flipped) label plate, in BOTH themes.
  */
-
-// Dark domain palette — index-aligned identity with estateGraphModel.PALETTE so the
-// dark recolor map is a no-op. Light is the same 12 hue families at 600-shade.
-const DARK_PALETTE = [
-  "#818CF8", "#6EE7B7", "#FCD34D", "#F472B6", "#22D3EE", "#A78BFA",
-  "#FB923C", "#34D399", "#60A5FA", "#F87171", "#C084FC", "#2DD4BF",
-]
-const LIGHT_PALETTE = [
-  "#4F46E5", "#059669", "#D97706", "#DB2777", "#0891B2", "#7C3AED",
-  "#EA580C", "#16A34A", "#2563EB", "#DC2626", "#9333EA", "#0D9488",
-]
+import type { NodeType } from "@/ontology/estateGraphModel"
 
 export type ResolvedTheme = "light" | "dark"
 
 export interface GraphTokens {
-  // Ground overlay (the sunken canvas colour itself stays `var(--bg-sunken)`, which
-  // already flips per theme — this is only the faint dot-grid drawn over it).
+  /** Faint dot-grid drawn over the sunken canvas (drafting-table depth). */
   dotGrid: string
-  // Label plate — the single most important flip: paper chip + dark text on light,
-  // near-black chip + light text on dark. This is what "washed out" under MV-D78.
+  ground: string
+  /** Label plate — paper chip + dark text on light; near-black chip + light text on dark. */
   plateBg: string
   plateOpacity: number
-  // Text (all read on the plate).
-  containerText: string
-  subcontainerText: string
-  domainText: string
-  subdomainText: string
-  assetText: string
-  snippetText: string
-  moreText: string
-  ungroupedText: string
-  // Compound container fills (translucent hue) — higher opacity on light or they vanish.
-  containerFillOpacity: number
-  subcontainerFillOpacity: number
-  // Filled-disc rims.
-  domainRim: string
-  domainRimOpacity: number
-  subdomainRim: string
-  subdomainRimOpacity: number
-  // Type accents.
-  metricViewRim: string
-  agentFill: string
-  agentRim: string
-  moreFill: string
-  // Ungrouped = neutral leftover bucket.
-  ungroupedFill: string
-  ungroupedFillOpacity: number
-  ungroupedBorder: string
-  // Edges (hue = relationship type; weight = strength).
-  edge: string
-  edgeOpacity: number
-  edgeCoquery: string
-  edgeLineage: string
-  edgeSnippet: string
-  // Interaction + provenance.
-  hoverRim: string
-  focusRing: string
-  proposedRim: string
-  // Domain palette + snippet/neutral hues — index-aligned with estateGraphModel so the
-  // component can recolour model-emitted `data.color` per theme (build spec §10.2 step 4).
-  palette: string[]
-  ungrouped: string
-  measure: string
-  page: string
-  metricView: string
-  agent: string
+  plateText: string
+  /** Per-type node fill (the primary encoding). */
+  typeFill: Record<NodeType, string>
+  /** A light or dark glyph stroke that reads on the saturated fills. */
+  glyphStroke: string
+  nodeStroke: string
+  /** Container rings (org/domain/subdomain) carry a domain tint at low weight. */
+  ringOpacity: number
+  /** Interaction. */
+  selectedRing: string
+  searchRing: string
+  hoverRing: string
+  /** Hierarchy spine edges (low-contrast). */
+  spine: string
+  spineOpacity: number
+  /** Typed cross-link hues (§4.5): within-domain slate, cross-domain maroon. */
+  sharedEdge: string
+  xdomEdge: string
+  verbText: string
+  verbXdomText: string
+  /** Off-tree Ungrouped tray (§4.7) — demoted, neutral. */
+  trayDivider: string
+  trayText: string
+  trayNodeFill: string
+  trayNodeStroke: string
+  /** Dashed proposal hull (§4.7). */
+  proposalStroke: string
+  proposalText: string
+  bandHigh: string
+  bandMedium: string
+  bandLow: string
+  /** Collapse `+N` badge. */
+  badgeFill: string
+  badgeText: string
+  /** Domain-tint palette (index-aligned per top domain) for rings + spine tint. */
+  domainTint: string[]
 }
+
+const DARK_DOMAIN_TINT = [
+  "#818CF8", "#6EE7B7", "#FCD34D", "#F472B6", "#22D3EE", "#A78BFA",
+  "#FB923C", "#34D399", "#60A5FA", "#F87171", "#C084FC", "#2DD4BF",
+]
+const LIGHT_DOMAIN_TINT = [
+  "#4F46E5", "#059669", "#D97706", "#DB2777", "#0891B2", "#7C3AED",
+  "#EA580C", "#16A34A", "#2563EB", "#DC2626", "#9333EA", "#0D9488",
+]
 
 const DARK: GraphTokens = {
   dotGrid: "rgba(148, 163, 184, 0.07)",
+  ground: "#0B0F1A",
   plateBg: "#0D1321",
   plateOpacity: 0.82,
-  containerText: "#F8FAFC",
-  subcontainerText: "#CBD5E1",
-  domainText: "#E2E8F0",
-  subdomainText: "#CBD5E1",
-  assetText: "#CBD5E1",
-  snippetText: "#CBD5E1",
-  moreText: "#94A3B8",
-  ungroupedText: "#94A3B8",
-  containerFillOpacity: 0.06,
-  subcontainerFillOpacity: 0.05,
-  domainRim: "#F8FAFC",
-  domainRimOpacity: 0.22,
-  subdomainRim: "#F8FAFC",
-  subdomainRimOpacity: 0.18,
-  metricViewRim: "#22D3EE",
-  agentFill: "#0D1321",
-  agentRim: "#A78BFA",
-  moreFill: "#1E293B",
-  ungroupedFill: "#64748B",
-  ungroupedFillOpacity: 0.18,
-  ungroupedBorder: "#64748B",
-  edge: "#475569",
-  edgeOpacity: 0.45,
-  edgeCoquery: "#818CF8",
-  edgeLineage: "#64748B",
-  edgeSnippet: "#38BDF8",
-  hoverRim: "#E2E8F0",
-  focusRing: "#22D3EE",
-  proposedRim: "#CBD5E1",
-  palette: DARK_PALETTE,
-  ungrouped: "#64748B",
-  measure: "#38BDF8",
-  page: "#FBBF24",
-  metricView: "#22D3EE",
-  agent: "#A78BFA",
+  plateText: "#E2E8F0",
+  typeFill: {
+    org: "#CBD5E1",
+    domain: "#94A3B8",
+    subdomain: "#64748B",
+    agent: "#FF5F46", // Lava — agents only
+    dashboard: "#60A5FA",
+    metric_view: "#34D399",
+    measure: "#FBBF24",
+    table: "#7C8CA3",
+  },
+  glyphStroke: "#0B0F1A",
+  nodeStroke: "#0B0F1A",
+  ringOpacity: 0.55,
+  selectedRing: "#F8FAFC",
+  searchRing: "#22D3EE",
+  hoverRing: "#E2E8F0",
+  spine: "#475569",
+  spineOpacity: 0.4,
+  sharedEdge: "#64748B",
+  xdomEdge: "#B45E7A",
+  verbText: "#94A3B8",
+  verbXdomText: "#E5A3B4",
+  trayDivider: "#334155",
+  trayText: "#94A3B8",
+  trayNodeFill: "#1E293B",
+  trayNodeStroke: "#475569",
+  proposalStroke: "#94A3B8",
+  proposalText: "#CBD5E1",
+  bandHigh: "#34D399",
+  bandMedium: "#FBBF24",
+  bandLow: "#94A3B8",
+  badgeFill: "#0D1321",
+  badgeText: "#F8FAFC",
+  domainTint: DARK_DOMAIN_TINT,
 }
 
 const LIGHT: GraphTokens = {
   dotGrid: "rgba(100, 116, 139, 0.10)",
+  ground: "#F1F5F9",
   plateBg: "#FFFFFF",
-  plateOpacity: 0.88,
-  containerText: "#0F172A",
-  subcontainerText: "#334155",
-  domainText: "#0F172A",
-  subdomainText: "#334155",
-  assetText: "#1E293B",
-  snippetText: "#334155",
-  moreText: "#475569",
-  ungroupedText: "#475569",
-  containerFillOpacity: 0.12,
-  subcontainerFillOpacity: 0.1,
-  domainRim: "#0F172A",
-  domainRimOpacity: 0.14,
-  subdomainRim: "#0F172A",
-  subdomainRimOpacity: 0.12,
-  metricViewRim: "#0891B2",
-  agentFill: "#1E293B", // dark node on the light ground: high contrast, light glyph reads
-  agentRim: "#7C3AED",
-  moreFill: "#E2E8F0",
-  ungroupedFill: "#475569",
-  ungroupedFillOpacity: 0.16,
-  ungroupedBorder: "#475569",
-  edge: "#64748B",
-  edgeOpacity: 0.5,
-  edgeCoquery: "#4F46E5",
-  edgeLineage: "#64748B",
-  edgeSnippet: "#0284C7",
-  hoverRim: "#0F172A",
-  focusRing: "#0891B2",
-  proposedRim: "#475569",
-  palette: LIGHT_PALETTE,
-  ungrouped: "#475569",
-  measure: "#0284C7",
-  page: "#D97706",
-  metricView: "#0891B2",
-  agent: "#7C3AED",
+  plateOpacity: 0.9,
+  plateText: "#0F172A",
+  typeFill: {
+    org: "#334155",
+    domain: "#475569",
+    subdomain: "#64748B",
+    agent: "#DC2626", // Lava (deeper on light) — agents only
+    dashboard: "#2563EB",
+    metric_view: "#059669",
+    measure: "#D97706",
+    table: "#64748B",
+  },
+  glyphStroke: "#FFFFFF",
+  nodeStroke: "#FFFFFF",
+  ringOpacity: 0.6,
+  selectedRing: "#0F172A",
+  searchRing: "#0891B2",
+  hoverRing: "#0F172A",
+  spine: "#94A3B8",
+  spineOpacity: 0.55,
+  sharedEdge: "#64748B",
+  xdomEdge: "#9F1239",
+  verbText: "#475569",
+  verbXdomText: "#9F1239",
+  trayDivider: "#CBD5E1",
+  trayText: "#475569",
+  trayNodeFill: "#E2E8F0",
+  trayNodeStroke: "#94A3B8",
+  proposalStroke: "#64748B",
+  proposalText: "#334155",
+  bandHigh: "#059669",
+  bandMedium: "#D97706",
+  bandLow: "#64748B",
+  badgeFill: "#0F172A",
+  badgeText: "#F8FAFC",
+  domainTint: LIGHT_DOMAIN_TINT,
 }
 
-/** The full canvas palette for the resolved app theme (pure; no side effects). */
+/** The full token set for the resolved app theme (pure; no side effects). */
 export function graphTokens(theme: ResolvedTheme): GraphTokens {
   return theme === "light" ? LIGHT : DARK
 }
 
-/**
- * Recolour map from the model's dark-constant palette to the theme palette (build spec
- * §10.2 step 4). estateGraphModel emits `data.color` from its fixed dark PALETTE +
- * ungrouped/measure/page + the metric-view (#22D3EE) / agent (#A78BFA) accents (which are
- * themselves palette entries), so a hex->hex map recolours every node without touching the
- * pure model. On dark this is the identity map (⇒ dark cells diff at 0%).
- */
-export function recolorMap(tokens: GraphTokens): Map<string, string> {
-  const m = new Map<string, string>()
-  DARK_PALETTE.forEach((hex, i) => m.set(hex, tokens.palette[i]))
-  m.set("#64748B", tokens.ungrouped) // UNGROUPED_COLOR
-  m.set("#38BDF8", tokens.measure) // MEASURE_COLOR
-  m.set("#FBBF24", tokens.page) // PAGE_COLOR
-  return m
+/** Stable domain-tint hue for a top-domain id (index-aligned, deterministic). */
+export function domainTintFor(tokens: GraphTokens, topId: string | null): string | null {
+  if (!topId) return null
+  let h = 0
+  for (let i = 0; i < topId.length; i++) h = (h * 31 + topId.charCodeAt(i)) >>> 0
+  return tokens.domainTint[h % tokens.domainTint.length]
+}
+
+/** Band label → its token colour. */
+export function bandColor(tokens: GraphTokens, band: "High" | "Medium" | "Low" | null): string {
+  if (band === "High") return tokens.bandHigh
+  if (band === "Medium") return tokens.bandMedium
+  if (band === "Low") return tokens.bandLow
+  return tokens.trayText
 }
