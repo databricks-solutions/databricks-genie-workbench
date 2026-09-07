@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ontology Map — dev harness</title>
+    <meta name="robots" content="noindex" />
+    <!-- Dev-only visual harness (Ontology Map v3 §2, MV-D77). Served by `npm run dev`
+         at /graph-harness.html; NOT referenced by index.html/App.tsx and NOT a rollup
+         input, so `npm run build` and the prod bundle are byte-unaffected. -->
+    <link rel="preload" href="/fonts/CabinetGrotesk-Bold.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/GeneralSans-Regular.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/GeneralSans-Medium.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/ontology/harness/main.tsx"></script>
+  </body>
+</html>

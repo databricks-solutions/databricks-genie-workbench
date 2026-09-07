@@ -1,0 +1,4 @@
+# Screenshot sets + local one-file builds are loop artifacts, never committed.
+shots/
+dist/
+local/

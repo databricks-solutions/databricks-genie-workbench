@@ -327,6 +327,38 @@ interface ExpandRecord {
   data: OntologyGraphExpand
 }
 
+/**
+ * Injectable API seam (Map v3 §2.2, MV-D77): the two runtime calls the map makes, threaded
+ * as an optional prop so the dev-only harness can substitute fixture-backed implementations
+ * (NO new dependency, MV-D45). Prod never passes it and keeps the real `api.ts` functions.
+ */
+export interface EstateGraphApi {
+  getGraph: (origin: GraphOrigin) => Promise<OntologyGraph>
+  expandNode: (node: string, origin: GraphOrigin) => Promise<OntologyGraphExpand>
+}
+
+// Module-level singleton so the default prop value is referentially stable across renders
+// (it participates in hook dependency arrays).
+const REAL_API: EstateGraphApi = { getGraph, expandNode }
+
+/**
+ * Props. Everything beyond `graph` is optional and additive:
+ *  - `api` — the injectable data seam above (harness/testing only).
+ *  - `initialOrigin` / `initialLod` / `initialFocus` — deep-link style initial view state,
+ *    used by the harness to make every state URL-addressable (and therefore screenshotable)
+ *    without simulated clicks. Defaults reproduce the exact pre-v3 behaviour.
+ *  - `onCyReady` — dev hook: receives the cytoscape instance once per mount (inside the
+ *    idempotency guard), so the harness can drive taps/asserts. Unused in prod.
+ */
+export interface EstateGraphProps {
+  graph: OntologyGraph
+  api?: EstateGraphApi
+  initialOrigin?: GraphOrigin
+  initialLod?: Lod
+  initialFocus?: { topId: string; name: string } | null
+  onCyReady?: (cy: unknown) => void
+}
+
 // A node is expandable (§2.3) when it's a metric view (→ measures) or a sub-domain (→ Pages).
 function isExpandable(data: Record<string, unknown> | null): boolean {
   if (!data) return false
@@ -335,11 +367,18 @@ function isExpandable(data: Record<string, unknown> | null): boolean {
   return ntype === "asset" && String(data.kind ?? "") === "metric_view"
 }
 
-export function EstateGraph({ graph }: { graph: OntologyGraph }) {
-  const [origin, setOrigin] = useState<GraphOrigin>("applied")
-  const [lod, setLod] = useState<Lod>("domains")
-  const [focusTop, setFocusTop] = useState<string | null>(null)
-  const [focusName, setFocusName] = useState<string | null>(null)
+export function EstateGraph({
+  graph,
+  api = REAL_API,
+  initialOrigin = "applied",
+  initialLod = "domains",
+  initialFocus = null,
+  onCyReady,
+}: EstateGraphProps) {
+  const [origin, setOrigin] = useState<GraphOrigin>(initialOrigin)
+  const [lod, setLod] = useState<Lod>(initialLod)
+  const [focusTop, setFocusTop] = useState<string | null>(initialFocus?.topId ?? null)
+  const [focusName, setFocusName] = useState<string | null>(initialFocus?.name ?? null)
   const [subCrumb, setSubCrumb] = useState<string | null>(null)
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null)
 
@@ -377,18 +416,21 @@ export function EstateGraph({ graph }: { graph: OntologyGraph }) {
   // The setState calls live inside this async helper (not directly in the effect body) so
   // the effect only synchronises with an external system (the graph fetch), mirroring the
   // OntologyPage load pattern.
-  const loadOrigin = useCallback(async (which: GraphOrigin) => {
-    setLoadingGraph(true)
-    setGraphError(null)
-    try {
-      const g = await getGraph(which)
-      setCache((prev) => ({ ...prev, [which]: g }))
-    } catch (e) {
-      setGraphError(e instanceof Error ? e.message : "Couldn't load the map")
-    } finally {
-      setLoadingGraph(false)
-    }
-  }, [])
+  const loadOrigin = useCallback(
+    async (which: GraphOrigin) => {
+      setLoadingGraph(true)
+      setGraphError(null)
+      try {
+        const g = await api.getGraph(which)
+        setCache((prev) => ({ ...prev, [which]: g }))
+      } catch (e) {
+        setGraphError(e instanceof Error ? e.message : "Couldn't load the map")
+      } finally {
+        setLoadingGraph(false)
+      }
+    },
+    [api],
+  )
 
   useEffect(() => {
     if (origin === "applied" || cache[origin]) return
@@ -459,7 +501,8 @@ export function EstateGraph({ graph }: { graph: OntologyGraph }) {
       const state = expandStateById[nodeId]
       if (state === "loading" || state === "done") return
       setExpandStateById((prev) => ({ ...prev, [nodeId]: "loading" }))
-      expandNode(nodeId, origin)
+      api
+        .expandNode(nodeId, origin)
         .then((exp) => {
           setExpands((prev) => [...prev.filter((e) => e.nodeId !== nodeId), { nodeId, parentId, data: exp }])
           setExpandStateById((prev) => ({ ...prev, [nodeId]: "done" }))
@@ -469,7 +512,7 @@ export function EstateGraph({ graph }: { graph: OntologyGraph }) {
           setExpandStateById((prev) => ({ ...prev, [nodeId]: "error" }))
         })
     },
-    [expandStateById, origin],
+    [expandStateById, origin, api],
   )
 
   const refreshMini = useCallback((cy: CyCore) => {
@@ -665,7 +708,9 @@ export function EstateGraph({ graph }: { graph: OntologyGraph }) {
 
       {/* Body: canvas + docked right-rail inspector */}
       <div className="flex">
-        <div className="relative flex-1 bg-elevated/25" style={{ height: "560px" }}>
+        {/* min-w-0 lets the canvas column shrink below the canvas bitmap's intrinsic
+            width — without it the fixed-width inspector rail gets pushed off-screen. */}
+        <div className="relative min-w-0 flex-1 bg-elevated/25" style={{ height: "560px" }}>
           {assetsNeedFocus ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
               <MousePointerClick className="h-6 w-6 text-muted" />
@@ -728,6 +773,7 @@ export function EstateGraph({ graph }: { graph: OntologyGraph }) {
                       })
                     }
                   })
+                  onCyReady?.(cy)
                 }}
               />
               <div className="pointer-events-none absolute bottom-3 left-3">
