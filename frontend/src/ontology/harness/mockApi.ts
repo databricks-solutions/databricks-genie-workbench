@@ -170,6 +170,10 @@ export function createMockApi(opts: MockOptions = {}): EstateGraphApi {
   const getGraph = async (origin: GraphOrigin): Promise<OntologyGraph> => {
     if (scene === "loading") return new Promise<OntologyGraph>(() => {}) // never settles
     if (scene === "error") throw new Error("The estate snapshot could not be read.")
+    // The synthesized northstar carries applied tree + tray + proposals in ONE snapshot, so
+    // it is returned for both origins; only the captured `default` scene swaps in the
+    // pre-Lane-D proposed fixture on the proposed origin.
+    if (scene === "northstar" || scene === "proposed" || scene === "stress") return graphForScene(scene)
     if (origin === "proposed") return proposedGraph()
     return graphForScene(scene)
   }

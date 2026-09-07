@@ -8,22 +8,21 @@
  */
 export const THEMES = ["light", "dark"]
 
-/** scene name → harness query params (theme is appended per cell). */
+/** scene name → harness query params (theme is appended per cell). See harness/main.tsx. */
 export const SCENES = [
-  { name: "domains", p: { lod: "domains" } },
-  { name: "subdomains", p: { lod: "subdomains" } },
-  { name: "assets", p: { lod: "assets", focus: "auto" } },
-  { name: "assets+select", p: { lod: "assets", focus: "auto", select: "ticket_coupon" } },
-  { name: "mv-expand", p: { scene: "mv", lod: "assets", focus: "auto", select: "cost attribution" } },
-  { name: "proposed", p: { origin: "proposed" } },
+  { name: "northstar", p: { scene: "northstar" } },
+  { name: "northstar+select", p: { scene: "northstar", select: "net sales" } },
+  { name: "proposed", p: { scene: "proposed", origin: "proposed" } },
+  { name: "degrade", p: { scene: "default" } },
   { name: "stale", p: { scene: "stale" } },
   { name: "empty", p: { scene: "empty" } },
-  { name: "error", p: { scene: "error", origin: "proposed" } },
-  { name: "stress", p: { scene: "stress", lod: "assets", focus: "auto" } },
+  { name: "loading", p: { scene: "loading" } },
+  { name: "error", p: { scene: "error" } },
+  { name: "stress", p: { scene: "stress" } },
 ]
 
-/** Scenes that render an honest CARD (no cytoscape instance ⇒ no `ready` flag). */
-export const CARD_SCENES = new Set(["empty", "error"])
+/** Scenes that render an honest CARD rather than the graph (loading/error/empty). */
+export const CARD_SCENES = new Set(["empty", "error", "loading"])
 
 /** Flattened {scene × theme} cells with their query string + output filename. */
 export function cells() {

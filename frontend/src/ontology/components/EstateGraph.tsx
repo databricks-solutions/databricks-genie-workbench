@@ -9,7 +9,7 @@
  * (MV-D43) when Lane-D fields are absent. Honest loading / empty / error / stale states.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Maximize2, RotateCcw, Sparkles } from "lucide-react"
+import { AlertTriangle, Loader2, Maximize2, RotateCcw, Sparkles } from "lucide-react"
 import { drag as d3drag } from "d3-drag"
 import { select } from "d3-selection"
 import { zoom as d3zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom"
@@ -120,9 +120,7 @@ function describe(node: LaidNode): string {
 
 export function EstateGraph({
   graph,
-  // `api` is accepted in the props type (the harness injects a fixture seam) but the
-  // north-star derives provenance from the snapshot's `origin` field, so it is not read
-  // here; a live origin-refetch is a follow-up. Intentionally not destructured.
+  api,
   initialOrigin = "applied",
   drafts = null,
   taxonomy = null,
@@ -148,9 +146,35 @@ export function EstateGraph({
   const [typeFocus, setTypeFocus] = useState<NodeType | null>(null)
   const [hint, setHint] = useState<string | null>(null)
 
+  // Data seam (MV-D43 honest states): the app passes a `graph` prop and owns its own
+  // loading/error shell (OntologyPage), so with no `api` we render the prop directly. When
+  // an `api` IS injected (the harness), we fetch per-provenance and surface loading/error.
+  const [fetched, setFetched] = useState<OntologyGraph | null>(null)
+  const [fetchState, setFetchState] = useState<"idle" | "loading" | "error">(api ? "loading" : "idle")
+  useEffect(() => {
+    if (!api) return
+    let alive = true
+    setFetchState("loading")
+    api
+      .getGraph(provenance === "proposed" ? "proposed" : "applied")
+      .then((g) => {
+        if (alive) {
+          setFetched(g)
+          setFetchState("idle")
+        }
+      })
+      .catch(() => {
+        if (alive) setFetchState("error")
+      })
+    return () => {
+      alive = false
+    }
+  }, [api, provenance])
+  const effectiveGraph = fetched ?? graph
+
   const model: EstateModel = useMemo(
-    () => buildEstateModel(graph, { drafts, taxonomy, estateName }),
-    [graph, drafts, taxonomy, estateName],
+    () => buildEstateModel(effectiveGraph, { drafts, taxonomy, estateName }),
+    [effectiveGraph, drafts, taxonomy, estateName],
   )
 
   const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(model))
@@ -180,6 +204,14 @@ export function EstateGraph({
   const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout])
   const showTree = provenance !== "proposed"
   const showProposals = provenance !== "applied"
+
+  // Honest states (MV-D43). Computed early so the fit effect can gate on them.
+  const isEmpty = layout.nodes.length <= 1 && layout.trayItems.length === 0 && model.proposals.length === 0
+  // The applied tree has no governed structure (only the org root) but the engine has
+  // suggestions: nudge the curator to view them without hiding the tray (MV-D43/D74).
+  const treeBare = layout.nodes.length <= 1
+  const showNudge = treeBare && provenance === "applied" && model.proposals.length > 0
+  const isStale = effectiveGraph.state === "stale"
 
   // ── Camera (d3.zoom) ───────────────────────────────────────────────────────
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -216,25 +248,51 @@ export function EstateGraph({
 
   const fit = useCallback(() => {
     const svg = svgRef.current
-    const b = layout.bounds
-    if (!svg || b.width <= 0 || b.height <= 0) return
+    if (!svg) return
+    // Frame the CONTENT that's actually on screen: the tree when it's shown (never let the
+    // off-tree tray column shrink the tree into a corner), the tray when the tree is hidden.
+    const pad = 48
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    const extend = (x: number, y: number, r = 0) => {
+      minX = Math.min(minX, x - r)
+      minY = Math.min(minY, y - r)
+      maxX = Math.max(maxX, x + r)
+      maxY = Math.max(maxY, y + r)
+    }
+    if (showTree) for (const n of layout.nodes) extend(n.x, n.y, n.radius + 20)
+    if ((showProposals || !showTree) && layout.trayBounds) {
+      extend(layout.trayBounds.minX, layout.trayBounds.minY)
+      extend(layout.trayBounds.maxX, layout.trayBounds.maxY)
+    }
+    if (!isFinite(minX)) return
+    const bw = maxX - minX + pad * 2
+    const bh = maxY - minY + pad * 2
+    if (bw <= 0 || bh <= 0) return
     const rect = svg.getBoundingClientRect()
-    const k = Math.min(2.5, Math.max(0.3, Math.min(rect.width / b.width, rect.height / b.height) * 0.9))
-    const x = rect.width / 2 - (b.minX + b.width / 2) * k
-    const y = rect.height / 2 - (b.minY + b.height / 2) * k
+    const k = Math.min(2.5, Math.max(0.3, Math.min(rect.width / bw, rect.height / bh) * 0.95))
+    const x = rect.width / 2 - (minX - pad + bw / 2) * k
+    const y = rect.height / 2 - (minY - pad + bh / 2) * k
     applyTransform({ x, y, k })
-  }, [layout.bounds, applyTransform])
+  }, [layout.nodes, layout.trayBounds, showTree, showProposals, applyTransform])
 
-  // Fit on first paint + whenever the visible set changes shape materially.
+  // Fit once the canvas is actually on screen. Guard against firing during the loading /
+  // error / empty phases (the <svg> isn't mounted then) — otherwise the one-shot fires
+  // against a null svg and never reframes once the graph arrives.
   const didFit = useRef(false)
   useEffect(() => {
     if (didFit.current) return
+    if (fetchState !== "idle" || isEmpty) return
     if (layout.nodes.length === 0) return
-    didFit.current = true
-    // Defer so the svg has measured its box.
-    const id = requestAnimationFrame(fit)
+    const id = requestAnimationFrame(() => {
+      if (!svgRef.current) return
+      didFit.current = true
+      fit()
+    })
     return () => cancelAnimationFrame(id)
-  }, [layout.nodes.length, fit])
+  }, [fetchState, isEmpty, layout.nodes.length, fit])
 
   // ── Drag (d3.drag on nodes) ──────────────────────────────────────────────────
   useEffect(() => {
@@ -354,14 +412,6 @@ export function EstateGraph({
       positions: () => layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
     })
   }, [onReady, layout, hash, model, reveal])
-
-  // ── Honest states ────────────────────────────────────────────────────────────
-  const isEmpty = layout.nodes.length <= 1 && layout.trayItems.length === 0 && model.proposals.length === 0
-  // The applied tree has no governed structure (only the org root) — but the engine has
-  // suggestions: nudge the curator to view them without hiding the tray (MV-D43/D74).
-  const treeBare = layout.nodes.length <= 1
-  const showNudge = treeBare && provenance === "applied" && model.proposals.length > 0
-  const isStale = graph.state === "stale"
 
   // ── Inspector data ─────────────────────────────────────────────────────────
   const inspector: InspectorData | null = useMemo(() => {
@@ -495,7 +545,18 @@ export function EstateGraph({
               </button>
             </div>
           )}
-          {isEmpty ? (
+          {fetchState === "loading" ? (
+            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-muted">
+              <Loader2 className="h-6 w-6 animate-spin" />
+              <p className="text-xs">Building the estate graph…</p>
+            </div>
+          ) : fetchState === "error" ? (
+            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-center text-muted">
+              <AlertTriangle className="h-6 w-6 text-warning-foreground" />
+              <p className="text-sm font-medium text-secondary">The estate snapshot could not be read</p>
+              <p className="max-w-xs text-xs">Try refreshing in a moment.</p>
+            </div>
+          ) : isEmpty ? (
             <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-center text-muted">
               <p className="text-sm font-medium text-secondary">No data in the estate graph yet</p>
               <p className="max-w-xs text-xs">
