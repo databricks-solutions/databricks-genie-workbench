@@ -913,6 +913,23 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > **Bakeoff pick (human gate, DECIDED): `cytoscape.js`** (mockup `17.0j`) is the estate-graph
 > render library. This unblocks Phase-3e **Step B** (the graph tab), folded into Wave-2 Lane 3.
 >
+> **Wave 3 — Ontology Map v2 (MV-D73/74/75) — BUILD-READY on `ontology`** (three disjoint-subtree
+> lanes; conflict-free by construction; merge 1 → 2 → 3). The full section-by-section spec is
+> `docs/design/ontology-map-v2-build.md` (§0 why → §8 open decisions); the parallel launcher is
+> `docs/design/ontology-wave3-launcher.md`. Two frozen contracts wire the lanes without file
+> overlap: the **blob shape** (Lane 1 → Lane 2 — `origin` on rollups, `subdomains.edges`, a baked
+> `snippets` index) and the **graph/expand API** (Lane 2 → Lane 3 — `GET /graph?origin=`,
+> `GET /graph/expand`, `OntologyGraphExpand`). Additive-only, no DDL (JSON blob, MV-D49), no new
+> dependency (reuses the Wave-2 cytoscape stack, MV-D45), read-only. Acceptance is **offline for
+> the code, deploy-gated for verification** — each lane green-tests its slice and stops before the
+> live materialize/deploy.
+>
+> | Lane | Chunk | Driver | Subtree it OWNS |
+> |---|---|---|---|
+> | 1 | **MV-D73 blob shape** — typed `kind` + `origin` on rollups, `subdomains.edges`, baked `snippets` (measures/Pages) | `ontology-map-v2-wheel-driver.md` | wheel `…/ontology/{layout,materialize}.py` |
+> | 2 | **MV-D73/74 routes** — `?origin=applied\|proposed` filter + `GET /graph/expand` + `OntologyGraphExpand` | `ontology-map-v2-backend-driver.md` | `backend/ontology/**` |
+> | 3 | **MV-D74/75 UI** — Applied\|Proposed toggle, expand-on-demand satellites, icons/inspector/search/minimap, Assets-LOD-requires-focus | `ontology-map-v2-frontend-driver.md` | `frontend/src/ontology/**` |
+>
 > **Wave 2 — LANDED + integrated + deploy-verified on `ontology`** (three disjoint-subtree lanes,
 > merged 1 → 2 → 3; conflict-free by construction). Integration commit `762a61b4`; the deferred
 > Step-4 bulk UI + a `reason` surface closed after in `4e1832b7`.
