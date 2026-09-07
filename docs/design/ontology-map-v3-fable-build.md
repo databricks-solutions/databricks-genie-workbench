@@ -298,7 +298,11 @@ PNGs). A human runs deploy-verify on fevm-serverless.
 
 ---
 
-## §9. v3.1 — light-mode gap remediation (MV-D78) — LANDED
+## §9. v3.1 — light-mode gap remediation (MV-D78) — LANDED, then SUPERSEDED by §10
+
+> ⚠️ **Superseded.** The forced-`.dark` scope below correctly diagnosed the root cause but fixed it
+> with a shortcut (it drops light mode). Keep the diagnosis; the *remedy* is replaced by the
+> theme-token system in **§10 (MV-D79)**. This section is retained as the paper trail.
 
 **What the deploy-verify eyeball found.** v3 landed green, but on the live app the map read
 "1990s / washed-out / empty grey pills". Root cause (found by re-running the §2 loop): the harness
@@ -324,3 +328,163 @@ snapshot; cross-box hidden until tap — MV-D43), so "sensible lines" was a cont
 loop can reproduce the production light-mode rendering — the one state the dark-only harness hid.
 Screenshots driven headless via the `user-playwright` MCP against `npm run dev`; zero runtime-dep
 change (lockfiles byte-identical).
+
+---
+
+## §10. v3.2 — theme-token visual system (MV-D79) — BUILD-READY
+
+**Goal.** Make the map's colour a first-class **dual-mode** system that follows the app theme, and
+delete the §9 forced-`.dark` shortcut. The map is an **Operate** surface — it must obey `useTheme`
+like every other panel. Verified in BOTH themes by the §11 loop; contrast is a mechanical gate.
+
+**Why a token function (not CSS).** Cytoscape renders to `<canvas>`; canvas paint cannot read the
+app's CSS custom properties the way DOM elements do. So the map's colours must be an explicit JS
+palette, selected by the resolved theme, and fed into the stylesheet the renderer builds.
+
+### 10.1 The token contract
+
+Add a **pure** module `frontend/src/ontology/graphTokens.ts`:
+
+```ts
+export type ResolvedTheme = "light" | "dark"
+
+export interface GraphTokens {
+  ground: string            // canvas background (matches --bg-sunken per theme)
+  dotGrid: string           // faint radial dot-grid overlay
+  labelPlateBg: string      // chip under labels: paper (light) / #0D1321 (dark)
+  labelPlateOpacity: number
+  textPrimary: string       // container/domain titles
+  textSecondary: string     // sub-domain / asset labels
+  iconStroke: string        // glyph stroke: dark on light, light on dark
+  containerFillOpacity: number   // higher on light (0.06 dark fills vanish on paper)
+  edge: string              // lineage/default hue
+  edgeCoquery: string       // co-query dashed hue
+  edgeSnippet: string       // measure/Page satellite hairline
+  hoverRim: string
+  focusRing: string
+  ungrouped: string
+  palette: string[]         // 12 domain hues, LIGHTNESS-TUNED FOR THIS THEME
+}
+
+export function graphTokens(theme: ResolvedTheme): GraphTokens { /* light & dark literals */ }
+```
+
+Rules for the two literal sets:
+- **Grounds** mirror the app tokens: light `#F1F5F9` / dark `#0D1321` (so the panel sits in the app,
+  not against it). The dot-grid opacity drops on light.
+- **Label plate flips**: light = near-white chip (`#FFFFFF`, ~0.85) + `#0F172A` text; dark = `#0D1321`
+  (~0.82) + `#F8FAFC` text. This is the single most important flip — it's what "washed out" in §9.
+- **Icon stroke flips**: `#0F172A` on light, `#F8FAFC` on dark (the current hardcoded `%23F8FAFC`
+  becomes a token; the SVG data-URI helper takes the stroke colour as an argument).
+- **Container fill opacity** is higher on light (~0.10–0.14) than dark (~0.06) — translucent hues
+  disappear on paper otherwise.
+- **`palette`**: the 12 domain hues get a **per-theme variant**. Each hue must clear **WCAG AA (≥3:1
+  for the node fill vs ground, ≥4.5:1 for text on its plate)** in BOTH themes. Dark-tuned hues
+  (`#818CF8`, `#6EE7B7`, `#FCD34D`…) are darkened/desaturated for the light ground; keep the SAME
+  hue *family* per `colorForTop` hash so a domain's identity is stable across themes and LODs.
+
+### 10.2 Wiring `EstateGraph`
+
+1. `const { resolvedTheme } = useTheme()` at the top of the component.
+2. `const tokens = useMemo(() => graphTokens(resolvedTheme), [resolvedTheme])`.
+3. `const STYLESHEET = useMemo(() => buildStylesheet(tokens), [tokens])` — refactor the current
+   module-level `STYLESHEET` array into a `buildStylesheet(tokens)` factory; every hardcoded colour
+   (`#0D1321`, `#F8FAFC`, `#94A3B8`, `0.06`, edge hues…) reads from `tokens`.
+4. The domain/asset colours come from `graphTokens(theme).palette` via `colorForTop`/`assetColor` —
+   thread `tokens.palette` into `estateGraphModel.ts` (or pass a `palette` arg) so the model emits the
+   theme-correct hue on each node's `data.color`.
+5. Add `resolvedTheme` to the canvas remount `key` (`EstateGraph.tsx` ~L934) so a theme toggle
+   rebuilds the styled canvas. (Cytoscape can restyle in place, but a remount is simplest and the key
+   already changes on view changes; determinism is preserved because layout is seeded.)
+6. **Delete** the four `dark ` class prefixes added in §9 (root + loading/empty/error cards). The
+   surrounding chrome tokens (`bg-surface`, `border-default`, `text-*`) now resolve to the app theme
+   again, which is correct.
+
+### 10.3 Guardrails
+No new runtime dep (MV-D45). `estateGraphModel.ts` stays pure + tested (extend the model tests for the
+palette-arg path). Keep the `initedCyRef` guard and the seeded layout. Additive, read-only, **STOP
+before deploy** — a human runs the deploy-verify after the §11 loop is green in both themes.
+
+---
+
+## §11. The Director / Developer / Reviewer / Gatekeeper loop + theme-matrix harness (MV-D80) — BUILD-READY
+
+**This section is the loop-infra spec.** It generalises the §2/MV-D77 harness into a role-separated,
+instant-feedback loop so long-horizon UI work converges without one agent grading its own paper — and
+without an open-ended self-QA money-burn (`impeccable`: *bounded passes, not loops*).
+
+### 11.1 Roles & artifacts
+
+| Role | Who | Owns | Cadence |
+|---|---|---|---|
+| **Director** | human + orchestrator | `docs/design/ontology-map-DESIGN.md` + the **rubric/scorecard** in it; reference mockups `17.0h/i/j`; the phase list | set once per phase |
+| **Developer** | build agent on a worktree branch | the code for ONE phase; runs the instant inner loop below | continuous within a phase |
+| **Reviewer** | a SEPARATE agent (or `impeccable critique`/`audit` with vision) | scores the contact-sheet against the rubric; emits a defect list w/ severities to `docs/design/reviews/<phase>.md` | ONCE per phase boundary (1 round + 1 confirm) |
+| **Gatekeeper** | deterministic tooling | `tsc -b` + lint + `vitest` + visual-regression diff + deploy-verify | every commit |
+
+The Developer and Reviewer are **different contexts** (the author is blind to their own defects) — this
+maps onto the existing worktree/lane + goal-mode pattern (the Reviewer is a distinct subagent).
+
+### 11.2 The instant inner loop (Developer)
+
+`npm run dev` (Vite HMR) + a save-triggered screenshot pass. The Developer looks at ONE image per
+iteration, not 20.
+
+**State matrix** (the harness is already URL-addressable, `?theme` added):
+```
+scenes  = domains, subdomains, assets, assets+select, mv-expand, proposed, stale, empty, error, stress
+themes  = light, dark
+```
+≈ 20 shots. Two dev-only tools to add under `frontend/src/ontology/harness/tools/` (git-ignored
+outputs, NOT in `vite build` inputs, prod bundle byte-unaffected):
+
+1. **`shoot.mjs`** — drives the browser (zero-dep `user-playwright` MCP, or an exact-pinned DEV-only
+   Playwright) across the matrix against `http://localhost:5173/graph-harness.html?…`. Waits for
+   `window.__ontologyHarness.ready === true` (deterministic seeded layout ⇒ no flaky sleeps), shoots
+   each state in each theme, writes PNGs to `harness/shots/<phase>/<state>.<theme>.png`.
+2. **`contact.mjs`** — stitches the matrix into ONE **contact-sheet** montage (grid: rows = scenes,
+   cols = light|dark) with captions, so the Developer/Reviewer reason over the whole surface at once.
+   No new dep: compose via a `<canvas>`/sharp-free approach (draw the PNGs onto an offscreen canvas in
+   a tiny headless page, or emit an HTML index that tiles them and screenshot THAT).
+
+**On-save watch** (optional convenience): a `watch.mjs` (chokidar already transitively present, or
+`fs.watch`) that re-runs `shoot` + `contact` on save and, when a baseline exists, a **visual-diff**.
+
+### 11.3 Visual-regression diff (Gatekeeper + Developer)
+
+Because layout is seeded/deterministic, a committed baseline set makes pixel-diffs meaningful.
+`diff.mjs` compares `harness/shots/<phase>/*` against `harness/baselines/*` (a per-pixel delta; a
+threshold %; write a heatmap PNG for any state over threshold). Baselines are updated deliberately
+(`--update`) when a change is intended, never silently. This is what turns "did I regress the other
+LOD/theme?" from an eyeball into a gate.
+
+### 11.4 The Reviewer pass (batched, at the phase gate)
+
+The Reviewer (separate context) reads `ontology-map-DESIGN.md` + the rubric, the contact-sheet, the
+mockups, and the visual-diff heatmaps, then fills the **scorecard** (§ rubric in DESIGN.md) — pass/fail
+per criterion with a one-line reason and a severity (P0 blocks / P1 fix-now / P2 follow-up). Output to
+`docs/design/reviews/map-<phase>.md`. **One round**, then the Developer fixes the P0/P1s in **one
+batch**, then **one confirm** round. Stop. (This is `impeccable`'s bounded-pass rule; the Reviewer is
+not an every-keystroke oracle.) A ready-to-paste Reviewer prompt lives in the DESIGN.md.
+
+### 11.5 Phasing (each phase: Developer builds → contact-sheet → Reviewer once → fix → confirm → Gatekeeper)
+
+- **P0 — loop infra**: `shoot.mjs` + `contact.mjs` + `diff.mjs`, baselines captured, DESIGN.md + rubric
+  written. (Enabling investment; no visual change.)
+- **P1 — theme tokens (§10 / MV-D79)**: dual-mode colour, delete forced-`.dark`. Gate: contrast passes
+  in both themes; both-theme contact-sheet clean.
+- **P2 — hover insights**: debounced hover tooltip (motion-value driven, no per-frame React state) with
+  2–3 quick facts; distinct from the click inspector.
+- **P3 — relations & hierarchy**: typed/curved edges, no-hairball, a deterministic layered (no-dep)
+  layout trial for the focused lineage view (elk/dagre only as an explicit dep decision, not silent).
+- **P4 — navigation smoothness**: semantic zoom, double-click drill / background ascend, cross-refresh
+  position persistence (mental-map stability).
+
+The deeper drill levels (asset-type breadth, asset→table children) are a **data/backend** gap — the
+snapshot's asset level is all tables today; *reveal, don't invent*. File a backend follow-up; the
+frontend lights those levels up when the data exists.
+
+### 11.6 Guardrails
+All harness/loop tooling is **dev-only**: git-ignored outputs, never imported by the app, not in the
+`vite build` input set, no runtime dep (an exact-pinned DEV Playwright, if used, is `devDependencies`
++ documented — the runtime lockfile graph stays byte-identical). Read-only to data + governed tags.
