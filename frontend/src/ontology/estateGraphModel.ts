@@ -95,6 +95,50 @@ export interface BuildOpts {
   perContainerCap?: number
 }
 
+/**
+ * Trim the word-prefix every top-level domain name shares ("Alaska Airlines …")
+ * from the CANVAS captions only — the estate reads "Commercial / Operations /
+ * Maintenance And Engineering" instead of four labels that all start with the
+ * company name. Presentation-only: `label` (inspector, breadcrumb, search) keeps
+ * the full name. Trims only when 2+ names share a full leading word sequence and
+ * every trimmed remainder is non-empty.
+ */
+export function trimCommonPrefix(names: string[]): Map<string, string> {
+  const out = new Map(names.map((n) => [n, n]))
+  if (names.length < 2) return out
+  const split = names.map((n) => n.split(" "))
+  const first = split[0]
+  let prefixLen = 0
+  for (let i = 0; i < first.length; i++) {
+    const word = first[i]
+    if (!split.every((w) => i < w.length && w[i] === word)) break
+    prefixLen = i + 1
+  }
+  // Trim only when every name keeps at least one word of its own — if any name IS
+  // the shared prefix, trimming would erase its identity, so leave all untouched.
+  if (prefixLen === 0 || !split.every((w) => w.length > prefixLen)) return out
+  for (let k = 0; k < names.length; k++) {
+    out.set(names[k], split[k].slice(prefixLen).join(" "))
+  }
+  return out
+}
+
+/** 1,911-style count for labels (Map v3 §1D — captions read at a glance). */
+export function fmtCount(n: number): string {
+  return n.toLocaleString("en-US")
+}
+
+/**
+ * Two-line hub caption (Map v3 §1D): the business-area name plus a plain-language
+ * count line, rendered by cytoscape as a wrapped multi-line label. Kept separate from
+ * `label` so search and the inspector keep the clean name.
+ */
+export function domainDisplay(name: string, memberCount: number, ungrouped: boolean): string {
+  const noun = ungrouped ? (memberCount === 1 ? "table" : "tables") : memberCount === 1 ? "asset" : "assets"
+  if (memberCount <= 0) return name
+  return `${name}\n${fmtCount(memberCount)} ${noun}`
+}
+
 /** Round-sized px from a member/asset weight, clamped for legibility. */
 function sizePx(weight: number, base: number, mult: number, max: number): number {
   return base + Math.min(Math.sqrt(Math.max(weight, 0)), max) * mult
@@ -160,6 +204,12 @@ export function buildElements(
   }
   const inFocus = (topId: string) => !focusTop || topId === focusTop
 
+  // Canvas display names: shared word-prefix trimmed across the real tops
+  // ("Alaska Airlines Commercial" → "Commercial"); Ungrouped stays as-is.
+  const realTopNames = [...tops.values()].filter((t) => !t.ungrouped).map((t) => t.name)
+  const shortNames = trimCommonPrefix(realTopNames)
+  const shortName = (t: TopDomain) => (t.ungrouped ? t.name : shortNames.get(t.name) ?? t.name)
+
   // Deterministic top centers (stable order by id) for the Group-in-a-Box seed.
   const topOrder = [...tops.keys()].sort()
   const topIndex = new Map(topOrder.map((id, i) => [id, i]))
@@ -183,6 +233,8 @@ export function buildElements(
           id: t.id, label: t.name, ntype: "domain", color: t.color,
           count: t.memberCount, px: sizePx(t.memberCount, 30, 9, 8),
           origin: t.origin,
+          display: domainDisplay(shortName(t), t.memberCount, t.ungrouped),
+          isUngrouped: t.ungrouped,
         },
         topCenter(t.id),
       )
@@ -215,6 +267,7 @@ export function buildElements(
           color: tops.get(top)!.color, count: d.member_count ?? 0,
           px: sizePx(d.member_count ?? 1, 16, 6, 6),
           origin: d.origin ?? tops.get(top)!.origin,
+          isUngrouped: tops.get(top)!.ungrouped,
         },
         seedNear(topCenter(top), d.id, 90),
       )
@@ -228,6 +281,7 @@ export function buildElements(
           id: `self:${t.id}`, parent: `top:${t.id}`, label: t.name, ntype: "subdomain",
           color: t.color, count: t.memberCount, px: sizePx(t.memberCount || 1, 16, 6, 6),
           origin: t.origin,
+          isUngrouped: t.ungrouped,
         },
         seedNear(topCenter(t.id), `self:${t.id}`, 40),
       )
@@ -236,7 +290,7 @@ export function buildElements(
       if (!emitted.has(e.src) || !emitted.has(e.dst)) continue
       els.push({ group: "edges", data: { id: `se_${e.src}__${e.dst}`, source: e.src, target: e.dst, etype: edgeType(e.kind) } })
     }
-    prependContainers(els, tops, usedTops)
+    prependContainers(els, tops, usedTops, shortName)
     return els
   }
 
@@ -307,6 +361,7 @@ export function buildElements(
         ntype: "subcontainer", color: tops.get(topId)?.color ?? UNGROUPED_COLOR,
         count: sub?.member_count ?? 0,
         origin: sub?.origin ?? tops.get(topId)?.origin ?? null,
+        isUngrouped: tops.get(topId)?.ungrouped ?? false,
       },
     })
   }
@@ -319,7 +374,7 @@ export function buildElements(
     })
   }
   els.unshift(...subContainers)
-  prependContainers(els, tops, usedTops)
+  prependContainers(els, tops, usedTops, shortName)
   return els
 }
 
@@ -414,14 +469,24 @@ export function mergeExpand(
 }
 
 /** Insert compound container parent nodes for exactly the tops that have children. */
-function prependContainers(els: CyEl[], tops: Map<string, TopDomain>, usedTops: Set<string>) {
+function prependContainers(
+  els: CyEl[],
+  tops: Map<string, TopDomain>,
+  usedTops: Set<string>,
+  shortName: (t: TopDomain) => string,
+) {
   const containers: CyEl[] = []
   for (const topId of usedTops) {
     const t = tops.get(topId)
     if (!t) continue
     containers.push({
       group: "nodes",
-      data: { id: `top:${t.id}`, label: t.name, ntype: "container", color: t.color, count: t.memberCount, origin: t.origin },
+      data: {
+        id: `top:${t.id}`, label: t.name, ntype: "container", color: t.color,
+        count: t.memberCount, origin: t.origin, isUngrouped: t.ungrouped,
+        // Container title: trimmed name + at-a-glance size (§1D one-line caption).
+        display: t.memberCount > 0 ? `${shortName(t)} · ${fmtCount(t.memberCount)}` : shortName(t),
+      },
     })
   }
   els.unshift(...containers)

@@ -62,68 +62,98 @@ const ICON_STYLE = {
   "background-image-opacity": 0.9,
 } as const
 
+// ── Visual system (Map v3 §1A, MV-D76) ──────────────────────────────────────
+// The shipped webfonts, loaded by index.css and measured by the canvas renderer.
+// Cabinet Grotesk = display (container titles); General Sans = everything else.
+const FONT_DISPLAY = "Cabinet Grotesk, Inter, system-ui, sans-serif"
+const FONT_BODY = "General Sans, Inter, system-ui, sans-serif"
+
+// Crisp label plate instead of the old heavy text-outline halo (§1A defect #1):
+// a translucent sunken chip under every label keeps text readable over edges and
+// fills at any zoom without warping the glyphs.
+const LABEL_PLATE = {
+  "text-outline-width": 0,
+  "text-background-color": "#0D1321",
+  "text-background-opacity": 0.82,
+  "text-background-padding": 3,
+  "text-background-shape": "round-rectangle",
+} as const
+
 const STYLESHEET = [
   {
     selector: 'node[ntype="container"]',
     style: {
       shape: "round-rectangle",
+      "corner-radius": 14,
       "background-color": "data(color)",
-      "background-opacity": 0.08,
+      "background-opacity": 0.06,
       "border-color": "data(color)",
       "border-width": 1.5,
-      "border-opacity": 0.55,
+      "border-opacity": 0.6,
       label: "data(label)",
+      "font-family": FONT_DISPLAY,
+      "font-size": 13,
+      "font-weight": 700,
+      color: "#F8FAFC",
       "text-valign": "top",
       "text-halign": "center",
-      "text-margin-y": -6,
-      "font-size": 12,
-      "font-weight": 700,
-      color: "#E2E8F0",
-      "text-outline-color": "#0f172a",
-      "text-outline-width": 2,
-      padding: 20,
+      "text-margin-y": -8,
+      ...LABEL_PLATE,
+      padding: 26,
       "z-index": 1,
     },
   },
   {
-    // Sub-domain container: an inner, dashed box nested inside its top domain so
-    // the sub-domain grouping stays visible at the Assets LOD.
+    // Sub-domain container nested inside its top domain. SOLID by default —
+    // provenance styling is origin-driven only (§1E; old defect #2 was dashing
+    // every subcontainer regardless of origin).
     selector: 'node[ntype="subcontainer"]',
     style: {
       shape: "round-rectangle",
+      "corner-radius": 10,
       "background-color": "data(color)",
       "background-opacity": 0.05,
       "border-color": "data(color)",
       "border-width": 1,
-      "border-opacity": 0.45,
-      "border-style": "dashed",
+      "border-opacity": 0.5,
       label: "data(label)",
-      "text-valign": "top",
-      "text-halign": "center",
-      "text-margin-y": -4,
-      "font-size": 10,
+      "font-family": FONT_BODY,
+      "font-size": 10.5,
       "font-weight": 600,
       color: "#CBD5E1",
-      "text-outline-color": "#0f172a",
-      "text-outline-width": 1.5,
-      padding: 12,
+      "text-valign": "top",
+      "text-halign": "center",
+      "text-margin-y": -5,
+      ...LABEL_PLATE,
+      padding: 16,
       "z-index": 2,
     },
   },
   {
+    // Domain hub (Domains LOD): a filled disc with a soft rim; the two-line
+    // caption (`display` = name + member count) sits BELOW on a plate so long
+    // names never truncate into the fill (§1A defect: warped centered labels).
     selector: 'node[ntype="domain"]',
     style: {
       "background-color": "data(color)",
+      "background-opacity": 0.92,
+      "border-width": 2,
+      "border-color": "#F8FAFC",
+      "border-opacity": 0.22,
       width: "data(px)",
       height: "data(px)",
       label: "data(label)",
-      "font-size": 12,
-      "font-weight": 700,
-      color: "#0B1120",
-      "text-valign": "center",
+      "font-family": FONT_BODY,
+      "font-size": 11.5,
+      "font-weight": 600,
+      color: "#E2E8F0",
+      "line-height": 1.25,
+      "text-valign": "bottom",
       "text-halign": "center",
-      "text-max-width": "data(px)",
-      "text-wrap": "ellipsis",
+      "text-margin-y": 7,
+      "text-wrap": "wrap",
+      "text-max-width": 150,
+      ...LABEL_PLATE,
       "z-index": 10,
     },
   },
@@ -132,14 +162,22 @@ const STYLESHEET = [
     style: {
       "background-color": "data(color)",
       "background-opacity": 0.9,
+      "border-width": 1.5,
+      "border-color": "#F8FAFC",
+      "border-opacity": 0.18,
       width: "data(px)",
       height: "data(px)",
       label: "data(label)",
+      "font-family": FONT_BODY,
       "font-size": 10,
+      "font-weight": 500,
       color: "#CBD5E1",
       "text-valign": "bottom",
       "text-halign": "center",
-      "text-margin-y": 2,
+      "text-margin-y": 5,
+      "text-wrap": "wrap",
+      "text-max-width": 110,
+      ...LABEL_PLATE,
     },
   },
   {
@@ -149,27 +187,37 @@ const STYLESHEET = [
       width: "data(px)",
       height: "data(px)",
       label: "data(label)",
-      "font-size": 8,
+      "font-family": FONT_BODY,
+      "font-size": 9,
+      "font-weight": 500,
       color: "#94A3B8",
-      "min-zoomed-font-size": 12, // declutter: hide asset labels until zoomed in
+      "min-zoomed-font-size": 11, // declutter: hide asset labels until zoomed in
       "text-valign": "bottom",
       "text-halign": "center",
+      "text-margin-y": 4,
+      ...LABEL_PLATE,
     },
   },
-  // Expand-on-demand satellites (MV-D73/D75): small "snippet" nodes off their parent.
+  // Two-line hub caption (name + count) wherever the model provides one.
+  { selector: "node[display]", style: { label: "data(display)" } },
+  // Expand-on-demand satellites (MV-D73/D75): small "snippet" chips off their parent.
   {
     selector: 'node[ntype="measure"]',
     style: {
       shape: "round-rectangle",
+      "corner-radius": 3,
       "background-color": "data(color)",
       width: "data(px)",
       height: "data(px)",
       label: "data(label)",
-      "font-size": 8,
-      color: "#0B1120",
+      "font-family": FONT_BODY,
+      "font-size": 8.5,
+      color: "#CBD5E1",
       "text-valign": "bottom",
       "text-halign": "center",
-      "text-margin-y": 1,
+      "text-margin-y": 3,
+      "min-zoomed-font-size": 8,
+      ...LABEL_PLATE,
       ...ICON_STYLE,
       "background-image": ICONS.measure,
     },
@@ -178,80 +226,113 @@ const STYLESHEET = [
     selector: 'node[ntype="page"]',
     style: {
       shape: "round-rectangle",
+      "corner-radius": 3,
       "background-color": "data(color)",
       width: "data(px)",
       height: "data(px)",
       label: "data(label)",
-      "font-size": 8,
-      color: "#0B1120",
+      "font-family": FONT_BODY,
+      "font-size": 8.5,
+      color: "#CBD5E1",
       "text-valign": "bottom",
       "text-halign": "center",
-      "text-margin-y": 1,
+      "text-margin-y": 3,
+      "min-zoomed-font-size": 8,
+      ...LABEL_PLATE,
       ...ICON_STYLE,
       "background-image": ICONS.page,
     },
   },
-  // Per-type icons on the asset dots (MV-D75).
+  // Per-type icons + accents on the asset dots (§1A: type = icon + shape).
   { selector: 'node[kind="table"]', style: { ...ICON_STYLE, "background-image": ICONS.table } },
   { selector: 'node[kind="view"]', style: { ...ICON_STYLE, "background-image": ICONS.table } },
   {
     selector: 'node[kind="metric_view"]',
-    style: { "border-color": "#22D3EE", "border-width": 2, ...ICON_STYLE, "background-image": ICONS.metric_view },
+    style: { "border-color": "#22D3EE", "border-width": 2, "border-opacity": 1, ...ICON_STYLE, "background-image": ICONS.metric_view },
   },
   {
     selector: 'node[kind="dashboard"]',
     style: { ...ICON_STYLE, "background-image": ICONS.dashboard },
   },
+  // Agents render hollow (sunken fill + violet rim) like the mockup's evidence set.
   {
-    selector: 'node[kind="agent"]',
-    style: { "border-color": "#A78BFA", "border-width": 2, shape: "diamond", ...ICON_STYLE, "background-image": ICONS.agent },
+    selector: 'node[kind="agent"], node[kind="genie_agent"]',
+    style: {
+      "background-color": "#0D1321",
+      "background-opacity": 1,
+      "border-color": "#A78BFA",
+      "border-width": 2,
+      "border-opacity": 1,
+      ...ICON_STYLE,
+      "background-image": ICONS.agent,
+    },
   },
-  {
-    selector: 'node[kind="genie_agent"]',
-    style: { "border-color": "#A78BFA", "border-width": 2, shape: "diamond", ...ICON_STYLE, "background-image": ICONS.agent },
-  },
-  // Provenance (MV-D74): proposed rollups render with a dashed border so they read as
-  // "Suggested", not current state. Applied rollups keep their solid border.
+  // Provenance (MV-D74, §1E): driven by `origin` ONLY. Proposed rollups — dashed
+  // at every level; applied stays solid/current-state.
   {
     selector: 'node[origin="proposed"][ntype="container"]',
     style: { "border-style": "dashed", "border-opacity": 0.75 },
   },
   {
+    selector: 'node[origin="proposed"][ntype="subcontainer"]',
+    style: { "border-style": "dashed", "border-opacity": 0.7 },
+  },
+  {
     selector: 'node[origin="proposed"][ntype="domain"]',
-    style: { "border-style": "dashed", "border-color": "#CBD5E1", "border-width": 2 },
+    style: { "border-style": "dashed", "border-color": "#CBD5E1", "border-opacity": 0.8 },
   },
   {
     selector: 'node[origin="proposed"][ntype="subdomain"]',
-    style: { "border-style": "dashed", "border-color": "#CBD5E1", "border-width": 1.5 },
+    style: { "border-style": "dashed", "border-color": "#CBD5E1", "border-opacity": 0.8 },
+  },
+  // Ungrouped is neither Applied nor Suggested — it's the honest leftover bucket.
+  // Neutral hollow + dotted rim, distinct from the provenance encodings (placed
+  // after them so it wins for the Ungrouped rollup).
+  {
+    selector: "node[?isUngrouped]",
+    style: {
+      "background-color": "#64748B",
+      "background-opacity": 0.18,
+      "border-color": "#64748B",
+      "border-style": "dotted",
+      "border-width": 1.5,
+      "border-opacity": 0.8,
+      color: "#94A3B8",
+    },
   },
   {
     selector: 'node[ntype="more"]',
     style: {
       shape: "round-rectangle",
+      "corner-radius": 4,
       "background-color": "#1E293B",
       "border-color": "data(color)",
       "border-width": 1,
       "border-style": "dashed",
+      "border-opacity": 0.7,
       label: "data(label)",
+      "font-family": FONT_BODY,
       "font-size": 9,
       color: "#94A3B8",
       "text-valign": "center",
       "text-halign": "center",
-      width: 46,
+      width: 52,
       height: 18,
     },
   },
+  // Edges: weight = line weight (§1A encoding); hue = relationship type.
   {
     selector: "edge",
-    style: { width: 1.4, "line-color": "#475569", "curve-style": "bezier", opacity: 0.5 },
+    style: { width: 1.2, "line-color": "#475569", "curve-style": "bezier", opacity: 0.45 },
   },
-  { selector: 'edge[etype="coquery"]', style: { "line-color": "#818CF8", "line-style": "dashed", opacity: 0.7 } },
+  { selector: "edge[w]", style: { width: "data(w)" } },
+  { selector: 'edge[etype="coquery"]', style: { "line-color": "#818CF8", "line-style": "dashed", opacity: 0.65 } },
   { selector: 'edge[etype="lineage"]', style: { "line-color": "#64748B" } },
   // Satellite edges (measure / Page links) — hairline, distinct hue, always shown.
-  { selector: 'edge[etype="snippet"]', style: { width: 1, "line-color": "#38BDF8", "line-style": "dotted", opacity: 0.7, "curve-style": "bezier" } },
+  { selector: 'edge[etype="snippet"]', style: { width: 1, "line-color": "#38BDF8", "line-style": "dotted", opacity: 0.55, "curve-style": "bezier" } },
   { selector: "node.faded", style: { opacity: 0.12 } },
   { selector: "edge.faded", style: { opacity: 0.05 } },
-  { selector: "node.focused", style: { "border-color": "#22D3EE", "border-width": 3 } },
+  { selector: "node.focused", style: { "border-color": "#22D3EE", "border-width": 3, "border-opacity": 1, "border-style": "solid" } },
   // Edge-on-demand: `visibility:hidden` keeps the edge in the fcose simulation (so
   // clusters still emerge from connectivity) but off-screen until a node is tapped.
   { selector: "edge.hidden", style: { visibility: "hidden" } },
@@ -268,14 +349,29 @@ function layoutFor(lod: Lod) {
     quality: lod === "assets" ? "default" : "proof",
     randomize: false, // start from the seed positions → deterministic, stable
     fit: true,
-    padding: 28,
-    nodeSeparation: 80,
-    idealEdgeLength: 90,
-    nodeRepulsion: 6500,
+    padding: 36,
+    // Domains: few large hubs with two-line captions BELOW them — spread wide so
+    // labels never collide with a neighbouring hub. Sub-domains: labelled leaves
+    // inside compound boxes — enough separation that sibling labels and the boxes
+    // themselves never overlap (§1A no-overlap at default zoom).
+    nodeSeparation: lod === "domains" ? 160 : lod === "subdomains" ? 130 : 90,
+    // Long leash for edges that CROSS compound boxes so a connected sub-domain is
+    // never dragged into a neighbouring domain's box (box-overlap fix); short
+    // intra-box edges keep siblings clustered.
+    idealEdgeLength:
+      lod === "domains"
+        ? 190
+        : (edge: { source(): { data(k: string): unknown }; target(): { data(k: string): unknown } }) => {
+            const sp = edge.source().data("parent")
+            const tp = edge.target().data("parent")
+            return sp && tp && sp === tp ? 90 : 320
+          },
+    nodeRepulsion: lod === "domains" ? 18000 : lod === "subdomains" ? 16000 : 7500,
     packComponents: true,
-    nestingFactor: 0.1,
-    gravity: 0.3,
-    gravityCompound: 1.2,
+    // A touch more breathing room between sibling compound boxes than fcose's default.
+    nestingFactor: 0.15,
+    gravity: lod === "domains" ? 0.2 : 0.25,
+    gravityCompound: lod === "assets" ? 1.2 : 0.8,
     tile: true,
   }
 }
@@ -567,8 +663,14 @@ export function EstateGraph({
     handleSelect(cy, node)
   }
 
-  const domainCount = graph.domains.nodes.filter((n) => n.kind !== "ungrouped").length
-  const assetCount = graph.assets.nodes.length
+  // Counts describe the graph actually on screen (activeGraph, not always the applied
+  // prop) and count top-level business areas only — sub-domains are not "Domains".
+  const countGraph = activeGraph ?? graph
+  const domainCount = countGraph.domains.nodes.filter(
+    (n) => !n.parent_id && n.kind !== "ungrouped" && n.id !== "ungrouped",
+  ).length
+  const subdomainCount = countGraph.domains.nodes.filter((n) => !!n.parent_id).length
+  const assetCount = countGraph.assets.nodes.length
   const truncated = (activeGraph?.domains.truncated || activeGraph?.assets.truncated) ?? false
   const isEmpty = !!activeGraph && activeGraph.domains.nodes.length + activeGraph.assets.nodes.length === 0
   const assetsNeedFocus = lod === "assets" && !focusTop
@@ -681,6 +783,7 @@ export function EstateGraph({
           />
           <div className="flex items-center gap-x-4 text-xs text-secondary">
             <span><span className="font-semibold text-accent">{domainCount}</span> Domains</span>
+            <span><span className="font-semibold text-accent">{subdomainCount}</span> Sub-domains</span>
             <span><span className="font-semibold text-accent">{assetCount}</span> Assets</span>
             {truncated && <span className="text-muted">Top 2,000 · centrality</span>}
           </div>
@@ -709,8 +812,18 @@ export function EstateGraph({
       {/* Body: canvas + docked right-rail inspector */}
       <div className="flex">
         {/* min-w-0 lets the canvas column shrink below the canvas bitmap's intrinsic
-            width — without it the fixed-width inspector rail gets pushed off-screen. */}
-        <div className="relative min-w-0 flex-1 bg-elevated/25" style={{ height: "560px" }}>
+            width — without it the fixed-width inspector rail gets pushed off-screen.
+            The sunken ground + faint dot grid give the map a drafting-table depth
+            distinct from the surrounding panel (§1A whitespace/density). */}
+        <div
+          className="relative min-w-0 flex-1"
+          style={{
+            height: "560px",
+            backgroundColor: "var(--bg-sunken)",
+            backgroundImage: "radial-gradient(circle at 1px 1px, rgba(148, 163, 184, 0.07) 1px, transparent 0)",
+            backgroundSize: "22px 22px",
+          }}
+        >
           {assetsNeedFocus ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
               <MousePointerClick className="h-6 w-6 text-muted" />

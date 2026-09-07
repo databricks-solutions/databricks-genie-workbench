@@ -3,9 +3,12 @@ import type { OntologyGraph, OntologyGraphExpand } from "@/ontology/types"
 import {
   buildElements,
   colorForTop,
+  domainDisplay,
+  fmtCount,
   groupTops,
   mergeExpand,
   nodeFacts,
+  trimCommonPrefix,
   viewElements,
 } from "@/ontology/estateGraphModel"
 
@@ -204,6 +207,58 @@ describe("origin provenance threading (MV-D74)", () => {
     expect(byId.get("top:rev")!.origin).toBe("applied")
     expect(byId.get("bk")!.origin).toBe("applied")
     expect(byId.get("top:ops")!.origin).toBe("proposed")
+  })
+})
+
+describe("Map v3 §1 — canvas captions (display) + Ungrouped flag", () => {
+  it("trimCommonPrefix strips a shared leading word sequence, keeps full names otherwise", () => {
+    const t = trimCommonPrefix(["Alaska Airlines Commercial", "Alaska Airlines Ops", "Alaska Airlines Ifec"])
+    expect(t.get("Alaska Airlines Commercial")).toBe("Commercial")
+    expect(t.get("Alaska Airlines Ops")).toBe("Ops")
+    // No shared prefix → untouched.
+    const u = trimCommonPrefix(["Revenue", "Operations"])
+    expect(u.get("Revenue")).toBe("Revenue")
+    // A single name is never trimmed.
+    expect(trimCommonPrefix(["Alaska Airlines Commercial"]).get("Alaska Airlines Commercial")).toBe(
+      "Alaska Airlines Commercial",
+    )
+    // A name that IS the prefix keeps at least its last word (never empty).
+    const v = trimCommonPrefix(["Alaska Airlines", "Alaska Airlines Cargo"])
+    expect(v.get("Alaska Airlines")).toBe("Alaska Airlines")
+  })
+
+  it("domainDisplay renders a two-line caption with a formatted count", () => {
+    expect(domainDisplay("Commercial", 48, false)).toBe("Commercial\n48 assets")
+    expect(domainDisplay("Ungrouped", 1911, true)).toBe("Ungrouped\n1,911 tables")
+    expect(domainDisplay("Empty", 0, false)).toBe("Empty")
+    expect(fmtCount(1911)).toBe("1,911")
+  })
+
+  it("Domains LOD hubs carry display captions and the Ungrouped flag", () => {
+    const g = fixture()
+    g.domains.nodes.push({
+      id: "ungrouped", label: "Ungrouped", kind: "ungrouped", x: 0, y: 0, size: 1, member_count: 7,
+    })
+    const els = buildElements(g, "domains", null)
+    const byId = new Map(els.map((e) => [e.data.id, e.data]))
+    expect(byId.get("rev")!.display).toBe("Revenue\n3 assets")
+    expect(byId.get("rev")!.isUngrouped).toBe(false)
+    expect(byId.get("ungrouped")!.display).toBe("Ungrouped\n7 tables")
+    expect(byId.get("ungrouped")!.isUngrouped).toBe(true)
+  })
+
+  it("containers carry a trimmed title-with-count caption; label keeps the full name", () => {
+    const g = fixture()
+    // Give the two tops a shared prefix so the trim path is exercised end-to-end.
+    g.domains.nodes[0].label = "Acme Corp Revenue"
+    g.domains.nodes[1].parent_name = "Acme Corp Revenue"
+    g.domains.nodes[2].parent_name = "Acme Corp Revenue"
+    g.domains.nodes[3].label = "Acme Corp Operations"
+    const els = buildElements(g, "subdomains", null)
+    const byId = new Map(els.map((e) => [e.data.id, e.data]))
+    expect(byId.get("top:rev")!.label).toBe("Acme Corp Revenue")
+    expect(byId.get("top:rev")!.display).toBe("Revenue · 3")
+    expect(byId.get("top:ops")!.display).toBe("Operations · 1")
   })
 })
 
