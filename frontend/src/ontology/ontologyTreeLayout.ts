@@ -28,7 +28,10 @@ export interface Point {
 }
 
 export interface LayoutConfig {
-  /** Sibling gap (x) fed to d3.tree().nodeSize. */
+  /**
+   * Sibling gap (x) fed to d3.tree().nodeSize. Sized to clear a plated, ellipsized
+   * label so sibling names never collide/hard-clip at the fit zoom (R12d).
+   */
   dx: number
   /** Row height (y) fed to d3.tree().nodeSize. */
   dy: number
@@ -42,14 +45,27 @@ export interface LayoutConfig {
   trayCellH: number
   /** Cap of tray items rendered before a "+N more" chip. */
   trayCap: number
+  /**
+   * Per-parent visible-child cap (§6). A parent with more expanded children than this
+   * renders the first `childCap` (stable sort) plus a synthetic `+N more` sentinel that
+   * expands on click — so no parent ever dumps a nameless band of children (R3).
+   */
+  childCap: number
+  /**
+   * Cross-link overlay cap when NOTHING is focused (§6/R4). Above this many
+   * simultaneously-visible typed arcs the unfocused overlay is suppressed (a "+N links"
+   * affordance is surfaced instead) so realistic scale never paints a hairball; a
+   * selection re-reveals just that node's arcs (with verb labels).
+   */
+  crossLinkCap: number
   /** Bow factor for cross-link beziers; xdom is multiplied by `xdomBow`. */
   bow: number
   xdomBow: number
 }
 
 export const DEFAULT_LAYOUT: LayoutConfig = {
-  dx: 44,
-  dy: 120,
+  dx: 118,
+  dy: 128,
   radius: {
     org: 26,
     domain: 20,
@@ -65,9 +81,18 @@ export const DEFAULT_LAYOUT: LayoutConfig = {
   trayCellW: 128,
   trayCellH: 38,
   trayCap: 48,
-  bow: 0.28,
-  xdomBow: 1.4,
+  childCap: 10,
+  crossLinkCap: 8,
+  bow: 0.16,
+  xdomBow: 1.35,
 }
+
+/** Sentinel id for a parent's "+N more" truncation chip (§6/R3). */
+export function moreSentinelId(parentId: string): string {
+  return `${parentId}::more`
+}
+
+const EMPTY_SET: ReadonlySet<string> = new Set<string>()
 
 export interface LaidNode {
   id: string
@@ -79,6 +104,8 @@ export interface LaidNode {
   displayName: string
   origin: EstateNode["origin"]
   domainId: string | null
+  /** Hierarchy parent id (null for the root). Drives the `+N more` expand target. */
+  parentId: string | null
   kind: string
   radius: number
   /** True when this node has children that are currently collapsed. */
@@ -87,6 +114,10 @@ export interface LaidNode {
   badge: number
   memberCount: number | null
   cost: number | null
+  /** Synthetic "+N more" truncation chip (§6/R3) — rendered as a pill, not a disc. */
+  isMore: boolean
+  /** Count of children this chip stands in for (0 for real nodes). */
+  moreCount: number
 }
 
 export interface SpineLink {
@@ -109,6 +140,11 @@ export interface CrossLink {
   path: string
   /** Midpoint of the arc — where the verb plate sits. */
   labelAt: Point
+  /**
+   * Whether to draw the verb plate. Only the focused node's arcs are labelled (R4) so
+   * realistic scale never paints a red verb-label cloud.
+   */
+  showLabel: boolean
 }
 
 export interface TrayLaidItem extends TrayItem {
@@ -142,7 +178,14 @@ export interface Bounds {
 export interface Layout {
   nodes: LaidNode[]
   spineLinks: SpineLink[]
+  /** The cross-links actually drawn after visible-only + focus/cap gating (R4). */
   crossLinks: CrossLink[]
+  /**
+   * Count of visible typed arcs suppressed because nothing is focused and the density is
+   * over `crossLinkCap` — surfaced as a "+N links" affordance (R4). 0 when focused or below
+   * the cap.
+   */
+  crossLinkOverflow: number
   trayItems: TrayLaidItem[]
   trayOverflow: number
   trayBounds: Bounds | null
@@ -150,19 +193,57 @@ export interface Layout {
   bounds: Bounds
 }
 
+/** Gating options for {@link layoutTree} (both optional; defaults keep prior behaviour). */
+export interface LayoutOpts {
+  /** Selected/focused node id — reveals just its typed arcs, with verb labels (R4). */
+  focusId?: string | null
+  /** Parent ids whose per-parent child cap is lifted (a `+N more` chip was clicked). */
+  uncapped?: Set<string>
+}
+
 /** Internal d3 hierarchy datum. */
 interface Datum {
   node: EstateNode
+  /** When set, this datum is a synthetic "+N more" truncation chip for `parentId`. */
+  more?: { parentId: string; count: number }
+}
+
+/** Synthetic EstateNode-shaped datum for a parent's "+N more" truncation chip (§6/R3). */
+function makeMoreDatum(parentId: string, count: number, domainId: string | null): Datum {
+  return {
+    node: {
+      id: moreSentinelId(parentId),
+      parentId,
+      type: "table", // radius fallback only; rendered as a pill, never a disc
+      label: `+${count} more`,
+      displayName: `+${count} more`,
+      origin: "applied",
+      domainId,
+      attachLevel: null,
+      kind: "__more__",
+      memberCount: null,
+      cost: null,
+      descendantCount: 0,
+    },
+    more: { parentId, count },
+  }
 }
 
 /**
  * Build the visible hierarchy: start at root, descend only through expanded nodes.
  * A node is "expanded" if it is in `expandedSet`; its children are included only then.
  * The root is always expanded.
+ *
+ * Per-parent cap (§6/R3): when an expanded parent has more children than `childCap` (and
+ * it is not in `uncapped`), only the first `childCap` (stable-sorted in the model) are laid
+ * out and a synthetic `+N more` sentinel is appended — deterministic, so no parent ever
+ * renders a nameless band. The chip lifts the cap for that parent when clicked.
  */
 function buildVisibleHierarchy(
   model: EstateModel,
   expandedSet: Set<string>,
+  childCap: number,
+  uncapped: ReadonlySet<string>,
 ): { rootDatum: Datum; hasHiddenChildren: Set<string> } | null {
   if (!model.root) return null
   const hasHiddenChildren = new Set<string>()
@@ -171,7 +252,15 @@ function buildVisibleHierarchy(
     const expanded = isRoot || expandedSet.has(node.id)
     if (kids.length && !expanded) hasHiddenChildren.add(node.id)
     const datum: Datum & { children?: Datum[] } = { node }
-    if (expanded && kids.length) datum.children = kids.map((k) => make(k, false))
+    if (expanded && kids.length) {
+      const capped = childCap > 0 && kids.length > childCap && !uncapped.has(node.id)
+      const shown = capped ? kids.slice(0, childCap) : kids
+      const children = shown.map((k) => make(k, false))
+      if (capped) {
+        children.push(makeMoreDatum(node.id, kids.length - shown.length, node.domainId))
+      }
+      datum.children = children
+    }
     return datum
   }
   return { rootDatum: make(model.root, true), hasHiddenChildren }
@@ -239,13 +328,17 @@ export function layoutTree(
   expandedSet: Set<string>,
   dragOffsets: Map<string, Point>,
   cfg: LayoutConfig = DEFAULT_LAYOUT,
+  opts: LayoutOpts = {},
 ): Layout {
-  const built = buildVisibleHierarchy(model, expandedSet)
+  const focusId = opts.focusId ?? null
+  const uncapped = opts.uncapped ?? EMPTY_SET
+  const built = buildVisibleHierarchy(model, expandedSet, cfg.childCap, uncapped)
   if (!built) {
     return {
       nodes: [],
       spineLinks: [],
       crossLinks: [],
+      crossLinkOverflow: 0,
       trayItems: [],
       trayOverflow: 0,
       trayBounds: null,
@@ -262,6 +355,7 @@ export function layoutTree(
   const laid: LaidNode[] = []
   h.each((hn: HierarchyNode<Datum>) => {
     const node = hn.data.node
+    const more = hn.data.more
     const off = dragOffsets.get(node.id)
     const x = (hn.x ?? 0) + (off?.x ?? 0)
     const y = (hn.y ?? 0) + (off?.y ?? 0)
@@ -277,12 +371,15 @@ export function layoutTree(
       displayName: node.displayName,
       origin: node.origin,
       domainId: node.domainId,
+      parentId: node.parentId,
       kind: node.kind,
       radius: cfg.radius[node.type] ?? 10,
       collapsed,
       badge: collapsed ? node.descendantCount : 0,
       memberCount: node.memberCount,
       cost: node.cost,
+      isMore: !!more,
+      moreCount: more?.count ?? 0,
     })
   })
 
@@ -303,16 +400,20 @@ export function layoutTree(
     })
   })
 
-  // Cross-links — only between two currently-visible nodes (keeps the overlay from
-  // becoming a hairball, §3.3 / R4).
-  const crossLinks: CrossLink[] = []
+  // Cross-links (§3.3 / §6 / R4). Two-stage gate so the typed overlay reads as structure,
+  // never a hairball:
+  //   1. VISIBLE-ONLY — both endpoints must currently be on the tree (expanded).
+  //   2. FOCUS/CAP — with a selection, draw ONLY that node's arcs, each with its verb
+  //      label; with no selection, draw every arc unlabelled up to `crossLinkCap`, and
+  //      above the cap suppress the mat entirely (surface a "+N links" affordance instead).
+  const candidates: CrossLink[] = []
   for (const e of model.crossEdges) {
     const a = posById.get(e.src)
     const b = posById.get(e.dst)
     if (!a || !b) continue
     const bow = cfg.bow * (e.relClass === "xdom" ? cfg.xdomBow : 1)
     const { path, mid } = crossPath(a, b, bow)
-    crossLinks.push({
+    candidates.push({
       id: e.id,
       sourceId: e.src,
       targetId: e.dst,
@@ -320,7 +421,21 @@ export function layoutTree(
       relClass: e.relClass,
       path,
       labelAt: mid,
+      showLabel: false,
     })
+  }
+  const focusVisible = focusId != null && posById.has(focusId)
+  let crossLinks: CrossLink[]
+  let crossLinkOverflow = 0
+  if (focusVisible) {
+    crossLinks = candidates
+      .filter((c) => c.sourceId === focusId || c.targetId === focusId)
+      .map((c) => ({ ...c, showLabel: true }))
+  } else if (candidates.length <= cfg.crossLinkCap) {
+    crossLinks = candidates
+  } else {
+    crossLinks = []
+    crossLinkOverflow = candidates.length
   }
 
   const treeBounds = boundsOf([...posById.values()], 60)
@@ -384,12 +499,43 @@ export function layoutTree(
     nodes: laid,
     spineLinks,
     crossLinks,
+    crossLinkOverflow,
     trayItems,
     trayOverflow,
     trayBounds,
     proposalHulls,
     bounds,
   }
+}
+
+/**
+ * Bounding box of the content the camera should frame (R12a fit-to-bounds). Unions the
+ * laid-out node discs (incl. radius) with any visible cross-link arc extents (their bowed
+ * label midpoints — so a selected node's verb arcs are always kept on-canvas, R12b) and,
+ * when requested, the off-tree tray. Pure + unit-testable so the fit math is covered
+ * without mounting the camera.
+ */
+export function contentBounds(
+  layout: Layout,
+  opts: { tree?: boolean; tray?: boolean } = { tree: true },
+): Bounds {
+  const pts: Point[] = []
+  if (opts.tree) {
+    for (const n of layout.nodes) {
+      const r = n.radius + 22 // disc + label plate headroom
+      pts.push({ x: n.x - r, y: n.y - r }, { x: n.x + r, y: n.y + r })
+    }
+    for (const c of layout.crossLinks) {
+      pts.push({ x: c.labelAt.x, y: c.labelAt.y })
+    }
+  }
+  if (opts.tray && layout.trayBounds) {
+    pts.push(
+      { x: layout.trayBounds.minX, y: layout.trayBounds.minY },
+      { x: layout.trayBounds.maxX, y: layout.trayBounds.maxY },
+    )
+  }
+  return boundsOf(pts, 0)
 }
 
 /**

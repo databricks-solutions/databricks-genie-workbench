@@ -29,6 +29,7 @@ import {
 import {
   DEFAULT_LAYOUT,
   ancestorPath,
+  contentBounds,
   initialExpanded,
   layoutHash,
   layoutTree,
@@ -95,6 +96,16 @@ const GLYPHS: Record<NodeType, string> = {
   metric_view: "M4 20V10M10 20V4M16 20v-8M22 20H2",
   measure: "M4 9h16M4 15h16M10 3 8 21M16 3l-2 18",
   table: "M3 4h18v16H3zM3 10h18M9 4v16",
+}
+
+/**
+ * Canvas caption declutter (R12d): ellipsize an over-long name so plated sibling labels
+ * never collide or hard-clip mid-word ("Revenue Accountin_"). The full name stays in the
+ * inspector, breadcrumb, and a hover `<title>`, so nothing is lost.
+ */
+const LABEL_MAX = 16
+function clampLabel(s: string): string {
+  return s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX - 1).trimEnd()}…` : s
 }
 
 function describe(node: LaidNode): string {
@@ -188,17 +199,25 @@ export function EstateGraph({
   useEffect(() => {
     setExpanded(initialExpanded(model))
     setSelectedId(null)
+    setUncapped(new Set())
   }, [model])
 
   // Manual drag offsets — persisted deltas applied post-layout (R17). A tick bumps relayout.
   const offsetsRef = useRef<Map<string, Point>>(new Map())
   const [dragTick, setDragTick] = useState(0)
 
+  // Parents whose per-parent child cap has been lifted via their `+N more` chip (§6/R3).
+  const [uncapped, setUncapped] = useState<Set<string>>(new Set())
+
   const layout: Layout = useMemo(
-    () => layoutTree(model, expanded, offsetsRef.current, DEFAULT_LAYOUT),
+    () =>
+      layoutTree(model, expanded, offsetsRef.current, DEFAULT_LAYOUT, {
+        focusId: selectedId,
+        uncapped,
+      }),
     // dragTick is a deliberate relayout trigger; offsetsRef is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [model, expanded, dragTick],
+    [model, expanded, dragTick, selectedId, uncapped],
   )
 
   const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout])
@@ -249,34 +268,21 @@ export function EstateGraph({
   const fit = useCallback(() => {
     const svg = svgRef.current
     if (!svg) return
-    // Frame the CONTENT that's actually on screen: the tree when it's shown (never let the
-    // off-tree tray column shrink the tree into a corner), the tray when the tree is hidden.
-    const pad = 48
-    let minX = Infinity
-    let minY = Infinity
-    let maxX = -Infinity
-    let maxY = -Infinity
-    const extend = (x: number, y: number, r = 0) => {
-      minX = Math.min(minX, x - r)
-      minY = Math.min(minY, y - r)
-      maxX = Math.max(maxX, x + r)
-      maxY = Math.max(maxY, y + r)
-    }
-    if (showTree) for (const n of layout.nodes) extend(n.x, n.y, n.radius + 20)
-    if ((showProposals || !showTree) && layout.trayBounds) {
-      extend(layout.trayBounds.minX, layout.trayBounds.minY)
-      extend(layout.trayBounds.maxX, layout.trayBounds.maxY)
-    }
-    if (!isFinite(minX)) return
-    const bw = maxX - minX + pad * 2
-    const bh = maxY - minY + pad * 2
-    if (bw <= 0 || bh <= 0) return
+    // Frame the laid-out CONTENT bbox — nodes + any visible verb-arc extents (R12b), plus
+    // the tray only when it's on screen. Center it and zoom so it fills the viewport with a
+    // modest margin (R12a — no dead canvas, no crammed corner, no arcs off the edge).
+    const b = contentBounds(layout, { tree: showTree, tray: showProposals || !showTree })
+    if (b.width <= 0 || b.height <= 0) return
+    const pad = 40
+    const bw = b.width + pad * 2
+    const bh = b.height + pad * 2
     const rect = svg.getBoundingClientRect()
-    const k = Math.min(2.5, Math.max(0.3, Math.min(rect.width / bw, rect.height / bh) * 0.95))
-    const x = rect.width / 2 - (minX - pad + bw / 2) * k
-    const y = rect.height / 2 - (minY - pad + bh / 2) * k
+    if (rect.width === 0 || rect.height === 0) return
+    const k = Math.min(2.2, Math.max(0.28, Math.min(rect.width / bw, rect.height / bh) * 0.98))
+    const x = rect.width / 2 - (b.minX + b.width / 2) * k
+    const y = rect.height / 2 - (b.minY + b.height / 2) * k
     applyTransform({ x, y, k })
-  }, [layout.nodes, layout.trayBounds, showTree, showProposals, applyTransform])
+  }, [layout, showTree, showProposals, applyTransform])
 
   // Fit once the canvas is actually on screen. Guard against firing during the loading /
   // error / empty phases (the <svg> isn't mounted then) — otherwise the one-shot fires
@@ -293,6 +299,18 @@ export function EstateGraph({
     })
     return () => cancelAnimationFrame(id)
   }, [fetchState, isEmpty, layout.nodes.length, fit])
+
+  // Reframe once after a reveal has relayed out (see `reveal`). Runs on the post-reveal
+  // layout so the newly-expanded path + its verb arcs are framed (R12b), then clears.
+  useEffect(() => {
+    if (!pendingFit.current) return
+    pendingFit.current = false
+    if (!didFit.current) return // initial fit will cover the first paint
+    const id = requestAnimationFrame(() => {
+      if (svgRef.current) fit()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [layout, fit])
 
   // ── Drag (d3.drag on nodes) ──────────────────────────────────────────────────
   useEffect(() => {
@@ -335,6 +353,11 @@ export function EstateGraph({
     [nodeById, model, toggleExpand],
   )
 
+  // A reveal (search hit, relationship nav, harness `select`) auto-expands paths and can
+  // grow the tree past the last Fit — request one reframe so the revealed node and its
+  // now-visible verb arcs stay on-canvas (R12b: no arcs spilling off the edge).
+  const pendingFit = useRef(false)
+
   // Reveal a node: open the whole ancestor path, then select it.
   const reveal = useCallback(
     (id: string) => {
@@ -345,6 +368,7 @@ export function EstateGraph({
         return next
       })
       setSelectedId(id)
+      pendingFit.current = true
     },
     [model],
   )
@@ -388,9 +412,19 @@ export function EstateGraph({
     setExpanded(initialExpanded(model))
     setSelectedId(null)
     setTypeFocus(null)
+    setUncapped(new Set())
     didFit.current = false
     setDragTick((t) => t + 1)
   }, [model])
+
+  // A `+N more` chip lifts its parent's child cap (§6/R3) — reveal the rest in place.
+  const expandMore = useCallback((parentId: string) => {
+    setUncapped((prev) => {
+      const next = new Set(prev)
+      next.add(parentId)
+      return next
+    })
+  }, [])
 
   // ── Harness handle ───────────────────────────────────────────────────────────
   const hash = useMemo(() => layoutHash(layout), [layout])
@@ -537,6 +571,13 @@ export function EstateGraph({
               Snapshot may be out of date
             </div>
           )}
+          {/* Cross-link overlay is gated at realistic scale (R4): show the count and point
+              the curator at selection instead of painting a full-width arc hairball. */}
+          {showTree && !selectedId && layout.crossLinkOverflow > 0 && (
+            <div className="absolute right-3 top-3 z-10 rounded-md border border-default bg-elevated/95 px-2 py-1 text-[11px] text-secondary shadow-sm">
+              +{fmtCount(layout.crossLinkOverflow)} links — select a node to trace its relationships
+            </div>
+          )}
           {showNudge && (
             <div className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-default bg-elevated/95 px-3 py-1.5 text-xs shadow-sm">
               <span className="text-secondary">No governed groups yet — the engine has suggestions.</span>
@@ -618,34 +659,39 @@ export function EstateGraph({
                           stroke={stroke}
                           strokeWidth={c.relClass === "xdom" ? 1.4 : 1}
                           strokeDasharray="4 3"
-                          strokeOpacity={0.75}
+                          strokeOpacity={c.showLabel ? 0.9 : 0.6}
                         />
-                        <g transform={`translate(${c.labelAt.x},${c.labelAt.y})`}>
-                          <rect
-                            x={-c.verb.length * 3.1 - 4}
-                            y={-7}
-                            width={c.verb.length * 6.2 + 8}
-                            height={14}
-                            rx={3}
-                            fill={tokens.plateBg}
-                            fillOpacity={tokens.plateOpacity}
-                          />
-                          <text
-                            textAnchor="middle"
-                            dy="3.5"
-                            fontSize={9}
-                            fontWeight={c.relClass === "xdom" ? 700 : 500}
-                            fill={c.relClass === "xdom" ? tokens.verbXdomText : tokens.verbText}
-                          >
-                            {c.verb}
-                          </text>
-                        </g>
+                        {/* Verb plate — only on the focused node's arcs (R4): no label cloud. */}
+                        {c.showLabel && (
+                          <g transform={`translate(${c.labelAt.x},${c.labelAt.y})`}>
+                            <rect
+                              x={-c.verb.length * 3.1 - 4}
+                              y={-7}
+                              width={c.verb.length * 6.2 + 8}
+                              height={14}
+                              rx={3}
+                              fill={tokens.plateBg}
+                              fillOpacity={tokens.plateOpacity}
+                            />
+                            <text
+                              textAnchor="middle"
+                              dy="3.5"
+                              fontSize={9}
+                              fontWeight={c.relClass === "xdom" ? 700 : 500}
+                              fill={c.relClass === "xdom" ? tokens.verbXdomText : tokens.verbText}
+                            >
+                              {c.verb}
+                            </text>
+                          </g>
+                        )}
                       </g>
                     )
                   })}
 
-                {/* Ungrouped tray + proposal hulls (§3.5) */}
-                {(layout.trayItems.length > 0 || showProposals) && layout.trayBounds && (
+                {/* Ungrouped tray + proposal hulls (§3.5) — the "mess" surfaces only under
+                    Proposed/Both; Applied is the solid tree only (§5), so no nameless
+                    ghost discs float beside the northstar tree (R3/R12c). */}
+                {showProposals && layout.trayItems.length > 0 && layout.trayBounds && (
                   <g>
                     <line
                       x1={layout.trayBounds.minX - 20}
@@ -702,6 +748,50 @@ export function EstateGraph({
                 {/* Nodes */}
                 {showTree &&
                   layout.nodes.map((n) => {
+                    // Synthetic "+N more" truncation chip (§6/R3): a labelled pill, not a
+                    // nameless disc; clicking it lifts its parent's child cap in place.
+                    if (n.isMore) {
+                      const label = `+${fmtCount(n.moreCount)} more`
+                      const w = label.length * 6.4 + 16
+                      return (
+                        <g
+                          key={n.id}
+                          data-node-id={n.id}
+                          transform={`translate(${n.x},${n.y})`}
+                          style={{ cursor: "pointer" }}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`Show ${n.moreCount} more`}
+                          onClick={(e) => {
+                            if ((e.nativeEvent as { defaultPrevented?: boolean }).defaultPrevented) return
+                            if (n.parentId) expandMore(n.parentId)
+                          }}
+                          onKeyDown={(e) => {
+                            if ((e.key === "Enter" || e.key === " ") && n.parentId) {
+                              e.preventDefault()
+                              expandMore(n.parentId)
+                            }
+                          }}
+                        >
+                          <rect
+                            x={-w / 2}
+                            y={-11}
+                            width={w}
+                            height={22}
+                            rx={11}
+                            fill={tokens.plateBg}
+                            fillOpacity={tokens.plateOpacity}
+                            stroke={tokens.trayNodeStroke}
+                            strokeWidth={1}
+                            strokeDasharray="3 2"
+                          />
+                          <text textAnchor="middle" dy="3.5" fontSize={10.5} fontWeight={600} fill={tokens.trayText}>
+                            {label}
+                          </text>
+                        </g>
+                      )
+                    }
+                    const caption = clampLabel(n.displayName)
                     const fill = tokens.typeFill[n.type]
                     const tint = domainTintFor(tokens, n.domainId)
                     const isContainer = n.type === "org" || n.type === "domain" || n.type === "subdomain"
@@ -753,21 +843,22 @@ export function EstateGraph({
                           transform={`translate(-12,-12) scale(${(n.radius * 1.1) / 24})`}
                           opacity={0.9}
                         />
-                        {/* Label plate */}
+                        {/* Label plate (ellipsized caption; full name in the hover title) */}
                         <g transform={`translate(0,${n.radius + 12})`}>
                           <rect
-                            x={-n.displayName.length * 3.2 - 4}
+                            x={-caption.length * 3.2 - 4}
                             y={-9}
-                            width={n.displayName.length * 6.4 + 8}
+                            width={caption.length * 6.4 + 8}
                             height={16}
                             rx={3}
                             fill={tokens.plateBg}
                             fillOpacity={tokens.plateOpacity}
                           />
                           <text textAnchor="middle" dy="3" fontSize={n.type === "org" ? 13 : n.type === "domain" ? 12 : 10.5} fontWeight={isContainer ? 600 : 500} fill={tokens.plateText}>
-                            {n.displayName}
+                            {caption}
                           </text>
                         </g>
+                        <title>{n.label}</title>
                         {/* Collapse +N badge */}
                         {n.collapsed && n.badge > 0 && (
                           <g transform={`translate(${n.radius * 0.7},${-n.radius * 0.7})`}>

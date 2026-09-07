@@ -94,6 +94,34 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     expect(html).toContain('role="treeitem"')
   })
 
+  it("hides the Ungrouped tray in Applied mode — no nameless ghost discs beside the tree (R3/R12c)", () => {
+    // northstar() carries an ungrouped tray asset; Applied is the default provenance.
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    // The tray divider label ("Ungrouped · N") must NOT render under Applied (§5).
+    expect(html).not.toContain("Ungrouped ·")
+  })
+
+  it("renders a '+N more' truncation chip for a parent past the child cap (R3)", () => {
+    const domains: OntologyGraphNode[] = [
+      node({ id: "d_ops", label: "Ops", kind: "domain", origin: "applied" }),
+    ]
+    const assets: OntologyGraphNode[] = []
+    for (let i = 0; i < 40; i++) {
+      assets.push(node({ id: `w${i}`, label: `wide_${i}`, kind: "table", domain_id: "d_ops", attach_level: "domain", origin: "applied" }))
+    }
+    const g: OntologyGraph = {
+      root: node({ id: "org", label: "Acme", kind: "org" }),
+      domains: { nodes: domains, edges: [], truncated: false },
+      assets: { nodes: assets, edges: [], truncated: false },
+      layout: "tree",
+      node_count: 42,
+      edge_count: 0,
+      state: "fresh",
+    }
+    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
+    expect(html).toMatch(/\+\d+ more/)
+  })
+
   it("shows an honest-empty applied nudge to view suggested when proposals exist", () => {
     // proposed-origin domain grouping assets → a proposal exists even with empty tree.
     const g: OntologyGraph = {

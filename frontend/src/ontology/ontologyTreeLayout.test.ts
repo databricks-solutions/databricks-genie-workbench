@@ -3,9 +3,11 @@ import { buildEstateModel } from "@/ontology/estateGraphModel"
 import {
   DEFAULT_LAYOUT,
   ancestorPath,
+  contentBounds,
   initialExpanded,
   layoutHash,
   layoutTree,
+  moreSentinelId,
   type Point,
 } from "@/ontology/ontologyTreeLayout"
 import type { OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
@@ -162,6 +164,144 @@ describe("layoutTree", () => {
     })
     expect(l.trayItems.length).toBe(10)
     expect(l.trayOverflow).toBeGreaterThan(0)
+  })
+})
+
+// ── Per-parent child cap + "+N more" sentinel (§6 / R3) ──────────────────────
+/** A graph whose `d_ops` domain has `n` direct table children (a wide fan). */
+function wideGraph(n: number): OntologyGraph {
+  const g = graph()
+  for (let i = 0; i < n; i++) {
+    g.assets.nodes.push(
+      node({ id: `w${i}`, label: `wide_${i}`, kind: "table", domain_id: "d_ops", attach_level: "domain", origin: "applied" }),
+    )
+  }
+  return g
+}
+
+describe("layoutTree — per-parent child cap (R3)", () => {
+  const cfg = { ...DEFAULT_LAYOUT, childCap: 5 }
+
+  it("caps a wide parent to childCap real children + one '+N more' sentinel", () => {
+    const model = buildEstateModel(wideGraph(20))
+    const l = layoutTree(model, initialExpanded(model), noOffsets, cfg)
+    const realKids = l.nodes.filter((x) => x.parentId === "d_ops" && !x.isMore)
+    expect(realKids.length).toBe(5)
+    const more = l.nodes.find((x) => x.id === moreSentinelId("d_ops"))!
+    expect(more).toBeTruthy()
+    expect(more.isMore).toBe(true)
+    // 20 direct wide_* children + the original ops_x leaf = 21 → 21 - 5 shown = 16 hidden.
+    expect(more.moreCount).toBe(16)
+  })
+
+  it("never renders a nameless node — every laid node is labelled or an explicit '+N more'", () => {
+    const model = buildEstateModel(wideGraph(40))
+    const l = layoutTree(model, initialExpanded(model), noOffsets, cfg)
+    for (const laid of l.nodes) {
+      if (laid.isMore) expect(laid.label).toMatch(/^\+\d+ more$/)
+      else expect(laid.label.length).toBeGreaterThan(0)
+    }
+  })
+
+  it("stays byte-stable across repeated capped layouts (R18)", () => {
+    const model = buildEstateModel(wideGraph(30))
+    const exp = initialExpanded(model)
+    expect(layoutHash(layoutTree(model, exp, noOffsets, cfg))).toBe(
+      layoutHash(layoutTree(model, exp, noOffsets, cfg)),
+    )
+  })
+
+  it("lifts the cap for an uncapped parent (the '+N more' click target)", () => {
+    const model = buildEstateModel(wideGraph(20))
+    const exp = initialExpanded(model)
+    const capped = layoutTree(model, exp, noOffsets, cfg)
+    const uncapped = layoutTree(model, exp, noOffsets, cfg, { uncapped: new Set(["d_ops"]) })
+    expect(capped.nodes.some((x) => x.isMore)).toBe(true)
+    // Uncapped: all 21 real children present, no sentinel for d_ops.
+    expect(uncapped.nodes.filter((x) => x.parentId === "d_ops" && !x.isMore).length).toBe(21)
+    expect(uncapped.nodes.some((x) => x.id === moreSentinelId("d_ops"))).toBe(false)
+  })
+
+  it("does not cap a parent whose child count is within the cap", () => {
+    const model = buildEstateModel(wideGraph(3))
+    const l = layoutTree(model, initialExpanded(model), noOffsets, cfg)
+    expect(l.nodes.some((x) => x.isMore)).toBe(false)
+  })
+})
+
+// ── Cross-link overlay gating (§6 / R4 — no hairball) ────────────────────────
+describe("layoutTree — cross-link gating (R4)", () => {
+  it("draws every visible arc UNLABELLED when nothing is focused and under the cap", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"]) // reveal t:sales endpoints
+    const l = layoutTree(model, exp, noOffsets)
+    expect(l.crossLinks.length).toBe(2)
+    expect(l.crossLinks.every((c) => c.showLabel === false)).toBe(true)
+    expect(l.crossLinkOverflow).toBe(0)
+  })
+
+  it("suppresses the overlay mat above the cap and reports the count (+N links)", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const l = layoutTree(model, exp, noOffsets, { ...DEFAULT_LAYOUT, crossLinkCap: 1 })
+    expect(l.crossLinks.length).toBe(0)
+    expect(l.crossLinkOverflow).toBe(2)
+  })
+
+  it("reveals ONLY the focused node's arcs, and labels them (labels only on the active arc)", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    // Focus t:cal — endpoint of the single 'joins calendar' shared arc only.
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:cal" })
+    expect(l.crossLinks.length).toBe(1)
+    expect(l.crossLinks[0].verb).toBe("joins calendar")
+    expect(l.crossLinks[0].showLabel).toBe(true)
+    expect(l.crossLinkOverflow).toBe(0)
+  })
+
+  it("draws no arcs for a focused node whose cross-link endpoints are hidden", () => {
+    const model = buildEstateModel(graph())
+    // t:sales is hidden (mv:a collapsed) → focusing it yields no visible arcs.
+    const l = layoutTree(model, initialExpanded(model), noOffsets, DEFAULT_LAYOUT, { focusId: "t:sales" })
+    expect(l.crossLinks.length).toBe(0)
+  })
+})
+
+// ── Fit-to-bounds math (§4.1 / R12a-b) ───────────────────────────────────────
+describe("contentBounds — fit-to-bounds (R12)", () => {
+  it("frames the tree with a positive, finite bbox", () => {
+    const model = buildEstateModel(graph())
+    const l = layoutTree(model, initialExpanded(model), noOffsets)
+    const b = contentBounds(l, { tree: true })
+    expect(b.width).toBeGreaterThan(0)
+    expect(b.height).toBeGreaterThan(0)
+    expect(Number.isFinite(b.minX)).toBe(true)
+  })
+
+  it("includes a focused node's verb-arc extent so arcs never fall outside the fit (R12b)", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:sales" })
+    expect(l.crossLinks.length).toBeGreaterThan(0)
+    const b = contentBounds(l, { tree: true })
+    for (const c of l.crossLinks) {
+      expect(c.labelAt.x).toBeGreaterThanOrEqual(b.minX)
+      expect(c.labelAt.x).toBeLessThanOrEqual(b.maxX)
+      expect(c.labelAt.y).toBeGreaterThanOrEqual(b.minY)
+      expect(c.labelAt.y).toBeLessThanOrEqual(b.maxY)
+    }
+  })
+
+  it("frames the tray separately from the tree (provenance-aware fit)", () => {
+    const g = graph()
+    g.domains.nodes.push(node({ id: "sug", label: "Suggested", kind: "domain", origin: "proposed" }))
+    g.assets.nodes.push(node({ id: "z1", label: "z_orphan", kind: "table", domain_id: "sug" }))
+    const model = buildEstateModel(g)
+    const l = layoutTree(model, initialExpanded(model), noOffsets)
+    const treeOnly = contentBounds(l, { tree: true, tray: false })
+    const trayOnly = contentBounds(l, { tree: false, tray: true })
+    // The tray sits to the right, so its bbox starts past the tree's right edge.
+    expect(trayOnly.minX).toBeGreaterThan(treeOnly.minX)
   })
 })
 
