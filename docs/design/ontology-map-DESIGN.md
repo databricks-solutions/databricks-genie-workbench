@@ -284,7 +284,21 @@ first paint calm (§7). Dot-grid ground gives drafting-table depth (fainter on l
 - **Legend type-focus.** Click a type → dim all other types (nodes + their edges). Click again to clear.
 - **Search** filters by name: hits get an accent ring and their ancestor paths auto-expand so no hit
   hides in a collapsed branch.
-- **Expand all / Reset view** buttons; **Fit** frames the visible set.
+- **Expand all / Collapse all / Reset view** buttons; **Fit** frames the visible set. **Collapse all**
+  (MV-D87) folds every container back to the domain tier and re-fits — the calm counterpart to Expand all.
+- **Fullscreen** (MV-D87). A Maximize control pops the whole map into a full-viewport overlay (Esc or a
+  close button restores); the graph re-fits on enter and exit, and the default canvas is ≥70vh so the tree
+  is framed rather than stranded in a thin band.
+- **Relationship legibility** (MV-D87, KG/Bloom idiom). Every visible cross-link is hoverable → an edge
+  tooltip (`From → To`, the verb, within/cross-domain class, and the pre-seed evidence bag when present,
+  degrading to verb+endpoints+class when absent). Direction reads via themed arrowheads (`marker-end`). The
+  legend lists each relationship **type** present with a live count; clicking one highlights that type
+  across the map (and dims the rest).
+- **Minimap navigation** (MV-D87). The overview minimap draws a live "you-are-here" viewport box; click or
+  drag on it recenters the main view (minimap coords → `d3.zoom` transform). Presentational + deterministic.
+- **Domain show/hide** (MV-D87). A right-rail panel lists business areas (expandable to sub-areas) with
+  checkboxes; unchecking hides that subtree and its cross-links + legend counts from the tree and minimap.
+  "Show all / Hide all". Visibility is view-only — it never mutates the snapshot.
 - **Motion.** Eased (cubic-out ~420 ms) enter/exit from the parent's position on expand/collapse; eased
   camera on Fit/drill; honor `prefers-reduced-motion` (snap, no tween).
 - **Provenance toggle — Applied | Proposed | Both** (extends MV-D74). *Applied* = solid tree only;
@@ -364,6 +378,10 @@ this batch / **P2** follow-up). Copy this table into `docs/design/reviews/map-<p
 | R21 | **Hover snippet present + legible** | Hovering a node shows a cursor-following snippet — type · full name · description · a few meta KV · a measure's Expression in mono — clamped to the viewport, dual-theme legible, distinct from click; the top domain tier is never cropped on fit (MV-D85) |
 | R22 | **Measures render under MVs** | Expanding a metric view hydrates its measures (MV-D73) as amber leaf children — the middle tier is present, colourful, and deep, not a flat table row |
 | R23 | **Containers read as areas, not chrome** | org/domain/subdomain carry NO glyph (identity = fill + ring + size); only leaf assets glyph — sub-areas never read as a "hamburger menu" |
+| R24 | **Fullscreen + framed tree** (MV-D87 P0-a) | A Maximize control pops the map to a full-viewport overlay (Esc / close restores; re-fits on enter+exit); the default canvas is tall enough (≥70vh) that the tree is framed, never stranded in a thin band; `Collapse all` folds every container back to the domain tier and re-fits |
+| R25 | **Edge hover detail + arrowheads legible** (MV-D87 P0-b) | Every VISIBLE cross-link is hoverable and shows an edge tooltip (`From → To`, verb, within/cross class, and the pre-seed `detail` evidence when present — degrading to verb+endpoints+class when null); direction reads via themed `marker-end` arrowheads; the legend lists each relationship type present with a count and click-to-highlight (Bloom idiom) |
+| R26 | **Minimap navigable** (MV-D87 P1-a) | The minimap draws a live "you-are-here" viewport box; click and drag on it recenter the main view; it stays presentational + deterministic (no layout churn) |
+| R27 | **Domain show/hide** (MV-D87 P1-b) | A right-rail panel lists domains (expandable to sub-domains) with checkboxes; unchecking hides that subtree and its cross-links + legend counts from the tree/minimap; "Show all / Hide all"; visibility is VIEW-ONLY (never mutates the snapshot) |
 
 A phase is **done** when G1–G7 are green and every applicable R-row is Pass (P2s may defer with a filed
 follow-up). Bounded passes: one Reviewer round → Developer fixes P0/P1 in one batch → one confirm round →

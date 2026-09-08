@@ -145,6 +145,8 @@ export interface CrossLink {
    * realistic scale never paints a red verb-label cloud.
    */
   showLabel: boolean
+  /** Optional pre-seed evidence bag (MV-D88) for the hover edge-tooltip (R25); null when absent. */
+  detail?: Record<string, string> | null
 }
 
 export interface TrayLaidItem extends TrayItem {
@@ -193,12 +195,19 @@ export interface Layout {
   bounds: Bounds
 }
 
-/** Gating options for {@link layoutTree} (both optional; defaults keep prior behaviour). */
+/** Gating options for {@link layoutTree} (all optional; defaults keep prior behaviour). */
 export interface LayoutOpts {
   /** Selected/focused node id — reveals just its typed arcs, with verb labels (R4). */
   focusId?: string | null
   /** Parent ids whose per-parent child cap is lifted (a `+N more` chip was clicked). */
   uncapped?: Set<string>
+  /**
+   * Highlight a single relationship VERB across the whole visible tree (legend click,
+   * Bloom-idiom, R25): draws every visible arc of that verb — labelled — and suppresses the
+   * rest, so a rel-type reads as structure even past `crossLinkCap`. Node `focusId` wins when
+   * both are set (a selection is the more specific navigation).
+   */
+  verbFocus?: string | null
 }
 
 /** Internal d3 hierarchy datum. */
@@ -331,6 +340,7 @@ export function layoutTree(
   opts: LayoutOpts = {},
 ): Layout {
   const focusId = opts.focusId ?? null
+  const verbFocus = opts.verbFocus ?? null
   const uncapped = opts.uncapped ?? EMPTY_SET
   const built = buildVisibleHierarchy(model, expandedSet, cfg.childCap, uncapped)
   if (!built) {
@@ -422,6 +432,7 @@ export function layoutTree(
       path,
       labelAt: mid,
       showLabel: false,
+      detail: e.detail ?? null,
     })
   }
   const focusVisible = focusId != null && posById.has(focusId)
@@ -431,6 +442,9 @@ export function layoutTree(
     crossLinks = candidates
       .filter((c) => c.sourceId === focusId || c.targetId === focusId)
       .map((c) => ({ ...c, showLabel: true }))
+  } else if (verbFocus) {
+    // Legend rel-type highlight (R25): reveal every visible arc of this verb, labelled.
+    crossLinks = candidates.filter((c) => c.verb === verbFocus).map((c) => ({ ...c, showLabel: true }))
   } else if (candidates.length <= cfg.crossLinkCap) {
     crossLinks = candidates
   } else {
@@ -560,6 +574,50 @@ export function initialExpanded(model: EstateModel): Set<string> {
     if (n.type === "org" || n.type === "domain" || n.type === "subdomain") set.add(n.id)
   }
   return set
+}
+
+/**
+ * Collapse-all target (§5 / MV-D87 P0-a): only the org root is expanded, so the tree reads
+ * down to the DOMAIN tier — every domain a collapsed container with its `+N` badge, nothing
+ * below on screen. The counterpart to `Expand all`; the map re-fits after applying it.
+ */
+export function collapsedToDomainTier(model: EstateModel): Set<string> {
+  const set = new Set<string>()
+  if (model.root) set.add(model.root.id)
+  return set
+}
+
+/**
+ * The current viewport rectangle expressed in CONTENT (pre-transform) coordinates, for the
+ * minimap "you-are-here" box (MV-D87 P1-a). Given the live `d3.zoom` transform (screen =
+ * content·k + translate) and the on-screen canvas size, inverts to the content-space rect the
+ * camera currently frames. Pure — the minimap stays presentational.
+ */
+export function viewportContentRect(
+  transform: { x: number; y: number; k: number },
+  size: { width: number; height: number },
+): { x1: number; y1: number; x2: number; y2: number } {
+  const k = transform.k || 1
+  return {
+    x1: (0 - transform.x) / k,
+    y1: (0 - transform.y) / k,
+    x2: (size.width - transform.x) / k,
+    y2: (size.height - transform.y) / k,
+  }
+}
+
+/**
+ * The `d3.zoom` transform that recenters the camera on a CONTENT-space point at the current
+ * scale (MV-D87 P1-a — minimap click/drag pan). Keeps the zoom level; only translates so the
+ * point lands at the viewport centre. Pure + unit-testable so the nav math is covered without
+ * a live camera.
+ */
+export function centerOnTransform(
+  point: Point,
+  size: { width: number; height: number },
+  k: number,
+): { x: number; y: number; k: number } {
+  return { x: size.width / 2 - point.x * k, y: size.height / 2 - point.y * k, k }
 }
 
 /** Ancestor path (root → node) for breadcrumb + search-to-reveal. */
