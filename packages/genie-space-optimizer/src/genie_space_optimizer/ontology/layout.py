@@ -138,6 +138,83 @@ def _rel_class_of(top_a: str | None, top_b: str | None) -> str:
     return "shared" if (top_a is not None and top_a == top_b) else "xdom"
 
 
+# Ontology Map interaction pass — per-edge evidence bag (MV-D88, Lane E). A compact,
+# reveal-don't-invent ``Dict[str,str]`` for the hover edge-tooltip (MV-D87, Lane P2),
+# sourced ONLY from what the fused signal-graph edge already carries. A key with no
+# signal is omitted, values are plain labels (never a raw float, MV-D35), and an unlisted
+# edge kind yields ``None`` so the blob omits ``detail`` and Lane P2 degrades to verb +
+# endpoints. Insertion order is fixed so the snapshot blob stays byte-stable (MV-D49).
+# Similarity bands track L3's dedup_gate thresholds (er.MERGE_THRESHOLD 0.90 /
+# er.ESCALATE_LOW 0.72) so the label follows the same boundaries the engine used.
+_SEM_SIM_VERY_HIGH = 0.90
+_SEM_SIM_HIGH = 0.72
+
+
+def _sim_band(weight: float) -> str:
+    """A plain similarity band for a ``semantic_sim`` cosine ``weight`` (MV-D88).
+
+    ``very high`` ≥ 0.90, ``high`` ≥ 0.72, else ``moderate`` — mirroring the L3
+    thresholds so the tooltip never renders a bare float (MV-D35, honest-not-opaque)."""
+    if weight >= _SEM_SIM_VERY_HIGH:
+        return "very high"
+    if weight >= _SEM_SIM_HIGH:
+        return "high"
+    return "moderate"
+
+
+def _columns_label(cols: Any) -> str | None:
+    """A plain join-column label from whatever the edge carried (MV-D88).
+
+    Accepts a list/tuple of column names or a single string; drops blanks; a missing or
+    empty value yields ``None`` — reveal-don't-invent, omit ``columns`` with no signal."""
+    if cols is None:
+        return None
+    if isinstance(cols, (list, tuple)):
+        parts = [str(c) for c in cols if c is not None and str(c) != ""]
+        return ", ".join(parts) or None
+    return str(cols) or None
+
+
+def _edge_detail(edge: dict[str, Any], mv_measure_count: dict[str, int]) -> dict[str, str] | None:
+    """The compact per-edge evidence bag for one fused-graph edge (MV-D88, Lane E).
+
+    Reveal-don't-invent: every value is read from what the edge already carries — the
+    ``source`` (FK vs shared-join-column proxy), the ``weight`` (a co-query count / a
+    similarity cosine), the join ``columns`` if the edge names them, and the MV measure
+    count from the baked snippet index. A key with no signal is omitted; an unlisted edge
+    kind returns ``None`` so the blob omits ``detail`` (Lane P2 falls back to verb +
+    endpoints). Values are plain labels, never a raw float (MV-D35)."""
+    kind = edge.get("kind", "")
+    weight = edge.get("weight")
+    if kind == "join_key":
+        bag: dict[str, str] = {}
+        col_label = _columns_label(edge.get("columns"))
+        if col_label:
+            bag["columns"] = col_label
+        # FK vs shared-join-column proxy, from the edge ``source`` (graph.add_edge).
+        bag["kind"] = "foreign key" if edge.get("source") == "foreign_key" else "shared column"
+        return bag
+    if kind == "co_query":
+        if weight is None:
+            return None
+        return {"co_queried": f"{int(round(float(weight)))} sessions"}
+    if kind == "lineage_adjacency":
+        return {"flow": "feeds"}
+    if kind == "mv_membership":
+        bag = {"role": "aggregates"}
+        count = mv_measure_count.get(str(edge.get("src") or ""))
+        if count:
+            bag["measures"] = str(count)  # bare count, like the MV-D86 node meta bag
+        return bag
+    if kind == "semantic_sim":
+        if weight is None:
+            return None
+        return {"similarity": _sim_band(float(weight))}
+    if kind == "agent_scope":
+        return {"role": "queries"}
+    return None  # unlisted kind → no detail (Lane P2 degrades to verb + endpoints)
+
+
 def _fqn_of(node_id: str) -> str:
     """Strip the ``prefix:`` from a signal-graph node id (``asset:c.s.t`` → ``c.s.t``).
 
@@ -174,7 +251,10 @@ def build_graph_snapshot(
       carry an optional ``description`` (its UC comment) + type-appropriate stat fields
       (``row_count``, ``data_format``, ``measure_count``, ``queries_28d``, …) that MV-D86
       surfaces as the node's ``description`` + compact ``meta`` bag; a node without them
-      degrades to ``None`` (reveal-don't-invent).
+      degrades to ``None`` (reveal-don't-invent). An edge may carry ``source`` (FK vs
+      shared-join-column proxy), ``weight`` (co-query count / similarity cosine), and
+      optional join ``columns`` that MV-D88 surfaces as the edge's compact ``detail``
+      evidence bag (all three edge sets); an unlisted edge kind omits ``detail``.
     - ``node_domain_id``: ``{node_id → domain_id}`` from 17e clustering.
     - ``node_scores``: Optional ``{node_id → score}`` from 17g ranking (for sizing).
     - ``domain_meta``: Optional ``{domain_id → {name, parent_id, origin[, description]}}`` from
@@ -324,10 +404,21 @@ def build_graph_snapshot(
         did = node_domain_id.get(node_id) or node_domain_id.get(_fqn_of(node_id))
         return _walk_to_top_domain(did, domain_meta)
 
+    # Per-MV measure count for the mv_membership edge-detail (MV-D88, Lane E). Read from
+    # the baked snippet index (no request-path warehouse) and keyed by the ``mv:<fqn>`` hub
+    # node id, so an mv_membership edge (whose src IS that hub) can label how many measures
+    # the metric view aggregates. Absent snippets ⇒ empty map ⇒ the ``measures`` key is omitted.
+    mv_measure_count: dict[str, int] = {}
+    if snippets_in:
+        for mv_fqn, measures in (snippets_in.get("measures") or {}).items():
+            mv_measure_count[f"mv:{mv_fqn}"] = len(measures)
+
     # Build asset-level edges (same as input, but only for present nodes). Each edge
     # now carries a plain-language ``verb`` and a ``shared``/``xdom`` ``rel_class`` from
-    # its endpoints' top domains (Build C, MV-D82) — additive; the src/dst/kind/weight
-    # shape is unchanged for a reader that ignores the new keys.
+    # its endpoints' top domains (Build C, MV-D82) plus an optional reveal-don't-invent
+    # ``detail`` evidence bag (MV-D88, Lane E) — all additive; the src/dst/kind/weight
+    # shape is unchanged for a reader that ignores the new keys. ``detail`` is omitted
+    # entirely when the edge kind carries no signal (Lane P2 degrades to verb + endpoints).
     asset_node_ids = {n["id"] for n in asset_nodes}
     asset_edges = []
     for edge in edges:
@@ -335,14 +426,18 @@ def build_graph_snapshot(
         dst_id = edge.get("dst")
         if src_id in asset_node_ids and dst_id in asset_node_ids:
             kind = edge.get("kind", "unknown")
-            asset_edges.append({
+            asset_edge: dict[str, Any] = {
                 "src": src_id,
                 "dst": dst_id,
                 "kind": kind,
                 "weight": edge.get("weight"),
                 "verb": _verb_of(kind),
                 "rel_class": _rel_class_of(_top_of_asset(src_id), _top_of_asset(dst_id)),
-            })
+            }
+            detail = _edge_detail(edge, mv_measure_count)
+            if detail is not None:
+                asset_edge["detail"] = detail
+            asset_edges.append(asset_edge)
 
     # Cap asset nodes to top-N by centrality (size).
     if len(asset_nodes) > TOP_N_BY_CENTRALITY:
@@ -504,7 +599,7 @@ def build_graph_snapshot(
                 d_src = src_domain or "ungrouped"
                 d_dst = dst_domain or "ungrouped"
                 kind = edge.get("kind", "unknown")
-                domain_edges.append({
+                d_edge: dict[str, Any] = {
                     "src": d_src,
                     "dst": d_dst,
                     "kind": kind,
@@ -514,7 +609,13 @@ def build_graph_snapshot(
                         _walk_to_top_domain(d_src, domain_meta),
                         _walk_to_top_domain(d_dst, domain_meta),
                     ),
-                })
+                }
+                # MV-D88 (Lane E): carry the representative asset edge's evidence bag up to
+                # the rollup edge (consistent with its ``weight``, also from this edge).
+                detail = edge.get("detail")
+                if detail is not None:
+                    d_edge["detail"] = detail
+                domain_edges.append(d_edge)
 
     # Sub-domain rollup edges (MV-D73 §2.2): aggregate asset edges to the sub-domain
     # grain so the Sub-domains LOD is not edge-empty. A sub-domain is a domain_id whose
@@ -539,7 +640,7 @@ def build_graph_snapshot(
             continue
         seen_sub_edges.add(edge_key)
         kind = edge.get("kind", "unknown")
-        subdomain_edges.append({
+        sub_edge: dict[str, Any] = {
             "src": src_sub,
             "dst": dst_sub,
             "kind": kind,
@@ -549,7 +650,12 @@ def build_graph_snapshot(
                 _walk_to_top_domain(src_sub, domain_meta),
                 _walk_to_top_domain(dst_sub, domain_meta),
             ),
-        })
+        }
+        # MV-D88 (Lane E): carry the representative asset edge's evidence bag through.
+        detail = edge.get("detail")
+        if detail is not None:
+            sub_edge["detail"] = detail
+        subdomain_edges.append(sub_edge)
 
     # Bounded expand-on-demand "business-snippet" index (MV-D73 §2.3): re-key measures to
     # the mv:<fqn> hub node id and pages to their sub-domain rollup domain_id, capping each

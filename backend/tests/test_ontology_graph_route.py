@@ -149,6 +149,33 @@ def test_graph_passes_through_description_and_meta(monkeypatch):
     assert metrics["meta"] is None
 
 
+def test_graph_passes_through_edge_detail(monkeypatch):
+    """MV-D88 (Lane E) contract parity: an edge's additive ``detail`` evidence bag rides
+    through _level untouched; an edge without it degrades to None (pre-MV-D88 blob or a
+    no-signal edge kind, MV-D43)."""
+    blob = {
+        "domains": {"nodes": [
+            {"id": "dom:fin", "label": "Finance", "kind": "domain",
+             "domain_id": "dom:fin", "origin": "applied"},
+        ], "edges": [], "truncated": False},
+        "assets": {"nodes": [
+            {"id": "tbl:a", "label": "a", "kind": "table", "domain_id": "dom:fin"},
+            {"id": "tbl:b", "label": "b", "kind": "table", "domain_id": "dom:fin"},
+            {"id": "tbl:c", "label": "c", "kind": "table", "domain_id": "dom:fin"},
+        ], "edges": [
+            {"src": "tbl:a", "dst": "tbl:b", "kind": "join_key",
+             "detail": {"columns": "route_id", "kind": "foreign key"}},
+            {"src": "tbl:a", "dst": "tbl:c", "kind": "co_query"},  # no detail in the blob
+        ], "truncated": False},
+        "layout": "fcose", "node_count": 3, "edge_count": 2,
+    }
+    data = _client(monkeypatch, _snap(blob)).get("/api/ontology/graph").json()
+    by_pair = {(e["src"], e["dst"]): e for e in data["assets"]["edges"]}
+    assert by_pair[("tbl:a", "tbl:b")]["detail"] == {"columns": "route_id", "kind": "foreign key"}
+    # An edge with no detail in the blob degrades cleanly to null (additive contract).
+    assert by_pair[("tbl:a", "tbl:c")]["detail"] is None
+
+
 def test_graph_origin_proposed_returns_proposed_plus_ungrouped(monkeypatch):
     data = _client(monkeypatch, _snap()).get("/api/ontology/graph?origin=proposed").json()
     dom_ids = {n["id"] for n in data["domains"]["nodes"]}
