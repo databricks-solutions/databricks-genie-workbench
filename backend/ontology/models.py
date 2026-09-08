@@ -107,6 +107,13 @@ class OntologyGraphNode(BaseModel):
     # containment tree — "asset" (under an mv:/agent: parent), "subdomain", or "domain".
     # Additive + defaulted None so a pre-MV-D82 blob still renders (MV-D43).
     attach_level: str | None = None
+    # Ontology Map north-star gap-closure (MV-D86, Lane D2): a plain-language node
+    # description + a compact optional meta bag (rows/format/freshness, measure count,
+    # expression, …) for the hover-snippet + inspector (MV-D85, Lane P). Pre-seed carve:
+    # declared here (contract) + filled wheel-side by Lane D2; additive + defaulted so a
+    # pre-MV-D86 blob still renders and Lane P degrades to generic copy when absent.
+    description: str | None = None
+    meta: dict[str, str] | None = None
 
 
 class OntologyGraphEdge(BaseModel):

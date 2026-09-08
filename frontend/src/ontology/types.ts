@@ -241,6 +241,12 @@ export interface OntologyGraphNode {
   origin?: string | null
   // Northstar Data Lane (MV-D82): containment attach point — "asset" | "subdomain" | "domain".
   attach_level?: string | null
+  // Northstar gap-closure (MV-D86, Lane D2): plain-language description + a compact meta
+  // bag (rows/format/freshness, measure count, expression, …) for the hover-snippet +
+  // inspector (MV-D85, Lane P). Pre-seed carve: contract only; filled wheel-side by Lane D2.
+  // Optional so a pre-MV-D86 blob still parses and Lane P degrades to generic copy.
+  description?: string | null
+  meta?: Record<string, string> | null
 }
 
 export interface OntologyGraphEdge {

@@ -120,9 +120,10 @@ async def get_ontology_graph(origin: str = "applied") -> OntologyGraph:
         return OntologyGraph(state="cold")
 
     blob = _filter_by_origin(snap["graph"], view)
-    # Node ``attach_level`` and edge ``verb``/``rel_class`` (MV-D82) flow through _level
-    # automatically (Pydantic reads the extra blob keys); the ``org`` root is passed
-    # explicitly here — absent on a pre-MV-D82 / empty blob, so root stays None (MV-D43).
+    # Node ``attach_level`` (MV-D82) + ``description``/``meta`` (MV-D86, Lane D2) and edge
+    # ``verb``/``rel_class`` (MV-D82) flow through _level automatically (Pydantic reads the
+    # extra blob keys); the ``org`` root is passed explicitly here — absent on a pre-MV-D82
+    # / empty blob, so root stays None (MV-D43).
     root_blob = blob.get("root")
     return OntologyGraph(
         domains=_level(blob.get("domains", {})),
