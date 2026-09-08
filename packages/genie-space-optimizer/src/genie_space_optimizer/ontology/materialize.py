@@ -583,6 +583,10 @@ def run_materialize(
                 "name": r.get("name"),
                 "parent_id": r.get("parent_id"),
                 "origin": "applied" if r.get("tag_decision") in ("reuse", "reassign") else "proposed",
+                # MV-D86 (Lane D2b): forward the rollup description (already on the
+                # domain row, materialize.py L159) so layout surfaces genie_ont_domains
+                # descriptions on domain/sub-domain nodes live. Additive; None stays None.
+                "description": r.get("description"),
             }
             for r in expanded["domain_rows"]
         }
