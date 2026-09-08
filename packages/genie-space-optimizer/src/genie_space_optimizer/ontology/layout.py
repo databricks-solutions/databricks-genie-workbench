@@ -55,6 +55,55 @@ _VERB_BY_KIND = {
 }
 
 
+# Ontology Map north-star gap-closure (MV-D86, Lane D2): the additive per-node ``meta``
+# bag. Reveal-don't-invent (MV-D82): each entry maps an OUTPUT meta key ← the fused-graph
+# node field it reads; a field the 17d inventory did not carry on the node is omitted
+# (never fabricated), a node with zero present fields yields ``meta=None``. Values are
+# coerced to str so the bag stays a compact ``Dict[str,str]`` (MV-D49, blob-only). Keys are
+# emitted in this fixed order so the snapshot blob is byte-stable across runs. Measures ride
+# the expand-on-demand snippet layer (MV-D73), not the base snapshot — but a ``measure`` node
+# that ever appears in the fused graph degrades cleanly here too.
+_META_FIELDS_BY_KIND: dict[str, tuple[tuple[str, str], ...]] = {
+    "table": (("rows", "row_count"), ("format", "data_format"),
+              ("freshness", "freshness"), ("path", "storage_path")),
+    "metric_view": (("measures", "measure_count"), ("dimensions", "dimension_count"),
+                    ("freshness", "freshness")),
+    "measure": (("expression", "expression"), ("format", "format")),
+    "agent": (("sample_questions", "sample_question_count"), ("queries_28d", "queries_28d")),
+    "dashboard": (("viewers_28d", "viewers_28d"), ("refresh", "refresh")),
+}
+
+
+def _clean_description(value: Any) -> str | None:
+    """A plain-language description coerced to a non-empty ``str`` or ``None`` (MV-D86).
+
+    Reveal-don't-invent: a missing/blank source (no UC comment on the 17d node, no
+    ``description`` on the domain row) degrades to ``None`` so Lane P falls back to
+    generic copy rather than rendering an empty string."""
+    if value is None or str(value) == "":
+        return None
+    return str(value)
+
+
+def _node_meta(node: dict[str, Any]) -> dict[str, str] | None:
+    """Compact ``Dict[str,str]`` meta bag for one fused-graph node (MV-D86, Lane D2).
+
+    Reads only the type-appropriate fields the 17d inventory already carried on the node
+    (``_META_FIELDS_BY_KIND``), coercing each present value to a string; a field with no
+    signal is omitted and a node with no present fields yields ``None`` — reveal-don't-
+    invent (MV-D82), additive + degrade-clean (MV-D43). An unlisted kind (``tag``,
+    ``schema``, ``org``, …) has no meta."""
+    spec = _META_FIELDS_BY_KIND.get(node.get("kind", ""))
+    if not spec:
+        return None
+    bag: dict[str, str] = {}
+    for out_key, field in spec:
+        val = node.get(field)
+        if val is not None and str(val) != "":
+            bag[out_key] = str(val)
+    return bag or None
+
+
 def _verb_of(kind: str) -> str:
     """The plain-language verb for a signal-edge ``kind`` (MV-D82 §3.4).
 
@@ -121,14 +170,19 @@ def build_graph_snapshot(
     level. Returns a single row for the ``genie_ont_graph_snapshot`` MERGE.
 
     **Args:**
-    - ``signal_graph``: ``{"nodes": [...], "edges": [...]`` from 17d.
+    - ``signal_graph``: ``{"nodes": [...], "edges": [...]`` from 17d. An asset node may
+      carry an optional ``description`` (its UC comment) + type-appropriate stat fields
+      (``row_count``, ``data_format``, ``measure_count``, ``queries_28d``, …) that MV-D86
+      surfaces as the node's ``description`` + compact ``meta`` bag; a node without them
+      degrades to ``None`` (reveal-don't-invent).
     - ``node_domain_id``: ``{node_id → domain_id}`` from 17e clustering.
     - ``node_scores``: Optional ``{node_id → score}`` from 17g ranking (for sizing).
-    - ``domain_meta``: Optional ``{domain_id → {name, parent_id, origin}}`` from 17e/17f
-      domain rows — labels the rollup nodes with human names, links Sub-Domain → Domain
-      so the map can render the hierarchy (MV-D71), and stamps ``origin`` on each rollup
+    - ``domain_meta``: Optional ``{domain_id → {name, parent_id, origin[, description]}}`` from
+      17e/17f domain rows — labels the rollup nodes with human names, links Sub-Domain →
+      Domain so the map can render the hierarchy (MV-D71), and stamps ``origin`` on each rollup
       (``applied`` when the domain is backed by a governed-tag decision, else
-      ``proposed``; MV-D73 §2.1). Absent → raw ids, flat, ``proposed``.
+      ``proposed``; MV-D73 §2.1). An optional ``description`` (MV-D86, Lane D2) is threaded
+      onto the rollup node when present. Absent → raw ids, flat, ``proposed``, no description.
     - ``snippets_in``: Optional expand-on-demand "business-snippet" index (MV-D73 §2.3),
       baked in the deterministic batch (no request-path warehouse). Shape
       ``{"measures": {mv_fqn → [{ref,name,expression,fmt}]},
@@ -255,6 +309,12 @@ def build_graph_snapshot(
             "y": float(y),
             "size": size,
             "cost": float(cost) if cost is not None else None,
+            # MV-D86 (Lane D2): the UC table/MV comment threaded onto the 17d node (else
+            # None) + the compact type-appropriate meta bag (rows/format/…; None when the
+            # inventory carried no signal). Additive + degrade-clean — Lane P surfaces
+            # these in the hover-snippet + inspector when present (MV-D85).
+            "description": _clean_description(node.get("description")),
+            "meta": _node_meta(node),
         })
 
     # Top-domain resolver for an asset-level node id (Build C rel_class). Resolves the
@@ -308,6 +368,31 @@ def build_graph_snapshot(
     for edge in asset_edges:
         if edge["kind"] in _CONTAINMENT_RANK:
             incoming_containment.setdefault(edge["dst"], []).append(edge)
+
+    # MV-D86 (Lane D2) — deeper containment: give a metric view a tree parent so the map
+    # renders ``agent ⊃ metric_view ⊃ table`` instead of a flat sub-area. An MV is never the
+    # TARGET of a containment edge (mv_membership/agent_scope both point at tables), so it
+    # would otherwise fall straight to the domain. Derived ONLY from existing edges: an MV
+    # attaches to the agent whose ``agent_scope`` covers the most of the MV's ``mv_membership``
+    # source tables (tie → agent id asc — deterministic). No overlap ⇒ no derived parent (the
+    # MV keeps its domain fallback). Reveal-don't-invent: no synthetic edge is emitted.
+    agent_tables: dict[str, set[str]] = {}
+    mv_tables: dict[str, set[str]] = {}
+    for edge in asset_edges:
+        if edge["kind"] == "agent_scope":
+            agent_tables.setdefault(edge["src"], set()).add(edge["dst"])
+        elif edge["kind"] == "mv_membership":
+            mv_tables.setdefault(edge["src"], set()).add(edge["dst"])
+    mv_agent_parent: dict[str, str] = {}
+    for mv_id, tables in mv_tables.items():
+        best_agent, best_overlap = None, 0
+        for agent_id in sorted(agent_tables):
+            overlap = len(tables & agent_tables[agent_id])
+            if overlap > best_overlap:
+                best_agent, best_overlap = agent_id, overlap
+        if best_agent is not None:
+            mv_agent_parent[mv_id] = best_agent
+
     for node in asset_nodes:
         cands = incoming_containment.get(node["id"])
         if cands:
@@ -317,6 +402,10 @@ def build_graph_snapshot(
                 e["src"],
             ))
             node["parent_id"] = best["src"]
+            node["attach_level"] = "asset"
+        elif node["id"] in mv_agent_parent:
+            # A metric view scoped by an agent → nest it under that agent (MV-D86).
+            node["parent_id"] = mv_agent_parent[node["id"]]
             node["attach_level"] = "asset"
         else:
             did = node.get("domain_id")
@@ -359,6 +448,10 @@ def build_graph_snapshot(
                 "parent_id": parent_id,
                 "parent_name": (parent_meta.get("name") if parent_meta else None) or parent_id,
                 "origin": origin,
+                # MV-D86 (Lane D2): the domain/sub-domain description from the genie_ont_domains
+                # row (threaded onto meta upstream); None for the Ungrouped blob or a meta-less
+                # cluster. Additive + degrade-clean — Lane P shows it in the inspector.
+                "description": _clean_description(meta.get("description")) if meta else None,
                 "x": node["x"],
                 "y": node["y"],
                 "size": node["size"],

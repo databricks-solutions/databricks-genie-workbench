@@ -450,3 +450,127 @@ def test_data_lane_keys_are_byte_identical_across_runs():
     b = layout.build_graph_snapshot(sig, {"c.rev.fact": "s1", "c.ops.log": "d0"},
                                     domain_meta=_subdomain_meta(), **kw)
     assert a["graph"] == b["graph"]
+
+
+# --- Ontology Map north-star gap-closure: data enrichment (MV-D86, Lane D2) —
+#     per-node description + compact meta bag + deeper agent⊃mv⊃table containment ---
+
+
+def test_asset_node_carries_description_when_source_has_it():
+    """MV-D86 accept (a): an asset node threads the UC comment carried on the 17d node
+    onto its ``description``; a node without a comment degrades to ``None`` (never blank)."""
+    sig = {"nodes": [
+        {"id": "asset:c.rev.fact", "kind": "table", "description": "Revenue fact table"},
+        {"id": "asset:c.rev.dim", "kind": "table"},  # no comment → null
+    ], "edges": []}
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.rev.dim": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    a = _assets_by_id(blob)
+    assert a["asset:c.rev.fact"]["description"] == "Revenue fact table"
+    assert a["asset:c.rev.dim"]["description"] is None
+
+
+def test_rollup_node_carries_domain_description_when_meta_has_it():
+    """MV-D86 accept (a): a domain rollup threads ``genie_ont_domains.description`` (via
+    domain_meta) onto its node; a meta-less cluster / the Ungrouped blob stays ``None``."""
+    sig = {"nodes": [{"id": "asset:c.fin.ledger", "kind": "table"},
+                     {"id": "asset:c.x.orphan", "kind": "table"}], "edges": []}
+    blob = _snap(sig, {"c.fin.ledger": "d1"},
+                 domain_meta={"d1": {"name": "Finance", "parent_id": None,
+                                     "description": "All finance-governed assets"}})
+    dom = {n["id"]: n for n in blob["domains"]["nodes"]}
+    assert dom["d1"]["description"] == "All finance-governed assets"
+    assert dom["ungrouped"]["description"] is None
+
+
+def test_meta_bag_carries_type_appropriate_keys_and_omits_absent():
+    """MV-D86 accept (b): each kind's meta bag carries only the fields the inventory had,
+    omits a field with no signal, and a node with zero signals yields ``meta = None``."""
+    sig = {"nodes": [
+        {"id": "asset:c.rev.fact", "kind": "table", "row_count": 1000000,
+         "data_format": "DELTA", "freshness": "2026-09-01", "storage_path": "s3://x/fact"},
+        {"id": "mv:c.m.rev_mv", "kind": "metric_view", "measure_count": 4,
+         "dimension_count": 3},  # no freshness → omitted
+        {"id": "agent:sales", "kind": "agent", "queries_28d": 128},  # no sample_questions
+        {"id": "asset:c.plain.tbl", "kind": "table"},  # no signals → meta None
+    ], "edges": []}
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.plain.tbl": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    a = _assets_by_id(blob)
+    assert a["asset:c.rev.fact"]["meta"] == {
+        "rows": "1000000", "format": "DELTA", "freshness": "2026-09-01", "path": "s3://x/fact"}
+    mv = a["mv:c.m.rev_mv"]
+    assert mv["meta"] == {"measures": "4", "dimensions": "3"}  # freshness omitted, no signal
+    assert "freshness" not in mv["meta"]
+    assert a["agent:sales"]["meta"] == {"queries_28d": "128"}  # sample_questions omitted
+    assert a["asset:c.plain.tbl"]["meta"] is None  # no signals at all
+
+
+def test_containment_depth_reaches_agent_metric_view_table():
+    """MV-D86 accept (c): with an ``agent_scope`` (agent→table) and an ``mv_membership``
+    (mv→table) over the SAME table, the tree nests agent ⊃ metric_view ⊃ table — the MV
+    is derived under the agent that scopes its source table (not a flat sub-area)."""
+    sig = {"nodes": [
+        {"id": "agent:sales_agent", "kind": "agent"},
+        {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+        {"id": "asset:c.rev.fact", "kind": "table"},
+    ], "edges": [
+        {"src": "agent:sales_agent", "dst": "asset:c.rev.fact", "kind": "agent_scope"},
+        {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
+    ]}
+    blob = _snap(sig, {"c.rev.fact": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    a = _assets_by_id(blob)
+    # The table's single parent is the MV (mv_membership outranks agent_scope, Build B).
+    assert a["asset:c.rev.fact"]["parent_id"] == "mv:c.m.rev_mv"
+    assert a["asset:c.rev.fact"]["attach_level"] == "asset"
+    # The MV nests under the agent that scopes its source table (MV-D86 deeper containment).
+    assert a["mv:c.m.rev_mv"]["parent_id"] == "agent:sales_agent"
+    assert a["mv:c.m.rev_mv"]["attach_level"] == "asset"
+    # The agent tops the chain, attached to its domain (not another asset).
+    assert a["agent:sales_agent"]["parent_id"] is None
+    assert a["agent:sales_agent"]["attach_level"] == "domain"
+    # Walk parent_id: table → mv → agent — three distinct depths, NOT a flat sub-area.
+    chain, cur, seen = [], "asset:c.rev.fact", set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        chain.append(cur)
+        cur = a.get(cur, {}).get("parent_id")
+    assert chain == ["asset:c.rev.fact", "mv:c.m.rev_mv", "agent:sales_agent"]
+
+
+def test_mv_without_scoping_agent_keeps_domain_fallback():
+    """MV-D86: the derived agent⊃mv link fires ONLY from a real overlap — an MV whose
+    tables no agent scopes keeps its domain fallback (no fabricated parent)."""
+    sig = {"nodes": [
+        {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+        {"id": "asset:c.rev.fact", "kind": "table"},
+    ], "edges": [
+        {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
+    ]}
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.m.rev_mv": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    mv = _assets_by_id(blob)["mv:c.m.rev_mv"]
+    assert mv["parent_id"] == "d1" and mv["attach_level"] == "domain"
+
+
+def test_enriched_keys_are_byte_identical_across_runs():
+    """MV-D86 accept (d): a graph exercising description + meta + agent⊃mv⊃table containment
+    is byte-for-byte identical built twice (fixed seed, deterministic derivation)."""
+    pytest.importorskip("igraph")
+    sig = {"nodes": [
+        {"id": "agent:a", "kind": "agent", "queries_28d": 42, "sample_question_count": 6},
+        {"id": "mv:c.m.mv", "kind": "metric_view", "measure_count": 2},
+        {"id": "asset:c.rev.fact", "kind": "table", "description": "rev", "row_count": 10,
+         "data_format": "DELTA"},
+    ], "edges": [
+        {"src": "agent:a", "dst": "asset:c.rev.fact", "kind": "agent_scope"},
+        {"src": "mv:c.m.mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
+    ]}
+    kw = dict(
+        domain_meta={"d1": {"name": "Rev", "parent_id": None, "description": "the revenue domain"}},
+        metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
+    )
+    x = layout.build_graph_snapshot(sig, {"c.rev.fact": "d1"}, **kw)
+    y = layout.build_graph_snapshot(sig, {"c.rev.fact": "d1"}, **kw)
+    assert x["graph"] == y["graph"]

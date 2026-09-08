@@ -50,7 +50,9 @@ _BLOB = {
             {"id": "mv:finance.sales.orders_metrics", "label": "orders_metrics",
              "kind": "metric_view", "domain_id": "dom:fin"},
             {"id": "tbl:finance.sales.orders", "label": "orders",
-             "kind": "table", "domain_id": "dom:fin"},
+             "kind": "table", "domain_id": "dom:fin",
+             # MV-D86 (Lane D2): additive per-node description + compact meta bag.
+             "description": "Order line items", "meta": {"rows": "1200000", "format": "DELTA"}},
             {"id": "mv:ifec.media.plays", "label": "plays",
              "kind": "metric_view", "domain_id": "dom:ifec"},
             {"id": "mv:un.loose", "label": "loose",
@@ -131,6 +133,20 @@ def test_graph_default_is_applied_plus_ungrouped(monkeypatch):
     assert {n["id"]: n["origin"] for n in data["domains"]["nodes"]} == {
         "dom:fin": "applied", "ungrouped": None,
     }
+
+
+def test_graph_passes_through_description_and_meta(monkeypatch):
+    """MV-D86 (Lane D2) contract parity: a node's additive ``description`` + ``meta`` ride
+    through _level untouched; a node without them degrades to None (pre-MV-D86 blob)."""
+    data = _client(monkeypatch, _snap()).get("/api/ontology/graph").json()
+    by_id = {n["id"]: n for n in data["assets"]["nodes"]}
+    orders = by_id["tbl:finance.sales.orders"]
+    assert orders["description"] == "Order line items"
+    assert orders["meta"] == {"rows": "1200000", "format": "DELTA"}
+    # A node without the fields degrades cleanly to null (additive contract, MV-D43).
+    metrics = by_id["mv:finance.sales.orders_metrics"]
+    assert metrics["description"] is None
+    assert metrics["meta"] is None
 
 
 def test_graph_origin_proposed_returns_proposed_plus_ungrouped(monkeypatch):
