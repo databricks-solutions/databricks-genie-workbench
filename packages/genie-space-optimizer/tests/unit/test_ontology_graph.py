@@ -574,3 +574,203 @@ def test_enriched_keys_are_byte_identical_across_runs():
     x = layout.build_graph_snapshot(sig, {"c.rev.fact": "d1"}, **kw)
     y = layout.build_graph_snapshot(sig, {"c.rev.fact": "d1"}, **kw)
     assert x["graph"] == y["graph"]
+
+
+# --- Ontology Map interaction pass: per-edge evidence bag (MV-D88, Lane E) —
+#     reveal-don't-invent detail sourced from the fused signal-graph edge ---
+
+
+def _asset_edges_by_pair(blob):
+    return {(e["src"], e["dst"]): e for e in blob["assets"]["edges"]}
+
+
+def test_join_key_edge_detail_columns_present_and_absent():
+    """MV-D88 accept (a): a join_key edge carries ``detail.columns`` when the fused edge
+    names them (and ``kind`` "foreign key" from source ``foreign_key``); a proxy edge with
+    no named columns omits ``columns`` and reports ``kind`` "shared column"."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.rev.fact", "kind": "table"},
+            {"id": "asset:c.rev.dim", "kind": "table"},
+            {"id": "asset:c.rev.bridge", "kind": "table"},
+        ],
+        "edges": [
+            # Declared FK, with named join columns → detail.columns present.
+            {"src": "asset:c.rev.fact", "dst": "asset:c.rev.dim", "kind": "join_key",
+             "source": "foreign_key", "columns": ["route_id"]},
+            # Shared-join-column proxy, no columns named → detail.kind only, no columns key.
+            {"src": "asset:c.rev.fact", "dst": "asset:c.rev.bridge", "kind": "join_key",
+             "source": "shared_join_column"},
+        ],
+    }
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.rev.dim": "d1", "c.rev.bridge": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    edges = _asset_edges_by_pair(blob)
+    fk = edges[("asset:c.rev.fact", "asset:c.rev.dim")]
+    assert fk["detail"] == {"columns": "route_id", "kind": "foreign key"}
+    proxy = edges[("asset:c.rev.fact", "asset:c.rev.bridge")]
+    assert proxy["detail"] == {"kind": "shared column"}
+    assert "columns" not in proxy["detail"]
+
+
+def test_join_key_multi_column_label():
+    """Multiple shared columns render as a plain comma-joined label."""
+    sig = {"nodes": [{"id": "asset:c.a.x", "kind": "table"},
+                     {"id": "asset:c.a.y", "kind": "table"}],
+           "edges": [{"src": "asset:c.a.x", "dst": "asset:c.a.y", "kind": "join_key",
+                      "source": "foreign_key", "columns": ["route_id", "day"]}]}
+    blob = _snap(sig, {"c.a.x": "d1", "c.a.y": "d1"},
+                 domain_meta={"d1": {"name": "A", "parent_id": None}})
+    e = blob["assets"]["edges"][0]
+    assert e["detail"]["columns"] == "route_id, day"
+
+
+def test_co_query_and_semantic_sim_detail_are_plain_labels_not_floats():
+    """MV-D88 accept (b): co_query renders a plain session count and semantic_sim a plain
+    similarity band — both strings, never a bare float (MV-D35)."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.a.t1", "kind": "table"},
+            {"id": "asset:c.a.t2", "kind": "table"},
+            {"id": "asset:c.a.t3", "kind": "table"},
+        ],
+        "edges": [
+            {"src": "asset:c.a.t1", "dst": "asset:c.a.t2", "kind": "co_query", "weight": 42.0},
+            {"src": "asset:c.a.t1", "dst": "asset:c.a.t3", "kind": "semantic_sim", "weight": 0.95},
+        ],
+    }
+    blob = _snap(sig, {"c.a.t1": "d1", "c.a.t2": "d1", "c.a.t3": "d1"},
+                 domain_meta={"d1": {"name": "A", "parent_id": None}})
+    edges = {e["kind"]: e for e in blob["assets"]["edges"]}
+    cq = edges["co_query"]["detail"]
+    assert cq == {"co_queried": "42 sessions"}
+    assert isinstance(cq["co_queried"], str)
+    ss = edges["semantic_sim"]["detail"]
+    assert ss == {"similarity": "very high"}
+    assert isinstance(ss["similarity"], str)
+
+
+def test_semantic_sim_bands_track_l3_thresholds():
+    """The band follows the L3 dedup_gate boundaries: ≥0.90 very high, ≥0.72 high, else
+    moderate — so the label is meaningful, not an arbitrary cut."""
+    sig = {"nodes": [
+        {"id": "asset:c.a.hub", "kind": "table"},
+        {"id": "asset:c.a.vh", "kind": "table"},
+        {"id": "asset:c.a.h", "kind": "table"},
+        {"id": "asset:c.a.m", "kind": "table"},
+    ], "edges": [
+        {"src": "asset:c.a.hub", "dst": "asset:c.a.vh", "kind": "semantic_sim", "weight": 0.90},
+        {"src": "asset:c.a.hub", "dst": "asset:c.a.h", "kind": "semantic_sim", "weight": 0.72},
+        {"src": "asset:c.a.hub", "dst": "asset:c.a.m", "kind": "semantic_sim", "weight": 0.71},
+    ]}
+    blob = _snap(sig, {"c.a.hub": "d1", "c.a.vh": "d1", "c.a.h": "d1", "c.a.m": "d1"},
+                 domain_meta={"d1": {"name": "A", "parent_id": None}})
+    band = {e["dst"]: e["detail"]["similarity"] for e in blob["assets"]["edges"]}
+    assert band == {"asset:c.a.vh": "very high", "asset:c.a.h": "high", "asset:c.a.m": "moderate"}
+
+
+def test_lineage_agent_and_mv_membership_detail():
+    """Directional + role verbs: lineage_adjacency → ``flow`` "feeds", agent_scope →
+    ``role`` "queries", mv_membership → ``role`` "aggregates" + measure count from snippets."""
+    sig = {"nodes": [
+        {"id": "agent:sales", "kind": "agent"},
+        {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+        {"id": "asset:c.rev.fact", "kind": "table"},
+        {"id": "asset:c.rev.dim", "kind": "table"},
+    ], "edges": [
+        {"src": "asset:c.rev.fact", "dst": "asset:c.rev.dim", "kind": "lineage_adjacency"},
+        {"src": "agent:sales", "dst": "asset:c.rev.fact", "kind": "agent_scope"},
+        {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
+    ]}
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.rev.dim": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
+                 snippets_in={"measures": {"c.m.rev_mv": [
+                     {"ref": "c.m.rev_mv.m0", "name": "m0", "expression": "SUM(x)", "fmt": ""},
+                     {"ref": "c.m.rev_mv.m1", "name": "m1", "expression": "SUM(y)", "fmt": ""},
+                 ]}, "pages": {}})
+    edges = {e["kind"]: e for e in blob["assets"]["edges"]}
+    assert edges["lineage_adjacency"]["detail"] == {"flow": "feeds"}
+    assert edges["agent_scope"]["detail"] == {"role": "queries"}
+    assert edges["mv_membership"]["detail"] == {"role": "aggregates", "measures": "2"}
+
+
+def test_mv_membership_detail_without_snippets_omits_measures():
+    """Reveal-don't-invent: no snippet index ⇒ the mv_membership ``measures`` key is
+    omitted; only the deterministic ``role`` survives."""
+    sig = {"nodes": [
+        {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+        {"id": "asset:c.rev.fact", "kind": "table"},
+    ], "edges": [
+        {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
+    ]}
+    blob = _snap(sig, {"c.rev.fact": "d1"}, domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    e = next(e for e in blob["assets"]["edges"] if e["kind"] == "mv_membership")
+    assert e["detail"] == {"role": "aggregates"}
+
+
+def test_no_signal_edges_omit_detail():
+    """MV-D88 accept (c): an unlisted edge kind, and a co_query edge with no weight, carry
+    NO ``detail`` key in the blob (so the route degrades to ``detail=None``)."""
+    sig = {"nodes": [
+        {"id": "asset:c.a.t1", "kind": "table"},
+        {"id": "asset:c.a.t2", "kind": "table"},
+        {"id": "asset:c.a.t3", "kind": "table"},
+    ], "edges": [
+        {"src": "asset:c.a.t1", "dst": "asset:c.a.t2", "kind": "mystery_kind"},   # unlisted
+        {"src": "asset:c.a.t1", "dst": "asset:c.a.t3", "kind": "co_query"},       # weight absent
+    ]}
+    blob = _snap(sig, {"c.a.t1": "d1", "c.a.t2": "d1", "c.a.t3": "d1"},
+                 domain_meta={"d1": {"name": "A", "parent_id": None}})
+    for e in blob["assets"]["edges"]:
+        assert "detail" not in e
+
+
+def test_edge_detail_propagates_to_domain_and_subdomain_rollups():
+    """A cross-sub join_key surfaces the SAME evidence bag on the domain rollup edge and
+    the sub-domain rollup edge (carried from the representative asset edge, like weight)."""
+    sig = {"nodes": [
+        {"id": "asset:c.rev.book", "kind": "table"},   # s1
+        {"id": "asset:c.rev.fare", "kind": "table"},   # s2
+    ], "edges": [
+        {"src": "asset:c.rev.book", "dst": "asset:c.rev.fare", "kind": "join_key",
+         "source": "foreign_key", "columns": ["fare_id"]},
+    ]}
+    blob = _snap(sig, {"c.rev.book": "s1", "c.rev.fare": "s2"}, domain_meta=_subdomain_meta())
+    dedges = blob["domains"]["edges"]
+    assert len(dedges) == 1
+    assert dedges[0]["detail"] == {"columns": "fare_id", "kind": "foreign key"}
+    subs = blob["subdomains"]["edges"]
+    assert len(subs) == 1
+    assert subs[0]["detail"] == {"columns": "fare_id", "kind": "foreign key"}
+
+
+def test_edge_detail_keys_are_byte_identical_across_runs():
+    """MV-D88 accept (d): a graph exercising every detail-bearing edge kind (with the new
+    ``detail`` key populated) is byte-for-byte identical when built twice."""
+    pytest.importorskip("igraph")
+    sig = {"nodes": [
+        {"id": "agent:sales", "kind": "agent"},
+        {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+        {"id": "asset:c.rev.fact", "kind": "table"},
+        {"id": "asset:c.rev.dim", "kind": "table"},
+        {"id": "asset:c.rev.other", "kind": "table"},
+    ], "edges": [
+        {"src": "asset:c.rev.fact", "dst": "asset:c.rev.dim", "kind": "join_key",
+         "source": "foreign_key", "columns": ["route_id", "day"]},
+        {"src": "asset:c.rev.fact", "dst": "asset:c.rev.other", "kind": "co_query", "weight": 7.0},
+        {"src": "asset:c.rev.dim", "dst": "asset:c.rev.other", "kind": "semantic_sim", "weight": 0.8},
+        {"src": "asset:c.rev.fact", "dst": "asset:c.rev.dim", "kind": "lineage_adjacency"},
+        {"src": "agent:sales", "dst": "asset:c.rev.fact", "kind": "agent_scope"},
+        {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
+    ]}
+    kw = dict(
+        domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
+        snippets_in={"measures": {"c.m.rev_mv": [{"ref": "c.m.rev_mv.m0", "name": "m0",
+                     "expression": "SUM(x)", "fmt": ""}]}, "pages": {}},
+        metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
+    )
+    ids = {"c.rev.fact": "d1", "c.rev.dim": "d1", "c.rev.other": "d1"}
+    a = layout.build_graph_snapshot(sig, dict(ids), **kw)
+    b = layout.build_graph_snapshot(sig, dict(ids), **kw)
+    assert a["graph"] == b["graph"]
+    assert '"detail"' in a["graph"]  # the new key really rides in the serialized blob
