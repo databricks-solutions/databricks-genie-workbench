@@ -22,6 +22,10 @@ export interface InspectorData {
   description: string
   /** Plain-language metadata lines (no jargon). */
   facts: string[]
+  /** Real key/value metadata from the snapshot (MV-D86) — rows/format/freshness/… */
+  meta?: [string, string][]
+  /** Documentation Pages attached to this node, hydrated on expand (MV-D73). */
+  pages?: { id: string; label: string }[]
   /** Technical detail (Expression / Path / Source) — behind the disclosure (§9-C). */
   technical: string[]
   relationships: InspectorRelationship[]
@@ -80,6 +84,33 @@ export function GraphInspector({
               <span>{line}</span>
             </p>
           ))}
+        </div>
+      )}
+
+      {data.meta && data.meta.length > 0 && (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+          {data.meta.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="text-muted">{k}</dt>
+              <dd className="break-words text-right text-secondary">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {data.pages && data.pages.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+            Attached pages · {data.pages.length}
+          </p>
+          <ul className="space-y-0.5 text-xs text-secondary">
+            {data.pages.slice(0, 8).map((p) => (
+              <li key={p.id} className="truncate">{p.label}</li>
+            ))}
+            {data.pages.length > 8 && (
+              <li className="text-muted">+{data.pages.length - 8} more</li>
+            )}
+          </ul>
         </div>
       )}
 

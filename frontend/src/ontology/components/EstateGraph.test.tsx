@@ -141,4 +141,26 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     const html = renderToStaticMarkup(<EstateGraph graph={g} />)
     expect(html).toContain("View suggested")
   })
+
+  it("de-chromes containers: org/domain/subdomain carry NO glyph; leaf assets keep theirs (R23)", () => {
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    // Container glyph paths (from GLYPHS) must be gone.
+    const ORG_GLYPH = "M12 3 3 8v8l9 5 9-5V8z"
+    const DOMAIN_GLYPH = "M4 7h16M4 12h16M4 17h16"
+    const SUBDOMAIN_GLYPH = "M6 8h12M6 12h12M9 16h9"
+    expect(html).not.toContain(ORG_GLYPH)
+    expect(html).not.toContain(DOMAIN_GLYPH)
+    expect(html).not.toContain(SUBDOMAIN_GLYPH)
+    // A leaf asset (the visible metric view) keeps its type glyph.
+    const MV_GLYPH = "M4 20V10M10 20V4M16 20v-8M22 20H2"
+    expect(html).toContain(MV_GLYPH)
+  })
+
+  it("renders the edge-type legend + interaction hint (R14/R6)", () => {
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(html).toContain("Hierarchy")
+    expect(html).toContain("Shared key")
+    expect(html).toContain("Cross-domain")
+    expect(html).toContain("click to drill · drag to move · hover for details")
+  })
 })

@@ -361,6 +361,9 @@ this batch / **P2** follow-up). Copy this table into `docs/design/reviews/map-<p
 | R18 | **Deterministic geometry** | Same estate → identical layout across reloads (G6) |
 | R19 | **Mess is honest, off-tree** | Ungrouped assets in a demoted tray with a count; never forced into the tree; empty tray reads as a good end-state |
 | R20 | **Proposals read as suggestions** | Dashed "Suggested" hulls over the tray (+ reassignment marks); Approve/Dismiss present; approve promotes tray→tree |
+| R21 | **Hover snippet present + legible** | Hovering a node shows a cursor-following snippet — type · full name · description · a few meta KV · a measure's Expression in mono — clamped to the viewport, dual-theme legible, distinct from click; the top domain tier is never cropped on fit (MV-D85) |
+| R22 | **Measures render under MVs** | Expanding a metric view hydrates its measures (MV-D73) as amber leaf children — the middle tier is present, colourful, and deep, not a flat table row |
+| R23 | **Containers read as areas, not chrome** | org/domain/subdomain carry NO glyph (identity = fill + ring + size); only leaf assets glyph — sub-areas never read as a "hamburger menu" |
 
 A phase is **done** when G1–G7 are green and every applicable R-row is Pass (P2s may defer with a filed
 follow-up). Bounded passes: one Reviewer round → Developer fixes P0/P1 in one batch → one confirm round →
