@@ -20,6 +20,7 @@ import type {
   OntologyDrafts,
   OntologyGraph,
   OntologyGraphEdge,
+  OntologyGraphExpand,
   OntologyGraphNode,
   OntologyTaxonomy,
 } from "@/ontology/types"
@@ -58,6 +59,15 @@ export interface EstateNode {
   cost: number | null
   /** Total descendants in the full tree (the collapsed `+N` badge count). */
   descendantCount: number
+  /**
+   * Plain-language description from the snapshot (MV-D86, Lane D2). The inspector +
+   * hover-snippet prefer this over the generic `describe()` copy; null/absent on a pre-MV-D86
+   * blob (Lane P degrades to the generic strings). Never fabricated (R13). Optional so
+   * synthetic nodes (the `+N more` chip) need not carry it.
+   */
+  description?: string | null
+  /** Compact key/value bag (rows/format/freshness/expression/…) for the snippet + inspector. */
+  meta?: Record<string, string> | null
 }
 
 /** A typed relational edge overlaid on the tree (§3.3). */
@@ -243,6 +253,8 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
     memberCount: graph.root?.member_count ?? null,
     cost: null,
     descendantCount: 0,
+    description: graph.root?.description ?? null,
+    meta: graph.root?.meta ?? null,
   }
 
   const nodes: EstateNode[] = [root]
@@ -272,6 +284,8 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
       memberCount: d.member_count ?? null,
       cost: d.cost ?? null,
       descendantCount: 0,
+      description: d.description ?? null,
+      meta: d.meta ?? null,
     })
   }
 
@@ -317,6 +331,8 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
       memberCount: a.member_count ?? null,
       cost: a.cost ?? null,
       descendantCount: 0,
+      description: a.description ?? null,
+      meta: a.meta ?? null,
     })
   }
 
@@ -485,4 +501,75 @@ function trayFromTaxonomyBucket(taxonomy: OntologyTaxonomy | null | undefined): 
     out.push({ id: m.fqn, label: m.fqn.split(".").pop() ?? m.fqn, type: typeForKind(m.asset_type), kind: m.asset_type })
   }
   return out
+}
+
+// ── Expand-on-demand hydration (MV-D73, §2.3) ────────────────────────────────
+// A metric view's measures + a subdomain's Pages are fetched on click and folded in.
+// Measures PROMOTE into the tree as amber leaf children of the MV — the missing middle
+// tier that makes the estate deep. Pages are "attached" (surfaced in the inspector via
+// {@link pagesFromExpansions}) rather than promoted, so the containment tree stays the
+// north-star taxonomy (org→domain→subdomain→asset→{measure,table}). Pure; reveal-don't-
+// invent (R13) — only merges nodes/edges the expand payload actually returned.
+
+/** True for a hydrated node that promotes into the tree as an MV child (a measure). */
+function isMeasureNode(n: OntologyGraphNode): boolean {
+  return n.kind === "measure"
+}
+
+/**
+ * Fold expand payloads (keyed by the expanded node id) into the base graph: measure
+ * children re-parented onto their metric view (the payload's `parent_id`), carrying the
+ * MV's domain so classing + tint still work. Dedupes against ids already present and across
+ * payloads, so re-expands are idempotent (the caller also caches per id). Returns the graph
+ * unchanged when nothing new merges — a stable identity so downstream memos don't churn.
+ */
+export function mergeHydration(
+  graph: OntologyGraph,
+  expansions: Iterable<OntologyGraphExpand>,
+): OntologyGraph {
+  const domainOfAsset = new Map(graph.assets.nodes.map((a) => [a.id, a.domain_id ?? null]))
+  const seen = new Set(graph.assets.nodes.map((a) => a.id))
+  const extraNodes: OntologyGraphNode[] = []
+  const extraEdges: OntologyGraphEdge[] = []
+  for (const exp of expansions) {
+    const parentDomain = domainOfAsset.get(exp.parent_id) ?? null
+    for (const n of exp.nodes) {
+      if (!isMeasureNode(n) || seen.has(n.id)) continue
+      seen.add(n.id)
+      extraNodes.push({
+        ...n,
+        parent_id: n.parent_id ?? exp.parent_id,
+        domain_id: n.domain_id ?? parentDomain,
+        attach_level: n.attach_level ?? "asset",
+      })
+    }
+    for (const e of exp.edges) {
+      if (e.kind === "mv_measure") extraEdges.push(e)
+    }
+  }
+  if (!extraNodes.length && !extraEdges.length) return graph
+  return {
+    ...graph,
+    assets: {
+      ...graph.assets,
+      nodes: [...graph.assets.nodes, ...extraNodes],
+      edges: [...graph.assets.edges, ...extraEdges],
+    },
+  }
+}
+
+/** A hydrated Page attached to a node (surfaced in the inspector, not the tree). */
+export interface AttachedPage {
+  id: string
+  label: string
+}
+
+/** The `kind="page"` children a node's expand payload returned (empty when none). */
+export function pagesFromExpansions(
+  expansion: OntologyGraphExpand | null | undefined,
+): AttachedPage[] {
+  if (!expansion) return []
+  return expansion.nodes
+    .filter((n) => n.kind === "page")
+    .map((n) => ({ id: n.id, label: n.label }))
 }

@@ -9,12 +9,22 @@
  * tray + proposals) is tunable offline. Harness-only; never imported by the prod bundle.
  */
 import type { EstateGraphApi } from "@/ontology/components/EstateGraph"
-import type { GraphOrigin, OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
+import type {
+  GraphOrigin,
+  OntologyGraph,
+  OntologyGraphEdge,
+  OntologyGraphExpand,
+  OntologyGraphNode,
+} from "@/ontology/types"
 import appliedRaw from "./fixtures/graph.applied.json?raw"
 import proposedRaw from "./fixtures/graph.proposed.json?raw"
+import expandMvRaw from "./fixtures/expand.mv.json?raw"
+import expandSubdomainRaw from "./fixtures/expand.subdomain.json?raw"
 
 const APPLIED = JSON.parse(appliedRaw) as OntologyGraph
 const PROPOSED = JSON.parse(proposedRaw) as OntologyGraph
+const EXPAND_MV = JSON.parse(expandMvRaw) as OntologyGraphExpand
+const EXPAND_SUBDOMAIN = JSON.parse(expandSubdomainRaw) as OntologyGraphExpand
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T
@@ -70,18 +80,18 @@ function node(p: Partial<OntologyGraphNode> & { id: string }): OntologyGraphNode
  */
 export function northstarGraph(): OntologyGraph {
   const domains: OntologyGraphNode[] = [
-    node({ id: "d_fin", label: "Acme Finance", kind: "domain", member_count: 42, origin: "applied" }),
-    node({ id: "d_ops", label: "Acme Operations", kind: "domain", member_count: 31, origin: "applied" }),
-    node({ id: "s_rev", label: "Revenue Accounting", kind: "subdomain", parent_id: "d_fin", parent_name: "Acme Finance", member_count: 12, origin: "applied" }),
+    node({ id: "d_fin", label: "Acme Finance", kind: "domain", member_count: 42, origin: "applied", description: "Finance's governed data — revenue, billing, and the ledgers that close the books." }),
+    node({ id: "d_ops", label: "Acme Operations", kind: "domain", member_count: 31, origin: "applied", description: "How the business runs day to day — events, fulfilment, and operational health." }),
+    node({ id: "s_rev", label: "Revenue Accounting", kind: "subdomain", parent_id: "d_fin", parent_name: "Acme Finance", member_count: 12, origin: "applied", description: "Recognized revenue and the sales facts behind it." }),
     node({ id: "sug_loyalty", label: "Loyalty", kind: "domain", member_count: 3, origin: "proposed" }),
     node({ id: "ungrouped", label: "Ungrouped", kind: "ungrouped", member_count: 5, origin: "proposed" }),
   ]
   const assets: OntologyGraphNode[] = [
-    node({ id: "agent:finance", label: "Finance Agent", kind: "genie_agent", domain_id: "s_rev", attach_level: "subdomain", origin: "applied", cost: 1800 }),
-    node({ id: "mv:net_sales", label: "net sales", kind: "metric_view", domain_id: "s_rev", parent_id: "agent:finance", attach_level: "asset", origin: "applied" }),
-    node({ id: "measure:net_sales", label: "net_sales", kind: "measure", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied" }),
-    node({ id: "table:fact_sales", label: "fact_sales_line", kind: "table", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied" }),
-    node({ id: "table:ref_calendar", label: "ref_calendar", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+    node({ id: "agent:finance", label: "Finance Agent", kind: "genie_agent", domain_id: "s_rev", attach_level: "subdomain", origin: "applied", cost: 1800, description: "Answers plain-language questions about revenue and billing.", meta: { Questions: "1,204 / mo", Rating: "4.6 / 5" } }),
+    node({ id: "mv:net_sales", label: "net sales", kind: "metric_view", domain_id: "s_rev", parent_id: "agent:finance", attach_level: "asset", origin: "applied", description: "Net sales after returns and discounts, by day and channel.", meta: { Grain: "day × channel", Measures: "6", Freshness: "2h" } }),
+    node({ id: "measure:net_sales", label: "net_sales", kind: "measure", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied", description: "Gross sales less returns and discounts.", meta: { Expression: "SUM(gross_amount) - SUM(returns) - SUM(discounts)", Format: "USD" } }),
+    node({ id: "table:fact_sales", label: "fact_sales_line", kind: "table", domain_id: "s_rev", parent_id: "mv:net_sales", attach_level: "asset", origin: "applied", description: "One row per sales order line.", meta: { Rows: "48.2M", Updated: "hourly" } }),
+    node({ id: "table:ref_calendar", label: "ref_calendar", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied", description: "Fiscal calendar — maps dates to periods and quarters.", meta: { Rows: "3,653" } }),
     node({ id: "dash:ops", label: "Ops Overview", kind: "dashboard", domain_id: "d_ops", attach_level: "domain", origin: "applied" }),
     node({ id: "table:ops_events", label: "ops_events", kind: "table", domain_id: "d_ops", attach_level: "domain", origin: "applied" }),
     // tray (ungrouped)
@@ -177,5 +187,14 @@ export function createMockApi(opts: MockOptions = {}): EstateGraphApi {
     if (origin === "proposed") return proposedGraph()
     return graphForScene(scene)
   }
-  return { getGraph }
+  // Expand-on-demand (MV-D73): a metric view hydrates its measures (expand.mv.json), any
+  // other expandable node (a subdomain) hydrates its attached Pages (expand.subdomain.json).
+  // Re-keyed to the requesting node id so the children nest under it. Fixture-backed; no live
+  // call. `slow-expand` / `fail-expand` variants exercise the renderer's honest degrade paths.
+  const expandNode = async (nodeId: string): Promise<OntologyGraphExpand> => {
+    const isMv = nodeId.startsWith("mv:") || nodeId.includes("metric")
+    const src = isMv ? EXPAND_MV : EXPAND_SUBDOMAIN
+    return { ...clone(src), parent_id: nodeId }
+  }
+  return { getGraph, expandNode }
 }

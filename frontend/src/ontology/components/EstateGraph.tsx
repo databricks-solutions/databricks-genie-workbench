@@ -17,12 +17,16 @@ import type {
   GraphOrigin,
   OntologyDrafts,
   OntologyGraph,
+  OntologyGraphExpand,
   OntologyTaxonomy,
 } from "@/ontology/types"
+import { expandNode as apiExpandNode } from "@/ontology/api"
 import {
   buildEstateModel,
   fmtCount,
   fmtMoney,
+  mergeHydration,
+  pagesFromExpansions,
   type EstateModel,
   type NodeType,
 } from "@/ontology/estateGraphModel"
@@ -42,10 +46,13 @@ import { useTheme } from "@/hooks/useTheme"
 import { GraphInspector, type InspectorData } from "./GraphInspector"
 import { GraphSearch } from "./GraphSearch"
 import { GraphMinimap, type MiniPoint, type MiniRect } from "./GraphMinimap"
+import { GraphTooltip, assembleTooltip, type TooltipData } from "./GraphTooltip"
 
 /** Injectable data seam (the harness supplies a fixture-backed mock). */
 export interface EstateGraphApi {
   getGraph: (origin: GraphOrigin) => Promise<OntologyGraph>
+  /** Expand-on-demand hydration (MV-D73): a node's measures / attached Pages. */
+  expandNode?: (node: string, origin: GraphOrigin) => Promise<OntologyGraphExpand>
 }
 
 /** Handle exposed to the dev harness for the deterministic screenshot loop. */
@@ -108,8 +115,9 @@ function clampLabel(s: string): string {
   return s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX - 1).trimEnd()}…` : s
 }
 
-function describe(node: LaidNode): string {
-  switch (node.type) {
+/** Generic plain-language copy by type — the fallback when a node has no real description. */
+function describeType(type: NodeType): string {
+  switch (type) {
     case "org":
       return "The whole estate — every governed business area lives under here."
     case "domain":
@@ -127,6 +135,10 @@ function describe(node: LaidNode): string {
     default:
       return "A data table."
   }
+}
+
+function describe(node: LaidNode): string {
+  return describeType(node.type)
 }
 
 export function EstateGraph({
@@ -156,6 +168,9 @@ export function EstateGraph({
   const [searchHits, setSearchHits] = useState<Set<string>>(new Set())
   const [typeFocus, setTypeFocus] = useState<NodeType | null>(null)
   const [hint, setHint] = useState<string | null>(null)
+  // Hover-snippet (R6/R21): which node the cursor is over + its viewport position.
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 })
 
   // Data seam (MV-D43 honest states): the app passes a `graph` prop and owns its own
   // loading/error shell (OntologyPage), so with no `api` we render the prop directly. When
@@ -183,24 +198,70 @@ export function EstateGraph({
   }, [api, provenance])
   const effectiveGraph = fetched ?? graph
 
+  // Expand-on-demand hydration (MV-D73, §2.3): a node's measures / attached Pages, fetched
+  // on expand and folded into the graph. Held in a ref + version counter (mirrors the
+  // drag-offset seam) so a merge grows the tree in place without resetting view state.
+  const hydrationRef = useRef<Map<string, OntologyGraphExpand>>(new Map())
+  const hydrationInFlight = useRef<Set<string>>(new Set())
+  const [hydrationVersion, setHydrationVersion] = useState(0)
+
+  const augmentedGraph = useMemo(
+    () => mergeHydration(effectiveGraph, hydrationRef.current.values()),
+    // hydrationRef is mutated in place; hydrationVersion bumps on each successful merge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [effectiveGraph, hydrationVersion],
+  )
+
   const model: EstateModel = useMemo(
-    () => buildEstateModel(effectiveGraph, { drafts, taxonomy, estateName }),
-    [effectiveGraph, drafts, taxonomy, estateName],
+    () => buildEstateModel(augmentedGraph, { drafts, taxonomy, estateName }),
+    [augmentedGraph, drafts, taxonomy, estateName],
   )
 
   const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(model))
-  // Reset the open set when the underlying estate changes.
-  const modelKey = useMemo(() => `${model.nodes.length}:${model.root?.id ?? ""}`, [model])
-  const lastKey = useRef(modelKey)
-  if (lastKey.current !== modelKey) {
-    lastKey.current = modelKey
-    // Defer state set out of render via a microtask-free direct set is unsafe; use effect.
-  }
+  // Reset the open set + hydration ONLY when the underlying estate changes (provenance
+  // toggle / new snapshot) — never when a hydration merge grows the model in place, which
+  // would collapse the node the curator just expanded (R7). Keyed on the base graph +
+  // provenance, so a measure/Page merge (which changes `model` but not the estate) is inert.
+  const estateSig = useMemo(
+    () =>
+      `${effectiveGraph.root?.id ?? ""}|${effectiveGraph.node_count}|${provenance === "proposed" ? "p" : "a"}`,
+    [effectiveGraph, provenance],
+  )
+  const lastSig = useRef(estateSig)
   useEffect(() => {
+    if (lastSig.current === estateSig) return
+    lastSig.current = estateSig
+    hydrationRef.current = new Map()
+    hydrationInFlight.current = new Set()
     setExpanded(initialExpanded(model))
     setSelectedId(null)
+    setHoveredId(null)
     setUncapped(new Set())
-  }, [model])
+  }, [estateSig, model])
+
+  // Hydrate a newly-expanded metric view (its measures, which promote as amber children)
+  // or subdomain (its attached Pages, surfaced in the inspector). Cached per node id and
+  // guarded against concurrent fetches (bounded); an error degrades to an empty payload so
+  // the node still expands. In production `EstateGraph` runs without an injected `api`, so
+  // the real `expandNode` client is the default; the harness supplies a fixture-backed one.
+  const doExpand = api?.expandNode ?? apiExpandNode
+  useEffect(() => {
+    const origin: GraphOrigin = provenance === "proposed" ? "proposed" : "applied"
+    const typeById = new Map(model.nodes.map((n) => [n.id, n.type]))
+    for (const id of expanded) {
+      const t = typeById.get(id)
+      if (t !== "metric_view" && t !== "subdomain") continue
+      if (hydrationRef.current.has(id) || hydrationInFlight.current.has(id)) continue
+      hydrationInFlight.current.add(id)
+      doExpand(id, origin)
+        .then((exp) => hydrationRef.current.set(id, exp))
+        .catch(() => hydrationRef.current.set(id, { nodes: [], edges: [], parent_id: id, as_of: null }))
+        .finally(() => {
+          hydrationInFlight.current.delete(id)
+          setHydrationVersion((v) => v + 1)
+        })
+    }
+  }, [expanded, model, provenance, doExpand])
 
   // Manual drag offsets — persisted deltas applied post-layout (R17). A tick bumps relayout.
   const offsetsRef = useRef<Map<string, Point>>(new Map())
@@ -273,14 +334,20 @@ export function EstateGraph({
     // modest margin (R12a — no dead canvas, no crammed corner, no arcs off the edge).
     const b = contentBounds(layout, { tree: showTree, tray: showProposals || !showTree })
     if (b.width <= 0 || b.height <= 0) return
-    const pad = 40
-    const bw = b.width + pad * 2
-    const bh = b.height + pad * 2
+    const padX = 40
+    // Reserve extra headroom at the top so the org / top-domain tier (and its label plate)
+    // is never cropped by the canvas edge on fit (§5/R21e).
+    const padTop = 60
+    const padBottom = 40
+    const bw = b.width + padX * 2
+    const bh = b.height + padTop + padBottom
     const rect = svg.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     const k = Math.min(2.2, Math.max(0.28, Math.min(rect.width / bw, rect.height / bh) * 0.98))
     const x = rect.width / 2 - (b.minX + b.width / 2) * k
-    const y = rect.height / 2 - (b.minY + b.height / 2) * k
+    const centeredY = rect.height / 2 - (b.minY + b.height / 2) * k
+    // Center vertically, but keep at least `padTop` screen px above the content top.
+    const y = Math.max(padTop - b.minY * k, centeredY)
     applyTransform({ x, y, k })
   }, [layout, showTree, showProposals, applyTransform])
 
@@ -320,6 +387,7 @@ export function EstateGraph({
     const dragged = d3drag<SVGGElement, unknown>()
       .on("start", function (e) {
         e.sourceEvent?.stopPropagation?.()
+        setHoveredId(null) // hide the hover snippet while dragging (R21)
       })
       .on("drag", function (e) {
         const id = (this as SVGGElement).getAttribute("data-node-id")
@@ -489,15 +557,39 @@ export function EstateGraph({
     }
     const technical: string[] = []
     if (mn.type === "table" || mn.type === "metric_view") technical.push(`Path: ${mn.id.replace(/^asset:|^mv:|^table:/, "")}`)
+    // Prefer the snapshot's real description/meta (MV-D86); fall back to generic copy (R13).
+    const meta = mn.meta
+      ? Object.entries(mn.meta).map(([k, v]) => [k, `${v}`] as [string, string])
+      : undefined
+    const pages = mn.type === "subdomain" ? pagesFromExpansions(hydrationRef.current.get(mn.id)) : []
     return {
       title: mn.label,
       typeLabel: TYPE_LABEL[mn.type],
-      description: describe(n),
+      description: mn.description && mn.description.trim() ? mn.description : describe(n),
       facts,
+      meta,
+      pages: pages.length ? pages : undefined,
       technical,
       relationships: rels.slice(0, 24),
     }
-  }, [selectedId, model, nodeById])
+    // hydrationRef is read for attached Pages; hydrationVersion gates recompute.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, model, nodeById, hydrationVersion])
+
+  // Hover-snippet content (R6/R21) — prefers real description/meta, degrades to generic copy
+  // (R13). Skips the synthetic "+N more" chip (not a model node → no tooltip).
+  const tooltip: TooltipData | null = useMemo(() => {
+    if (!hoveredId) return null
+    const mn = model.nodes.find((n) => n.id === hoveredId)
+    if (!mn) return null
+    return assembleTooltip({
+      typeLabel: TYPE_LABEL[mn.type],
+      name: mn.label,
+      description: mn.description,
+      meta: mn.meta,
+      fallbackDescription: describeType(mn.type),
+    })
+  }, [hoveredId, model])
 
   const breadcrumb = useMemo(
     () => (selectedId ? ancestorPath(model, selectedId) : model.root ? [model.root] : []),
@@ -626,10 +718,12 @@ export function EstateGraph({
               </defs>
               <rect x="0" y="0" width="100%" height="100%" fill="url(#ontgrid)" />
               <g ref={gRef} transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
-                {/* Spine links */}
+                {/* Spine links — a NEUTRAL hierarchy stroke (§5/R21e), not the domain tint, so
+                    containment reads as structure and never sweeps a coloured arc off-canvas.
+                    Drawn only when BOTH endpoints are laid out (clip-to-visible). */}
                 {showTree &&
                   layout.spineLinks.map((l) => {
-                    const tint = domainTintFor(tokens, l.domainId) ?? tokens.spine
+                    if (!nodeById.has(l.sourceId) || !nodeById.has(l.targetId)) return null
                     const child = nodeById.get(l.targetId)
                     const fade = child ? dimmed(child.type) : false
                     return (
@@ -637,7 +731,7 @@ export function EstateGraph({
                         key={l.id}
                         d={l.path}
                         fill="none"
-                        stroke={tint}
+                        stroke={tokens.spine}
                         strokeWidth={1.2}
                         strokeOpacity={fade ? 0.08 : tokens.spineOpacity}
                       />
@@ -649,7 +743,9 @@ export function EstateGraph({
                   layout.crossLinks.map((c) => {
                     const s = nodeById.get(c.sourceId)
                     const d = nodeById.get(c.targetId)
-                    const fade = (s && dimmed(s.type)) || (d && dimmed(d.type))
+                    // Clip-to-visible (§5/R4): never draw an arc to an off-tree endpoint.
+                    if (!s || !d) return null
+                    const fade = dimmed(s.type) || dimmed(d.type)
                     const stroke = c.relClass === "xdom" ? tokens.xdomEdge : tokens.sharedEdge
                     return (
                       <g key={c.id} opacity={fade ? 0.08 : 1}>
@@ -825,6 +921,13 @@ export function EstateGraph({
                             onNodeClick(n.id)
                           }
                         }}
+                        onMouseEnter={(e) => {
+                          setHoveredId(n.id)
+                          setHoverPos({ x: e.clientX, y: e.clientY })
+                        }}
+                        onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
+                        onMouseLeave={() => setHoveredId((cur) => (cur === n.id ? null : cur))}
+                        onBlur={() => setHoveredId((cur) => (cur === n.id ? null : cur))}
                       >
                         <circle
                           r={n.radius}
@@ -833,16 +936,21 @@ export function EstateGraph({
                           strokeWidth={selectedId === n.id || searchHits.has(n.id) ? 2.5 : isContainer ? 2 : 1.25}
                           strokeOpacity={selectedId === n.id || searchHits.has(n.id) ? 1 : isContainer ? tokens.ringOpacity : 1}
                         />
-                        <path
-                          d={GLYPHS[n.type]}
-                          fill="none"
-                          stroke={tokens.glyphStroke}
-                          strokeWidth={1.6}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          transform={`translate(-12,-12) scale(${(n.radius * 1.1) / 24})`}
-                          opacity={0.9}
-                        />
+                        {/* De-chrome containers (§5/R23): org/domain/subdomain carry NO glyph —
+                            their identity is fill + ring + size — so sub-areas never read as a
+                            "hamburger menu". Leaf assets keep their type glyph (R11). */}
+                        {!isContainer && (
+                          <path
+                            d={GLYPHS[n.type]}
+                            fill="none"
+                            stroke={tokens.glyphStroke}
+                            strokeWidth={1.6}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            transform={`translate(-12,-12) scale(${(n.radius * 1.1) / 24})`}
+                            opacity={0.9}
+                          />
+                        )}
                         {/* Label plate (ellipsized caption; full name in the hover title) */}
                         <g transform={`translate(0,${n.radius + 12})`}>
                           <rect
@@ -880,21 +988,39 @@ export function EstateGraph({
             <GraphMinimap points={miniPoints} rects={miniRects} />
           </div>
 
-          {/* Legend (type-focus) */}
-          <div className="absolute left-3 bottom-3 flex flex-wrap gap-1.5 rounded-lg border border-default bg-elevated/90 p-2">
-            {LEGEND.map((l) => (
-              <button
-                key={l.type}
-                onClick={() => setTypeFocus((cur) => (cur === l.type ? null : l.type))}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
-                  typeFocus === l.type ? "bg-accent/20 text-primary" : "text-secondary hover:text-primary"
-                }`}
-                aria-pressed={typeFocus === l.type}
-              >
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: tokens.typeFill[l.type] }} />
-                {l.label}
-              </button>
-            ))}
+          {/* Legend — node types (click to focus) + edge types + a one-line interaction hint */}
+          <div className="absolute left-3 bottom-3 flex max-w-[calc(100%-1.5rem)] flex-col gap-1.5 rounded-lg border border-default bg-elevated/90 p-2">
+            <div className="flex flex-wrap gap-1.5">
+              {LEGEND.map((l) => (
+                <button
+                  key={l.type}
+                  onClick={() => setTypeFocus((cur) => (cur === l.type ? null : l.type))}
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+                    typeFocus === l.type ? "bg-accent/20 text-primary" : "text-secondary hover:text-primary"
+                  }`}
+                  aria-pressed={typeFocus === l.type}
+                >
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: tokens.typeFill[l.type] }} />
+                  {l.label}
+                </button>
+              ))}
+            </div>
+            {/* Edge-type key (§4.5/R14): hierarchy solid · shared dashed-slate · cross-domain dashed-maroon */}
+            <div className="flex flex-wrap items-center gap-2.5 text-[10px] text-secondary">
+              {[
+                { label: "Hierarchy", stroke: tokens.spine, dash: undefined },
+                { label: "Shared key", stroke: tokens.sharedEdge, dash: "3 2" },
+                { label: "Cross-domain", stroke: tokens.xdomEdge, dash: "3 2" },
+              ].map((e) => (
+                <span key={e.label} className="flex items-center gap-1">
+                  <svg width="18" height="6" aria-hidden className="shrink-0">
+                    <line x1="1" y1="3" x2="17" y2="3" stroke={e.stroke} strokeWidth="1.4" strokeDasharray={e.dash} />
+                  </svg>
+                  {e.label}
+                </span>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted">click to drill · drag to move · hover for details</p>
           </div>
         </div>
 
@@ -918,6 +1044,9 @@ export function EstateGraph({
             ? "Proposed (engine suggestions — nothing applied yet)"
             : "Applied tree + proposed groupings"}
       </p>
+
+      {/* Hover snippet — cursor-following, viewport-clamped, pointer-events:none (R6/R21) */}
+      <GraphTooltip data={tooltip} x={hoverPos.x} y={hoverPos.y} tokens={tokens} />
     </div>
   )
 }

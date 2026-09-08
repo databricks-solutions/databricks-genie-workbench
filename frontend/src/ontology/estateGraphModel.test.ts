@@ -2,11 +2,19 @@ import { describe, expect, it } from "vitest"
 import {
   buildEstateModel,
   classForEdge,
+  mergeHydration,
+  pagesFromExpansions,
   trimCommonPrefix,
   typeForKind,
   verbForEdge,
 } from "@/ontology/estateGraphModel"
-import type { OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
+import { initialExpanded, layoutTree } from "@/ontology/ontologyTreeLayout"
+import type {
+  OntologyGraph,
+  OntologyGraphEdge,
+  OntologyGraphExpand,
+  OntologyGraphNode,
+} from "@/ontology/types"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -258,5 +266,133 @@ describe("buildEstateModel proposals", () => {
     const p = model.proposals[0]
     expect(p.band).toBe("High")
     expect(p.memberIds).toContain("table:u1")
+  })
+})
+
+// ── Expand-on-demand hydration (MV-D73 / R22) ────────────────────────────────
+
+/** An expand payload of measures for a metric view (parent_id-less children, edges carry it). */
+function mvExpand(parentId: string, count: number): OntologyGraphExpand {
+  const nodes: OntologyGraphNode[] = []
+  const edges: OntologyGraphEdge[] = []
+  for (let i = 0; i < count; i++) {
+    nodes.push(node({ id: `measure:${parentId}.m${i}`, label: `m${i}`, kind: "measure" }))
+    edges.push({ src: parentId, dst: `measure:${parentId}.m${i}`, kind: "mv_measure" })
+  }
+  return { nodes, edges, parent_id: parentId, as_of: null }
+}
+
+describe("mergeHydration — measures promote as MV children (MV-D73)", () => {
+  function graphWithMv(): OntologyGraph {
+    return {
+      root: node({ id: "org", label: "Acme", kind: "org" }),
+      domains: {
+        nodes: [node({ id: "d_fin", label: "Finance", kind: "domain", origin: "applied" })],
+        edges: [],
+        truncated: false,
+      },
+      assets: {
+        nodes: [
+          node({ id: "mv:net", label: "net sales", kind: "metric_view", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+        ],
+        edges: [],
+        truncated: false,
+      },
+      layout: "tree",
+      node_count: 3,
+      edge_count: 0,
+      state: "fresh",
+    }
+  }
+
+  it("re-parents measure children onto the metric view and inherits its domain", () => {
+    const merged = mergeHydration(graphWithMv(), [mvExpand("mv:net", 3)])
+    const model = buildEstateModel(merged)
+    const kids = model.childrenByParent.get("mv:net") ?? []
+    expect(kids.map((k) => k.id).sort()).toEqual([
+      "measure:mv:net.m0",
+      "measure:mv:net.m1",
+      "measure:mv:net.m2",
+    ])
+    expect(kids.every((k) => k.type === "measure")).toBe(true)
+    expect(kids.every((k) => k.domainId === "d_fin")).toBe(true)
+  })
+
+  it("is idempotent — merging the same expand twice does not duplicate children (cache-safe)", () => {
+    const exp = mvExpand("mv:net", 3)
+    const merged = mergeHydration(graphWithMv(), [exp, exp])
+    expect(merged.assets.nodes.filter((n) => n.kind === "measure").length).toBe(3)
+  })
+
+  it("returns the SAME graph object when nothing new merges (stable identity, no memo churn)", () => {
+    const g = graphWithMv()
+    expect(mergeHydration(g, [])).toBe(g)
+    // A page-only payload never promotes into the tree — graph is unchanged.
+    const pageOnly: OntologyGraphExpand = {
+      nodes: [node({ id: "page:p1", label: "P1", kind: "page" })],
+      edges: [{ src: "mv:net", dst: "page:p1", kind: "page_source" }],
+      parent_id: "mv:net",
+      as_of: null,
+    }
+    expect(mergeHydration(g, [pageOnly])).toBe(g)
+  })
+
+  it("pagesFromExpansions surfaces kind=page children (attached, not promoted)", () => {
+    const exp: OntologyGraphExpand = {
+      nodes: [
+        node({ id: "page:p1", label: "Doc One", kind: "page" }),
+        node({ id: "measure:x", label: "x", kind: "measure" }),
+      ],
+      edges: [],
+      parent_id: "s_rev",
+      as_of: null,
+    }
+    const pages = pagesFromExpansions(exp)
+    expect(pages).toEqual([{ id: "page:p1", label: "Doc One" }])
+    expect(pagesFromExpansions(null)).toEqual([])
+  })
+})
+
+describe("layout clip-to-visible — no edges to off-tree endpoints (R4/R21e)", () => {
+  function graphWithCollapsedCrossEdge(): OntologyGraph {
+    // A cross-edge between a domain-level table and a table nested under a COLLAPSED MV.
+    return {
+      root: node({ id: "org", label: "Acme", kind: "org" }),
+      domains: {
+        nodes: [node({ id: "d_fin", label: "Finance", kind: "domain", origin: "applied" })],
+        edges: [],
+        truncated: false,
+      },
+      assets: {
+        nodes: [
+          node({ id: "mv:net", label: "net sales", kind: "metric_view", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+          node({ id: "t:deep", label: "deep_table", kind: "table", domain_id: "d_fin", parent_id: "mv:net", attach_level: "asset", origin: "applied" }),
+          node({ id: "t:top", label: "top_table", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+        ],
+        edges: [{ src: "t:top", dst: "t:deep", kind: "join_key", verb: "joins", rel_class: "shared" }],
+        truncated: false,
+      },
+      layout: "tree",
+      node_count: 5,
+      edge_count: 1,
+      state: "fresh",
+    }
+  }
+
+  it("excludes a cross-link whose endpoint is inside a collapsed subtree", () => {
+    const model = buildEstateModel(graphWithCollapsedCrossEdge())
+    // The model still knows the typed cross-edge exists…
+    expect(model.crossEdges.some((e) => e.src === "t:top" && e.dst === "t:deep")).toBe(true)
+    // …but with the MV collapsed (default: only org/domain/subdomain open), t:deep is not
+    // laid out, so the arc is clipped from the rendered cross-links.
+    const laid = layoutTree(model, initialExpanded(model), new Map())
+    const laidIds = new Set(laid.nodes.map((n) => n.id))
+    expect(laidIds.has("t:deep")).toBe(false)
+    expect(laid.crossLinks.some((c) => c.targetId === "t:deep" || c.sourceId === "t:deep")).toBe(false)
+    // Every spine link connects two laid-out nodes (never sweeps to an off-tree node).
+    for (const s of laid.spineLinks) {
+      expect(laidIds.has(s.sourceId)).toBe(true)
+      expect(laidIds.has(s.targetId)).toBe(true)
+    }
   })
 })
