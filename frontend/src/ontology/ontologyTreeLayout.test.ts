@@ -3,11 +3,14 @@ import { buildEstateModel } from "@/ontology/estateGraphModel"
 import {
   DEFAULT_LAYOUT,
   ancestorPath,
+  centerOnTransform,
+  collapsedToDomainTier,
   contentBounds,
   initialExpanded,
   layoutHash,
   layoutTree,
   moreSentinelId,
+  viewportContentRect,
   type Point,
 } from "@/ontology/ontologyTreeLayout"
 import type { OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
@@ -321,5 +324,78 @@ describe("ancestorPath + initialExpanded", () => {
     expect(exp.has("d_fin")).toBe(true)
     expect(exp.has("s_rev")).toBe(true)
     expect(exp.has("mv:a")).toBe(false)
+  })
+})
+
+// ── MV-D87 (Lane P2) — verb focus, collapse-tier, minimap/camera math ─────────
+describe("layoutTree — rel-type verb focus (R25)", () => {
+  it("reveals every visible arc of a verb, labelled, and suppresses the rest", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { verbFocus: "also queried with" })
+    expect(l.crossLinks.length).toBe(1)
+    expect(l.crossLinks[0].verb).toBe("also queried with")
+    expect(l.crossLinks[0].showLabel).toBe(true)
+  })
+
+  it("verb focus overrides the cap so a rel-type reads even in a dense estate", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const l = layoutTree(model, exp, noOffsets, { ...DEFAULT_LAYOUT, crossLinkCap: 0 }, { verbFocus: "joins calendar" })
+    expect(l.crossLinks.map((c) => c.verb)).toEqual(["joins calendar"])
+  })
+
+  it("node focusId takes precedence over verbFocus (a selection is more specific)", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:cal", verbFocus: "also queried with" })
+    // t:cal only touches the shared 'joins calendar' arc — verbFocus is ignored.
+    expect(l.crossLinks.map((c) => c.verb)).toEqual(["joins calendar"])
+  })
+
+  it("threads an edge's detail bag onto the laid-out cross-link", () => {
+    const g = graph()
+    g.assets.edges = [
+      { src: "t:sales", dst: "t:cal", kind: "join_key", verb: "joins calendar", rel_class: "shared", detail: { Shares: "date_key" } },
+    ]
+    const model = buildEstateModel(g)
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:cal" })
+    expect(l.crossLinks[0].detail).toEqual({ Shares: "date_key" })
+  })
+})
+
+describe("collapsedToDomainTier (P0-a, R24)", () => {
+  it("expands only the org root → the tree reads down to the domain tier", () => {
+    const model = buildEstateModel(graph())
+    const exp = collapsedToDomainTier(model)
+    const laid = layoutTree(model, exp, noOffsets)
+    const types = new Set(laid.nodes.map((n) => n.type))
+    // Only org + its domain children are laid out; nothing below the domain tier.
+    expect(types.has("org")).toBe(true)
+    expect(types.has("domain")).toBe(true)
+    expect(types.has("subdomain")).toBe(false)
+    expect(types.has("table")).toBe(false)
+    // Every domain node reads as a collapsed container (a +N badge to drill).
+    expect(laid.nodes.filter((n) => n.type === "domain").every((n) => n.collapsed)).toBe(true)
+  })
+})
+
+describe("minimap + camera math (P1-a, R26)", () => {
+  it("viewportContentRect inverts the camera transform to content coords", () => {
+    // transform x=40,y=40,k=0.5; a 800×600 canvas frames content [-80,-80]..[1520,1120].
+    const r = viewportContentRect({ x: 40, y: 40, k: 0.5 }, { width: 800, height: 600 })
+    expect(r.x1).toBeCloseTo(-80)
+    expect(r.y1).toBeCloseTo(-80)
+    expect(r.x2).toBeCloseTo(1520)
+    expect(r.y2).toBeCloseTo(1120)
+  })
+
+  it("centerOnTransform puts a content point at the viewport centre at the given zoom", () => {
+    const t = centerOnTransform({ x: 100, y: 50 }, { width: 800, height: 600 }, 2)
+    // screen = content*k + translate; the point must map to the centre (400,300).
+    expect(100 * t.k + t.x).toBeCloseTo(400)
+    expect(50 * t.k + t.y).toBeCloseTo(300)
+    expect(t.k).toBe(2)
   })
 })

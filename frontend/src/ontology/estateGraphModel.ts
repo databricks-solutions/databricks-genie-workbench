@@ -78,6 +78,12 @@ export interface EstateCrossEdge {
   verb: string
   relClass: RelClass
   kind: string
+  /**
+   * Compact optional evidence bag for the hover edge-tooltip (MV-D88, Lane E → MV-D87,
+   * Lane P2): e.g. { "Shares": "customer_id, flight_id", "Co-queried": "42 sessions" }.
+   * Null on a pre-MV-D88 blob — the tooltip then degrades to verb + endpoints + class (R25).
+   */
+  detail?: Record<string, string> | null
 }
 
 /** An asset with no applied group — lives in the off-tree tray (§3.5). */
@@ -444,6 +450,7 @@ function buildCrossEdges(
       verb: verbForEdge(edge),
       relClass: classForEdge(edge, domainOfNode),
       kind: edge.kind,
+      detail: edge.detail ?? null,
     })
   }
   for (const e of graph.assets.edges) consider(e)
@@ -572,4 +579,81 @@ export function pagesFromExpansions(
   return expansion.nodes
     .filter((n) => n.kind === "page")
     .map((n) => ({ id: n.id, label: n.label }))
+}
+
+// ── Domain show/hide (MV-D87 P1-b, §5) ───────────────────────────────────────
+// Pure, VIEW-ONLY: derive a filtered model that omits every node whose domain (or
+// sub-domain) the curator has unchecked, plus its whole subtree and any cross-link that
+// touches a removed node. Never mutates the snapshot (R13) — it returns a fresh model, and
+// with nothing hidden it returns the input UNCHANGED (byte-stable identity so the default
+// paint's layout hash never churns, R18).
+
+/** True for a top-domain / sub-domain container that can be toggled in the panel. */
+function isVisibilityContainer(n: EstateNode): boolean {
+  return n.type === "domain" || n.type === "subdomain"
+}
+
+/** The top-domain + sub-domain containers, top-first then stable order (panel listing). */
+export function visibilityDomains(model: EstateModel): EstateNode[] {
+  return model.nodes.filter(isVisibilityContainer)
+}
+
+/**
+ * Filter the model to hide the subtrees of the container ids in `hidden` (top domains or
+ * sub-domains). A node is hidden when itself or any ancestor is in `hidden`; hidden nodes
+ * drop from `nodes`/`childrenByParent`, cross-edges with a hidden endpoint drop, and the
+ * remaining collapse-badge descendant counts are recomputed. Tray + proposals are untouched
+ * (they are off-tree / ungrouped, not domain-scoped). Returns the input model unchanged when
+ * `hidden` is empty.
+ */
+export function filterModelByVisibility(
+  model: EstateModel,
+  hidden: ReadonlySet<string>,
+): EstateModel {
+  if (hidden.size === 0 || !model.root) return model
+  const byId = new Map(model.nodes.map((n) => [n.id, n]))
+  const removed = new Set<string>()
+  const isHidden = (n: EstateNode): boolean => {
+    // Walk to the root; hidden if any ancestor (or self) is unchecked.
+    let cur: EstateNode | null = n
+    const guard = new Set<string>()
+    while (cur && !guard.has(cur.id)) {
+      guard.add(cur.id)
+      if (hidden.has(cur.id)) return true
+      cur = cur.parentId ? byId.get(cur.parentId) ?? null : null
+    }
+    return false
+  }
+  for (const n of model.nodes) if (isHidden(n)) removed.add(n.id)
+  if (removed.size === 0) return model
+  const nodes = model.nodes.filter((n) => !removed.has(n.id))
+  const crossEdges = model.crossEdges.filter((e) => !removed.has(e.src) && !removed.has(e.dst))
+  const childrenByParent = indexChildren(nodes)
+  computeDescendantCounts(model.root, childrenByParent)
+  return { ...model, nodes, childrenByParent, crossEdges }
+}
+
+/** One row of the relationship-type legend (§5, Bloom-idiom): a verb + its live count. */
+export interface RelTypeLegendRow {
+  verb: string
+  count: number
+  /** How many of this verb's edges are cross-domain (drives the swatch class). */
+  xdom: number
+}
+
+/**
+ * Group cross-edges by their plain verb into legend rows with live counts, so the legend
+ * lists each relationship type present (with a number, click-to-highlight). Deterministic
+ * order: count desc, then verb A→Z. Pure — recomputes from whatever edges are currently
+ * visible, so domain show/hide changes the counts (R27).
+ */
+export function relTypeLegend(edges: EstateCrossEdge[]): RelTypeLegendRow[] {
+  const by = new Map<string, RelTypeLegendRow>()
+  for (const e of edges) {
+    const row = by.get(e.verb) ?? { verb: e.verb, count: 0, xdom: 0 }
+    row.count += 1
+    if (e.relClass === "xdom") row.xdom += 1
+    by.set(e.verb, row)
+  }
+  return [...by.values()].sort((a, b) => (b.count - a.count) || (a.verb < b.verb ? -1 : a.verb > b.verb ? 1 : 0))
 }

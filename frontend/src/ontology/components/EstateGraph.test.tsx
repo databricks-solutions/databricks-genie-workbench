@@ -163,4 +163,32 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     expect(html).toContain("Cross-domain")
     expect(html).toContain("click to drill · drag to move · hover for details")
   })
+
+  // ── MV-D87 (Lane P2) — nav & relationship legibility ───────────────────────
+  it("renders the P0-a toolbar: Collapse all + Fullscreen + Domains (R24/R27)", () => {
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(html).toContain("Expand all")
+    expect(html).toContain("Collapse all")
+    expect(html).toContain("Fullscreen")
+    expect(html).toContain("Domains") // the show/hide toggle
+  })
+
+  it("defines themed direction-arrowhead markers for the two edge classes (R25)", () => {
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(html).toContain('id="arrow-shared"')
+    expect(html).toContain('id="arrow-xdom"')
+    expect(html).toContain("→ shows direction") // the updated interaction hint
+  })
+
+  it("renders a relationship-type legend row (verb + count) when cross-links exist (R25)", () => {
+    const g = northstar()
+    // Two domain-level tables under d_fin joined by a shared key → one rel-type row.
+    g.assets.nodes.push(
+      node({ id: "t:a", label: "table_a", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+      node({ id: "t:b", label: "table_b", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+    )
+    g.assets.edges = [{ src: "t:a", dst: "t:b", kind: "join_key", verb: "shares key with", rel_class: "shared" }]
+    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
+    expect(html).toContain("shares key with")
+  })
 })

@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest"
 import {
   buildEstateModel,
   classForEdge,
+  filterModelByVisibility,
   mergeHydration,
   pagesFromExpansions,
+  relTypeLegend,
   trimCommonPrefix,
   typeForKind,
   verbForEdge,
+  visibilityDomains,
 } from "@/ontology/estateGraphModel"
 import { initialExpanded, layoutTree } from "@/ontology/ontologyTreeLayout"
 import type {
@@ -394,5 +397,88 @@ describe("layout clip-to-visible — no edges to off-tree endpoints (R4/R21e)", 
       expect(laidIds.has(s.sourceId)).toBe(true)
       expect(laidIds.has(s.targetId)).toBe(true)
     }
+  })
+})
+
+// ── MV-D87 (Lane P2) — detail thread, domain show/hide, rel-type legend ───────
+describe("cross-edge detail thread (MV-D87 / MV-D88 pre-seed, R25)", () => {
+  it("carries an edge's optional detail bag onto the cross-edge; null when absent", () => {
+    const g = northstarGraph()
+    g.assets.edges = [
+      {
+        src: "table:sales",
+        dst: "table:cal",
+        kind: "join_key",
+        weight: 2,
+        verb: "joins calendar",
+        rel_class: "shared",
+        detail: { Shares: "date_key", "Co-queried": "42 sessions" },
+      },
+      { src: "table:sales", dst: "table:ops1", kind: "co_query", weight: 1, verb: "also queried with", rel_class: "xdom" },
+    ]
+    const m = buildEstateModel(g)
+    const withDetail = m.crossEdges.find((e) => e.verb === "joins calendar")
+    const without = m.crossEdges.find((e) => e.verb === "also queried with")
+    expect(withDetail?.detail).toEqual({ Shares: "date_key", "Co-queried": "42 sessions" })
+    expect(without?.detail ?? null).toBeNull()
+  })
+})
+
+describe("filterModelByVisibility — domain show/hide (R27)", () => {
+  it("returns the input UNCHANGED (identity) when nothing is hidden — byte-stable default", () => {
+    const m = buildEstateModel(northstarGraph())
+    expect(filterModelByVisibility(m, new Set())).toBe(m)
+  })
+
+  it("hides a top domain's subtree AND drops cross-links + counts that touch it", () => {
+    const m = buildEstateModel(northstarGraph())
+    expect(m.crossEdges.length).toBe(2) // shared (fin↔fin) + xdom (fin↔ops)
+    const filtered = filterModelByVisibility(m, new Set(["d_ops"]))
+    const ids = new Set(filtered.nodes.map((n) => n.id))
+    expect(ids.has("d_ops")).toBe(false)
+    expect(ids.has("table:ops1")).toBe(false)
+    expect(ids.has("d_fin")).toBe(true)
+    // The cross-domain edge (sales↔ops1) is gone; the within-domain one survives.
+    expect(filtered.crossEdges.length).toBe(1)
+    expect(filtered.crossEdges[0].relClass).toBe("shared")
+  })
+
+  it("hides a sub-domain subtree without touching its parent domain", () => {
+    const m = buildEstateModel(northstarGraph())
+    const filtered = filterModelByVisibility(m, new Set(["s_rev"]))
+    const ids = new Set(filtered.nodes.map((n) => n.id))
+    expect(ids.has("s_rev")).toBe(false)
+    expect(ids.has("mv:net_sales")).toBe(false) // descendant of s_rev
+    expect(ids.has("d_fin")).toBe(true) // parent domain stays
+    expect(ids.has("table:cal")).toBe(true) // sibling under d_fin stays
+  })
+
+  it("lists top-domain + sub-domain containers for the panel", () => {
+    const m = buildEstateModel(northstarGraph())
+    const ids = visibilityDomains(m).map((n) => n.id)
+    expect(ids).toContain("d_fin")
+    expect(ids).toContain("d_ops")
+    expect(ids).toContain("s_rev")
+    expect(ids).not.toContain("org:acme")
+    expect(ids).not.toContain("mv:net_sales")
+  })
+})
+
+describe("relTypeLegend — verb rows with live counts (R25)", () => {
+  it("groups cross-edges by verb with a count + cross-domain tally, sorted", () => {
+    const m = buildEstateModel(northstarGraph())
+    const rows = relTypeLegend(m.crossEdges)
+    const byVerb = Object.fromEntries(rows.map((r) => [r.verb, r]))
+    expect(byVerb["joins calendar"].count).toBe(1)
+    expect(byVerb["joins calendar"].xdom).toBe(0)
+    expect(byVerb["also queried with"].count).toBe(1)
+    expect(byVerb["also queried with"].xdom).toBe(1)
+  })
+
+  it("count follows a domain-hide (fewer visible edges → fewer rows)", () => {
+    const m = buildEstateModel(northstarGraph())
+    const filtered = filterModelByVisibility(m, new Set(["d_ops"]))
+    const rows = relTypeLegend(filtered.crossEdges)
+    expect(rows.map((r) => r.verb)).toEqual(["joins calendar"])
   })
 })

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
 import { graphTokens } from "@/ontology/graphTokens"
-import { GraphTooltip, assembleTooltip } from "./GraphTooltip"
+import { GraphEdgeTooltip, GraphTooltip, assembleEdgeTooltip, assembleTooltip } from "./GraphTooltip"
 
 describe("assembleTooltip — hover-snippet content (MV-D85 / R21)", () => {
   it("prefers the real description over the generic fallback", () => {
@@ -73,6 +73,64 @@ describe("assembleTooltip — hover-snippet content (MV-D85 / R21)", () => {
     expect(html).toContain("SUM(gross) - SUM(ret)")
     expect(html).toContain("monospace")
     // pointer-events:none so the snippet never eats the hover it describes (R21).
+    expect(html).toContain("pointer-events:none")
+  })
+})
+
+describe("assembleEdgeTooltip — relationship hover content (MV-D87 / R25)", () => {
+  it("carries endpoints, verb, and the within-domain class label", () => {
+    const t = assembleEdgeTooltip({ fromName: "fact_sales", toName: "ref_calendar", verb: "joins calendar", xdom: false })
+    expect(t.fromName).toBe("fact_sales")
+    expect(t.toName).toBe("ref_calendar")
+    expect(t.verb).toBe("joins calendar")
+    expect(t.classLabel).toBe("Within business area")
+    expect(t.xdom).toBe(false)
+  })
+
+  it("labels a cross-domain edge and folds in the pre-seed evidence bag", () => {
+    const t = assembleEdgeTooltip({
+      fromName: "a",
+      toName: "b",
+      verb: "also queried with",
+      xdom: true,
+      detail: { "Co-queried": "42 sessions", Shares: "customer_id" },
+    })
+    expect(t.classLabel).toBe("Across business areas")
+    expect(t.detail).toContainEqual(["Co-queried", "42 sessions"])
+    expect(t.detail).toContainEqual(["Shares", "customer_id"])
+  })
+
+  it("DEGRADES to verb + endpoints + class when detail is null/empty (never requires Lane E, R13)", () => {
+    expect(assembleEdgeTooltip({ fromName: "a", toName: "b", verb: "relates to", xdom: false, detail: null }).detail).toEqual([])
+    expect(assembleEdgeTooltip({ fromName: "a", toName: "b", verb: "relates to", xdom: false }).detail).toEqual([])
+    // Blank values are dropped.
+    expect(
+      assembleEdgeTooltip({ fromName: "a", toName: "b", verb: "x", xdom: false, detail: { Shares: "   " } }).detail,
+    ).toEqual([])
+  })
+
+  it("caps the evidence bag at ~6 entries", () => {
+    const detail: Record<string, string> = {}
+    for (let i = 0; i < 10; i++) detail[`k${i}`] = `v${i}`
+    expect(assembleEdgeTooltip({ fromName: "a", toName: "b", verb: "x", xdom: false, detail }).detail.length).toBe(6)
+  })
+
+  it("renders From → To, verb, class, and evidence; nothing when null", () => {
+    expect(renderToStaticMarkup(<GraphEdgeTooltip data={null} x={0} y={0} tokens={graphTokens("dark")} />)).toBe("")
+    const data = assembleEdgeTooltip({
+      fromName: "fact_sales",
+      toName: "ref_calendar",
+      verb: "joins calendar",
+      xdom: false,
+      detail: { Shares: "date_key" },
+    })
+    const html = renderToStaticMarkup(<GraphEdgeTooltip data={data} x={10} y={10} tokens={graphTokens("light")} />)
+    expect(html).toContain("Relationship")
+    expect(html).toContain("fact_sales")
+    expect(html).toContain("ref_calendar")
+    expect(html).toContain("joins calendar")
+    expect(html).toContain("Within business area")
+    expect(html).toContain("date_key")
     expect(html).toContain("pointer-events:none")
   })
 })

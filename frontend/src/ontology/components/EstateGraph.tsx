@@ -9,7 +9,17 @@
  * (MV-D43) when Lane-D fields are absent. Honest loading / empty / error / stale states.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { AlertTriangle, Loader2, Maximize2, RotateCcw, Sparkles } from "lucide-react"
+import {
+  AlertTriangle,
+  ChevronsDownUp,
+  Eye,
+  Loader2,
+  Maximize,
+  Maximize2,
+  Minimize,
+  RotateCcw,
+  Sparkles,
+} from "lucide-react"
 import { drag as d3drag } from "d3-drag"
 import { select } from "d3-selection"
 import { zoom as d3zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom"
@@ -23,20 +33,25 @@ import type {
 import { expandNode as apiExpandNode } from "@/ontology/api"
 import {
   buildEstateModel,
+  filterModelByVisibility,
   fmtCount,
   fmtMoney,
   mergeHydration,
   pagesFromExpansions,
+  relTypeLegend,
   type EstateModel,
   type NodeType,
 } from "@/ontology/estateGraphModel"
 import {
   DEFAULT_LAYOUT,
   ancestorPath,
+  centerOnTransform,
+  collapsedToDomainTier,
   contentBounds,
   initialExpanded,
   layoutHash,
   layoutTree,
+  viewportContentRect,
   type LaidNode,
   type Layout,
   type Point,
@@ -45,8 +60,16 @@ import { bandColor, domainTintFor, graphTokens } from "@/ontology/graphTokens"
 import { useTheme } from "@/hooks/useTheme"
 import { GraphInspector, type InspectorData } from "./GraphInspector"
 import { GraphSearch } from "./GraphSearch"
-import { GraphMinimap, type MiniPoint, type MiniRect } from "./GraphMinimap"
-import { GraphTooltip, assembleTooltip, type TooltipData } from "./GraphTooltip"
+import { GraphMinimap, type MiniPoint, type MiniRect, type MiniViewport } from "./GraphMinimap"
+import {
+  GraphEdgeTooltip,
+  GraphTooltip,
+  assembleEdgeTooltip,
+  assembleTooltip,
+  type EdgeTooltipData,
+  type TooltipData,
+} from "./GraphTooltip"
+import { DomainVisibilityPanel, type VisibilityGroup } from "./DomainVisibilityPanel"
 
 /** Injectable data seam (the harness supplies a fixture-backed mock). */
 export interface EstateGraphApi {
@@ -171,6 +194,17 @@ export function EstateGraph({
   // Hover-snippet (R6/R21): which node the cursor is over + its viewport position.
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 })
+  // Edge hover (R25) — which cross-link arc the cursor is over (mutually exclusive w/ node hover).
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
+  // Relationship-type highlight (R25, Bloom idiom) — a legend verb, or null.
+  const [relVerbFocus, setRelVerbFocus] = useState<string | null>(null)
+  // Fullscreen overlay (P0-a) + right-rail domain show/hide panel (P1-b).
+  const [fullscreen, setFullscreen] = useState(false)
+  const [showDomainPanel, setShowDomainPanel] = useState(false)
+  // Domain show/hide (R27) — top-domain / sub-domain container ids the curator has hidden.
+  const [hiddenDomains, setHiddenDomains] = useState<Set<string>>(new Set())
+  // Live viewport rect (content coords) for the minimap you-are-here box (R26).
+  const [viewportRect, setViewportRect] = useState<MiniViewport | null>(null)
 
   // Data seam (MV-D43 honest states): the app passes a `graph` prop and owns its own
   // loading/error shell (OntologyPage), so with no `api` we render the prop directly. When
@@ -215,6 +249,14 @@ export function EstateGraph({
   const model: EstateModel = useMemo(
     () => buildEstateModel(augmentedGraph, { drafts, taxonomy, estateName }),
     [augmentedGraph, drafts, taxonomy, estateName],
+  )
+
+  // View-only domain show/hide (R27): the model the map actually renders — the full model with
+  // any hidden domain/sub-domain subtree (and its cross-links + legend counts) removed. With
+  // nothing hidden this IS `model` (identity), so the default paint's layout is byte-identical.
+  const vizModel: EstateModel = useMemo(
+    () => filterModelByVisibility(model, hiddenDomains),
+    [model, hiddenDomains],
   )
 
   const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(model))
@@ -272,13 +314,14 @@ export function EstateGraph({
 
   const layout: Layout = useMemo(
     () =>
-      layoutTree(model, expanded, offsetsRef.current, DEFAULT_LAYOUT, {
+      layoutTree(vizModel, expanded, offsetsRef.current, DEFAULT_LAYOUT, {
         focusId: selectedId,
+        verbFocus: relVerbFocus,
         uncapped,
       }),
     // dragTick is a deliberate relayout trigger; offsetsRef is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [model, expanded, dragTick, selectedId, uncapped],
+    [vizModel, expanded, dragTick, selectedId, relVerbFocus, uncapped],
   )
 
   const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout])
@@ -415,10 +458,11 @@ export function EstateGraph({
   const onNodeClick = useCallback(
     (id: string) => {
       setSelectedId(id)
+      setRelVerbFocus(null) // a node selection is the more specific navigation (R25 precedence)
       const n = nodeById.get(id)
-      if (n && (n.collapsed || (model.childrenByParent.get(id)?.length ?? 0) > 0)) toggleExpand(id)
+      if (n && (n.collapsed || (vizModel.childrenByParent.get(id)?.length ?? 0) > 0)) toggleExpand(id)
     },
-    [nodeById, model, toggleExpand],
+    [nodeById, vizModel, toggleExpand],
   )
 
   // A reveal (search hit, relationship nav, harness `select`) auto-expands paths and can
@@ -429,16 +473,17 @@ export function EstateGraph({
   // Reveal a node: open the whole ancestor path, then select it.
   const reveal = useCallback(
     (id: string) => {
-      const path = ancestorPath(model, id)
+      const path = ancestorPath(vizModel, id)
       setExpanded((prev) => {
         const next = new Set(prev)
         for (const a of path) next.add(a.id)
         return next
       })
       setSelectedId(id)
+      setRelVerbFocus(null)
       pendingFit.current = true
     },
-    [model],
+    [vizModel],
   )
 
   // ── Search-to-reveal ─────────────────────────────────────────────────────────
@@ -449,7 +494,7 @@ export function EstateGraph({
       setHint(null)
       return
     }
-    const hits = model.nodes.filter((n) => n.label.toLowerCase().includes(q))
+    const hits = vizModel.nodes.filter((n) => n.label.toLowerCase().includes(q))
     if (!hits.length) {
       setSearchHits(new Set())
       setHint("No match in the estate.")
@@ -457,13 +502,13 @@ export function EstateGraph({
     }
     setExpanded((prev) => {
       const next = new Set(prev)
-      for (const h of hits) for (const a of ancestorPath(model, h.id)) next.add(a.id)
+      for (const h of hits) for (const a of ancestorPath(vizModel, h.id)) next.add(a.id)
       return next
     })
     setSearchHits(new Set(hits.map((h) => h.id)))
     setSelectedId(hits[0].id)
     setHint(hits.length === 1 ? null : `${hits.length} matches`)
-  }, [query, model])
+  }, [query, vizModel])
 
   const clearSearch = useCallback(() => {
     setQuery("")
@@ -472,14 +517,23 @@ export function EstateGraph({
   }, [])
 
   const expandAll = useCallback(() => {
-    setExpanded(new Set(model.nodes.map((n) => n.id)))
-  }, [model])
+    setExpanded(new Set(vizModel.nodes.map((n) => n.id)))
+    pendingFit.current = true
+  }, [vizModel])
+
+  // Collapse-all (P0-a): fold every container back to the domain tier, then re-fit (R24).
+  const collapseAll = useCallback(() => {
+    setExpanded(collapsedToDomainTier(vizModel))
+    setUncapped(new Set())
+    pendingFit.current = true
+  }, [vizModel])
 
   const resetView = useCallback(() => {
     offsetsRef.current = new Map()
     setExpanded(initialExpanded(model))
     setSelectedId(null)
     setTypeFocus(null)
+    setRelVerbFocus(null)
     setUncapped(new Set())
     didFit.current = false
     setDragTick((t) => t + 1)
@@ -504,7 +558,7 @@ export function EstateGraph({
       layoutHash: hash,
       tapByLabel: (q: string) => {
         const needle = q.toLowerCase()
-        const hit = model.nodes.find((n) => n.label.toLowerCase().includes(needle) || n.id === q)
+        const hit = vizModel.nodes.find((n) => n.label.toLowerCase().includes(needle) || n.id === q)
         if (hit) {
           reveal(hit.id)
           return true
@@ -513,12 +567,12 @@ export function EstateGraph({
       },
       positions: () => layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
     })
-  }, [onReady, layout, hash, model, reveal])
+  }, [onReady, layout, hash, vizModel, reveal])
 
   // ── Inspector data ─────────────────────────────────────────────────────────
   const inspector: InspectorData | null = useMemo(() => {
     if (!selectedId) return null
-    const proposal = model.proposals.find((p) => p.id === selectedId)
+    const proposal = vizModel.proposals.find((p) => p.id === selectedId)
     if (proposal) {
       return {
         title: proposal.name,
@@ -532,7 +586,7 @@ export function EstateGraph({
       }
     }
     const n = nodeById.get(selectedId)
-    const mn = model.nodes.find((x) => x.id === selectedId)
+    const mn = vizModel.nodes.find((x) => x.id === selectedId)
     if (!n || !mn) return null
     const facts: string[] = []
     if (mn.memberCount != null && mn.memberCount > 0)
@@ -541,17 +595,17 @@ export function EstateGraph({
     const rels: InspectorData["relationships"] = []
     // Hierarchy relationships (part of / contains).
     if (mn.parentId) {
-      const p = model.nodes.find((x) => x.id === mn.parentId)
+      const p = vizModel.nodes.find((x) => x.id === mn.parentId)
       if (p) rels.push({ targetId: p.id, label: p.label, verb: "part of", xdom: false })
     }
-    for (const c of model.childrenByParent.get(mn.id) ?? []) {
+    for (const c of vizModel.childrenByParent.get(mn.id) ?? []) {
       rels.push({ targetId: c.id, label: c.label, verb: "contains", xdom: false })
     }
     // Typed cross-links.
-    for (const e of model.crossEdges) {
+    for (const e of vizModel.crossEdges) {
       if (e.src === mn.id || e.dst === mn.id) {
         const otherId = e.src === mn.id ? e.dst : e.src
-        const other = model.nodes.find((x) => x.id === otherId)
+        const other = vizModel.nodes.find((x) => x.id === otherId)
         if (other) rels.push({ targetId: otherId, label: other.label, verb: e.verb, xdom: e.relClass === "xdom" })
       }
     }
@@ -574,13 +628,13 @@ export function EstateGraph({
     }
     // hydrationRef is read for attached Pages; hydrationVersion gates recompute.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, model, nodeById, hydrationVersion])
+  }, [selectedId, vizModel, nodeById, hydrationVersion])
 
   // Hover-snippet content (R6/R21) — prefers real description/meta, degrades to generic copy
   // (R13). Skips the synthetic "+N more" chip (not a model node → no tooltip).
   const tooltip: TooltipData | null = useMemo(() => {
     if (!hoveredId) return null
-    const mn = model.nodes.find((n) => n.id === hoveredId)
+    const mn = vizModel.nodes.find((n) => n.id === hoveredId)
     if (!mn) return null
     return assembleTooltip({
       typeLabel: TYPE_LABEL[mn.type],
@@ -589,11 +643,63 @@ export function EstateGraph({
       meta: mn.meta,
       fallbackDescription: describeType(mn.type),
     })
-  }, [hoveredId, model])
+  }, [hoveredId, vizModel])
+
+  // Edge hover content (R25) — From → To, verb, class, and the pre-seed evidence bag; degrades
+  // to verb + endpoints + class when the edge carries no `detail` (never requires Lane E).
+  const edgeTooltip: EdgeTooltipData | null = useMemo(() => {
+    if (!hoveredEdgeId) return null
+    const c = layout.crossLinks.find((x) => x.id === hoveredEdgeId)
+    if (!c) return null
+    const from = vizModel.nodes.find((x) => x.id === c.sourceId)
+    const to = vizModel.nodes.find((x) => x.id === c.targetId)
+    if (!from || !to) return null
+    return assembleEdgeTooltip({
+      fromName: from.label,
+      toName: to.label,
+      verb: c.verb,
+      xdom: c.relClass === "xdom",
+      detail: c.detail,
+    })
+  }, [hoveredEdgeId, layout, vizModel])
 
   const breadcrumb = useMemo(
-    () => (selectedId ? ancestorPath(model, selectedId) : model.root ? [model.root] : []),
-    [selectedId, model],
+    () => (selectedId ? ancestorPath(vizModel, selectedId) : vizModel.root ? [vizModel.root] : []),
+    [selectedId, vizModel],
+  )
+
+  // Relationship-type legend rows (R25) — one per verb present, with a live count (drops as
+  // domains are hidden). Computed from the visible cross-edges.
+  const relLegend = useMemo(() => relTypeLegend(vizModel.crossEdges), [vizModel])
+
+  // Domain show/hide panel groups (R27) — listed from the FULL model so a hidden area can be
+  // re-shown; each top domain expandable to its sub-areas.
+  const visGroups: VisibilityGroup[] = useMemo(
+    () =>
+      model.nodes
+        .filter((n) => n.type === "domain")
+        .map((d) => ({
+          id: d.id,
+          label: d.label,
+          subdomains: (model.childrenByParent.get(d.id) ?? [])
+            .filter((c) => c.type === "subdomain")
+            .map((c) => ({ id: c.id, label: c.label })),
+        })),
+    [model],
+  )
+
+  const toggleDomainVisibility = useCallback((id: string) => {
+    setHiddenDomains((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+  const showAllDomains = useCallback(() => setHiddenDomains(new Set()), [])
+  const hideAllDomains = useCallback(
+    () => setHiddenDomains(new Set(model.nodes.filter((n) => n.type === "domain").map((n) => n.id))),
+    [model],
   )
 
   // Minimap points + rects.
@@ -607,11 +713,66 @@ export function EstateGraph({
     return [{ x1: b.minX, y1: b.minY, x2: b.maxX, y2: b.maxY, color: tokens.trayNodeStroke }]
   }, [layout, tokens])
 
+  // Keep the minimap "you-are-here" box in sync with the live camera (R26). Reads the on-screen
+  // canvas rect + current transform, inverts to content coords. Recomputes on pan/zoom, on a
+  // fit, and when the canvas resizes (fullscreen enter/exit / new layout).
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) {
+      setViewportRect(null)
+      return
+    }
+    const rect = svg.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
+    setViewportRect(viewportContentRect(transform, { width: rect.width, height: rect.height }))
+  }, [transform, fullscreen, fetchState, layout.nodes.length])
+
+  // Minimap click/drag → recenter the main camera on that content point at the current zoom (R26).
+  const onMinimapNavigate = useCallback(
+    (cx: number, cy: number) => {
+      const svg = svgRef.current
+      if (!svg) return
+      const rect = svg.getBoundingClientRect()
+      if (rect.width === 0) return
+      applyTransform(centerOnTransform({ x: cx, y: cy }, { width: rect.width, height: rect.height }, transform.k))
+    },
+    [applyTransform, transform.k],
+  )
+
+  // Fullscreen (P0-a): Esc restores; re-fit on enter AND exit so the tree reframes to the new
+  // canvas size (R24 — never stranded in a thin band).
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [fullscreen])
+  useEffect(() => {
+    if (!didFit.current) return
+    const id = requestAnimationFrame(() => {
+      if (svgRef.current) fit()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [fullscreen, fit])
+
   const dimmed = useCallback((t: NodeType) => typeFocus != null && typeFocus !== t, [typeFocus])
+  // Dim an arc when a rel-type is highlighted and this arc isn't that verb (Bloom idiom, R25).
+  const edgeDimmed = useCallback(
+    (verb: string) => relVerbFocus != null && relVerbFocus !== verb,
+    [relVerbFocus],
+  )
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className={
+        fullscreen
+          ? "fixed inset-0 z-50 flex flex-col gap-2 overflow-hidden bg-sunken p-4"
+          : "flex flex-col gap-2"
+      }
+    >
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex rounded-lg border border-default bg-elevated p-0.5" role="tablist" aria-label="Provenance">
@@ -630,15 +791,36 @@ export function EstateGraph({
           ))}
         </div>
         <GraphSearch value={query} onChange={setQuery} onSubmit={runSearch} onClear={clearSearch} hint={hint} />
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex flex-wrap items-center gap-1">
           <button onClick={fit} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary" aria-label="Fit">
             <Maximize2 className="h-3.5 w-3.5" /> Fit
           </button>
           <button onClick={expandAll} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary">
             <Sparkles className="h-3.5 w-3.5" /> Expand all
           </button>
+          <button onClick={collapseAll} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary" aria-label="Collapse all">
+            <ChevronsDownUp className="h-3.5 w-3.5" /> Collapse all
+          </button>
+          <button
+            onClick={() => setShowDomainPanel((v) => !v)}
+            aria-pressed={showDomainPanel}
+            className={`flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs hover:text-primary ${
+              showDomainPanel ? "bg-accent/15 text-primary" : "text-secondary"
+            }`}
+          >
+            <Eye className="h-3.5 w-3.5" /> Domains
+          </button>
           <button onClick={resetView} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary" aria-label="Reset view">
             <RotateCcw className="h-3.5 w-3.5" /> Reset
+          </button>
+          <button
+            onClick={() => setFullscreen((v) => !v)}
+            aria-pressed={fullscreen}
+            className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary"
+            aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            {fullscreen ? <Minimize className="h-3.5 w-3.5" /> : <Maximize className="h-3.5 w-3.5" />}
+            {fullscreen ? "Exit" : "Fullscreen"}
           </button>
         </div>
       </div>
@@ -655,9 +837,12 @@ export function EstateGraph({
         ))}
       </nav>
 
-      <div className="relative flex gap-2">
-        {/* Canvas */}
-        <div className="relative flex-1 overflow-hidden rounded-xl border border-default bg-sunken" style={{ minHeight: 520 }}>
+      <div className={`relative flex gap-2${fullscreen ? " min-h-0 flex-1" : ""}`}>
+        {/* Canvas — a bigger default so the tree is framed, not stranded in a thin band (R24). */}
+        <div
+          className="relative flex-1 overflow-hidden rounded-xl border border-default bg-sunken"
+          style={fullscreen ? { height: "100%" } : { height: "max(70vh, 520px)" }}
+        >
           {isStale && (
             <div className="absolute left-3 top-3 z-10 rounded-md bg-warning/15 px-2 py-1 text-[11px] text-warning-foreground">
               Snapshot may be out of date
@@ -679,18 +864,18 @@ export function EstateGraph({
             </div>
           )}
           {fetchState === "loading" ? (
-            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-muted">
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
               <Loader2 className="h-6 w-6 animate-spin" />
               <p className="text-xs">Building the estate graph…</p>
             </div>
           ) : fetchState === "error" ? (
-            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-center text-muted">
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted">
               <AlertTriangle className="h-6 w-6 text-warning-foreground" />
               <p className="text-sm font-medium text-secondary">The estate snapshot could not be read</p>
               <p className="max-w-xs text-xs">Try refreshing in a moment.</p>
             </div>
           ) : isEmpty ? (
-            <div className="flex h-[520px] flex-col items-center justify-center gap-2 text-center text-muted">
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted">
               <p className="text-sm font-medium text-secondary">No data in the estate graph yet</p>
               <p className="max-w-xs text-xs">
                 {provenance === "proposed"
@@ -708,13 +893,31 @@ export function EstateGraph({
               ref={svgRef}
               role="img"
               aria-label="Estate ontology map"
-              className="h-[520px] w-full cursor-grab active:cursor-grabbing"
+              className="h-full w-full cursor-grab active:cursor-grabbing"
               style={{ background: tokens.ground }}
             >
               <defs>
                 <pattern id="ontgrid" width="24" height="24" patternUnits="userSpaceOnUse">
                   <circle cx="1" cy="1" r="1" fill={tokens.dotGrid} />
                 </pattern>
+                {/* Direction arrowheads (R25) — one per edge class, themed to the edge hue. */}
+                {[
+                  { id: "arrow-shared", color: tokens.sharedEdge },
+                  { id: "arrow-xdom", color: tokens.xdomEdge },
+                ].map((m) => (
+                  <marker
+                    key={m.id}
+                    id={m.id}
+                    viewBox="0 0 10 10"
+                    refX="9"
+                    refY="5"
+                    markerWidth="6"
+                    markerHeight="6"
+                    orient="auto-start-reverse"
+                  >
+                    <path d="M0,0 L10,5 L0,10 z" fill={m.color} />
+                  </marker>
+                ))}
               </defs>
               <rect x="0" y="0" width="100%" height="100%" fill="url(#ontgrid)" />
               <g ref={gRef} transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
@@ -738,17 +941,33 @@ export function EstateGraph({
                     )
                   })}
 
-                {/* Typed cross-links + verb plates */}
+                {/* Typed cross-links + verb plates. KG idiom (R25): every VISIBLE arc is
+                    hoverable (a fat transparent hit path), carries a direction arrowhead, and
+                    dims when a different rel-type is highlighted from the legend. */}
                 {showTree &&
                   layout.crossLinks.map((c) => {
                     const s = nodeById.get(c.sourceId)
                     const d = nodeById.get(c.targetId)
                     // Clip-to-visible (§5/R4): never draw an arc to an off-tree endpoint.
                     if (!s || !d) return null
-                    const fade = dimmed(s.type) || dimmed(d.type)
+                    const fade = dimmed(s.type) || dimmed(d.type) || edgeDimmed(c.verb)
                     const stroke = c.relClass === "xdom" ? tokens.xdomEdge : tokens.sharedEdge
+                    const marker = c.relClass === "xdom" ? "url(#arrow-xdom)" : "url(#arrow-shared)"
                     return (
-                      <g key={c.id} opacity={fade ? 0.08 : 1}>
+                      <g
+                        key={c.id}
+                        opacity={fade ? 0.08 : 1}
+                        style={{ cursor: "help" }}
+                        onMouseEnter={(e) => {
+                          setHoveredId(null)
+                          setHoveredEdgeId(c.id)
+                          setHoverPos({ x: e.clientX, y: e.clientY })
+                        }}
+                        onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
+                        onMouseLeave={() => setHoveredEdgeId((cur) => (cur === c.id ? null : cur))}
+                      >
+                        {/* Invisible fat hit path so a thin dashed arc is easy to hover (R25). */}
+                        <path d={c.path} fill="none" stroke="transparent" strokeWidth={12} />
                         <path
                           d={c.path}
                           fill="none"
@@ -756,6 +975,8 @@ export function EstateGraph({
                           strokeWidth={c.relClass === "xdom" ? 1.4 : 1}
                           strokeDasharray="4 3"
                           strokeOpacity={c.showLabel ? 0.9 : 0.6}
+                          markerEnd={marker}
+                          pointerEvents="none"
                         />
                         {/* Verb plate — only on the focused node's arcs (R4): no label cloud. */}
                         {c.showLabel && (
@@ -909,7 +1130,7 @@ export function EstateGraph({
                         style={{ cursor: "pointer" }}
                         tabIndex={0}
                         role="treeitem"
-                        aria-expanded={model.childrenByParent.get(n.id)?.length ? !n.collapsed : undefined}
+                        aria-expanded={vizModel.childrenByParent.get(n.id)?.length ? !n.collapsed : undefined}
                         aria-label={`${TYPE_LABEL[n.type]}: ${n.label}`}
                         onClick={(e) => {
                           if ((e.nativeEvent as { defaultPrevented?: boolean }).defaultPrevented) return
@@ -983,12 +1204,13 @@ export function EstateGraph({
             </svg>
           )}
 
-          {/* Minimap */}
+          {/* Minimap — navigable: you-are-here box + click/drag to pan (R26) */}
           <div className="absolute bottom-3 right-3">
-            <GraphMinimap points={miniPoints} rects={miniRects} />
+            <GraphMinimap points={miniPoints} rects={miniRects} viewport={viewportRect} onNavigate={onMinimapNavigate} />
           </div>
 
-          {/* Legend — node types (click to focus) + edge types + a one-line interaction hint */}
+          {/* Legend — node types (click to focus) + rel-types (verb + count, click to highlight)
+              + edge-class key + a one-line interaction hint */}
           <div className="absolute left-3 bottom-3 flex max-w-[calc(100%-1.5rem)] flex-col gap-1.5 rounded-lg border border-default bg-elevated/90 p-2">
             <div className="flex flex-wrap gap-1.5">
               {LEGEND.map((l) => (
@@ -1005,7 +1227,39 @@ export function EstateGraph({
                 </button>
               ))}
             </div>
-            {/* Edge-type key (§4.5/R14): hierarchy solid · shared dashed-slate · cross-domain dashed-maroon */}
+            {/* Relationship types present (R25, Bloom idiom): verb + live count, click to
+                highlight that type across the map; swatch coloured by its within/cross class. */}
+            {relLegend.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {relLegend.map((r) => {
+                  const active = relVerbFocus === r.verb
+                  const swatch = r.xdom > 0 ? tokens.xdomEdge : tokens.sharedEdge
+                  return (
+                    <button
+                      key={r.verb}
+                      onClick={() =>
+                        setRelVerbFocus((cur) => {
+                          const next = cur === r.verb ? null : r.verb
+                          if (next) setSelectedId(null) // rel-type highlight and node focus are exclusive (R25)
+                          return next
+                        })
+                      }
+                      className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+                        active ? "bg-accent/20 text-primary" : "text-secondary hover:text-primary"
+                      }`}
+                      aria-pressed={active}
+                    >
+                      <svg width="16" height="6" aria-hidden className="shrink-0">
+                        <line x1="1" y1="3" x2="15" y2="3" stroke={swatch} strokeWidth="1.4" strokeDasharray="3 2" />
+                      </svg>
+                      {r.verb}
+                      <span className="text-muted">· {fmtCount(r.count)}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {/* Edge-class key (§4.5/R14): hierarchy solid · shared dashed-slate · cross-domain dashed-maroon */}
             <div className="flex flex-wrap items-center gap-2.5 text-[10px] text-secondary">
               {[
                 { label: "Hierarchy", stroke: tokens.spine, dash: undefined },
@@ -1020,19 +1274,31 @@ export function EstateGraph({
                 </span>
               ))}
             </div>
-            <p className="text-[10px] text-muted">click to drill · drag to move · hover for details</p>
+            <p className="text-[10px] text-muted">click to drill · drag to move · hover for details · → shows direction</p>
           </div>
         </div>
 
-        {/* Inspector rail */}
-        <div className="w-64 shrink-0 rounded-xl border border-default bg-elevated">
-          <GraphInspector
-            data={inspector}
-            onSelectRelationship={reveal}
-            onClose={() => setSelectedId(null)}
-            onApprove={inspector?.isProposal ? () => setHint("Approve is wired to the Phase-5 apply gate.") : undefined}
-            onDismiss={inspector?.isProposal ? () => setSelectedId(null) : undefined}
-          />
+        {/* Right rail — optional domain show/hide panel above the docked inspector */}
+        <div className="flex w-64 shrink-0 flex-col gap-2">
+          {showDomainPanel && (
+            <DomainVisibilityPanel
+              groups={visGroups}
+              hidden={hiddenDomains}
+              onToggle={toggleDomainVisibility}
+              onShowAll={showAllDomains}
+              onHideAll={hideAllDomains}
+              onClose={() => setShowDomainPanel(false)}
+            />
+          )}
+          <div className="min-h-0 flex-1 rounded-xl border border-default bg-elevated">
+            <GraphInspector
+              data={inspector}
+              onSelectRelationship={reveal}
+              onClose={() => setSelectedId(null)}
+              onApprove={inspector?.isProposal ? () => setHint("Approve is wired to the Phase-5 apply gate.") : undefined}
+              onDismiss={inspector?.isProposal ? () => setSelectedId(null) : undefined}
+            />
+          </div>
         </div>
       </div>
 
@@ -1045,8 +1311,9 @@ export function EstateGraph({
             : "Applied tree + proposed groupings"}
       </p>
 
-      {/* Hover snippet — cursor-following, viewport-clamped, pointer-events:none (R6/R21) */}
+      {/* Hover snippets — node (R6/R21) + edge (R25); cursor-following, clamped, pointer-events:none */}
       <GraphTooltip data={tooltip} x={hoverPos.x} y={hoverPos.y} tokens={tokens} />
+      <GraphEdgeTooltip data={edgeTooltip} x={hoverPos.x} y={hoverPos.y} tokens={tokens} />
     </div>
   )
 }
