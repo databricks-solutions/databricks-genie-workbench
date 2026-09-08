@@ -2,62 +2,73 @@
 
 Copy-paste launcher for a long-running agent. Run on the **`ontology`** branch **after Stage 2
 landed**. Stage 3 puts **Lakeview Dashboards** on the map: each dashboard becomes a `dashboard`
-node edged to the tables/MVs its datasets query, placed in the domain it most draws from.
-**Wheel + reader. Additive. Offline + green tests. STOPs before deploy.**
+node, **placed by its APPLIED governed tag** (read from the `entity-tag-assignments` API) and
+edged to the tables/MVs its datasets query. **Wheel + reader. Additive. Offline + green tests.
+STOPs before deploy.**
 
-- **Spec:** `docs/design/ontology-map-typed-assets-build.md` §5, §6, §7 (MV-D92).
+- **Spec:** `docs/design/ontology-map-typed-assets-build.md` §2.5, §5, §6, §7 (MV-D92).
   **Decisions:** `mv-advisor-playbook.md` — MV-D92; honor MV-D26/D43/D49/D82.
-- **Seams:** `jobs/run_ontology_materialize.py` (reader — add `dashboard_scopes` from dataset
-  lineage); `ontology/graph.build_signal_graph` (add an OPTIONAL `dashboard_scopes` kwarg
-  mirroring `agent_scopes` — emit `dashboard:<id>` nodes + `dashboard_scope` edges);
-  `ontology/materialize.py` (pass it through); `ontology/layout.py` (`_label_for_node`
-  dashboard branch, `_verb_of` `dashboard_scope`→"reads", §6 placement). Renderer FROZEN.
+- **Seams:** `jobs/run_ontology_materialize.py` (reader — extend `entity_tag_assignments(...)`
+  to the `dashboards` entity via `w.lakeview.list()` + per-dashboard
+  `list_tag_assignments("dashboards", id)`; add `dashboard_scopes` from dataset lineage);
+  `ontology/graph.build_signal_graph` (add an OPTIONAL `dashboard_scopes` kwarg mirroring
+  `agent_scopes` — `dashboard:<id>` nodes + `dashboard_scope` edges); `ontology/materialize.py`
+  (feed dashboard tag rows into the domain assembly; pass `dashboard_scopes=`);
+  `ontology/layout.py` (`_label_for_node` dashboard branch, `_verb_of` `dashboard_scope`→"reads",
+  §6 fallback). Renderer FROZEN. Stage 2 already built the `geniespaces` reader — mirror it.
 
 ---
 
 ## Driver prompt (paste verbatim)
 
 GOAL: Ontology Map Stage 3 — put Lakeview Dashboards on the map. Each dashboard becomes a
-dashboard node edged to the tables/MVs its datasets query, placed in the domain it most draws
-from. Wheel+reader, additive, offline; STOP before deploy.
+dashboard node PLACED BY ITS APPLIED GOVERNED TAG (entity-tag-assignments API, not
+information_schema) and edged to the tables/MVs its datasets query. Wheel+reader, additive,
+offline; STOP before deploy.
 
-SPEC: docs/design/ontology-map-typed-assets-build.md §5/§6/§7. DECISIONS: mv-advisor-playbook.md
-MV-D92; honor MV-D26/D43/D49/D82. Read first. Stages 1 (typed assets) + 2 (agents) are landed;
-mirror the agent_scopes wiring.
+SPEC: docs/design/ontology-map-typed-assets-build.md §2.5/§5/§6/§7. DECISIONS:
+mv-advisor-playbook.md MV-D92; honor MV-D26/D43/D49/D82. Read first. Stages 1 (typed assets) +
+2 (agents, incl. the geniespaces entity-tag reader) are landed — mirror the Stage-2 wiring.
 
-CONTEXT: There is NO dashboard reader, NO dashboard_scopes kwarg, and NO dashboard node kind in
-the wheel today. 30 Lakeview dashboards exist. Dashboards are NOT UC relations and cannot carry
-UC table tags, so they get their domain by DERIVED LINEAGE, never a tag write (MV-D92).
-build_signal_graph already has an agent_scopes kwarg emitting agent:<id> nodes + agent_scope
-edges — mirror that exactly for dashboards. Frontend already types dashboard — DO NOT touch it.
+CONTEXT: No dashboard reader, kwarg, or kind exists yet. 30 Lakeview dashboards exist
+(w.lakeview.list()). Governed tags DO apply to dashboards but the assignment lives behind GET
+/api/2.0/entity-tag-assignments/dashboards/{id}/tags (SDK
+w.workspace_entity_tag_assignments.list_tag_assignments; entity_type "dashboards"), NOT
+information_schema. Reuse Stage 2's geniespaces entity-tag reader + assemble path, and mirror
+its agent_scopes kwarg wiring. Frontend already types dashboard — DO NOT touch it.
 
-BUILD A (reader in run_ontology_materialize): add dashboard_scopes(allowlist) ->
-{dashboard_id -> sorted [table_fqn,...]} = the tables/MVs each dashboard's datasets query,
-from dataset lineage (system.access.table_lineage filtered to the dashboard's queries, or the
-serialized dashboard datasets). Degrade to {} on failure (MV-D43). Deterministic (sorted).
+BUILD A — DOMAIN (primary), reader entity_tag_assignments("dashboards"): enumerate dashboards
+via w.lakeview.list(); per dashboard call list_tag_assignments("dashboards", id) (SDK, or REST
+w.api_client.do("GET", f"/api/2.0/entity-tag-assignments/dashboards/{id}/tags") if the pinned
+databricks-sdk==0.117.0 lacks the method — NO dependency bump). Return rows {tag_name,
+tag_value, member_id: f"dashboard:{id}"} filtered to the domain governed-tag key(s); degrade to
+[] on failure (MV-D43). In materialize, feed them into the SAME transforms.assemble_tag_graph
+path as tables/agents ⇒ a tagged dashboard lands in its Domain/sub-domain with origin=applied.
+Sorted/deterministic.
 
-BUILD B (graph.build_signal_graph): add an OPTIONAL dashboard_scopes kwarg mirroring
-agent_scopes: for each dashboard emit a dashboard:<id> node and a dashboard_scope edge to each
-read asset. UNSET kwarg ⇒ byte-identical graph (MV-D43). Then in materialize pass
-dashboard_scopes=reader.dashboard_scopes(allowlist).
+BUILD B — READ EDGES (secondary): add an OPTIONAL dashboard_scopes kwarg to build_signal_graph
+mirroring agent_scopes (emit dashboard:<id> nodes + dashboard_scope edges; UNSET ⇒
+byte-identical graph, MV-D43). Reader dashboard_scopes(allowlist) -> {id->sorted[fqn]} from
+dataset lineage (system.access.table_lineage or serialized datasets; degrade to {}); materialize
+passes it. In layout add a _label_for_node dashboard branch (name) + _verb_of dashboard_scope ->
+"reads".
 
-BUILD C (layout.py): add a dashboard branch to _label_for_node (label = dashboard display
-name; thread onto node payload — additive) and a _verb_of branch dashboard_scope -> "reads".
-Apply §6 DOMAIN PLACEMENT identically to agents: a dashboard inherits the MODAL top-domain of
-its scoped assets (via node_domain_id → top domain; ties by domain id); empty/all-untagged
-scope ⇒ UNGROUPED, never guessed. Placement only; NO tag proposed or written.
+BUILD C — FALLBACK (optional, §6): an UNTAGGED dashboard may borrow the MODAL top-domain of its
+dashboard_scopes assets (via node_domain_id; ties by domain id), emitted origin=proposed (never
+applied); empty scope ⇒ ungrouped. Skip if it complicates the applied slice. NO tag written.
 
 HARD GUARDRAILS: additive — NO frontend, NO backend/route, NO new table/column (blob-only,
-MV-D49), NO governed-tag write (MV-D26), NO new dependency. Unset dashboard_scopes ⇒
-byte-identical graph for every existing caller/test. Read-only. Degrade-not-hang (MV-D43).
-Deterministic (MV-D82).
+MV-D49), NO governed-tag WRITE (read-only, MV-D26), NO new dependency (REST fallback keeps the
+SDK pin). Unset dashboard_scopes ⇒ byte-identical graph for every existing caller/test.
+Degrade-not-hang on Beta/permission failure (MV-D43). Deterministic (MV-D82).
 
-ACCEPTANCE (offline): wheel unit tests — build_signal_graph with dashboard_scopes emits
-dashboard:<id> nodes + dashboard_scope edges; WITHOUT it the graph is byte-identical to today;
-layout emits them as dashboard display nodes with a name label and the "reads" verb; a
-dashboard whose scope is one domain lands there, a tie resolves by domain id, an empty-scope
-dashboard is ungrouped. ./scripts/test.sh + wheel suite green. Additive-only diff; package-lock
-untouched.
+ACCEPTANCE (offline): wheel unit tests — a dashboards TagAssignment{tag_key=<domain>, tag_value}
+maps through assemble_tag_graph so the dashboard:<id> node lands in that Domain/sub-domain with
+origin=applied; build_signal_graph with dashboard_scopes emits dashboard:<id> nodes +
+dashboard_scope edges and is byte-identical WITHOUT it; layout labels dashboards with the
+"reads" verb + name; an untagged dashboard is ungrouped (or origin=proposed if Build C shipped);
+the reader returns [] when list_tag_assignments raises. ./scripts/test.sh + wheel suite green.
+Additive-only diff; package-lock untouched.
 
 WORKFLOW: branch `ontology`. Do NOT deploy or run the job. When offline-green, STOP and report
 the diff + test summary; a human runs the §8 deploy-verify gate.
@@ -67,5 +78,6 @@ the diff + test summary; a human runs the §8 deploy-verify gate.
 ## After the run (human-gated)
 `SKIP_FRONTEND_BUILD=1 ./scripts/deploy.sh --update` (fevm-serverless), trigger the materialize
 job scoped to `["serverless_stable_6t92c3_catalog"]`. Eyeball `genie_ont_graph_snapshot.assets`:
-`dashboard` node count ≈ 30, each edged (`dashboard_scope`) to its datasets' tables and sitting
-inside a domain (or ungrouped). This closes the Typed Estate Assets build.
+`dashboard` node count ≈ 30; each **tagged** dashboard sits in its governed-tag domain
+(`origin=applied`, solid) with `dashboard_scope` read edges; untagged ⇒ ungrouped or dashed
+`proposed`. This closes the Typed Estate Assets build.
