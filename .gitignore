@@ -5,7 +5,10 @@
 /output
 /.build/
 /.roadmap/
-.cursor/
+.cursor/*
+# Agent rules travel with the branch; local Cursor state does not. A parent
+# directory cannot be re-included once excluded, hence `.cursor/*` above.
+!.cursor/rules/
 .codex/
 .agents/
 .superpowers/
@@ -259,3 +262,6 @@ packages/genie-space-optimizer/docs/scoring_v2_rollout.md
 packages/genie-space-optimizer/docs/high level plans/
 packages/genie-space-optimizer/docs/runid_analysis/
 packages/genie-space-optimizer/docs/skills/
+# Design working notes + HTML mockups — kept local only.
+# Canonical, published documentation lives in docs/docs/ (Docusaurus).
+docs/design/

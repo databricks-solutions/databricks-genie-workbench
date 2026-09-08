@@ -355,3 +355,46 @@ def test_llm_messages_include_quality_rubric_and_scan_context() -> None:
         "Treat data_profile as bounded observations" in rule
         for rule in user["patch_rules"]
     )
+
+
+def _guidance_config(guidance: str | None) -> dict:
+    config: dict = {
+        "description": "",
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.orders",
+                    "columns": [{"name": "id", "type": "INT"}],
+                }
+            ],
+        },
+        "instructions": {},
+    }
+    if guidance is not None:
+        config["_operator_guidance"] = guidance
+    return config
+
+
+def test_llm_messages_inject_operator_guidance_when_present() -> None:
+    messages, _stats = _llm_messages(
+        allowed_levers=[1],
+        current_config=_guidance_config("Prefer orders_v2; revenue is net of refunds."),
+        eval_result=_eval("SELECT 1"),
+        reflections=[],
+    )
+    user = json.loads(messages[1]["content"])
+    assert user["operator_guidance"] == "Prefer orders_v2; revenue is net of refunds."
+    assert "advice" in user["operator_guidance_note"].lower()
+
+
+def test_llm_messages_omit_operator_guidance_when_blank_or_absent() -> None:
+    for guidance in (None, "", "   "):
+        messages, _stats = _llm_messages(
+            allowed_levers=[1],
+            current_config=_guidance_config(guidance),
+            eval_result=_eval("SELECT 1"),
+            reflections=[],
+        )
+        user = json.loads(messages[1]["content"])
+        assert "operator_guidance" not in user
+        assert "operator_guidance_note" not in user

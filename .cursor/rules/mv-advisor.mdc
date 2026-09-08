@@ -1,0 +1,257 @@
+---
+description: Non-negotiables for the metric view advisor feature
+alwaysApply: true
+---
+Paths below are under databricks-genie-workbench/ from this workspace root.
+Repo reality (and the gap report) wins over older POV wording. Do not
+revive taskValues, condition tasks, run_if, extra job tasks, or a second
+eval adapter.
+
+READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
+- Before modifying ANY file, you must first output a PLAN section containing:
+  (1) the exact file paths you intend to modify or create,
+  (2) for each existing file, a quoted excerpt of the CURRENT code at the
+      location you will change (read it fresh in this session — do not rely
+      on memory of a previous session),
+  (3) every existing function, class, endpoint, table, task_key, or config
+      key you intend to call or extend, each with the file:line where it is
+      defined today.
+- If any item in (3) cannot be located in the current codebase, STOP after
+  the PLAN and report it as a blocker. Do not scaffold a stand-in.
+- If the PLAN contradicts docs/design/mv-advisor-gap-report.md or the POV
+  doc, STOP and report the contradiction before editing.
+- After edits, output a VERIFY section: run the test suite and linter for the
+  touched packages, and confirm (by search) that every symbol you referenced
+  exists and every symbol you defined is exported/registered the way this
+  repo registers it (router inclusion, entrypoint table, migration list).
+- ABSENCE claims require a positive control. Any "X does not exist in this
+  repo" check must run from the repo root and first confirm a known-present
+  sentinel (e.g. databricks.yml) resolves from the same working directory.
+  An absence check whose positive control fails is void — rerun it, do not
+  report it.
+- VERIFY includes `git status`. Run Python tooling with a frozen lockfile
+  (`uv run --frozen` or equivalent); the working tree after VERIFY must be
+  clean apart from the intended changes. A dirtied uv.lock is a finding to
+  report, never a file to commit.
+- Context discovery stays inside the repository. Do not read files outside
+  the repo (home directories, ~/Downloads, other checkouts) unless the
+  prompt names them explicitly.
+- RULES COPIES: exactly two exist — .cursor/rules/mv-advisor.mdc in this
+  repo and the fenced block in docs/design/mv-advisor-playbook.md — and they
+  are kept byte-identical. Any third copy found outside the repository (a
+  workspace-root .cursor/, another checkout) is stale by definition: report
+  it, do not read it as guidance.
+
+FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
+- Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
+  AS AMENDED BY docs/design/mv-advisor-gap-report.md. Where they disagree,
+  the gap report wins.
+- Never invent API endpoints, table names, task names, wheel entrypoints,
+  or config keys. Read existing code first. If a name is not in the repo,
+  ASK.
+- The GSO job is a LINEAR FOUR-TASK NOTEBOOK DAG: intake_and_snapshot →
+  benchmark_qc_and_repair → optimize → publish_and_audit. Do NOT add tasks,
+  condition tasks, run_if edges, or wheel entry points. GSO v2 playbook decision D9 (a different D-namespace from this playbook's
+  MV-D numbering) and test_phase7_job_dag.py forbid condition tasks and
+  taskValues — respect the
+  tests, do not delete or weaken them.
+- Cross-task and cross-phase state passes through Delta tables keyed by
+  run_id (genie_opt_* via optimization/ddl.py). NEVER dbutils.jobs.taskValues.
+  SCOPE (MV-D23): this governs state passing INSIDE the job. It does not make
+  run_id the only legitimate key on the MV tables. genie_opt_mv_candidates is
+  partitioned by target_space_id precisely because a candidate outlives the run
+  that proposed it (MV-D7), and wh_load_mv_candidates already reads by
+  target_space_id or run_id. A space-keyed READ of metric-view state is correct
+  and is not a violation of this rule.
+- Job parameters are read with dbutils.widgets. Any new parameter is added
+  IN LOCKSTEP to all three job-definition mirrors — root databricks.yml,
+  packages/genie-space-optimizer/databricks.yml, and
+  scripts/deploy_lib/gso_job.py — plus backend/job_launcher.py's run_now map.
+  A parameter present in fewer than all four places is a bug.
+- Metric-view code inside the job runs as GATED PHASES within the existing
+  optimize task, each wrapped in try/except; on failure, persist a status
+  row to Delta and let the optimization continue. Never raise across the
+  phase boundary.
+- All benchmark eval calls go through the EvalRunner seam in
+  optimization/eval_runner.py (OfficialBenchmarkRunner). No second adapter,
+  no raw SDK eval calls anywhere else.
+- Patches are dicts with type/target/new_text/old_text, registered in
+  PATCH_TYPES (common/config.py) and allowlisted in unified_loop. New MV
+  patch types must implement a REAL applier action that mutates
+  data_sources.metric_views — the current Lever-2 MV path renders then
+  no-ops at config level, and that no-op is the bug this feature fixes.
+- Rollback is whole-snapshot revert (integration/revert.py). Detach-on-
+  regression = snapshot revert. NEVER auto-drop the created UC object
+  outside sandbox mode; drop is an explicit backend OBO endpoint.
+- The job runs as the SERVICE PRINCIPAL. Therefore the job NEVER executes
+  CREATE VIEW ... WITH METRICS. UC object creation happens ONLY in the
+  FastAPI backend under OBO (require_obo_workspace_client), against a
+  recorded consent. The job attaches (patch), measures, and
+  reverts — writes it already performs as SP today.
+  "AT TRIGGER TIME" IS NOT ONE OF THE INVARIANTS (MV-D23). Through Prompt 9 it
+  was the only moment a create could happen, so the rule read as though the
+  timing carried the safety. It does not. The four invariants are: the identity
+  (require_obo_workspace_client, which hard-fails — never the SP-tolerant
+  get_workspace_client), a recorded and freshly re-verified consent,
+  downgrade-never-upgrade on any mismatch, and the target being the consented
+  schema and nowhere else. A create initiated outside a run must satisfy all
+  four. Until MV-D23 is decided, do not build one — but do not treat the
+  timing as the reason.
+- Do not reuse GET /permissions/{space_id} for entitlement: it probes the
+  SP's privileges, not the user's. The entitlement probe is new OBO code.
+- On entitlement/consent mismatch, DOWNGRADE to suggest_only — never
+  upgrade, never fall back to a different schema.
+- MLflow is decommissioned in GSO except tracing. No experiments, registry,
+  or judges. Grading comes ONLY from native benchmark eval runs.
+- Backend routes live under the /api/auto-optimize router prefix; the
+  run-start endpoint is POST /api/auto-optimize/trigger with the inline
+  TriggerRequest model — extend it, never add a parallel start endpoint.
+- Run artifacts persist to the genie_opt_artifacts Delta table, not a
+  Volumes path.
+- Firewall: extend optimization/leakage.py for MV metadata/DDL rather than
+  writing a second scanner. No literals, sample values, or PII in shipped
+  metadata, DDL comments, or logs.
+- Materialization is a separate consent (mv_materialize); never bundled.
+- SUGGEST-SURFACE CONTRACT (from the first human smoke run): a proposal is a
+  metric VIEW bundling the measures of one grain, never one card per measure;
+  MEDIUM+ surfaces by default, LOW behind explicit disclosure, and a proposal
+  with no proposed_object never renders; no proposal surfaces without a
+  servable DDL body (a render failure is loud in the run outcome, never a
+  silent gate); every surfaced card carries its
+  justification (measures, evidence counts, gain); EMPTY states are variant-
+  specific (already-governed / nothing-recurring / no-corpus), never one
+  generic shrug; results hydrate from persisted candidates on mount and are
+  never lost to navigation; long operations show staged progress and report
+  where they stopped on failure. A visualization must never crash the page —
+  error boundaries are mandatory on graph surfaces.
+  FACTS LEAD, THE SCORE RANKS (MV-D35): quality is binary and gated — a card
+  leads with the proven checks (validated / executable / no-overlap), each
+  wired to the gate that proved it; the numeric score orders the list and
+  picks one Recommended (or the orthogonality callout when all are
+  independent) and is NEVER displayed as a percent or the word "confidence".
+  Both suggestion surfaces (IQ panel and run-output panels) render through
+  SHARED components — one card, one accept flow, one display module — so a
+  fix on one surface is a fix on both by construction.
+- CONTRACT SWEEPS ARE GREP-VERIFIED, NOT TEST-VERIFIED (from the fourth-look
+  autopsy: MV-D35 landed on the card and not the list chrome; the ACL grantee
+  landed in the consent modal and not the card DDL; a contract applied to one
+  call site and not its sibling passed every component test). When a prompt
+  changes a CONTRACT — a forbidden string, a required affordance, a resolved
+  value, a shared component — its VERIFY must include a repo-wide grep whose
+  output is pasted in the report, proving ZERO residual violations across
+  every surface, including list/section/disclosure chrome, empty states, and
+  the sibling surface. "The component is fixed" is not the contract; "no
+  instance of the violation remains in the repo" is. Chrome is surface.
+- TERMINAL UI STATES MUST BE EARNED. A component that renders a
+  post-action state (approved / created / done) initializes that state ONLY
+  from a persisted record of the user's own action. Deriving a success state
+  from an ambient default, a null decision, or a server field that means
+  something adjacent is a defect of the worst kind: it tells the user they
+  did something they did not, and it MASKS the action it replaces.
+- FIDELITY GATE (from the third-smoke process autopsy — three waves of
+  green-tested patches missed the experience): any prompt that changes a
+  user-facing surface must, in its VERIFY, export the changed surface states
+  through the mockup emitter (both themes) and attach them to the report
+  next to the approved reference frames; the reviewer compares them and
+  adversarially re-greps every numbered spec item before accepting.
+  Structural tests green is NOT acceptance. An approved mockup is a visual
+  CONTRACT: implementation matches its default-view density and layout, or
+  the deviation is called out in the report with a reason — never
+  discovered by the reviewer in the deployed app.
+- ONTOLOGY PAGES (Prompt 17.x): Databricks Pages have NO public create/update
+  API — they are created in the Discover UI. Never invent a Pages endpoint.
+  The workbench emits copy-ready Page drafts (manual paste) and API-writes
+  ONLY text_instructions, under OBO with diff preview and explicit consent,
+  never auto-applied. The GSL instruction schema
+  (docs/docs/platform/gsl-instruction-schema.md) is authoritative for every
+  instruction write; single text_instruction; respect the length budget.
+- Web enrichment in Page drafts is BEST-EFFORT and labeled: "informational,
+  as of DATE — not certified" plus a Sources list, or the section is absent.
+  A failed search never blocks a suggestion and never hangs a route. All LLM
+  calls go through llm_utils.call_serving_endpoint with
+  model_catalog.validate_chat_model — no second client. Benchmark question
+  text never lands verbatim in a Page draft or instruction delta (extend
+  LeakageOracle, no second scanner).
+- GAP-REPORT FRESHNESS (MV-D9): the gap report outranks the POV, so a stale
+  quote there actively misleads. Any commit that changes something the gap
+  report quotes or counts — _ALL_DDL membership, task keys, patch shape,
+  router paths, parameter lists, file:line anchors — MUST refresh the
+  affected gap-report sites in the SAME commit, re-quoting live code rather
+  than editing the prose around it. Every PLAN that touches such a surface
+  states which gap-report sites it will refresh, or asserts none apply.
+- LIVE CLAIMS vs FROZEN TRANSCRIPTS: prompt bodies for already-executed
+  prompts are historical records — do not retrofit them when facts change.
+  Statements outside those bodies (headings, register preamble, custody
+  notes, rules, gap-report quotes) are live claims and must be refreshed
+  under MV-D9. When in doubt, ask rather than edit a transcript.
+- CITE DOCUMENTS BY SECTION, CODE BY FILE:LINE. Never cite another design
+  document by line number — doc line anchors rot on every edit and each
+  rot costs a reconciliation pass. Use section headings or quoted phrases.
+  file:line into source code is required and unchanged.
+- DOC FREEZE: no further doc-only commits on this branch. Playbook, POV,
+  and gap-report changes ride inside the code commit that made them
+  necessary (MV-D9 already requires same-commit gap-report refresh).
+  Exception: a factual error that would misdirect the next prompt.
+- METRIC VIEW BEST PRACTICES: before authoring or reviewing metric view YAML,
+  joins, level-of-detail semantics, validation queries, or Genie-facing MV
+  metadata, read the skills under
+  /Users/prashanth.subrahmanyam/Projects/vibe-coding-workshop-template/data_product_accelerator/skills/semantic-layer/01-metric-views-patterns
+  — SKILL.md plus references/ (yaml-reference, advanced-patterns,
+  composability-patterns, level-of-detail, querying-metric-views,
+  validation-checklist, validation-queries, implementation-workflow) and
+  scripts/validate_metric_view.py. This is a standing NAMED EXCEPTION to the
+  in-repository context rule above, and the only one. It is external,
+  machine-local guidance: it informs generated YAML and validation but never
+  outranks repo reality, the gap report, or MV-D8 below. If the path is not
+  present on this machine, proceed without it — do not block, and do not
+  substitute a different checkout.
+- GENERATED YAML conforms to the generation quality standard in POV Part 4
+  (MV-D8): version "1.1" quoted; no name/time_dimension/top-level
+  window_measures/join_type/table-in-joins; multi-hop ladder (denormalize ->
+  nested joins only on DBR>=17.1 with profiling-proven 1:1 keys ->
+  subquery-source fallback); NEVER a flat sibling join referencing another
+  join alias; SCD2 joins carry is_current=true; rely.at_most_one_match only
+  with proven uniqueness; format types from the closed set (percentage not
+  percent, number not decimal); additive measures aggregate fact columns.
+- MV comments use the structured format (PURPOSE/BEST FOR/NOT FOR/...).
+  BEST FOR lines are PARAPHRASED intents — verbatim benchmark question text
+  in any shipped MV metadata contaminates the benchmark and is a firewall
+  violation, same class as literals/PII.
+- Updates to an existing metric view use ALTER VIEW ... AS $$...$$, never
+  CREATE OR REPLACE or drop+create (replace deletes UC grants).
+- Post-create: DESCRIBE EXTENDED must show Type: METRIC_VIEW. Validation
+  queries use MEASURE(`name`) with GROUP BY — never SELECT *, never a
+  re-typed aggregate. Fan-out smoke test on every join.
+- Every new module ships with pytest tests in the same PR-sized commit.
+  The repo has NO test CI — run the suites locally and report results in
+  every VERIFY section.
+
+- RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
+  `uv run --frozen --extra dev`. Expected baseline: 681 backend + 1512 GSO,
+  measured 2026-08-25 (this supersedes the prior 638+1461 floor). Historical
+  ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag). A count BELOW this is a regression — investigate. A
+  count ABOVE it is normal growth: update this line and the playbook's copy in
+  the same commit that adds the tests (test_rules_parity.py enforces the two
+  copies match, so you cannot update one).
+  `--extra dev` is mandatory, not stylistic: `asyncio_mode = "auto"` needs
+  pytest-asyncio, which lives in the dev extra, and without it exactly 12
+  async backend tests fail on uncollectable coroutines. Those 12 are an
+  INVOCATION defect. Do NOT report them as pre-existing and do NOT debug the
+  code — fix the command. If you call pytest directly, it is
+  `uv run --frozen --extra dev pytest`.
+- IMPORT RESOLUTION IS PART OF EVERY VERIFY THAT RUNS BACKEND TESTS: before
+  trusting any backend pytest result, print
+  `uv run --frozen --extra dev python -c "import genie_space_optimizer as g; print(g.__file__)"`
+  and confirm the path resolves inside THIS repository checkout. A test run
+  against a foreign checkout is void — report it, do not interpret it.
+- PINNED-DEPENDENCY RESOLUTION: for any behavior that depends on a pinned
+  library version (sqlglot parsing and rendering above all), run only under
+  `uv run --frozen`. A bare pytest on an ambient interpreter is a void run:
+  the pyenv global carries sqlglot 30.0.1 against the pinned 30.0.3, and
+  canonicalization output can differ across parser patch releases. Report
+  the resolved version in VERIFY alongside the import path.
+- `uv lock --check` FAILS STRUCTURALLY on this repo and is NOT drift: the GSO
+  package version is dynamic (git-describe), so re-resolution differs from the
+  lockfile at every commit, on a clean tree. Verify with
+  `git status -- uv.lock` instead. Never run `uv lock` to silence it, and do
+  not wire `uv lock --check` into CI.

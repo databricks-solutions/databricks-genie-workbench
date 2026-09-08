@@ -9,6 +9,7 @@ implementation that drives the native eval-run methods on the Databricks SDK
 
     w.genie.genie_create_eval_run(space_id, benchmark_question_ids=None)  # None ⇒ all
     w.genie.genie_get_eval_run(space_id, eval_run_id)                     # poll status
+    w.genie.genie_list_eval_runs(space_id, page_size, page_token)         # cross-run history
     w.genie.genie_list_eval_results(space_id, eval_run_id, page_size, page_token)
     w.genie.genie_get_eval_result_details(space_id, eval_run_id, result_id)
 
@@ -37,8 +38,9 @@ Verified against the installed SDK (v0.102.0,
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
 from genie_space_optimizer.common import config as _config
@@ -163,12 +165,151 @@ class EvalRunResult:
         return out
 
 
+@dataclass
+class LiftReport:
+    """Contract shape persisted later as ``genie_opt_mv_created_objects.lift_report_json``.
+
+    Accuracies and deltas are 0–1 fractions. Needs-review questions are excluded
+    from both numerator and denominator on each side of the comparison (POV
+    Caveats: "Manual review needed" is a third outcome, not a failure).
+    """
+
+    delta_affected: float
+    delta_suite: float
+    regressed_question_ids: list[str]
+    needs_review_count: int
+    pre_eval_run_id: str
+    post_eval_run_id: str
+    question_subset: list[str]
+    pre_accuracy_affected: float
+    post_accuracy_affected: float
+    pre_accuracy_suite: float
+    post_accuracy_suite: float
+    needs_review_question_ids: list[str]
+    graded_affected_count: int
+    graded_suite_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _row_qid(row: dict[str, Any]) -> str:
+    return str(row.get("question_id") or "")
+
+
+def _row_assessment(row: dict[str, Any] | None) -> str:
+    if not row:
+        return ""
+    return str(row.get("assessment") or "").upper()
+
+
+def _row_needs_review(row: dict[str, Any] | None) -> bool:
+    if not row:
+        return False
+    if row.get("needs_review"):
+        return True
+    return _row_assessment(row) == "NEEDS_REVIEW"
+
+
+def _index_eval_rows(result: EvalRunResult) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in result.rows:
+        qid = _row_qid(row)
+        if qid:
+            out[qid] = row
+    return out
+
+
+def _accuracy_fraction(
+    index: dict[str, dict[str, Any]], graded_ids: Sequence[str]
+) -> float:
+    if not graded_ids:
+        return 0.0
+    good = sum(1 for qid in graded_ids if _row_assessment(index[qid]) == "GOOD")
+    return good / len(graded_ids)
+
+
+def lift_report(
+    pre_run: EvalRunResult,
+    post_run: EvalRunResult,
+    question_subset: Sequence[str],
+) -> LiftReport:
+    """Compare two DONE eval runs, excluding needs-review from lift math.
+
+    ``delta_affected`` is post−pre accuracy on ``question_subset``.
+    ``delta_suite`` is post−pre accuracy on every question present in either run.
+    A question is graded only when it appears in both runs and is not
+    ``NEEDS_REVIEW`` on either side, so the denominator is aligned.
+    """
+    if not pre_run.succeeded or not post_run.succeeded:
+        raise EvalRunError(
+            "lift_report requires both eval runs to reach DONE "
+            f"(pre={pre_run.status!r}, post={post_run.status!r})"
+        )
+
+    pre_idx = _index_eval_rows(pre_run)
+    post_idx = _index_eval_rows(post_run)
+    suite_ids = sorted(set(pre_idx) | set(post_idx))
+    subset_ids = [str(qid) for qid in question_subset if str(qid)]
+
+    nr_ids = sorted(
+        qid
+        for qid in suite_ids
+        if _row_needs_review(pre_idx.get(qid)) or _row_needs_review(post_idx.get(qid))
+    )
+    nr_set = set(nr_ids)
+
+    def _graded(ids: Sequence[str]) -> list[str]:
+        return [
+            qid
+            for qid in ids
+            if qid not in nr_set and qid in pre_idx and qid in post_idx
+        ]
+
+    graded_affected = _graded(subset_ids)
+    graded_suite = _graded(suite_ids)
+    pre_aff = _accuracy_fraction(pre_idx, graded_affected)
+    post_aff = _accuracy_fraction(post_idx, graded_affected)
+    pre_suite = _accuracy_fraction(pre_idx, graded_suite)
+    post_suite = _accuracy_fraction(post_idx, graded_suite)
+
+    regressed = [
+        qid
+        for qid in suite_ids
+        if qid not in nr_set
+        and qid in pre_idx
+        and qid in post_idx
+        and _row_assessment(pre_idx[qid]) == "GOOD"
+        and _row_assessment(post_idx[qid]) == "BAD"
+    ]
+
+    return LiftReport(
+        delta_affected=post_aff - pre_aff,
+        delta_suite=post_suite - pre_suite,
+        regressed_question_ids=regressed,
+        needs_review_count=len(nr_ids),
+        pre_eval_run_id=pre_run.eval_run_id,
+        post_eval_run_id=post_run.eval_run_id,
+        question_subset=list(subset_ids),
+        pre_accuracy_affected=pre_aff,
+        post_accuracy_affected=post_aff,
+        pre_accuracy_suite=pre_suite,
+        post_accuracy_suite=post_suite,
+        needs_review_question_ids=nr_ids,
+        graded_affected_count=len(graded_affected),
+        graded_suite_count=len(graded_suite),
+    )
+
+
 @runtime_checkable
 class EvalRunner(Protocol):
     """The single seam the optimizer evaluates through.
 
     Implementations run a benchmark eval over ``space_id``.
     ``benchmark_question_ids=None`` evaluates every benchmark question.
+
+    ``run``'s signature is frozen (unified loop). ``run_subset`` / ``list_eval_runs``
+    are additive MV-advisor methods on the same seam — not a second adapter.
     """
 
     def run(
@@ -178,6 +319,15 @@ class EvalRunner(Protocol):
         *,
         eval_scope: str = FULL,
     ) -> EvalRunResult: ...
+
+    def run_subset(
+        self,
+        space_id: str,
+        question_ids: Sequence[str],
+        label: str,
+    ) -> EvalRunResult: ...
+
+    def list_eval_runs(self, space_id: str) -> Sequence[Any]: ...
 
 
 def _official_genie_eval_block(assessment: str, reasons: list[str]) -> dict[str, Any]:
@@ -350,6 +500,9 @@ class OfficialBenchmarkRunner:
         self._clock = clock
         self._sleep = sleep
         self._progress = progress
+        # Workspace eval throughput is ~20 q/min; never overlap create/poll
+        # on this runner (subset and full runs share the same lock).
+        self._eval_lock = threading.RLock()
 
     # -- public API --------------------------------------------------------
     def run(
@@ -358,6 +511,59 @@ class OfficialBenchmarkRunner:
         benchmark_question_ids: Sequence[str] | None = None,
         *,
         eval_scope: str = FULL,
+    ) -> EvalRunResult:
+        with self._eval_lock:
+            return self._run_locked(
+                space_id, benchmark_question_ids, eval_scope=eval_scope
+            )
+
+    def run_subset(
+        self,
+        space_id: str,
+        question_ids: Sequence[str],
+        label: str,
+    ) -> EvalRunResult:
+        """Labeled eval over an explicit question subset (serialized via ``run``).
+
+        ``OfficialBenchmarkRunner._eval_lock`` serializes subset and full eval
+        runs *within this process* so one optimize-task runner respects the
+        ~20 q/min workspace ceiling. It does **not** coordinate concurrent
+        Databricks job runs against the same space; there is no cross-run
+        eval mutex in this repo.
+        """
+        qids = [str(qid) for qid in question_ids if str(qid)]
+        if not qids:
+            raise EvalRunError("run_subset requires a non-empty question_ids list")
+        return self.run(space_id, qids, eval_scope=label)
+
+    def list_eval_runs(self, space_id: str) -> list[Any]:
+        """Paginated ``genie_list_eval_runs`` for cross-run history on this space."""
+        runs: list[Any] = []
+        page_token: str | None = None
+        while True:
+            page = self._genie.genie_list_eval_runs(
+                space_id, page_size=self._page_size, page_token=page_token
+            )
+            runs.extend(getattr(page, "eval_runs", None) or [])
+            page_token = getattr(page, "next_page_token", None)
+            if not page_token:
+                break
+        return runs
+
+    def lift_report(
+        self,
+        pre_run: EvalRunResult,
+        post_run: EvalRunResult,
+        question_subset: Sequence[str],
+    ) -> LiftReport:
+        return lift_report(pre_run, post_run, question_subset)
+
+    def _run_locked(
+        self,
+        space_id: str,
+        benchmark_question_ids: Sequence[str] | None,
+        *,
+        eval_scope: str,
     ) -> EvalRunResult:
         start = self._clock()
         qids: list[str] | None = (

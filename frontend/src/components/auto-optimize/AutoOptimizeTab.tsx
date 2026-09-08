@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, useRef } from "react"
 import { Info, Play, CheckCircle, AlertCircle, Loader2, ExternalLink, ShieldCheck, Sparkles } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { OptimizationConfig } from "@/components/auto-optimize/OptimizationConfig"
+import { OptimizationConfig, type MvRerunPrefill } from "@/components/auto-optimize/OptimizationConfig"
 import { OptimizationLoadingStepper } from "@/components/auto-optimize/OptimizationLoadingStepper"
 import { RunHistoryTable } from "@/components/auto-optimize/RunHistoryTable"
 import { RunDetailView } from "@/components/auto-optimize/RunDetailView"
@@ -36,6 +36,7 @@ import type {
   GSOBenchmarkChanges,
   GSOPipelineRun,
   GSOIterationResult,
+  MvProposal,
 } from "@/types"
 
 interface AutoOptimizeTabProps {
@@ -44,6 +45,13 @@ interface AutoOptimizeTabProps {
   onRunChange?: (runId?: string) => void
   onRefreshIqScore?: (runId: string, force?: boolean) => Promise<boolean>
   onViewIqScore?: () => void
+  /**
+   * Prompt 15.6 finding 6 — a proposal carried from the IQ-scan "Review in run
+   * setup" deep-link. Opens the configure view with the MV section expanded and
+   * this suggestion preselected in create_and_attach mode (reuses the MV-D1
+   * prefill flow; does not fork it).
+   */
+  initialMvPrefill?: MvRerunPrefill | null
 }
 
 type View = "configure" | "monitoring" | "detail"
@@ -135,6 +143,7 @@ export function AutoOptimizeTab({
   onRunChange,
   onRefreshIqScore,
   onViewIqScore,
+  initialMvPrefill,
 }: AutoOptimizeTabProps) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [healthIssues, setHealthIssues] = useState<string[]>([])
@@ -144,6 +153,13 @@ export function AutoOptimizeTab({
   const [stepperComplete, setStepperComplete] = useState(false)
   const [stepperError, setStepperError] = useState<string | null>(null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  // Carried from a suggest-only run's "Re-run with this metric view" action to
+  // the configure view (MV-D1), or from the IQ-scan "Review in run setup"
+  // deep-link (Prompt 15.6 finding 6). Cleared once consumed so a later plain
+  // configure does not re-open create_and_attach.
+  const [mvRerunPrefill, setMvRerunPrefill] = useState<MvRerunPrefill | null>(
+    initialMvPrefill ?? null,
+  )
   const [runStatus, setRunStatus] = useState<GSORunStatus | null>(null)
   const [runDetail, setRunDetail] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
@@ -382,12 +398,14 @@ export function AutoOptimizeTab({
           </Card>
         )}
         <OptimizationConfig
+          key={mvRerunPrefill?.suggestionId ?? "config"}
           spaceId={spaceId}
           hasActiveRun={!!activeRunId}
           permissions={permissions}
           permsLoading={permsLoading}
           healthIssues={healthIssues}
           onRefreshPermissions={refreshPermissions}
+          initialMv={mvRerunPrefill}
           onTriggerStart={() => {
             setStepperError(null)
             setStepperComplete(false)
@@ -397,6 +415,7 @@ export function AutoOptimizeTab({
             setStepperError(msg)
           }}
           onStarted={(runId) => {
+            setMvRerunPrefill(null)
             setActiveRunId(runId)
             setStepperComplete(true)
           }}
@@ -416,6 +435,7 @@ export function AutoOptimizeTab({
           spaceId={spaceId}
           onLiveStateChanged={(runId) => refreshIqScore(runId, true)}
           onSelectRun={(runId) => {
+            setMvRerunPrefill(null)
             setSelectedRunId(runId)
             setView("detail")
           }}
@@ -675,6 +695,10 @@ export function AutoOptimizeTab({
           runId={selectedRunId}
           onBack={() => setView("configure")}
           onRefreshIqScore={refreshIqScore}
+          onRerunWithMv={(proposal: MvProposal) => {
+            setMvRerunPrefill({ mode: "create_and_attach", suggestionId: proposal.suggestion_id })
+            setView("configure")
+          }}
         />
       </div>
     )

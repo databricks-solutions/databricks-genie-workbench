@@ -369,6 +369,47 @@ def user_can_edit_space(
         return False
 
 
+def user_can_manage_space(
+    w: WorkspaceClient,
+    space_id: str,
+    *,
+    user_email: str | None = None,
+    user_groups: set[str] | None = None,
+    acl_client: WorkspaceClient | None = None,
+    cached_perms: dict | None = None,
+) -> bool:
+    """Check whether a user has CAN_MANAGE on a Genie Agent.
+
+    Stricter than :func:`user_can_edit_space`, which also accepts CAN_EDIT.
+    Patching ``data_sources.metric_views[]`` needs CAN_MANAGE, so the metric
+    view entitlement probe asks this question and not the editable one.
+    ``cached_perms`` accepts a raw REST dict from
+    :func:`get_space_permissions_rest`.
+    """
+    try:
+        if not user_email:
+            me = w.current_user.me()
+            user_email = (me.user_name or "").lower()
+            if user_groups is None and me.groups:
+                user_groups = {g.display.lower() for g in me.groups if g.display}
+        else:
+            user_email = user_email.lower()
+        user_groups = user_groups or set()
+
+        if cached_perms is not None:
+            return _check_user_manage_from_rest_acl(cached_perms, user_email, user_groups)
+
+        for client in [w, acl_client] if acl_client else [w]:
+            acl_resp = get_space_permissions_rest(client, space_id)
+            if acl_resp is not None:
+                return _check_user_manage_from_rest_acl(acl_resp, user_email, user_groups)
+
+        return False
+    except Exception:
+        logger.warning("Could not check CAN_MANAGE for space %s — denying", space_id)
+        return False
+
+
 def sp_can_manage_space(
     w: WorkspaceClient, space_id: str, sp_aliases: set[str],
     cached_perms: dict | None = None,

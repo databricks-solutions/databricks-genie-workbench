@@ -108,6 +108,78 @@ def test_new_job_parameters_present_with_defaults():
     assert params.get("workload_warehouse_ids") == "[]"
 
 
+_MV_JOB_PARAM_DEFAULTS = {
+    "enable_metric_view_suggestions": "false",
+    "mv_action_mode": "suggest_only",
+    "mv_attach_views": "",
+    "mv_consent_id": "",
+    "mv_min_confidence": "75",
+}
+
+
+def test_metric_view_advisor_params_declared_with_defaults():
+    """MV-D5: the five advisor job parameters are declared with their defaults."""
+    job = _load_job()
+    params = {p["name"]: p["default"] for p in job["parameters"]}
+    for name, default in _MV_JOB_PARAM_DEFAULTS.items():
+        assert params.get(name) == default, name
+
+
+def test_optimize_task_receives_metric_view_advisor_params():
+    """The advisor phase runs inside the optimize task, so every MV parameter
+    must reach run_optimize.py via that task's base_parameters. A parameter
+    declared at job level but omitted here silently resolves to the widget
+    default — the pass-through trap Prompt 8 exists to close."""
+    job = _load_job()
+    by_key = {t["task_key"]: t for t in job["tasks"]}
+    bp = by_key["optimize"]["notebook_task"]["base_parameters"]
+    for name in _MV_JOB_PARAM_DEFAULTS:
+        assert bp.get(name) == f"{{{{job.parameters.{name}}}}}", name
+
+
+def test_submit_optimization_threads_metric_view_params_with_defaults():
+    """MV-D5: the five MV parameters ride into run_now with the job-level
+    defaults when the caller omits them (Prompt 9 will pass real values), so the
+    launcher stays a subset-consistent mirror of the declared job parameters."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    ws = MagicMock()
+    ws.jobs.run_now.return_value = MagicMock(run_id=7)
+    submit_optimization(
+        ws, job_id=1, run_id="r", space_id="s", domain="d", catalog="c", schema="x",
+    )
+    params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
+    for name, default in _MV_JOB_PARAM_DEFAULTS.items():
+        assert params[name] == default, name
+
+
+def test_submit_optimization_threads_metric_view_param_overrides():
+    """Keyword-only MV kwargs propagate into run_now, proving the plumbing is
+    live for the Prompt 9 trigger flow while the default-only caller is untouched."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    ws = MagicMock()
+    ws.jobs.run_now.return_value = MagicMock(run_id=8)
+    submit_optimization(
+        ws, job_id=1, run_id="r", space_id="s", domain="d", catalog="c", schema="x",
+        enable_metric_view_suggestions="true",
+        mv_action_mode="create_and_attach",
+        mv_attach_views='["main.sales.mv_orders"]',
+        mv_consent_id="probe_7f21",
+        mv_min_confidence="80",
+    )
+    params = ws.jobs.run_now.call_args.kwargs["job_parameters"]
+    assert params["enable_metric_view_suggestions"] == "true"
+    assert params["mv_action_mode"] == "create_and_attach"
+    assert params["mv_attach_views"] == '["main.sales.mv_orders"]'
+    assert params["mv_consent_id"] == "probe_7f21"
+    assert params["mv_min_confidence"] == "80"
+
+
 def test_legacy_deploy_target_param_removed():
     job = _load_job()
     names = {p["name"] for p in job["parameters"]}

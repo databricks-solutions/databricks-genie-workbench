@@ -87,6 +87,13 @@ def canonicalize_sql(sql: str) -> str:
     quoted-alias syntax produce the same fingerprint. Identifier-level
     differences (different column names, different tables) produce
     different fingerprints — those are legitimately different queries.
+
+    **Literals are PRESERVED here**, deliberately: this function hunts verbatim
+    benchmark text, so the values *are* the evidence. That is the inverse of
+    ``mv_fingerprint.canonicalize_sql_ast``, which erases every literal because
+    two queries differing only in a date are one measure shape and a literal in
+    shipped metric-view metadata is a firewall violation. The two are not
+    interchangeable in either direction.
     """
     stripped = _strip_sql(sql)
     if not stripped:

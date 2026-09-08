@@ -193,13 +193,19 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
                 if catalog and wh_id:
                     try:
                         from genie_space_optimizer.common.warehouse import sql_warehouse_query
+                        from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
                         from backend.services.auth import get_service_principal_client
                         ws = get_service_principal_client()
+                        # MV-D23 guardrail (ii): exclude sentinel advice runs so a
+                        # standalone suggest never poses as this space's latest
+                        # optimization run (it has no best_accuracy). Same pinned
+                        # predicate as the history surface.
                         df = sql_warehouse_query(
                             ws, wh_id,
                             f"SELECT run_id, space_id, status, best_accuracy, completed_at, started_at "
                             f"FROM {catalog}.{schema}.genie_opt_runs "
-                            f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+                            f"WHERE space_id = '{space_id}' AND {MV_ADVICE_RUN_EXCLUSION} "
+                            f"ORDER BY started_at DESC"
                         )
                         if not df.empty:
                             runs = df.to_dict(orient="records")

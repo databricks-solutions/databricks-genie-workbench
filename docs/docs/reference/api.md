@@ -90,6 +90,10 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/question-results` | <span className="badge badge--secondary">SP</span> | Per-question results (requires `iteration` param) |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/patches` | <span className="badge badge--secondary">SP</span> | All patches for the run |
 | <span className="badge badge--success">GET</span> | `/api/auto-optimize/runs/{run_id}/benchmark-changes` | <span className="badge badge--secondary">SP</span> | Benchmark mutation ledger plus QC window, structured quality findings, semantic-review coverage, and proposed repairs |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/semantic-graph` | <span className="badge badge--info">OBO → SP</span> | Semantic Blueprint graph (tables, joins, metric views, measures) for the Model tab |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/join-candidates` | <span className="badge badge--info">OBO → SP</span> | Discover data-grounded Join Advisor candidates with warehouse containment verdicts |
+| <span className="badge badge--success">GET</span> | `/api/auto-optimize/spaces/{space_id}/join-advice` | <span className="badge badge--primary">OBO</span> | Read the pending Join Advisor advice seeded for a space |
+| <span className="badge badge--info">POST</span> | `/api/auto-optimize/spaces/{space_id}/join-advice` | <span className="badge badge--primary">OBO</span> | Seed (or clear) Join Advisor advice — carried into the next run, never a config edit |
 
 ## GenieWatch Routers (`/api/watch`)
 
