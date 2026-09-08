@@ -9,6 +9,7 @@
  *   ?scene=default|northstar|stale|empty|loading|error|stress|proposed
  *   &origin=applied|proposed          initial provenance (default applied)
  *   &select=<node label or id>        reveal + select this node once laid out
+ *   &panel=domains                    open the domain show/hide panel on mount (R27 shot)
  *   &theme=light|dark                 app theme (default dark)
  */
 import { StrictMode } from "react"
@@ -40,6 +41,7 @@ hashParams.forEach((v, k) => params.set(k, v))
 const scene = pick(params.get("scene"), SCENES, "default")
 const origin = pick(params.get("origin"), ORIGINS, "applied")
 const select = params.get("select")
+const domainPanelOpen = params.get("panel") === "domains"
 
 const graph = graphForScene(scene)
 const api = createMockApi({ scene })
@@ -95,7 +97,13 @@ createRoot(document.getElementById("root")!).render(
         <p className="mb-3 text-xs text-muted">
           Ontology Map — dev harness · scene <span className="font-mono text-secondary">{scene}</span>
         </p>
-        <EstateGraph graph={graph} api={api} initialOrigin={origin} onReady={onReady} />
+        <EstateGraph
+          graph={graph}
+          api={api}
+          initialOrigin={origin}
+          initialDomainPanelOpen={domainPanelOpen}
+          onReady={onReady}
+        />
       </div>
     </div>
   </StrictMode>,

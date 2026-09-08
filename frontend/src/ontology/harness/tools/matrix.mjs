@@ -12,6 +12,7 @@ export const THEMES = ["light", "dark"]
 export const SCENES = [
   { name: "northstar", p: { scene: "northstar" } },
   { name: "northstar+select", p: { scene: "northstar", select: "net sales" } },
+  { name: "northstar+panel", p: { scene: "northstar", panel: "domains" } },
   { name: "proposed", p: { scene: "proposed", origin: "proposed" } },
   { name: "degrade", p: { scene: "default" } },
   { name: "stale", p: { scene: "stale" } },

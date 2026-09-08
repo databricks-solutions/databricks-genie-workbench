@@ -311,7 +311,13 @@ function spinePath(s: Point, t: Point): string {
  * Quadratic bezier bowed off the straight line between two points; xdom bows wider
  * (§4.1). Returns the path plus the arc midpoint (for the verb plate).
  */
-function crossPath(a: Point, b: Point, bow: number): { path: string; mid: Point } {
+function crossPath(
+  a: Point,
+  b: Point,
+  bow: number,
+  startTrim = 0,
+  endTrim = 0,
+): { path: string; mid: Point } {
   const mx = (a.x + b.x) / 2
   const my = (a.y + b.y) / 2
   const dx = b.x - a.x
@@ -323,10 +329,24 @@ function crossPath(a: Point, b: Point, bow: number): { path: string; mid: Point 
   const off = len * bow
   const cx = mx + nx * off
   const cy = my + ny * off
-  // Midpoint of a quadratic bezier at t=0.5.
-  const midX = 0.25 * a.x + 0.5 * cx + 0.25 * b.x
-  const midY = 0.25 * a.y + 0.5 * cy + 0.25 * b.y
-  return { path: `M${a.x},${a.y}Q${cx},${cy} ${b.x},${b.y}`, mid: { x: midX, y: midY } }
+  // Trim the DRAWN endpoints back to the node perimeter along the bezier's end tangents
+  // (tangent at t=0 points a→c, at t=1 points c→b), so the `marker-end` arrowhead sits just
+  // OUTSIDE the target disc instead of under it — the R25 fix. The control point (hence the
+  // bow + arc shape) is unchanged, so the overlay stays deterministic.
+  const trim = (from: Point, toward: Point, d: number): Point => {
+    if (d <= 0) return from
+    const vx = toward.x - from.x
+    const vy = toward.y - from.y
+    const vlen = Math.hypot(vx, vy) || 1
+    return { x: from.x + (vx / vlen) * d, y: from.y + (vy / vlen) * d }
+  }
+  const ctrl = { x: cx, y: cy }
+  const a2 = trim(a, ctrl, startTrim)
+  const b2 = trim(b, ctrl, endTrim)
+  // Midpoint of the (trimmed) quadratic bezier at t=0.5.
+  const midX = 0.25 * a2.x + 0.5 * cx + 0.25 * b2.x
+  const midY = 0.25 * a2.y + 0.5 * cy + 0.25 * b2.y
+  return { path: `M${a2.x},${a2.y}Q${cx},${cy} ${b2.x},${b2.y}`, mid: { x: midX, y: midY } }
 }
 
 /**
@@ -416,13 +436,18 @@ export function layoutTree(
   //   2. FOCUS/CAP — with a selection, draw ONLY that node's arcs, each with its verb
   //      label; with no selection, draw every arc unlabelled up to `crossLinkCap`, and
   //      above the cap suppress the mat entirely (surface a "+N links" affordance instead).
+  const radiusById = new Map(laid.map((n) => [n.id, n.radius]))
   const candidates: CrossLink[] = []
   for (const e of model.crossEdges) {
     const a = posById.get(e.src)
     const b = posById.get(e.dst)
     if (!a || !b) continue
     const bow = cfg.bow * (e.relClass === "xdom" ? cfg.xdomBow : 1)
-    const { path, mid } = crossPath(a, b, bow)
+    // Pull the tail off the source disc and leave arrowhead headroom past the target disc
+    // so the marker-end is visible (R25).
+    const startTrim = (radiusById.get(e.src) ?? 0) + 2
+    const endTrim = (radiusById.get(e.dst) ?? 0) + 7
+    const { path, mid } = crossPath(a, b, bow, startTrim, endTrim)
     candidates.push({
       id: e.id,
       sourceId: e.src,

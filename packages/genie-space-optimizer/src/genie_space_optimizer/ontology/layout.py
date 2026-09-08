@@ -570,6 +570,51 @@ def build_graph_snapshot(
         domain_info["member_count"] = len([n for n in asset_nodes if n.get("domain_id") == domain_id])
         domain_nodes.append(domain_info)
 
+    # Parent-domain closure. ``domain_dict`` is keyed off each asset's ``domain_id``, so a
+    # rollup node exists only for a domain/sub-domain that has DIRECTLY-tagged assets. A
+    # top-level domain whose assets all live in its sub-domains (e.g. a governed "…
+    # Operations" tag) therefore gets NO node, yet its sub-domains ARE emitted carrying a
+    # ``parent_id`` that points at the absent parent — a dangling reference. The renderer's
+    # degrade guard then re-roots those orphans onto the Estate root, so the real domain
+    # never appears in the tree or the show/hide panel (and cannot be hidden). Fix: backfill
+    # every ancestor referenced by an emitted node's ``parent_id`` but not itself emitted,
+    # walking ``domain_meta`` to the top. Synthesized nodes take the meta name/description/
+    # origin; position/size are averaged from the children that referenced them so the
+    # rollup sits amid its sub-domains. Additive, deterministic (sorted), blob-only (MV-D49).
+    emitted_ids = {d["id"] for d in domain_nodes}
+    pending = [d for d in domain_nodes if d.get("parent_id") and d["parent_id"] not in emitted_ids]
+    while pending:
+        missing: dict[str, list[dict[str, Any]]] = {}
+        for child in pending:
+            missing.setdefault(child["parent_id"], []).append(child)
+        new_parent_nodes: list[dict[str, Any]] = []
+        for pid, kids in sorted(missing.items()):
+            meta = domain_meta.get(pid)
+            gp = meta.get("parent_id") if meta else None
+            gp_meta = domain_meta.get(gp) if gp else None
+            xs = [k["x"] for k in kids if k.get("x") is not None]
+            ys = [k["y"] for k in kids if k.get("y") is not None]
+            sizes = [k.get("size") for k in kids if k.get("size") is not None]
+            new_parent_nodes.append({
+                "id": pid,
+                "label": (meta.get("name") if meta else None) or pid,
+                "kind": "subdomain" if gp else "domain",
+                "domain_id": pid,
+                "parent_id": gp,
+                "parent_name": (gp_meta.get("name") if gp_meta else None) or gp,
+                "origin": (meta.get("origin") if meta else None) or "proposed",
+                "description": _clean_description(meta.get("description")) if meta else None,
+                "x": float(sum(xs) / len(xs)) if xs else 0.0,
+                "y": float(sum(ys) / len(ys)) if ys else 0.0,
+                "size": float(sum(sizes) / len(sizes)) if sizes else 1.0,
+                "cost": None,
+                "member_count": 0,
+            })
+        domain_nodes.extend(new_parent_nodes)
+        emitted_ids.update(n["id"] for n in new_parent_nodes)
+        # Close the next level up (a grandparent that is still absent).
+        pending = [n for n in new_parent_nodes if n.get("parent_id") and n["parent_id"] not in emitted_ids]
+
     # Domain-level edges: aggregate asset edges across domain boundaries.
     domain_edges = []
     domain_ids_set = {d["domain_id"] for d in domain_nodes}

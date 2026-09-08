@@ -134,6 +134,24 @@ describe("layoutTree", () => {
     expect(shared!.path.startsWith("M")).toBe(true)
   })
 
+  it("trims cross-link endpoints off the node discs so the arrowhead clears the target (R25)", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const l = layoutTree(model, exp, noOffsets)
+    const c = l.crossLinks[0]
+    expect(c).toBeDefined()
+    const tgt = l.nodes.find((n) => n.id === c.targetId)!
+    // Parse the drawn end point from "M ax,ay Q cx,cy ex,ey".
+    const m = c.path.match(/Q[\d.-]+,[\d.-]+ ([\d.-]+),([\d.-]+)$/)!
+    const ex = parseFloat(m[1])
+    const ey = parseFloat(m[2])
+    const dist = Math.hypot(ex - tgt.x, ey - tgt.y)
+    // End is pulled back past the target radius (arrowhead headroom) — OUTSIDE the disc,
+    // never the bare target centre (the pre-fix occlusion bug).
+    expect(dist).toBeGreaterThanOrEqual(tgt.radius)
+    expect(ex === tgt.x && ey === tgt.y).toBe(false)
+  })
+
   it("only draws cross-links between two visible nodes (no hairball, R4)", () => {
     const model = buildEstateModel(graph())
     // Collapse s_rev so t:sales is hidden → its cross-links must disappear.

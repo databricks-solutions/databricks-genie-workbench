@@ -144,6 +144,62 @@ def test_subdomain_rollup_carries_parent_linkage():
     assert dom["d2"]["parent_name"] == "Revenue"
 
 
+def test_parent_domain_closure_backfills_missing_top_level():
+    """Regression (dangling parent): a top-level domain whose assets all live in its
+    SUB-domains has no directly-tagged asset, so the asset-keyed rollup never emits it —
+    yet its sub-domains carry a ``parent_id`` pointing at it. The closure must backfill the
+    missing parent as a top-level domain node so the renderer nests the sub-domains under
+    it (instead of re-rooting them onto the Estate org root) and the show/hide panel can
+    list + hide it."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.ops.regs", "kind": "table"},
+            {"id": "asset:c.ops.deals", "kind": "table"},
+        ],
+        "edges": [],
+    }
+    # Both assets tagged to SUB-domains (s1, s2); the top-level parent d_ops has no asset.
+    blob = _snap(sig, {"c.ops.regs": "s1", "c.ops.deals": "s2"}, domain_meta={
+        "d_ops": {"name": "Alaska Airlines Operations", "parent_id": None, "origin": "applied"},
+        "s1": {"name": "Aircraft Registry", "parent_id": "d_ops", "origin": "applied"},
+        "s2": {"name": "Carrier Agreements", "parent_id": "d_ops", "origin": "applied"},
+    })
+    dom = {n["id"]: n for n in blob["domains"]["nodes"]}
+    # The parent is now emitted (no longer dangling).
+    assert "d_ops" in dom
+    assert dom["d_ops"]["kind"] == "domain"
+    assert dom["d_ops"]["parent_id"] is None
+    assert dom["d_ops"]["label"] == "Alaska Airlines Operations"
+    assert dom["d_ops"]["origin"] == "applied"
+    # Backfilled parent has no direct members (its assets live in the sub-domains).
+    assert dom["d_ops"]["member_count"] == 0
+    # Sub-domains nest under it; NO node has a dangling parent_id.
+    for sub in ("s1", "s2"):
+        assert dom[sub]["kind"] == "subdomain"
+        assert dom[sub]["parent_id"] == "d_ops"
+    ids = set(dom)
+    assert all(n["parent_id"] in ids for n in blob["domains"]["nodes"] if n.get("parent_id"))
+
+
+def test_parent_domain_closure_walks_multiple_levels():
+    """The closure walks the whole chain: an asset tagged to a leaf sub-domain whose parent
+    AND grandparent are both absent backfills both ancestors (grandparent as a top-level
+    domain, parent as a sub-domain), leaving no dangling reference."""
+    sig = {"nodes": [{"id": "asset:c.ops.x", "kind": "table"}], "edges": []}
+    blob = _snap(sig, {"c.ops.x": "leaf"}, domain_meta={
+        "top": {"name": "Top", "parent_id": None},
+        "mid": {"name": "Mid", "parent_id": "top"},
+        "leaf": {"name": "Leaf", "parent_id": "mid"},
+    })
+    dom = {n["id"]: n for n in blob["domains"]["nodes"]}
+    assert {"leaf", "mid", "top"} <= set(dom)
+    assert dom["top"]["kind"] == "domain" and dom["top"]["parent_id"] is None
+    assert dom["mid"]["kind"] == "subdomain" and dom["mid"]["parent_id"] == "top"
+    assert dom["leaf"]["parent_id"] == "mid"
+    ids = set(dom)
+    assert all(n["parent_id"] in ids for n in blob["domains"]["nodes"] if n.get("parent_id"))
+
+
 def test_unmapped_assets_still_fall_back_to_ungrouped():
     """Assets with no domain in the map (and no meta) keep the Ungrouped rollup —
     the fix must not fabricate domains for genuinely unassigned assets."""

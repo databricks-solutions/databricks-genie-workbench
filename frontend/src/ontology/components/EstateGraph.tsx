@@ -171,6 +171,7 @@ export function EstateGraph({
   drafts = null,
   taxonomy = null,
   estateName = null,
+  initialDomainPanelOpen = false,
   onReady,
 }: {
   graph: OntologyGraph
@@ -179,6 +180,8 @@ export function EstateGraph({
   drafts?: OntologyDrafts | null
   taxonomy?: OntologyTaxonomy | null
   estateName?: string | null
+  /** Dev-harness only (R27 shot): open the domain show/hide panel on mount. */
+  initialDomainPanelOpen?: boolean
   onReady?: (handle: EstateGraphHandle) => void
 }) {
   const { resolvedTheme } = useTheme()
@@ -200,7 +203,7 @@ export function EstateGraph({
   const [relVerbFocus, setRelVerbFocus] = useState<string | null>(null)
   // Fullscreen overlay (P0-a) + right-rail domain show/hide panel (P1-b).
   const [fullscreen, setFullscreen] = useState(false)
-  const [showDomainPanel, setShowDomainPanel] = useState(false)
+  const [showDomainPanel, setShowDomainPanel] = useState(initialDomainPanelOpen)
   // Domain show/hide (R27) — top-domain / sub-domain container ids the curator has hidden.
   const [hiddenDomains, setHiddenDomains] = useState<Set<string>>(new Set())
   // Live viewport rect (content coords) for the minimap you-are-here box (R26).
@@ -911,8 +914,8 @@ export function EstateGraph({
                     viewBox="0 0 10 10"
                     refX="9"
                     refY="5"
-                    markerWidth="6"
-                    markerHeight="6"
+                    markerWidth="7.5"
+                    markerHeight="7.5"
                     orient="auto-start-reverse"
                   >
                     <path d="M0,0 L10,5 L0,10 z" fill={m.color} />
