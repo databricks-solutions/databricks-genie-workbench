@@ -127,6 +127,12 @@ class OntologyGraphEdge(BaseModel):
     # blobs and expand edges without them still parse; MV-D43).
     verb: str | None = None
     rel_class: str | None = None
+    # Ontology Map interaction pass (MV-D88, Lane E): a compact optional per-edge
+    # evidence bag for the hover edge-tooltip (MV-D87, Lane P2) — e.g. join columns,
+    # co-query count, lineage flow, similarity band. Pre-seed carve: declared here
+    # (contract) + filled wheel-side by Lane E; additive + defaulted so a pre-MV-D88
+    # blob still parses and Lane P2 degrades to verb+endpoints when absent.
+    detail: dict[str, str] | None = None
 
 
 class OntologyGraphLevel(BaseModel):

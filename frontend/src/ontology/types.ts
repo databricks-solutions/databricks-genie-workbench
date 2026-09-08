@@ -257,6 +257,10 @@ export interface OntologyGraphEdge {
   // Northstar Data Lane (MV-D82): plain-language verb + within/cross class ("shared" | "xdom").
   verb?: string | null
   rel_class?: string | null
+  // Interaction pass (MV-D88, Lane E): compact optional evidence bag for the hover
+  // edge-tooltip (MV-D87, Lane P2). Pre-seed carve: contract only; filled wheel-side by
+  // Lane E. Optional so a pre-MV-D88 blob still parses and Lane P2 degrades gracefully.
+  detail?: Record<string, string> | null
 }
 
 export interface OntologyGraphLevel {

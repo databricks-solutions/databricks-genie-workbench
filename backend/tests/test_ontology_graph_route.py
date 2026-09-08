@@ -216,10 +216,11 @@ def test_expand_subdomain_returns_page_children(monkeypatch):
     assert page["id"] == "page:p1"
     assert page["label"] == "[Routing] Revenue"
     assert page["domain_id"] == "dom:fin/tax"
-    # verb/rel_class are additive optionals (MV-D82); expand edges don't set them → None.
+    # verb/rel_class (MV-D82) + detail (MV-D88) are additive optionals; expand edges
+    # don't set them → None.
     assert data["edges"] == [{"src": "dom:fin/tax", "dst": "page:p1",
                               "kind": "page_source", "weight": None,
-                              "verb": None, "rel_class": None}]
+                              "verb": None, "rel_class": None, "detail": None}]
 
 
 def test_expand_unknown_node_is_empty_200(monkeypatch):
