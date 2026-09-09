@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 # Larger estates cap at this to keep the asset LOD interactive.
 TOP_N_BY_CENTRALITY = 2000
 
+# Ontology Map — typed display-assets (MV-D89). The map's DISPLAY projection is exactly
+# these kinds; every other signal-graph node (a ``tag:``/``schema:`` hub, or a bare
+# ``node`` from a defensively-added semantic-sim endpoint) is STRUCTURAL — it drives
+# domain resolution + membership edges but is never emitted into ``assets.nodes``. The
+# ``mv:<fqn>`` measure-hub carries kind ``metric_view`` too, so it is excluded by id
+# prefix (``_STRUCTURAL_ID_PREFIXES``) and folded into the typed ``asset:<fqn>`` node
+# (Build C) rather than by kind. The cap then ranks REAL assets, not tag plumbing.
+_DISPLAY_KINDS = frozenset({"table", "metric_view", "agent", "dashboard", "measure"})
+_STRUCTURAL_ID_PREFIXES = ("tag:", "schema:", "mv:")
+
 # Bounded per-parent "business-snippet" index (MV-D73 §2.3): the expand-on-demand
 # source is baked in the deterministic batch (no request-path warehouse), so cap the
 # MV measures and sub-domain Pages per parent to keep the snapshot blob small (MV-D49).
@@ -227,6 +237,18 @@ def _fqn_of(node_id: str) -> str:
     return node_id.split(":", 1)[1] if ":" in node_id else node_id
 
 
+def _is_display_node(node_id: str, kind: str) -> bool:
+    """True when a signal-graph node belongs in the DISPLAY projection (MV-D89).
+
+    A display asset has a display ``kind`` (``table``/``metric_view``/``agent``/
+    ``dashboard``/``measure``) AND is not a structural hub id (``tag:``/``schema:``/
+    ``mv:``). The ``mv:<fqn>`` hub shares kind ``metric_view`` with a real typed MV, so
+    the id-prefix guard is what excludes it (Build C folds it into ``asset:<fqn>``)."""
+    if node_id.startswith(_STRUCTURAL_ID_PREFIXES):
+        return False
+    return kind in _DISPLAY_KINDS
+
+
 def build_graph_snapshot(
     signal_graph: dict[str, Any],
     node_domain_id: dict[str, str],
@@ -361,12 +383,19 @@ def build_graph_snapshot(
         layout = g.layout_circle()
         layout_algo = "circle"
 
-    # Attach (x, y) coordinates + sizes to each node.
+    # Attach (x, y) coordinates + sizes to each DISPLAY node. Build A (MV-D89): the
+    # display projection narrows to real assets — ``tag:``/``schema:``/``mv:`` hubs stay in
+    # the igraph layout + the structural lookups below (domain resolution, membership
+    # edges, ``_top_of_asset``) but never become display nodes, so the cap ranks real
+    # assets instead of tag plumbing. Skipped nodes keep their layout index ``i`` (the
+    # igraph vertex set is unchanged), so coordinates for surviving nodes are identical.
     asset_nodes = []
     node_sizes = {}
     for i, node in enumerate(nodes):
         node_id = node.get("id", "")
         kind = node.get("kind", "table")
+        if not _is_display_node(node_id, kind):
+            continue
         x, y = layout[i]
 
         # Size: normalized function of centrality / cost / score. Centrality
@@ -420,10 +449,33 @@ def build_graph_snapshot(
     # shape is unchanged for a reader that ignores the new keys. ``detail`` is omitted
     # entirely when the edge kind carries no signal (Lane P2 degrades to verb + endpoints).
     asset_node_ids = {n["id"] for n in asset_nodes}
+
+    # Build C — dedupe the MV double-emit (MV-D90). A tagged Metric View can appear twice:
+    # as the typed display node ``asset:<fqn>`` (from its tag membership, now kind
+    # ``metric_view`` per Build B) AND as the structural ``mv:<fqn>`` measure-hub. Build A
+    # already dropped the hub from the display projection; here we FOLD it in by mapping
+    # ``mv:<fqn> -> asset:<fqn>`` whenever the typed asset survived, so the hub's
+    # ``mv_membership`` edges reattach to the surviving node (Measures still expand) and
+    # exactly one display node remains. A hub with no surviving ``asset:<fqn>`` (an untagged
+    # MV) has no fold target — its edges drop with the hub, consistent with Build A. Sorted
+    # for determinism (MV-D82).
+    mv_hub_survivor: dict[str, str] = {}
+    for node in nodes:
+        nid = node.get("id", "")
+        if nid.startswith("mv:"):
+            survivor = f"asset:{nid[len('mv:'):]}"
+            if survivor in asset_node_ids:
+                mv_hub_survivor[nid] = survivor
+    mv_hub_survivor = dict(sorted(mv_hub_survivor.items()))
+
     asset_edges = []
     for edge in edges:
-        src_id = edge.get("src")
-        dst_id = edge.get("dst")
+        raw_src = edge.get("src")
+        raw_dst = edge.get("dst")
+        # Reattach a folded hub's edges to the surviving typed node (Build C); a non-hub
+        # endpoint passes through unchanged (``.get(x, x)``).
+        src_id = mv_hub_survivor.get(raw_src, raw_src)
+        dst_id = mv_hub_survivor.get(raw_dst, raw_dst)
         if src_id in asset_node_ids and dst_id in asset_node_ids:
             kind = edge.get("kind", "unknown")
             asset_edge: dict[str, Any] = {
@@ -434,6 +486,8 @@ def build_graph_snapshot(
                 "verb": _verb_of(kind),
                 "rel_class": _rel_class_of(_top_of_asset(src_id), _top_of_asset(dst_id)),
             }
+            # Detail reads the ORIGINAL edge (its ``mv:<fqn>`` src still keys the measure
+            # count) so the folded edge keeps its evidence bag intact (MV-D88).
             detail = _edge_detail(edge, mv_measure_count)
             if detail is not None:
                 asset_edge["detail"] = detail
@@ -710,7 +764,14 @@ def build_graph_snapshot(
     if snippets_in is not None:
         snippets_out = {}
         for mv_fqn, measures in (snippets_in.get("measures") or {}).items():
-            snippets_out[f"mv:{mv_fqn}"] = {"measures": list(measures)[:MAX_SNIPPET_MEASURES]}
+            # Build C (MV-D90): key measures to the SURVIVING display node id. When the MV
+            # folded into a typed ``asset:<fqn>`` node, the expand route (``snippets[node]``)
+            # is asked for ``asset:<fqn>`` — key there so Measures still expand; otherwise the
+            # ``mv:<fqn>`` hub key is unchanged (byte-identical to today for that case).
+            hub_id = f"mv:{mv_fqn}"
+            snippets_out[mv_hub_survivor.get(hub_id, hub_id)] = {
+                "measures": list(measures)[:MAX_SNIPPET_MEASURES]
+            }
         for sub_id, pgs in (snippets_in.get("pages") or {}).items():
             snippets_out.setdefault(sub_id, {})["pages"] = list(pgs)[:MAX_SNIPPET_PAGES]
 

@@ -386,26 +386,34 @@ def _assets_by_id(blob):
 
 
 def test_mv_membership_gives_asset_a_containment_parent():
-    """Build B: a table that is the TARGET of an mv_membership edge attaches to that
-    metric view — parent_id = the mv: source, attach_level = "asset"."""
+    """Build B + Stage-1 fold (MV-D89/D90): a table that is the TARGET of an mv_membership
+    edge attaches to the METRIC VIEW. The MV's ``mv:<fqn>`` hub folds into the typed
+    ``asset:<fqn>`` display node (Build C), so the surviving parent_id is that typed node."""
     sig = {
         "nodes": [
-            {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+            {"id": "asset:c.m.rev_mv", "kind": "metric_view"},  # tagged MV → the display node
+            {"id": "mv:c.m.rev_mv", "kind": "metric_view"},     # structural hub (folds in)
             {"id": "asset:c.rev.fact", "kind": "table"},
         ],
         "edges": [{"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"}],
     }
-    blob = _snap(sig, {"c.rev.fact": "d1"}, domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.m.rev_mv": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    # The mv: hub is not a display node; the reattached edge parents the table on the typed MV.
+    assert "mv:c.m.rev_mv" not in _assets_by_id(blob)
     fact = _assets_by_id(blob)["asset:c.rev.fact"]
-    assert fact["parent_id"] == "mv:c.m.rev_mv"
+    assert fact["parent_id"] == "asset:c.m.rev_mv"
     assert fact["attach_level"] == "asset"
 
 
 def test_table_read_by_two_mvs_keeps_only_strongest_parent_surplus_stays_edge():
     """Build B (canonical-parent) + Build C: a table read by two MVs keeps ONE tree
-    parent (higher weight wins); both memberships remain edges with verb "reads"."""
+    parent (higher weight wins); both memberships remain edges with verb "reads". Each
+    ``mv:<fqn>`` hub folds into its typed ``asset:<fqn>`` node, so edges carry asset: ids."""
     sig = {
         "nodes": [
+            {"id": "asset:c.m.a_mv", "kind": "metric_view"},
+            {"id": "asset:c.m.b_mv", "kind": "metric_view"},
             {"id": "mv:c.m.a_mv", "kind": "metric_view"},
             {"id": "mv:c.m.b_mv", "kind": "metric_view"},
             {"id": "asset:c.rev.fact", "kind": "table"},
@@ -415,14 +423,15 @@ def test_table_read_by_two_mvs_keeps_only_strongest_parent_surplus_stays_edge():
             {"src": "mv:c.m.b_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership", "weight": 0.5},
         ],
     }
-    blob = _snap(sig, {"c.rev.fact": "d1"}, domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.m.a_mv": "d1", "c.m.b_mv": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
     fact = _assets_by_id(blob)["asset:c.rev.fact"]
-    assert fact["parent_id"] == "mv:c.m.a_mv"  # higher weight wins the single parent
+    assert fact["parent_id"] == "asset:c.m.a_mv"  # higher weight wins the single parent
     assert fact["attach_level"] == "asset"
-    # Neither membership was deleted; the surplus (b_mv) survives as a verb edge.
+    # Neither membership was deleted; the surplus (b_mv) survives as a reattached verb edge.
     memberships = [e for e in blob["assets"]["edges"] if e["kind"] == "mv_membership"]
     assert len(memberships) == 2
-    surplus = [e for e in memberships if e["src"] == "mv:c.m.b_mv"]
+    surplus = [e for e in memberships if e["src"] == "asset:c.m.b_mv"]
     assert len(surplus) == 1 and surplus[0]["verb"] == "reads"
 
 
@@ -542,20 +551,22 @@ def test_rollup_node_carries_domain_description_when_meta_has_it():
 def test_meta_bag_carries_type_appropriate_keys_and_omits_absent():
     """MV-D86 accept (b): each kind's meta bag carries only the fields the inventory had,
     omits a field with no signal, and a node with zero signals yields ``meta = None``."""
+    # Stage-1 (MV-D89): the metric-view DISPLAY node is the typed ``asset:<fqn>``, not the
+    # ``mv:`` hub — the meta bag rides that node.
     sig = {"nodes": [
         {"id": "asset:c.rev.fact", "kind": "table", "row_count": 1000000,
          "data_format": "DELTA", "freshness": "2026-09-01", "storage_path": "s3://x/fact"},
-        {"id": "mv:c.m.rev_mv", "kind": "metric_view", "measure_count": 4,
+        {"id": "asset:c.m.rev_mv", "kind": "metric_view", "measure_count": 4,
          "dimension_count": 3},  # no freshness → omitted
         {"id": "agent:sales", "kind": "agent", "queries_28d": 128},  # no sample_questions
         {"id": "asset:c.plain.tbl", "kind": "table"},  # no signals → meta None
     ], "edges": []}
-    blob = _snap(sig, {"c.rev.fact": "d1", "c.plain.tbl": "d1"},
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.plain.tbl": "d1", "c.m.rev_mv": "d1"},
                  domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
     a = _assets_by_id(blob)
     assert a["asset:c.rev.fact"]["meta"] == {
         "rows": "1000000", "format": "DELTA", "freshness": "2026-09-01", "path": "s3://x/fact"}
-    mv = a["mv:c.m.rev_mv"]
+    mv = a["asset:c.m.rev_mv"]
     assert mv["meta"] == {"measures": "4", "dimensions": "3"}  # freshness omitted, no signal
     assert "freshness" not in mv["meta"]
     assert a["agent:sales"]["meta"] == {"queries_28d": "128"}  # sample_questions omitted
@@ -566,23 +577,27 @@ def test_containment_depth_reaches_agent_metric_view_table():
     """MV-D86 accept (c): with an ``agent_scope`` (agent→table) and an ``mv_membership``
     (mv→table) over the SAME table, the tree nests agent ⊃ metric_view ⊃ table — the MV
     is derived under the agent that scopes its source table (not a flat sub-area)."""
+    # Stage-1 (MV-D89/D90): the MV's display node is the typed ``asset:<fqn>`` (the
+    # ``mv:`` hub folds into it, reattaching mv_membership), so the chain runs through it.
     sig = {"nodes": [
         {"id": "agent:sales_agent", "kind": "agent"},
-        {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+        {"id": "asset:c.m.rev_mv", "kind": "metric_view"},  # tagged MV → display node
+        {"id": "mv:c.m.rev_mv", "kind": "metric_view"},     # structural hub (folds in)
         {"id": "asset:c.rev.fact", "kind": "table"},
     ], "edges": [
         {"src": "agent:sales_agent", "dst": "asset:c.rev.fact", "kind": "agent_scope"},
         {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
     ]}
-    blob = _snap(sig, {"c.rev.fact": "d1"},
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.m.rev_mv": "d1"},
                  domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
     a = _assets_by_id(blob)
+    assert "mv:c.m.rev_mv" not in a  # the hub is not a display node
     # The table's single parent is the MV (mv_membership outranks agent_scope, Build B).
-    assert a["asset:c.rev.fact"]["parent_id"] == "mv:c.m.rev_mv"
+    assert a["asset:c.rev.fact"]["parent_id"] == "asset:c.m.rev_mv"
     assert a["asset:c.rev.fact"]["attach_level"] == "asset"
     # The MV nests under the agent that scopes its source table (MV-D86 deeper containment).
-    assert a["mv:c.m.rev_mv"]["parent_id"] == "agent:sales_agent"
-    assert a["mv:c.m.rev_mv"]["attach_level"] == "asset"
+    assert a["asset:c.m.rev_mv"]["parent_id"] == "agent:sales_agent"
+    assert a["asset:c.m.rev_mv"]["attach_level"] == "asset"
     # The agent tops the chain, attached to its domain (not another asset).
     assert a["agent:sales_agent"]["parent_id"] is None
     assert a["agent:sales_agent"]["attach_level"] == "domain"
@@ -592,13 +607,15 @@ def test_containment_depth_reaches_agent_metric_view_table():
         seen.add(cur)
         chain.append(cur)
         cur = a.get(cur, {}).get("parent_id")
-    assert chain == ["asset:c.rev.fact", "mv:c.m.rev_mv", "agent:sales_agent"]
+    assert chain == ["asset:c.rev.fact", "asset:c.m.rev_mv", "agent:sales_agent"]
 
 
 def test_mv_without_scoping_agent_keeps_domain_fallback():
     """MV-D86: the derived agent⊃mv link fires ONLY from a real overlap — an MV whose
     tables no agent scopes keeps its domain fallback (no fabricated parent)."""
+    # Stage-1 (MV-D89): the MV's display node is the typed ``asset:<fqn>`` (hub folds in).
     sig = {"nodes": [
+        {"id": "asset:c.m.rev_mv", "kind": "metric_view"},
         {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
         {"id": "asset:c.rev.fact", "kind": "table"},
     ], "edges": [
@@ -606,7 +623,7 @@ def test_mv_without_scoping_agent_keeps_domain_fallback():
     ]}
     blob = _snap(sig, {"c.rev.fact": "d1", "c.m.rev_mv": "d1"},
                  domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
-    mv = _assets_by_id(blob)["mv:c.m.rev_mv"]
+    mv = _assets_by_id(blob)["asset:c.m.rev_mv"]
     assert mv["parent_id"] == "d1" and mv["attach_level"] == "domain"
 
 
@@ -728,8 +745,12 @@ def test_semantic_sim_bands_track_l3_thresholds():
 def test_lineage_agent_and_mv_membership_detail():
     """Directional + role verbs: lineage_adjacency → ``flow`` "feeds", agent_scope →
     ``role`` "queries", mv_membership → ``role`` "aggregates" + measure count from snippets."""
+    # Stage-1: the mv_membership edge reattaches to the typed ``asset:<fqn>`` (the hub folds
+    # in); its ``detail`` still reads the original ``mv:``-keyed edge, so the measure count
+    # from snippets is unchanged.
     sig = {"nodes": [
         {"id": "agent:sales", "kind": "agent"},
+        {"id": "asset:c.m.rev_mv", "kind": "metric_view"},
         {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
         {"id": "asset:c.rev.fact", "kind": "table"},
         {"id": "asset:c.rev.dim", "kind": "table"},
@@ -738,7 +759,7 @@ def test_lineage_agent_and_mv_membership_detail():
         {"src": "agent:sales", "dst": "asset:c.rev.fact", "kind": "agent_scope"},
         {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
     ]}
-    blob = _snap(sig, {"c.rev.fact": "d1", "c.rev.dim": "d1"},
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.rev.dim": "d1", "c.m.rev_mv": "d1"},
                  domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
                  snippets_in={"measures": {"c.m.rev_mv": [
                      {"ref": "c.m.rev_mv.m0", "name": "m0", "expression": "SUM(x)", "fmt": ""},
@@ -754,12 +775,14 @@ def test_mv_membership_detail_without_snippets_omits_measures():
     """Reveal-don't-invent: no snippet index ⇒ the mv_membership ``measures`` key is
     omitted; only the deterministic ``role`` survives."""
     sig = {"nodes": [
+        {"id": "asset:c.m.rev_mv", "kind": "metric_view"},
         {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
         {"id": "asset:c.rev.fact", "kind": "table"},
     ], "edges": [
         {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
     ]}
-    blob = _snap(sig, {"c.rev.fact": "d1"}, domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.m.rev_mv": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
     e = next(e for e in blob["assets"]["edges"] if e["kind"] == "mv_membership")
     assert e["detail"] == {"role": "aggregates"}
 
@@ -830,3 +853,85 @@ def test_edge_detail_keys_are_byte_identical_across_runs():
     b = layout.build_graph_snapshot(sig, dict(ids), **kw)
     assert a["graph"] == b["graph"]
     assert '"detail"' in a["graph"]  # the new key really rides in the serialized blob
+
+
+# --- Ontology Map — typed display-assets, not tag plumbing (Stage 1, MV-D89/D90) ---
+
+
+def test_assets_projection_excludes_tag_schema_and_mv_hubs():
+    """Accept (i): the DISPLAY projection carries only real assets — no ``tag:``/``schema:``
+    hub (kinds ``tag``/``schema``) and no ``mv:`` measure-hub (kind ``metric_view``) ever
+    lands in ``assets.nodes``. Real assets (table/metric_view/agent) survive."""
+    sig = {
+        "nodes": [
+            {"id": "tag:Alaska Airlines Commercial", "kind": "tag"},
+            {"id": "schema:c.revenue", "kind": "schema"},
+            {"id": "mv:c.m.rev_mv", "kind": "metric_view"},   # structural hub
+            {"id": "asset:c.m.rev_mv", "kind": "metric_view"},  # tagged MV → display
+            {"id": "asset:c.rev.fact", "kind": "table"},
+            {"id": "agent:sales · 01ef", "kind": "agent"},
+        ],
+        "edges": [
+            {"src": "tag:Alaska Airlines Commercial", "dst": "asset:c.rev.fact", "kind": "tag_assignment"},
+            {"src": "schema:c.revenue", "dst": "asset:c.rev.fact", "kind": "schema_affinity"},
+            {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
+        ],
+    }
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.m.rev_mv": "d1"},
+                 domain_meta={"d1": {"name": "Commercial", "parent_id": None}})
+    ids = {n["id"] for n in blob["assets"]["nodes"]}
+    kinds = {n["kind"] for n in blob["assets"]["nodes"]}
+    assert not any(i.startswith(("tag:", "schema:", "mv:")) for i in ids)
+    assert "tag" not in kinds and "schema" not in kinds
+    # Only the real assets survived — the typed MV, the table, the agent.
+    assert ids == {"asset:c.m.rev_mv", "asset:c.rev.fact", "agent:sales · 01ef"}
+
+
+def test_tagged_mv_emits_one_metric_view_node_keeping_membership_edges():
+    """Accept (ii): a tagged MV that double-emits (``asset:<fqn>`` + ``mv:<fqn>`` hub) yields
+    EXACTLY ONE ``metric_view`` display node — the typed asset — and its ``mv_membership``
+    edges reattach to that node so Measures still expand. The snippet index re-keys too."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.m.rev_mv", "kind": "metric_view"},
+            {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
+            {"id": "asset:c.rev.fact", "kind": "table"},
+        ],
+        "edges": [{"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"}],
+    }
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.m.rev_mv": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
+                 snippets_in={"measures": {"c.m.rev_mv": [
+                     {"ref": "c.m.rev_mv.m0", "name": "m0", "expression": "SUM(x)", "fmt": ""}]},
+                     "pages": {}})
+    mvs = [n for n in blob["assets"]["nodes"] if n["kind"] == "metric_view"]
+    assert [n["id"] for n in mvs] == ["asset:c.m.rev_mv"]  # exactly one, the typed asset
+    # The hub's membership edge reattached to the surviving typed node.
+    memberships = [e for e in blob["assets"]["edges"] if e["kind"] == "mv_membership"]
+    assert len(memberships) == 1
+    assert memberships[0]["src"] == "asset:c.m.rev_mv"
+    assert memberships[0]["dst"] == "asset:c.rev.fact"
+    # Measures re-key to the surviving display node id, so ``snippets[node]`` (the expand
+    # route) resolves them under the typed asset, not the folded-away ``mv:`` hub.
+    assert "asset:c.m.rev_mv" in blob["snippets"]
+    assert "mv:c.m.rev_mv" not in blob["snippets"]
+
+
+def test_cap_keeps_display_assets_not_hubs():
+    """Accept (iv): with far more than ``TOP_N_BY_CENTRALITY`` nodes dominated by tag hubs,
+    the cap ranks REAL assets — every surviving display node is an asset, never a hub."""
+    n_tables = 50
+    n_hubs = layout.TOP_N_BY_CENTRALITY + 500  # hubs alone exceed the cap
+    nodes = [{"id": f"asset:c.s.t{i}", "kind": "table"} for i in range(n_tables)]
+    nodes += [{"id": f"tag:key{i}", "kind": "tag"} for i in range(n_hubs)]
+    # Give the hubs huge degree (they would win a node-count cap) — every hub tags every table.
+    edges = [{"src": f"tag:key{i}", "dst": f"asset:c.s.t{j}", "kind": "tag_assignment"}
+             for i in range(n_hubs) for j in range(1)]
+    sig = {"nodes": nodes, "edges": edges}
+    blob = _snap(sig, {f"c.s.t{i}": "d1" for i in range(n_tables)},
+                 domain_meta={"d1": {"name": "D", "parent_id": None}})
+    disp = blob["assets"]["nodes"]
+    assert len(disp) <= layout.TOP_N_BY_CENTRALITY
+    assert all(n["id"].startswith("asset:") and n["kind"] == "table" for n in disp)
+    # All 50 real tables survived (hubs were never candidates).
+    assert len(disp) == n_tables

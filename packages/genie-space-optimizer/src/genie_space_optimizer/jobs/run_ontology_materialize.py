@@ -347,6 +347,33 @@ class SparkSystemTableReader:
             _log("metric_view_fqns read failed", error=str(e))
             return []
 
+    def table_types(self, allowlist: list[str]) -> dict[str, str]:
+        # Stage-1 asset typing (MV-D90): {fqn -> table_type} for every relation in the
+        # allowlisted catalogs, so ``assemble_tag_graph`` can type a tagged Metric View as
+        # ``metric_view`` (not ``table``). Same allowlist-scoped ``information_schema.tables``
+        # source as ``metric_view_fqns``; degrades to {} on any missing grant (MV-D43).
+        if not allowlist:
+            return {}
+        cats = _in_list(allowlist)
+        sql = (
+            "SELECT table_catalog, table_schema, table_name, table_type "
+            "FROM system.information_schema.tables "
+            f"WHERE table_catalog IN ({cats})"
+        )
+        try:
+            out: dict[str, str] = {}
+            for r in _rows(sql):
+                fqn = ".".join(
+                    str(v) for v in (r.get("table_catalog"), r.get("table_schema"), r.get("table_name")) if v
+                )
+                ttype = r.get("table_type")
+                if fqn and ttype:
+                    out[fqn] = str(ttype)
+            return out
+        except Exception as e:  # noqa: BLE001
+            _log("table_types read failed", error=str(e))
+            return {}
+
     def agents(self) -> list[str]:
         try:
             w = make_workspace_client()

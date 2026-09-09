@@ -53,6 +53,10 @@ class MaterializeReader(Protocol):
     def assignments(self, allowlist: list[str]) -> list[dict[str, Any]]: ...
     def metric_view_fqns(self, allowlist: list[str]) -> list[str]: ...
     def agents(self) -> list[str]: ...
+    # Stage-1 asset typing (MV-D90) — optional; the wheel calls it defensively (a reader
+    # without it degrades to every tagged member typed ``table``, byte-identical to the
+    # pre-Stage-1 output, MV-D43). ``{fqn -> table_type}`` from ``information_schema.tables``.
+    def table_types(self, allowlist: list[str]) -> dict[str, str]: ...
     def lineage_edges(self, allowlist: list[str]) -> list[tuple[str, str]]: ...
     # Stage-1 structural signals (MV-D52) — optional; the wheel calls them defensively
     # (an older reader without them degrades to the lineage-only graph, MV-D43).
@@ -256,6 +260,22 @@ def _gather_structural_signals(reader: Any, allowlist: list[str]) -> dict[str, A
     }
 
 
+def _gather_asset_types(reader: Any, allowlist: list[str]) -> dict[str, str]:
+    """The Stage-1 asset-type map (fqn → table_type) for per-member typing (MV-D90), if the
+    reader surfaces ``table_types``, else empty (MV-D43 degrade — an older reader, or a
+    failed ``information_schema.tables`` read, leaves every tagged member a ``table``,
+    byte-identical to the pre-Stage-1 output)."""
+    fn = getattr(reader, "table_types", None)
+    if fn is None:
+        return {}
+    try:
+        got = fn(allowlist)
+        return {str(k): str(v) for k, v in dict(got or {}).items() if k and v}
+    except Exception as exc:  # noqa: BLE001 — a missing signal never fails the run
+        logger.info("ontology asset-type map unavailable (%s)", exc)
+        return {}
+
+
 def _gather_usage(reader: Any, allowlist: list[str]) -> dict[str, float]:
     """The L2 usage/cost signal (fqn → pre-normalized [0,1] demand) for the L6 blend,
     if the reader surfaces it, else empty (MV-D43 degrade — a reader without it just
@@ -415,7 +435,13 @@ def run_materialize(
     try:
         catalog_rows = reader.governed_tags()
         assign_rows = reader.assignments(allowlist)
-        graph_struct = transforms.assemble_tag_graph(catalog_rows, assign_rows, as_of)
+        # Stage 1 (MV-D90): type tagged members by their real relation type so a tagged
+        # Metric View becomes a first-class ``metric_view`` node (Measures then expand),
+        # not a generic ``table``. Absent/failed read ⇒ {} ⇒ byte-identical (MV-D43).
+        asset_type_map = _gather_asset_types(reader, allowlist)
+        graph_struct = transforms.assemble_tag_graph(
+            catalog_rows, assign_rows, as_of, asset_type_map=asset_type_map,
+        )
         metric_views = reader.metric_view_fqns(allowlist)
         agents = reader.agents()
         tree = transforms.build_taxonomy_dict(graph_struct, metric_views, agents)

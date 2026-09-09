@@ -876,6 +876,54 @@ def test_assemble_tag_graph_threads_tag_value_additively():
             assert set(m) == {"fqn", "asset_type"}
 
 
+def test_assemble_tag_graph_types_members_from_asset_type_map():
+    """Stage 1 accept (iii), MV-D90: with an asset-type map, a ``METRIC_VIEW`` member is
+    typed ``metric_view`` and every other member ``table``; absent map ⇒ every member
+    ``table``, byte-identical to the pre-Stage-1 output."""
+    catalog_rows = [{"tag_name": "Commercial"}]
+    assign_rows = [
+        {"tag_name": "Commercial", "catalog_name": "c", "schema_name": "m", "table_name": "rev_mv"},
+        {"tag_name": "Commercial", "catalog_name": "c", "schema_name": "rev", "table_name": "fact"},
+    ]
+    # With the map: the MV fqn types as metric_view; the plain table stays table.
+    type_map = {"c.m.rev_mv": "METRIC_VIEW", "c.rev.fact": "TABLE"}
+    typed = transforms.assemble_tag_graph(catalog_rows, assign_rows, _AS_OF, asset_type_map=type_map)
+    members = {m["fqn"]: m["asset_type"] for m in typed["tags"][0]["members"]}
+    assert members == {"c.m.rev_mv": "metric_view", "c.rev.fact": "table"}
+    # An fqn absent from the map (and a lowercase / unexpected table_type) falls back to table.
+    partial = transforms.assemble_tag_graph(
+        catalog_rows, assign_rows, _AS_OF, asset_type_map={"c.m.rev_mv": "metric_view"})
+    assert {m["fqn"]: m["asset_type"] for m in partial["tags"][0]["members"]} == {
+        "c.m.rev_mv": "metric_view", "c.rev.fact": "table"}
+    # Absent map ⇒ byte-identical to the value-free (all-table) output.
+    assert (
+        transforms.assemble_tag_graph(catalog_rows, assign_rows, _AS_OF)
+        == transforms.assemble_tag_graph(catalog_rows, assign_rows, _AS_OF, asset_type_map=None)
+    )
+    assert {m["asset_type"] for m in
+            transforms.assemble_tag_graph(catalog_rows, assign_rows, _AS_OF)["tags"][0]["members"]} == {"table"}
+
+
+def test_gather_asset_types_degrades_and_threads(monkeypatch):
+    """Stage 1 (MV-D90/D43): the reader glue threads ``table_types`` into the type map, and
+    degrades to {} when the reader lacks the method or the read raises — so a run over an
+    older reader is byte-identical (every member a table)."""
+    class _NoMethod:
+        pass
+
+    class _Good:
+        def table_types(self, allowlist):
+            return {"c.m.rev_mv": "METRIC_VIEW", "c.rev.fact": "TABLE"}
+
+    class _Raises:
+        def table_types(self, allowlist):
+            raise RuntimeError("no grant")
+
+    assert materialize._gather_asset_types(_NoMethod(), ["c"]) == {}
+    assert materialize._gather_asset_types(_Good(), ["c"]) == {"c.m.rev_mv": "METRIC_VIEW", "c.rev.fact": "TABLE"}
+    assert materialize._gather_asset_types(_Raises(), ["c"]) == {}
+
+
 def test_coerce_scalar_fits_explicit_schema_types():
     """SparkSnapshotWriter._df_for passes the target Delta schema to
     createDataFrame (serverless can't infer all-None columns). _coerce_scalar

@@ -82,10 +82,21 @@ def tag_value_of(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _asset_type_of(fqn: str, asset_type_map: dict[str, str] | None) -> str:
+    """The member ``asset_type`` from an OPTIONAL ``{fqn -> table_type}`` map (Build B,
+    MV-D90). ``table_type == 'METRIC_VIEW'`` ⇒ ``"metric_view"``; anything else — and an
+    absent/empty map, or an fqn the map does not carry — ⇒ ``"table"``. So a value-free
+    call (``asset_type_map=None``) reproduces the pre-Stage-1 hardcode byte-for-byte."""
+    tt = (asset_type_map or {}).get(fqn)
+    return "metric_view" if str(tt).upper() == "METRIC_VIEW" else "table"
+
+
 def assemble_tag_graph(
     catalog_rows: list[dict[str, Any]],
     assign_rows: list[dict[str, Any]],
     as_of: str,
+    *,
+    asset_type_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Assemble the tag-graph structure from raw catalog + assignment rows.
 
@@ -97,6 +108,12 @@ def assemble_tag_graph(
     non-empty value, so a value-free (membership-only) tag yields the exact
     ``{"fqn", "asset_type"}`` member shape the value-free callers already emit —
     byte-identical. Only a value-carrying tag (``mvm_subdomain``) grows the key.
+
+    ``asset_type_map`` (Stage 1, MV-D90) types each member per its real relation type
+    (``{fqn -> table_type}`` from ``information_schema.tables``): a member whose fqn maps
+    to ``METRIC_VIEW`` becomes a ``metric_view`` (so the map renders it as a first-class
+    node and its Measures expand), every other fqn stays a ``table``. Absent map ⇒ every
+    member is a ``table`` — byte-identical to the pre-Stage-1 hardcode (MV-D43 degrade).
     """
     tags: dict[str, dict[str, Any]] = {}
     for r in catalog_rows:
@@ -111,7 +128,7 @@ def assemble_tag_graph(
         if not key or not fqn:
             continue
         entry = tags.setdefault(key, {"tag_key": key, "allowed_values": [], "members": []})
-        member: dict[str, Any] = {"fqn": fqn, "asset_type": "table"}
+        member: dict[str, Any] = {"fqn": fqn, "asset_type": _asset_type_of(fqn, asset_type_map)}
         tv = tag_value_of(r)
         if tv is not None:
             member["tag_value"] = tv
