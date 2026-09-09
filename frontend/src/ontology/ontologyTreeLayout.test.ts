@@ -355,6 +355,47 @@ describe("ancestorPath + initialExpanded", () => {
   })
 })
 
+// ── Tier-aware asset gating (owner directive) ────────────────────────────────
+describe("layoutTree — tier-aware asset gating", () => {
+  it("hides a domain's directly-attached assets by default, showing only sub-domains (+badge)", () => {
+    const model = buildEstateModel(graph())
+    const exp = initialExpanded(model) // org + domains
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { assetsExpanded: new Set() })
+    const ids = new Set(l.nodes.map((n) => n.id))
+    expect(ids.has("s_rev")).toBe(true) // sub-domain container still shows
+    expect(ids.has("t:cal")).toBe(false) // domain-attached asset is gated
+    expect(ids.has("t:ops")).toBe(false)
+    // The domain is partially open (sub-domain shown, asset hidden) → collapsed with a +N badge.
+    const dFin = l.nodes.find((n) => n.id === "d_fin")!
+    expect(dFin.collapsed).toBe(true)
+    expect(dFin.badge).toBeGreaterThan(0)
+  })
+
+  it("reveals a domain's assets once that domain id is drilled", () => {
+    const model = buildEstateModel(graph())
+    const exp = initialExpanded(model)
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { assetsExpanded: new Set(["d_fin"]) })
+    const ids = new Set(l.nodes.map((n) => n.id))
+    expect(ids.has("t:cal")).toBe(true) // drilled → visible
+    expect(ids.has("t:ops")).toBe(false) // the sibling domain stays gated
+  })
+
+  it("does NOT gate assets under a sub-domain — expanding the sub-domain reveals them", () => {
+    const model = buildEstateModel(graph())
+    const exp = new Set([...initialExpanded(model), "s_rev"])
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { assetsExpanded: new Set() })
+    expect(new Set(l.nodes.map((n) => n.id)).has("mv:a")).toBe(true)
+  })
+
+  it("is opt-in — absent assetsExpanded, an expanded domain reveals its assets (legacy)", () => {
+    const model = buildEstateModel(graph())
+    const l = layoutTree(model, initialExpanded(model), noOffsets)
+    const ids = new Set(l.nodes.map((n) => n.id))
+    expect(ids.has("t:cal")).toBe(true)
+    expect(ids.has("t:ops")).toBe(true)
+  })
+})
+
 // ── MV-D87 (Lane P2) — verb focus, collapse-tier, minimap/camera math ─────────
 describe("layoutTree — rel-type verb focus (R25)", () => {
   it("reveals every visible arc of a verb, labelled, and suppresses the rest", () => {

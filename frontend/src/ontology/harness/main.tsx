@@ -10,6 +10,7 @@
  *   &origin=applied|proposed          initial provenance (default applied)
  *   &select=<node label or id>        reveal + select this node once laid out
  *   &panel=domains                    open the domain show/hide panel on mount (R27 shot)
+ *   &expand=all                       seed the full tree incl. gated leaf assets (asset-colour shot)
  *   &theme=light|dark                 app theme (default dark)
  */
 import { StrictMode } from "react"
@@ -42,6 +43,9 @@ const scene = pick(params.get("scene"), SCENES, "default")
 const origin = pick(params.get("origin"), ORIGINS, "applied")
 const select = params.get("select")
 const domainPanelOpen = params.get("panel") === "domains"
+// Leaf assets are gated behind a per-domain drill in the real UI; `?expand=all` seeds the full
+// tree so a static shot can inspect typed asset colours/glyphs deterministically.
+const expandAll = params.get("expand") === "all"
 
 const graph = graphForScene(scene)
 const api = createMockApi({ scene })
@@ -110,6 +114,7 @@ createRoot(document.getElementById("root")!).render(
           api={api}
           initialOrigin={origin}
           initialDomainPanelOpen={domainPanelOpen}
+          initialExpandAll={expandAll}
           onReady={onReady}
         />
       </div>

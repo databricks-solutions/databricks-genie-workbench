@@ -118,7 +118,8 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
       edge_count: 0,
       state: "fresh",
     }
-    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
+    // Domain-attached assets are gated by default — drill them so the child cap applies (R3).
+    const html = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll />)
     expect(html).toMatch(/\+\d+ more/)
   })
 
@@ -143,9 +144,8 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
   })
 
   it("de-chromes containers: org/domain/subdomain carry NO glyph; leaf assets keep theirs (R23)", () => {
-    // The default view opens org + domains only (Estate → Domain → Sub-domain), so a
-    // sub-domain-nested asset would be hidden. Attach a metric view at the DOMAIN tier so a
-    // leaf asset is visible by default and its glyph can be asserted.
+    // The default view opens org + domains only and gates leaf assets behind an explicit drill,
+    // so render with `initialExpandAll` to make a leaf asset visible and assert its glyph.
     const g: OntologyGraph = {
       root: node({ id: "org", label: "Acme", kind: "org" }),
       domains: {
@@ -168,7 +168,7 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
       edge_count: 0,
       state: "fresh",
     }
-    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
+    const html = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll />)
     // Container glyph paths (from GLYPHS) must be gone.
     const ORG_GLYPH = "M12 3 3 8v8l9 5 9-5V8z"
     const DOMAIN_GLYPH = "M4 7h16M4 12h16M4 17h16"
@@ -213,7 +213,8 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
       node({ id: "t:b", label: "table_b", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
     )
     g.assets.edges = [{ src: "t:a", dst: "t:b", kind: "join_key", verb: "shares key with", rel_class: "shared" }]
-    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
+    // Domain-attached tables are gated in the default view — drill them via initialExpandAll.
+    const html = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll />)
     expect(html).toContain("shares key with")
   })
 
@@ -236,7 +237,8 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
       node({ id: "t:b", label: "table_b", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
     )
     g.assets.edges = [{ src: "t:a", dst: "t:b", kind: "join_key", verb: "shares key with", rel_class: "shared" }]
-    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
+    // Domain-attached tables are gated in the default view — drill them via initialExpandAll.
+    const html = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll />)
     expect(html).toContain('data-edge-kind="cross"')
     expect(html).toContain('data-relclass="shared"')
     expect(html).toContain("data-cross-line")

@@ -202,6 +202,16 @@ export interface LayoutOpts {
   /** Parent ids whose per-parent child cap is lifted (a `+N more` chip was clicked). */
   uncapped?: Set<string>
   /**
+   * Tier-aware asset gating (owner directive). When PRESENT (even empty), expanding a
+   * DOMAIN/ORG reveals only its container children (sub-domains) — its directly-attached
+   * assets stay hidden until that domain id is in this set (an explicit "drill"), so the
+   * default view reads a clean `Estate → Domain → Sub-domain`. Sub-domains and asset nodes
+   * (e.g. a metric view → its measures) reveal their children on expand, unchanged. When
+   * ABSENT (undefined) gating is OFF and every expanded node reveals all children (the legacy
+   * pure-layout behaviour), so existing callers/tests are unaffected.
+   */
+  assetsExpanded?: Set<string>
+  /**
    * Highlight a single relationship VERB across the whole visible tree (legend click,
    * Bloom-idiom, R25): draws every visible arc of that verb — labelled — and suppresses the
    * rest, so a rel-type reads as structure even past `crossLinkCap`. Node `focusId` wins when
@@ -248,31 +258,49 @@ function makeMoreDatum(parentId: string, count: number, domainId: string | null)
  * out and a synthetic `+N more` sentinel is appended — deterministic, so no parent ever
  * renders a nameless band. The chip lifts the cap for that parent when clicked.
  */
+/** Container tiers (the always-navigable skeleton); everything else is a leaf/asset. */
+function isContainerType(t: NodeType): boolean {
+  return t === "org" || t === "domain" || t === "subdomain"
+}
+
 function buildVisibleHierarchy(
   model: EstateModel,
   expandedSet: Set<string>,
   childCap: number,
   uncapped: ReadonlySet<string>,
-): { rootDatum: Datum; hasHiddenChildren: Set<string> } | null {
+  assetGate: { on: boolean; drilled: ReadonlySet<string> },
+): { rootDatum: Datum; hiddenBadge: Map<string, number> } | null {
   if (!model.root) return null
-  const hasHiddenChildren = new Set<string>()
+  // node id → collapse-badge count. A fully-hidden subtree reports its deep descendant count
+  // (as before); a partially-open node (domain showing sub-domains but hiding its gated assets)
+  // reports the honest count of hidden DIRECT children.
+  const hiddenBadge = new Map<string, number>()
   const make = (node: EstateNode, isRoot: boolean): Datum & { children?: Datum[] } => {
     const kids = model.childrenByParent.get(node.id) ?? []
     const expanded = isRoot || expandedSet.has(node.id)
-    if (kids.length && !expanded) hasHiddenChildren.add(node.id)
+    // Tier-aware gating (opt-in): a DOMAIN/ORG reveals its container children on expand but
+    // gates its directly-attached assets behind an explicit drill (`drilled`), so the default
+    // reads Estate→Domain→Sub-domain. Sub-domains/assets reveal children on expand as before.
+    const gateAssets = assetGate.on && (node.type === "domain" || node.type === "org")
+    const showAssets = expanded && (!gateAssets || assetGate.drilled.has(node.id))
+    const visible = kids.filter((k) => (isContainerType(k.type) ? expanded : showAssets))
+    const hiddenCount = kids.length - visible.length
+    if (hiddenCount > 0) {
+      hiddenBadge.set(node.id, visible.length === 0 ? node.descendantCount : hiddenCount)
+    }
     const datum: Datum & { children?: Datum[] } = { node }
-    if (expanded && kids.length) {
-      const capped = childCap > 0 && kids.length > childCap && !uncapped.has(node.id)
-      const shown = capped ? kids.slice(0, childCap) : kids
+    if (visible.length) {
+      const capped = childCap > 0 && visible.length > childCap && !uncapped.has(node.id)
+      const shown = capped ? visible.slice(0, childCap) : visible
       const children = shown.map((k) => make(k, false))
       if (capped) {
-        children.push(makeMoreDatum(node.id, kids.length - shown.length, node.domainId))
+        children.push(makeMoreDatum(node.id, visible.length - shown.length, node.domainId))
       }
       datum.children = children
     }
     return datum
   }
-  return { rootDatum: make(model.root, true), hasHiddenChildren }
+  return { rootDatum: make(model.root, true), hiddenBadge }
 }
 
 function emptyBounds(): Bounds {
@@ -369,7 +397,10 @@ export function layoutTree(
   const focusId = opts.focusId ?? null
   const verbFocus = opts.verbFocus ?? null
   const uncapped = opts.uncapped ?? EMPTY_SET
-  const built = buildVisibleHierarchy(model, expandedSet, cfg.childCap, uncapped)
+  const built = buildVisibleHierarchy(model, expandedSet, cfg.childCap, uncapped, {
+    on: opts.assetsExpanded != null,
+    drilled: opts.assetsExpanded ?? EMPTY_SET,
+  })
   if (!built) {
     return {
       nodes: [],
@@ -397,7 +428,7 @@ export function layoutTree(
     const x = (hn.x ?? 0) + (off?.x ?? 0)
     const y = (hn.y ?? 0) + (off?.y ?? 0)
     posById.set(node.id, { x, y })
-    const collapsed = built.hasHiddenChildren.has(node.id)
+    const badge = built.hiddenBadge.get(node.id) ?? 0
     laid.push({
       id: node.id,
       x,
@@ -411,8 +442,8 @@ export function layoutTree(
       parentId: node.parentId,
       kind: node.kind,
       radius: cfg.radius[node.type] ?? 10,
-      collapsed,
-      badge: collapsed ? node.descendantCount : 0,
+      collapsed: badge > 0,
+      badge,
       memberCount: node.memberCount,
       cost: node.cost,
       isMore: !!more,
@@ -601,9 +632,10 @@ export function layoutHash(layout: Layout): string {
 /**
  * Initial / reset expansion (§5, owner directive): open org + domains ONLY, so the default
  * view reads exactly three tiers — `Estate → Domain → Sub-domain`. Sub-domains are VISIBLE
- * (their parent domain is expanded) but stay COLLAPSED containers (a `+N` badge), so assets
- * are NOT revealed by default — the curator drills in on demand. A domain whose only children
- * are assets (no sub-domain) still shows them, but nothing deeper auto-expands.
+ * (their parent domain is expanded) but stay COLLAPSED containers (a `+N` badge), so their
+ * assets are NOT revealed by default. With `LayoutOpts.assetsExpanded` gating on (the app),
+ * a domain's directly-attached assets are ALSO gated — a domain shows only its sub-domains
+ * until the curator drills in — so the default view carries no leaf assets at all.
  */
 export function initialExpanded(model: EstateModel): Set<string> {
   const set = new Set<string>()

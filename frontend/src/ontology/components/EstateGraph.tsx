@@ -191,6 +191,7 @@ export function EstateGraph({
   taxonomy = null,
   estateName = null,
   initialDomainPanelOpen = false,
+  initialExpandAll = false,
   onReady,
 }: {
   graph: OntologyGraph
@@ -201,6 +202,12 @@ export function EstateGraph({
   estateName?: string | null
   /** Dev-harness only (R27 shot): open the domain show/hide panel on mount. */
   initialDomainPanelOpen?: boolean
+  /**
+   * Dev-harness / static-test only: seed BOTH the expand set and the asset-drill set with every
+   * node id, so a non-interactive render shows the full tree incl. gated leaf assets. Real UI
+   * mounts default to the clean Estate→Domain→Sub-domain view (asset gating on).
+   */
+  initialExpandAll?: boolean
   onReady?: (handle: EstateGraphHandle) => void
 }) {
   const { resolvedTheme } = useTheme()
@@ -281,7 +288,15 @@ export function EstateGraph({
     [model, hiddenDomains],
   )
 
-  const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(model))
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    initialExpandAll ? new Set(model.nodes.map((n) => n.id)) : initialExpanded(model),
+  )
+  // Tier-aware asset drilling (owner directive): domain/org ids the curator has explicitly
+  // drilled to reveal their directly-attached assets. Empty by default so the reset view is a
+  // clean Estate→Domain→Sub-domain; passing this set to `layoutTree` turns gating ON.
+  const [assetsExpanded, setAssetsExpanded] = useState<Set<string>>(() =>
+    initialExpandAll ? new Set(model.nodes.map((n) => n.id)) : new Set(),
+  )
   // Reset the open set + hydration ONLY when the underlying estate changes (provenance
   // toggle / new snapshot) — never when a hydration merge grows the model in place, which
   // would collapse the node the curator just expanded (R7). Keyed on the base graph +
@@ -298,6 +313,7 @@ export function EstateGraph({
     hydrationRef.current = new Map()
     hydrationInFlight.current = new Set()
     setExpanded(initialExpanded(model))
+    setAssetsExpanded(new Set())
     setSelectedId(null)
     setHoveredId(null)
     setUncapped(new Set())
@@ -340,10 +356,11 @@ export function EstateGraph({
         focusId: selectedId,
         verbFocus: relVerbFocus,
         uncapped,
+        assetsExpanded, // presence turns tier-aware gating ON (domain assets need a drill)
       }),
     // dragTick is a deliberate relayout trigger; offsetsRef is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [vizModel, expanded, dragTick, selectedId, relVerbFocus, uncapped],
+    [vizModel, expanded, dragTick, selectedId, relVerbFocus, uncapped, assetsExpanded],
   )
 
   const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout])
@@ -493,6 +510,13 @@ export function EstateGraph({
     },
     [computeFit, animateTransform, applyTransform],
   )
+  // Latest-value ref for `fit` so effects that should fire on a SPECIFIC trigger (e.g. a
+  // fullscreen transition) can call the current fit WITHOUT listing `fit` in their deps —
+  // `fit` is recreated on every layout change (computeFit depends on `layout`), so depending
+  // on it would auto-reframe the camera on every node click / expand (the "clicking zooms
+  // out" bug). Assigned during render (idempotent, ref only).
+  const fitRef = useRef(fit)
+  fitRef.current = fit
 
   // Fit once the canvas is actually on screen. Guard against firing during the loading /
   // error / empty phases (the <svg> isn't mounted then) — otherwise the one-shot fires
@@ -607,9 +631,13 @@ export function EstateGraph({
       })
       .on("drag", function (e) {
         if (!live.id) return
-        const k = transformRef.current.k || 1
-        live.dx += e.dx / k
-        live.dy += e.dy / k
+        // d3-drag's container defaults to the dragged element's parent — the zoom-transformed
+        // <g ref={gRef}> — so `e.dx/e.dy` are ALREADY inverted through that group's CTM, i.e.
+        // in CONTENT (unscaled) coordinates. Dividing by the zoom `k` here double-compensated
+        // and made the node run ahead of the cursor (worse the further you zoomed). Accumulate
+        // the raw content-space deltas so the node tracks the pointer 1:1 at every zoom level.
+        live.dx += e.dx
+        live.dy += e.dy
         applyLiveDrag(this as SVGGElement, live.id, live.dx, live.dy)
       })
       .on("end", function () {
@@ -627,23 +655,47 @@ export function EstateGraph({
   }, [layout.nodes, applyLiveDrag])
 
   // ── Selection / expand / navigation ─────────────────────────────────────────
-  const toggleExpand = useCallback((id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
-
   const onNodeClick = useCallback(
     (id: string) => {
       setSelectedId(id)
       setRelVerbFocus(null) // a node selection is the more specific navigation (R25 precedence)
       const n = nodeById.get(id)
-      if (n && (n.collapsed || (vizModel.childrenByParent.get(id)?.length ?? 0) > 0)) toggleExpand(id)
+      const kids = vizModel.childrenByParent.get(id) ?? []
+      if (!n || kids.length === 0) return // leaf → select only, nothing to expand
+      const isCont = (t: NodeType) => t === "org" || t === "domain" || t === "subdomain"
+      const isDomainOrOrg = n.type === "domain" || n.type === "org"
+      const hasContainerKids = kids.some((k) => isCont(k.type))
+      const hasAssetKids = kids.some((k) => !isCont(k.type))
+      const inExpanded = expanded.has(id)
+      const assetsDrilled = assetsExpanded.has(id)
+      // Progressive disclosure: a CLOSED container opens its sub-containers first; an OPEN
+      // domain/org still hiding its own directly-attached assets drills those next; a fully
+      // open node collapses. Sub-domains/assets (no domain gate) just open/close in one step.
+      if (!inExpanded) {
+        setExpanded((prev) => new Set(prev).add(id))
+        // A domain/org with no sub-containers (assets only) drills in the same click so it
+        // never dead-ends on an empty expand.
+        if (isDomainOrOrg && !hasContainerKids && hasAssetKids) {
+          setAssetsExpanded((prev) => new Set(prev).add(id))
+        }
+      } else if (isDomainOrOrg && hasAssetKids && !assetsDrilled) {
+        setAssetsExpanded((prev) => new Set(prev).add(id))
+      } else {
+        setExpanded((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+        if (assetsDrilled) {
+          setAssetsExpanded((prev) => {
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+        }
+      }
     },
-    [nodeById, vizModel, toggleExpand],
+    [nodeById, vizModel, expanded, assetsExpanded],
   )
 
   // A reveal (search hit, relationship nav, harness `select`) auto-expands paths and can
@@ -656,6 +708,13 @@ export function EstateGraph({
     (id: string) => {
       const path = ancestorPath(vizModel, id)
       setExpanded((prev) => {
+        const next = new Set(prev)
+        for (const a of path) next.add(a.id)
+        return next
+      })
+      // Drill every domain/org ancestor too, so a gated (directly-attached) target — e.g. an
+      // agent hanging off a domain — is actually revealed and not left hidden behind the gate.
+      setAssetsExpanded((prev) => {
         const next = new Set(prev)
         for (const a of path) next.add(a.id)
         return next
@@ -686,6 +745,12 @@ export function EstateGraph({
       for (const h of hits) for (const a of ancestorPath(vizModel, h.id)) next.add(a.id)
       return next
     })
+    // Drill the domain/org ancestors so gated (directly-attached) hits are actually revealed.
+    setAssetsExpanded((prev) => {
+      const next = new Set(prev)
+      for (const h of hits) for (const a of ancestorPath(vizModel, h.id)) next.add(a.id)
+      return next
+    })
     setSearchHits(new Set(hits.map((h) => h.id)))
     setSelectedId(hits[0].id)
     setHint(hits.length === 1 ? null : `${hits.length} matches`)
@@ -698,13 +763,16 @@ export function EstateGraph({
   }, [])
 
   const expandAll = useCallback(() => {
-    setExpanded(new Set(vizModel.nodes.map((n) => n.id)))
+    const allIds = new Set(vizModel.nodes.map((n) => n.id))
+    setExpanded(allIds)
+    setAssetsExpanded(new Set(allIds)) // drill every domain so their assets show too
     pendingFit.current = true
   }, [vizModel])
 
   // Collapse-all (P0-a): fold every container back to the domain tier, then re-fit (R24).
   const collapseAll = useCallback(() => {
     setExpanded(collapsedToDomainTier(vizModel))
+    setAssetsExpanded(new Set())
     setUncapped(new Set())
     pendingFit.current = true
   }, [vizModel])
@@ -712,6 +780,7 @@ export function EstateGraph({
   const resetView = useCallback(() => {
     offsetsRef.current = new Map()
     setExpanded(initialExpanded(model))
+    setAssetsExpanded(new Set())
     setSelectedId(null)
     setTypeFocus(null)
     setRelVerbFocus(null)
@@ -932,13 +1001,16 @@ export function EstateGraph({
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [fullscreen])
+  // Re-fit ONLY on an actual fullscreen enter/exit (the canvas size changed) — call the latest
+  // fit via the ref so this does NOT re-run when `fit` is recreated by a layout change (which
+  // would reframe the camera on every click/expand). R24: never stranded in a thin band.
   useEffect(() => {
     if (!didFit.current) return
     const id = requestAnimationFrame(() => {
-      if (svgRef.current) fit()
+      if (svgRef.current) fitRef.current()
     })
     return () => cancelAnimationFrame(id)
-  }, [fullscreen, fit])
+  }, [fullscreen])
 
   const dimmed = useCallback((t: NodeType) => typeFocus != null && typeFocus !== t, [typeFocus])
   // Dim an arc when a rel-type is highlighted and this arc isn't that verb (Bloom idiom, R25).
