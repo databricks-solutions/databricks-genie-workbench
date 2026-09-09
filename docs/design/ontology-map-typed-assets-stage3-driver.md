@@ -31,11 +31,10 @@ mv-advisor-playbook.md MV-D92; honor MV-D26/D43/D49/D82. Read first. Stages 1 (t
 2 (agents, incl. the geniespaces entity-tag reader) are landed — mirror the Stage-2 wiring.
 
 CONTEXT: No dashboard reader, kwarg, or kind exists yet. 30 Lakeview dashboards exist
-(w.lakeview.list()). Governed tags DO apply to dashboards but the assignment lives behind GET
-/api/2.0/entity-tag-assignments/dashboards/{id}/tags (SDK
-w.workspace_entity_tag_assignments.list_tag_assignments; entity_type "dashboards"), NOT
-information_schema. Reuse Stage 2's geniespaces entity-tag reader + assemble path, and mirror
-its agent_scopes kwarg wiring. Frontend already types dashboard — DO NOT touch it.
+(w.lakeview.list()). Governed tags DO apply to dashboards but the assignment lives behind the
+entity-tag-assignments API (entity_type "dashboards"), NOT information_schema. Reuse Stage 2's
+geniespaces entity-tag reader + assemble path, and mirror its agent_scopes kwarg wiring. Frontend
+already types dashboard — DO NOT touch it.
 
 BUILD A — DOMAIN (primary), reader entity_tag_assignments("dashboards"): enumerate dashboards
 via w.lakeview.list(); per dashboard call list_tag_assignments("dashboards", id) (SDK, or REST
@@ -43,10 +42,13 @@ w.api_client.do("GET", f"/api/2.0/entity-tag-assignments/dashboards/{id}/tags") 
 databricks-sdk==0.117.0 lacks the method — NO dependency bump). Return rows {tag_name,
 tag_value, member_id: f"dashboard:{id}"}. Domain-key selection is identical to Stage 2: keep a
 tag_key ONLY if transforms.classify_tag(...) (MV-D51) = aboutness (drop facets certified,
-contains_synthetic); do NOT use system.tags.governed_tags. Degrade to [] on failure (MV-D43). In
-materialize, feed the kept rows into the SAME transforms.assemble_tag_graph path as tables/agents
-⇒ a tagged dashboard lands in its domain with origin=applied (usually the value-less top-level
-key, e.g. "Alaska Airlines Operations"). Sorted/deterministic.
+contains_synthetic AND system.*/class.*/sap.*-prefixed system tags); do NOT use
+system.tags.governed_tags. SCOPE RECONCILE (required): keep a tag only if its top-level domain
+already exists in THIS run's table-derived domain_meta (workspace tags are not catalog-scoped);
+out-of-scope ⇒ dashboard ungrouped, never fabricate a domain. Degrade to [] on failure (MV-D43).
+In materialize, feed the kept rows into the SAME transforms.assemble_tag_graph path as
+tables/agents ⇒ a tagged dashboard lands in its domain with origin=applied (usually a value-less
+top-level key). Sorted/deterministic.
 
 BUILD B — READ EDGES (secondary): add an OPTIONAL dashboard_scopes kwarg to build_signal_graph
 mirroring agent_scopes (emit dashboard:<id> nodes + dashboard_scope edges; UNSET ⇒
@@ -56,8 +58,8 @@ passes it. In layout add a _label_for_node dashboard branch (name) + _verb_of da
 "reads".
 
 BUILD C — FALLBACK (optional, §6): an UNTAGGED dashboard may borrow the MODAL top-domain of its
-dashboard_scopes assets (via node_domain_id; ties by domain id), emitted origin=proposed (never
-applied); empty scope ⇒ ungrouped. Skip if it complicates the applied slice. NO tag written.
+dashboard_scopes assets (origin=proposed; empty scope ⇒ ungrouped). Skip if it complicates the
+applied slice. NO tag written.
 
 HARD GUARDRAILS: additive — NO frontend, NO backend/route, NO new table/column (blob-only,
 MV-D49), NO governed-tag WRITE (read-only, MV-D26), NO new dependency (REST fallback keeps the

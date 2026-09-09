@@ -174,17 +174,26 @@ method that enumerates Genie spaces (`list_spaces(w)`) and, per space, calls
 §2.5), returning rows shaped like the `assignments()` union: `{tag_name, tag_value, member_id:
 "agent:<space_id>"}`. **Domain-key selection = reuse the table path's `classify_tag(...)`
 (MV-D51): keep a `tag_key` only when it classifies as `aboutness`, dropping facets** the same
-objects carry (`certified`, `contains_synthetic`, …). Do **NOT** source the domain allowlist
+objects carry (`certified`, `contains_synthetic`, …) **and any `system.*` / `class.*` /
+`sap.*`-prefixed governed tag** (Databricks system tags — the live probe saw
+`system.certification_status=certified`; guard on the reserved prefix explicitly rather than
+trust the dotted name to hit a `classify_tag` pattern). Do **NOT** source the domain allowlist
 from `system.tags.governed_tags` — that catalog read is unreliable (it returned empty in the
 earlier probe despite 🔒 governed tags existing, so it degrades to `[]`); the aboutness rule is
 self-consistent with how tables already resolve domains and needs no readable governed-tags
-catalog. Feed the kept rows into the **same** tag-graph assembly tables use
-(`transforms.assemble_tag_graph` / `tag_key_of` / `tag_value_of`), so a tagged space lands in
-its domain with `origin=applied`. On these objects the tag is typically the **value-less
-top-level domain key** (evidence: `Alaska Airlines Commercial`) ⇒ the agent attaches to the
-top-level domain rollup; a slash key / `mvm_subdomain=<value>`, if present, nests it into a
-sub-domain exactly like a table. Bounded fan-out (~17 calls); degrade to `[]` on any
-API/permission failure (MV-D43). Deterministic, sorted.
+catalog. **Scope reconciliation (live-probe finding, REQUIRED):** workspace entities are NOT
+catalog-scoped, so a space can carry a domain tag from another estate (the probe saw
+`SupplyChain`, `Horizon M&E`, `fuels_pricing` alongside the airline domains). Keep an entity's
+domain tag **only when its (top-level) domain key matches a domain already present in THIS run's
+table-derived domain set** (`domain_meta`); a tag naming an out-of-scope domain ⇒ leave the
+entity **ungrouped**, never fabricate a domain node. Feed the kept rows into the **same**
+tag-graph assembly tables use (`transforms.assemble_tag_graph` / `tag_key_of` / `tag_value_of`),
+so a tagged space lands in its domain with `origin=applied`. On these objects the tag is
+typically the **value-less top-level domain key** (evidence: `Alaska Airlines Commercial`) ⇒ the
+agent attaches to the top-level domain rollup; a slash key (probe saw `Operations1/maintenance`,
+`fuels_pricing/loyalty`) or `mvm_subdomain=<value>`, if present, nests it into a sub-domain
+exactly like a table. Bounded fan-out (~17 calls); degrade to `[]` on any API/permission failure
+(MV-D43). Deterministic, sorted.
 
 **Build B — reader `agent_scopes` → read edges (SECONDARY, relational overlay only).** Return
 `{agent_id → [table_fqn, …]}` (the space's configured tables; reuse the create/scan
@@ -210,11 +219,15 @@ query. **Gated on §2.5** (same posture as Stage 2).
 dashboards (`w.lakeview.list()`) and, per dashboard, call
 `list_tag_assignments("dashboards", <dashboard_id>)`, returning `{tag_name, tag_value,
 member_id: "dashboard:<id>"}` rows. **Domain-key selection is identical to Stage 2:** keep only
-`aboutness` keys via `classify_tag(...)` (MV-D51), drop facets (`certified`,
-`contains_synthetic`), and do **NOT** rely on `system.tags.governed_tags`. Feed the kept rows
-into the **same** tag-graph assembly as tables ⇒ `origin=applied` (evidence: the "Flight
-Operations…" dashboard carries the value-less top-level key `Alaska Airlines Operations`).
-Bounded fan-out (~30 calls); degrade to `[]` on failure (MV-D43). Deterministic, sorted.
+`aboutness` keys via `classify_tag(...)` (MV-D51), drop facets (`certified`, `contains_synthetic`)
+**and `system.*`/`class.*`/`sap.*`-prefixed system tags**, do **NOT** rely on
+`system.tags.governed_tags`, and apply the **same in-snapshot scope reconciliation** (keep a tag
+only if its top-level domain exists in this run's `domain_meta`; else leave the dashboard
+ungrouped — workspace tags are not catalog-scoped). Feed the kept rows into the **same** tag-graph
+assembly as tables ⇒ `origin=applied` (evidence: the "Flight Operations…" dashboard carries the
+value-less top-level key `Alaska Airlines Operations`; the probe also saw a value-carrying
+aboutness key `Field Operations=fieldops`). Bounded fan-out (~30 calls); degrade to `[]` on
+failure (MV-D43). Deterministic, sorted.
 
 **Build B — `dashboard_scopes` kwarg + kind → read edges (SECONDARY).** Add an **optional**
 `dashboard_scopes` kwarg to `graph.build_signal_graph` mirroring `agent_scopes`: emit
