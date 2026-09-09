@@ -36,7 +36,22 @@ per-phase build specs / drivers remain the *content* source of truth, and
    - (b) **Page `body` is not rendered** on `PageDraftCard` — it rides the copy payload
      only, so the curator can't read a proposed Page in-app.
    - **Next action:** one tiny `ontology-ux-papercuts-{build,driver}.md` (or fold into the
-     Phase-5 build) — reload-on-refresh-complete + render body. Frontend-only, no dep.
+     Phase-5 build) — reload-on-refresh-complete. NOTE: papercut (b) (render Page `body`)
+     is **already done** — `PageDraftCard` renders `draft.body`. Frontend-only, no dep.
+2b. **Ontology Map visual + interaction polish** · 🟡 PARTIAL / 📝 DRAFTED
+   - **Shipped inline on `ontology`:** graph canvas now follows the app theme (transparent
+     SVG over `bg-sunken`, flips light/dark via CSS — commit `5e3ff17b`); north-star LIGHT
+     palette + tiered labels; default view `Estate→Domain→Sub-domain` (sub-domains collapsed);
+     folded-MV measures from the snippet index.
+   - **DRAFTED — "buttery interactions"** · driver `ontology-map-buttery-interactions-driver.md`:
+     O(1)/frame imperative drag + zoom (drops the per-pointer-move `layoutTree()` relayout),
+     hand-rolled rAF glide on expand/collapse (nodes AND edges tween together), transitioned
+     Fit/Reset camera — **no new npm dep**, reduced-motion aware, harness renders the final
+     frame. Doubles as the render-side **scale** lever (see "Scale hardening" below).
+   - **Still open (tiny, DRAFTED as chat "Run 1"):** `useTheme` multi-instance staleness fix
+     (map palette must flip live with the toggle) + `FreshnessControls` reload-on-refresh.
+   - **Next action:** run `ontology-map-buttery-interactions-driver.md` in Goal Mode → STOP →
+     human deploy-verify eyeball.
 
 ### P1 — Quality scoreboard (gates all later tuning)
 2. **§10 Evaluation & trust harness (MV-D59)** · ✏️ UNDRAFTED
@@ -142,6 +157,29 @@ per-phase build specs / drivers remain the *content* source of truth, and
 bounded drafting/naming/ER; MV-D63–D68; timeout resolved, run in ~21 min, deploy-verified).
 
 🧊 `semantic-graph-v2-note.md`, `semantic-graph-v3-note.md` — superseded by v4.
+
+---
+
+## Scale hardening (enterprise levers — context, not yet scheduled)
+
+The architecture bounds the problem by design — reads are **catalog-allowlist scoped**, the
+served graph is **capped at `TOP_N_BY_CENTRALITY = 2000`** display nodes (so the snapshot
+payload does NOT grow with estate size), the tree is **progressively disclosed** (default
+`Estate→Domain→Sub-domain`, per-parent `+N more`, cross-link overflow gating), and reads are
+**Lakebase-mirrored + TTL-cached**. Correctness and payload size hold at enterprise scale.
+Two levers remain for true-enterprise estates, neither yet scheduled:
+
+1. **Batch runtime + LLM cost → catalog sharding.** The batch materialize is the time/cost
+   cliff (~21 min, 641 Pages on the airline estate; Page/naming/ER are LLM fan-out that scales
+   ~linearly with candidate count). For 10×+ estates, materialize **per-catalog and union**
+   (and/or raise the job timeout deliberately). Bounded today by the MV-D66/67/68 caps + the
+   attachment gate — but not yet sharded.
+2. **Render → O(1)/frame interactions + virtualization.** The visual is safe by default
+   (collapsed = tens of nodes) but the current per-drag `layoutTree()` relayout + per-zoom
+   React re-render would stutter on a fully-expanded estate near the 2000 cap. The
+   **buttery-interactions driver** (P0 item 2b) fixes the per-frame cost as its first job; if
+   routine thousand-node expansion is ever needed, add **viewport virtualization / LOD**
+   (render only in-frame nodes) — a WebGL renderer (a new dep) only if that isn't enough.
 
 ---
 
