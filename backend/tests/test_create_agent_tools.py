@@ -424,6 +424,36 @@ class TestUpdateSpaceDescription:
         assert result["success"] is True
         assert "description" not in bodies[0]["body"]
 
+    def test_rename_uses_title_field(self, monkeypatch):
+        """The updateSpace API field for the display name is 'title', not 'display_name' —
+        sending 'display_name' makes the rename a silent no-op."""
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+
+        result = _update_space("space1", display_name="New Name")
+
+        assert result["success"] is True
+        assert bodies[0]["body"]["title"] == "New Name"
+        assert "display_name" not in bodies[0]["body"]
+
+    def test_warehouse_id_omitted_on_metadata_only_update(self, monkeypatch):
+        """A title/description-only PATCH must not carry warehouse_id — that would reset the
+        space's configured warehouse. warehouse_id belongs only with a serialized_space update."""
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+        # Warehouse IS configured — it must still be omitted for a metadata-only update.
+        monkeypatch.setattr("backend.services.create_agent_tools.get_sql_warehouse_id", lambda: "wh123")
+
+        result = _update_space("space1", display_name="New Name", description="Answers revenue questions.")
+
+        assert result["success"] is True
+        assert "warehouse_id" not in bodies[0]["body"]
+        assert "serialized_space" not in bodies[0]["body"]
+
     def test_error_when_nothing_to_update(self):
         from backend.services.create_agent_tools import _update_space
 

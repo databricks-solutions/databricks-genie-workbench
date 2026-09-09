@@ -3421,16 +3421,19 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
             constrained = _enforce_constraints(config)
             cleaned = _clean_config(constrained)
             body["serialized_space"] = json.dumps(cleaned)
+            # warehouse_id only belongs with a serialized_space update — sending it on a
+            # metadata-only PATCH would silently reset the space's configured warehouse.
+            warehouse_id = get_sql_warehouse_id()
+            if warehouse_id:
+                body["warehouse_id"] = warehouse_id
 
+        # The updateSpace API field for the display name is "title" (matches create-time
+        # in genie_creator.py); "display_name" is silently ignored and the rename no-ops.
         if display_name:
-            body["display_name"] = display_name
+            body["title"] = display_name
 
         if description:
             body["description"] = description
-
-        warehouse_id = get_sql_warehouse_id()
-        if warehouse_id:
-            body["warehouse_id"] = warehouse_id
 
         client = get_workspace_client()
         client.api_client.do(

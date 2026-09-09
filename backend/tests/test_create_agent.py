@@ -250,6 +250,41 @@ class TestExistingSpaceDescriptionUpdate:
         assert update_call[2] == generated_config
         assert any(event["event"] == "updated" for event in events)
 
+    def test_fast_create_update_omits_derived_description(self, monkeypatch):
+        """Updating an existing space must NOT write a description the user didn't ask to
+        change — a plan suggestion / PURPOSE fallback would clobber existing wording."""
+        generated_config = {
+            "data_sources": {"tables": [{"identifier": "c.s.t"}]},
+            "instructions": {"text_instructions": [{"content": ["## PURPOSE\n- Derived purpose.\n"]}]},
+        }
+        calls = []
+
+        def fake_handle_tool_call(name, arguments, session_config=None):
+            calls.append((name, arguments.copy(), session_config))
+            if name == "generate_config":
+                return {"config": generated_config}
+            if name == "update_space":
+                return {"success": True, "space_id": "s1", "url": "https://example.com/s1"}
+            raise AssertionError(f"Unexpected tool call: {name}")
+
+        monkeypatch.setattr("backend.services.create_agent_tools.handle_tool_call", fake_handle_tool_call)
+        agent = CreateGenieAgent.__new__(CreateGenieAgent)
+        session = _make_session(
+            space_id="s1",
+            space_url="https://example.com/s1",
+            history=[{"role": "tool", "content": json.dumps({"suggested_description": "Plan suggestion"})}],
+        )
+        # No description in selections — the user only tweaked the plan.
+        selections = {"edited_plan": {"tables": [{"identifier": "c.s.t"}]}, "display_name": "Revenue Agent"}
+
+        async def run():
+            return [event async for event in agent._fast_create(session, selections)]
+
+        asyncio.run(run())
+
+        update_call = next(call for call in calls if call[0] == "update_space")
+        assert "description" not in update_call[1]
+
 
 class TestDeriveDescription:
     """_derive_description fallback ordering: selections > tool_args > history > PURPOSE > ""."""
@@ -335,3 +370,61 @@ class TestDeriveDescription:
     def test_empty_when_nothing_available(self):
         session = _make_session(space_config={"data_sources": {}})
         assert CreateGenieAgent._derive_description(None, None, session) == ""
+
+
+class TestExplicitDescription:
+    """_explicit_description (update path) returns explicit intent only — never a derived fallback."""
+
+    def test_selections_win(self):
+        session = _make_session()
+        assert CreateGenieAgent._explicit_description(
+            {"description": "from selections"}, {"description": "from args"}, session
+        ) == "from selections"
+
+    def test_tool_args_second(self):
+        session = _make_session()
+        assert CreateGenieAgent._explicit_description(None, {"description": "from args"}, session) == "from args"
+
+    def test_history_user_selection(self):
+        session = _make_session(history=[
+            {"role": "user", "content": 'go ahead [User selections: {"description": "from history"}]'},
+        ])
+        assert CreateGenieAgent._explicit_description(None, None, session) == "from history"
+
+    def test_ignores_plan_suggestion_fallback(self):
+        """A plan-time suggestion is a derived default — the update path must not send it."""
+        session = _make_session(history=[
+            {"role": "tool", "content": json.dumps({"suggested_description": "from plan"})},
+        ])
+        assert CreateGenieAgent._explicit_description(None, None, session) == ""
+
+    def test_ignores_purpose_fallback(self):
+        """The ## PURPOSE distillation is a derived default — the update path must not send it."""
+        config = {"instructions": {"text_instructions": [{"content": ["## PURPOSE\n- Answers sales.\n"]}]}}
+        session = _make_session(space_config=config)
+        assert CreateGenieAgent._explicit_description(None, None, session) == ""
+
+    def test_clamps_to_max(self):
+        from backend.services.create_agent import MAX_DESCRIPTION_CHARS
+        session = _make_session()
+        long = "x" * (MAX_DESCRIPTION_CHARS + 50)
+        assert len(CreateGenieAgent._explicit_description({"description": long}, None, session)) == MAX_DESCRIPTION_CHARS
+
+
+class TestPurposeFromConfig:
+    """_purpose_from_config must not crash on malformed config shapes."""
+
+    def test_non_dict_instructions_returns_empty(self):
+        # instructions is a string (not a dict) — must not raise AttributeError.
+        assert CreateGenieAgent._purpose_from_config({"instructions": "just a string"}) == ""
+
+    def test_list_instructions_returns_empty(self):
+        assert CreateGenieAgent._purpose_from_config({"instructions": ["a", "b"]}) == ""
+
+    def test_string_content_not_char_iterated(self):
+        # content as a string must be treated as one chunk, not iterated char-by-char.
+        config = {"instructions": {"text_instructions": [{"content": "## PURPOSE\n- Answers sales questions.\n"}]}}
+        assert CreateGenieAgent._purpose_from_config(config) == "Answers sales questions."
+
+    def test_none_config_returns_empty(self):
+        assert CreateGenieAgent._purpose_from_config(None) == ""

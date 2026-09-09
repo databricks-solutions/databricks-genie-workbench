@@ -3,6 +3,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# Hard ceiling on a Genie Agent space description. Enforced here for the wizard endpoint
+# and on the live create-agent path (see backend/services/create_agent.py, which imports it).
+MAX_DESCRIPTION_CHARS = 2000
+
 
 # ===== GenieIQ Models =====
 
@@ -91,7 +95,7 @@ class CreateSpaceRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=255)
     serialized_space: dict
     parent_path: str | None = Field(None, max_length=1000)
-    description: str = Field("", max_length=2000)
+    description: str = Field("", max_length=MAX_DESCRIPTION_CHARS)
 
 
 class CreateSpaceResponse(BaseModel):

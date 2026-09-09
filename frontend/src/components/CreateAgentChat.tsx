@@ -42,13 +42,18 @@ import remarkGfm from "remark-gfm"
 import { streamAgentChat, fetchCreatePreflight } from "@/lib/api"
 import { MAX_AUTO_RECONNECTS, decideReconnect } from "@/lib/reconnect-policy"
 import { EMPTY_DESCRIPTION, descriptionEdit, descriptionSelections, generatedDescription, restoreDescription } from "@/lib/create-description"
-import { drainQueuedChatMessage, queueChatMessage, type QueuedChatMessage } from "@/lib/chat-message-queue"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
 import { TableBrowserDrawer } from "@/components/TableBrowserDrawer"
 import { ChatModelMenu } from "@/components/ModelPicker"
 import { Tooltip } from "@/components/ui/tooltip"
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string, spaceUrl?: string, initialTab?: string) => void
+}
+
+// A chat send deferred while a stream is in flight; drained when the stream ends.
+interface QueuedChatMessage {
+  text: string
+  selections?: Record<string, unknown>
 }
 
 let msgCounter = 0
@@ -269,7 +274,7 @@ function loadState(): PersistedState | null {
     const parsed = JSON.parse(raw) as PersistedState
     // Migrate old schema (string) -> schemas (string[])
     const p = parsed.progress as LegacyProgress
-    if (p) Object.assign(p, restoreDescription(p, parsed.messages ?? []))
+    if (p) Object.assign(p, restoreDescription(p))
     if (p && !Array.isArray(p.schemas)) {
       p.schemas = p.schema ? [p.schema] : []
       delete p.schema
@@ -545,7 +550,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       const isContinuation = text === ""
       if (!isContinuation && !text.trim()) return
       if (isStreaming && !isContinuation) {
-        const queued = queueChatMessage(text, selections)
+        // Snapshot selections so a later mutation of the caller's object can't change
+        // what eventually gets sent when the queue drains.
+        const queued: QueuedChatMessage = {
+          text: text.trim(),
+          selections: selections ? { ...selections } : undefined,
+        }
         queuedMessageRef.current = queued
         setQueuedMessage(queued.text)
         setInput("")
@@ -946,7 +956,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           const pending = queuedMessageRef.current
           queuedMessageRef.current = null
           setQueuedMessage(null)
-          if (pending) requestAnimationFrame(() => drainQueuedChatMessage(pending, sendMessageRef.current))
+          if (pending) requestAnimationFrame(() => sendMessageRef.current(pending.text, pending.selections))
         },
       }, null, selectedModel)
     },
@@ -1064,8 +1074,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   }
 
-  // Panel: submit description edit
+  // Panel: submit description edit. Guard against mid-stream edits (the Enter-key path
+  // bypasses the button's disabled attr) — otherwise the optimistic setProgress sticks in
+  // the panel while the queued send is dropped on Stop, leaving the panel out of sync.
   const submitDescription = () => {
+    if (isStreaming) return
     const edit = descriptionEdit(descriptionDraft)
     if (!edit) return
     setProgress((p) => ({ ...p, ...edit.state }))
@@ -2908,7 +2921,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                         />
                         <button
                           onClick={submitDescription}
-                          disabled={!descriptionDraft.trim()}
+                          disabled={!descriptionDraft.trim() || isStreaming}
                           className="px-1.5 text-accent disabled:opacity-40"
                         >
                           <Check className="w-3 h-3" />

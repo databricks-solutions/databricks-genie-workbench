@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import AsyncGenerator, Generator
 
+from backend.models import MAX_DESCRIPTION_CHARS
 from backend.services.llm_utils import get_llm_model, normalize_message_content
 from backend.services.auth import get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
@@ -22,6 +23,12 @@ from backend.prompts_create import assemble_system_prompt, detect_step
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 15
+
+# MAX_DESCRIPTION_CHARS (imported from models) is the hard ceiling on any space description
+# written on the live create/update path — the same limit the wizard endpoint enforces.
+# PURPOSE_SUMMARY_CHARS is a deliberately shorter cap for the ## PURPOSE fallback, which is a
+# one-line summary rather than a full description.
+PURPOSE_SUMMARY_CHARS = 500
 
 # Strip fake tool-call XML the LLM writes when tools are unavailable
 _FAKE_TOOL_RE = re.compile(
@@ -369,10 +376,12 @@ class CreateGenieAgent:
                         config = result["config"]
 
                         if session.space_id:
-                            # Space already exists → update it (include display metadata if provided)
+                            # Space already exists → update it (include display metadata if provided).
+                            # Description is only written when the user explicitly asked — never a
+                            # derived fallback, which would overwrite create-time / human-authored wording.
                             update_args: dict = {"space_id": session.space_id}
                             dn = self._derive_display_name(None, tool_args, session)
-                            desc = self._derive_description(None, tool_args, session, config)
+                            desc = self._explicit_description(None, tool_args, session)
                             if dn and dn != "New Genie Agent":
                                 update_args["display_name"] = dn
                             if desc:
@@ -752,25 +761,43 @@ class CreateGenieAgent:
         return None
 
     @staticmethod
+    def _explicit_selection(
+        key: str,
+        selections: dict | None,
+        tool_args: dict | None,
+        session: AgentSession,
+    ) -> str:
+        """Return an explicitly-provided value for ``key``, or "".
+
+        Covers the three sources that represent explicit user/LLM intent, in priority
+        order: current ``selections`` → current ``tool_args`` → the most recent user
+        selection in history. Shared by display-name and description derivation, and
+        used on its own by the update path (which must only write metadata the user
+        explicitly asked to change, never a derived fallback).
+        """
+        if selections and selections.get(key):
+            return selections[key]
+        if tool_args and tool_args.get(key):
+            return tool_args[key]
+        for m in reversed(session.history):
+            if m["role"] != "user":
+                continue
+            sel = CreateGenieAgent._extract_selections(m.get("content", ""))
+            if sel and sel.get(key):
+                return sel[key]
+        return ""
+
+    @staticmethod
     def _derive_display_name(
         selections: dict | None,
         tool_args: dict | None,
         session: AgentSession,
     ) -> str:
         """Derive a display name from the best available source."""
-        # 1. Explicit from selections
-        if selections and selections.get("display_name"):
-            return selections["display_name"]
-        # 2. From tool_args (LLM may have specified it)
-        if tool_args and tool_args.get("display_name"):
-            return tool_args["display_name"]
-        # 3. From any user selection in history (scan all, not just last)
-        for m in reversed(session.history):
-            if m["role"] != "user":
-                continue
-            sel = CreateGenieAgent._extract_selections(m.get("content", ""))
-            if sel and sel.get("display_name"):
-                return sel["display_name"]
+        # 1-3. Explicit intent (selections / tool_args / history user selection)
+        explicit = CreateGenieAgent._explicit_selection("display_name", selections, tool_args, session)
+        if explicit:
+            return explicit
         # 4. Derive from table names
         tables = (tool_args or {}).get("tables") or []
         if not tables:
@@ -789,29 +816,38 @@ class CreateGenieAgent:
         return "New Genie Agent"
 
     @staticmethod
+    def _explicit_description(
+        selections: dict | None,
+        tool_args: dict | None,
+        session: AgentSession,
+    ) -> str:
+        """Description the user/LLM explicitly provided, clamped, or "".
+
+        Used on the update path: an existing space's description is only rewritten when
+        the user actually asked to change it — never from a derived (plan / PURPOSE)
+        fallback, which would clobber create-time or human-authored wording.
+        """
+        explicit = CreateGenieAgent._explicit_selection("description", selections, tool_args, session)
+        return explicit[:MAX_DESCRIPTION_CHARS] if explicit else ""
+
+    @staticmethod
     def _derive_description(
         selections: dict | None,
         tool_args: dict | None,
         session: AgentSession,
         config: dict | None = None,
     ) -> str:
-        """Derive a space description from the best available source.
+        """Derive a space description from the best available source (CREATE path).
 
-        Falls back to "" — create_genie_space then uses its generic default.
+        Prefers explicit intent, then the plan-time suggestion, then the config's
+        ## PURPOSE section. Falls back to "" — create_genie_space then uses its generic
+        default. The derived (plan/PURPOSE) fallbacks are for creation only; on update
+        use _explicit_description so an existing description is not overwritten.
         """
-        # 1. Explicit from selections
-        if selections and selections.get("description"):
-            return selections["description"]
-        # 2. From tool_args (LLM may have specified it)
-        if tool_args and tool_args.get("description"):
-            return tool_args["description"]
-        # 3. From any user selection in history (scan all, not just last)
-        for m in reversed(session.history):
-            if m["role"] != "user":
-                continue
-            sel = CreateGenieAgent._extract_selections(m.get("content", ""))
-            if sel and sel.get("description"):
-                return sel["description"]
+        # 1-3. Explicit intent (selections / tool_args / history user selection)
+        explicit = CreateGenieAgent._explicit_selection("description", selections, tool_args, session)
+        if explicit:
+            return explicit[:MAX_DESCRIPTION_CHARS]
         # 4. From the latest plan result in history (LLM-suggested at plan time)
         for m in reversed(session.history):
             if m["role"] != "tool":
@@ -821,7 +857,7 @@ class CreateGenieAgent:
             except (json.JSONDecodeError, ValueError):
                 continue
             if isinstance(r, dict) and r.get("suggested_description"):
-                return r["suggested_description"]
+                return str(r["suggested_description"])[:MAX_DESCRIPTION_CHARS]
         # 5. Distill the config's ## PURPOSE section
         purpose = CreateGenieAgent._purpose_from_config(config or session.space_config)
         if purpose:
@@ -833,11 +869,18 @@ class CreateGenieAgent:
         """Build a one-line description from the ## PURPOSE section of text_instructions."""
         if not config:
             return ""
-        ti = (config.get("instructions") or {}).get("text_instructions") or []
+        instructions = config.get("instructions")
+        if not isinstance(instructions, dict):
+            return ""
+        ti = instructions.get("text_instructions") or []
         chunks: list[str] = []
         for entry in ti:
             if isinstance(entry, dict):
-                chunks.extend(str(c) for c in (entry.get("content") or []))
+                content = entry.get("content")
+                if isinstance(content, str):
+                    chunks.append(content)
+                elif isinstance(content, list):
+                    chunks.extend(str(c) for c in content)
             elif isinstance(entry, str):
                 chunks.append(entry)
         blob = "\n".join(chunks)
@@ -856,7 +899,7 @@ class CreateGenieAgent:
             if line:
                 lines.append(line)
         # Defensive cap — the description is a short summary, not the full instructions.
-        return " ".join(lines).strip()[:500].strip()
+        return " ".join(lines).strip()[:PURPOSE_SUMMARY_CHARS].strip()
 
     async def _create_space_with_repair(
         self,
@@ -990,11 +1033,13 @@ class CreateGenieAgent:
 
             config = config_result.get("config")
             session.space_config = config
-            description = self._derive_description(selections, None, session, config)
 
             if session.space_id:
-                # Space already exists → update it (include display metadata)
+                # Space already exists → update it (include display metadata). Description is
+                # only written on explicit user intent — never a derived fallback, which would
+                # overwrite create-time / human-authored wording.
                 update_args: dict = {"space_id": session.space_id}
+                description = self._explicit_description(selections, None, session)
                 if display_name and display_name != "New Genie Agent":
                     update_args["display_name"] = display_name
                 if description:
@@ -1023,6 +1068,7 @@ class CreateGenieAgent:
                     return
 
                 # Step 3: create_space (with LLM repair on failure)
+                description = self._derive_description(selections, None, session, config)
                 async for event in self._create_space_with_repair(session, config, display_name, description):
                     yield event
 

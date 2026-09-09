@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest"
-import type { AgentChatMessage } from "@/types"
 import {
   EMPTY_DESCRIPTION, descriptionEdit, descriptionSelections, generatedDescription, restoreDescription,
 } from "./create-description"
-
-function plan(description: string, tool = "generate_plan"): AgentChatMessage {
-  return { id: "plan", role: "tool", content: "", timestamp: 0, tool_name: tool,
-    tool_result: { suggested_description: description } }
-}
 
 describe("Create Agent descriptions", () => {
   it("sends a trimmed edit as structured selections and carries it into chat approval", () => {
@@ -49,34 +43,19 @@ describe("Create Agent descriptions", () => {
   it("preserves intentional edits across regeneration and JSON session restoration", () => {
     const edit = descriptionEdit("My wording")!
     const saved = JSON.parse(JSON.stringify(edit.state))
-    const restored = restoreDescription(saved, [plan("Generated wording")])
+    const restored = restoreDescription(saved)
     expect(generatedDescription(restored, "New suggestion")).toEqual(edit.state)
     expect(descriptionSelections(restored)).toEqual(edit.selections)
   })
 
   it("keeps generated descriptions refreshable after restoration", () => {
     const saved = JSON.parse(JSON.stringify(generatedDescription(EMPTY_DESCRIPTION, "First")))
-    expect(generatedDescription(restoreDescription(saved, []), "Second").description).toBe("Second")
+    expect(generatedDescription(restoreDescription(saved), "Second").description).toBe("Second")
   })
 
-  it("migrates an old stale suggestion using all successful plan history", () => {
-    const restored = restoreDescription({ description: "First" }, [plan("First"), plan("Second", "present_plan")])
-    expect(restored.descriptionEdited).toBe(false)
-    expect(generatedDescription(restored, "Third").description).toBe("Third")
-  })
-
-  it("recognizes legacy prose edits even if they match generated wording", () => {
-    const edit = descriptionEdit("First")!
-    const history: AgentChatMessage[] = [plan("First"),
-      { id: "edit", role: "user", content: edit.text, timestamp: 1 }]
-    const restored = restoreDescription({ description: "First" }, history)
-    expect(generatedDescription(restored, "Second")).toEqual(edit.state)
-    expect(descriptionSelections(restored)).toEqual(edit.selections)
-  })
-
-  it("preserves legacy values with incomplete history and defaults missing values", () => {
-    expect(restoreDescription({ description: "User wording" }, []).descriptionEdited).toBe(true)
-    expect(restoreDescription({}, [])).toEqual(EMPTY_DESCRIPTION)
+  it("defaults missing fields on restoration", () => {
+    expect(restoreDescription({})).toEqual(EMPTY_DESCRIPTION)
+    expect(restoreDescription({ description: "Saved" })).toEqual({ description: "Saved", descriptionEdited: false })
   })
 
   it("a new session accepts suggestions without inheriting the previous edit", () => {

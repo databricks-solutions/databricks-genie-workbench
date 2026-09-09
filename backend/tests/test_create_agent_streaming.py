@@ -97,7 +97,8 @@ def test_structured_content_blocks_do_not_break_tool_calling(monkeypatch):
     assert assistant_tool_message["content"] == "I'll look now."
 
 
-def test_existing_space_autochain_updates_suggested_description(monkeypatch):
+def _autochain_update_calls(monkeypatch, history):
+    """Drive the update_config auto-chain on an existing space and capture update_space args."""
     agent = CreateGenieAgent()
     agent._build_messages = lambda session: []
 
@@ -136,16 +137,30 @@ def test_existing_space_autochain_updates_suggested_description(monkeypatch):
         space_id="s1",
         space_url="https://example.com/s1",
         space_config={"data_sources": {"tables": []}},
-        history=[{
-            "role": "tool",
-            "content": json.dumps({"suggested_description": "Answers revenue questions."}),
-        }],
+        history=history,
     )
 
     events = _collect_events(agent, session, "Apply the updated plan")
+    return update_calls, updated_config, events
 
-    assert update_calls == [({
-        "space_id": "s1",
-        "description": "Answers revenue questions.",
-    }, updated_config)]
+
+def test_existing_space_autochain_omits_suggested_description(monkeypatch):
+    """A plan-time suggestion is a derived default. The update auto-chain must NOT PATCH it —
+    doing so would overwrite the create-time / human-authored description on every config round."""
+    history = [{"role": "tool", "content": json.dumps({"suggested_description": "Answers revenue questions."})}]
+    update_calls, updated_config, events = _autochain_update_calls(monkeypatch, history)
+
+    assert update_calls == [({"space_id": "s1"}, updated_config)]
+    assert any(event["event"] == "updated" for event in events)
+
+
+def test_existing_space_autochain_sends_explicit_description(monkeypatch):
+    """An explicit user description edit IS propagated by the update auto-chain."""
+    history = [{
+        "role": "user",
+        "content": 'The agent description should be: Edited wording [User selections: {"description": "Edited wording"}]',
+    }]
+    update_calls, updated_config, events = _autochain_update_calls(monkeypatch, history)
+
+    assert update_calls == [({"space_id": "s1", "description": "Edited wording"}, updated_config)]
     assert any(event["event"] == "updated" for event in events)
