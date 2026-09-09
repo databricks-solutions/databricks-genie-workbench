@@ -89,6 +89,27 @@ per-phase build specs / drivers remain the *content* source of truth, and
    - **Next action:** draft `ontology-17j-hardening-{build,driver}.md`; run after 17i
      lands (rollback needs the `genie_ont_applied` audit rows).
 
+### P6 — Signal authority (OntoRank-style enrichment) — **build LAST, gated on P1**
+7. **Ontology Signal Authority — popularity + certification into the ranker (MV-D93–D97)** · 📝 DRAFTED (build spec exists; driver pending)
+   - Build spec: `ontology-signal-authority-build.md` (MV-D93 umbrella + MV-D94 popularity /
+     MV-D95 certification / MV-D96 PageRank+seeding / MV-D97 visual). Driver `…-driver.md` to write.
+   - Scope: the L6 ranker already reserves a `usage(0.40) × centrality(0.35) × governance(0.25)`
+     blend but sources neither the usage factor (`usage_signals()` returns `{}`) nor the
+     `curated` certified-authority rung (`_governance_map` only emits `governed`). Four stages:
+     wire `system.query.history`+`table_lineage` popularity (percentile-normalized, honest-gap);
+     feed `system.certification_status` into the authority rung + make `deprecated` a rank
+     firewall; upgrade degree→`igraph` PageRank over the full fused graph + certified-seeded
+     domain assignment + usage-weighted clustering; encode popularity=size / certified=ring on
+     the map. Additive/read-only, reuses GenieWatch's SP system-table plumbing + the `igraph`
+     already lazy in `cluster.py` (no new dep — MV-D45/D49/D26).
+   - **HARD GATE (MV-D59):** it changes signals + thresholds, so it **must land after P1** (the
+     §10 eval harness) to be measured, not eyeballed — Stage 3 (PageRank/seeding) especially.
+   - **Why last:** highest ceiling (this is the "make the ontology builder propose *better*
+     assets, categorize by earned authority, and visualize trust" work), but it depends on the
+     scoreboard and reads best on top of the Typed Estate Assets map (MV-D89–D92).
+   - **Next action:** write `ontology-signal-authority-driver.md`, then build Stage 1 first
+     (smallest change, unblocks the 0.40 factor) once the harness exists.
+
 ---
 
 ## Track A — MV-Advisor / Semantic Graph (parallel, independent of ontology)
@@ -130,5 +151,7 @@ Batch engine is **done** (P0 item 1). **Build P4 (Phase 5 apply) NEXT** — it's
 value-unlock that closes the curator loop and its driver is paste-ready. Fold the P0
 UX papercuts in alongside (or just before) it. Then the **4.1d Steps 2→4** curator
 enrichment loop, **P2** (Estate Graph, read-only win), **P1** (§10 harness, so quality
-stops regressing silently), **P3** (external) and **P5** (hardening) later. **Track A #7**
+stops regressing silently), **P3** (external) and **P5** (hardening) later. **P6**
+(Signal Authority / OntoRank enrichment) is the **last ontology build** — it needs the
+P1 harness as its scoreboard, so it deliberately follows everything above. **Track A #7**
 (Blueprint remainder) can run in parallel by anyone not on the ontology branch work.
