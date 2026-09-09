@@ -41,12 +41,19 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat, fetchCreatePreflight } from "@/lib/api"
 import { MAX_AUTO_RECONNECTS, decideReconnect } from "@/lib/reconnect-policy"
+import { EMPTY_DESCRIPTION, descriptionEdit, descriptionSelections, generatedDescription, restoreDescription } from "@/lib/create-description"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
 import { TableBrowserDrawer } from "@/components/TableBrowserDrawer"
 import { ChatModelMenu } from "@/components/ModelPicker"
 import { Tooltip } from "@/components/ui/tooltip"
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string, spaceUrl?: string, initialTab?: string) => void
+}
+
+// A chat send deferred while a stream is in flight; drained when the stream ends.
+interface QueuedChatMessage {
+  text: string
+  selections?: Record<string, unknown>
 }
 
 let msgCounter = 0
@@ -98,6 +105,7 @@ interface PlanSummary {
 interface BuildProgress {
   title: string
   description: string
+  descriptionEdited: boolean
   businessContext: string[]
   catalog: string
   schemas: string[]
@@ -119,7 +127,7 @@ const EMPTY_PLAN_SUMMARY: PlanSummary = { questions: 0, benchmarks: 0, measures:
 
 const EMPTY_PROGRESS: BuildProgress = {
   title: "",
-  description: "",
+  ...EMPTY_DESCRIPTION,
   businessContext: [],
   catalog: "",
   schemas: [],
@@ -266,6 +274,7 @@ function loadState(): PersistedState | null {
     const parsed = JSON.parse(raw) as PersistedState
     // Migrate old schema (string) -> schemas (string[])
     const p = parsed.progress as LegacyProgress
+    if (p) Object.assign(p, restoreDescription(p))
     if (p && !Array.isArray(p.schemas)) {
       p.schemas = p.schema ? [p.schema] : []
       delete p.schema
@@ -390,6 +399,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
+  const [editingDescription, setEditingDescription] = useState(false)
+  const [descriptionDraft, setDescriptionDraft] = useState("")
   // businessContextDraft state removed — was only used for add/remove business context UI
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
@@ -399,7 +410,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [expandedTableId, setExpandedTableId] = useState<string | null>(null)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
-  const queuedMessageRef = useRef<string | null>(null)
+  const queuedMessageRef = useRef<QueuedChatMessage | null>(null)
   const [preflight, setPreflight] = useState<{ warehouses_available: boolean; obo_enabled: boolean; app_name: string } | null>(null)
   const [selectedModel, setSelectedModel] = useState<string | null>(restored?.selectedModel ?? null)
 
@@ -481,6 +492,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setProgress(EMPTY_PROGRESS)
     setEditingTitle(false)
     setTitleDraft("")
+    setEditingDescription(false)
+    setDescriptionDraft("")
     setExpandedPlanSections(new Set(["sample_questions"]))
     setEditedPlan(null)
     setEditingPlanItem(null)
@@ -537,9 +550,14 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       const isContinuation = text === ""
       if (!isContinuation && !text.trim()) return
       if (isStreaming && !isContinuation) {
-        const trimmed = text.trim()
-        queuedMessageRef.current = trimmed
-        setQueuedMessage(trimmed)
+        // Snapshot selections so a later mutation of the caller's object can't change
+        // what eventually gets sent when the queue drains.
+        const queued: QueuedChatMessage = {
+          text: text.trim(),
+          selections: selections ? { ...selections } : undefined,
+        }
+        queuedMessageRef.current = queued
+        setQueuedMessage(queued.text)
         setInput("")
         return
       }
@@ -594,7 +612,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         )
       }
 
-      stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
+      const requestSelections = isContinuation ? selections : descriptionSelections({
+        description: progress.description,
+        descriptionEdited: progress.descriptionEdited,
+      }, selections)
+      stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, requestSelections ?? null, {
         onSession: (sid) => {
           sessionIdRef.current = sid
           setSessionId(sid)
@@ -711,11 +733,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             setEditedPlan(plan)
             setEditingPlanItem(null)
             const suggestedName = (result as Record<string, unknown>).suggested_display_name as string | undefined
+            const suggestedDescription = (result as Record<string, unknown>).suggested_description as string | undefined
             setProgress((p) => ({
               ...p,
               planReady: true,
               // Set title from LLM suggestion if user hasn't already named it
               title: p.title || suggestedName || p.title,
+              ...generatedDescription(p, suggestedDescription),
               planSummary: {
                 questions: plan.sample_questions.length,
                 benchmarks: plan.benchmarks.length,
@@ -932,13 +956,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           const pending = queuedMessageRef.current
           queuedMessageRef.current = null
           setQueuedMessage(null)
-          if (pending) {
-            requestAnimationFrame(() => sendMessageRef.current(pending))
-          }
+          if (pending) requestAnimationFrame(() => sendMessageRef.current(pending.text, pending.selections))
         },
       }, null, selectedModel)
     },
-    [isStreaming, selectedModel],
+    [isStreaming, selectedModel, progress.description, progress.descriptionEdited],
   )
   // Keep the ref in sync (in an effect, not during render) so scheduled
   // self-calls — reconnect, continuation, queued-message drain — invoke the
@@ -1050,6 +1072,18 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setEditingTitle(false)
     sendMessage(`The agent name should be "${titleDraft.trim()}"`)
 
+  }
+
+  // Panel: submit description edit. Guard against mid-stream edits (the Enter-key path
+  // bypasses the button's disabled attr) — otherwise the optimistic setProgress sticks in
+  // the panel while the queued send is dropped on Stop, leaving the panel out of sync.
+  const submitDescription = () => {
+    if (isStreaming) return
+    const edit = descriptionEdit(descriptionDraft)
+    if (!edit) return
+    setProgress((p) => ({ ...p, ...edit.state }))
+    setEditingDescription(false)
+    sendMessage(edit.text, edit.selections)
   }
 
   // Panel: remove a table
@@ -2866,6 +2900,43 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                         className="text-[10px] text-accent hover:underline mt-0.5"
                       >
                         + Set name
+                      </button>
+                    ) : null}
+                    {editingDescription ? (
+                      <div className="flex gap-1">
+                        <textarea
+                          value={descriptionDraft}
+                          onChange={(e) => setDescriptionDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault()
+                              submitDescription()
+                            }
+                            if (e.key === "Escape") setEditingDescription(false)
+                          }}
+                          autoFocus
+                          rows={2}
+                          placeholder="Agent description"
+                          className="flex-1 text-xs border border-accent/40 rounded px-2 py-1 bg-surface text-primary focus:outline-none resize-none"
+                        />
+                        <button
+                          onClick={submitDescription}
+                          disabled={!descriptionDraft.trim() || isStreaming}
+                          className="px-1.5 text-accent disabled:opacity-40"
+                        >
+                          <Check className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ) : progress.description ? (
+                      <button
+                        onClick={() => {
+                          setDescriptionDraft(progress.description)
+                          setEditingDescription(true)
+                        }}
+                        className="group flex items-start gap-1 text-left text-[11px] leading-snug text-muted hover:text-secondary transition-colors"
+                      >
+                        <span className="line-clamp-2">{progress.description}</span>
+                        <Pencil className="w-2.5 h-2.5 mt-0.5 shrink-0 text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
                       </button>
                     ) : null}
                   </div>

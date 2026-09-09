@@ -99,12 +99,16 @@ When the agent calls `generate_plan`, the request is routed to `backend/services
 | Section | Content Generated |
 |---------|-------------------|
 | `tables` | Table selection, descriptions, column configs |
-| `questions` | Sample questions for the agent |
+| `questions` | Sample questions, text instructions, plus a suggested display name and space description |
 | `example_sqls` | Example question-SQL pairs with usage guidance |
 | `benchmarks` | Benchmark question-answer pairs for accuracy measurement |
 | `analytics` | Join specs, measures, filters, expressions |
 
 These sections are generated concurrently using a `ThreadPoolExecutor` with 3 workers. After all sections complete, `_assemble()` merges the results and `_validate_plan_sqls()` runs SQL validation with 8 concurrent checks to catch syntax errors.
+
+The suggested space description refreshes when the plan is regenerated. If you
+edit the description, your edit is preserved across later plans and used whether
+you approve creation in chat or with the Create button.
 
 ## Fast Path
 
@@ -124,6 +128,10 @@ After certain tool calls, the agent automatically chains to the next logical ste
 - After `validate_config` (if clean) → automatically calls `create_space` or `update_space`
 
 This reduces latency and keeps the flow smooth.
+
+If the creation API rejects the configuration, the agent attempts one automatic
+repair and retries with the repaired configuration, preserving the display name
+and description.
 
 ## Streaming Protocol
 
