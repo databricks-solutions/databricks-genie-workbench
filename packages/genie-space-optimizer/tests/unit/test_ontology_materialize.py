@@ -1208,3 +1208,140 @@ def test_step2_refresh_stub_body():
     _run(_page_reader(), writer, run_id="run2", page_drafter=_page_drafter)
     row = writer.tables["genie_ont_pages"][key]
     assert row["body"] != "SENTINEL should be overwritten"  # refreshed, not preserved
+
+
+# ── Stage 2: Genie Agents placed by their APPLIED governed tag (MV-D91) ──────
+
+from genie_space_optimizer.ontology import cluster as _cluster  # noqa: E402
+
+
+def _prop(domain_id, parent_id, tag_decision, tag_key):
+    return _cluster.DomainProposal(
+        domain_id=domain_id, parent_id=parent_id, name=tag_key or domain_id,
+        description="", tag_decision=tag_decision, tag_key=tag_key,
+        tag_value=None, evidence={}, members=("c.s.t",),
+    )
+
+
+def test_agent_domain_placement_applied_top_sub_and_out_of_scope():
+    proposals = [
+        _prop("dF", None, "reuse", "Finance"),
+        _prop("dFT", "dF", "reuse", "Finance/Tax"),
+        _prop("dC", None, "create", "Widget"),   # engine-proposed, NOT applied
+    ]
+    rows = [
+        {"tag_name": "Finance", "member_id": "agent:sp1"},         # top-level applied
+        {"tag_name": "Finance/Tax", "member_id": "agent:sp2"},     # exact sub-domain
+        {"tag_name": "Finance/Unknown", "member_id": "agent:sp3"}, # sub absent → top domain
+        {"tag_name": "SupplyChain", "member_id": "agent:sp4"},     # out-of-scope → ungrouped
+        {"tag_name": "Widget", "member_id": "agent:sp5"},          # create-only → ungrouped
+    ]
+    placement = materialize.agent_domain_placement(rows, proposals)
+    assert placement == {"agent:sp1": "dF", "agent:sp2": "dFT", "agent:sp3": "dF"}
+
+
+def test_agent_domain_placement_most_specific_wins_deterministic():
+    proposals = [_prop("dF", None, "reuse", "Finance"), _prop("dFT", "dF", "reuse", "Finance/Tax")]
+    rows = [
+        {"tag_name": "Finance", "member_id": "agent:sp1"},
+        {"tag_name": "Finance/Tax", "member_id": "agent:sp1"},   # same agent, more specific
+    ]
+    assert materialize.agent_domain_placement(rows, proposals) == {"agent:sp1": "dFT"}
+
+
+def test_agent_domain_placement_empty_inputs():
+    assert materialize.agent_domain_placement([], []) == {}
+    assert materialize.agent_domain_placement([{"tag_name": "X", "member_id": "agent:a"}], []) == {}
+
+
+class _AgentReader(_FakeReader):
+    """A reader that surfaces the Stage-2 Genie-Agent signals."""
+
+    def __init__(self, catalog_rows, assign_rows, *, entity_rows, scopes, names):
+        super().__init__(catalog_rows, assign_rows, [], [])
+        self._entity, self._scopes, self._names = entity_rows, scopes, names
+
+    def entity_tag_assignments(self, entity_type):
+        return list(self._entity)
+
+    def agent_scopes(self, allowlist):
+        return dict(self._scopes)
+
+    def agent_names(self):
+        return dict(self._names)
+
+
+def _graph_blob(writer):
+    row = writer.tables[ddl.TABLE_ONT_GRAPH_SNAPSHOT][("ms1",)]
+    return json.loads(row["graph"])
+
+
+def test_run_places_tagged_agent_applied_and_untagged_ungrouped():
+    import pytest
+    pytest.importorskip("igraph")
+    catalog_rows, assign_rows = _fixture_rows()
+    reader = _AgentReader(
+        catalog_rows, assign_rows,
+        entity_rows=[
+            {"tag_name": "Finance", "member_id": "agent:sp1"},       # applied → Finance domain
+            {"tag_name": "SupplyChain", "member_id": "agent:sp2"},   # out-of-scope → ungrouped
+        ],
+        scopes={"sp1": ["finance.core.ledger"], "sp2": []},
+        names={"sp1": "Finance Agent", "sp2": "SupplyChain Agent"},
+    )
+    writer = _FakeWriter()
+    run = _run(reader, writer, run_id="r1")
+    assert run["state"] == "succeeded"
+
+    blob = _graph_blob(writer)
+    agents = {n["id"]: n for n in blob["assets"]["nodes"] if n["kind"] == "agent"}
+    assert set(agents) == {"agent:sp1", "agent:sp2"}
+    assert agents["agent:sp1"]["label"] == "Finance Agent"       # space name (MV-D91)
+
+    # sp1 lands in the Finance domain with origin=applied (same as a tagged table).
+    dom_by_id = {d["id"]: d for d in blob["domains"]["nodes"]}
+    finance_id = agents["agent:sp1"]["domain_id"]
+    assert finance_id is not None
+    assert dom_by_id[finance_id]["origin"] == "applied"
+    assert dom_by_id[finance_id]["label"] == "Finance"
+    # sp2's tag names an out-of-scope domain ⇒ ungrouped (never a fabricated domain).
+    assert agents["agent:sp2"]["domain_id"] is None
+
+
+def test_entity_tag_reader_raise_degrades_run_succeeds():
+    """A reader whose entity_tag_assignments raises degrades to [] (no applied placement)
+    without failing the run (MV-D43); the agent still appears via its scope, ungrouped."""
+    import pytest
+    pytest.importorskip("igraph")
+    catalog_rows, assign_rows = _fixture_rows()
+
+    class _Boom(_AgentReader):
+        def entity_tag_assignments(self, entity_type):
+            raise RuntimeError("entity-tag API not enabled")
+
+    reader = _Boom(catalog_rows, assign_rows, entity_rows=[],
+                   scopes={"sp1": ["finance.core.ledger"]}, names={"sp1": "Finance Agent"})
+    writer = _FakeWriter()
+    run = _run(reader, writer, run_id="r1")
+    assert run["state"] == "succeeded"
+    agents = {n["id"]: n for n in _graph_blob(writer)["assets"]["nodes"] if n["kind"] == "agent"}
+    assert agents["agent:sp1"]["domain_id"] is None   # no applied placement, but present
+
+
+def test_stage2_gather_helpers_degrade_on_missing_or_raising_reader():
+    """The defensive gathers return empty for an older reader lacking the methods and for
+    one whose methods raise (degrade-not-hang, MV-D43)."""
+    base = _FakeReader([], [], [], [])   # no Stage-2 methods
+    assert materialize._gather_entity_tags(base, "geniespaces") == []
+    assert materialize._gather_agent_scopes(base, ["finance"]) == {}
+    assert materialize._gather_agent_names(base) == {}
+
+    class _Raises:
+        def entity_tag_assignments(self, et): raise RuntimeError("x")
+        def agent_scopes(self, a): raise RuntimeError("x")
+        def agent_names(self): raise RuntimeError("x")
+
+    r = _Raises()
+    assert materialize._gather_entity_tags(r, "geniespaces") == []
+    assert materialize._gather_agent_scopes(r, ["finance"]) == {}
+    assert materialize._gather_agent_names(r) == {}

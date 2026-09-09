@@ -383,6 +383,124 @@ class SparkSystemTableReader:
             _log("agents read skipped", error=str(e))
             return []
 
+    # ── Stage 2 (MV-D91): Genie Agents placed by their APPLIED governed tag ──────
+    def entity_tag_assignments(self, entity_type: str = "geniespaces") -> list[dict[str, Any]]:
+        """Applied governed-tag rows for each Genie space, read off the ENTITY-TAG-
+        ASSIGNMENTS API (NOT information_schema — governed tags on workspace objects live
+        there, which is why the materializer was blind to them). Enumerate spaces via
+        ``list_spaces`` and, per space, call
+        ``w.workspace_entity_tag_assignments.list_tag_assignments("geniespaces", id)``;
+        if the pinned ``databricks-sdk==0.117.0`` lacks the method, fall back to REST
+        ``api_client.do("GET", /api/2.0/entity-tag-assignments/geniespaces/{id}/tags)``
+        (NO dependency bump). Keep a tag ONLY when ``transforms.is_domain_entity_tag`` says
+        aboutness (drops facets — ``certified``/``contains_synthetic`` — and reserved
+        ``system.*``/``class.*``/``sap.*`` tags). Returns rows shaped like the
+        ``assignments()`` union — ``{tag_name, tag_value, member_id: "agent:<id>"}`` —
+        sorted/deterministic. Bounded fan-out (~17 calls); ANY API/permission failure
+        degrades to [] (MV-D43), and scope reconciliation is done in the wheel."""
+        from genie_space_optimizer.ontology import transforms
+        try:
+            w = make_workspace_client()
+            from genie_space_optimizer.common.genie_client import list_spaces
+            spaces = list_spaces(w)
+        except Exception as e:  # noqa: BLE001 — no spaces / no client ⇒ no applied rows
+            _log("entity_tag_assignments enumerate skipped", error=str(e))
+            return []
+        et = entity_type or "geniespaces"
+        out: list[dict[str, Any]] = []
+        for s in spaces:
+            sid = s.get("id")
+            if not sid:
+                continue
+            for tag_key, tag_value in self._list_entity_tags(w, et, str(sid)):
+                if not transforms.is_domain_entity_tag(tag_key):
+                    continue
+                row: dict[str, Any] = {"tag_name": tag_key, "member_id": f"agent:{sid}"}
+                if tag_value is not None and str(tag_value) != "":
+                    row["tag_value"] = str(tag_value)
+                out.append(row)
+        # Deterministic (MV-D82): stable by (member, tag, value).
+        return sorted(out, key=lambda r: (r["member_id"], r["tag_name"], str(r.get("tag_value") or "")))
+
+    def _list_entity_tags(self, w: Any, entity_type: str, entity_id: str) -> list[tuple[str, str | None]]:
+        """One entity's ``(tag_key, tag_value)`` pairs — SDK first, REST fallback, else []
+        (per-entity degrade so one unreadable space never sinks the batch, MV-D43)."""
+        svc = getattr(w, "workspace_entity_tag_assignments", None)
+        if svc is not None and hasattr(svc, "list_tag_assignments"):
+            try:
+                return [
+                    (str(getattr(a, "tag_key", "") or ""), getattr(a, "tag_value", None))
+                    for a in svc.list_tag_assignments(entity_type, entity_id)
+                    if getattr(a, "tag_key", None)
+                ]
+            except Exception as e:  # noqa: BLE001 — fall through to REST
+                _log("list_tag_assignments SDK failed; trying REST", entity=entity_id, error=str(e))
+        try:
+            resp = w.api_client.do("GET", f"/api/2.0/entity-tag-assignments/{entity_type}/{entity_id}/tags")
+        except Exception as e:  # noqa: BLE001 — no access to this entity's tags
+            _log("entity-tag REST read skipped", entity=entity_id, error=str(e))
+            return []
+        items = []
+        if isinstance(resp, dict):
+            for k in ("tag_assignments", "tags", "assignments"):
+                v = resp.get(k)
+                if isinstance(v, list):
+                    items = v
+                    break
+        return [
+            (str(it.get("tag_key") or ""), it.get("tag_value"))
+            for it in items
+            if isinstance(it, dict) and it.get("tag_key")
+        ]
+
+    def agent_scopes(self, allowlist: list[str]) -> dict[str, list[str]]:
+        """Read-edge overlay (MV-D91 Build B): ``{space_id -> sorted[table_fqn]}`` — the
+        tables/MVs each Genie space reads, reusing ``fetch_space_config``'s resolved
+        ``_tables`` + ``_metric_views`` identifiers (the create/scan resolution). Scoped to
+        the allowlisted catalogs so an out-of-scope table never draws an edge. EVERY
+        enumerated space is a key (a scopeless space maps to ``[]`` so it still gets an
+        ``agent:<id>`` node). ANY failure degrades to {} ⇒ byte-identical graph (MV-D43)."""
+        try:
+            w = make_workspace_client()
+            from genie_space_optimizer.common.genie_client import fetch_space_config, list_spaces
+            spaces = list_spaces(w)
+        except Exception as e:  # noqa: BLE001
+            _log("agent_scopes enumerate skipped", error=str(e))
+            return {}
+        cats = {str(c).strip() for c in (allowlist or []) if str(c).strip()}
+
+        def _in_scope(fqn: str) -> bool:
+            return not cats or (str(fqn).split(".", 1)[0] in cats)
+
+        out: dict[str, list[str]] = {}
+        for s in spaces:
+            sid = s.get("id")
+            if not sid:
+                continue
+            try:
+                cfg = fetch_space_config(w, str(sid))
+                refs = list(cfg.get("_tables") or []) + list(cfg.get("_metric_views") or [])
+            except Exception as e:  # noqa: BLE001 — a space we cannot read has no edges
+                _log("agent_scopes space read skipped", space=str(sid), error=str(e))
+                refs = []
+            fqns = sorted({str(r) for r in refs if r and _in_scope(str(r))})
+            out[str(sid)] = fqns
+        return dict(sorted(out.items()))
+
+    def agent_names(self) -> dict[str, str]:
+        """``{space_id -> display_name}`` so the map labels an agent node with its space
+        name (a raw id is not human-readable). Degrades to {} ⇒ id fallback (MV-D43)."""
+        try:
+            w = make_workspace_client()
+            from genie_space_optimizer.common.genie_client import list_spaces
+            return {
+                str(s["id"]): str(s.get("title") or s.get("display_name") or s["id"])
+                for s in list_spaces(w) if s.get("id")
+            }
+        except Exception as e:  # noqa: BLE001
+            _log("agent_names read skipped", error=str(e))
+            return {}
+
     def lineage_edges(self, allowlist: list[str]) -> list[tuple[str, str]]:
         # Structural adjacency only (used by the L2 scaffold; never invents a domain).
         return []

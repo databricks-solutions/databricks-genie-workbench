@@ -36,6 +36,7 @@ def build_signal_graph(
     *,
     co_query_edges: Iterable[tuple] | None = None,
     agent_scopes: dict[str, list[str]] | None = None,
+    agent_names: dict[str, str] | None = None,
     costs: dict[str, float] | None = None,
     semantic_sim_edges: Iterable[tuple] | None = None,
     join_key_edges: Iterable[tuple] | None = None,
@@ -124,10 +125,18 @@ def build_signal_graph(
         add_asset(b)
         add_edge(f"asset:{a}", f"asset:{b}", "co_query", "query_history", weight)
 
-    # Agent scope (agent → asset the Agent reads).
+    # Agent scope (agent → asset the Agent reads). A space with an EMPTY scope still
+    # gets its ``agent:<id>`` node (no edges) so a tagged-but-scopeless Agent still lands
+    # on the map (Stage 2, MV-D91). ``agent_names`` (optional) threads the space display
+    # name onto the node ADDITIVELY — present only when supplied, so a value-free call is
+    # byte-identical to the pre-Stage-2 scaffold.
+    names = agent_names or {}
     for agent_id, fqns in (agent_scopes or {}).items():
         agent_node = f"agent:{agent_id}"
-        add_node(agent_node, "agent")
+        node = add_node(agent_node, "agent")
+        label = names.get(agent_id)
+        if label and "label" not in node:
+            node["label"] = str(label)
         for fqn in fqns:
             add_asset(fqn)
             add_edge(agent_node, f"asset:{fqn}", "agent_scope", "agent_scope")

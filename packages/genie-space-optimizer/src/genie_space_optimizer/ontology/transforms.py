@@ -66,7 +66,14 @@ def member_fqn_of(row: dict[str, Any]) -> str | None:
     sch = row.get("schema_name")
     tbl = row.get("table_name")
     parts = [p for p in (cat, sch, tbl) if p]
-    return ".".join(str(p) for p in parts) if parts else None
+    if parts:
+        return ".".join(str(p) for p in parts)
+    # Stage 2 (MV-D91): a workspace-entity assignment (Genie space / dashboard) carries
+    # its member ref as a prefixed ``member_id`` (``agent:<id>``) rather than the
+    # catalog/schema/table columns of an information_schema row — recognize it so an
+    # entity-tag row shaped like the ``assignments()`` union still resolves a member.
+    mid = row.get("member_id")
+    return str(mid) if mid else None
 
 
 def tag_value_of(row: dict[str, Any]) -> str | None:
@@ -392,6 +399,42 @@ def is_facet_tag(
     return classify_tag(
         tag_key, allowed_values=allowed_values, tiebreaker=tiebreaker, extra_denylist=extra_denylist,
     )[0] == "facet"
+
+
+# Databricks-reserved governed-tag namespaces (Stage 2, MV-D91). These are SYSTEM tags
+# an entity/table carries alongside its domain tag (the live probe saw
+# ``system.certification_status=certified``); a Domain never comes from one, so guard on
+# the reserved dotted prefix explicitly rather than trust the name to hit a
+# ``classify_tag`` facet pattern.
+_RESERVED_TAG_PREFIXES: tuple[str, ...] = ("system.", "class.", "sap.")
+
+
+def is_reserved_system_tag(tag_key: str) -> bool:
+    """True when ``tag_key`` is in a Databricks-reserved system namespace
+    (``system.*`` / ``class.*`` / ``sap.*``, case-insensitive) — never a Domain (MV-D91)."""
+    low = str(tag_key or "").strip().casefold()
+    return low.startswith(_RESERVED_TAG_PREFIXES)
+
+
+def is_domain_entity_tag(
+    tag_key: str,
+    *,
+    allowed_values: list[str] | None = None,
+    tiebreaker: Callable[[str], bool | None] | None = None,
+    extra_denylist: frozenset[str] | None = None,
+) -> bool:
+    """Keep-decision for a governed tag read off a workspace ENTITY (Genie space /
+    dashboard) via the entity-tag-assignments API (Stage 2/3, MV-D91/D92): keep it as a
+    Domain candidate ONLY when it is aboutness (``classify_tag``) AND not a reserved
+    system tag. Drops the facets these objects also carry (``certified``,
+    ``contains_synthetic``, ``system.certification_status``…). Pure; deterministic — the
+    same rule tables use to resolve domains, so an agent/dashboard lands exactly like a
+    tagged table. Scope reconciliation (in-snapshot domain match) is the caller's step."""
+    if not tag_key or is_reserved_system_tag(tag_key):
+        return False
+    return not is_facet_tag(
+        tag_key, allowed_values=allowed_values, tiebreaker=tiebreaker, extra_denylist=extra_denylist,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────

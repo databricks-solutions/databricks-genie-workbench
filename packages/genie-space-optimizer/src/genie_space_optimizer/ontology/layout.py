@@ -411,7 +411,7 @@ def build_graph_snapshot(
 
         asset_nodes.append({
             "id": node_id,
-            "label": _label_for_node(node_id, kind),
+            "label": _label_for_node(node_id, kind, node),
             "kind": kind,
             "domain_id": domain_id,
             "x": float(x),
@@ -838,12 +838,20 @@ def _compute_node_size(node: dict[str, Any], score: float) -> float:
     return min(2.0, max(0.5, size))
 
 
-def _label_for_node(node_id: str, kind: str) -> str:
+def _label_for_node(node_id: str, kind: str, node: dict[str, Any] | None = None) -> str:
     """Extract a human-readable label from node_id.
 
     Node IDs are prefixed: ``asset:<fqn>``, ``tag:<key>``, ``agent:<id>``,
     ``mv:<fqn>``, ``schema:<key>``. Strip the prefix for the label.
-    """
+
+    Stage 2 (MV-D91): when the fused-graph node carries an explicit ``label`` (an
+    ``agent`` node threaded with its Genie space display name — a raw space id is not
+    human-readable), prefer it. Additive + reveal-don't-invent: absent ⇒ the prefix-strip
+    fallback below, so every other node kind is byte-identical."""
+    if node is not None:
+        label = node.get("label")
+        if label:
+            return str(label)
     if ":" in node_id:
         prefix, rest = node_id.split(":", 1)
         # Use the last component for FQNs (catalog.schema.table → table).

@@ -53,6 +53,14 @@ class MaterializeReader(Protocol):
     def assignments(self, allowlist: list[str]) -> list[dict[str, Any]]: ...
     def metric_view_fqns(self, allowlist: list[str]) -> list[str]: ...
     def agents(self) -> list[str]: ...
+    # Stage-2 Genie-Agent placement (MV-D91) — all optional; the wheel calls them
+    # defensively (an older reader degrades: no agent nodes / no applied placement,
+    # byte-identical, MV-D43). ``entity_tag_assignments`` reads the applied governed tag
+    # off each Genie space via the entity-tag-assignments API; ``agent_scopes`` are the
+    # space→table read edges; ``agent_names`` map space id → display name for the label.
+    def entity_tag_assignments(self, entity_type: str) -> list[dict[str, Any]]: ...
+    def agent_scopes(self, allowlist: list[str]) -> dict[str, list[str]]: ...
+    def agent_names(self) -> dict[str, str]: ...
     # Stage-1 asset typing (MV-D90) — optional; the wheel calls it defensively (a reader
     # without it degrades to every tagged member typed ``table``, byte-identical to the
     # pre-Stage-1 output, MV-D43). ``{fqn -> table_type}`` from ``information_schema.tables``.
@@ -182,6 +190,69 @@ def build_domain_rows(
     return {"domain_rows": domain_rows, "member_rows": member_rows}
 
 
+def agent_domain_placement(
+    entity_rows: list[dict[str, Any]],
+    proposals: list[cluster.DomainProposal],
+) -> dict[str, str]:
+    """Place workspace-entity assignments (Genie spaces, Stage 2 MV-D91) into the
+    Domain/sub-domain their APPLIED governed tag names — the ``{member_id -> domain_id}``
+    the layout uses to colour an ``agent:<id>`` node ``origin=applied``.
+
+    ``entity_rows`` are the reader's kept, aboutness-only entity-tag rows
+    (``{tag_name, tag_value?, member_id}``, ``member_id`` = ``agent:<id>``). The
+    placement is the deterministic dual of how a tagged TABLE lands in its domain: an
+    entity tag is matched to the proposal that **reused/reassigned that same governed
+    tag** (``tag_decision in {reuse, reassign}`` — the ``origin=applied`` domains). The
+    clustering engine cannot carry a structure-less tag-only member into a community (a
+    tag never solo-creates a Domain, MV-D52), so this post-cluster attach is what maps
+    the agent's applied tag onto the very domain_id its tables produced — semantically
+    "lands in its domain via the same governed tag", with no phantom ``asset:agent:<id>``
+    node and no change to table clustering/ranking.
+
+    **Scope reconciliation (MV-D91, live-probe finding):** an entity tag naming a domain
+    NOT present as an applied proposal in this run (an out-of-scope workspace tag —
+    ``SupplyChain`` on the airline snapshot) matches nothing and the agent is left
+    UNGROUPED (absent from the returned map) — never a fabricated domain. A slash key
+    (``Domain/Sub``) nests into the sub-domain when that exact sub is an applied proposal,
+    else onto its top-level domain; a value-less top-level key (the common case,
+    ``Alaska Airlines Commercial``) attaches to the top-level rollup. Deterministic
+    (MV-D82): per member, the most specific match wins, ties break by domain_id asc.
+    Pure — no I/O, no proposal mutation.
+    """
+    applied_top: dict[str, str] = {}
+    applied_sub: dict[str, str] = {}
+    for p in proposals:
+        if p.tag_decision not in ("reuse", "reassign") or not p.tag_key:
+            continue
+        (applied_sub if p.parent_id is not None else applied_top)[p.tag_key] = p.domain_id
+
+    placement: dict[str, str] = {}
+    # (member_id -> best (specificity, domain_id)); higher specificity + lower id wins.
+    best: dict[str, tuple[int, str]] = {}
+    for r in sorted(entity_rows, key=lambda x: (str(x.get("member_id") or ""), str(transforms.tag_key_of(x) or ""))):
+        member_id = r.get("member_id")
+        key = transforms.tag_key_of(r)
+        if not member_id or not key:
+            continue
+        cand: tuple[int, str] | None = None
+        if key in applied_sub:                       # exact slash sub-domain match
+            cand = (2, applied_sub[key])
+        elif key in applied_top:                     # exact top-level domain key
+            cand = (1, applied_top[key])
+        else:                                        # slash key whose sub is absent → top domain
+            dom = transforms.domain_part(key)
+            if dom in applied_top:
+                cand = (1, applied_top[dom])
+        if cand is None:
+            continue                                 # out-of-scope domain ⇒ ungrouped
+        prev = best.get(str(member_id))
+        if prev is None or cand[0] > prev[0] or (cand[0] == prev[0] and cand[1] < prev[1]):
+            best[str(member_id)] = cand
+    for member_id, (_spec, domain_id) in best.items():
+        placement[member_id] = domain_id
+    return dict(sorted(placement.items()))
+
+
 def build_page_rows(
     candidates: list[pages.PageCandidate],
     *,
@@ -273,6 +344,51 @@ def _gather_asset_types(reader: Any, allowlist: list[str]) -> dict[str, str]:
         return {str(k): str(v) for k, v in dict(got or {}).items() if k and v}
     except Exception as exc:  # noqa: BLE001 — a missing signal never fails the run
         logger.info("ontology asset-type map unavailable (%s)", exc)
+        return {}
+
+
+def _gather_entity_tags(reader: Any, entity_type: str) -> list[dict[str, Any]]:
+    """Stage 2 (MV-D91): the reader's kept, aboutness-only entity-tag rows for a workspace
+    entity type (``geniespaces``) via the entity-tag-assignments API — ``{tag_name,
+    tag_value?, member_id}``. Defensive: an older reader without ``entity_tag_assignments``,
+    or any Beta/permission failure, degrades to [] (the applied placement is then simply
+    absent, MV-D43) — never blocks the run."""
+    fn = getattr(reader, "entity_tag_assignments", None)
+    if fn is None:
+        return []
+    try:
+        return list(fn(entity_type) or [])
+    except Exception as exc:  # noqa: BLE001 — a missing/Beta entity-tag API never fails the run
+        logger.info("ontology entity-tag read (%s) unavailable (%s)", entity_type, exc)
+        return []
+
+
+def _gather_agent_scopes(reader: Any, allowlist: list[str]) -> dict[str, list[str]]:
+    """Stage 2 (MV-D91) read-edge overlay: ``{space_id -> sorted[table_fqn]}`` for the
+    ``agent_scopes`` kwarg of ``build_signal_graph``. Defensive: an older reader, or any
+    failure, degrades to {} ⇒ byte-identical graph (MV-D43)."""
+    fn = getattr(reader, "agent_scopes", None)
+    if fn is None:
+        return {}
+    try:
+        got = fn(allowlist) or {}
+        return {str(k): [str(x) for x in (v or [])] for k, v in dict(got).items()}
+    except Exception as exc:  # noqa: BLE001 — a missing scope read never fails the run
+        logger.info("ontology agent_scopes unavailable (%s)", exc)
+        return {}
+
+
+def _gather_agent_names(reader: Any) -> dict[str, str]:
+    """Stage 2 (MV-D91): ``{space_id -> display_name}`` so ``layout`` labels an agent node
+    with its space name (a raw id is not human-readable). Defensive: absent/failed ⇒ {}
+    ⇒ the label degrades to the id (MV-D43)."""
+    fn = getattr(reader, "agent_names", None)
+    if fn is None:
+        return {}
+    try:
+        return {str(k): str(v) for k, v in dict(fn() or {}).items() if k and v}
+    except Exception as exc:  # noqa: BLE001 — a missing name map never fails the run
+        logger.info("ontology agent_names unavailable (%s)", exc)
         return {}
 
 
@@ -451,8 +567,16 @@ def run_materialize(
         # membership, shared schema) when the reader surfaces them; a reader without them
         # degrades to the lineage-only graph unchanged (MV-D43).
         structural = _gather_structural_signals(reader, allowlist)
+        # Stage 2 (MV-D91) read-edge overlay: the space→table scopes emit ``agent:<id>``
+        # nodes + ``agent_scope`` edges (a relational overlay, NOT the domain mechanism —
+        # that is the applied-tag placement below). ``agent_names`` labels each node with
+        # its Genie space display name. Empty scopes ⇒ byte-identical graph (MV-D43).
+        agent_scopes = _gather_agent_scopes(reader, allowlist)
+        agent_names = _gather_agent_names(reader)
         signal_graph = graph.build_signal_graph(
             graph_struct, reader.lineage_edges(allowlist),
+            agent_scopes=agent_scopes,
+            agent_names=agent_names,
             join_key_edges=structural["join_key_edges"],
             mv_membership=structural["mv_membership"],
             schema_affinity=structural["schema_affinity"],
@@ -636,8 +760,17 @@ def run_materialize(
             "measures": {k: measures_by_mv[k] for k in sorted(measures_by_mv)},
             "pages": {k: pages_by_domain[k] for k in sorted(pages_by_domain)},
         }
+        # Stage 2 (MV-D91) APPLIED placement: map each Genie space's applied governed tag
+        # (read off the entity-tag-assignments API — NOT information_schema, which is why
+        # the materializer was blind to it) onto the domain_id its tables produced, so the
+        # ``agent:<id>`` node rolls up ``origin=applied`` in its Domain/sub-domain. An
+        # out-of-scope or untagged space is simply absent here ⇒ ungrouped (never a
+        # fabricated domain). Additive: the table ``asset_domain`` (rank/member rows) is
+        # untouched — agents ride only the layout's node→domain map (MV-D43/D49/D82).
+        entity_tags = _gather_entity_tags(reader, "geniespaces")
+        agent_domain = agent_domain_placement(entity_tags, proposals)
         graph_row = layout.build_graph_snapshot(
-            signal_graph, asset_domain, node_scores=None, domain_meta=domain_meta,
+            signal_graph, {**asset_domain, **agent_domain}, node_scores=None, domain_meta=domain_meta,
             snippets_in=snippets_in,
             metastore_id=metastore_id, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
         )

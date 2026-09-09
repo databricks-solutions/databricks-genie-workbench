@@ -69,3 +69,34 @@ def test_llm_tiebreaker_only_for_ambiguous_and_degrades():
 
     klass, _ = t.classify_tag("Widget", tiebreaker=boom)
     assert klass == "aboutness"
+
+
+# --- Stage 2: entity-tag domain keeper + reserved system-tag guard (MV-D91) ---
+
+
+def test_is_reserved_system_tag_prefixes():
+    assert t.is_reserved_system_tag("system.certification_status")
+    assert t.is_reserved_system_tag("class.pii")
+    assert t.is_reserved_system_tag("SAP.material")   # case-insensitive
+    assert not t.is_reserved_system_tag("Alaska Airlines Commercial")
+    assert not t.is_reserved_system_tag("system_of_record")  # only the dotted namespace
+
+
+def test_is_domain_entity_tag_keeps_aboutness_drops_facets_and_system():
+    # Aboutness domain keys the live probe saw ⇒ KEEP.
+    assert t.is_domain_entity_tag("Alaska Airlines Commercial")
+    assert t.is_domain_entity_tag("Alaska Airlines Operations")
+    assert t.is_domain_entity_tag("Operations1/maintenance")   # slash sub-domain key
+    # Facets these objects also carry ⇒ DROP.
+    assert not t.is_domain_entity_tag("certified")
+    assert not t.is_domain_entity_tag("contains_synthetic")
+    # Reserved system tags ⇒ DROP even if the dotted name would not hit a facet pattern.
+    assert not t.is_domain_entity_tag("system.certification_status")
+    assert not t.is_domain_entity_tag("")
+
+
+def test_member_fqn_of_recognizes_member_id():
+    assert t.member_fqn_of({"member_id": "agent:sp1"}) == "agent:sp1"
+    # information_schema columns still win when present.
+    assert t.member_fqn_of({"catalog_name": "c", "schema_name": "s", "table_name": "t"}) == "c.s.t"
+    assert t.member_fqn_of({}) is None

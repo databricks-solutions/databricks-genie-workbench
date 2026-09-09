@@ -935,3 +935,75 @@ def test_cap_keeps_display_assets_not_hubs():
     assert all(n["id"].startswith("asset:") and n["kind"] == "table" for n in disp)
     # All 50 real tables survived (hubs were never candidates).
     assert len(disp) == n_tables
+
+
+# --- Ontology Map Stage 2: Genie Agents as first-class nodes (MV-D91) ---
+
+
+def test_agent_scopes_emit_agent_node_and_scope_edges():
+    """build_signal_graph with agent_scopes emits an ``agent:<id>`` node (kind agent) +
+    an ``agent_scope`` edge to each read asset (the relational overlay)."""
+    sig = graph.build_signal_graph(
+        {"tags": []}, agent_scopes={"sp1": ["c.rev.fact", "c.rev.dim"]},
+    )
+    agents = [n for n in sig["nodes"] if n["kind"] == "agent"]
+    assert [n["id"] for n in agents] == ["agent:sp1"]
+    scope = [(e["src"], e["dst"]) for e in sig["edges"] if e["kind"] == "agent_scope"]
+    assert scope == [("agent:sp1", "asset:c.rev.fact"), ("agent:sp1", "asset:c.rev.dim")]
+
+
+def test_agent_scopes_unset_is_byte_identical_scaffold():
+    """Guardrail: unset/empty agent_scopes ⇒ byte-identical graph (MV-D43)."""
+    base = {"tags": [{"tag_key": "Commercial", "members": [{"fqn": "c.s.a"}]}]}
+    ts = "2026-01-01T00:00:00+00:00"
+    a = graph.build_signal_graph(base, [("c.s.a", "c.s.b")], as_of=ts)
+    b = graph.build_signal_graph(base, [("c.s.a", "c.s.b")], agent_scopes={}, as_of=ts)
+    c = graph.build_signal_graph(base, [("c.s.a", "c.s.b")], agent_scopes=None, agent_names=None, as_of=ts)
+    assert a == b == c
+
+
+def test_empty_scope_agent_still_gets_a_node():
+    """A tagged-but-scopeless space still gets its ``agent:<id>`` node (no edges) so it
+    can be placed by its applied tag / shown ungrouped (MV-D91)."""
+    sig = graph.build_signal_graph({"tags": []}, agent_scopes={"sp1": []})
+    assert [n["id"] for n in sig["nodes"] if n["kind"] == "agent"] == ["agent:sp1"]
+    assert not [e for e in sig["edges"] if e["kind"] == "agent_scope"]
+
+
+def test_agent_names_thread_label_onto_node_additively():
+    """agent_names thread the space display name onto the node; absent ⇒ no label key."""
+    named = graph.build_signal_graph(
+        {"tags": []}, agent_scopes={"sp1": ["c.s.a"]}, agent_names={"sp1": "Airline Commercial Revenue"},
+    )
+    node = next(n for n in named["nodes"] if n["id"] == "agent:sp1")
+    assert node["label"] == "Airline Commercial Revenue"
+    plain = graph.build_signal_graph({"tags": []}, agent_scopes={"sp1": ["c.s.a"]})
+    assert "label" not in next(n for n in plain["nodes"] if n["id"] == "agent:sp1")
+
+
+def test_layout_labels_agent_with_space_name():
+    """layout uses the node-carried label (the space name) for an agent; a nameless agent
+    node degrades to the id-strip fallback."""
+    sig = graph.build_signal_graph(
+        {"tags": []}, agent_scopes={"sp1": ["c.rev.fact"], "sp2": ["c.rev.fact"]},
+        agent_names={"sp1": "Commercial Revenue"},
+    )
+    blob = _snap(sig, {"agent:sp1": "d1", "agent:sp2": "d1", "c.rev.fact": "d1"},
+                 domain_meta={"d1": {"name": "Commercial", "parent_id": None, "origin": "applied"}})
+    labels = {n["id"]: n["label"] for n in blob["assets"]["nodes"] if n["kind"] == "agent"}
+    assert labels["agent:sp1"] == "Commercial Revenue"   # threaded name
+    assert labels["agent:sp2"] == "sp2"                  # id fallback (no name)
+
+
+def test_layout_places_agent_node_in_its_applied_domain():
+    """An ``agent:<id>`` node whose node_domain_id maps to an applied domain rolls up in
+    that domain with origin=applied (same placement mechanism as a tagged table)."""
+    sig = graph.build_signal_graph(
+        {"tags": []}, agent_scopes={"sp1": ["c.rev.fact"]}, agent_names={"sp1": "Rev Agent"},
+    )
+    blob = _snap(sig, {"agent:sp1": "d1", "c.rev.fact": "d1"},
+                 domain_meta={"d1": {"name": "Commercial", "parent_id": None, "origin": "applied"}})
+    agent = next(n for n in blob["assets"]["nodes"] if n["id"] == "agent:sp1")
+    assert agent["kind"] == "agent" and agent["domain_id"] == "d1"
+    dom = {d["id"]: d for d in blob["domains"]["nodes"]}
+    assert dom["d1"]["origin"] == "applied"
