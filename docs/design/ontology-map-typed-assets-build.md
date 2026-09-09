@@ -186,9 +186,14 @@ catalog-scoped, so a space can carry a domain tag from another estate (the probe
 `SupplyChain`, `Horizon M&E`, `fuels_pricing` alongside the airline domains). Keep an entity's
 domain tag **only when its (top-level) domain key matches a domain already present in THIS run's
 table-derived domain set** (`domain_meta`); a tag naming an out-of-scope domain ⇒ leave the
-entity **ungrouped**, never fabricate a domain node. Feed the kept rows into the **same**
-tag-graph assembly tables use (`transforms.assemble_tag_graph` / `tag_key_of` / `tag_value_of`),
-so a tagged space lands in its domain with `origin=applied`. On these objects the tag is
+entity **ungrouped**, never fabricate a domain node. **As-built (MV-D91, `2841fe99`):** the kept
+rows are NOT fed through `assemble_tag_graph` — the cluster engine drops a structure-less tag-only
+member (a tag never solo-creates a Domain, MV-D52), so placement is a deterministic **post-cluster
+attach** in `materialize.agent_domain_placement(entity_rows, proposals)`: the entity tag is matched
+to the `reuse`/`reassign` proposal carrying that governed tag → `domain_id`, and the scope
+reconciliation above runs internally (out-of-scope ⇒ ungrouped). The kept-tag filter itself is
+`transforms.is_domain_entity_tag(...)`. Net effect is identical — a tagged space lands in its
+domain with `origin=applied`, with no phantom `asset:agent:<id>` node. On these objects the tag is
 typically the **value-less top-level domain key** (evidence: `Alaska Airlines Commercial`) ⇒ the
 agent attaches to the top-level domain rollup; a slash key (probe saw `Operations1/maintenance`,
 `fuels_pricing/loyalty`) or `mvm_subdomain=<value>`, if present, nests it into a sub-domain
@@ -219,15 +224,23 @@ query. **Gated on §2.5** (same posture as Stage 2).
 dashboards (`w.lakeview.list()`) and, per dashboard, call
 `list_tag_assignments("dashboards", <dashboard_id>)`, returning `{tag_name, tag_value,
 member_id: "dashboard:<id>"}` rows. **Domain-key selection is identical to Stage 2:** keep only
-`aboutness` keys via `classify_tag(...)` (MV-D51), drop facets (`certified`, `contains_synthetic`)
-**and `system.*`/`class.*`/`sap.*`-prefixed system tags**, do **NOT** rely on
-`system.tags.governed_tags`, and apply the **same in-snapshot scope reconciliation** (keep a tag
-only if its top-level domain exists in this run's `domain_meta`; else leave the dashboard
-ungrouped — workspace tags are not catalog-scoped). Feed the kept rows into the **same** tag-graph
-assembly as tables ⇒ `origin=applied` (evidence: the "Flight Operations…" dashboard carries the
-value-less top-level key `Alaska Airlines Operations`; the probe also saw a value-carrying
-aboutness key `Field Operations=fieldops`). Bounded fan-out (~30 calls); degrade to `[]` on
-failure (MV-D43). Deterministic, sorted.
+`aboutness` keys via `transforms.is_domain_entity_tag(...)` (the Stage-2 guard built on
+`classify_tag`, MV-D51), which drops facets (`certified`, `contains_synthetic`) **and
+`system.*`/`class.*`/`sap.*`-prefixed system tags**, and does **NOT** rely on
+`system.tags.governed_tags`. **Placement mirrors Stage 2's as-built mechanism (MV-D91,
+`2841fe99`), NOT a tag-graph re-assembly:** the cluster engine drops a structure-less tag-only
+member (a tag never solo-creates a Domain, MV-D52), so a tagged entity is placed by a
+**post-cluster attach** — **reuse `materialize.agent_domain_placement(entity_rows, proposals)`
+as-is** (it is generic on `member_id`, so `dashboard:<id>` works unchanged): it matches each tag
+to the `reuse`/`reassign` proposal carrying that governed tag → `domain_id` (⇒ `origin=applied`),
+performs the in-snapshot scope reconciliation internally (an out-of-scope domain matches nothing
+⇒ the dashboard is left ungrouped, never a fabricated domain), and nests a slash key into its
+sub-domain / a value-less key onto its top-level domain. In `materialize`, call
+`_gather_entity_tags(reader, "dashboards")` → `agent_domain_placement(...)` and merge
+`{**asset_domain, **agent_domain, **dashboard_domain}` into the layout node→domain map (evidence:
+the "Flight Operations…" dashboard carries the value-less top-level key `Alaska Airlines
+Operations`; the probe also saw a value-carrying aboutness key `Field Operations=fieldops`).
+Bounded fan-out (~30 calls); degrade to `[]` on failure (MV-D43). Deterministic, sorted.
 
 **Build B — `dashboard_scopes` kwarg + kind → read edges (SECONDARY).** Add an **optional**
 `dashboard_scopes` kwarg to `graph.build_signal_graph` mirroring `agent_scopes`: emit
