@@ -41,10 +41,12 @@ BUILD A — DOMAIN (primary), reader entity_tag_assignments("dashboards"): enume
 via w.lakeview.list(); per dashboard call list_tag_assignments("dashboards", id) (SDK, or REST
 w.api_client.do("GET", f"/api/2.0/entity-tag-assignments/dashboards/{id}/tags") if the pinned
 databricks-sdk==0.117.0 lacks the method — NO dependency bump). Return rows {tag_name,
-tag_value, member_id: f"dashboard:{id}"} filtered to the domain governed-tag key(s); degrade to
-[] on failure (MV-D43). In materialize, feed them into the SAME transforms.assemble_tag_graph
-path as tables/agents ⇒ a tagged dashboard lands in its Domain/sub-domain with origin=applied.
-Sorted/deterministic.
+tag_value, member_id: f"dashboard:{id}"}. Domain-key selection is identical to Stage 2: keep a
+tag_key ONLY if transforms.classify_tag(...) (MV-D51) = aboutness (drop facets certified,
+contains_synthetic); do NOT use system.tags.governed_tags. Degrade to [] on failure (MV-D43). In
+materialize, feed the kept rows into the SAME transforms.assemble_tag_graph path as tables/agents
+⇒ a tagged dashboard lands in its domain with origin=applied (usually the value-less top-level
+key, e.g. "Alaska Airlines Operations"). Sorted/deterministic.
 
 BUILD B — READ EDGES (secondary): add an OPTIONAL dashboard_scopes kwarg to build_signal_graph
 mirroring agent_scopes (emit dashboard:<id> nodes + dashboard_scope edges; UNSET ⇒

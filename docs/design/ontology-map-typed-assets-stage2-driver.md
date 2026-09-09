@@ -30,23 +30,26 @@ before deploy.
 SPEC: docs/design/ontology-map-typed-assets-build.md §2.5/§4/§6/§7. DECISIONS:
 mv-advisor-playbook.md MV-D91, MV-D92; honor MV-D26/D43/D49/D82. Read first. Stage 1 landed.
 
-CONTEXT: Governed tags DO apply to Genie spaces, but the assignment lives behind GET
-/api/2.0/entity-tag-assignments/{entity_type}/{entity_id}/tags (SDK
-w.workspace_entity_tag_assignments.list_tag_assignments; entity_type "geniespaces"), NOT
-system.information_schema.*_tags — which is why the materializer never saw it. reader.agents()
-lists 17 spaces (list_spaces, each has id) but is taxonomy-count only. build_signal_graph
-already accepts agent_scopes={id->[fqn]} and emits agent:<id> nodes + agent_scope edges, but
-materialize never passes it. Frontend already types agent — DO NOT touch frontend.
+CONTEXT: Governed tags DO apply to Genie spaces, but the assignment lives behind the
+entity-tag-assignments API (SDK w.workspace_entity_tag_assignments.list_tag_assignments;
+entity_type "geniespaces"), NOT information_schema — which is why the materializer never saw
+it. reader.agents() lists 17 spaces (list_spaces) but is taxonomy-count only. build_signal_graph
+already accepts agent_scopes={id->[fqn]} (emits agent:<id> + agent_scope edges) but materialize
+never passes it. Frontend already types agent — DO NOT touch frontend.
 
 BUILD A — DOMAIN (primary), reader entity_tag_assignments("geniespaces"): enumerate spaces via
 list_spaces(w); per space call w.workspace_entity_tag_assignments.list_tag_assignments(
 "geniespaces", id). If the pinned databricks-sdk==0.117.0 lacks the method, call REST directly
 via w.api_client.do("GET", f"/api/2.0/entity-tag-assignments/geniespaces/{id}/tags") — NO
 dependency bump. Return rows shaped like assignments(): {tag_name, tag_value, member_id:
-f"agent:{id}"}; filter to the domain governed-tag key(s) tables use. Degrade to [] on any
-API/permission failure (MV-D43). Sorted/deterministic. In materialize, feed these rows into the
-SAME transforms.assemble_tag_graph path table assignments use so a tagged agent lands in its
-Domain/sub-domain with origin=applied.
+f"agent:{id}"}. Keep a tag_key ONLY if transforms.classify_tag(...) (MV-D51) = aboutness — drop
+facets (certified, contains_synthetic); do NOT source the allowlist from
+system.tags.governed_tags (unreliable — it returned empty despite governed tags existing). The
+tag is usually the VALUE-LESS TOP-LEVEL domain key (e.g. "Alaska Airlines Commercial") ⇒
+top-level placement; a slash key / mvm_subdomain=value nests a sub-domain like a table. Degrade
+to [] on any API/permission failure (MV-D43). Sorted/deterministic. In materialize, feed the
+kept rows into the SAME transforms.assemble_tag_graph path tables use so a tagged agent lands in
+its domain with origin=applied.
 
 BUILD B — READ EDGES (secondary), reader agent_scopes(allowlist) -> {id->sorted[fqn]} reusing
 the create/scan space->tables resolution (degrade to {}); in materialize pass
@@ -56,9 +59,8 @@ layout._label_for_node labels an agent with the space display name (thread name 
 payload if missing — additive).
 
 BUILD C — FALLBACK (optional, §6): an UNTAGGED agent may borrow the MODAL top-domain of its
-agent_scopes assets (via node_domain_id; ties by domain id), emitted origin=proposed (never
-applied). Empty scope ⇒ ungrouped. If this complicates the applied slice, skip it — ungrouped
-is honest. NO tag written.
+agent_scopes assets (node_domain_id; ties by domain id), emitted origin=proposed; empty scope ⇒
+ungrouped. Skip if it complicates the applied slice. NO tag written.
 
 HARD GUARDRAILS: additive — NO frontend, NO backend/route, NO new table/column (blob-only,
 MV-D49), NO governed-tag WRITE (read-only, MV-D26), NO new dependency (REST fallback keeps the
@@ -79,12 +81,15 @@ the diff + test summary (incl. any §2.5 probe rows you were given); a human run
 ---
 
 ## Before the run (human-gated §2.5 probe — read-only, no writes)
-Run as the job's `run_as` identity (MV-D50): pick one space id (`list_spaces`) + one dashboard
-id (`w.lakeview.list()`), call `list_tag_assignments("geniespaces"/"dashboards", id)` (SDK or
-REST `api_client.do`), and confirm the returned `tag_key`/`tag_value` carry the domain governed
-tag. Paste the rows into the run notes so Build A's tag-key filter matches reality. If the API
-is unavailable (Beta off / missing `tags` scope), Build A still ships (degrades to `[]`) and
-placement falls to the §6 `proposed` fallback until the grant lands.
+Presence is already evidenced (a Genie Agent carries 🔒 `Alaska Airlines Commercial`; a dashboard
+carries `Alaska Airlines Operations` — value-less top-level domain keys). So the probe is now a
+narrow confirmation: run as the job's `run_as` identity (MV-D50), pick one space id
+(`list_spaces`) + one dashboard id (`w.lakeview.list()`), call
+`list_tag_assignments("geniespaces"/"dashboards", id)` (SDK or REST `api_client.do`), and (a)
+capture the exact domain `tag_key` strings, (b) confirm the API is readable headlessly. Paste
+the rows into the run notes. The one real risk is access: if `run_as` lacks the `tags` scope /
+entity read, Build A still ships (degrades to `[]`) and placement falls to the §6 `proposed`
+fallback until the grant lands — close this during Stage 1.
 
 ## After the run (human-gated)
 `SKIP_FRONTEND_BUILD=1 ./scripts/deploy.sh --update` (fevm-serverless), trigger the materialize

@@ -84,12 +84,16 @@ tag plumbing.
 
 ---
 
-## §2.5. Probe-first gate (run BEFORE building Stage 2/3 — confirm the tag actually lands)
+## §2.5. Probe-first gate (run BEFORE building Stage 2/3 — capture the exact tag keys + confirm access)
 
-The whole agent/dashboard-domain design rests on one unverified assumption: that this estate's
-domain governed tag is actually **assigned to Genie spaces + dashboards** on the
-`entity-tag-assignments` surface. Confirm it on a real space + dashboard **before** we commit
-any thresholds or wire the reader — a five-minute read, no writes.
+**Presence is already evidenced** (2026-09-08 workspace screenshots): the Genie Agent "Airline
+Commercial Revenue" carries a 🔒 governed tag **`Alaska Airlines Commercial`**, and the dashboard
+"Flight Operations…" carries **`Alaska Airlines Operations`** — both **top-level domain names as
+value-less tag keys** on the `entity-tag-assignments` surface. So the probe is no longer
+"does the tag land at all?" but a narrower confirmation before we wire the reader:
+(a) capture the **exact `tag_key` strings** the reader must recognize, and (b) confirm the
+`entity-tag-assignments` API is readable **headlessly under the job `run_as`** (the one real
+remaining risk). A five-minute read, no writes.
 
 **Surface (Beta, API scope `tags`):**
 - REST: `GET /api/2.0/entity-tag-assignments/{entity_type}/{entity_id}/tags`
@@ -105,20 +109,23 @@ any thresholds or wire the reader — a five-minute read, no writes.
    (`==0.117.0`) lacks the method, hit REST directly via
    `w.api_client.do("GET", f"/api/2.0/entity-tag-assignments/{et}/{eid}/tags")` — **no**
    dependency bump (keeps the exact-pin policy).
-3. **Inspect** the returned `tag_key`/`tag_value` pairs: do they carry the **same** domain
-   governed-tag key(s) tables use (top-level domain tag + `mvm_subdomain=<value>`)?
+3. **Inspect** the returned `tag_key`/`tag_value` pairs. Expect value-less **top-level domain
+   keys** (e.g. `Alaska Airlines Commercial`), and — if a curator added them — slash sub-domain
+   keys (`…/Airport`) or `mvm_subdomain=<value>`. These sit alongside **facets** the same
+   objects/tables carry (`certified`, `contains_synthetic`); the reader must NOT treat those as
+   domains (see §4/§5 Build A — reuse the MV-D51 aboutness classifier).
 
 **Decision from the probe:**
-- **Tag present** ⇒ proceed: the reader maps these assignments into the tag graph exactly like
-  table members (§4/§5, `origin=applied`); lineage (§6) stays a fallback for untagged assets.
+- **API readable under `run_as`** (expected) ⇒ proceed: the reader maps these assignments into
+  the tag graph exactly like table members (§4/§5, `origin=applied`); lineage (§6) stays a
+  fallback for untagged assets. Record the exact domain `tag_key` strings.
 - **API/permission unavailable** (Beta not enabled, or `run_as` lacks the `tags` scope /
-  entity read) ⇒ record it, and Stage 2/3 degrade to **lineage-only placement** (§6, all
-  `origin=proposed`) until the grant lands. No stage blocks on the applied read.
-- **Tag absent** (spaces/dashboards simply aren't tagged yet in this estate) ⇒ the applied
-  path is inert-but-correct; lineage fallback carries placement until curators tag them.
+  entity read — the main open risk) ⇒ record it, and Stage 2/3 degrade to **lineage-only
+  placement** (§6, all `origin=proposed`) until the grant lands. No stage blocks on the
+  applied read; close this during Stage 1 so Stage 2 isn't gated on it.
 
 Capture the probe output (a few `TagAssignment` rows + which decision it triggered) in the
-Stage-2 driver's run notes so the thresholds/wiring are tuned to what actually exists.
+Stage-2 driver's run notes so the reader's tag-key handling is tuned to what actually exists.
 
 ---
 
@@ -165,10 +172,19 @@ exists).
 method that enumerates Genie spaces (`list_spaces(w)`) and, per space, calls
 `list_tag_assignments("geniespaces", <space_id>)` (SDK, or REST `api_client.do` fallback —
 §2.5), returning rows shaped like the `assignments()` union: `{tag_name, tag_value, member_id:
-"agent:<space_id>"}`. Filter to the domain governed-tag key(s). Feed these into the **same**
-tag-graph assembly tables use (`transforms.assemble_tag_graph` / `tag_key_of` / `tag_value_of`),
-so a tagged space lands in its Domain/sub-domain with `origin=applied`. Bounded fan-out (~17
-calls); degrade to `[]` on any API/permission failure (MV-D43). Deterministic, sorted.
+"agent:<space_id>"}`. **Domain-key selection = reuse the table path's `classify_tag(...)`
+(MV-D51): keep a `tag_key` only when it classifies as `aboutness`, dropping facets** the same
+objects carry (`certified`, `contains_synthetic`, …). Do **NOT** source the domain allowlist
+from `system.tags.governed_tags` — that catalog read is unreliable (it returned empty in the
+earlier probe despite 🔒 governed tags existing, so it degrades to `[]`); the aboutness rule is
+self-consistent with how tables already resolve domains and needs no readable governed-tags
+catalog. Feed the kept rows into the **same** tag-graph assembly tables use
+(`transforms.assemble_tag_graph` / `tag_key_of` / `tag_value_of`), so a tagged space lands in
+its domain with `origin=applied`. On these objects the tag is typically the **value-less
+top-level domain key** (evidence: `Alaska Airlines Commercial`) ⇒ the agent attaches to the
+top-level domain rollup; a slash key / `mvm_subdomain=<value>`, if present, nests it into a
+sub-domain exactly like a table. Bounded fan-out (~17 calls); degrade to `[]` on any
+API/permission failure (MV-D43). Deterministic, sorted.
 
 **Build B — reader `agent_scopes` → read edges (SECONDARY, relational overlay only).** Return
 `{agent_id → [table_fqn, …]}` (the space's configured tables; reuse the create/scan
@@ -177,7 +193,10 @@ resolution), pass `agent_scopes=` into `graph.build_signal_graph(...)` (the kwar
 domain mechanism (that is Build A). `layout` already labels `agent` nodes; confirm the label
 reads the space display name (thread it onto the node payload if missing — additive).
 
-**Domain placement:** applied tag (Build A). Untagged spaces ⇒ §6 fallback (`origin=proposed`).
+**Domain placement:** applied tag (Build A) — **usually the top-level domain** (these objects
+carry the domain key, not a sub-domain). Refining a top-level-tagged agent into a *sub-domain*
+via its read lineage is inference, so it belongs in the §6 fallback (`origin=proposed`), never
+promoted to `applied`. Untagged spaces ⇒ §6 fallback.
 
 ---
 
@@ -190,9 +209,12 @@ query. **Gated on §2.5** (same posture as Stage 2).
 **Build A — reader `entity_tag_assignments("dashboards")` → domain (PRIMARY).** Enumerate
 dashboards (`w.lakeview.list()`) and, per dashboard, call
 `list_tag_assignments("dashboards", <dashboard_id>)`, returning `{tag_name, tag_value,
-member_id: "dashboard:<id>"}` rows filtered to the domain governed-tag key(s), fed into the
-**same** tag-graph assembly as tables ⇒ `origin=applied`. Bounded fan-out (~30 calls); degrade
-to `[]` on failure (MV-D43). Deterministic, sorted.
+member_id: "dashboard:<id>"}` rows. **Domain-key selection is identical to Stage 2:** keep only
+`aboutness` keys via `classify_tag(...)` (MV-D51), drop facets (`certified`,
+`contains_synthetic`), and do **NOT** rely on `system.tags.governed_tags`. Feed the kept rows
+into the **same** tag-graph assembly as tables ⇒ `origin=applied` (evidence: the "Flight
+Operations…" dashboard carries the value-less top-level key `Alaska Airlines Operations`).
+Bounded fan-out (~30 calls); degrade to `[]` on failure (MV-D43). Deterministic, sorted.
 
 **Build B — `dashboard_scopes` kwarg + kind → read edges (SECONDARY).** Add an **optional**
 `dashboard_scopes` kwarg to `graph.build_signal_graph` mirroring `agent_scopes`: emit
@@ -202,22 +224,31 @@ datasets). Unset kwarg ⇒ byte-identical graph (MV-D43). Add a `dashboard` labe
 `layout` (`_label_for_node`) + an edge verb for `dashboard_scope` (`_verb_of` → "reads").
 Frontend already renders the `dashboard` type.
 
-**Domain placement:** applied tag (Build A). Untagged dashboards ⇒ §6 fallback.
+**Domain placement:** applied tag (Build A) — usually the top-level domain; sub-domain
+refinement from dataset lineage is `origin=proposed` (§6), never promoted to `applied`.
+Untagged dashboards ⇒ §6 fallback.
 
 ---
 
 ## §6. Fallback — derived-lineage placement for UNTAGGED agents/dashboards (labeled proposed)
 
-This is the **fallback**, not the mechanism (§4/§5 Build A is the mechanism). When an
-agent/dashboard carries **no** applied domain governed tag, it may borrow a domain from what it
-reads: take its `agent_scopes`/`dashboard_scopes` assets, look up each asset's `domain_id`
-(`node_domain_id`), and assign the **modal** top-domain (ties broken deterministically by
-domain id). Because this is inferred, not asserted, it is emitted with **`origin=proposed`**
-(renders as a dashed "Suggested" hull), so a lineage guess never masquerades as an applied
-assignment. An agent/dashboard whose scope is empty or all-untagged stays **ungrouped** (under
-the Estate root), never guessed. Zero user burden, read-only, never a tag write. This fallback
-is **optional per stage** — if it complicates the applied slice, ship applied-only first and
-add the fallback later; ungrouped is an honest current state (MV-D43).
+This is the **fallback**, not the mechanism (§4/§5 Build A is the mechanism). It covers **two**
+inferred cases, both emitted with **`origin=proposed`** (dashed "Suggested" hull) so a guess
+never masquerades as an applied assignment:
+
+1. **Untagged** agent/dashboard — borrow a domain from what it reads: take its
+   `agent_scopes`/`dashboard_scopes` assets, look up each asset's `domain_id`
+   (`node_domain_id`), and assign the **modal** top-domain (ties broken deterministically by
+   domain id).
+2. **Top-level-tagged, sub-domain refinement** — an agent/dashboard whose applied tag is only a
+   *top-level* domain (the common case — evidence in §2.5) may additionally be *suggested* into
+   a sub-domain of that same domain via the modal sub-domain of its read assets. The applied
+   top-level placement stays `applied`; only the sub-domain nesting is `proposed`.
+
+An agent/dashboard whose scope is empty or all-untagged stays **ungrouped** (under the Estate
+root), never guessed. Zero user burden, read-only, never a tag write. This fallback is
+**optional per stage** — if it complicates the applied slice, ship applied-only first and add
+the fallback later; ungrouped is an honest current state (MV-D43).
 
 ---
 
