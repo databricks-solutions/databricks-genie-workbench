@@ -56,14 +56,22 @@ per-phase build specs / drivers remain the *content* source of truth, and
      human deploy-verify eyeball.
 
 ### P1 — Quality scoreboard (gates all later tuning)
-2. **§10 Evaluation & trust harness (MV-D59)** · ✏️ UNDRAFTED
-   - Exists only as a stub: `ontology-curation-redesign-build.md` §10 + MV-D59.
-   - Scope: offline harness — gold-standard P/R/F vs aligned reference, structural
-     health (singleton/orphan/depth/branching), cheap reference-free LLM sanity
-     monitor, human spot-review queue. No new dependency (MV-D45).
-   - **Next action:** draft `ontology-eval-harness-{build,driver}.md`, then build.
-   - **Why here:** MV-D59 gates every subsequent signal/threshold change, so it
-     should precede further Stage/threshold tuning and Phase-4 alignment.
+2. **§10 Evaluation & trust harness (MV-D59)** · ⚙️ SCORER BUILT-OFFLINE · GATE DRAFTED
+   - **Scorer — BUILT + committed** (`7120a6df`, 28 tests green): `ontology/eval_harness.py`
+     — `assemble_eval_report` + `compare_reports` (gold-standard P/R/F vs aligned reference,
+     structural health singleton/orphan/depth/branching, injectable reference-free LLM sanity
+     monitor, seeded spot-review queue, BEFORE/AFTER deltas + regression warnings). Driver of
+     record: `ontology-eval-harness-driver.md`.
+   - **Gap — it is INERT:** referenced only by its own test; nothing reads a materialized run
+     into it and nothing runs it, so it can't yet gate anything.
+   - **DRAFTED — the wiring & gate** · driver `ontology-eval-harness-gate-driver.md`: read-only
+     reader (`genie_ont_domains`/`genie_ont_members` → scorer shape), a runnable
+     `jobs/run_ontology_eval.py` that emits+persists a report JSON (no new table, MV-D49),
+     baseline-vs-current gating (non-zero exit on regression), and an optional airline gold
+     reference to light up P/R/F. Wheel-only, additive, no new dep (MV-D45). **Build-ready.**
+   - **Next action:** run the gate driver, then human baseline-capture at the deploy gate.
+   - **Why here:** MV-D59 gates every subsequent signal/threshold change, so the gate must be
+     runnable before further Stage/threshold tuning, Phase-4 alignment, and **P6**.
 
 ### P2 — Drafted + independent (parallelizable read-only win)
 3. **Phase 3e / 17k — Estate Graph ("Ontology Map")** · 📝 DRAFTED
