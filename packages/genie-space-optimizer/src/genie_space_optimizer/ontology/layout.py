@@ -390,6 +390,28 @@ def build_graph_snapshot(
     # edges, ``_top_of_asset``) but never become display nodes, so the cap ranks real
     # assets instead of tag plumbing. Skipped nodes keep their layout index ``i`` (the
     # igraph vertex set is unchanged), so coordinates for surviving nodes are identical.
+    # Build C stat-meta fold (MV-D90 follow-up): a folded metric_view's hover counts must
+    # ride the tag-membership ``asset:<fqn>`` display node that survives the fold, but the
+    # ``mv:<fqn>`` measure hub carries NO ``measure_count``/``dimension_count`` attribute in
+    # the live producer (those meta keys are read-only in ``_META_FIELDS_BY_KIND`` — nothing
+    # sets them). The ONE live source of the measure count is the baked snippet index
+    # (``snippets_in["measures"]``, the same source the MV-D88 edge-detail counts), keyed by
+    # bare FQN so it merges onto the ``asset:<fqn>`` node. Reveal-don't-invent (MV-D82):
+    # ``dimensions`` has no producer source, so it is omitted (never fabricated). The hub
+    # meta bag is still precomputed and merged first, so IF a future producer stamps stats
+    # onto the ``mv:`` hub they win — but today it is empty and the snippet count carries.
+    mv_hub_meta_by_fqn: dict[str, dict[str, str]] = {}
+    for node in nodes:
+        nid = node.get("id", "")
+        if nid.startswith("mv:"):
+            hub_meta = _node_meta(node)
+            if hub_meta:
+                mv_hub_meta_by_fqn[nid[len("mv:"):]] = hub_meta
+    mv_measures_by_fqn: dict[str, int] = {}
+    if snippets_in:
+        for mv_fqn, measures in (snippets_in.get("measures") or {}).items():
+            mv_measures_by_fqn[mv_fqn] = len(measures)
+
     asset_nodes = []
     node_sizes = {}
     for i, node in enumerate(nodes):
@@ -410,6 +432,22 @@ def build_graph_snapshot(
         domain_id = node_domain_id.get(node_id) or node_domain_id.get(_fqn_of(node_id))
         cost = node.get("cost")
 
+        # MV-D86 (Lane D2): the compact type-appropriate meta bag. For a folded metric_view
+        # the hover counts don't live on the ``asset:<fqn>`` survivor, so hydrate them
+        # (Build C): merge any hub meta first (future-proof, empty today), then fall the
+        # ``measures`` count back to the baked snippet index — the only live source. A
+        # value already present (hub or node) wins. Reveal-don't-invent: no snippet ⇒
+        # ``measures`` omitted; ``dimensions`` has no source so it never appears.
+        meta = _node_meta(node)
+        if kind == "metric_view":
+            hub_meta = mv_hub_meta_by_fqn.get(_fqn_of(node_id))
+            if hub_meta:
+                meta = {**hub_meta, **(meta or {})}
+            n_measures = mv_measures_by_fqn.get(_fqn_of(node_id))
+            if n_measures and not (meta or {}).get("measures"):
+                meta = {**(meta or {}), "measures": str(n_measures)}
+            meta = meta or None
+
         asset_nodes.append({
             "id": node_id,
             "label": _label_for_node(node_id, kind, node),
@@ -424,7 +462,7 @@ def build_graph_snapshot(
             # inventory carried no signal). Additive + degrade-clean — Lane P surfaces
             # these in the hover-snippet + inspector when present (MV-D85).
             "description": _clean_description(node.get("description")),
-            "meta": _node_meta(node),
+            "meta": meta,
         })
 
     # Top-domain resolver for an asset-level node id (Build C rel_class). Resolves the

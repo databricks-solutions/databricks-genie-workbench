@@ -134,8 +134,11 @@ const GLYPHS: Record<NodeType, string> = {
  * inspector, breadcrumb, and a hover `<title>`, so nothing is lost.
  */
 const LABEL_MAX = 16
-function clampLabel(s: string): string {
-  return s.length > LABEL_MAX ? `${s.slice(0, LABEL_MAX - 1).trimEnd()}…` : s
+// Containers (org/domain/subdomain) are the north-star's headline tier, so they get a
+// longer budget before ellipsis — their names are what the curator reads first (R12d).
+const LABEL_MAX_CONTAINER = 24
+function clampLabel(s: string, max: number = LABEL_MAX): string {
+  return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s
 }
 
 /** Generic plain-language copy by type — the fallback when a node has no real description. */
@@ -1111,10 +1114,18 @@ export function EstateGraph({
                         </g>
                       )
                     }
-                    const caption = clampLabel(n.displayName)
                     const fill = tokens.typeFill[n.type]
                     const tint = domainTintFor(tokens, n.domainId)
                     const isContainer = n.type === "org" || n.type === "domain" || n.type === "subdomain"
+                    const caption = clampLabel(n.displayName, isContainer ? LABEL_MAX_CONTAINER : LABEL_MAX)
+                    // Tiered label typography (north-star §5/R21e): the container tier reads
+                    // bigger + bold so business areas dominate the leaf assets; the plate is
+                    // sized to the font so a larger caption never hard-clips its chip.
+                    const labelFont =
+                      n.type === "org" ? 15 : n.type === "domain" ? 13 : n.type === "subdomain" ? 12 : 10.5
+                    const charW = labelFont * 0.62
+                    const plateW = caption.length * charW + 10
+                    const plateH = labelFont + 7
                     const ring =
                       selectedId === n.id
                         ? tokens.selectedRing
@@ -1178,15 +1189,15 @@ export function EstateGraph({
                         {/* Label plate (ellipsized caption; full name in the hover title) */}
                         <g transform={`translate(0,${n.radius + 12})`}>
                           <rect
-                            x={-caption.length * 3.2 - 4}
-                            y={-9}
-                            width={caption.length * 6.4 + 8}
-                            height={16}
+                            x={-plateW / 2}
+                            y={-plateH / 2}
+                            width={plateW}
+                            height={plateH}
                             rx={3}
                             fill={tokens.plateBg}
                             fillOpacity={tokens.plateOpacity}
                           />
-                          <text textAnchor="middle" dy="3" fontSize={n.type === "org" ? 13 : n.type === "domain" ? 12 : 10.5} fontWeight={isContainer ? 600 : 500} fill={tokens.plateText}>
+                          <text textAnchor="middle" dy={labelFont * 0.35} fontSize={labelFont} fontWeight={isContainer ? 700 : 500} fill={tokens.plateText}>
                             {caption}
                           </text>
                         </g>

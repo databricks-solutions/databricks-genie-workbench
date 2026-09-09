@@ -114,44 +114,49 @@ const DARK: GraphTokens = {
   domainTint: DARK_DOMAIN_TINT,
 }
 
+// LIGHT theme authored to the north-star mockup (docs/design/mockups/
+// genie-ontology-knowledge-graph-v2.html): a warm Oat ground, NAVY-ink containers
+// (org/domain/subdomain) for a strong tier read, and vivid Databricks brand hues for
+// the leaf asset types. This replaces the earlier muted cool-slate set that made
+// containers and labels hard to distinguish on screen.
 const LIGHT: GraphTokens = {
-  dotGrid: "rgba(100, 116, 139, 0.10)",
-  ground: "#F1F5F9",
+  dotGrid: "rgba(139, 125, 107, 0.14)", // warm taupe grid (mockup --grid #E8E4DC)
+  ground: "#F9F7F4", // Oat Light
   plateBg: "#FFFFFF",
-  plateOpacity: 0.9,
-  plateText: "#0F172A",
+  plateOpacity: 0.92,
+  plateText: "#1B3139", // Navy ink — high-contrast labels
   typeFill: {
-    org: "#334155",
-    domain: "#475569",
-    subdomain: "#64748B",
-    agent: "#DC2626", // Lava (deeper on light) — agents only
-    dashboard: "#2563EB",
-    metric_view: "#059669",
-    measure: "#D97706",
-    table: "#64748B",
+    org: "#0B2026", // near-black navy
+    domain: "#1B3139", // Navy
+    subdomain: "#1B5162", // Navy-700
+    agent: "#FF3621", // Lava — agents only
+    dashboard: "#4359FF", // Blue
+    metric_view: "#00A972", // Green
+    measure: "#FFAB00", // Amber
+    table: "#618794", // Slate
   },
   glyphStroke: "#FFFFFF",
   nodeStroke: "#FFFFFF",
   ringOpacity: 0.6,
-  selectedRing: "#0F172A",
+  selectedRing: "#1B3139",
   searchRing: "#0891B2",
-  hoverRing: "#0F172A",
-  spine: "#94A3B8",
-  spineOpacity: 0.55,
-  sharedEdge: "#64748B",
-  xdomEdge: "#9F1239",
-  verbText: "#475569",
-  verbXdomText: "#9F1239",
+  hoverRing: "#1B3139",
+  spine: "#C9C2B6", // warm taupe hierarchy stroke (mockup .link)
+  spineOpacity: 0.85,
+  sharedEdge: "#618794", // slate — within-domain shared key
+  xdomEdge: "#98102A", // Maroon — cross-domain
+  verbText: "#445B66", // ink-2
+  verbXdomText: "#98102A",
   trayDivider: "#CBD5E1",
-  trayText: "#475569",
-  trayNodeFill: "#E2E8F0",
-  trayNodeStroke: "#94A3B8",
-  proposalStroke: "#64748B",
-  proposalText: "#334155",
-  bandHigh: "#059669",
+  trayText: "#445B66",
+  trayNodeFill: "#EFEBE3",
+  trayNodeStroke: "#B8AE9E",
+  proposalStroke: "#8CA0A8",
+  proposalText: "#1B3139",
+  bandHigh: "#00A972",
   bandMedium: "#D97706",
-  bandLow: "#64748B",
-  badgeFill: "#0F172A",
+  bandLow: "#8CA0A8",
+  badgeFill: "#1B3139",
   badgeText: "#F8FAFC",
   domainTint: LIGHT_DOMAIN_TINT,
 }

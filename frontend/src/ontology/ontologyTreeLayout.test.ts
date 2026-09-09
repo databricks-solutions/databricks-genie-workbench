@@ -122,7 +122,7 @@ describe("layoutTree", () => {
   it("bows xdom cross-links wider than shared ones", () => {
     const model = buildEstateModel(graph())
     // Expand the MV too so its child table (a cross-link endpoint) is visible.
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets)
     const shared = l.crossLinks.find((c) => c.relClass === "shared")
     const xdom = l.crossLinks.find((c) => c.relClass === "xdom")
@@ -136,7 +136,7 @@ describe("layoutTree", () => {
 
   it("trims cross-link endpoints off the node discs so the arrowhead clears the target (R25)", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets)
     const c = l.crossLinks[0]
     expect(c).toBeDefined()
@@ -254,7 +254,7 @@ describe("layoutTree — per-parent child cap (R3)", () => {
 describe("layoutTree — cross-link gating (R4)", () => {
   it("draws every visible arc UNLABELLED when nothing is focused and under the cap", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"]) // reveal t:sales endpoints
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"]) // reveal t:sales endpoints
     const l = layoutTree(model, exp, noOffsets)
     expect(l.crossLinks.length).toBe(2)
     expect(l.crossLinks.every((c) => c.showLabel === false)).toBe(true)
@@ -263,7 +263,7 @@ describe("layoutTree — cross-link gating (R4)", () => {
 
   it("suppresses the overlay mat above the cap and reports the count (+N links)", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets, { ...DEFAULT_LAYOUT, crossLinkCap: 1 })
     expect(l.crossLinks.length).toBe(0)
     expect(l.crossLinkOverflow).toBe(2)
@@ -271,7 +271,7 @@ describe("layoutTree — cross-link gating (R4)", () => {
 
   it("reveals ONLY the focused node's arcs, and labels them (labels only on the active arc)", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     // Focus t:cal — endpoint of the single 'joins calendar' shared arc only.
     const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:cal" })
     expect(l.crossLinks.length).toBe(1)
@@ -301,7 +301,7 @@ describe("contentBounds — fit-to-bounds (R12)", () => {
 
   it("includes a focused node's verb-arc extent so arcs never fall outside the fit (R12b)", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:sales" })
     expect(l.crossLinks.length).toBeGreaterThan(0)
     const b = contentBounds(l, { tree: true })
@@ -335,13 +335,21 @@ describe("ancestorPath + initialExpanded", () => {
     expect(path).toContain("mv:a")
   })
 
-  it("opens org + domains + subdomains initially, not deeper", () => {
+  it("opens org + domains only — sub-domains visible but collapsed, assets hidden", () => {
     const model = buildEstateModel(graph())
     const exp = initialExpanded(model)
     expect(exp.has("org")).toBe(true)
     expect(exp.has("d_fin")).toBe(true)
-    expect(exp.has("s_rev")).toBe(true)
+    // Sub-domain is visible (its domain is open) but NOT expanded → assets stay hidden.
+    expect(exp.has("s_rev")).toBe(false)
     expect(exp.has("mv:a")).toBe(false)
+    // Estate → Domain → Sub-domain renders; the sub-domain is a collapsed container.
+    const laid = layoutTree(model, exp, noOffsets)
+    const ids = new Set(laid.nodes.map((n) => n.id))
+    expect(ids.has("s_rev")).toBe(true)
+    expect(ids.has("t:sales")).toBe(false)
+    const sub = laid.nodes.find((n) => n.id === "s_rev")!
+    expect(sub.collapsed).toBe(true)
   })
 })
 
@@ -349,7 +357,7 @@ describe("ancestorPath + initialExpanded", () => {
 describe("layoutTree — rel-type verb focus (R25)", () => {
   it("reveals every visible arc of a verb, labelled, and suppresses the rest", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { verbFocus: "also queried with" })
     expect(l.crossLinks.length).toBe(1)
     expect(l.crossLinks[0].verb).toBe("also queried with")
@@ -358,14 +366,14 @@ describe("layoutTree — rel-type verb focus (R25)", () => {
 
   it("verb focus overrides the cap so a rel-type reads even in a dense estate", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets, { ...DEFAULT_LAYOUT, crossLinkCap: 0 }, { verbFocus: "joins calendar" })
     expect(l.crossLinks.map((c) => c.verb)).toEqual(["joins calendar"])
   })
 
   it("node focusId takes precedence over verbFocus (a selection is more specific)", () => {
     const model = buildEstateModel(graph())
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:cal", verbFocus: "also queried with" })
     // t:cal only touches the shared 'joins calendar' arc — verbFocus is ignored.
     expect(l.crossLinks.map((c) => c.verb)).toEqual(["joins calendar"])
@@ -377,7 +385,7 @@ describe("layoutTree — rel-type verb focus (R25)", () => {
       { src: "t:sales", dst: "t:cal", kind: "join_key", verb: "joins calendar", rel_class: "shared", detail: { Shares: "date_key" } },
     ]
     const model = buildEstateModel(g)
-    const exp = new Set([...initialExpanded(model), "mv:a"])
+    const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:cal" })
     expect(l.crossLinks[0].detail).toEqual({ Shares: "date_key" })
   })

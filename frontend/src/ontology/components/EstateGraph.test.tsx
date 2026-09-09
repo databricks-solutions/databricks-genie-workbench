@@ -143,7 +143,32 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
   })
 
   it("de-chromes containers: org/domain/subdomain carry NO glyph; leaf assets keep theirs (R23)", () => {
-    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    // The default view opens org + domains only (Estate → Domain → Sub-domain), so a
+    // sub-domain-nested asset would be hidden. Attach a metric view at the DOMAIN tier so a
+    // leaf asset is visible by default and its glyph can be asserted.
+    const g: OntologyGraph = {
+      root: node({ id: "org", label: "Acme", kind: "org" }),
+      domains: {
+        nodes: [
+          node({ id: "d_fin", label: "Acme Finance", kind: "domain", origin: "applied" }),
+          node({ id: "s_rev", label: "Revenue", kind: "subdomain", parent_id: "d_fin", origin: "applied" }),
+        ],
+        edges: [],
+        truncated: false,
+      },
+      assets: {
+        nodes: [
+          node({ id: "mv:top", label: "net sales", kind: "metric_view", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+        ],
+        edges: [],
+        truncated: false,
+      },
+      layout: "tree",
+      node_count: 4,
+      edge_count: 0,
+      state: "fresh",
+    }
+    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
     // Container glyph paths (from GLYPHS) must be gone.
     const ORG_GLYPH = "M12 3 3 8v8l9 5 9-5V8z"
     const DOMAIN_GLYPH = "M4 7h16M4 12h16M4 17h16"
@@ -151,7 +176,7 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     expect(html).not.toContain(ORG_GLYPH)
     expect(html).not.toContain(DOMAIN_GLYPH)
     expect(html).not.toContain(SUBDOMAIN_GLYPH)
-    // A leaf asset (the visible metric view) keeps its type glyph.
+    // A leaf asset (the domain-attached metric view) keeps its type glyph.
     const MV_GLYPH = "M4 20V10M10 20V4M16 20v-8M22 20H2"
     expect(html).toContain(MV_GLYPH)
   })

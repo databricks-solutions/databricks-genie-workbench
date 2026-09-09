@@ -406,6 +406,63 @@ def test_mv_membership_gives_asset_a_containment_parent():
     assert fact["attach_level"] == "asset"
 
 
+def test_folded_metric_view_inherits_stat_meta_from_hub():
+    """MV-D90 follow-up (obs #2): ``measure_count``/``dimension_count`` ride the ``mv:``
+    hub, not the tag-membership ``asset:<fqn>`` survivor. The fold must merge the hub's
+    meta bag onto the typed node so hover counts render (else meta is empty)."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.m.rev_mv", "kind": "metric_view"},  # display node — no stats
+            {"id": "mv:c.m.rev_mv", "kind": "metric_view",      # hub carries the stats
+             "measure_count": 7, "dimension_count": 3},
+        ],
+        "edges": [],
+    }
+    blob = _snap(sig, {"c.m.rev_mv": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}})
+    survivor = _assets_by_id(blob)["asset:c.m.rev_mv"]
+    assert "mv:c.m.rev_mv" not in _assets_by_id(blob)
+    assert survivor["meta"] == {"measures": "7", "dimensions": "3"}
+
+
+def test_folded_metric_view_measures_from_snippet_index():
+    """MV-D90 follow-up (LIVE path): the ``mv:`` hub carries NO ``measure_count`` attribute
+    in the real producer (that meta key is read-only — nothing sets it), so the folded MV
+    must source its ``measures`` count from the baked snippet index instead. Deploy-verify
+    (run ``4902d757``) proved the hub-only merge rendered ``meta=None`` on all 25 MVs."""
+    sig = {
+        "nodes": [
+            {"id": "asset:c.m.rev_mv", "kind": "metric_view"},  # tagged MV survivor, no stats
+            {"id": "mv:c.m.rev_mv", "kind": "metric_view"},     # hub — no stat attrs (as-live)
+        ],
+        "edges": [],
+    }
+    # snippets_in["measures"] is keyed by BARE fqn (materialize.py) and lists the MV's measures.
+    blob = _snap(sig, {"c.m.rev_mv": "d1"},
+                 domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
+                 snippets_in={"measures": {"c.m.rev_mv": [{"ref": "m1"}, {"ref": "m2"}, {"ref": "m3"}]},
+                              "pages": {}})
+    survivor = _assets_by_id(blob)["asset:c.m.rev_mv"]
+    # measures count lands from the snippet index; dimensions has no source ⇒ omitted (not fabricated).
+    assert survivor["meta"] == {"measures": "3"}
+
+
+def test_untagged_metric_view_hub_alone_yields_no_display_node():
+    """An UNTAGGED MV is a hub-only node (no ``asset:<fqn>`` survivor) — it drops from the
+    display entirely (Build A), so there is nothing to merge stat-meta onto (no fabrication)."""
+    sig = {
+        "nodes": [
+            {"id": "mv:c.m.orphan_mv", "kind": "metric_view",
+             "measure_count": 4, "dimension_count": 2},
+        ],
+        "edges": [],
+    }
+    blob = _snap(sig, {}, domain_meta={})
+    ids = _assets_by_id(blob)
+    assert "mv:c.m.orphan_mv" not in ids
+    assert "asset:c.m.orphan_mv" not in ids
+
+
 def test_table_read_by_two_mvs_keeps_only_strongest_parent_surplus_stays_edge():
     """Build B (canonical-parent) + Build C: a table read by two MVs keeps ONE tree
     parent (higher weight wins); both memberships remain edges with verb "reads". Each

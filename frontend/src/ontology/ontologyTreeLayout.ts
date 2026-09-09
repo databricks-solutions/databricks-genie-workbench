@@ -591,12 +591,18 @@ export function layoutHash(layout: Layout): string {
   return h.toString(16)
 }
 
-/** Initial expansion (§5): org + domains + sub-domains open; assets visible, deeper collapsed. */
+/**
+ * Initial / reset expansion (§5, owner directive): open org + domains ONLY, so the default
+ * view reads exactly three tiers — `Estate → Domain → Sub-domain`. Sub-domains are VISIBLE
+ * (their parent domain is expanded) but stay COLLAPSED containers (a `+N` badge), so assets
+ * are NOT revealed by default — the curator drills in on demand. A domain whose only children
+ * are assets (no sub-domain) still shows them, but nothing deeper auto-expands.
+ */
 export function initialExpanded(model: EstateModel): Set<string> {
   const set = new Set<string>()
   if (model.root) set.add(model.root.id)
   for (const n of model.nodes) {
-    if (n.type === "org" || n.type === "domain" || n.type === "subdomain") set.add(n.id)
+    if (n.type === "org" || n.type === "domain") set.add(n.id)
   }
   return set
 }
