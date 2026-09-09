@@ -828,7 +828,7 @@ class CreateGenieAgent:
         fallback, which would clobber create-time or human-authored wording.
         """
         explicit = CreateGenieAgent._explicit_selection("description", selections, tool_args, session)
-        return explicit[:MAX_DESCRIPTION_CHARS] if explicit else ""
+        return str(explicit)[:MAX_DESCRIPTION_CHARS] if explicit else ""
 
     @staticmethod
     def _derive_description(
@@ -847,7 +847,7 @@ class CreateGenieAgent:
         # 1-3. Explicit intent (selections / tool_args / history user selection)
         explicit = CreateGenieAgent._explicit_selection("description", selections, tool_args, session)
         if explicit:
-            return explicit[:MAX_DESCRIPTION_CHARS]
+            return str(explicit)[:MAX_DESCRIPTION_CHARS]
         # 4. From the latest plan result in history (LLM-suggested at plan time)
         for m in reversed(session.history):
             if m["role"] != "tool":

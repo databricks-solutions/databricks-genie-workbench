@@ -777,6 +777,14 @@ TOOL_DEFINITIONS = [
                             "required": ["identifier"],
                         },
                     },
+                    "suggested_description": {
+                        "type": "string",
+                        "description": (
+                            "A concise one-line description of the agent (what it answers "
+                            "questions about), used as the created space's description. "
+                            "Keep it under ~2000 characters."
+                        ),
+                    },
                 },
                 "required": ["sample_questions", "example_sqls", "benchmarks"],
             },
@@ -2246,11 +2254,15 @@ def _present_plan(
     join_specs: list[dict] | None = None,
     benchmarks: list[dict] | None = None,
     metric_views: list[dict] | None = None,
+    suggested_description: str | None = None,
 ) -> dict:
     """Pass structured plan data through for frontend rendering.
 
-    Parameters are identical to generate_config so the plan is
-    a 1:1 preview of the config that will be created.
+    Parameters are identical to generate_config (plus the optional
+    ``suggested_description``) so the plan is a 1:1 preview of the config
+    that will be created. ``suggested_description`` is surfaced on the result
+    so the CREATE path (_derive_description) can honor the LLM's intended
+    space description on the dense-plan path, matching the parallel path.
     """
     sections: dict[str, Any] = {}
 
@@ -2288,6 +2300,8 @@ def _present_plan(
     }
     if warnings:
         result["warnings"] = warnings
+    if suggested_description:
+        result["suggested_description"] = suggested_description
     return result
 
 

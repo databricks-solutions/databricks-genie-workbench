@@ -12,6 +12,7 @@ from backend.services.create_agent_tools import (
     _base_col_type,
     _enum_value_upper,
     _generate_config,
+    _present_plan,
     _reconcile_metric_view_sources,
     _validate_config,
     _TYPE_HINT_MAP,
@@ -459,3 +460,24 @@ class TestUpdateSpaceDescription:
 
         result = _update_space("space1")
         assert result["success"] is False
+
+
+class TestPresentPlanSuggestedDescription:
+    """_present_plan surfaces suggested_description so the dense-plan path (routed
+    directly through present_plan, not parallel generate_plan) can honor the LLM's
+    intended space description on CREATE."""
+
+    def test_suggested_description_included_when_passed(self):
+        result = _present_plan(
+            tables=[{"identifier": "c.s.t"}],
+            suggested_description="Answers revenue questions for US retail.",
+        )
+        assert result["suggested_description"] == "Answers revenue questions for US retail."
+
+    def test_suggested_description_omitted_when_absent(self):
+        result = _present_plan(tables=[{"identifier": "c.s.t"}])
+        assert "suggested_description" not in result
+
+    def test_suggested_description_omitted_when_empty(self):
+        result = _present_plan(tables=[{"identifier": "c.s.t"}], suggested_description="")
+        assert "suggested_description" not in result

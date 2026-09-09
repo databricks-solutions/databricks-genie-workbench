@@ -371,6 +371,15 @@ class TestDeriveDescription:
         session = _make_session(space_config={"data_sources": {}})
         assert CreateGenieAgent._derive_description(None, None, session) == ""
 
+    def test_non_str_explicit_is_coerced_not_crashed(self):
+        """LLM tool args can carry a non-str description — slice must not raise."""
+        session = _make_session()
+        # int would raise TypeError on subscript without str() coercion
+        assert CreateGenieAgent._derive_description(None, {"description": 12345}, session) == "12345"
+        # dict mis-slices without coercion; coerced form is a string, no crash
+        desc = CreateGenieAgent._derive_description(None, {"description": {"a": 1}}, session)
+        assert isinstance(desc, str) and desc
+
 
 class TestExplicitDescription:
     """_explicit_description (update path) returns explicit intent only — never a derived fallback."""
@@ -409,6 +418,11 @@ class TestExplicitDescription:
         session = _make_session()
         long = "x" * (MAX_DESCRIPTION_CHARS + 50)
         assert len(CreateGenieAgent._explicit_description({"description": long}, None, session)) == MAX_DESCRIPTION_CHARS
+
+    def test_non_str_explicit_is_coerced_not_crashed(self):
+        """LLM tool args can carry a non-str description — slice must not raise."""
+        session = _make_session()
+        assert CreateGenieAgent._explicit_description(None, {"description": 12345}, session) == "12345"
 
 
 class TestPurposeFromConfig:
