@@ -83,16 +83,24 @@ per-phase build specs / drivers remain the *content* source of truth, and
    - **Next action:** run/record the bakeoff decision → build the offline slice.
    - Independent of 17h/17i; runnable any time after P0.
 
-### P3 — External enrichment (needs drafting)
-4. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · ✏️ UNDRAFTED
-   - Architecture only: MV-D38 (Context Pack, provenance firewall, zero user burden)
-     + MV-D58/§9 (Vibe industry-model alignment, typed correspondences). **No build
-     or driver doc exists.**
-   - **Next action:** draft `ontology-phase4-external-{build,driver}.md` (fetch the
-     matching Databricks Vibe airline/travel reference model; pin the match contract:
-     string+embedding seed → structural propagation → semantic sanity; typed
-     `exact/narrower/broader/derived/not-equivalent`; T2/T3 provenance-gated, off by
-     default per MV-D44). Then build.
+### P3 — External enrichment
+4. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 📝 DRAFTED (Stage A build-ready)
+   - **Build spec:** `ontology-phase4-external-build.md` (§1 → §12), staged **A → B → C**
+     with a human STOP between each, all DEFAULT OFF (MV-D44), estate-only byte-identical when
+     off. Honors MV-D38 (Context Pack + provenance firewall + zero burden), MV-D46/D47 (AI
+     Gateway MCP Context Sources registry, firewalled by class), MV-D45 (no net-new service).
+   - **Stage A (safe backbone) — build-ready:** `ontology-phase4-external-stageA-driver.md`
+     (paste-ready, 3.9k). Registry + firewall-by-class + capability probe + `external_context`
+     config + a real tier-5 banner; **NO egress, no Context Pack** (those are Stage B). Inert
+     and safe to land first.
+   - **Stage B / C** — specified in the build doc; drivers authored once Stage A lands (B = the
+     batch Context Pack resolver + `system.ai.web_search` MCP + LeakageOracle self-validation +
+     the two plug-points; C = tier-5 Context Sources panel + `GRANT EXECUTE`/OAuth scopes).
+   - **§9 industry alignment (MV-D58) — already drafted:** `ontology-industry-alignment-driver.md`
+     (typed `exact/narrower/broader/derived/not-equivalent`, T2/T3 provenance-gated). *Consumes*
+     the Stage B pack seam — schedule **after Stage B**.
+   - **Next action:** run `ontology-phase4-external-stageA-driver.md` in Goal Mode → STOP →
+     human deploy-verify → author the Stage B driver.
 
 ### P4 — The one write path (drafted) — **NOW THE #1 BUILD (post-4.1f pivot)**
 5. **Phase 5 / 17i — consented `SET TAG` apply (L9)** · 📝 DRAFTED — **QUEUED NEXT**

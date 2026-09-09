@@ -4286,6 +4286,19 @@ STOP for the proposal-quality review checkpoint.
 
 ### Prompt 17h — Phase 4: external context / Context Pack tier via AI Gateway MCP context sources (MV-D38 / MV-D44 / MV-D46 / MV-D47)
 
+> **Build-ready (mirrors the Phase-1/2/3 pairs).** The section-by-section spec is
+> `docs/design/ontology-phase4-external-build.md` (§1 scope → §12 DoD), staged **A → B → C**
+> with a human STOP between each. **Stage A** — the external-context **safe backbone** (Context
+> Sources registry + firewall-by-class + capability probe + `external_context` config + a real
+> tier-5 banner, **DEFAULT OFF, NO egress**, estate-only byte-identical) — has a paste-ready
+> Goal-Mode launcher: `docs/design/ontology-phase4-external-stageA-driver.md`. Stage B (the batch
+> Context Pack resolver + `system.ai.web_search` AI-Gateway MCP + LeakageOracle self-validation +
+> the two plug-points) and Stage C (tier-5 Context Sources panel + `GRANT EXECUTE`/OAuth scopes)
+> are specified in the build doc and get their own drivers once Stage A lands. **§9 industry
+> alignment** (MV-D58) is **already drafted** — `docs/design/ontology-industry-alignment-driver.md`
+> — and *consumes* the Stage B pack seam; schedule it after Stage B. The block below is the
+> register summary; the build spec is the source of truth.
+
 ```
 Architecture §6 (external context + Context Sources). Opt-in, DEFAULT OFF (MV-D44).
 Inherit the whole MV-D38 contract: external context is a naming / description /
