@@ -369,11 +369,14 @@ class CreateGenieAgent:
                         config = result["config"]
 
                         if session.space_id:
-                            # Space already exists → update it (include display_name if provided)
+                            # Space already exists → update it (include display metadata if provided)
                             update_args: dict = {"space_id": session.space_id}
                             dn = self._derive_display_name(None, tool_args, session)
+                            desc = self._derive_description(None, tool_args, session, config)
                             if dn and dn != "New Genie Agent":
                                 update_args["display_name"] = dn
+                            if desc:
+                                update_args["description"] = desc
                             yield {"event": "tool_call", "data": {"tool": "update_space", "args": update_args}}
                             u_result = await loop.run_in_executor(
                                 None, run_in_context(handle_tool_call, "update_space", update_args, config)
@@ -397,7 +400,8 @@ class CreateGenieAgent:
 
                             if not v_result.get("errors"):
                                 dn = self._derive_display_name(None, tool_args, session)
-                                async for event in self._create_space_with_repair(session, config, dn):
+                                desc = self._derive_description(None, tool_args, session, config)
+                                async for event in self._create_space_with_repair(session, config, dn, desc):
                                     yield event
                                 tools_used.append("create_space")
 
@@ -784,11 +788,82 @@ class CreateGenieAgent:
             return " + ".join(n for n in short if n) + " Agent"
         return "New Genie Agent"
 
+    @staticmethod
+    def _derive_description(
+        selections: dict | None,
+        tool_args: dict | None,
+        session: AgentSession,
+        config: dict | None = None,
+    ) -> str:
+        """Derive a space description from the best available source.
+
+        Falls back to "" — create_genie_space then uses its generic default.
+        """
+        # 1. Explicit from selections
+        if selections and selections.get("description"):
+            return selections["description"]
+        # 2. From tool_args (LLM may have specified it)
+        if tool_args and tool_args.get("description"):
+            return tool_args["description"]
+        # 3. From any user selection in history (scan all, not just last)
+        for m in reversed(session.history):
+            if m["role"] != "user":
+                continue
+            sel = CreateGenieAgent._extract_selections(m.get("content", ""))
+            if sel and sel.get("description"):
+                return sel["description"]
+        # 4. From the latest plan result in history (LLM-suggested at plan time)
+        for m in reversed(session.history):
+            if m["role"] != "tool":
+                continue
+            try:
+                r = json.loads(m.get("content", "{}"))
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(r, dict) and r.get("suggested_description"):
+                return r["suggested_description"]
+        # 5. Distill the config's ## PURPOSE section
+        purpose = CreateGenieAgent._purpose_from_config(config or session.space_config)
+        if purpose:
+            return purpose
+        return ""
+
+    @staticmethod
+    def _purpose_from_config(config: dict | None) -> str:
+        """Build a one-line description from the ## PURPOSE section of text_instructions."""
+        if not config:
+            return ""
+        ti = (config.get("instructions") or {}).get("text_instructions") or []
+        chunks: list[str] = []
+        for entry in ti:
+            if isinstance(entry, dict):
+                chunks.extend(str(c) for c in (entry.get("content") or []))
+            elif isinstance(entry, str):
+                chunks.append(entry)
+        blob = "\n".join(chunks)
+        m = re.search(
+            r"^##\s+PURPOSE\s*\n(.*?)(?=^##\s|\Z)",
+            blob,
+            re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        )
+        if not m:
+            return ""
+        lines = []
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                line = line[2:].strip()
+            if line:
+                lines.append(line)
+        # Defensive cap — the description is a short summary, not the full instructions.
+        return " ".join(lines).strip()[:500].strip()
+
     async def _create_space_with_repair(
         self,
         session: AgentSession,
         config: dict,
         display_name: str,
+        description: str = "",
     ) -> AsyncGenerator[dict, None]:
         """Run create_space with automatic LLM repair on config errors.
 
@@ -798,6 +873,9 @@ class CreateGenieAgent:
         Idempotent: if session.space_id is already set (space already created),
         returns immediately without calling the API again (#67).
         """
+        create_args: dict = {"display_name": display_name}
+        if description:
+            create_args["description"] = description
         # Guard: space already created in this session — skip duplicate API call (#67).
         # Emits both tool_result AND "created" because direct callers (e.g. _fast_create)
         # bypass the tool-call loop, so no prior "created" event was sent to the frontend.
@@ -821,9 +899,10 @@ class CreateGenieAgent:
         from backend.services.create_agent_tools import handle_tool_call
         loop = asyncio.get_event_loop()
 
-        yield {"event": "tool_call", "data": {"tool": "create_space", "args": {"display_name": display_name}}}
+        yield {"event": "tool_call", "data": {"tool": "create_space", "args": create_args}}
+        # The dispatcher injects config into its arguments; keep a fresh dict per attempt.
         result = await loop.run_in_executor(
-            None, run_in_context(handle_tool_call, "create_space", {"display_name": display_name}, config)
+            None, run_in_context(handle_tool_call, "create_space", create_args.copy(), config)
         )
 
         # If creation failed with a config error, try LLM-assisted repair once
@@ -841,7 +920,7 @@ class CreateGenieAgent:
                     session.space_config = config
                     yield {"event": "thinking", "data": {"message": "Retrying agent creation with repaired config...", "step": "create", "round": 0}}
                     result = await loop.run_in_executor(
-                        None, run_in_context(handle_tool_call, "create_space", {"display_name": display_name}, config)
+                        None, run_in_context(handle_tool_call, "create_space", create_args.copy(), config)
                     )
 
         yield {"event": "tool_result", "data": {"tool": "create_space", "result": result}}
@@ -911,12 +990,15 @@ class CreateGenieAgent:
 
             config = config_result.get("config")
             session.space_config = config
+            description = self._derive_description(selections, None, session, config)
 
             if session.space_id:
-                # Space already exists → update it (include display_name for rename support)
+                # Space already exists → update it (include display metadata)
                 update_args: dict = {"space_id": session.space_id}
                 if display_name and display_name != "New Genie Agent":
                     update_args["display_name"] = display_name
+                if description:
+                    update_args["description"] = description
                 yield {"event": "tool_call", "data": {"tool": "update_space", "args": update_args}}
                 u_result = await loop.run_in_executor(
                     None, run_in_context(handle_tool_call, "update_space", update_args, config)
@@ -941,7 +1023,7 @@ class CreateGenieAgent:
                     return
 
                 # Step 3: create_space (with LLM repair on failure)
-                async for event in self._create_space_with_repair(session, config, display_name):
+                async for event in self._create_space_with_repair(session, config, display_name, description):
                     yield event
 
                 if session.space_id:
@@ -1230,6 +1312,8 @@ class CreateGenieAgent:
         result = _present_plan(**plan_args)
         if raw_plan.get("suggested_display_name"):
             result["suggested_display_name"] = raw_plan["suggested_display_name"]
+        if raw_plan.get("suggested_description"):
+            result["suggested_description"] = raw_plan["suggested_description"]
         if warnings:
             result["_generation_warnings"] = warnings
         return result

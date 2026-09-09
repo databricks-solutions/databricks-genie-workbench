@@ -91,6 +91,7 @@ class CreateSpaceRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=255)
     serialized_space: dict
     parent_path: str | None = Field(None, max_length=1000)
+    description: str = Field("", max_length=2000)
 
 
 class CreateSpaceResponse(BaseModel):

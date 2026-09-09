@@ -1,18 +1,20 @@
 """Tests for CreateAgent idempotency guards (backend/services/create_agent.py)."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 from backend.services.create_agent import CreateGenieAgent
 
 
-def _make_session(space_id=None, space_url=None):
+def _make_session(space_id=None, space_url=None, history=None, space_config=None):
     """Build a minimal mock session with the fields CreateAgent checks."""
     return SimpleNamespace(
         space_id=space_id,
         space_url=space_url,
-        space_config={"data_sources": {"tables": []}},
+        space_config=space_config if space_config is not None else {"data_sources": {"tables": []}},
         llm_model=None,
+        history=history or [],
     )
 
 
@@ -120,3 +122,216 @@ class TestCreateSpaceIdempotency:
             e["event"] == "error" and e["data"]["message"] == "Invalid export proto: still duplicated"
             for e in events
         )
+
+
+class TestCreateSpaceDescription:
+    """_create_space_with_repair threads the description into create_space args."""
+
+    def test_repair_retry_uses_repaired_config_and_preserves_description(self, monkeypatch):
+        original = {"data_sources": {"tables": [{"identifier": "c.s.original"}]}}
+        repaired = {"data_sources": {"tables": [{"identifier": "c.s.repaired"}]}}
+        calls = []
+
+        def fake_create_space(display_name, description="", config=None):
+            calls.append((display_name, description, config))
+            if config != repaired:
+                return {"success": False, "error": "Invalid configuration"}
+            return {"success": True, "space_id": "s1", "space_url": "https://example.com/s1"}
+
+        # Keep the real dispatcher: it injects config into the arguments dict.
+        monkeypatch.setattr("backend.services.create_agent_tools._create_space", fake_create_space)
+        agent = CreateGenieAgent.__new__(CreateGenieAgent)
+        agent._repair_config = lambda config, err, model=None: repaired
+        session = _make_session(space_config=original)
+
+        async def run():
+            return [event async for event in agent._create_space_with_repair(
+                session, original, "Test Space", "Answers revenue questions."
+            )]
+
+        events = asyncio.run(run())
+
+        assert calls == [
+            ("Test Space", "Answers revenue questions.", original),
+            ("Test Space", "Answers revenue questions.", repaired),
+        ]
+        assert session.space_id == "s1"
+        assert session.space_config == repaired
+        assert any(event["event"] == "created" for event in events)
+        tool_call = next(event for event in events if event["event"] == "tool_call")
+        assert tool_call["data"]["args"] == {
+            "display_name": "Test Space", "description": "Answers revenue questions."
+        }
+
+    def test_description_passed_to_create_space(self, monkeypatch):
+        async def run():
+            agent = CreateGenieAgent.__new__(CreateGenieAgent)
+            session = _make_session(space_id=None)
+
+            events = []
+            async for event in agent._create_space_with_repair(
+                session, {}, "Test Space", "Answers revenue questions."
+            ):
+                events.append(event)
+            return events
+
+        calls = []
+
+        def fake_handle_tool_call(name, arguments, session_config=None):
+            calls.append(arguments)
+            return {"success": True, "space_id": "s1", "space_url": "https://example.com/s1", "display_name": "Test Space"}
+
+        monkeypatch.setattr("backend.services.create_agent_tools.handle_tool_call", fake_handle_tool_call)
+
+        events = asyncio.run(run())
+
+        assert calls[0]["description"] == "Answers revenue questions."
+        tool_call = next(e for e in events if e["event"] == "tool_call")
+        assert tool_call["data"]["args"]["description"] == "Answers revenue questions."
+
+    def test_description_omitted_when_empty(self, monkeypatch):
+        async def run():
+            agent = CreateGenieAgent.__new__(CreateGenieAgent)
+            session = _make_session(space_id=None)
+
+            events = []
+            async for event in agent._create_space_with_repair(session, {}, "Test Space"):
+                events.append(event)
+            return events
+
+        calls = []
+
+        def fake_handle_tool_call(name, arguments, session_config=None):
+            calls.append(arguments)
+            return {"success": True, "space_id": "s1", "space_url": "https://example.com/s1", "display_name": "Test Space"}
+
+        monkeypatch.setattr("backend.services.create_agent_tools.handle_tool_call", fake_handle_tool_call)
+
+        asyncio.run(run())
+
+        assert "description" not in calls[0]
+
+
+class TestExistingSpaceDescriptionUpdate:
+    """Existing-space fast approvals propagate description metadata."""
+
+    def test_fast_create_updates_description(self, monkeypatch):
+        generated_config = {"data_sources": {"tables": [{"identifier": "c.s.t"}]}}
+        calls = []
+
+        def fake_handle_tool_call(name, arguments, session_config=None):
+            calls.append((name, arguments.copy(), session_config))
+            if name == "generate_config":
+                return {"config": generated_config}
+            if name == "update_space":
+                return {"success": True, "space_id": "s1", "url": "https://example.com/s1"}
+            raise AssertionError(f"Unexpected tool call: {name}")
+
+        monkeypatch.setattr("backend.services.create_agent_tools.handle_tool_call", fake_handle_tool_call)
+        agent = CreateGenieAgent.__new__(CreateGenieAgent)
+        session = _make_session(space_id="s1", space_url="https://example.com/s1")
+        selections = {
+            "edited_plan": {"tables": [{"identifier": "c.s.t"}]},
+            "display_name": "Revenue Agent",
+            "description": "Answers revenue questions.",
+        }
+
+        async def run():
+            return [event async for event in agent._fast_create(session, selections)]
+
+        events = asyncio.run(run())
+
+        update_call = next(call for call in calls if call[0] == "update_space")
+        assert update_call[1] == {
+            "space_id": "s1",
+            "display_name": "Revenue Agent",
+            "description": "Answers revenue questions.",
+        }
+        assert update_call[2] == generated_config
+        assert any(event["event"] == "updated" for event in events)
+
+
+class TestDeriveDescription:
+    """_derive_description fallback ordering: selections > tool_args > history > PURPOSE > ""."""
+
+    def test_selections_win(self):
+        session = _make_session()
+        desc = CreateGenieAgent._derive_description(
+            {"description": "from selections"}, {"description": "from args"}, session
+        )
+        assert desc == "from selections"
+
+    def test_tool_args_second(self):
+        session = _make_session()
+        desc = CreateGenieAgent._derive_description(None, {"description": "from args"}, session)
+        assert desc == "from args"
+
+    def test_history_selections(self):
+        session = _make_session(history=[
+            {"role": "user", "content": 'go ahead [User selections: {"description": "from history"}]'},
+        ])
+        desc = CreateGenieAgent._derive_description(None, None, session)
+        assert desc == "from history"
+
+    def test_history_plan_suggestion(self):
+        session = _make_session(history=[
+            {"role": "tool", "content": json.dumps({"suggested_description": "from plan"})},
+        ])
+        desc = CreateGenieAgent._derive_description(None, None, session)
+        assert desc == "from plan"
+
+    def test_chat_approval_preserves_structured_edit_over_regenerated_plan(self):
+        session = _make_session(history=[
+            {"role": "tool", "content": json.dumps({"suggested_description": "Original suggestion"})},
+            {"role": "user", "content": 'The agent description should be: Edited description [User selections: {"description": "Edited description"}]'},
+            {"role": "tool", "content": json.dumps({"suggested_description": "New suggestion"})},
+            {"role": "user", "content": "go ahead and create it"},
+        ])
+        assert CreateGenieAgent._derive_description(None, None, session) == "Edited description"
+
+    def test_purpose_fallback_from_config(self):
+        config = {
+            "instructions": {
+                "text_instructions": [{
+                    "id": "abc",
+                    "content": [
+                        "## PURPOSE\n- Answer revenue questions for the US retail team.\n- Audience: merchandising managers.\n",
+                        "## CONSTRAINTS\n- Never show PII columns.\n",
+                    ],
+                }]
+            }
+        }
+        session = _make_session()
+        desc = CreateGenieAgent._derive_description(None, None, session, config)
+        assert desc == "Answer revenue questions for the US retail team. Audience: merchandising managers."
+
+    def test_purpose_fallback_from_joined_string(self):
+        """The plan editor sends text_instructions as one joined string — sections must still split."""
+        config = {
+            "instructions": {
+                "text_instructions": [{
+                    "id": "abc",
+                    "content": ["## PURPOSE\n- Answers sales questions.\n\n## CONSTRAINTS\n- No PII.\n"],
+                }]
+            }
+        }
+        session = _make_session()
+        desc = CreateGenieAgent._derive_description(None, None, session, config)
+        assert desc == "Answers sales questions."
+
+    def test_purpose_fallback_uses_session_config(self):
+        config = {
+            "instructions": {
+                "text_instructions": [{
+                    "id": "abc",
+                    "content": ["## Purpose\n- Session config purpose.\n"],
+                }]
+            }
+        }
+        session = _make_session(space_config=config)
+        desc = CreateGenieAgent._derive_description(None, None, session, None)
+        assert desc == "Session config purpose."
+
+    def test_empty_when_nothing_available(self):
+        session = _make_session(space_config={"data_sources": {}})
+        assert CreateGenieAgent._derive_description(None, None, session) == ""

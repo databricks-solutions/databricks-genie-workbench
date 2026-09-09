@@ -382,3 +382,50 @@ class TestUpdateConfigAddFilter:
         )
         filters = result["config"]["instructions"]["sql_snippets"]["filters"]
         assert filters[0]["sql"] == ["status = 'active'"]
+
+
+class TestUpdateSpaceDescription:
+    """_update_space PATCHes the top-level description field when provided."""
+
+    def _mock_client(self, monkeypatch, bodies):
+        class FakeAPI:
+            def do(self, method, path, body=None, **kwargs):
+                bodies.append({"method": method, "path": path, "body": body})
+                return {}
+
+        class FakeClient:
+            api_client = FakeAPI()
+
+        monkeypatch.setattr("backend.services.auth.get_workspace_client", lambda: FakeClient())
+        monkeypatch.setattr("backend.services.auth.get_databricks_host", lambda: "https://example.com")
+        monkeypatch.setattr("backend.services.create_agent_tools.get_sql_warehouse_id", lambda: None)
+
+    def test_description_included_when_provided(self, monkeypatch):
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+
+        result = _update_space("space1", description="Answers revenue questions.")
+
+        assert result["success"] is True
+        assert bodies[0]["method"] == "PATCH"
+        assert bodies[0]["body"]["description"] == "Answers revenue questions."
+        assert "serialized_space" not in bodies[0]["body"]
+
+    def test_description_omitted_when_not_provided(self, monkeypatch):
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+
+        result = _update_space("space1", display_name="New Name")
+
+        assert result["success"] is True
+        assert "description" not in bodies[0]["body"]
+
+    def test_error_when_nothing_to_update(self):
+        from backend.services.create_agent_tools import _update_space
+
+        result = _update_space("space1")
+        assert result["success"] is False

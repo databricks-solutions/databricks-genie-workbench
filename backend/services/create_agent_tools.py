@@ -817,13 +817,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_space",
-            "description": "Update an existing Genie Agent — config, display name, or both. Use this instead of create_space when the agent has already been created. Supports renaming.",
+            "description": "Update an existing Genie Agent — config, display name, description, or any combination. Use this instead of create_space when the agent has already been created. Supports renaming.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "space_id": {"type": "string", "description": "The ID of the existing Genie Agent to update"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
                     "display_name": {"type": "string", "description": "New display name for the agent (optional — only if renaming)"},
+                    "description": {"type": "string", "description": "New description for the agent (optional — only if the user asks to change it)"},
                 },
                 "required": ["space_id"],
             },
@@ -3405,10 +3406,10 @@ def _create_space(display_name: str, description: str = "", config: dict | None 
 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
-def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None) -> dict:
-    """Update an existing Genie Agent with a new configuration and/or name."""
-    if not config and not display_name:
-        return {"success": False, "error": "No config or display_name provided"}
+def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None, description: str | None = None) -> dict:
+    """Update an existing Genie Agent with a new configuration, name, and/or description."""
+    if not config and not display_name and not description:
+        return {"success": False, "error": "No config, display_name, or description provided"}
     try:
         from backend.services.auth import get_workspace_client, get_databricks_host
         from backend.genie_creator import _enforce_constraints, _clean_config
@@ -3423,6 +3424,9 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
 
         if display_name:
             body["display_name"] = display_name
+
+        if description:
+            body["description"] = description
 
         warehouse_id = get_sql_warehouse_id()
         if warehouse_id:
