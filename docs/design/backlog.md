@@ -48,8 +48,10 @@ per-phase build specs / drivers remain the *content* source of truth, and
      hand-rolled rAF glide on expand/collapse (nodes AND edges tween together), transitioned
      Fit/Reset camera — **no new npm dep**, reduced-motion aware, harness renders the final
      frame. Doubles as the render-side **scale** lever (see "Scale hardening" below).
-   - **Still open (tiny, DRAFTED as chat "Run 1"):** `useTheme` multi-instance staleness fix
-     (map palette must flip live with the toggle) + `FreshnessControls` reload-on-refresh.
+   - **DRAFTED — UX papercuts "Run 1"** · driver `ontology-ux-papercuts-driver.md`: `useTheme`
+     multi-instance staleness fix (map node/edge/plate palette must flip live with the toggle;
+     the background already does, `5e3ff17b`) + `FreshnessControls` reload-on-refresh-complete.
+     Frontend-only, no dep.
    - **Next action:** run `ontology-map-buttery-interactions-driver.md` in Goal Mode → STOP →
      human deploy-verify eyeball.
 
