@@ -1007,3 +1007,80 @@ def test_layout_places_agent_node_in_its_applied_domain():
     assert agent["kind"] == "agent" and agent["domain_id"] == "d1"
     dom = {d["id"]: d for d in blob["domains"]["nodes"]}
     assert dom["d1"]["origin"] == "applied"
+
+
+# --- Ontology Map Stage 3: Dashboards as first-class nodes (MV-D92) ---
+
+
+def test_dashboard_scopes_emit_dashboard_node_and_scope_edges():
+    """build_signal_graph with dashboard_scopes emits a ``dashboard:<id>`` node (kind
+    dashboard) + a ``dashboard_scope`` edge to each read asset (the relational overlay)."""
+    sig = graph.build_signal_graph(
+        {"tags": []}, dashboard_scopes={"db1": ["c.ops.flights", "c.ops.legs"]},
+    )
+    dash = [n for n in sig["nodes"] if n["kind"] == "dashboard"]
+    assert [n["id"] for n in dash] == ["dashboard:db1"]
+    scope = [(e["src"], e["dst"]) for e in sig["edges"] if e["kind"] == "dashboard_scope"]
+    assert scope == [("dashboard:db1", "asset:c.ops.flights"), ("dashboard:db1", "asset:c.ops.legs")]
+
+
+def test_dashboard_scopes_unset_is_byte_identical_scaffold():
+    """Guardrail: unset/empty dashboard_scopes ⇒ byte-identical graph (MV-D43)."""
+    base = {"tags": [{"tag_key": "Operations", "members": [{"fqn": "c.s.a"}]}]}
+    ts = "2026-01-01T00:00:00+00:00"
+    a = graph.build_signal_graph(base, [("c.s.a", "c.s.b")], as_of=ts)
+    b = graph.build_signal_graph(base, [("c.s.a", "c.s.b")], dashboard_scopes={}, as_of=ts)
+    c = graph.build_signal_graph(base, [("c.s.a", "c.s.b")], dashboard_scopes=None, dashboard_names=None, as_of=ts)
+    assert a == b == c
+
+
+def test_empty_scope_dashboard_still_gets_a_node():
+    """A tagged-but-scopeless dashboard still gets its ``dashboard:<id>`` node (no edges)
+    so it can be placed by its applied tag / shown ungrouped (MV-D92)."""
+    sig = graph.build_signal_graph({"tags": []}, dashboard_scopes={"db1": []})
+    assert [n["id"] for n in sig["nodes"] if n["kind"] == "dashboard"] == ["dashboard:db1"]
+    assert not [e for e in sig["edges"] if e["kind"] == "dashboard_scope"]
+
+
+def test_dashboard_names_thread_label_onto_node_additively():
+    """dashboard_names thread the display name onto the node; absent ⇒ no label key."""
+    named = graph.build_signal_graph(
+        {"tags": []}, dashboard_scopes={"db1": ["c.s.a"]}, dashboard_names={"db1": "Flight Operations"},
+    )
+    node = next(n for n in named["nodes"] if n["id"] == "dashboard:db1")
+    assert node["label"] == "Flight Operations"
+    plain = graph.build_signal_graph({"tags": []}, dashboard_scopes={"db1": ["c.s.a"]})
+    assert "label" not in next(n for n in plain["nodes"] if n["id"] == "dashboard:db1")
+
+
+def test_verb_of_dashboard_scope_is_reads():
+    """layout labels a ``dashboard_scope`` edge with the "reads" verb (MV-D92)."""
+    assert layout._verb_of("dashboard_scope") == "reads"
+
+
+def test_layout_labels_dashboard_with_name():
+    """layout uses the node-carried label (the dashboard name) for a dashboard; a nameless
+    dashboard node degrades to the id-strip fallback."""
+    sig = graph.build_signal_graph(
+        {"tags": []}, dashboard_scopes={"db1": ["c.ops.flights"], "db2": ["c.ops.flights"]},
+        dashboard_names={"db1": "Flight Operations"},
+    )
+    blob = _snap(sig, {"dashboard:db1": "d1", "dashboard:db2": "d1", "c.ops.flights": "d1"},
+                 domain_meta={"d1": {"name": "Operations", "parent_id": None, "origin": "applied"}})
+    labels = {n["id"]: n["label"] for n in blob["assets"]["nodes"] if n["kind"] == "dashboard"}
+    assert labels["dashboard:db1"] == "Flight Operations"   # threaded name
+    assert labels["dashboard:db2"] == "db2"                 # id fallback (no name)
+
+
+def test_layout_places_dashboard_node_in_its_applied_domain():
+    """A ``dashboard:<id>`` node whose node_domain_id maps to an applied domain rolls up in
+    that domain with origin=applied (same placement mechanism as a tagged table/agent)."""
+    sig = graph.build_signal_graph(
+        {"tags": []}, dashboard_scopes={"db1": ["c.ops.flights"]}, dashboard_names={"db1": "Ops Dash"},
+    )
+    blob = _snap(sig, {"dashboard:db1": "d1", "c.ops.flights": "d1"},
+                 domain_meta={"d1": {"name": "Operations", "parent_id": None, "origin": "applied"}})
+    dash = next(n for n in blob["assets"]["nodes"] if n["id"] == "dashboard:db1")
+    assert dash["kind"] == "dashboard" and dash["domain_id"] == "d1"
+    dom = {d["id"]: d for d in blob["domains"]["nodes"]}
+    assert dom["d1"]["origin"] == "applied"

@@ -37,6 +37,8 @@ def build_signal_graph(
     co_query_edges: Iterable[tuple] | None = None,
     agent_scopes: dict[str, list[str]] | None = None,
     agent_names: dict[str, str] | None = None,
+    dashboard_scopes: dict[str, list[str]] | None = None,
+    dashboard_names: dict[str, str] | None = None,
     costs: dict[str, float] | None = None,
     semantic_sim_edges: Iterable[tuple] | None = None,
     join_key_edges: Iterable[tuple] | None = None,
@@ -140,6 +142,22 @@ def build_signal_graph(
         for fqn in fqns:
             add_asset(fqn)
             add_edge(agent_node, f"asset:{fqn}", "agent_scope", "agent_scope")
+
+    # Dashboard scope (dashboard → asset the dashboard's datasets read). Mirrors the
+    # agent overlay exactly (Stage 3, MV-D92): a dashboard with an EMPTY scope still gets
+    # its ``dashboard:<id>`` node (no edges) so a tagged-but-scopeless dashboard still
+    # lands on the map. ``dashboard_names`` (optional) threads the display name onto the
+    # node ADDITIVELY. UNSET ⇒ byte-identical graph for every pre-Stage-3 caller (MV-D43).
+    dnames = dashboard_names or {}
+    for dashboard_id, fqns in (dashboard_scopes or {}).items():
+        dashboard_node = f"dashboard:{dashboard_id}"
+        node = add_node(dashboard_node, "dashboard")
+        label = dnames.get(dashboard_id)
+        if label and "label" not in node:
+            node["label"] = str(label)
+        for fqn in fqns:
+            add_asset(fqn)
+            add_edge(dashboard_node, f"asset:{fqn}", "dashboard_scope", "dashboard_scope")
 
     # Semantic-similarity edges contributed by L3 (``er.py``). Accepts ``(a, b)``
     # or ``(a, b, score)``; nodes are assumed already present but added defensively.

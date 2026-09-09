@@ -399,28 +399,57 @@ class SparkSystemTableReader:
         sorted/deterministic. Bounded fan-out (~17 calls); ANY API/permission failure
         degrades to [] (MV-D43), and scope reconciliation is done in the wheel."""
         from genie_space_optimizer.ontology import transforms
+        et = entity_type or "geniespaces"
         try:
             w = make_workspace_client()
-            from genie_space_optimizer.common.genie_client import list_spaces
-            spaces = list_spaces(w)
-        except Exception as e:  # noqa: BLE001 — no spaces / no client ⇒ no applied rows
-            _log("entity_tag_assignments enumerate skipped", error=str(e))
+            entities = self._enumerate_tag_entities(w, et)
+        except Exception as e:  # noqa: BLE001 — no entities / no client ⇒ no applied rows
+            _log("entity_tag_assignments enumerate skipped", entity_type=et, error=str(e))
             return []
-        et = entity_type or "geniespaces"
         out: list[dict[str, Any]] = []
-        for s in spaces:
-            sid = s.get("id")
-            if not sid:
+        for entity_id, member_id in entities:
+            if not entity_id:
                 continue
-            for tag_key, tag_value in self._list_entity_tags(w, et, str(sid)):
+            for tag_key, tag_value in self._list_entity_tags(w, et, str(entity_id)):
                 if not transforms.is_domain_entity_tag(tag_key):
                     continue
-                row: dict[str, Any] = {"tag_name": tag_key, "member_id": f"agent:{sid}"}
+                row: dict[str, Any] = {"tag_name": tag_key, "member_id": member_id}
                 if tag_value is not None and str(tag_value) != "":
                     row["tag_value"] = str(tag_value)
                 out.append(row)
         # Deterministic (MV-D82): stable by (member, tag, value).
         return sorted(out, key=lambda r: (r["member_id"], r["tag_name"], str(r.get("tag_value") or "")))
+
+    def _enumerate_tag_entities(self, w: Any, entity_type: str) -> list[tuple[str, str]]:
+        """``[(entity_id, member_id)]`` for the entity-tag fan-out — dispatched by entity
+        type so the SAME per-entity tag read (``_list_entity_tags``) + keep-filter serves
+        both stages. ``geniespaces`` enumerates Genie spaces (``list_spaces`` → member
+        ``agent:<id>``, Stage 2); ``dashboards`` enumerates Lakeview dashboards
+        (``w.lakeview.list()`` → member ``dashboard:<id>``, Stage 3, MV-D92). An id is coerced
+        to str; a missing id is dropped by the caller."""
+        if entity_type == "dashboards":
+            return [(did, f"dashboard:{did}") for did, _name in self._list_dashboards(w)]
+        from genie_space_optimizer.common.genie_client import list_spaces
+        return [(str(s.get("id")), f"agent:{s.get('id')}") for s in list_spaces(w) if s.get("id")]
+
+    def _list_dashboards(self, w: Any) -> list[tuple[str, str]]:
+        """``[(dashboard_id, display_name)]`` from ``w.lakeview.list()`` (Stage 3, MV-D92) —
+        the single enumeration reused by the entity-tag fan-out, ``dashboard_scopes`` and
+        ``dashboard_names``. Tolerates SDK objects or dicts; degrades to [] on any failure
+        (MV-D43)."""
+        try:
+            listing = w.lakeview.list()
+        except Exception as e:  # noqa: BLE001 — no dashboards / no access ⇒ none
+            _log("lakeview list skipped", error=str(e))
+            return []
+        out: list[tuple[str, str]] = []
+        for d in listing or []:
+            did = getattr(d, "dashboard_id", None) if not isinstance(d, dict) else d.get("dashboard_id")
+            if not did:
+                continue
+            name = getattr(d, "display_name", None) if not isinstance(d, dict) else d.get("display_name")
+            out.append((str(did), str(name or did)))
+        return out
 
     def _list_entity_tags(self, w: Any, entity_type: str, entity_id: str) -> list[tuple[str, str | None]]:
         """One entity's ``(tag_key, tag_value)`` pairs — SDK first, REST fallback, else []
@@ -499,6 +528,58 @@ class SparkSystemTableReader:
             }
         except Exception as e:  # noqa: BLE001
             _log("agent_names read skipped", error=str(e))
+            return {}
+
+    # ── Stage 3 (MV-D92): Lakeview Dashboards as first-class nodes ───────────────
+    def dashboard_scopes(self, allowlist: list[str]) -> dict[str, list[str]]:
+        """Read-edge overlay (MV-D92 Build B): ``{dashboard_id -> sorted[table_fqn]}`` — the
+        tables/MVs each Lakeview dashboard's datasets read, resolved from dataset lineage
+        (``system.access.table_lineage`` keyed by ``entity_metadata.dashboard_id``, the same
+        table GenieWatch reads). Scoped to the allowlisted catalogs so an out-of-scope table
+        never draws an edge. EVERY enumerated dashboard is a key (a dashboard with no readable
+        lineage maps to ``[]`` so it still gets a ``dashboard:<id>`` node). ANY failure degrades
+        to {} ⇒ byte-identical graph (MV-D43). Mirrors ``agent_scopes``."""
+        try:
+            w = make_workspace_client()
+            dashboards = self._list_dashboards(w)
+        except Exception as e:  # noqa: BLE001
+            _log("dashboard_scopes enumerate skipped", error=str(e))
+            return {}
+        cats = {str(c).strip() for c in (allowlist or []) if str(c).strip()}
+
+        def _in_scope(fqn: str) -> bool:
+            return not cats or (str(fqn).split(".", 1)[0] in cats)
+
+        lineage: dict[str, set[str]] = {}
+        try:
+            for r in _rows(
+                "SELECT entity_metadata.dashboard_id AS dashboard_id, "
+                "source_table_full_name AS full_name "
+                "FROM system.access.table_lineage "
+                "WHERE entity_metadata.dashboard_id IS NOT NULL "
+                "AND source_table_full_name IS NOT NULL "
+                "GROUP BY 1, 2"
+            ):
+                did, fqn = r.get("dashboard_id"), r.get("full_name")
+                if did and fqn and _in_scope(str(fqn)):
+                    lineage.setdefault(str(did), set()).add(str(fqn))
+        except Exception as e:  # noqa: BLE001 — no lineage grant ⇒ nodes with no read edges
+            _log("dashboard_scopes lineage read skipped", error=str(e))
+            lineage = {}
+
+        out: dict[str, list[str]] = {}
+        for did, _name in dashboards:
+            out[str(did)] = sorted(lineage.get(str(did), set()))
+        return dict(sorted(out.items()))
+
+    def dashboard_names(self) -> dict[str, str]:
+        """``{dashboard_id -> display_name}`` so the map labels a dashboard node with its name
+        (a raw id is not human-readable). Degrades to {} ⇒ id fallback (MV-D43)."""
+        try:
+            w = make_workspace_client()
+            return {did: name for did, name in self._list_dashboards(w) if did}
+        except Exception as e:  # noqa: BLE001
+            _log("dashboard_names read skipped", error=str(e))
             return {}
 
     def lineage_edges(self, allowlist: list[str]) -> list[tuple[str, str]]:

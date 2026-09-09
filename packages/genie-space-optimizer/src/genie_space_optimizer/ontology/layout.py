@@ -59,6 +59,7 @@ _VERB_BY_KIND = {
     "mv_membership": "reads",
     "lineage_adjacency": "reads",
     "agent_scope": "uses",
+    "dashboard_scope": "reads",
     "join_key": "shares",
     "co_query": "also queried with",
     "semantic_sim": "similar to",

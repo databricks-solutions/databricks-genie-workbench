@@ -61,6 +61,14 @@ class MaterializeReader(Protocol):
     def entity_tag_assignments(self, entity_type: str) -> list[dict[str, Any]]: ...
     def agent_scopes(self, allowlist: list[str]) -> dict[str, list[str]]: ...
     def agent_names(self) -> dict[str, str]: ...
+    # Stage-3 Dashboard placement (MV-D92) — all optional, same posture as the Stage-2
+    # agent methods above. ``entity_tag_assignments("dashboards")`` reads the applied
+    # governed tag off each Lakeview dashboard; ``dashboard_scopes`` are the
+    # dashboard→table read edges (from dataset lineage); ``dashboard_names`` map dashboard
+    # id → display name for the label. An older reader degrades: no dashboard nodes / no
+    # applied placement, byte-identical (MV-D43).
+    def dashboard_scopes(self, allowlist: list[str]) -> dict[str, list[str]]: ...
+    def dashboard_names(self) -> dict[str, str]: ...
     # Stage-1 asset typing (MV-D90) — optional; the wheel calls it defensively (a reader
     # without it degrades to every tagged member typed ``table``, byte-identical to the
     # pre-Stage-1 output, MV-D43). ``{fqn -> table_type}`` from ``information_schema.tables``.
@@ -392,6 +400,35 @@ def _gather_agent_names(reader: Any) -> dict[str, str]:
         return {}
 
 
+def _gather_dashboard_scopes(reader: Any, allowlist: list[str]) -> dict[str, list[str]]:
+    """Stage 3 (MV-D92) read-edge overlay: ``{dashboard_id -> sorted[table_fqn]}`` for the
+    ``dashboard_scopes`` kwarg of ``build_signal_graph``. Defensive: an older reader, or any
+    failure, degrades to {} ⇒ byte-identical graph (MV-D43)."""
+    fn = getattr(reader, "dashboard_scopes", None)
+    if fn is None:
+        return {}
+    try:
+        got = fn(allowlist) or {}
+        return {str(k): [str(x) for x in (v or [])] for k, v in dict(got).items()}
+    except Exception as exc:  # noqa: BLE001 — a missing scope read never fails the run
+        logger.info("ontology dashboard_scopes unavailable (%s)", exc)
+        return {}
+
+
+def _gather_dashboard_names(reader: Any) -> dict[str, str]:
+    """Stage 3 (MV-D92): ``{dashboard_id -> display_name}`` so ``layout`` labels a dashboard
+    node with its name (a raw id is not human-readable). Defensive: absent/failed ⇒ {}
+    ⇒ the label degrades to the id (MV-D43)."""
+    fn = getattr(reader, "dashboard_names", None)
+    if fn is None:
+        return {}
+    try:
+        return {str(k): str(v) for k, v in dict(fn() or {}).items() if k and v}
+    except Exception as exc:  # noqa: BLE001 — a missing name map never fails the run
+        logger.info("ontology dashboard_names unavailable (%s)", exc)
+        return {}
+
+
 def _gather_usage(reader: Any, allowlist: list[str]) -> dict[str, float]:
     """The L2 usage/cost signal (fqn → pre-normalized [0,1] demand) for the L6 blend,
     if the reader surfaces it, else empty (MV-D43 degrade — a reader without it just
@@ -573,10 +610,18 @@ def run_materialize(
         # its Genie space display name. Empty scopes ⇒ byte-identical graph (MV-D43).
         agent_scopes = _gather_agent_scopes(reader, allowlist)
         agent_names = _gather_agent_names(reader)
+        # Stage 3 (MV-D92) read-edge overlay: the dashboard→table scopes emit
+        # ``dashboard:<id>`` nodes + ``dashboard_scope`` edges (a relational overlay, NOT
+        # the domain mechanism — that is the applied-tag placement below), mirroring the
+        # agent overlay. Empty scopes ⇒ byte-identical graph (MV-D43).
+        dashboard_scopes = _gather_dashboard_scopes(reader, allowlist)
+        dashboard_names = _gather_dashboard_names(reader)
         signal_graph = graph.build_signal_graph(
             graph_struct, reader.lineage_edges(allowlist),
             agent_scopes=agent_scopes,
             agent_names=agent_names,
+            dashboard_scopes=dashboard_scopes,
+            dashboard_names=dashboard_names,
             join_key_edges=structural["join_key_edges"],
             mv_membership=structural["mv_membership"],
             schema_affinity=structural["schema_affinity"],
@@ -769,8 +814,17 @@ def run_materialize(
         # untouched — agents ride only the layout's node→domain map (MV-D43/D49/D82).
         entity_tags = _gather_entity_tags(reader, "geniespaces")
         agent_domain = agent_domain_placement(entity_tags, proposals)
+        # Stage 3 (MV-D92) APPLIED placement: identical mechanism to the agent placement
+        # above — each Lakeview dashboard's applied governed tag (read off the
+        # entity-tag-assignments API for the ``dashboards`` entity, NOT information_schema)
+        # maps onto the domain_id its tables produced, so the ``dashboard:<id>`` node rolls
+        # up ``origin=applied``. Out-of-scope/untagged ⇒ absent here ⇒ ungrouped (MV-D43).
+        # ``agent_domain_placement`` is generic on ``member_id`` (``dashboard:<id>`` works
+        # unchanged); dashboards ride only the layout node→domain map (MV-D49/D82).
+        dashboard_tags = _gather_entity_tags(reader, "dashboards")
+        dashboard_domain = agent_domain_placement(dashboard_tags, proposals)
         graph_row = layout.build_graph_snapshot(
-            signal_graph, {**asset_domain, **agent_domain}, node_scores=None, domain_meta=domain_meta,
+            signal_graph, {**asset_domain, **agent_domain, **dashboard_domain}, node_scores=None, domain_meta=domain_meta,
             snippets_in=snippets_in,
             metastore_id=metastore_id, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
         )

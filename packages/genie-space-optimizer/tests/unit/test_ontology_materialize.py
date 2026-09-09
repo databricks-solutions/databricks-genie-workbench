@@ -1345,3 +1345,107 @@ def test_stage2_gather_helpers_degrade_on_missing_or_raising_reader():
     assert materialize._gather_entity_tags(r, "geniespaces") == []
     assert materialize._gather_agent_scopes(r, ["finance"]) == {}
     assert materialize._gather_agent_names(r) == {}
+
+
+# ── Stage 3: Dashboards placed by their APPLIED governed tag (MV-D92) ────────
+
+
+def test_dashboard_domain_placement_reuses_agent_placement():
+    """agent_domain_placement is generic on member_id, so a ``dashboard:<id>`` row lands
+    exactly like an ``agent:<id>`` row — applied top / exact sub / out-of-scope⇒ungrouped."""
+    proposals = [
+        _prop("dF", None, "reuse", "Finance"),
+        _prop("dFT", "dF", "reuse", "Finance/Tax"),
+    ]
+    rows = [
+        {"tag_name": "Finance", "member_id": "dashboard:db1"},         # top-level applied
+        {"tag_name": "Finance/Tax", "member_id": "dashboard:db2"},     # exact sub-domain
+        {"tag_name": "SupplyChain", "member_id": "dashboard:db3"},     # out-of-scope → ungrouped
+    ]
+    placement = materialize.agent_domain_placement(rows, proposals)
+    assert placement == {"dashboard:db1": "dF", "dashboard:db2": "dFT"}
+
+
+class _DashboardReader(_FakeReader):
+    """A reader that surfaces the Stage-3 Dashboard signals (and no agent signals)."""
+
+    def __init__(self, catalog_rows, assign_rows, *, dash_entity, dash_scopes, dash_names):
+        super().__init__(catalog_rows, assign_rows, [], [])
+        self._dash_entity, self._dash_scopes, self._dash_names = dash_entity, dash_scopes, dash_names
+
+    def entity_tag_assignments(self, entity_type):
+        return list(self._dash_entity) if entity_type == "dashboards" else []
+
+    def dashboard_scopes(self, allowlist):
+        return dict(self._dash_scopes)
+
+    def dashboard_names(self):
+        return dict(self._dash_names)
+
+
+def test_run_places_tagged_dashboard_applied_and_untagged_ungrouped():
+    import pytest
+    pytest.importorskip("igraph")
+    catalog_rows, assign_rows = _fixture_rows()
+    reader = _DashboardReader(
+        catalog_rows, assign_rows,
+        dash_entity=[
+            {"tag_name": "Finance", "member_id": "dashboard:db1"},       # applied → Finance domain
+            {"tag_name": "SupplyChain", "member_id": "dashboard:db2"},   # out-of-scope → ungrouped
+        ],
+        dash_scopes={"db1": ["finance.core.ledger"], "db2": []},
+        dash_names={"db1": "Finance Dash", "db2": "SupplyChain Dash"},
+    )
+    writer = _FakeWriter()
+    run = _run(reader, writer, run_id="r1")
+    assert run["state"] == "succeeded"
+
+    blob = _graph_blob(writer)
+    dashboards = {n["id"]: n for n in blob["assets"]["nodes"] if n["kind"] == "dashboard"}
+    assert set(dashboards) == {"dashboard:db1", "dashboard:db2"}
+    assert dashboards["dashboard:db1"]["label"] == "Finance Dash"     # display name (MV-D92)
+
+    # db1 lands in the Finance domain with origin=applied (same as a tagged table/agent).
+    dom_by_id = {d["id"]: d for d in blob["domains"]["nodes"]}
+    finance_id = dashboards["dashboard:db1"]["domain_id"]
+    assert finance_id is not None
+    assert dom_by_id[finance_id]["origin"] == "applied"
+    assert dom_by_id[finance_id]["label"] == "Finance"
+    # db2's tag names an out-of-scope domain ⇒ ungrouped (never a fabricated domain).
+    assert dashboards["dashboard:db2"]["domain_id"] is None
+
+
+def test_dashboard_entity_tag_reader_raise_degrades_run_succeeds():
+    """A reader whose entity_tag_assignments raises degrades to [] (no applied placement)
+    without failing the run (MV-D43); the dashboard still appears via its scope, ungrouped."""
+    import pytest
+    pytest.importorskip("igraph")
+    catalog_rows, assign_rows = _fixture_rows()
+
+    class _Boom(_DashboardReader):
+        def entity_tag_assignments(self, entity_type):
+            raise RuntimeError("entity-tag API not enabled")
+
+    reader = _Boom(catalog_rows, assign_rows, dash_entity=[],
+                   dash_scopes={"db1": ["finance.core.ledger"]}, dash_names={"db1": "Finance Dash"})
+    writer = _FakeWriter()
+    run = _run(reader, writer, run_id="r1")
+    assert run["state"] == "succeeded"
+    dashboards = {n["id"]: n for n in _graph_blob(writer)["assets"]["nodes"] if n["kind"] == "dashboard"}
+    assert dashboards["dashboard:db1"]["domain_id"] is None   # no applied placement, but present
+
+
+def test_stage3_gather_helpers_degrade_on_missing_or_raising_reader():
+    """The defensive dashboard gathers return empty for an older reader lacking the methods
+    and for one whose methods raise (degrade-not-hang, MV-D43)."""
+    base = _FakeReader([], [], [], [])   # no Stage-3 methods
+    assert materialize._gather_dashboard_scopes(base, ["finance"]) == {}
+    assert materialize._gather_dashboard_names(base) == {}
+
+    class _Raises:
+        def dashboard_scopes(self, a): raise RuntimeError("x")
+        def dashboard_names(self): raise RuntimeError("x")
+
+    r = _Raises()
+    assert materialize._gather_dashboard_scopes(r, ["finance"]) == {}
+    assert materialize._gather_dashboard_names(r) == {}
