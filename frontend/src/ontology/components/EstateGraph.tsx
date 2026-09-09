@@ -899,8 +899,11 @@ export function EstateGraph({
               ref={svgRef}
               role="img"
               aria-label="Estate ontology map"
-              className="h-full w-full cursor-grab active:cursor-grabbing"
-              style={{ background: tokens.ground }}
+              // Transparent canvas: the app-themed container (`bg-sunken`) shows through, so the
+              // map background always matches the app and flips with the light/dark toggle via CSS
+              // (independent of the React token theme). The north-star's oat `ground` is dropped on
+              // purpose — the palette that matters (nodes/edges/plates) still comes from `tokens`.
+              className="h-full w-full cursor-grab bg-transparent active:cursor-grabbing"
             >
               <defs>
                 <pattern id="ontgrid" width="24" height="24" patternUnits="userSpaceOnUse">
