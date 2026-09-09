@@ -5,7 +5,7 @@
  * - Applies 'dark' class to <html> element
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback } from "react"
 
 type Theme = "light" | "dark" | "system"
 
@@ -38,19 +38,59 @@ function applyTheme(theme: Theme) {
   }
 }
 
+/**
+ * The theme ACTUALLY applied to the document, read from `<html>.dark`. This is the shared
+ * source of truth every `useTheme()` instance agrees on: the app restyles off that class, and
+ * components that pick colours from `resolvedTheme` in React (e.g. the Ontology Map's
+ * `graphTokens`) must track it live. SSR / no-DOM falls back to the stored/system setting so
+ * `renderToStaticMarkup` and the node test env stay light-by-default (unchanged behaviour).
+ */
+export function readAppliedTheme(): "light" | "dark" {
+  if (typeof document !== "undefined" && document.documentElement) {
+    return document.documentElement.classList.contains("dark") ? "dark" : "light"
+  }
+  return getStoredTheme() === "dark" ? "dark" : "light"
+}
+
 export function useTheme() {
   // Initialize state lazily to avoid hydration issues
   const [theme, setThemeState] = useState<Theme>(() => getStoredTheme())
 
-  const resolvedTheme = useMemo(
-    () => (theme === "system" ? getSystemTheme() : theme),
-    [theme]
-  )
+  // `resolvedTheme` mirrors the LIVE applied class rather than this instance's `theme` copy, so
+  // a flip from any consumer (ThemeToggle) propagates to every `useTheme()` — the fix for the
+  // Ontology Map palette going stale on toggle.
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => readAppliedTheme())
 
   // Apply theme on mount and when theme changes
   useEffect(() => {
     applyTheme(theme)
   }, [theme])
+
+  // React to the applied theme changing anywhere: observe `<html>`'s class attribute (any
+  // instance's toggle flips it) and cross-tab `storage` writes. Both recompute `resolvedTheme`
+  // so all instances stay in agreement.
+  useEffect(() => {
+    if (typeof document === "undefined") return
+    const sync = () => setResolvedTheme(readAppliedTheme())
+    sync() // reconcile in case the class was applied before this instance mounted
+
+    const observer = new MutationObserver(sync)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] })
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_KEY) return
+      const stored = getStoredTheme()
+      setThemeState(stored) // adopt the cross-tab setting (re-applies via the effect above)
+      applyTheme(stored) // apply now so the class + resolvedTheme converge immediately
+      sync()
+    }
+    window.addEventListener("storage", onStorage)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("storage", onStorage)
+    }
+  }, [])
 
   // Listen for system theme changes
   useEffect(() => {
@@ -58,9 +98,9 @@ export function useTheme() {
 
     const handleChange = () => {
       if (theme === "system") {
+        // Re-apply; the MutationObserver above picks up the class change and updates
+        // resolvedTheme for every instance.
         applyTheme("system")
-        // Force re-render to update resolvedTheme
-        setThemeState((prev) => prev)
       }
     }
 

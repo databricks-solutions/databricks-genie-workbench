@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
 import { EstateGraph } from "./EstateGraph"
 
@@ -245,5 +245,36 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
   it("keeps node <g> tagged with data-node-id (the drag + glide handle)", () => {
     const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
     expect(html).toContain('data-node-id="org"')
+  })
+})
+
+// ── Live theme reactivity (useTheme fix) ─────────────────────────────────────
+// The Map picks its palette from `graphTokens(resolvedTheme)`, and `resolvedTheme` now tracks
+// the applied `<html>.dark` class. So the SAME graph renders DARK token hexes when the document
+// carries `.dark` and LIGHT hexes otherwise — proving the toggle flips the Map live (no stale
+// frozen theme). We stub a minimal `document` since the node test env has no DOM.
+describe("EstateGraph — palette follows the applied theme (useTheme reactivity)", () => {
+  const DARK_DOMAIN_FILL = "#94A3B8" // graphTokens DARK typeFill.domain
+  const LIGHT_DOMAIN_FILL = "#1B3139" // graphTokens LIGHT typeFill.domain
+
+  function stubHtmlDark(hasDark: boolean) {
+    vi.stubGlobal("document", {
+      documentElement: { classList: { contains: (c: string) => c === "dark" && hasDark } },
+    })
+  }
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("emits DARK token hexes when <html> has the dark class", () => {
+    stubHtmlDark(true)
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(html).toContain(DARK_DOMAIN_FILL)
+    expect(html).not.toContain(LIGHT_DOMAIN_FILL)
+  })
+
+  it("emits LIGHT token hexes when <html> has no dark class", () => {
+    stubHtmlDark(false)
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(html).toContain(LIGHT_DOMAIN_FILL)
+    expect(html).not.toContain(DARK_DOMAIN_FILL)
   })
 })

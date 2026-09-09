@@ -88,6 +88,9 @@ export default function OntologyPage() {
   const [loadingBody, setLoadingBody] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<OntologyTab>("taxonomy")
+  // Bump to re-run the heavy taxonomy/tags/drafts/graph fetch (e.g. after a refresh completes).
+  const [reloadKey, setReloadKey] = useState(0)
+  const reload = useCallback(() => setReloadKey((k) => k + 1), [])
 
   const canRender = preflight?.can_render_taxonomy ?? false
   const emptyScope = (preflight?.catalog_allowlist.length ?? 0) === 0
@@ -135,7 +138,7 @@ export default function OntologyPage() {
     return () => {
       cancelled = true
     }
-  }, [canRender, emptyScope])
+  }, [canRender, emptyScope, reloadKey])
 
   const TABS: { id: OntologyTab; label: string; icon: React.ReactNode }[] = [
     { id: "taxonomy", label: "Taxonomy", icon: <FolderTree className="h-4 w-4" /> },
@@ -215,7 +218,11 @@ export default function OntologyPage() {
                 so the refresh action is available; the chip is always informative. */}
             {(tab === "taxonomy" || tab === "tags" || tab === "drafts" || tab === "graph") && canRender && !emptyScope && (
               <div className="flex justify-end">
-                <FreshnessControls isAdmin={true} onOpenSettings={() => setTab("settings")} />
+                <FreshnessControls
+                  isAdmin={true}
+                  onOpenSettings={() => setTab("settings")}
+                  onRefreshComplete={reload}
+                />
               </div>
             )}
 

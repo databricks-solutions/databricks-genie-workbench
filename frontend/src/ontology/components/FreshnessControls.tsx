@@ -7,6 +7,7 @@ import { AlertTriangle, Loader2, RefreshCw, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { getRefreshStatus, triggerRefresh } from "@/ontology/api"
 import type { OntologyRefreshStatus } from "@/ontology/types"
+import { pollSettleAction } from "@/ontology/refreshPolling"
 
 function Chip({ status, onOpenSettings }: { status: OntologyRefreshStatus | null; onOpenSettings?: () => void }) {
   if (!status) return null
@@ -52,10 +53,22 @@ function Chip({ status, onOpenSettings }: { status: OntologyRefreshStatus | null
   )
 }
 
-export function FreshnessControls({ isAdmin, onOpenSettings }: { isAdmin: boolean; onOpenSettings?: () => void }) {
+export function FreshnessControls({
+  isAdmin,
+  onOpenSettings,
+  onRefreshComplete,
+}: {
+  isAdmin: boolean
+  onOpenSettings?: () => void
+  /** Called ONCE when a triggered refresh transitions running/queued → terminal, so the parent
+   *  can re-fetch taxonomy/tags/drafts/graph (new domains/drafts don't appear otherwise). */
+  onRefreshComplete?: () => void
+}) {
   const [status, setStatus] = useState<OntologyRefreshStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Guards `onRefreshComplete` to a single fire per run (reset when a new refresh is triggered).
+  const firedRef = useRef(false)
 
   // Initial freshness read (non-critical — the panels render regardless).
   useEffect(() => {
@@ -77,18 +90,25 @@ export function FreshnessControls({ isAdmin, onOpenSettings }: { isAdmin: boolea
       try {
         const next = await getRefreshStatus()
         setStatus(next)
-        if (next.state !== "running" && next.state !== "queued") {
+        const { settled, fireComplete } = pollSettleAction(next.state, firedRef.current)
+        if (settled) {
           if (pollRef.current) clearInterval(pollRef.current)
+          pollRef.current = null
           setBusy(false)
+        }
+        if (fireComplete) {
+          firedRef.current = true
+          onRefreshComplete?.() // exactly once, on the running/queued → terminal transition
         }
       } catch {
         /* keep polling silently */
       }
     }, 4000)
-  }, [])
+  }, [onRefreshComplete])
 
   const onRefresh = async () => {
     setBusy(true)
+    firedRef.current = false // arm the completion callback for this run
     try {
       setStatus(await triggerRefresh())
       startPolling()
