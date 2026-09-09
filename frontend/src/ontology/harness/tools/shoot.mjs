@@ -36,7 +36,10 @@ const VIEWPORT = { width: 1440, height: 900 }
 fs.mkdirSync(outDir, { recursive: true })
 
 const { browser } = await launchChromium()
-const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 })
+// Emulate prefers-reduced-motion so the map renders its FINAL frame (no mid-glide / camera-ease
+// captures) — the buttery-interactions tweens (§6) all no-op under reduced motion, keeping the
+// visual-regression baseline deterministic.
+const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, reducedMotion: "reduce" })
 const meta = []
 
 for (const c of cells()) {

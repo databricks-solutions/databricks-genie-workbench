@@ -8,7 +8,7 @@
  * DOM). Expand/collapse happens in place (no LOD control). Degrades to the shallow contract
  * (MV-D43) when Lane-D fields are absent. Honest loading / empty / error / stale states.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
   ChevronsDownUp,
@@ -48,14 +48,17 @@ import {
   centerOnTransform,
   collapsedToDomainTier,
   contentBounds,
+  crossPath,
   initialExpanded,
   layoutHash,
   layoutTree,
+  spinePath,
   viewportContentRect,
   type LaidNode,
   type Layout,
   type Point,
 } from "@/ontology/ontologyTreeLayout"
+import { MOTION, easeCubicOut, lerp, prefersReducedMotion } from "@/ontology/ontologyMotion"
 import { bandColor, domainTintFor, graphTokens } from "@/ontology/graphTokens"
 import { useTheme } from "@/hooks/useTheme"
 import { GraphInspector, type InspectorData } from "./GraphInspector"
@@ -165,6 +168,19 @@ function describeType(type: NodeType): string {
 
 function describe(node: LaidNode): string {
   return describeType(node.type)
+}
+
+/**
+ * `useLayoutEffect` on the client, `useEffect` on the server. The relayout glide must paint its
+ * t=0 frame BEFORE the browser shows the freshly-committed (final) positions — otherwise the
+ * tree would flash to its end state and snap back. Falling back to `useEffect` under SSR keeps
+ * `renderToStaticMarkup` (the node-env test path) free of the useLayoutEffect warning.
+ */
+const useIsoLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect
+
+/** Escape a node id for use inside a `[data-…="…"]` CSS attribute selector. */
+function escSel(id: string): string {
+  return id.replace(/["\\]/g, "\\$&")
 }
 
 export function EstateGraph({
@@ -331,6 +347,14 @@ export function EstateGraph({
   )
 
   const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout])
+
+  // Latest-value ref for the imperative interaction paths (zoom / drag / glide) so their event
+  // handlers read current geometry (position + radius) WITHOUT re-binding on every render —
+  // assigned during render (idempotent, ref only). This is what lets drag be O(1)/frame with
+  // no relayout.
+  const nodeByIdRef = useRef(nodeById)
+  nodeByIdRef.current = nodeById
+
   const showTree = provenance !== "proposed"
   const showProposals = provenance !== "applied"
 
@@ -347,7 +371,23 @@ export function EstateGraph({
   const gRef = useRef<SVGGElement | null>(null)
   const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null)
   const [transform, setTransform] = useState({ x: 40, y: 40, k: 0.75 })
+  // Latest committed transform (for drag → content-space delta + camera-tween start), and the
+  // running camera rAF so a user gesture can interrupt an in-flight Fit/Reset ease.
+  const transformRef = useRef(transform)
+  transformRef.current = transform
+  const cameraRafRef = useRef<number | null>(null)
 
+  const cancelCameraTween = useCallback(() => {
+    if (cameraRafRef.current != null) {
+      cancelAnimationFrame(cameraRafRef.current)
+      cameraRafRef.current = null
+    }
+  }, [])
+
+  // IMPERATIVE ZOOM (§2, O(1)/frame): write the transform straight to the <g> each tick — NO
+  // per-frame React render. React `transform` state syncs only on 'end' (which also updates the
+  // minimap you-are-here box via its effect). A user-initiated gesture (sourceEvent present)
+  // cancels any in-flight camera ease so it doesn't fight the pan.
   useEffect(() => {
     const svg = svgRef.current
     if (!svg) return
@@ -358,14 +398,23 @@ export function EstateGraph({
         const t = e.target as Element
         return !(t && t.closest && t.closest("[data-node-id]"))
       })
-      .on("zoom", (e) => setTransform({ x: e.transform.x, y: e.transform.y, k: e.transform.k }))
+      .on("start", (e) => {
+        if (e.sourceEvent) cancelCameraTween()
+      })
+      .on("zoom", (e) => {
+        const g = gRef.current
+        if (g) g.setAttribute("transform", `translate(${e.transform.x},${e.transform.y}) scale(${e.transform.k})`)
+      })
+      .on("end", (e) => setTransform({ x: e.transform.x, y: e.transform.y, k: e.transform.k }))
     zoomRef.current = z
     select(svg).call(z)
     return () => {
       select(svg).on(".zoom", null)
     }
-  }, [])
+  }, [cancelCameraTween])
 
+  // Instant camera set (auto-fits, minimap, reveal): drives d3.zoom, which dispatches a
+  // synchronous zoom+end → the <g> moves imperatively and React state syncs on 'end'.
   const applyTransform = useCallback((t: { x: number; y: number; k: number }) => {
     const svg = svgRef.current
     if (!svg || !zoomRef.current) {
@@ -375,14 +424,47 @@ export function EstateGraph({
     select(svg).call(zoomRef.current.transform, zoomIdentity.translate(t.x, t.y).scale(t.k))
   }, [])
 
-  const fit = useCallback(() => {
+  // TRANSITIONED CAMERA (§5): rAF-tween {x,y,k} with easeCubicOut, writing the <g> transform
+  // imperatively each frame, then sync d3.zoom's internal state ONCE at the end (via
+  // applyTransform → zoom.transform) so the next pan doesn't jump. Reduced-motion (or no rAF)
+  // ⇒ instant. Used by the Fit + Reset buttons; auto-fits stay instant.
+  const animateTransform = useCallback(
+    (target: { x: number; y: number; k: number }) => {
+      const g = gRef.current
+      if (!g || !zoomRef.current || prefersReducedMotion() || typeof requestAnimationFrame === "undefined") {
+        applyTransform(target)
+        return
+      }
+      cancelCameraTween()
+      const start = { ...transformRef.current }
+      const t0 = performance.now()
+      const step = (now: number) => {
+        const p = Math.min(1, (now - t0) / MOTION.cameraMs)
+        const e = easeCubicOut(p)
+        const cx = lerp(start.x, target.x, e)
+        const cy = lerp(start.y, target.y, e)
+        const ck = lerp(start.k, target.k, e)
+        g.setAttribute("transform", `translate(${cx},${cy}) scale(${ck})`)
+        if (p < 1) {
+          cameraRafRef.current = requestAnimationFrame(step)
+        } else {
+          cameraRafRef.current = null
+          applyTransform(target) // sync d3 internal + React state ONCE
+        }
+      }
+      cameraRafRef.current = requestAnimationFrame(step)
+    },
+    [applyTransform, cancelCameraTween],
+  )
+
+  // Pure-ish framing math: the target camera transform that frames the laid-out CONTENT bbox —
+  // nodes + any visible verb-arc extents (R12b), plus the tray only when on screen. Returns null
+  // when there's nothing to frame or the canvas isn't measurable yet.
+  const computeFit = useCallback((): { x: number; y: number; k: number } | null => {
     const svg = svgRef.current
-    if (!svg) return
-    // Frame the laid-out CONTENT bbox — nodes + any visible verb-arc extents (R12b), plus
-    // the tray only when it's on screen. Center it and zoom so it fills the viewport with a
-    // modest margin (R12a — no dead canvas, no crammed corner, no arcs off the edge).
+    if (!svg) return null
     const b = contentBounds(layout, { tree: showTree, tray: showProposals || !showTree })
-    if (b.width <= 0 || b.height <= 0) return
+    if (b.width <= 0 || b.height <= 0) return null
     const padX = 40
     // Reserve extra headroom at the top so the org / top-domain tier (and its label plate)
     // is never cropped by the canvas edge on fit (§5/R21e).
@@ -391,14 +473,26 @@ export function EstateGraph({
     const bw = b.width + padX * 2
     const bh = b.height + padTop + padBottom
     const rect = svg.getBoundingClientRect()
-    if (rect.width === 0 || rect.height === 0) return
+    if (rect.width === 0 || rect.height === 0) return null
     const k = Math.min(2.2, Math.max(0.28, Math.min(rect.width / bw, rect.height / bh) * 0.98))
     const x = rect.width / 2 - (b.minX + b.width / 2) * k
     const centeredY = rect.height / 2 - (b.minY + b.height / 2) * k
     // Center vertically, but keep at least `padTop` screen px above the content top.
     const y = Math.max(padTop - b.minY * k, centeredY)
-    applyTransform({ x, y, k })
-  }, [layout, showTree, showProposals, applyTransform])
+    return { x, y, k }
+  }, [layout, showTree, showProposals])
+
+  // Frame the content (R12a). The Fit + Reset buttons ease the camera (§5); every AUTO-fit
+  // (initial mount, fullscreen enter/exit, reveal) stays INSTANT.
+  const fit = useCallback(
+    (animated = false) => {
+      const t = computeFit()
+      if (!t) return
+      if (animated) animateTransform(t)
+      else applyTransform(t)
+    },
+    [computeFit, animateTransform, applyTransform],
+  )
 
   // Fit once the canvas is actually on screen. Guard against firing during the loading /
   // error / empty phases (the <svg> isn't mounted then) — otherwise the one-shot fires
@@ -417,7 +511,8 @@ export function EstateGraph({
   }, [fetchState, isEmpty, layout.nodes.length, fit])
 
   // Reframe once after a reveal has relayed out (see `reveal`). Runs on the post-reveal
-  // layout so the newly-expanded path + its verb arcs are framed (R12b), then clears.
+  // layout so the newly-expanded path + its verb arcs are framed (R12b), then clears. Reveal is
+  // an AUTO-fit, so it stays INSTANT (§5).
   useEffect(() => {
     if (!pendingFit.current) return
     pendingFit.current = false
@@ -428,28 +523,108 @@ export function EstateGraph({
     return () => cancelAnimationFrame(id)
   }, [layout, fit])
 
+  // Reframe with an EASED camera after a Reset has relayed out (§5) — Reset is a button, so its
+  // camera transitions (unlike the auto-fits above). Fires on the post-reset layout, then clears.
+  const pendingAnimatedFit = useRef(false)
+  useEffect(() => {
+    if (!pendingAnimatedFit.current) return
+    pendingAnimatedFit.current = false
+    const id = requestAnimationFrame(() => {
+      if (svgRef.current) fit(true)
+    })
+    return () => cancelAnimationFrame(id)
+  }, [layout, fit])
+
+  // ── Imperative edge redraw (shared by drag §3 + glide §4) ────────────────────
+  // Recompute ONE edge's `d` from a `posOf(id)` lookup, using the SAME pure builders the layout
+  // pass uses (§1) so the geometry is byte-identical. Spine paths carry data-src/data-dst;
+  // cross groups additionally carry data-relclass + hold two `data-cross-line` paths and an
+  // optional `data-cross-label` verb plate.
+  const redrawEdge = useCallback((el: Element, posOf: (id: string) => Point | null) => {
+    const kind = el.getAttribute("data-edge-kind")
+    const src = el.getAttribute("data-src")
+    const dst = el.getAttribute("data-dst")
+    if (!src || !dst) return
+    const a = posOf(src)
+    const b = posOf(dst)
+    if (!a || !b) return
+    if (kind === "spine") {
+      el.setAttribute("d", spinePath(a.x, a.y, b.x, b.y))
+      return
+    }
+    const xdom = el.getAttribute("data-relclass") === "xdom"
+    const bow = DEFAULT_LAYOUT.bow * (xdom ? DEFAULT_LAYOUT.xdomBow : 1)
+    const startTrim = (nodeByIdRef.current.get(src)?.radius ?? 0) + 2
+    const endTrim = (nodeByIdRef.current.get(dst)?.radius ?? 0) + 7
+    const { path, mid } = crossPath(a, b, bow, startTrim, endTrim)
+    el.querySelectorAll<SVGPathElement>("path[data-cross-line]").forEach((p) => p.setAttribute("d", path))
+    const label = el.querySelector<SVGGElement>("[data-cross-label]")
+    if (label) label.setAttribute("transform", `translate(${mid.x},${mid.y})`)
+  }, [])
+
+  // IMPERATIVE DRAG (§3, O(1)/frame): move ONLY this node's <g> + recompute the `d` of its
+  // incident spine/cross edges — never a relayout. `layoutTree` MUST NOT run mid-drag; the
+  // accumulated offset is committed to `offsetsRef` and relayout is triggered ONCE, on 'end'.
+  const applyLiveDrag = useCallback(
+    (el: SVGGElement, id: string, dx: number, dy: number) => {
+      const g = gRef.current
+      const base = nodeByIdRef.current.get(id)
+      if (!g || !base) return
+      const nx = base.x + dx
+      const ny = base.y + dy
+      el.setAttribute("transform", `translate(${nx},${ny})`)
+      const posOf = (q: string): Point | null =>
+        q === id ? { x: nx, y: ny } : nodeByIdRef.current.get(q) ?? null
+      g.querySelectorAll<SVGElement>(
+        `[data-edge-kind][data-src="${escSel(id)}"],[data-edge-kind][data-dst="${escSel(id)}"]`,
+      ).forEach((edge) => redrawEdge(edge, posOf))
+    },
+    [redrawEdge],
+  )
+
+  // ── Relayout glide (§4) ──────────────────────────────────────────────────────
+  const prevPosRef = useRef<Map<string, Point>>(new Map())
+  const glideRafRef = useRef<number | null>(null)
+  // Set on drag-commit so the offset relayout does NOT glide the node back from its origin (it's
+  // already visually at the drop point).
+  const skipNextGlideRef = useRef(false)
+
   // ── Drag (d3.drag on nodes) ──────────────────────────────────────────────────
   useEffect(() => {
     const g = gRef.current
     if (!g) return
     const sel = select(g).selectAll<SVGGElement, unknown>("[data-node-id]")
+    // Per-gesture accumulator (content units) — one drag at a time, so a single closure var is
+    // enough. `k` is read from the ref so a zoom between drags never re-binds this effect.
+    const live = { id: "", dx: 0, dy: 0 }
     const dragged = d3drag<SVGGElement, unknown>()
       .on("start", function (e) {
         e.sourceEvent?.stopPropagation?.()
         setHoveredId(null) // hide the hover snippet while dragging (R21)
+        live.id = (this as SVGGElement).getAttribute("data-node-id") ?? ""
+        live.dx = 0
+        live.dy = 0
       })
       .on("drag", function (e) {
-        const id = (this as SVGGElement).getAttribute("data-node-id")
-        if (!id) return
-        const cur = offsetsRef.current.get(id) ?? { x: 0, y: 0 }
-        offsetsRef.current.set(id, { x: cur.x + e.dx / transform.k, y: cur.y + e.dy / transform.k })
-        setDragTick((t) => t + 1)
+        if (!live.id) return
+        const k = transformRef.current.k || 1
+        live.dx += e.dx / k
+        live.dy += e.dy / k
+        applyLiveDrag(this as SVGGElement, live.id, live.dx, live.dy)
+      })
+      .on("end", function () {
+        if (!live.id) return
+        const cur = offsetsRef.current.get(live.id) ?? { x: 0, y: 0 }
+        offsetsRef.current.set(live.id, { x: cur.x + live.dx, y: cur.y + live.dy })
+        skipNextGlideRef.current = true
+        setDragTick((t) => t + 1) // the ONE relayout for the whole gesture
+        live.id = ""
       })
     sel.call(dragged)
     return () => {
       sel.on(".drag", null)
     }
-  }, [layout.nodes, transform.k])
+  }, [layout.nodes, applyLiveDrag])
 
   // ── Selection / expand / navigation ─────────────────────────────────────────
   const toggleExpand = useCallback((id: string) => {
@@ -541,7 +716,9 @@ export function EstateGraph({
     setTypeFocus(null)
     setRelVerbFocus(null)
     setUncapped(new Set())
-    didFit.current = false
+    // dragTick guarantees a fresh layout object → the eased-reframe effect fires (didFit stays
+    // true so the instant one-shot doesn't also fire).
+    pendingAnimatedFit.current = true
     setDragTick((t) => t + 1)
   }, [model])
 
@@ -770,6 +947,112 @@ export function EstateGraph({
     [relVerbFocus],
   )
 
+  // GLIDE ON RELAYOUT (§4): on a layout change, tween every surviving node prev→next over ~380ms
+  // (easeCubicOut), driving BOTH node transforms AND their incident edge `d` (via §1) so edges
+  // stay glued — no snap. Entering nodes fade+scale in from their parent's previous position;
+  // exiting nodes are already unmounted, so they snap (documented tradeoff). React has already
+  // committed the FINAL positions in JSX, so we paint the t=0 frame in a layout-effect (before
+  // the browser shows the final frame) then rAF to t=1. Reduced-motion / drag-commit / the first
+  // paint settle instantly with positions byte-identical to today.
+  useIsoLayoutEffect(() => {
+    const g = gRef.current
+    const nodes = layout.nodes
+    const nextPos = new Map<string, Point>(nodes.map((n) => [n.id, { x: n.x, y: n.y }]))
+    const prev = prevPosRef.current
+    const settle = () => {
+      prevPosRef.current = nextPos
+      if (glideRafRef.current != null) {
+        cancelAnimationFrame(glideRafRef.current)
+        glideRafRef.current = null
+      }
+    }
+    if (
+      !g ||
+      prev.size === 0 || // first paint — never fade the whole tree in
+      skipNextGlideRef.current || // a drag just committed; the node is already at its drop point
+      prefersReducedMotion() ||
+      typeof requestAnimationFrame === "undefined"
+    ) {
+      skipNextGlideRef.current = false
+      settle()
+      return
+    }
+
+    // Entering nodes (not in prev) start from their parent's previous position; survivors that
+    // actually moved trigger the tween.
+    const enterFrom = new Map<string, Point>()
+    let changed = false
+    for (const n of nodes) {
+      const p = prev.get(n.id)
+      if (!p) {
+        const parentPrev = n.parentId ? prev.get(n.parentId) ?? nextPos.get(n.parentId) : undefined
+        enterFrom.set(n.id, parentPrev ?? { x: n.x, y: n.y })
+        changed = true
+      } else if (Math.abs(p.x - n.x) > 0.01 || Math.abs(p.y - n.y) > 0.01) {
+        changed = true
+      }
+    }
+    if (!changed) {
+      settle()
+      return
+    }
+
+    if (glideRafRef.current != null) cancelAnimationFrame(glideRafRef.current)
+    // Snapshot the element + edge nodes once (positions change every frame, the DOM set doesn't).
+    const elById = new Map<string, SVGGElement>()
+    g.querySelectorAll<SVGGElement>("[data-node-id]").forEach((el) => {
+      const id = el.getAttribute("data-node-id")
+      if (id) elById.set(id, el)
+    })
+    const edgeEls = Array.from(g.querySelectorAll<SVGElement>("[data-edge-kind]"))
+    const startPrev = prev
+    const natural = (n: LaidNode) => (dimmed(n.type) ? 0.2 : 1)
+
+    const paint = (e: number) => {
+      const posNow = new Map<string, Point>()
+      for (const n of nodes) {
+        const entering = enterFrom.has(n.id)
+        const from = entering ? enterFrom.get(n.id)! : startPrev.get(n.id) ?? { x: n.x, y: n.y }
+        const cur = { x: from.x + (n.x - from.x) * e, y: from.y + (n.y - from.y) * e }
+        posNow.set(n.id, cur)
+        const el = elById.get(n.id)
+        if (!el) continue
+        if (entering) {
+          el.setAttribute("transform", `translate(${cur.x},${cur.y}) scale(${0.7 + 0.3 * e})`)
+          el.setAttribute("opacity", String(natural(n) * e))
+        } else {
+          el.setAttribute("transform", `translate(${cur.x},${cur.y})`)
+          // Idempotent: keeps a node that was mid-fade in an earlier (interrupted) glide correct.
+          el.setAttribute("opacity", String(natural(n)))
+        }
+      }
+      const posOf = (id: string): Point | null => posNow.get(id) ?? nextPos.get(id) ?? null
+      edgeEls.forEach((edge) => redrawEdge(edge, posOf))
+    }
+
+    paint(0) // t=0 synchronously, before the browser paints the committed final frame
+    const t0 = performance.now()
+    const step = (now: number) => {
+      const p = Math.min(1, (now - t0) / MOTION.glideMs)
+      paint(easeCubicOut(p))
+      if (p < 1) {
+        glideRafRef.current = requestAnimationFrame(step)
+      } else {
+        glideRafRef.current = null
+        prevPosRef.current = nextPos
+      }
+    }
+    glideRafRef.current = requestAnimationFrame(step)
+    return () => {
+      if (glideRafRef.current != null) {
+        cancelAnimationFrame(glideRafRef.current)
+        glideRafRef.current = null
+      }
+    }
+    // `layout` is the real trigger; `dimmed` + `redrawEdge` are captured fresh each run (a
+    // typeFocus-only change relayouts to identical positions ⇒ the tween no-ops via `changed`).
+  }, [layout])
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div
@@ -798,7 +1081,7 @@ export function EstateGraph({
         </div>
         <GraphSearch value={query} onChange={setQuery} onSubmit={runSearch} onClear={clearSearch} hint={hint} />
         <div className="ml-auto flex flex-wrap items-center gap-1">
-          <button onClick={fit} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary" aria-label="Fit">
+          <button onClick={() => fit(true)} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary" aria-label="Fit">
             <Maximize2 className="h-3.5 w-3.5" /> Fit
           </button>
           <button onClick={expandAll} className="flex items-center gap-1 rounded-md border border-default px-2 py-1 text-xs text-secondary hover:text-primary">
@@ -941,6 +1224,9 @@ export function EstateGraph({
                     return (
                       <path
                         key={l.id}
+                        data-edge-kind="spine"
+                        data-src={l.sourceId}
+                        data-dst={l.targetId}
                         d={l.path}
                         fill="none"
                         stroke={tokens.spine}
@@ -965,6 +1251,10 @@ export function EstateGraph({
                     return (
                       <g
                         key={c.id}
+                        data-edge-kind="cross"
+                        data-src={c.sourceId}
+                        data-dst={c.targetId}
+                        data-relclass={c.relClass}
                         opacity={fade ? 0.08 : 1}
                         style={{ cursor: "help" }}
                         onMouseEnter={(e) => {
@@ -976,8 +1266,9 @@ export function EstateGraph({
                         onMouseLeave={() => setHoveredEdgeId((cur) => (cur === c.id ? null : cur))}
                       >
                         {/* Invisible fat hit path so a thin dashed arc is easy to hover (R25). */}
-                        <path d={c.path} fill="none" stroke="transparent" strokeWidth={12} />
+                        <path data-cross-line d={c.path} fill="none" stroke="transparent" strokeWidth={12} />
                         <path
+                          data-cross-line
                           d={c.path}
                           fill="none"
                           stroke={stroke}
@@ -989,7 +1280,7 @@ export function EstateGraph({
                         />
                         {/* Verb plate — only on the focused node's arcs (R4): no label cloud. */}
                         {c.showLabel && (
-                          <g transform={`translate(${c.labelAt.x},${c.labelAt.y})`}>
+                          <g data-cross-label transform={`translate(${c.labelAt.x},${c.labelAt.y})`}>
                             <rect
                               x={-c.verb.length * 3.1 - 4}
                               y={-7}

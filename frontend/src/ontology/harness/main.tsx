@@ -61,8 +61,16 @@ interface OntologyHarness {
 declare global {
   interface Window {
     __ontologyHarness?: OntologyHarness
+    /** Harness override read by ontologyMotion.prefersReducedMotion (buttery interactions §6). */
+    __ontologyMotionOff?: boolean
   }
 }
+
+// Force motion OFF in the harness so every screenshot captures the FINAL frame, never a
+// mid-animation glide / camera ease — the loop must stay deterministic. (shoot.mjs also
+// emulates prefers-reduced-motion at the browser-context level; this is the belt-and-braces
+// flag for a plain `npm run dev` capture.)
+window.__ontologyMotionOff = true
 
 const mountedAt = performance.now()
 const harness: OntologyHarness = {

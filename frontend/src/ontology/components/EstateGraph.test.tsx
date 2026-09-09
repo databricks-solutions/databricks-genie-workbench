@@ -216,4 +216,34 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     const html = renderToStaticMarkup(<EstateGraph graph={g} />)
     expect(html).toContain("shares key with")
   })
+
+  // ── Buttery interactions — imperative redraw hooks (§1/§3/§4) ────────────────
+  // Drag + relayout-glide recompute an edge's `d` from moved endpoints imperatively, keyed by
+  // these data-attributes. They must render on the edges so the imperative path can find + redraw
+  // them (the interactions themselves need a DOM env; the node-env suite verifies the hooks exist
+  // and the geometry via the pure builder tests in ontologyTreeLayout.test.ts).
+  it("tags spine links with data-edge-kind/src/dst for imperative redraw", () => {
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(html).toContain('data-edge-kind="spine"')
+    // org → d_fin spine carries its endpoint ids.
+    expect(html).toMatch(/data-edge-kind="spine"[^>]*data-src="org"/)
+  })
+
+  it("tags cross-links with data-edge-kind/relclass + data-cross-line paths for imperative redraw", () => {
+    const g = northstar()
+    g.assets.nodes.push(
+      node({ id: "t:a", label: "table_a", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+      node({ id: "t:b", label: "table_b", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+    )
+    g.assets.edges = [{ src: "t:a", dst: "t:b", kind: "join_key", verb: "shares key with", rel_class: "shared" }]
+    const html = renderToStaticMarkup(<EstateGraph graph={g} />)
+    expect(html).toContain('data-edge-kind="cross"')
+    expect(html).toContain('data-relclass="shared"')
+    expect(html).toContain("data-cross-line")
+  })
+
+  it("keeps node <g> tagged with data-node-id (the drag + glide handle)", () => {
+    const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(html).toContain('data-node-id="org"')
+  })
 })

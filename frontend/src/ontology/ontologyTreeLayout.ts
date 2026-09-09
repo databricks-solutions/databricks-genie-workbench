@@ -301,17 +301,24 @@ function boundsOf(points: Point[], pad: number): Bounds {
   }
 }
 
-/** Vertical tidy-tree cubic bezier between parent and child (linkVertical shape). */
-function spinePath(s: Point, t: Point): string {
-  const my = (s.y + t.y) / 2
-  return `M${s.x},${s.y}C${s.x},${my} ${t.x},${my} ${t.x},${t.y}`
+/**
+ * Vertical tidy-tree cubic bezier between parent and child (linkVertical shape). Scalar
+ * endpoints so the SAME builder can recompute a spine `d` from live-dragged / tweened
+ * endpoint positions imperatively (EstateGraph buttery interactions) — not just at layout
+ * time. Pure + unit-tested.
+ */
+export function spinePath(sx: number, sy: number, tx: number, ty: number): string {
+  const my = (sy + ty) / 2
+  return `M${sx},${sy}C${sx},${my} ${tx},${my} ${tx},${ty}`
 }
 
 /**
  * Quadratic bezier bowed off the straight line between two points; xdom bows wider
- * (§4.1). Returns the path plus the arc midpoint (for the verb plate).
+ * (§4.1). Returns the path plus the arc midpoint (for the verb plate). Exported so an edge
+ * can be redrawn from moved endpoints during drag / relayout glide with byte-identical
+ * geometry to the layout pass. Pure + unit-tested.
  */
-function crossPath(
+export function crossPath(
   a: Point,
   b: Point,
   bow: number,
@@ -425,7 +432,7 @@ export function layoutTree(
       targetId: lnk.target.data.node.id,
       source: s,
       target: t,
-      path: spinePath(s, t),
+      path: spinePath(s.x, s.y, t.x, t.y),
       domainId: lnk.target.data.node.domainId,
     })
   })

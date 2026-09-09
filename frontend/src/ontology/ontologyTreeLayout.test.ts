@@ -6,10 +6,12 @@ import {
   centerOnTransform,
   collapsedToDomainTier,
   contentBounds,
+  crossPath,
   initialExpanded,
   layoutHash,
   layoutTree,
   moreSentinelId,
+  spinePath,
   viewportContentRect,
   type Point,
 } from "@/ontology/ontologyTreeLayout"
@@ -404,6 +406,52 @@ describe("collapsedToDomainTier (P0-a, R24)", () => {
     expect(types.has("table")).toBe(false)
     // Every domain node reads as a collapsed container (a +N badge to drill).
     expect(laid.nodes.filter((n) => n.type === "domain").every((n) => n.collapsed)).toBe(true)
+  })
+})
+
+// ── Exported path builders (buttery interactions §1) ─────────────────────────
+// These are the SAME builders the layout pass uses; EstateGraph re-runs them imperatively to
+// redraw an edge from moved endpoints (drag / relayout glide) without a full React relayout.
+describe("spinePath / crossPath builders", () => {
+  it("spinePath draws a vertical tidy-tree cubic through the vertical midpoint", () => {
+    const d = spinePath(0, 0, 100, 200)
+    // M sx,sy C sx,my tx,my tx,ty  with my = (sy+ty)/2 = 100.
+    expect(d).toBe("M0,0C0,100 100,100 100,200")
+  })
+
+  it("spinePath is what layoutTree emits for a spine link (render === redraw)", () => {
+    const model = buildEstateModel(graph())
+    const l = layoutTree(model, initialExpanded(model), noOffsets)
+    const link = l.spineLinks[0]
+    expect(link).toBeDefined()
+    expect(link.path).toBe(
+      spinePath(link.source.x, link.source.y, link.target.x, link.target.y),
+    )
+  })
+
+  it("crossPath returns a quadratic bezier + its arc midpoint", () => {
+    const { path, mid } = crossPath({ x: 0, y: 0 }, { x: 100, y: 0 }, 0.2)
+    expect(path.startsWith("M")).toBe(true)
+    expect(path).toContain("Q")
+    // Symmetric horizontal arc → midpoint x at the centre, bowed off the line in y.
+    expect(mid.x).toBeCloseTo(50)
+    expect(Math.abs(mid.y)).toBeGreaterThan(0)
+  })
+
+  it("crossPath bows more with a larger bow factor (xdom vs shared)", () => {
+    const shared = crossPath({ x: 0, y: 0 }, { x: 100, y: 0 }, 0.16)
+    const xdom = crossPath({ x: 0, y: 0 }, { x: 100, y: 0 }, 0.16 * 1.35)
+    expect(Math.abs(xdom.mid.y)).toBeGreaterThan(Math.abs(shared.mid.y))
+  })
+
+  it("crossPath trims endpoints inward so the arrowhead clears the target disc", () => {
+    const a = { x: 0, y: 0 }
+    const b = { x: 100, y: 0 }
+    const untrimmed = crossPath(a, b, 0.2)
+    const trimmed = crossPath(a, b, 0.2, 6, 12)
+    // The drawn start moves off `a` and the drawn end pulls back from `b`.
+    expect(untrimmed.path).toContain("M0,0")
+    expect(trimmed.path).not.toContain("M0,0")
   })
 })
 
