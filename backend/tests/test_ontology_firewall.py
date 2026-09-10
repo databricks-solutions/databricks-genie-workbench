@@ -34,10 +34,24 @@ _FORBIDDEN = [
 # Phase 5 (17i): single-writer carve — these tokens are allowed ONLY in apply.py.
 _APPLY_ALLOWED = ["set tag", "unset tag", "create governed tag"]
 
-# Phase-4 external-context substrate must not be pulled forward. (Phase 3a
-# unlocks the Lakebase Search similarity tokens, but ONLY inside similarity.py —
-# see test_lakebase_search_tokens_confined_to_similarity below.)
+# Phase-4 external-context EGRESS is confined to the Stage-B resolver files. Stage A
+# ships the Context Sources *registry* (which NAMES the ``system.ai.web_search``
+# securable as a config string — naming a source is not an egress call); Stage B adds
+# the wheel egress path (``web_search.py`` AI-Gateway MCP client) + the resolver
+# (``context_pack.py``) that drives it, plus the single-sourced wheel registry
+# (``context_registry.py``). The ``web_search`` token is permitted ONLY in those four
+# modules; every OTHER ontology module (rank/pages/materialize/graph/…) must stay clear
+# of the egress token, so external context can never leak into structure. (Phase 3a
+# unlocks the Lakebase Search similarity tokens, but ONLY inside similarity.py — see
+# test_lakebase_search_tokens_confined_to_similarity below.)
 _DEFERRED_TOKENS = ["web_search"]
+# The modules allowed to NAME/CALL the web-search source: the backend preflight tier
+# (``context_sources.py`` re-exports the registry), the single-sourced wheel registry
+# (``context_registry.py``), the wheel egress client (``web_search.py``), and the
+# Stage-B resolver (``context_pack.py``). Every other ontology module stays covered.
+_WEB_SEARCH_NAMING_ALLOWED = frozenset(
+    {"context_sources.py", "context_registry.py", "web_search.py", "context_pack.py"}
+)
 
 # Lakebase Search tokens are allowed in exactly one module (the similarity seam).
 _LAKEBASE_SEARCH_TOKENS = ["lakebase_vector", "lakebase_text"]
@@ -86,6 +100,11 @@ def test_no_write_path_in_ontology_module(path: pathlib.Path):
 @pytest.mark.parametrize("path", _PY_FILES, ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_no_deferred_phase4_tokens(path: pathlib.Path):
     text = path.read_text().lower()
+    # The registry + resolver + egress-client modules may NAME/CALL the web-search
+    # source; no OTHER module may reference the egress token (so external context can
+    # never leak into structure).
+    if path.name in _WEB_SEARCH_NAMING_ALLOWED:
+        return
     hits = [tok for tok in _DEFERRED_TOKENS if tok in text]
     assert not hits, f"{path.name} references a deferred Phase-4 token: {hits}"
 

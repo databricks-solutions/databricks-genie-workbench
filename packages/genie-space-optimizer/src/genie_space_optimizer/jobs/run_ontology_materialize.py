@@ -124,6 +124,15 @@ dbutils.widgets.text("enrich_max_workers", "4")
 dbutils.widgets.text("er_adjudicate_max_pairs", "30")
 dbutils.widgets.text("er_adjudicate_min_score", "0.85")
 dbutils.widgets.text("rename_max_domains", "10")
+# Phase 4 Stage B (17h) external Context Pack (MV-D38/D44/D46) — job_parameters, DEFAULT
+# OFF. A param-less run (nightly, older launcher) leaves the tier off ⇒ the resolver is
+# NEVER invoked and the run is byte-identical estate-only (no pack rows). ``sources`` is a
+# JSON {source_id: bool} map (the enabled AI-Gateway MCP context sources); ``company_name``
+# seeds the resolver's queries; ``hipaa_baa`` hard-off keeps a compliance workspace dark.
+dbutils.widgets.text("external_context_enabled", "false")
+dbutils.widgets.text("external_context_sources", "{}")
+dbutils.widgets.text("company_name", "")
+dbutils.widgets.text("external_context_hipaa_baa", "false")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -209,6 +218,18 @@ enrich_max_workers = _parse_int("enrich_max_workers", 4)
 er_adjudicate_max_pairs = _parse_int("er_adjudicate_max_pairs", 30)
 er_adjudicate_min_score = _parse_float("er_adjudicate_min_score", 0.85)
 rename_max_domains = _parse_int("rename_max_domains", 10)
+
+# Phase 4 Stage B (MV-D38/D44/D46) external Context Pack params, parsed defensively →
+# DEFAULT OFF (MV-D43). ``enabled=false`` (default) ⇒ the resolver is NEVER built below.
+external_context_enabled = (dbutils.widgets.get("external_context_enabled").strip().lower() or "false") == "true"
+try:
+    external_context_sources = {
+        str(k): bool(v) for k, v in json.loads(dbutils.widgets.get("external_context_sources") or "{}").items()
+    }
+except (TypeError, ValueError, AttributeError):
+    external_context_sources = {}
+company_name = dbutils.widgets.get("company_name").strip() or None
+external_context_hipaa_baa = (dbutils.widgets.get("external_context_hipaa_baa").strip().lower() or "false") == "true"
 
 
 def _resolve_metastore_id() -> str:
@@ -924,6 +945,43 @@ except Exception as _e:  # noqa: BLE001 — degrade to string-only ER
     _log("Embedding client unavailable; ER runs string-only", error=str(_e))
     _embedder = None
 
+# Phase 4 Stage B (MV-D38/D44/D46/D50): resolve the external Context Pack ONCE at BATCH
+# identity when the tier is enabled AND ≥1 web-search source is enabled — else leave it
+# None so run_materialize stays byte-identical estate-only (the resolver is never invoked).
+# The pack is a READ-ONLY naming/overlay prior; it never touches structure or writes a tag.
+_context_pack = None
+if external_context_enabled and not external_context_hipaa_baa:
+    from genie_space_optimizer.ontology import context_pack as _cp
+    from genie_space_optimizer.ontology.context_registry import CONTEXT_SOURCES
+
+    # Enabled web-search providers = the enabled AI-Gateway MCP web sources (registry
+    # default overridden by the per-source map). model_serving has no registry securable.
+    _enabled_providers = [
+        s.id for s in CONTEXT_SOURCES
+        if s.id in ("web_search", "youcom")
+        and external_context_sources.get(s.id, s.default_enabled)
+    ]
+    if _enabled_providers and company_name:
+        def _pack_llm(prompt: str) -> str:
+            from genie_space_optimizer.common.llm import call_llm_core
+            content, _resp = call_llm_core(
+                _ont_llm_w, messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            return content
+
+        try:
+            _context_pack = _cp.resolve_context_pack(
+                company=company_name, enabled_providers=_enabled_providers,
+                llm_fn=_pack_llm, w=_ont_llm_w, hipaa_baa=external_context_hipaa_baa,
+                model=llm_model or None,
+            )
+        except Exception as _e:  # noqa: BLE001 — degrade-not-hang: estate-only on any failure
+            _log("context pack resolve degraded; estate-only", error=str(_e))
+            _context_pack = None
+    _log("Context Pack resolved", enabled=external_context_enabled,
+         providers=_enabled_providers, resolved=_context_pack is not None)
+
 writer = materialize.SparkSnapshotWriter(spark, catalog, schema)
 run = materialize.run_materialize(
     SparkSystemTableReader(
@@ -973,6 +1031,9 @@ run = materialize.run_materialize(
     er_adjudicate_max_pairs=er_adjudicate_max_pairs,
     er_adjudicate_min_score=er_adjudicate_min_score,
     er_adjudicate_max_workers=enrich_max_workers,
+    # Phase 4 Stage B (MV-D38): the read-only external Context Pack prior (None ⇒ off ⇒
+    # byte-identical estate-only). Threaded into rank naming + Page Recent-context only.
+    context_pack=_context_pack,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))

@@ -610,6 +610,18 @@ _QUESTION_ECHO_STOPWORDS: frozenset[str] = frozenset({
 _QUESTION_PUNCT_RE = re.compile(r"[^\w\s]+")
 
 
+# A financial / regulatory FIGURE: a currency-prefixed number, a number with a percent /
+# magnitude unit, or a multi-digit figure. Deliberately does NOT match a lone small digit
+# in a name (e.g. "Q4", "Section 5") — the rail targets stated numbers, not name tokens
+# (MV-D38 no-unsourced-numbers; used by LeakageOracle.unsourced_number_leaks).
+_UNSOURCED_FIGURE_RE = re.compile(
+    r"(\$\s?\d)"
+    r"|(\d[\d,]*(?:\.\d+)?\s?(?:%|percent|bn|billion|m\b|mn|million|k\b|thousand|usd|eur|gbp)\b)"
+    r"|(\b\d[\d,]{2,}(?:\.\d+)?\b)",
+    re.IGNORECASE,
+)
+
+
 def _normalize_question_text(q: str) -> set[str]:
     """Return the canonical token set for a question.
 
@@ -938,6 +950,28 @@ class LeakageOracle:
         except Exception:  # noqa: BLE001 — scanner unavailable → do not block (degrade)
             return False, ""
         return (True, "tag_name_pii") if pii_reject(name) else (False, "")
+
+    def unsourced_number_leaks(self, text: str, source_url: Any) -> tuple[bool, str]:
+        """Return ``(is_leak, reason)`` when ``text`` carries a financial / regulatory
+        FIGURE but has no citable ``source_url`` — the MV-D38 "no unsourced numbers" rail
+        (architecture §6 rail 2) for the external Context Pack (Phase 4 Stage B).
+
+        A T1–T3 external leaf whose value states a number (a currency amount, a percentage,
+        a magnitude like ``4.2B``, or a multi-digit figure) must cite a source URL + as-of
+        date, or the resolver DROPS it rather than let an LLM-guessed figure become a Page
+        Recent-context claim. A leaf that already carries a ``source_url`` is sourced and
+        passes; a leaf with no number (a name / synonym / description) is never flagged by
+        THIS rail (its own PII rail — :meth:`tag_name_leaks` — governs names).
+
+        Corpus-independent: whether a figure is sourced is intrinsic to the leaf, so this
+        fires with or without a benchmark corpus (like :meth:`tag_name_leaks`)."""
+        if source_url and str(source_url).strip():
+            return False, ""
+        if not text or not isinstance(text, str) or not text.strip():
+            return False, ""
+        if _UNSOURCED_FIGURE_RE.search(text):
+            return True, "unsourced_number"
+        return False, ""
 
     # Deliberately absent — see class docstring for rationale. Any of
     # the following would re-open the side channel the wrapper exists

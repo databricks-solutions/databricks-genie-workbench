@@ -273,6 +273,76 @@ def test_page_autodraft_param_less_run_uses_defaults():
     assert run["page_count"] == len(writer.tables["genie_ont_pages"])
 
 
+# ── Phase 4 Stage B: the external Context Pack, off-by-default byte-identical ────
+
+
+def _demo_pack():
+    from genie_space_optimizer.ontology.context_pack import ContextPack
+
+    return ContextPack(
+        pack_id="pack_demo", company_key="northwind", version=1, content_hash="abc123",
+        generated_at="2026-09-10T00:00:00+00:00",
+        industry={"label": {"value": "Food Retail", "tier": "T2", "source_url": "https://ex.com/i",
+                            "source_kind": "industry_model", "as_of": "2026-09-10",
+                            "confidence": 0.9, "decay_weight": 1.0}, "gate_confidence": 0.9,
+                  "codes": {"value": {"naics": "445", "gics_sector": "Consumer Staples"},
+                            "tier": "T2", "source_url": "https://ex.com/c",
+                            "source_kind": "standards_body", "as_of": "2026-09-10",
+                            "confidence": 0.9, "decay_weight": 1.0}},
+        canonical_domains=[
+            {"name": {"value": "Finance", "tier": "T2", "source_url": "https://ex.com/f",
+                      "source_kind": "industry_model", "as_of": "2026-09-10",
+                      "confidence": 0.6, "decay_weight": 1.0}, "is_template": True},
+        ],
+    )
+
+
+def test_context_pack_off_by_default_writes_no_pack_rows():
+    """DEFAULT OFF (MV-D44): a run with no context_pack writes ZERO pack rows and is
+    byte-identical to today — the resolver is never invoked."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    run = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    assert run["state"] == "succeeded"
+    assert "genie_ont_context_pack" not in writer.tables
+    assert "genie_ont_context_sources" not in writer.tables
+    assert run["context_pack_rows"] == 0
+    assert run["context_gap_hypotheses"] == []
+
+
+def test_context_pack_off_is_byte_identical_to_omitting_it():
+    """Threading context_pack=None must be byte-identical to a run that never passed it."""
+    catalog_rows, assign_rows = _fixture_rows()
+    w_none, w_omit = _FakeWriter(), _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), w_none, run_id="r1", context_pack=None)
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), w_omit, run_id="r1")
+    # Same tables, same rows (domains/taxonomy/graph) — pack changes nothing when off.
+    assert set(w_none.tables) == set(w_omit.tables)
+    for t in w_none.tables:
+        assert w_none.tables[t] == w_omit.tables[t]
+
+
+def test_context_pack_on_writes_pack_and_source_rows():
+    """With a resolved pack, the two context tables are MERGEd (metastore-scoped) and the
+    naming prior is recorded on the curated Domain (never renaming it — T0/curated wins)."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    run = _run(
+        _FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+        context_pack=_demo_pack(),
+    )
+    assert run["state"] == "succeeded"
+    assert run["context_pack_rows"] == 1
+    pack_rows = writer.tables["genie_ont_context_pack"]
+    assert len(pack_rows) == 1
+    assert next(iter(pack_rows.values()))["company_key"] == "northwind"
+    # The citation index has the sourced leaves.
+    assert writer.tables["genie_ont_context_sources"]
+    # The curated "Finance" governed-tag Domain kept its name (never outranked by T2).
+    fin = [r for r in writer.tables["genie_ont_domains"].values() if r.get("name") == "Finance"]
+    assert fin, "the curated Finance Domain kept its T0/curated name"
+
+
 def test_mirror_vs_live_parity_tree_and_tag_graph():
     catalog_rows, assign_rows = _fixture_rows()
     metric_views, agents = ["finance.rep.untagged_mv"], ["Sales · 01ef"]
@@ -730,18 +800,23 @@ def test_merge_sql_delete_unmatched_false_is_upsert_only():
 
 def test_ddl_shape_all_tables_no_deferred_tokens():
     rendered = ddl.all_ddl("maincat", "gso_schema")
-    # Phase 5 (17i): add APPLY_TABLES (1 audit table for the backend apply).
+    # Phase 5 (17i): APPLY_TABLES (1 audit table). Phase 4 Stage B (17h): CONTEXT_TABLES
+    # (the external Context Pack header + its per-leaf citation index) — created empty,
+    # written only when the tier is enabled (MV-D49 additive; MV-D44 default off).
     assert set(rendered) == (
         set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES)
         | set(ddl.PAGE_TABLES) | set(ddl.PHASE3_TABLES) | set(ddl.APPLY_TABLES)
+        | set(ddl.CONTEXT_TABLES)
     )
     # 5 snapshot (+ graph_snapshot, Phase 3e) + 2 proposal + 1 page (now written)
-    # + 2 still-empty (consents/suppressions) + 1 apply audit (Phase 5) = 11 total.
-    assert len(rendered) == 11
+    # + 2 still-empty (consents/suppressions) + 1 apply audit (Phase 5) + 2 context
+    # (Phase 4 Stage B) = 13 total.
+    assert len(rendered) == 13
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():
         assert stmt.startswith("CREATE TABLE IF NOT EXISTS maincat.gso_schema.")
-    # No Phase-3/4 substrate, no governed-tag writes anywhere in the DDL.
+    # No similarity substrate token, no egress token (the Context Pack DDL names no
+    # source), and no governed-tag writes anywhere in the DDL.
     for tok in ("lakebase_vector", "lakebase_text", "web_search", "set tag", "create governed tag"):
         assert tok not in joined
 

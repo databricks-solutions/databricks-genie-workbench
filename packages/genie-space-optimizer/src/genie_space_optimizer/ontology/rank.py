@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -133,8 +133,159 @@ def provenance_ladder(provenance_tier: str = "T0") -> tuple[bool, str]:
 
 def outranks(tier_a: str, tier_b: str) -> bool:
     """Whether provenance ``tier_a`` strictly outranks ``tier_b`` (T0 > T1 > T2 > T3).
-    The invariant 17h enforces; pinned dormant by the §11 seam test."""
+    The invariant 17h enforces; the naming-prior + gap-hypothesis plug-points below make
+    it load-bearing (a T3 web hint never outranks a T0 lineage fact)."""
     return PROVENANCE_TIER_STRENGTH.get(tier_a, -1) > PROVENANCE_TIER_STRENGTH.get(tier_b, -1)
+
+
+# ── Plug-point 1 (17h Stage B): external Context Pack as a read-only naming prior ────
+# The pack (MV-D38) is a PROVENANCED prior that steers L4/L5 cluster NAMING + gap
+# hypotheses. It NEVER outranks a T0/curated fact: a governed-tag Domain (reuse/reassign
+# — a human-asserted, T0/curated name) is never renamed by the pack; only a pure engine
+# ``create`` cluster (whose name is an anchor-derived default, not a curated fact) may
+# take a business-language name from the pack. A gap hypothesis ("industry has domain X,
+# estate has none") is ranked BELOW every graph-backed proposal (it is never a surfaced
+# Domain row; the run report carries it). This is the ONLY place the pack touches naming;
+# ``pack=None`` (the estate-only default) makes every function here a no-op.
+
+_STOPWORDS: frozenset[str] = frozenset(
+    {"the", "and", "of", "for", "data", "domain", "business", "core", "team", "group"}
+)
+
+
+def _tokens(text: str) -> set[str]:
+    """Meaningful lowercase tokens (len > 2, non-stopword) for prior/gap matching."""
+    raw = "".join(c.lower() if (c.isalnum() or c.isspace()) else " " for c in str(text or ""))
+    return {t for t in raw.split() if len(t) > 2 and t not in _STOPWORDS}
+
+
+def _row_name_tokens(row: Mapping[str, Any], members: Sequence[str]) -> set[str]:
+    """The tokens a pack name is matched against: the cluster's current name + its member
+    schema/table stems (so an industry name like ``Revenue`` matches a revenue cluster)."""
+    toks = _tokens(row.get("name") or "")
+    for m in members:
+        parts = str(m).split(".")
+        for p in parts[1:]:  # skip catalog; schema + table carry the business sense
+            toks |= _tokens(p)
+    return toks
+
+
+def apply_context_prior(
+    domain_rows: list[dict[str, Any]],
+    pack: Any | None,
+    *,
+    members_by_domain: Mapping[str, Sequence[str]] | None = None,
+) -> int:
+    """Apply the Context Pack's business-language names as PROVENANCED priors to ``create``
+    Domain rows IN PLACE (plug-point 1, MV-D38). Returns the number of rows renamed.
+
+    A curated governed-tag Domain (``tag_decision`` in ``{reuse, reassign}`` — a T0/curated
+    name) is NEVER renamed: the pack name is recorded on ``evidence["rank"]["naming_prior"]``
+    as corroborating provenance but the name is left untouched (T0/curated wins, MV-D35/D38).
+    A pure engine ``create`` cluster (an anchor-derived default name, not a curated fact) may
+    take a matching pack name; the prior + its provenance envelope are recorded on the rank
+    block. ``pack=None`` (the estate-only default) is a NO-OP — zero rows touched,
+    byte-identical."""
+    if pack is None:
+        return 0
+    priors = _pack_domain_priors(pack)
+    if not priors:
+        return 0
+    members = members_by_domain or {}
+    renamed = 0
+    for row in domain_rows:
+        row_members = members.get(str(row.get("domain_id") or ""), ())
+        row_toks = _row_name_tokens(row, row_members)
+        match = _best_prior(priors, row_toks)
+        if match is None:
+            continue
+        name, leaf = match
+        ev = _load_evidence(row)
+        rank = ev.get("rank")
+        if not isinstance(rank, dict):
+            rank = {}
+        curated = str(row.get("tag_decision") or "") in ("reuse", "reassign")
+        rank["naming_prior"] = {
+            "value": name,
+            "tier": str(leaf.get("tier") or "T2"),
+            "source_url": leaf.get("source_url"),
+            "source_kind": leaf.get("source_kind"),
+            "as_of": leaf.get("as_of"),
+            # A curated (T0) name always wins — record why the prior did NOT apply.
+            "applied": not curated,
+            "outranked_by": "curated" if curated else None,
+        }
+        ev["rank"] = rank
+        if not curated:
+            row["name"] = name
+            renamed += 1
+        row["evidence"] = json.dumps(ev, sort_keys=True)
+    return renamed
+
+
+def context_gap_hypotheses(pack: Any | None, surfaced_domain_names: Iterable[str]) -> list[dict[str, Any]]:
+    """The pack's canonical-domain gap hypotheses ("industry has domain X, estate has
+    none"), each a PROVENANCED prior ranked BELOW every graph-backed proposal (MV-D38).
+
+    Returns ``[]`` when ``pack=None`` OR the confidence-gate suppressed the gap-check
+    (``pack.gap_check_suppressed`` — a low-confidence industry guess, MV-D38 rail 6). A
+    hypothesis is emitted only for a canonical domain whose name is NOT already covered by
+    a surfaced Domain (token overlap). These are NEVER surfaced Domain rows — the caller
+    carries them in the run report as informational, sourced, dated hints."""
+    if pack is None or getattr(pack, "gap_check_suppressed", False):
+        return []
+    priors = _pack_domain_priors(pack)
+    if not priors:
+        return []
+    covered: set[str] = set()
+    for nm in surfaced_domain_names:
+        covered |= _tokens(nm)
+    out: list[dict[str, Any]] = []
+    for name, leaf in priors:
+        if _tokens(name) & covered:
+            continue  # the estate already has a domain covering this concept
+        out.append({
+            "kind": "gap_hypothesis",
+            "name": name,
+            "tier": str(leaf.get("tier") or "T2"),
+            "source_url": leaf.get("source_url"),
+            "source_kind": leaf.get("source_kind"),
+            "as_of": leaf.get("as_of"),
+            # A gap ranks below EVERY graph-backed proposal — never a surfaced Domain.
+            "ranks_below_graph_proposals": True,
+            "surfaced": False,
+        })
+    return sorted(out, key=lambda h: h["name"].lower())
+
+
+def _pack_domain_priors(pack: Any) -> list[tuple[str, dict[str, Any]]]:
+    """``[(name, name_leaf)]`` from the pack's canonical domains (duck-typed on
+    ``canonical_domain_names``; falls back to reading ``canonical_domains`` dicts)."""
+    getter = getattr(pack, "canonical_domain_names", None)
+    if callable(getter):
+        try:
+            return list(getter())
+        except Exception:  # noqa: BLE001 — degrade to the raw-field read
+            pass
+    out: list[tuple[str, dict[str, Any]]] = []
+    for cd in getattr(pack, "canonical_domains", []) or []:
+        leaf = cd.get("name") if isinstance(cd, dict) else None
+        if isinstance(leaf, dict) and str(leaf.get("value") or "").strip():
+            out.append((str(leaf["value"]).strip(), leaf))
+    return out
+
+
+def _best_prior(priors: Sequence[tuple[str, dict[str, Any]]], row_toks: set[str]) -> tuple[str, dict[str, Any]] | None:
+    """The pack name with the most token overlap with a cluster (deterministic tie-break by
+    name); ``None`` when nothing overlaps."""
+    best: tuple[int, str, dict[str, Any]] | None = None
+    for name, leaf in priors:
+        overlap = len(_tokens(name) & row_toks)
+        if overlap <= 0:
+            continue
+        if best is None or overlap > best[0] or (overlap == best[0] and name.lower() < best[1].lower()):
+            best = (overlap, name, leaf)
+    return (best[1], best[2]) if best else None
 
 
 # ── The blend ───────────────────────────────────────────────────────────────
@@ -524,7 +675,9 @@ __all__ = [
     "FACTOR_WEIGHTS",
     "PROVENANCE_TIER_STRENGTH",
     "RankSignals",
+    "apply_context_prior",
     "blend",
+    "context_gap_hypotheses",
     "mark_surfaced",
     "outranks",
     "pii_name_reject",

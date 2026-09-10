@@ -22,7 +22,18 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Protocol
 
-from genie_space_optimizer.ontology import cluster, ddl, er, graph, layout, pages, rank, similarity, transforms
+from genie_space_optimizer.ontology import (
+    cluster,
+    context_pack as context_pack_mod,
+    ddl,
+    er,
+    graph,
+    layout,
+    pages,
+    rank,
+    similarity,
+    transforms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +55,11 @@ MEMBER_KEYS = ["metastore_id", "domain_id", "asset_fqn"]
 # Page proposals (Phase 3c) — concept-anchored derived PK, metastore-scoped (§7).
 PAGE_KEYS = ["metastore_id", "page_id"]
 GRAPH_SNAPSHOT_KEYS = ["metastore_id"]
+# Phase 4 Stage B (17h): the external Context Pack tables (additive, MV-D49). Written
+# ONLY when a resolved ``context_pack`` is threaded in (tier enabled + a source available);
+# the default estate-only run never touches them (byte-identical, MV-D44).
+CONTEXT_PACK_KEYS = list(ddl.CONTEXT_PACK_KEYS)
+CONTEXT_SOURCE_KEYS = list(ddl.CONTEXT_SOURCE_KEYS)
 
 
 class MaterializeReader(Protocol):
@@ -521,6 +537,7 @@ def run_materialize(
     er_adjudicate_max_pairs: int | None = None,
     er_adjudicate_min_score: float = er.ESCALATE_LOW,
     er_adjudicate_max_workers: int = 1,
+    context_pack: Any | None = None,
 ) -> dict[str, Any]:
     """Materialize the governed-tag graph + taxonomy snapshots for one metastore
     (MV-D49 grain), then resolve identity (L3 ER) and MERGE the identity map +
@@ -754,6 +771,24 @@ def run_materialize(
             proposals, expanded["domain_rows"], namer=namer, company=company,
             max_workers=rename_max_workers, max_domains=rename_max_domains,
         )
+        # Phase 4 Stage B plug-point 1 (MV-D38): the external Context Pack as a read-only
+        # NAMING prior — business-language names on ``create`` clusters only (a curated
+        # governed-tag Domain keeps its T0/curated name; provenance recorded either way).
+        # ``context_pack=None`` (the estate-only default) is a no-op ⇒ byte-identical.
+        gap_hypotheses: list[dict[str, Any]] = []
+        if context_pack is not None:
+            rank.apply_context_prior(
+                expanded["domain_rows"], context_pack, members_by_domain=members_by_domain,
+            )
+            surfaced_names = [
+                str(r.get("name") or "")
+                for r in expanded["domain_rows"]
+                if json.loads(r.get("evidence") or "{}").get("surfaced")
+            ]
+            gap_hypotheses = rank.context_gap_hypotheses(context_pack, surfaced_names)
+            # Plug-point 2 (MV-D28 subsumed): the Page Recent-context overlay — labeled,
+            # sourced, dated, certify-no. Rides evidence; never touches body/certify.
+            context_pack_mod.apply_recent_context(page_rows, context_pack)
         writer.merge(ddl.TABLE_ONT_DOMAINS, expanded["domain_rows"], DOMAIN_KEYS, metastore_id)
         # Step 2 (MV-D66): re-merge pages with preserved bodies for curator rows.
         writer.merge(
@@ -830,6 +865,24 @@ def run_materialize(
         )
         writer.merge(ddl.TABLE_ONT_GRAPH_SNAPSHOT, [graph_row], GRAPH_SNAPSHOT_KEYS, metastore_id)
 
+        # Phase 4 Stage B persistence (MV-D49 additive): MERGE the resolved Context Pack +
+        # its per-leaf citation index. Written ONLY when a pack was resolved (tier enabled +
+        # a source available); the estate-only default writes zero pack rows (MV-D44). The
+        # tables are metastore-scoped like every other genie_ont_* table.
+        context_pack_rows = 0
+        if context_pack is not None:
+            built = context_pack_mod.pack_rows(
+                context_pack, metastore_id=metastore_id, workspace_id=workspace_id,
+                run_id=run_id, as_of=as_of,
+            )
+            writer.merge(
+                ddl.TABLE_ONT_CONTEXT_PACK, built["context_pack_rows"], CONTEXT_PACK_KEYS, metastore_id,
+            )
+            writer.merge(
+                ddl.TABLE_ONT_CONTEXT_SOURCES, built["context_source_rows"], CONTEXT_SOURCE_KEYS, metastore_id,
+            )
+            context_pack_rows = len(built["context_pack_rows"])
+
         counts = {**snap["counts"], "domain_count": len(proposals)}
         run_row = {
             **run_row,
@@ -843,6 +896,11 @@ def run_materialize(
             "surfaced_count": report["surfaced"],
             "suppressed_count": report["suppressed"],
             "blocked_count": report["blocked"],
+            # Phase 4 Stage B (§8.3): pack rows written (0 when off) + gap hypotheses (the
+            # sourced, dated, ranked-below-graph hints). Returned + logged, NOT persisted
+            # columns (no DDL, MV-D49) — the writer drops keys absent from the schema.
+            "context_pack_rows": context_pack_rows,
+            "context_gap_hypotheses": gap_hypotheses,
         }
         writer.upsert_run(run_row)
         return run_row

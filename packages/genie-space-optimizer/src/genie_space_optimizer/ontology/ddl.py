@@ -249,6 +249,57 @@ APPLY_TABLES: tuple[str, ...] = (
     TABLE_ONT_APPLIED,
 )
 
+# ── Phase 4 Stage B (17h): external Context Pack tables (additive, MV-D49/D38) ──
+# Created empty at startup; WRITTEN only when the external-context tier is enabled AND a
+# source is available (DEFAULT OFF ⇒ zero rows ⇒ byte-identical estate-only). No key/grain
+# change to any existing genie_ont_* table (MV-D49). Shapes per architecture §6: the pack
+# rides a JSON blob (no per-field schema churn), plus a normalized per-leaf citation index
+# so the egress audit is a SELECT.
+_GENIE_ONT_CONTEXT_PACK_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_context_pack (
+    metastore_id    STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, company_key, version) is the derived PK',
+    company_key     STRING     COMMENT 'Per-company grain (§6) — the pack is resolved once per company',
+    version         INT        COMMENT 'Pack version; (metastore_id, company_key, version) is the PK',
+    workspace_id    STRING     COMMENT 'provenance — which install triggered the resolve; NOT a key',
+    pack_id         STRING     COMMENT 'pack_<company_key>_<version>_<hash> — stable id',
+    content_hash    STRING     COMMENT 'SHA-256 over the validated pack content (determinism guard)',
+    status          STRING     COMMENT 'active | stale | superseded (internal, auto-managed)',
+    industry_code   STRING     COMMENT 'Resolved NAICS/GICS code (header projection of the industry leaf)',
+    gate_confidence DOUBLE     COMMENT 'company->industry confidence; < tau suppresses the gap-check (MV-D38)',
+    pack_json       STRING     COMMENT 'JSON blob: the full ContextPack (Provenanced<T> leaves, §6)',
+    generated_at    TIMESTAMP  COMMENT 'When the pack was resolved',
+    run_id          STRING     COMMENT 'FK to genie_ont_runs.run_id',
+    as_of           TIMESTAMP  COMMENT 'Materialization time'
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
+
+_GENIE_ONT_CONTEXT_SOURCES_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_context_sources (
+    metastore_id  STRING     COMMENT 'Metastore grain (MV-D49); (metastore_id, pack_id, field_path) is the derived PK',
+    pack_id       STRING     COMMENT 'FK to genie_ont_context_pack.pack_id',
+    field_path    STRING     COMMENT 'Dotted path of the provenanced leaf (e.g. canonical_domains[0].name)',
+    workspace_id  STRING     COMMENT 'provenance — which install triggered the resolve; NOT a key',
+    tier          STRING     COMMENT 'T0..T3 provenance tier of the leaf (MV-D35)',
+    source_url    STRING     COMMENT 'Citable URL for the leaf (required for a T1-T3 number; else dropped)',
+    source_kind   STRING     COMMENT 'system_table | filing | industry_model | standards_body | web | llm_synthesis',
+    sha256        STRING     COMMENT 'Hash of the source_url — the egress audit key',
+    as_of         STRING     COMMENT 'As-of date the leaf was fetched',
+    run_id        STRING     COMMENT 'FK to genie_ont_runs.run_id'
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
+
+TABLE_ONT_CONTEXT_PACK = "genie_ont_context_pack"
+TABLE_ONT_CONTEXT_SOURCES = "genie_ont_context_sources"
+
+CONTEXT_TABLES: tuple[str, ...] = (
+    TABLE_ONT_CONTEXT_PACK,
+    TABLE_ONT_CONTEXT_SOURCES,
+)
+
+# The MERGE keys for the two Context Pack tables (metastore-scoped delete, MV-D49).
+CONTEXT_PACK_KEYS: tuple[str, ...] = ("metastore_id", "company_key", "version")
+CONTEXT_SOURCE_KEYS: tuple[str, ...] = ("metastore_id", "pack_id", "field_path")
+
 _ONT_ALL_DDL: dict[str, str] = {
     TABLE_ONT_RUNS: _GENIE_ONT_RUNS_DDL,
     TABLE_ONT_TAG_GRAPH: _GENIE_ONT_TAG_GRAPH_DDL,
@@ -261,6 +312,8 @@ _ONT_ALL_DDL: dict[str, str] = {
     "genie_ont_consents": _GENIE_ONT_CONSENTS_DDL,
     "genie_ont_suppressions": _GENIE_ONT_SUPPRESSIONS_DDL,
     TABLE_ONT_APPLIED: _GENIE_ONT_APPLIED_DDL,
+    TABLE_ONT_CONTEXT_PACK: _GENIE_ONT_CONTEXT_PACK_DDL,
+    TABLE_ONT_CONTEXT_SOURCES: _GENIE_ONT_CONTEXT_SOURCES_DDL,
 }
 
 
