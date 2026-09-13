@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Camera, GitBranch, RefreshCw, Upload } from 'lucide-react'
+import { Camera, GitBranch, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { VersionControlApi, VersionControlError } from '@/lib/version-control-api'
 import type { ObservationResult, SemanticDiff, VersionDetail, VersionPage, VersionSummary, VersionTagMap } from '@/types/version-control'
@@ -9,8 +9,6 @@ import { VersionDetailPanel } from './version-detail-panel'
 import { SemanticDiffView } from './diff'
 import { shortId } from './version-format'
 import { chronoPair } from './compare-order'
-
-type SubTab = 'versions' | 'promote'
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof VersionControlError ? err.message : fallback
@@ -28,7 +26,6 @@ interface Props {
 }
 
 export function SpaceVersionControlTab({ spaceId }: Props) {
-  const [subTab, setSubTab] = useState<SubTab>('versions')
   const [page, setPage] = useState<VersionPage>(EMPTY_PAGE)
   const [tags, setTags] = useState<VersionTagMap>({})
   const [loading, setLoading] = useState(false)
@@ -272,11 +269,6 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     }
   }, [spaceId, load])
 
-  const subTabs: { id: SubTab; label: string }[] = [
-    { id: 'versions', label: 'Versions' },
-    { id: 'promote', label: 'Promote' },
-  ]
-
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-3">
@@ -286,8 +278,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
         <div>
           <h3 className="text-lg font-display font-semibold text-primary">Version Control</h3>
           <p className="text-sm text-muted mt-1 max-w-2xl">
-            Manage this agent's configuration versions in-workspace, and promote an approved
-            version to another workspace you manage.
+            Manage this agent's configuration versions in-workspace.
           </p>
           <p className="text-xs text-muted mt-1.5 max-w-2xl">
             A version is auto-captured whenever you open this tab and after each optimizer run.
@@ -297,26 +288,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
         </div>
       </div>
 
-      <div className="inline-flex rounded-lg border border-default bg-surface-secondary p-0.5">
-        {subTabs.map(tab => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setSubTab(tab.id)}
-            className={cn(
-              'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
-              subTab === tab.id
-                ? 'bg-surface text-primary shadow-sm'
-                : 'text-muted hover:text-secondary',
-            )}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {subTab === 'versions' && (
-        <div className="space-y-4">
+      <div className="space-y-4">
           <div className="flex items-center justify-end gap-2">
             {/* The compact icon and the labeled button run the same action — observe the
                 live Genie space (source-check + record). The icon is the quick repeat
@@ -478,22 +450,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
             </div>
           )}
           {diff && <SemanticDiffView diff={diff} />}
-        </div>
-      )}
-
-      {subTab === 'promote' && (
-        <div className="rounded-xl border border-default bg-surface p-4">
-          <div className="text-center py-16 text-muted">
-            <Upload className="w-8 h-8 mx-auto mb-3 opacity-50" />
-            <p className="text-secondary font-medium">Cross-workspace promotion</p>
-            <p className="text-sm mt-1 max-w-md mx-auto">
-              Promote an approved version to another workspace you manage, with two-person
-              approval and a durable deployment receipt. This surface is not enabled on this
-              deployment yet.
-            </p>
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   )
 }

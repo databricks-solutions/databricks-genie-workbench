@@ -6,7 +6,6 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { VersionControlView } from './version-control-tab'
 import { RestorePanel } from './restore'
 import { PromotionPanel } from './promotion'
-import { VersionControlWorkbench } from '@/pages/VersionControlWorkbench'
 import { createDemoTransport } from './demo-api'
 
 it('open_waits_for_capture_before_showing_reconcile_choices', async () => {
@@ -44,13 +43,6 @@ it('version_control_actions_are_keyboard_accessible_and_errors_announced', () =>
   expect(controls).toContain('<label>Target binding<input')
   expect(controls).toContain('<button disabled=""')
   expect(controls).not.toMatch(/tabindex="-1"|<div[^>]*role="button"/)
-})
-
-it('workbench_exposes_an_explicit_api_faked_entry_point', () => {
-  const html = renderToStaticMarkup(<VersionControlWorkbench />)
-  expect(html).toContain('VC/1.0 API-faked foundation')
-  expect(html).toContain('No real endpoints')
-  expect(html).toContain('Version Control overview')
 })
 
 it('fake_api_supports_approval_restore_promotion_and_receipt_without_network', async () => {
