@@ -200,6 +200,8 @@ export function History({ page, loading, selectedId, currentId, onNext, onSelect
   const headId = currentId ?? page.items[0]?.version_id ?? null
   const groups = groupByDay(page.items)
   // Lookup for the benchmark-changed chip: resolve a version by id within this page.
+  // `byId` is page-scoped, so a row whose parent is not on the loaded page shows no chip —
+  // this is the intended "unknown parent => no change surfaced" behavior, not "no change".
   const versionsById = new Map(page.items.map(version => [version.version_id, version]))
   const byId = (id: string) => versionsById.get(id)
   const selectClass = 'rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary'

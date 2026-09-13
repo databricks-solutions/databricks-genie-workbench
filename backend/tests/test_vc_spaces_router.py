@@ -273,3 +273,22 @@ def test_put_tag_fail_closed_when_writes_disabled():
                      json={"label": "Golden"})
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "vc_writes_disabled"
+
+
+def test_put_tag_denies_actor_outside_binding_workspace():
+    # Mirror `test_restore_service_denies_actor_outside_binding_workspace`, which forces the
+    # scope gate to fail via a mismatched workspace_id on the actor (the binding lives in
+    # "target"; the intruder authenticates from "other-ws"). Here the actor comes from
+    # `identity.actor`, so we mismatch it there: `resolve_readable` then raises
+    # PermissionError, which the router maps to 403 for the tag WRITE — proving the write is
+    # denied (not merely that a read returns empty). DELETE enforces the same gate.
+    runtime = _runtime()
+    runtime.identity.actor.return_value = vc.ActorContext("user@x", "other-ws", "human")
+    c = _client(runtime)
+    put = c.put(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag",
+                json={"label": "Golden"})
+    assert put.status_code == 403
+    assert put.json()["detail"]["code"] == "scope_denied"
+    delete = c.delete(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag")
+    assert delete.status_code == 403
+    assert delete.json()["detail"]["code"] == "scope_denied"
