@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { Bot, Copy, GitBranch, Sparkles, User } from 'lucide-react'
+import { Bot, Copy, GitBranch, Sparkles, Tag, User } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import type { VersionPage, VersionSummary } from '@/types/version-control'
+import type { VersionPage, VersionSummary, VersionTag, VersionTagMap } from '@/types/version-control'
 import { absoluteTime, dayGroupLabel, friendlyActor, isHumanActor, originMeta, relativeTime, shortId } from './version-format'
 
 interface HistoryProps {
@@ -19,6 +19,8 @@ interface HistoryProps {
   onCompare?: (left: string, right: string) => void
   compareIds?: string[]
   onToggleCompare?: (versionId: string) => void
+  // Optional per-version tags, keyed by version_id (Task 5).
+  tags?: VersionTagMap
 }
 
 const CHIP = 'inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-0.5 text-xs text-muted'
@@ -43,9 +45,10 @@ interface VersionRowProps {
   onSelect: (version: VersionSummary) => void
   compareChecked?: boolean
   onToggleCompare?: (versionId: string) => void
+  tag?: VersionTag
 }
 
-function VersionRow({ version, isCurrent, isActive, onSelect, compareChecked, onToggleCompare }: VersionRowProps) {
+function VersionRow({ version, isCurrent, isActive, onSelect, compareChecked, onToggleCompare, tag }: VersionRowProps) {
   const meta = originMeta(version.origin)
   const { Icon } = meta
   const ActorIcon = isHumanActor(version.observed_by) ? User : Bot
@@ -96,6 +99,12 @@ function VersionRow({ version, isCurrent, isActive, onSelect, compareChecked, on
           >
             <Copy className="w-3 h-3" />
           </button>
+          {tag && (
+            <Badge variant="secondary" className="gap-1" title={tag.note ?? tag.label}>
+              <Tag className="w-3 h-3" />
+              {tag.label}
+            </Badge>
+          )}
           <span className="ml-auto text-xs text-muted" title={absoluteTime(version.observed_at)}>
             {relativeTime(version.observed_at)}
           </span>
@@ -166,7 +175,7 @@ function compareLabel(version: VersionSummary): string {
   return `${originMeta(version.origin).label} · ${relativeTime(version.observed_at)} · ${shortId(version.version_id)}`
 }
 
-export function History({ page, loading, selectedId, currentId, onNext, onSelect, onCompare, compareIds, onToggleCompare }: HistoryProps) {
+export function History({ page, loading, selectedId, currentId, onNext, onSelect, onCompare, compareIds, onToggleCompare, tags }: HistoryProps) {
   const [left, setLeft] = useState('')
   const [right, setRight] = useState('')
 
@@ -203,6 +212,7 @@ export function History({ page, loading, selectedId, currentId, onNext, onSelect
                   onSelect={onSelect}
                   compareChecked={compareIds?.includes(version.version_id)}
                   onToggleCompare={onToggleCompare}
+                  tag={tags?.[version.version_id]}
                 />
               ))}
             </ol>

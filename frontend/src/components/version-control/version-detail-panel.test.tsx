@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { VersionDetailPanel } from './version-detail-panel'
 import { versionFixture } from './fixtures'
 import type { VersionDetail } from '@/types/version-control'
@@ -50,4 +50,36 @@ it('detail_panel_restore_enabled_when_flag_on', () => {
   )
   expect(html).toContain('Restore this version')
   expect(html).toContain('Apply this version as the live configuration')
+})
+
+describe('VersionDetailPanel tags', () => {
+  it('seeds the editor input from the existing tag label and shows a Remove tag control', () => {
+    const html = renderToStaticMarkup(
+      <VersionDetailPanel
+        detail={detail}
+        onClose={vi.fn()}
+        tag={{ label: 'Golden', note: null }}
+        onSetTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+      />,
+    )
+    // Editor input is seeded with the existing label (getByDisplayValue equivalent in markup).
+    expect(html).toContain('value="Golden"')
+    expect(html).toContain('Remove tag')
+    expect(html).toContain('Save')
+  })
+
+  it('shows the editor with an empty input and no Remove control when no tag exists', () => {
+    const html = renderToStaticMarkup(
+      <VersionDetailPanel detail={detail} onClose={vi.fn()} onSetTag={vi.fn()} onRemoveTag={vi.fn()} />,
+    )
+    expect(html).toContain('Save')
+    expect(html).not.toContain('Remove tag')
+  })
+
+  it('omits the tag editor entirely when onSetTag is not provided', () => {
+    const html = renderToStaticMarkup(<VersionDetailPanel detail={detail} onClose={vi.fn()} />)
+    expect(html).not.toContain('Remove tag')
+    expect(html).not.toContain('Tag label')
+  })
 })

@@ -1,4 +1,4 @@
-import type { ApiError, ApprovalRequestInputs, ApprovalRecord, ApprovalRequest, BindingStatus, DeploymentReceipt, ObservationResult, Operation, OperationHandle, OverviewPage, ReconcileCommand, ReleaseCommand, ReleaseHandle, RestoreCommand, SemanticDiff, SpaceRestoreRequest, VcConfig, VersionDetail, VersionPage } from '@/types/version-control'
+import type { ApiError, ApprovalRequestInputs, ApprovalRecord, ApprovalRequest, BindingStatus, DeploymentReceipt, ObservationResult, Operation, OperationHandle, OverviewPage, ReconcileCommand, ReleaseCommand, ReleaseHandle, RestoreCommand, SemanticDiff, SpaceRestoreRequest, VcConfig, VersionDetail, VersionPage, VersionTag } from '@/types/version-control'
 
 export class VersionControlError extends Error implements ApiError {
   code: string
@@ -64,6 +64,20 @@ export class VersionControlApi {
   spaceObserve(spaceId: string, key: string) { return this.post<ObservationResult>(`/spaces/${encodeURIComponent(spaceId)}/observe`, {}, key, false) }
   // Simple in-workspace restore (CUJ-1 §4.5): apply a stored version to the live space.
   spaceRestore(spaceId: string, body: SpaceRestoreRequest, key: string) { return this.post<ObservationResult>(`/spaces/${encodeURIComponent(spaceId)}/restore`, body, key, false) }
+  // Version tags (Task 4 endpoints): space-keyed read + per-version set/delete.
+  spaceTags(spaceId: string, signal?: AbortSignal) {
+    return this.get<Record<string, VersionTag>>(`/spaces/${encodeURIComponent(spaceId)}/tags`, signal)
+  }
+  setVersionTag(spaceId: string, versionId: string, body: { label: string; note?: string | null }) {
+    return this.request<VersionTag & { version_id: string }>(
+      `/spaces/${encodeURIComponent(spaceId)}/versions/${encodeURIComponent(versionId)}/tag`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  }
+  deleteVersionTag(spaceId: string, versionId: string) {
+    return this.request<{ version_id: string; deleted: boolean }>(
+      `/spaces/${encodeURIComponent(spaceId)}/versions/${encodeURIComponent(versionId)}/tag`,
+      { method: 'DELETE' })
+  }
   overview(cursor?: string, signal?: AbortSignal) { return this.get<OverviewPage>(`/overview?${pageQuery(cursor)}`, signal) }
   status(bindingId: string, signal?: AbortSignal) { return this.get<BindingStatus>(`${bindingPath(bindingId)}/status`, signal) }
   versions(bindingId: string, cursor?: string, signal?: AbortSignal) { return this.get<VersionPage>(`${bindingPath(bindingId)}/versions?${pageQuery(cursor)}`, signal) }

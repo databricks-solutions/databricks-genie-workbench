@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { History } from './history'
 import { versionFixture } from './fixtures'
 
@@ -26,4 +26,25 @@ it('history_renders_empty_and_loading_states', () => {
   const loading = renderToStaticMarkup(<History page={{ items: [], next_cursor: null }} loading onNext={vi.fn()} onSelect={vi.fn()} onCompare={vi.fn()} />)
   expect(loading).toContain('animate-pulse')
   expect(loading).not.toContain('No versions captured yet')
+})
+
+describe('History tags', () => {
+  it('renders the tag label in the rail when a tag exists for the version', () => {
+    const html = renderToStaticMarkup(
+      <History
+        page={{ items: [versionFixture], next_cursor: null }}
+        onNext={vi.fn()}
+        onSelect={vi.fn()}
+        tags={{ [versionFixture.version_id]: { label: 'Golden', note: null } }}
+      />,
+    )
+    expect(html).toContain('Golden')
+  })
+
+  it('omits the tag badge when the version has no tag', () => {
+    const html = renderToStaticMarkup(
+      <History page={{ items: [versionFixture], next_cursor: null }} onNext={vi.fn()} onSelect={vi.fn()} tags={{}} />,
+    )
+    expect(html).not.toContain('Golden')
+  })
 })

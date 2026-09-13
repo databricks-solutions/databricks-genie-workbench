@@ -1060,6 +1060,13 @@ async def _ainvoke(op):
 
 ### Task 5 — Tag UI (badge in the rail + editor in the detail panel)
 
+LANDED: `VersionTag`/`VersionTagMap` types + `spaceTags`/`setVersionTag`/`deleteVersionTag`
+API methods; rail tag Badge in `history.tsx`; sticky-header tag editor (label input + Save +
+Remove tag) in `version-detail-panel.tsx`; tag state/handlers wired into
+`SpaceVersionControlTab.tsx`. Tests appended to `history.test.tsx` and
+`version-detail-panel.test.tsx` (renderToStaticMarkup markup assertions — no new deps).
+Full vitest suite 552 passed; lint clean.
+
 **Files:**
 - Modify: `frontend/src/types/version-control.ts` (add `VersionTag`)
 - Modify: `frontend/src/lib/version-control-api.ts` (client methods)
@@ -1168,7 +1175,7 @@ const removeTag = useCallback(async (versionId: string) => {
 ```
 
 - [ ] **Step 8: Run tests + lint** — `npm run test` / `npm run lint`.
-- [ ] **Step 9: Commit** — `vc(tags): tag badge in rail + tag editor in detail panel`. Mark Task 5 LANDED.
+- [x] **Step 9: Commit** — `vc(tags): tag badge in rail + tag editor in detail panel`. Mark Task 5 LANDED.
 
 ---
 

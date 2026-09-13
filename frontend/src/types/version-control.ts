@@ -16,6 +16,8 @@ export interface VersionSummary {
   parent_version_id: string | null; restored_from_version_id: string | null
   fingerprints: Fingerprints; optimizer_run_id: string | null; champion_id: string | null
 }
+export interface VersionTag { label: string; note: string | null; author?: string | null }
+export type VersionTagMap = Record<string, VersionTag>
 export interface Page<Item> { items: Item[]; next_cursor: string | null }
 export type VersionPage = Page<VersionSummary>
 export type OverviewPage = Page<BindingStatus>

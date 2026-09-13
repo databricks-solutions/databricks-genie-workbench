@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Camera, GitBranch, RefreshCw, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { VersionControlApi, VersionControlError } from '@/lib/version-control-api'
-import type { ObservationResult, SemanticDiff, VersionDetail, VersionPage, VersionSummary } from '@/types/version-control'
+import type { ObservationResult, SemanticDiff, VersionDetail, VersionPage, VersionSummary, VersionTagMap } from '@/types/version-control'
 import { type CaptureNotice, describeCaptureError, describeObservation } from './capture-notice'
 import { History } from './history'
 import { VersionDetailPanel } from './version-detail-panel'
@@ -30,6 +30,7 @@ interface Props {
 export function SpaceVersionControlTab({ spaceId }: Props) {
   const [subTab, setSubTab] = useState<SubTab>('versions')
   const [page, setPage] = useState<VersionPage>(EMPTY_PAGE)
+  const [tags, setTags] = useState<VersionTagMap>({})
   const [loading, setLoading] = useState(false)
   const [capturing, setCapturing] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -80,6 +81,9 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     // what renders. The observe below is the slow step (an OBO live GET of the Genie space);
     // it runs in the background and appends a new version only if the live config drifted.
     await load()
+    // Load tags alongside the initial history (best-effort; a tag read failure never
+    // blocks the version rail). Refetched on spaceId change since syncOnOpen re-runs.
+    api.spaceTags(spaceId).then(setTags).catch(() => {})
     setSyncing(true)
     setNotice(null)
     try {
@@ -154,6 +158,17 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     setDetail(null)
     setDetailError(null)
   }, [])
+
+  // Tag write handlers: mutate via the Task 4 endpoints, then refresh the whole tag map
+  // so the rail badge and detail editor reflect the authoritative server state.
+  const setTag = useCallback(async (versionId: string, label: string, note: string | null) => {
+    await api.setVersionTag(spaceId, versionId, { label, note })
+    setTags(await api.spaceTags(spaceId))
+  }, [spaceId])
+  const removeTag = useCallback(async (versionId: string) => {
+    await api.deleteVersionTag(spaceId, versionId)
+    setTags(await api.spaceTags(spaceId))
+  }, [spaceId])
 
   // Toggle a version into the compare set; cap at two (rolling — the newest two win).
   const toggleCompare = useCallback((versionId: string) => {
@@ -350,6 +365,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
                 onSelect={version => { void selectVersion(version) }}
                 compareIds={compareIds}
                 onToggleCompare={toggleCompare}
+                tags={tags}
               />
             </div>
 
@@ -396,6 +412,9 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
                     onRestore={() => beginRestore(detail)}
                     restoreEnabled={restoreEnabled}
                     restoring={restoring && pendingRestore?.version_id === detail.version_id}
+                    tag={tags[detail.version_id]}
+                    onSetTag={(label, note) => { void setTag(detail.version_id, label, note) }}
+                    onRemoveTag={() => { void removeTag(detail.version_id) }}
                   />
                 </div>
               ) : !detailError && (

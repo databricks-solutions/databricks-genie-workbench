@@ -1,6 +1,7 @@
-import { Bot, Copy, RotateCcw, User, X } from 'lucide-react'
+import { useState } from 'react'
+import { Bot, Copy, RotateCcw, Tag, Trash2, User, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import type { VersionDetail } from '@/types/version-control'
+import type { VersionDetail, VersionTag } from '@/types/version-control'
 import { ConfigView } from './config-view'
 import { absoluteTime, friendlyActor, isHumanActor, originMeta, relativeTime, shortId } from './version-format'
 
@@ -23,13 +24,19 @@ interface VersionDetailPanelProps {
   restoreEnabled?: boolean
   restoring?: boolean
   isCurrent?: boolean
+  // Tag editor (Task 5): existing tag for this version + set/remove handlers. The whole
+  // editor block is gated on `onSetTag` being provided.
+  tag?: VersionTag
+  onSetTag?: (label: string, note: string | null) => void
+  onRemoveTag?: () => void
 }
 
-export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled, restoring, isCurrent }: VersionDetailPanelProps) {
+export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled, restoring, isCurrent, tag, onSetTag, onRemoveTag }: VersionDetailPanelProps) {
   const meta = originMeta(detail.origin)
   const { Icon } = meta
   const ActorIcon = isHumanActor(detail.observed_by) ? User : Bot
   const snapshot = detail.snapshot
+  const [label, setLabel] = useState(tag?.label ?? '')
   return (
     <section aria-label="Version detail" className="flex h-full flex-col rounded-xl border border-default bg-surface">
       {/* Sticky metadata header — stays put while the configuration body scrolls below. */}
@@ -87,6 +94,46 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
         <Fingerprint label="Benchmark" value={detail.fingerprints.benchmark} />
         <Fingerprint label="Metadata" value={detail.fingerprints.metadata} />
       </div>
+
+      {onSetTag && (
+        <div className="space-y-1.5">
+          <label htmlFor="vc-tag-label" className="flex items-center gap-1 text-xs font-semibold text-secondary uppercase tracking-wide">
+            <Tag className="w-3 h-3" />
+            Tag label
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              id="vc-tag-label"
+              type="text"
+              value={label}
+              maxLength={60}
+              onChange={event => setLabel(event.target.value)}
+              placeholder="e.g. Golden"
+              className="min-w-0 flex-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary focus:outline-none focus:ring-2 focus:ring-accent/50"
+            />
+            <button
+              type="button"
+              onClick={() => onSetTag(label, tag?.note ?? null)}
+              disabled={!label.trim()}
+              className="inline-flex items-center rounded-md border border-default px-2.5 py-1 text-xs font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Save
+            </button>
+            {tag && onRemoveTag && (
+              <button
+                type="button"
+                onClick={onRemoveTag}
+                title="Remove tag"
+                aria-label="Remove tag"
+                className="inline-flex items-center gap-1 rounded-md border border-default px-2.5 py-1 text-xs font-medium text-muted hover:text-secondary hover:bg-surface-secondary transition-colors"
+              >
+                <Trash2 className="w-3 h-3" />
+                Remove tag
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {(detail.parent_version_id || detail.restored_from_version_id || detail.optimizer_run_id) && (
         <div className="flex flex-wrap items-center gap-2">
