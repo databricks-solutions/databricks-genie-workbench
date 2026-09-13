@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Camera, GitBranch, RefreshCw } from 'lucide-react'
+import { Camera, GitBranch, Info, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Tooltip } from '@/components/ui/tooltip'
 import { VersionControlApi, VersionControlError } from '@/lib/version-control-api'
 import type { ObservationResult, SemanticDiff, VersionDetail, VersionPage, VersionSummary, VersionTagMap } from '@/types/version-control'
 import { type CaptureNotice, describeCaptureError, describeObservation } from './capture-notice'
@@ -20,6 +21,12 @@ function errorMessage(err: unknown, fallback: string): string {
 const api = new VersionControlApi((input, init) => fetch(input, init))
 
 const EMPTY_PAGE: VersionPage = { items: [], next_cursor: null }
+
+// Static "read once" explainer — surfaced via an info tooltip (and aria-label) instead of a
+// permanent multi-line paragraph, to keep the header compact and the config area tall.
+const CAPTURE_EXPLAINER =
+  'A version is auto-captured whenever you open this tab and after each optimizer run. ' +
+  'Edits made directly in Genie are captured the next time you open this tab — there is no background watcher.'
 
 interface Props {
   spaceId: string
@@ -286,26 +293,31 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   }, [spaceId, page.items, load])
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 p-2 rounded-lg border border-default bg-surface-secondary text-muted">
-          <GitBranch className="w-4 h-4" />
-        </span>
-        <div>
+    <div className="space-y-3">
+      {/* One-row header: identity + info tooltip on the left, live-status + actions on the
+          right. Keeps the config master–detail as high on the page as possible. */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="shrink-0 p-2 rounded-lg border border-default bg-surface-secondary text-muted">
+            <GitBranch className="w-4 h-4" />
+          </span>
           <h3 className="text-lg font-display font-semibold text-primary">Version Control</h3>
-          <p className="text-sm text-muted mt-1 max-w-2xl">
-            Manage this agent's configuration versions in-workspace.
-          </p>
-          <p className="text-xs text-muted mt-1.5 max-w-2xl">
-            A version is auto-captured whenever you open this tab and after each optimizer run.
-            Edits made directly in Genie are captured the next time you open this tab — there is
-            no background watcher.
-          </p>
+          <Tooltip content={<span className="block max-w-xs text-left">{CAPTURE_EXPLAINER}</span>}>
+            <span
+              aria-label={CAPTURE_EXPLAINER}
+              className="text-muted hover:text-secondary transition-colors cursor-help"
+            >
+              <Info className="w-4 h-4" />
+            </span>
+          </Tooltip>
         </div>
-      </div>
-
-      <div className="space-y-4">
-          <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          {(syncing || capturing) && (
+            <span role="status" className="inline-flex items-center gap-1.5 text-xs text-muted">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              {capturing ? 'Capturing…' : 'Checking…'}
+            </span>
+          )}
             {/* The compact icon and the labeled button run the same action — observe the
                 live Genie space (source-check + record). The icon is the quick repeat
                 affordance; "Capture current state" is the explicit, discoverable primary. */}
@@ -326,19 +338,15 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
               {capturing ? 'Capturing…' : 'Capture current state'}
             </button>
           </div>
+      </div>
 
-          {(syncing || capturing) && (
-            <div role="status" className="flex items-center gap-2 text-sm rounded-lg border border-default bg-surface-secondary text-muted px-3 py-2">
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              {capturing ? 'Capturing the current configuration…' : 'Checking the live configuration for changes…'}
-            </div>
-          )}
+      <div className="space-y-3">
           {error && (
             <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
               {error}
             </div>
           )}
-          {notice && (
+          {notice && !syncing && !capturing && (
             <div
               role="status"
               className={cn(
@@ -357,7 +365,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
           {/* Master–detail: narrow versions rail (left) + wide detail (right). Each pane
               scrolls on its own at lg+; below lg they stack and the page scrolls. */}
           <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)] lg:items-start">
-            <div className="rounded-xl border border-default bg-surface p-3 lg:h-[70vh] lg:overflow-auto">
+            <div className="rounded-xl border border-default bg-surface p-3 lg:h-[78vh] lg:overflow-auto">
               <History
                 page={page}
                 loading={loading}
@@ -371,7 +379,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
               />
             </div>
 
-            <div ref={detailRef} className="min-w-0 lg:h-[70vh]">
+            <div ref={detailRef} className="min-w-0 lg:h-[78vh]">
               {detailError && (
                 <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
                   {detailError}

@@ -113,10 +113,11 @@ function roundTripOrigin(value: Origin) {
     case 'restore': return value
     case 'promotion': return value
     case 'unknown': return value
+    case 'create': return value
     default: return assertNever(value)
   }
 }
-const OriginValues: Record<Origin, true> = { workbench: true, external: true, optimizer: true, restore: true, promotion: true, unknown: true }
+const OriginValues: Record<Origin, true> = { workbench: true, external: true, optimizer: true, restore: true, promotion: true, unknown: true, create: true }
 function roundTripComparison(value: Comparison) {
   switch (value) {
     case 'equal': return value
