@@ -10,7 +10,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Generator
+from typing import AsyncGenerator, Callable, Generator
 
 from backend.services.llm_utils import get_llm_model, normalize_message_content
 from backend.services.auth import get_workspace_client, run_in_context
@@ -105,6 +105,7 @@ class CreateGenieAgent:
         session: AgentSession,
         user_message: str,
         selections: dict | None = None,
+        vc_capture: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Process a user message (or empty continuation) and stream events.
 
@@ -157,7 +158,7 @@ class CreateGenieAgent:
                 sel = self._extract_selections(user_message)  # Fallback: parse from message
             if sel and sel.get("action") == "create" and sel.get("edited_plan"):
                 logger.info("Fast path triggered: action=create, plan keys=%s", list(sel["edited_plan"].keys()))
-                async for event in self._fast_create(session, sel):
+                async for event in self._fast_create(session, sel, vc_capture):
                     yield event
                 return
 
@@ -349,6 +350,7 @@ class CreateGenieAgent:
                             "url": result["space_url"],
                             "display_name": result.get("display_name", ""),
                         }}
+                        await self._maybe_capture(session, vc_capture)
 
                     if tool_name == "update_space" and result.get("success"):
                         yield {"event": "updated", "data": {
@@ -397,7 +399,7 @@ class CreateGenieAgent:
 
                             if not v_result.get("errors"):
                                 dn = self._derive_display_name(None, tool_args, session)
-                                async for event in self._create_space_with_repair(session, config, dn):
+                                async for event in self._create_space_with_repair(session, config, dn, vc_capture):
                                     yield event
                                 tools_used.append("create_space")
 
@@ -442,6 +444,18 @@ class CreateGenieAgent:
             )
 
         yield {"event": "done", "data": {"needs_continuation": needs_continuation}}
+
+    async def _maybe_capture(self, session, vc_capture) -> None:
+        """Fire the best-effort initial-capture hook for a just-created space.
+        Runs in a thread with the current context (OBO token) propagated; never
+        breaks the SSE stream."""
+        if not vc_capture or not session.space_id:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, run_in_context(vc_capture, session.space_id))
+        except Exception:
+            logger.warning("initial VC capture failed for %s", session.space_id, exc_info=True)
 
     _TOOL_RESULT_CHAR_LIMIT = 3000
     _COMPRESSIBLE_TOOLS = frozenset({
@@ -789,6 +803,7 @@ class CreateGenieAgent:
         session: AgentSession,
         config: dict,
         display_name: str,
+        vc_capture: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Run create_space with automatic LLM repair on config errors.
 
@@ -854,6 +869,7 @@ class CreateGenieAgent:
                 "url": result["space_url"],
                 "display_name": result.get("display_name", display_name),
             }}
+            await self._maybe_capture(session, vc_capture)
         elif result.get("error"):
             yield {"event": "error", "data": {"message": result["error"]}}
 
@@ -861,6 +877,7 @@ class CreateGenieAgent:
         self,
         session: AgentSession,
         selections: dict,
+        vc_capture: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Deterministic create path — skips the LLM entirely.
 
@@ -941,7 +958,7 @@ class CreateGenieAgent:
                     return
 
                 # Step 3: create_space (with LLM repair on failure)
-                async for event in self._create_space_with_repair(session, config, display_name):
+                async for event in self._create_space_with_repair(session, config, display_name, vc_capture):
                     yield event
 
                 if session.space_id:

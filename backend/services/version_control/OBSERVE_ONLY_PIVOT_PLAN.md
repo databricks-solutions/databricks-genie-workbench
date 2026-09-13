@@ -1569,10 +1569,22 @@ async def create_space_endpoint(body: CreateSpaceRequest, request: Request):
 
 ### Task 4 — Wire the agentic Create flow (`created` event)
 
+**LANDED:** `vc_capture` threaded `chat → _fast_create → _create_space_with_repair` (all
+optional, default `None`); new `_maybe_capture(session, vc_capture)` fires the hook off the
+event loop via `run_in_executor(None, run_in_context(vc_capture, space_id))` — `run_in_context`
+propagates the OBO ContextVar into the worker thread so the helper's live read runs under the
+creator's token. Fired at BOTH genuine `created` sites (main loop + `_create_space_with_repair`
+success branch); the idempotent-guard branch (`already_existed`) deliberately does NOT capture.
+Router binds `vc_capture = lambda sid: capture_initial_version(request, sid)`. New
+`test_create_agent_hook.py` (8 passed) covers both paths, the guard, all `_maybe_capture` edge
+cases, and default-None safety; one `FakeAgent.chat` stub updated to accept the new kwarg.
+
 **Files:**
 - Modify: `backend/routers/create.py` (`agent_chat`, `create.py:184`)
 - Modify: `backend/services/create_agent.py` (entrypoint `chat`, `create_agent.py:103`; the
   TWO `created` emission sites, `create_agent.py:345` and `create_agent.py:850`)
+- Create: `backend/tests/test_create_agent_hook.py`
+- Modify: `backend/tests/test_create_agent_model_selection.py` (FakeAgent stub kwarg)
 
 **⚠ Two creation sites — both must fire the hook.** `session.space_id` is set and a `created`
 event emitted in **both** the main tool-result loop (`create_agent.py:345`) **and**
@@ -1582,37 +1594,30 @@ via the repair/fast path. Prefer a single private helper (e.g. `self._emit_creat
 `_maybe_capture(session, vc_capture, loop)`) called from both sites so the capture and the
 `created` event stay in lockstep by construction.
 
-- [ ] **Step 1:** Thread an optional `vc_capture: Callable[[str], None] | None = None` from the
-  entrypoint `chat` (`create_agent.py:103`) down to both creation paths (it must reach
-  `_create_space_with_repair` and the main loop). Do NOT store it on the shared agent
-  instance (concurrent sessions) — pass it through the call chain or stash it on the
-  per-request `session`.
+- [x] **Step 1:** Threaded `vc_capture: Callable[[str], None] | None = None` from `chat` down
+  through `_fast_create` and `_create_space_with_repair` (all call sites updated); not stored
+  on the shared agent instance.
 
-- [ ] **Step 2:** At **each** `created` emission (`create_agent.py:345` and `:850`), right after
-  `session.space_id` is set, if `vc_capture` and the id are truthy, invoke it off the event
-  loop: `await loop.run_in_executor(None, vc_capture, session.space_id)` (precedent: the
-  `run_in_executor(handle_tool_call, ...)` calls, `create_agent.py:826`/`:844`). Wrap in
-  try/except so a capture failure never breaks the SSE stream.
+- [x] **Step 2:** Added `_maybe_capture`; fired after the `created` emission at both genuine
+  sites. OBO is preserved with `run_in_context` (not a bare `run_in_executor(None, vc_capture,
+  id)` — the ContextVar would not reach the thread otherwise); wrapped in try/except.
 
-- [ ] **Step 3:** In `agent_chat` (`create.py:184`, which has `request`), build the bound
-  callback and thread it into `agent.chat(...)`:
+- [x] **Step 3:** `agent_chat` binds `vc_capture = lambda sid: capture_initial_version(request,
+  sid)` and passes it to `agent.chat(...)` (OBO token is already set inside `event_stream`
+  before the call, so `run_in_context` snapshots it).
 
-```python
-vc_capture = lambda sid: capture_initial_version(request, sid)
-# agent.chat(..., vc_capture=vc_capture)
-```
+- [x] **Step 4:** `test_create_agent_hook.py` (8 passed): both paths capture once with the new
+  id; the idempotent-guard branch does NOT capture; default `None` path unchanged.
 
-- [ ] **Step 4:** Test: assert `created` still fires and `vc_capture` is invoked once with the
-  new `space_id` for **both** paths — the main-loop create AND the repair/fast-create path
-  (`_create_space_with_repair`); assert the default `None` path is unchanged.
-
-- [ ] **Step 5:** `./scripts/test.sh` green. Mark **LANDED**.
+- [x] **Step 5:** `./scripts/test.sh` green (see §21 Verify). **LANDED**.
 
 ---
 
-### Verify (whole §21, on completion)
-- `./scripts/test.sh` — combined suites green at/above baseline **3326**; print the resolved
-  import path + sqlglot version.
+### Verify (whole §21, on completion) — DONE
+- `./scripts/test.sh` — **3341 passed**, 17 deselected (baseline 3326 + 15 new §21 tests:
+  5 `test_vc_create_hook` + 2 `test_create_space_hook` + 8 `test_create_agent_hook`; Task 1
+  added no test, only fixture parity). Import resolves inside this checkout
+  (`packages/genie-space-optimizer/.../__init__.py`); sqlglot 30.0.3 under `--frozen`.
 - `git status -- uv.lock` clean.
 - **Enum parity (Task 1):** `test_vc_wire_contract_golden_roundtrip` green — the `Origin`
   enum (`contracts.py:82`) and the fixture (`enums.json:26`) both end in `create`, appended

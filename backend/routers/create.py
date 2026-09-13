@@ -268,7 +268,8 @@ async def agent_chat(body: AgentChatRequest, request: Request):
             yield _sse_event("session", {"session_id": session.session_id})
 
             async with session._lock:
-                agent_iter = agent.chat(session, user_message, selections=selections).__aiter__()
+                vc_capture = lambda sid: capture_initial_version(request, sid)
+                agent_iter = agent.chat(session, user_message, selections=selections, vc_capture=vc_capture).__aiter__()
                 next_coro = None
                 while True:
                     if next_coro is None:
