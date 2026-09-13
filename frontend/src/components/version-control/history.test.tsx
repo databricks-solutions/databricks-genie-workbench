@@ -48,3 +48,32 @@ describe('History tags', () => {
     expect(html).not.toContain('Golden')
   })
 })
+
+describe('History benchmark-changed chip', () => {
+  const parent = {
+    ...versionFixture, version_id: 'parent-1', parent_version_id: null,
+    fingerprints: { ...versionFixture.fingerprints, benchmark: 'BM1' },
+  }
+  const changedChild = {
+    ...versionFixture, version_id: 'child-changed', parent_version_id: 'parent-1',
+    fingerprints: { ...versionFixture.fingerprints, benchmark: 'BM2' },
+  }
+  const unchangedChild = {
+    ...versionFixture, version_id: 'child-same', parent_version_id: 'parent-1',
+    fingerprints: { ...versionFixture.fingerprints, benchmark: 'BM1' },
+  }
+
+  it('renders the chip when a row benchmark differs from its parent', () => {
+    const html = renderToStaticMarkup(
+      <History page={{ items: [changedChild, parent], next_cursor: null }} onNext={vi.fn()} onSelect={vi.fn()} />,
+    )
+    expect(html).toContain('Benchmarks changed')
+  })
+
+  it('omits the chip when the benchmark matches the parent', () => {
+    const html = renderToStaticMarkup(
+      <History page={{ items: [unchangedChild, parent], next_cursor: null }} onNext={vi.fn()} onSelect={vi.fn()} />,
+    )
+    expect(html).not.toContain('Benchmarks changed')
+  })
+})

@@ -1181,6 +1181,8 @@ const removeTag = useCallback(async (versionId: string) => {
 
 ### Task 6 (optional) — Benchmark-changed spotlight
 
+**LANDED:** `benchmarkChanged` helper (`benchmark-change.ts` + `.test.ts`) added; `history.tsx` computes `byId` from `page.items` and renders a `Badge variant="info"` "Benchmarks changed" on rows whose benchmark fingerprint differs from their parent, alongside the Task 5 tag badge (untouched). Presentation-only, no backend change. Full vitest 557 passed, lint clean. Commit `vc(tags): benchmark-changed chip on the timeline`.
+
 **Files:**
 - Create: `frontend/src/components/version-control/benchmark-change.ts` (+ `.test.ts`)
 - Modify: `history.tsx` (chip on rows whose benchmark fingerprint differs from their parent)
@@ -1190,7 +1192,7 @@ Benchmarks are already versioned (their own `fingerprints.benchmark`); this only
 
 **Interfaces — Produces:** `benchmarkChanged(version: VersionSummary, byId: (id: string) => VersionSummary | undefined): boolean`.
 
-- [ ] **Step 1: Failing test** (`benchmark-change.test.ts`)
+- [x] **Step 1: Failing test** (`benchmark-change.test.ts`)
 
 ```ts
 import { describe, it, expect } from 'vitest'
@@ -1213,7 +1215,7 @@ describe('benchmarkChanged', () => {
 })
 ```
 
-- [ ] **Step 2: Implement** (`benchmark-change.ts`)
+- [x] **Step 2: Implement** (`benchmark-change.ts`)
 
 ```ts
 import type { VersionSummary } from '@/types/version-control'
@@ -1230,9 +1232,9 @@ export function benchmarkChanged(
 }
 ```
 
-- [ ] **Step 3: Wire the chip** — in `History`, build `byId` from `page.items` and render a
+- [x] **Step 3: Wire the chip** — in `History`, build `byId` from `page.items` and render a
   `Badge variant="info"` "Benchmarks changed" on rows where `benchmarkChanged(version, byId)`.
-- [ ] **Step 4: Run tests + lint; Commit** — `vc(tags): benchmark-changed chip on the timeline`. Mark Task 6 LANDED.
+- [x] **Step 4: Run tests + lint; Commit** — `vc(tags): benchmark-changed chip on the timeline`. Mark Task 6 LANDED.
 
 ---
 

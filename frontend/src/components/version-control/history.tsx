@@ -5,6 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import type { VersionPage, VersionSummary, VersionTag, VersionTagMap } from '@/types/version-control'
 import { absoluteTime, dayGroupLabel, friendlyActor, isHumanActor, originMeta, relativeTime, shortId } from './version-format'
+import { benchmarkChanged } from './benchmark-change'
 
 interface HistoryProps {
   page: VersionPage
@@ -46,9 +47,11 @@ interface VersionRowProps {
   compareChecked?: boolean
   onToggleCompare?: (versionId: string) => void
   tag?: VersionTag
+  // Presentation-only: the benchmark fingerprint differs from this version's parent (Task 6).
+  benchmarkChanged?: boolean
 }
 
-function VersionRow({ version, isCurrent, isActive, onSelect, compareChecked, onToggleCompare, tag }: VersionRowProps) {
+function VersionRow({ version, isCurrent, isActive, onSelect, compareChecked, onToggleCompare, tag, benchmarkChanged: benchmarkDidChange }: VersionRowProps) {
   const meta = originMeta(version.origin)
   const { Icon } = meta
   const ActorIcon = isHumanActor(version.observed_by) ? User : Bot
@@ -103,6 +106,11 @@ function VersionRow({ version, isCurrent, isActive, onSelect, compareChecked, on
             <Badge variant="secondary" className="gap-1" title={tag.note ?? tag.label}>
               <Tag className="w-3 h-3" />
               {tag.label}
+            </Badge>
+          )}
+          {benchmarkDidChange && (
+            <Badge variant="info" title="Benchmark fingerprint differs from the parent version">
+              Benchmarks changed
             </Badge>
           )}
           <span className="ml-auto text-xs text-muted" title={absoluteTime(version.observed_at)}>
@@ -191,6 +199,9 @@ export function History({ page, loading, selectedId, currentId, onNext, onSelect
       : '2 selected — comparing'
   const headId = currentId ?? page.items[0]?.version_id ?? null
   const groups = groupByDay(page.items)
+  // Lookup for the benchmark-changed chip: resolve a version by id within this page.
+  const versionsById = new Map(page.items.map(version => [version.version_id, version]))
+  const byId = (id: string) => versionsById.get(id)
   const selectClass = 'rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary'
   const actionClass = 'inline-flex items-center gap-1 rounded-md border border-default px-2.5 py-1 text-xs font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
 
@@ -213,6 +224,7 @@ export function History({ page, loading, selectedId, currentId, onNext, onSelect
                   compareChecked={compareIds?.includes(version.version_id)}
                   onToggleCompare={onToggleCompare}
                   tag={tags?.[version.version_id]}
+                  benchmarkChanged={benchmarkChanged(version, byId)}
                 />
               ))}
             </ol>
