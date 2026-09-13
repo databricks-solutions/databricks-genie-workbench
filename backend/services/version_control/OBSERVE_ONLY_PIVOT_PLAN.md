@@ -822,6 +822,15 @@ const hasModified = diff.items.some(item => item.change === 'modified')
 
 ### Task 3 — Lakebase tag store
 
+**LANDED:** `genie.vc_version_tags` table + `idx_vc_version_tags_space` index added to
+`_ensure_schema` (next to `starred_spaces`), a `vc_version_tags` bucket added to the
+in-memory `_memory_store`, and `set_version_tag` / `delete_version_tag` / `get_version_tags`
+added near `star_space` (branch on `_lakebase_available`/`_pool`, in-memory fallback; `get`
+calls `_maybe_retry_schema` like the other read paths). Mutable UX metadata only — never a
+governed VC Delta fact, never in any fingerprint; `contracts.py`/`OWNER_SPECS`/grant matrix
+untouched. TDD followed (RED `AttributeError: no attribute 'set_version_tag'` → GREEN 1
+passed). `git status -- uv.lock` clean; import path resolves in-repo; sqlglot 30.0.3.
+
 **Files:**
 - Modify: `backend/services/lakebase.py` (memory store ~L20-33; `_ensure_schema` ~L182-193; new functions near `star_space` ~L562)
 - Test: `backend/tests/test_vc_version_tags.py` (create)
@@ -831,7 +840,7 @@ const hasModified = diff.items.some(item => item.change === 'modified')
 - `set_version_tag(space_id, version_id, label, note, author) -> None`
 - `delete_version_tag(space_id, version_id) -> None`
 
-- [ ] **Step 1: Write the failing test** (`test_vc_version_tags.py`)
+- [x] **Step 1: Write the failing test** (`test_vc_version_tags.py`)
 
 ```python
 import pytest
@@ -854,9 +863,9 @@ async def test_set_get_delete_version_tag_in_memory():
     assert vid not in await lakebase.get_version_tags(sid)
 ```
 
-- [ ] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_version_tags.py` → FAIL (functions undefined).
+- [x] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_version_tags.py` → FAIL (functions undefined).
 
-- [ ] **Step 3: Implement** — add the memory bucket to `_memory_store`:
+- [x] **Step 3: Implement** — add the memory bucket to `_memory_store`:
 
 ```python
     "vc_version_tags": {},  # version_id -> {space_id, label, note, author}
@@ -925,8 +934,8 @@ async def get_version_tags(space_id: str) -> dict:
                 for r in rows}
 ```
 
-- [ ] **Step 4: Run it, confirm it passes** — `./scripts/test.sh backend/tests/test_vc_version_tags.py`.
-- [ ] **Step 5: Commit** — `vc(tags): Lakebase vc_version_tags store (mutable UX, in-memory fallback)`. Mark Task 3 LANDED.
+- [x] **Step 4: Run it, confirm it passes** — `./scripts/test.sh backend/tests/test_vc_version_tags.py`.
+- [x] **Step 5: Commit** — `vc(tags): Lakebase vc_version_tags store (mutable UX, in-memory fallback)`. Mark Task 3 LANDED.
 
 ---
 

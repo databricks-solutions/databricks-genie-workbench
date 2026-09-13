@@ -24,6 +24,7 @@ _memory_store: dict = {
     "seen": set(),    # set of seen space_ids
     "optimization_runs": {},  # space_id -> latest optimization run dict
     "join_advice": {},  # space_id -> {seeds, updated_at, seeded_by} (Join Advisor advice)
+    "vc_version_tags": {},  # version_id -> {space_id, label, note, author}
     # ── GenieWatch caches (read-only observability surface) ──
     "watch_space_cache": {},        # space_id -> dict
     "watch_conversation_cache": {}, # (space_id, conversation_id) -> dict
@@ -185,6 +186,23 @@ async def _ensure_schema():
                     starred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
             """)
+            # Version-tag UX metadata (§19 VC-D-tag1): mutable, Lakebase-only —
+            # NEVER a governed VC Delta fact. Modeled on starred_spaces (mutable
+            # CRUD via INSERT ... ON CONFLICT DO UPDATE / DELETE). Keyed by the
+            # globally-unique version_id with a space_id scope column.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.vc_version_tags (
+                    version_id VARCHAR(64)  PRIMARY KEY,
+                    space_id   VARCHAR(128) NOT NULL,
+                    label      VARCHAR(60)  NOT NULL,
+                    note       TEXT,
+                    author     TEXT,
+                    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_vc_version_tags_space ON genie.vc_version_tags(space_id)"
+            )
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS genie.seen_spaces (
                     space_id   VARCHAR(64) PRIMARY KEY,
@@ -602,6 +620,56 @@ async def is_space_starred(space_id: str) -> bool:
             "SELECT 1 FROM genie.starred_spaces WHERE space_id = $1", space_id
         )
         return row is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Version tags (§19 VC-D-tag1) — mutable UX metadata, Lakebase-only.
+# Never a governed VC Delta fact; never enters any fingerprint. Modeled on
+# star_space (branch on availability, in-memory fallback when Lakebase is down).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def set_version_tag(space_id: str, version_id: str, label: str,
+                          note: str | None, author: str | None) -> None:
+    """Create or update the tag on one version (mutable UX metadata; never a VC fact)."""
+    if not _lakebase_available or _pool is None:
+        _memory_store["vc_version_tags"][version_id] = {
+            "space_id": space_id, "label": label, "note": note, "author": author}
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO genie.vc_version_tags (version_id, space_id, label, note, author, updated_at)
+               VALUES ($1, $2, $3, $4, $5, NOW())
+               ON CONFLICT (version_id) DO UPDATE
+                 SET label = EXCLUDED.label, note = EXCLUDED.note,
+                     author = EXCLUDED.author, updated_at = NOW()""",
+            version_id, space_id, label, note, author)
+
+
+async def delete_version_tag(space_id: str, version_id: str) -> None:
+    """Remove the tag on one version (no-op when absent)."""
+    if not _lakebase_available or _pool is None:
+        _memory_store["vc_version_tags"].pop(version_id, None)
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM genie.vc_version_tags WHERE version_id = $1 AND space_id = $2",
+            version_id, space_id)
+
+
+async def get_version_tags(space_id: str) -> dict:
+    """Return {version_id: {label, note, author}} for one space."""
+    await _maybe_retry_schema()
+    if not _lakebase_available or _pool is None:
+        return {vid: {"label": t["label"], "note": t.get("note"), "author": t.get("author")}
+                for vid, t in _memory_store["vc_version_tags"].items()
+                if t["space_id"] == space_id}
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT version_id, label, note, author FROM genie.vc_version_tags WHERE space_id = $1",
+            space_id)
+        return {r["version_id"]: {"label": r["label"], "note": r["note"], "author": r["author"]}
+                for r in rows}
 
 
 async def record_space_seen(space_id: str) -> None:
