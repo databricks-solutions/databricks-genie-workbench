@@ -755,6 +755,12 @@ api.diff(bindingId, olderId, newerId)
 
 ### Task 2 — Split/unified toggle only shows when it does something (fixes bug #4)
 
+> LANDED: `SemanticDiffView` now gates the split/unified toggle behind
+> `hasModified = diff.items.some(item => item.change === 'modified')` — added-only
+> and removed-only diffs no longer show a toggle that does nothing. New TDD test
+> `frontend/src/components/version-control/diff.test.tsx` covers both cases (545/545
+> frontend tests pass, lint clean).
+
 **Files:**
 - Modify: `frontend/src/components/version-control/diff.tsx` (toggle at ~L120-130)
 - Test: `frontend/src/components/version-control/diff.test.tsx` (create if absent)
@@ -764,7 +770,7 @@ Rationale: the toggle passes `split` only to `ValueDiff`, which renders solely f
 and have no second side to lay out. Showing the toggle on an add/remove-only diff makes it
 look broken. Hide it unless there is at least one `modified` item.
 
-- [ ] **Step 1: Write the failing test** (`diff.test.tsx`)
+- [x] **Step 1: Write the failing test** (`diff.test.tsx`)
 
 ```tsx
 import { describe, it, expect } from 'vitest'
@@ -789,9 +795,9 @@ describe('SemanticDiffView toggle', () => {
 })
 ```
 
-- [ ] **Step 2: Run it, confirm the first case fails** — `npm run test -- diff` → FAIL (toggle currently always renders).
+- [x] **Step 2: Run it, confirm the first case fails** — `npm run test -- diff` → FAIL (toggle currently always renders).
 
-- [ ] **Step 3: Implement** — in `diff.tsx`, compute and gate:
+- [x] **Step 3: Implement** — in `diff.tsx`, compute and gate:
 
 ```tsx
 const hasModified = diff.items.some(item => item.change === 'modified')
@@ -804,8 +810,8 @@ const hasModified = diff.items.some(item => item.change === 'modified')
 )}
 ```
 
-- [ ] **Step 4: Run tests + lint** — `npm run test` (543) / `npm run lint`.
-- [ ] **Step 5: Commit** — `vc(diff): hide split toggle when no modified items`. Mark Task 2 LANDED.
+- [x] **Step 4: Run tests + lint** — `npm run test` (543) / `npm run lint`.
+- [x] **Step 5: Commit** — `vc(diff): hide split toggle when no modified items`. Mark Task 2 LANDED.
 
 > Note (deferred, not this Task): a richer option is to route `added`/`removed` through
 > `ValueDiff` with the opposite side blank so every change kind obeys the toggle. Skipped

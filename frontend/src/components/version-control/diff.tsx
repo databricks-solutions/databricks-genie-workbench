@@ -112,12 +112,13 @@ export function SemanticDiffView({ diff }: { diff: SemanticDiff }) {
     (a, b) => categoryOrder(a) - categoryOrder(b),
   )
   const ToggleIcon = split ? Rows2 : Columns2
+  const hasModified = diff.items.some(item => item.change === 'modified')
 
   return (
     <section aria-label="Semantic diff" className="rounded-xl border border-default bg-surface p-4 space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide">Semantic diff</h3>
-        {diff.items.length > 0 && (
+        {diff.items.length > 0 && hasModified && (
           <button
             type="button"
             onClick={() => setSplit(value => !value)}
