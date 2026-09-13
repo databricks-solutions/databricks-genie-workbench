@@ -78,9 +78,18 @@ def test_config_empty_env_is_none():
     assert observe_config_from_env({}) is None
 
 
-def test_vc_auth_prefers_forwarded_user_then_email_then_dev():
-    assert vc_auth_from_request({"X-Forwarded-User": "a@x"}, "ws") == vc.AuthenticatedRequest("a@x", "ws")
-    assert vc_auth_from_request({"X-Forwarded-Email": "b@x"}, "ws") == vc.AuthenticatedRequest("b@x", "ws")
+def test_vc_auth_prefers_email_then_username_then_user_id_then_dev():
+    # The human email (X-Forwarded-Email) wins over the numeric X-Forwarded-User id so the
+    # recorded author is a readable person, not a cryptic id.
+    assert vc_auth_from_request(
+        {"X-Forwarded-Email": "b@x", "X-Forwarded-User": "5999868213926204"}, "ws"
+    ) == vc.AuthenticatedRequest("b@x", "ws")
+    # Preferred username is the next-best readable identity.
+    assert vc_auth_from_request(
+        {"X-Forwarded-Preferred-Username": "user@x", "X-Forwarded-User": "5999868213926204"}, "ws"
+    ) == vc.AuthenticatedRequest("user@x", "ws")
+    # The numeric id is only a last resort when no readable identity is forwarded.
+    assert vc_auth_from_request({"X-Forwarded-User": "5999868213926204"}, "ws") == vc.AuthenticatedRequest("5999868213926204", "ws")
     assert vc_auth_from_request({}, "ws", dev_email="d@x") == vc.AuthenticatedRequest("d@x", "ws")
     assert vc_auth_from_request({}, "ws") is None
 

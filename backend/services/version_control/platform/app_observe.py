@@ -100,12 +100,19 @@ def vc_auth_from_request(headers: Any, workspace_id: str, *, dev_email: str | No
     Returns ``None`` when no authenticated subject is present (the routers then fail
     closed with 401). Reads are proxied through the trusted target workspace, so the
     workspace_id is the observe runtime's, not the caller's.
+
+    Prefer the human email: Databricks Apps forwards the address in ``X-Forwarded-Email``
+    (and the username in ``X-Forwarded-Preferred-Username``), while ``X-Forwarded-User`` is
+    the *numeric user id* — a cryptic value that would surface as the version author. Only
+    fall back to the id when no readable identity is forwarded.
     """
-    email = (headers.get("X-Forwarded-User") or headers.get("X-Forwarded-Email")
-             or dev_email)
-    if not email:
+    subject = (headers.get("X-Forwarded-Email")
+               or headers.get("X-Forwarded-Preferred-Username")
+               or headers.get("X-Forwarded-User")
+               or dev_email)
+    if not subject:
         return None
-    return vc.AuthenticatedRequest(email, workspace_id)
+    return vc.AuthenticatedRequest(subject, workspace_id)
 
 
 class FailClosedRestore:

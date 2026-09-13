@@ -26,6 +26,19 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function friendlyActor(observedBy: string): string {
   if (!observedBy) return 'Unknown'
   if (UUID_RE.test(observedBy)) return 'Workbench service principal'
+  // A forwarded email (person@host) reads best as a name: title-case the local part with
+  // dot/underscore/hyphen separators — "prashanth.subrahmanyam@databricks.com" -> "Prashanth
+  // Subrahmanyam". The full email stays in the title attribute at the call sites for audit.
+  const at = observedBy.indexOf('@')
+  if (at > 0) {
+    const name = observedBy
+      .slice(0, at)
+      .split(/[._-]+/)
+      .filter(Boolean)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ')
+    if (name) return name
+  }
   return observedBy
 }
 
