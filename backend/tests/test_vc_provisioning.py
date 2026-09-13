@@ -196,6 +196,7 @@ def test_ddl_migrations_are_owned_ordered_idempotent_and_not_content_deploys():
             ("M02", "table", "genie_space_registry"),
             ("M03", "table", "genie_ops_coordination"),
             ("M06", "table", "genie_space_operations"),
+            ("M09", "table", "genie_space_version_tags"),
             ("M02", "volume", "vc_snapshots"),
             ("M07", "volume", "vc_outbound_packages"),
             ("M06", "volume", "vc_approval_evidence"),
@@ -204,7 +205,7 @@ def test_ddl_migrations_are_owned_ordered_idempotent_and_not_content_deploys():
     ]
     runner.validate_owner_spec.return_value = True
     run(list(reversed(manifests)), runner)
-    assert [call.args[0]["kind"] for call in runner.apply_owner_spec.call_args_list] == ["table"] * 4 + ["volume"] * 4
+    assert [call.args[0]["kind"] for call in runner.apply_owner_spec.call_args_list] == ["table"] * 5 + ["volume"] * 4
     runner.apply_grants.assert_called_once_with()
     runner.reset_mock()
     for invalid in [manifests[:-1], manifests + [manifests[0]],

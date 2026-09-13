@@ -32,6 +32,7 @@ OWNER_SPECS = (
     ("M02", "table", "genie_space_registry"),
     ("M03", "table", "genie_ops_coordination"),
     ("M06", "table", "genie_space_operations"),
+    ("M09", "table", "genie_space_version_tags"),
     ("M02", "volume", "vc_snapshots"),
     ("M06", "volume", "vc_approval_evidence"),
     ("M07", "volume", "vc_outbound_packages"),
@@ -186,6 +187,10 @@ class OwnerMigrationRunner:
 PROVISION_ROLES = ("runtime", "executor", "enrollment", "observer", "approval", "source")
 _FACT_TABLES = ("genie_space_versions", "genie_space_registry", "genie_space_operations")
 _COORDINATION = "genie_ops_coordination"
+# Mutable, non-authoritative UX metadata (version tags/comments). Written in place by the
+# observe runtime's executor identity (adapters.sql("executor")); SELECT+MODIFY covers the
+# MERGE upsert and DELETE. Not a fact table, so it is intentionally not appendOnly.
+_VERSION_TAGS = "genie_space_version_tags"
 _VOLUME_WRITER = {
     "vc_snapshots": "observer",
     "vc_approval_evidence": "approval",
@@ -237,6 +242,11 @@ def build_grant_matrix(principals):
     # enforces the write separation.
     grants.append(f"GRANT SELECT, MODIFY ON TABLE {table}.{_COORDINATION} TO {quoted['executor']}")
     grants.append(f"GRANT SELECT, MODIFY ON TABLE {table}.{_COORDINATION} TO {quoted['enrollment']}")
+
+    # Version tags (mutable UX metadata): the observe runtime upserts/deletes rows via the
+    # executor identity. UC has no INSERT/UPDATE/DELETE privilege, so SELECT+MODIFY is least
+    # privilege for a MERGE/DELETE on a non-appendOnly table.
+    grants.append(f"GRANT SELECT, MODIFY ON TABLE {table}.{_VERSION_TAGS} TO {quoted['executor']}")
 
     # Volumes: one writer each (read+write), designated consumers read-only.
     for volume, role in _VOLUME_WRITER.items():

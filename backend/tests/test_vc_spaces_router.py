@@ -52,7 +52,29 @@ def _runtime(*, history=True, writes=True, restore=True, existing=_BINDING):
     return SimpleNamespace(
         ledger=ledger, registry=registry, observer=observer, identity=identity, flags=flags,
         canonicalizer=canonicalizer, authorize_history=Mock(return_value=True), actor=actor,
-        workspace_id="target", environment="prod", reader_selection=object())
+        workspace_id="target", environment="prod", reader_selection=object(),
+        tag_store=_FakeTagStore())
+
+
+class _FakeTagStore:
+    """Sync in-memory twin of DeltaVersionTagStore for router tests (fresh per runtime, so
+    no cross-test bleed). Same method surface the router calls: set_tag/delete_tag/get_tags."""
+
+    def __init__(self):
+        self._rows: dict[str, dict] = {}
+
+    def set_tag(self, space_id, version_id, label, note, author):
+        self._rows[version_id] = {"space_id": space_id, "label": label,
+                                  "note": note, "author": author}
+
+    def delete_tag(self, space_id, version_id):
+        row = self._rows.get(version_id)
+        if row is not None and row["space_id"] == space_id:
+            del self._rows[version_id]
+
+    def get_tags(self, space_id):
+        return {vid: {"label": r["label"], "note": r["note"], "author": r["author"]}
+                for vid, r in self._rows.items() if r["space_id"] == space_id}
 
 
 def _client(runtime, *, authenticated=True):
@@ -236,27 +258,24 @@ def test_restore_service_denies_actor_outside_binding_workspace():
 
 
 # -- version tags (§19 Task 4) ------------------------------------------------
-# The tag store is the real lakebase in-memory fallback (process-global, keyed by
-# version_id). Use a unique version_id per test to avoid cross-test bleed.
+# The tag store is the Delta-backed DeltaVersionTagStore in prod; router tests inject a
+# fresh sync in-memory twin per runtime (_FakeTagStore), so there is no cross-test bleed.
 _TAG_VID = "22222222-2222-2222-2222-222222222222"
 
 
 def test_put_get_delete_version_tag():
     c = _client(_runtime())
-    try:
-        put = c.put(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag",
-                    json={"label": "Golden", "note": "keep"})
-        assert put.status_code == 200
-        assert put.json()["author"] == "user@x"  # stamped with the actor's subject_id
+    put = c.put(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag",
+                json={"label": "Golden", "note": "keep"})
+    assert put.status_code == 200
+    assert put.json()["author"] == "user@x"  # stamped with the actor's subject_id
 
-        got = c.get(f"/api/version-control/spaces/{SPACE_ID}/tags").json()
-        assert got[_TAG_VID]["label"] == "Golden"
+    got = c.get(f"/api/version-control/spaces/{SPACE_ID}/tags").json()
+    assert got[_TAG_VID]["label"] == "Golden"
 
-        assert c.delete(
-            f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag").status_code == 200
-        assert _TAG_VID not in c.get(f"/api/version-control/spaces/{SPACE_ID}/tags").json()
-    finally:
-        c.delete(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag")
+    assert c.delete(
+        f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag").status_code == 200
+    assert _TAG_VID not in c.get(f"/api/version-control/spaces/{SPACE_ID}/tags").json()
 
 
 def test_put_tag_404_when_not_enrolled():

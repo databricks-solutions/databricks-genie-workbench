@@ -23,6 +23,7 @@ from backend.services.version_control.platform.observe_seams import (
     resolve_observe_runtime,
 )
 from backend.services.version_control.registry import DeltaRegistry
+from backend.services.version_control.version_tags import DeltaVersionTagStore
 from backend.tests.test_vc_live_seams import FakeAdapters, TARGET_HOST
 
 
@@ -44,6 +45,10 @@ def test_observe_runtime_assembles_with_real_leaves():
     runtime = build_observe_runtime(_config(), adapters=FakeAdapters())
     assert isinstance(runtime.observer, Observer)
     assert isinstance(runtime.ledger, DeltaVersionLedger)
+    # Version-tag store is wired onto the runtime, qualified to the control schema
+    # (backtick-quoted `cat`.`schema`.`genie_space_version_tags`).
+    assert isinstance(runtime.tag_store, DeltaVersionTagStore)
+    assert "genie_space_version_tags" in runtime.tag_store.table
     assert isinstance(runtime.registry, DeltaRegistry)
     assert isinstance(runtime.coordination, CoordinationService)
     assert isinstance(runtime.transport, GenieTransport)

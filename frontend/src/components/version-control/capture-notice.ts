@@ -6,9 +6,21 @@ export type CaptureNotice = { tone: 'success' | 'info' | 'error'; message: strin
 // Map an observation outcome to a single user-facing notice with a tone. Kept pure and in
 // its own module so the distinct terminal states are unit-tested directly (the component
 // just renders them).
-export function describeObservation(result: ObservationResult): CaptureNotice {
+//
+// `knownVersionIds` are the version ids the caller had ALREADY loaded before observing.
+// This matters because the observer's dedup branch returns the existing observed *head* as
+// `captured_version` on an unchanged open (it is not None) — so "a version object came back"
+// is NOT proof that a new version was appended. A capture is genuinely new only when its id
+// was not already present in the history we held before the observe.
+export function describeObservation(
+  result: ObservationResult,
+  knownVersionIds: ReadonlySet<string> = new Set(),
+): CaptureNotice {
   if (result.busy) return { tone: 'info', message: 'A capture is already in progress — showing the latest history.' }
-  if (result.captured_version) return { tone: 'success', message: 'Saved a new version — changes were detected in the live configuration.' }
+  const captured = result.captured_version
+  if (captured && !knownVersionIds.has(captured.version_id)) {
+    return { tone: 'success', message: 'Saved a new version — changes were detected in the live configuration.' }
+  }
   return { tone: 'info', message: 'No changes since the last captured version.' }
 }
 

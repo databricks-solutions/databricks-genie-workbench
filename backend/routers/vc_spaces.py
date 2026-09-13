@@ -70,29 +70,11 @@ def _invoke(call):
         raise _error(503, "evidence_unavailable", "Evidence unavailable", stale=True) from error
 
 
-async def _ainvoke(op):
-    """Async twin of ``_invoke`` for the tag routes (which await lakebase). Maps the same
-    exceptions but returns the awaited result verbatim — tag responses are plain dicts, not
-    wire values, so there is no ``to_wire`` wrap here."""
-    try:
-        return await op()
-    except HTTPException:
-        raise
-    except PermissionError as error:
-        raise _error(403, "scope_denied", str(error)) from error
-    except LookupError as error:
-        raise _error(404, "resource_not_found", "Scoped resource not found") from error
-    except (ValueError, TypeError) as error:
-        raise _error(409, "request_conflict", str(error)) from error
-    except Exception as error:
-        logger.exception("VC space request failed")
-        raise _error(503, "evidence_unavailable", "Evidence unavailable", stale=True) from error
-
-
 def build_router(*, runtime):
     router = APIRouter(prefix="/api/version-control")
     ledger, registry, identity = runtime.ledger, runtime.registry, runtime.identity
     flags, authorize_history = runtime.flags, runtime.authorize_history
+    tag_store = runtime.tag_store
 
     def actor_for(request):
         authentication = getattr(request.state, "vc_auth", None)
@@ -178,46 +160,40 @@ def build_router(*, runtime):
         return binding, actor
 
     @router.get("/spaces/{space_id}/tags")
-    async def space_tags(space_id: SpaceId, request: Request):
-        from backend.services import lakebase
-
-        async def op():
+    def space_tags(space_id: SpaceId, request: Request):
+        def read():
             if flags.enabled("vc_history_enabled") is not True:
                 raise _error(503, "vc_history_disabled", "VC history reads disabled", stale=True)
             binding, _ = resolve_readable(space_id, request)
             if binding is None:
                 return {}  # not enrolled yet -> no tags
-            return await lakebase.get_version_tags(space_id)
-        return await _ainvoke(op)
+            return tag_store.get_tags(space_id)
+        return _invoke(read)
 
     @router.put("/spaces/{space_id}/versions/{version_id}/tag")
-    async def set_tag(space_id: SpaceId, version_id: UUID, body: TagBody, request: Request):
-        from backend.services import lakebase
-
-        async def op():
+    def set_tag(space_id: SpaceId, version_id: UUID, body: TagBody, request: Request):
+        def write():
             if flags.enabled("vc_writes_enabled") is not True:
                 raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
             binding, actor = resolve_readable(space_id, request)
             if binding is None:
                 raise _error(404, "resource_not_found", "Space is not enrolled in version control")
-            await lakebase.set_version_tag(space_id, str(version_id), body.label, body.note,
-                                           actor.subject_id)
+            tag_store.set_tag(space_id, str(version_id), body.label, body.note,
+                              actor.subject_id)
             return {"version_id": str(version_id), "label": body.label,
                     "note": body.note, "author": actor.subject_id}
-        return await _ainvoke(op)
+        return _invoke(write)
 
     @router.delete("/spaces/{space_id}/versions/{version_id}/tag")
-    async def delete_tag(space_id: SpaceId, version_id: UUID, request: Request):
-        from backend.services import lakebase
-
-        async def op():
+    def delete_tag(space_id: SpaceId, version_id: UUID, request: Request):
+        def write():
             if flags.enabled("vc_writes_enabled") is not True:
                 raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
             binding, _ = resolve_readable(space_id, request)
             if binding is None:
                 raise _error(404, "resource_not_found", "Space is not enrolled in version control")
-            await lakebase.delete_version_tag(space_id, str(version_id))
+            tag_store.delete_tag(space_id, str(version_id))
             return {"version_id": str(version_id), "deleted": True}
-        return await _ainvoke(op)
+        return _invoke(write)
 
     return router

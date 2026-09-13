@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Bot, Copy, RotateCcw, Tag, Trash2, User, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Bot, Check, ChevronUp, Copy, Pencil, RotateCcw, Tag, Trash2, User, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { VersionDetail, VersionTag } from '@/types/version-control'
 import { ConfigView } from './config-view'
@@ -7,6 +7,8 @@ import { absoluteTime, friendlyActor, isHumanActor, originMeta, relativeTime, sh
 
 const CHIP = 'inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-0.5 text-xs text-muted'
 const CURRENT_PILL = 'inline-flex items-center rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent'
+// Common labels operators reach for; clicking one fills the label input (still editable).
+const TAG_PRESETS = ['Champion', 'Challenger', 'Baseline', 'v1'] as const
 
 function Fingerprint({ label, value }: { label: string; value: string }) {
   return (
@@ -25,10 +27,12 @@ interface VersionDetailPanelProps {
   restoring?: boolean
   isCurrent?: boolean
   // Tag editor (Task 5): existing tag for this version + set/remove handlers. The whole
-  // editor block is gated on `onSetTag` being provided.
+  // editor block is gated on `onSetTag` being provided. Handlers may return a boolean
+  // (true = success) so the panel can show a transient "Saved ✓" cue and reset on remove;
+  // returning void is treated as success.
   tag?: VersionTag
-  onSetTag?: (label: string, note: string | null) => void
-  onRemoveTag?: () => void
+  onSetTag?: (label: string, note: string | null) => void | boolean | Promise<void | boolean>
+  onRemoveTag?: () => void | boolean | Promise<void | boolean>
 }
 
 export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled, restoring, isCurrent, tag, onSetTag, onRemoveTag }: VersionDetailPanelProps) {
@@ -38,8 +42,34 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
   const snapshot = detail.snapshot
   // Seeded once per mount from the version's tag. The parent remounts this panel per
   // version_id (via a React `key`), so a version switch gives a fresh instance and the
-  // input always reflects the CURRENT version's tag (empty for an untagged version).
+  // label/note always reflect the CURRENT version's tag (empty for an untagged version).
   const [label, setLabel] = useState(tag?.label ?? '')
+  const [note, setNote] = useState(tag?.note ?? '')
+  // Collapsed by default so the tag/comment editor does not steal permanent space from the
+  // scrollable configuration below — a tagged version shows only a compact summary line.
+  const [editing, setEditing] = useState(false)
+  // Transient inline "Saved ✓" confirmation next to Save (~2s), cleared on unmount.
+  const [saved, setSaved] = useState(false)
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current) }, [])
+
+  const handleSave = async () => {
+    if (!onSetTag) return
+    const result = await onSetTag(label.trim(), note.trim() || null)
+    if (result === false) return  // explicit failure surfaces via the parent banner; no cue
+    setSaved(true)
+    if (savedTimer.current) clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => setSaved(false), 2000)
+  }
+
+  const handleRemove = async () => {
+    if (!onRemoveTag) return
+    const result = await onRemoveTag()
+    if (result === false) return
+    setLabel('')
+    setNote('')
+    setEditing(false)
+  }
   return (
     <section aria-label="Version detail" className="flex h-full flex-col rounded-xl border border-default bg-surface">
       {/* Sticky metadata header — stays put while the configuration body scrolls below. */}
@@ -100,41 +130,105 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
 
       {onSetTag && (
         <div className="space-y-1.5">
-          <label htmlFor="vc-tag-label" className="flex items-center gap-1 text-xs font-semibold text-secondary uppercase tracking-wide">
-            <Tag className="w-3 h-3" />
-            Tag label
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              id="vc-tag-label"
-              type="text"
-              value={label}
-              maxLength={60}
-              onChange={event => setLabel(event.target.value)}
-              placeholder="e.g. Golden"
-              className="min-w-0 flex-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary focus:outline-none focus:ring-2 focus:ring-accent/50"
-            />
+          {!editing ? (
+            // Collapsed: a single compact line. Tagged versions show label + note preview;
+            // untagged versions show an "Add tag" affordance. Either expands the editor.
             <button
               type="button"
-              onClick={() => onSetTag(label, tag?.note ?? null)}
-              disabled={!label.trim()}
-              className="inline-flex items-center rounded-md border border-default px-2.5 py-1 text-xs font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => setEditing(true)}
+              aria-label={tag ? 'Edit tag' : 'Add tag'}
+              className="flex w-full items-center gap-2 rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary hover:bg-surface-secondary transition-colors"
             >
-              Save
+              <Tag className="w-3 h-3 shrink-0 text-muted" />
+              {tag ? (
+                <>
+                  <Badge variant="info" className="shrink-0">{tag.label}</Badge>
+                  {tag.note && <span className="min-w-0 truncate text-muted" title={tag.note}>{tag.note}</span>}
+                  <Pencil className="ml-auto w-3 h-3 shrink-0 text-muted" />
+                </>
+              ) : (
+                <span className="text-muted">Add tag &amp; comment</span>
+              )}
             </button>
-            {tag && onRemoveTag && (
-              <button
-                type="button"
-                onClick={onRemoveTag}
-                title="Remove tag"
-                aria-label="Remove tag"
-                className="inline-flex items-center gap-1 rounded-md border border-default px-2.5 py-1 text-xs font-medium text-muted hover:text-secondary hover:bg-surface-secondary transition-colors"
-              >
-                <Trash2 className="w-3 h-3" />
-                Remove tag
-              </button>
-            )}
-          </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-1 text-xs font-semibold text-secondary uppercase tracking-wide">
+                <Tag className="w-3 h-3" />
+                <label htmlFor="vc-tag-label">Tag &amp; comment</label>
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  aria-label="Collapse tag editor"
+                  className="ml-auto text-muted hover:text-secondary transition-colors"
+                >
+                  <ChevronUp className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {/* Quick-pick presets fill the label; the note is still free text. */}
+              <div className="flex flex-wrap gap-1">
+                {TAG_PRESETS.map(preset => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setLabel(preset)}
+                    aria-pressed={label === preset}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                      label === preset
+                        ? 'border-accent/50 bg-accent/10 text-accent'
+                        : 'border-default text-muted hover:bg-surface-secondary'}`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  id="vc-tag-label"
+                  type="text"
+                  value={label}
+                  maxLength={60}
+                  onChange={event => setLabel(event.target.value)}
+                  placeholder="e.g. Champion"
+                  className="min-w-0 flex-1 rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary focus:outline-none focus:ring-2 focus:ring-accent/50"
+                />
+                <button
+                  type="button"
+                  onClick={() => { void handleSave() }}
+                  disabled={!label.trim()}
+                  className="inline-flex items-center rounded-md border border-default px-2.5 py-1 text-xs font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Save
+                </button>
+                {saved && (
+                  <span role="status" className="inline-flex items-center gap-1 text-xs font-medium text-green-400">
+                    <Check className="w-3 h-3" />
+                    Saved
+                  </span>
+                )}
+                {tag && onRemoveTag && (
+                  <button
+                    type="button"
+                    onClick={() => { void handleRemove() }}
+                    title="Remove tag"
+                    aria-label="Remove tag"
+                    className="inline-flex items-center gap-1 rounded-md border border-default px-2.5 py-1 text-xs font-medium text-muted hover:text-secondary hover:bg-surface-secondary transition-colors"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Remove tag
+                  </button>
+                )}
+              </div>
+              <textarea
+                aria-label="Tag comment"
+                value={note}
+                maxLength={500}
+                rows={2}
+                onChange={event => setNote(event.target.value)}
+                placeholder="Optional comment — why this version matters"
+                className="w-full resize-y rounded-md border border-default bg-surface px-2 py-1 text-xs text-secondary focus:outline-none focus:ring-2 focus:ring-accent/50"
+              />
+            </>
+          )}
         </div>
       )}
 

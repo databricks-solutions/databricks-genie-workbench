@@ -167,7 +167,7 @@ function SqlEntry({ record, index, labelKeys }: { record: Record<string, unknown
   return (
     <div className={`${box} space-y-1`}>
       <p className="text-xs text-secondary break-words">{label}</p>
-      {sql ? <SqlCodeBlock code={sql} maxLines={8} /> : null}
+      {sql ? <SqlCodeBlock code={sql} maxLines={8} format label={label} /> : null}
       {synonyms.length > 0 && <p className="text-xs text-muted break-words">Synonyms: {synonyms.join(', ')}</p>}
       {instruction && <p className="text-xs text-muted break-words">{instruction}</p>}
       {comment && <p className="text-xs text-muted break-words">{comment}</p>}
@@ -184,7 +184,7 @@ function ExampleSqlEntry({ record, index }: { record: Record<string, unknown>; i
   return (
     <div className={`${box} space-y-1`}>
       <p className="text-xs text-secondary break-words">{question}</p>
-      {sql ? <SqlCodeBlock code={sql} maxLines={8} /> : null}
+      {sql ? <SqlCodeBlock code={sql} maxLines={8} format label="Example SQL" /> : null}
       {parameters.length > 0 && (
         <div className="space-y-0.5">
           <p className="text-[11px] uppercase tracking-wide text-muted">Parameters</p>
@@ -259,7 +259,7 @@ function BenchmarkEntry({ record, index }: { record: Record<string, unknown>; in
   return (
     <div className={`${box} space-y-1`}>
       <p className="text-xs text-secondary break-words">{question}</p>
-      {sql ? <SqlCodeBlock code={sql} maxLines={8} /> : null}
+      {sql ? <SqlCodeBlock code={sql} maxLines={8} format label="Expected SQL answer" /> : null}
     </div>
   )
 }

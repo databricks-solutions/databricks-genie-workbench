@@ -39,9 +39,10 @@ _DDL_ROOT = Path(__file__).resolve().parents[2] / "backend" / "version_control_d
 # coordination, operation facts, snapshot Volume). Approval/promotion Volumes are
 # not part of the reads-only observe scope and are intentionally skipped.
 _OBSERVE_DDL = ("01-versions.sql", "02-registry.sql", "03-snapshots-volume.sql",
-                "05-coordination.sql", "06-operations.sql")
+                "05-coordination.sql", "06-operations.sql", "09-version-tags.sql")
 _OBSERVE_TABLES = ("genie_space_versions", "genie_space_registry",
-                   "genie_ops_coordination", "genie_space_operations")
+                   "genie_ops_coordination", "genie_space_operations",
+                   "genie_space_version_tags")
 _OBSERVE_VOLUME = "vc_snapshots"
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PRINCIPAL = re.compile(r"[A-Za-z0-9._@-]+")

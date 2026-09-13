@@ -52,6 +52,7 @@ from backend.services.version_control.platform.termination import (
     PlatformTerminationEvidenceProvider,
 )
 from backend.services.version_control.registry import DeltaRegistry
+from backend.services.version_control.version_tags import DeltaVersionTagStore
 
 _REQUIRED_CONFIG = ("workspace_id", "catalog", "control_schema", "target_selection")
 
@@ -74,6 +75,7 @@ class ObserveRuntime:
     workspace_id: str
     actor: vc.ActorContext
     environment: str
+    tag_store: Any
 
 
 def _deny_authorization(_grant: Any, _executor: Any) -> bool:
@@ -200,6 +202,10 @@ def build_observe_runtime(config: dict, *, adapters: Any = None,
 
     actor = vc.ActorContext(config["target_selection"]["principal_id"], workspace_id, "service")
 
+    # Mutable version tags/comments: written in place by the same executor identity that
+    # runs the ledger/coordination SQL. Not a governed fact — purely UX metadata.
+    tag_store = DeltaVersionTagStore(sql, _qualified(config, "genie_space_version_tags"))
+
     def authorize_history(actor_ctx: Any, binding: Any) -> bool:
         # Target-local read authorization: the caller must resolve into the trusted
         # target workspace (OBO reads are proxied through the SP actor by the router).
@@ -210,7 +216,7 @@ def build_observe_runtime(config: dict, *, adapters: Any = None,
         coordination=coordination, canonicalizer=canonicalizer, transport=transport,
         reader_selection=selection, authorize_history=authorize_history, flags=flags,
         workspace_id=workspace_id, actor=actor,
-        environment=str(config.get("environment") or "prod"))
+        environment=str(config.get("environment") or "prod"), tag_store=tag_store)
 
 
 def resolve_observe_runtime(config: dict | None, *, adapters: Any = None,

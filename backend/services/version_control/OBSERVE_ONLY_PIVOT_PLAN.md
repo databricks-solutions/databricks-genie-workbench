@@ -644,7 +644,8 @@ benchmarks are already versioned via `Fingerprints.benchmark` (`contracts.py:290
   travel via promotion. Accepted for CUJ-1.
 
 ### Design decisions
-- **VC-D-tag1 (store):** Lakebase table `genie.vc_version_tags`, mutable CRUD
+- **VC-D-tag1 (store):** _SUPERSEDED by VC-D-tag1′ in §20 — the store moved from Lakebase to
+  the governed Delta control table `genie_space_version_tags`._ Lakebase table `genie.vc_version_tags`, mutable CRUD
   (`INSERT … ON CONFLICT DO UPDATE` / `DELETE`), modeled on `star_space`
   (`lakebase.py:562-592`). Rationale: a mutable tag row in the VC Delta ledger would force a
   non-append-only fact table through the strict provisioning `OWNER_SPECS`
@@ -1250,3 +1251,357 @@ export function benchmarkChanged(
 ### Suggested order
 Tasks 1-2 first (fast, frontend-only bug fixes, high payoff), then 3 → 4 → 5 (tagging
 end-to-end), then 6 if wanted.
+
+---
+
+## §20 — Tagging store pivot: Lakebase → governed Delta control table (LANDED)
+
+Supersedes **VC-D-tag1** (the Lakebase decision) and the §19 file-structure/self-review
+claims that named `lakebase.py` as the tag store. Motivation (from review): the module is
+otherwise a self-contained GSO control plane keyed by the GSO Delta schema; a Lakebase
+side-table split tag state away from that plane and depended on app-instance-scoped
+Postgres that the deployed app does not provision. Tags now live in the SAME governed
+schema as the rest of the VC control plane, one row per version (1:1/0..1 mapping to
+`genie_space_versions`).
+
+### Decisions (amending §19)
+- **VC-D-tag1′ (store, REPLACES VC-D-tag1):** mutable Delta control table
+  `genie_space_version_tags`, keyed by `version_id` (PRIMARY KEY) with a `space_id` scope
+  column. Written in place (`MERGE` upsert / `DELETE`) by the observe runtime's executor
+  identity — the same pattern as `genie_ops_coordination` (`DeltaCoordinationStore`), which
+  established that a mutable, non-`appendOnly` Delta table with `SELECT, MODIFY` is the
+  sanctioned shape for control (non-fact) state. Not an `appendOnly` fact table, so it is
+  intentionally excluded from `_FACT_TABLES`.
+- **VC-D-tag2 (shape):** unchanged — one `{label (1–60), note?}` per version, author-stamped.
+- **VC-D-tag4 (comment field, §19-followup):** the single per-version tag carries an
+  optional free-text `note` (comment). The detail-panel editor surfaces a `note` textarea
+  plus quick-pick preset chips (`Champion`, `Challenger`, `Baseline`, `v1`).
+- **VC-D-sql (formatting):** example SQL, expected-SQL benchmark answers, and sql_snippets
+  render through `SqlCodeBlock` with `format` (pretty-print via the already-vendored
+  `sql-formatter`, `spark` dialect, parse-failure falls back to raw) and a contextual header
+  `label`.
+
+### Landed changes
+- `backend/version_control_ddl/09-version-tags.sql` — **new** owner DDL: `CREATE TABLE …
+  genie_space_version_tags` (PK `version_id`, `Serializable`, NOT `appendOnly`) + idempotent
+  `label` length `CHECK` via `ALTER`.
+- `backend/services/version_control/platform/provisioning.py` — `("M09","table",
+  "genie_space_version_tags")` added to `OWNER_SPECS`; grant matrix adds `GRANT SELECT,
+  MODIFY … genie_space_version_tags TO <executor>`.
+- `backend/services/version_control/version_tags.py` — **new** `DeltaVersionTagStore`
+  (`set_tag`/`delete_tag`/`get_tags`, `current_timestamp()`-stamped, space-scoped).
+- `backend/services/version_control/platform/observe_seams.py` — `tag_store` added to
+  `ObserveRuntime`; constructed in `build_observe_runtime` from the executor `sql` seam.
+- `backend/routers/vc_spaces.py` — tag routes now **sync**, backed by `runtime.tag_store`;
+  the async `_ainvoke` helper is removed (all routes go through `_invoke` → `to_wire`).
+- `backend/services/lakebase.py` — `vc_version_tags` table, index, in-memory bucket, and the
+  three async tag functions **removed**.
+- `scripts/version_control/provision_observe_nonprod.py` — `09-version-tags.sql` +
+  `genie_space_version_tags` added to the observe DDL/table lists.
+- `frontend/src/components/SqlCodeBlock.tsx` — optional `format`/`language`/`label` props.
+- `frontend/src/components/version-control/config-view.tsx` — formatted SQL for
+  example/benchmark/snippet blocks with contextual headers.
+- `frontend/src/components/version-control/version-detail-panel.tsx` — `note` textarea +
+  preset chips.
+
+### Verify (this session)
+- Backend: `./scripts/test.sh` — **3326 passed**, 17 deselected, 0 failed (import resolves
+  inside this checkout; sqlglot 30.0.3 under `--frozen`).
+- Frontend: touched vitest files green (13 passed); `eslint` clean; `tsc --noEmit` clean.
+- Grep-clean: no `set_version_tag`/`delete_version_tag`/`get_version_tags`/`vc_version_tags`/
+  `_ainvoke` in code (only descriptive test names + this doc's frozen §19 history remain).
+
+## §21 — Initial-capture hook for the Create flow (PLAN)
+
+> **For agentic workers:** written with the `writing-plans` discipline — bite-sized
+> TDD tasks, real code, frequent commits. Each Task ends with an independently testable
+> deliverable and its own PLAN → VERIFY → commit slice (mark the Task **LANDED** here in
+> the same commit, MV-D9). Steps use `- [ ]` for tracking.
+>
+> **Numbering note:** §20 is already taken (the LANDED tagging-store pivot), so this
+> forward-looking plan is §21.
+
+**Goal:** When a Genie space is born inside the workbench (REST wizard or the agentic
+Create flow), append its **first** VC version automatically, so the version timeline starts
+at "created here" instead of lazily at "first tab open." The capture is **best-effort**:
+space creation must never fail because VC is off, unintegrated, or hiccuped.
+
+**Architecture:** The `POST /spaces/{space_id}/observe` handler
+(`vc_spaces.py:112`) already does exactly "enroll-if-needed + capture live config":
+`resolve_or_enroll_bound` auto-enrolls a brand-new space and `capture_on_open` writes the
+first version. The create hook does **not** re-implement any of that — it invokes the same
+seam once, right after `create_genie_space` returns, from inside the OBO request context.
+A single fail-soft helper (`capture_initial_version(request, space_id)`) reads the runtime
+off `app.state.vc_observe` (`main.py:167`) and the actor off `request.state.vc_auth`
+(`main.py:124`), so no create-path code needs to know the binding id or the observer
+internals. The observer's fingerprint dedup makes a later tab-open capture idempotent (it
+returns the existing head, exactly the "no changes" branch §19/§20 already rely on), so the
+hook is safe to add without touching the tab path.
+
+**Tech Stack:** FastAPI (backend); pytest via `./scripts/test.sh`. No frontend change (the
+new version simply appears in the existing history list).
+
+**Spec:** this doc's CUJ-1 capture semantics + §19/§20. The hook reuses the observe seam
+verbatim; it introduces no new fingerprint, wire value, or governed table.
+
+### Global Constraints
+- Backend Tasks run `./scripts/test.sh` (**baseline 3326**, combined suites), print the
+  import path + resolved sqlglot version, and leave `git status -- uv.lock` clean.
+- **Creation is never blocked by VC.** Every failure path in the helper is swallowed and
+  logged; `create_space_endpoint` and the agentic `created` event behave identically when
+  VC is unintegrated (`vc_observe is None`), disabled (`vc_writes_enabled` not true), or
+  when `capture_on_open` raises.
+- The hook runs **inside the OBO request context** (never a detached background task) so the
+  `live_reader` reads the live serialized space under the creator's token — the app SP has
+  no grant on a just-created user-owned space and would 403 (same reason the observe route
+  injects `live_reader`, `vc_spaces.py:127-129`).
+- No change to the observer, ledger, registry, `OWNER_SPECS`, or the grant matrix. The ONE
+  contract change is **purely additive**: a new `Origin.CREATE` enum member (Task 1). No
+  existing wire value, fingerprint, or governed table is altered.
+- Frontend Tasks keep vitest green and `npx tsc --noEmit` clean — adding `Origin.CREATE`
+  forces a new `ORIGIN_META` entry (exhaustive `Record<Origin, …>`, tsc-enforced).
+
+### Design decisions
+- **VC-D-init1 (hook shape):** a single fail-soft helper
+  `capture_initial_version(request, space_id) -> None`. It no-ops when
+  `getattr(request.app.state, "vc_observe", None) is None`, when
+  `runtime.flags.enabled("vc_writes_enabled") is not True`, or when
+  `getattr(request.state, "vc_auth", None) is None`; otherwise it resolves the actor via
+  `runtime.identity.actor(auth)` and calls the observe seam. All exceptions are caught and
+  logged at `warning`. Lives next to the observe app glue in
+  `platform/app_observe.py` (the module that already owns `vc_auth_from_request` and router
+  mounting), keeping the create routers free of VC internals.
+- **VC-D-init2 (identity/OBO):** the ledger actor is the authenticated human
+  (`actor_override=actor`, mirroring `space_observe`), and the live read runs under OBO via
+  `live_reader=lambda: get_genie_space(space_id)`. The lease/status/append still run as the
+  SP executor inside `capture_on_open`.
+- **VC-D-init3 (dedup/idempotency):** the hook does **not** guard against a later tab-open
+  capture. `capture_on_open` fingerprints the config; a redundant call returns the existing
+  head instead of appending a duplicate (the §19/§20 "no changes since the last captured
+  version" branch). So double-capture is harmless by construction.
+- **VC-D-init4 (origin) — LOCKED: add `Origin.CREATE`.** `Origin` (`contracts.py:82`) today
+  is `WORKBENCH/EXTERNAL/OPTIMIZER/RESTORE/PROMOTION/UNKNOWN`. We add a new member
+  `CREATE = "create"` so the timeline reads "born in the workbench" distinctly from a
+  tab-open auto-capture (`WORKBENCH` → "Auto-captured"). This is a **purely additive**
+  contract change landed FIRST (Task 1) because two surfaces enforce enum totality:
+  the golden round-trip asserts the enum's ordered values equal the fixture
+  (`test_vc_contracts.py:32`, fixture `enums.json:26`), and the frontend `ORIGIN_META` is an
+  exhaustive `Record<Origin, …>` (`version-format.ts:9`) that fails `tsc` on a missing key.
+  The member is APPENDED (never reordered) so the ordered-list assertion stays a pure add.
+  The helper (VC-D-init2) then passes `origin=vc.Origin.CREATE`.
+- **VC-D-init5 (agentic threading):** the agentic Create flow emits `created` deep inside an
+  async SSE generator (`create_agent.py:344`) with no `Request` handle. Rather than couple
+  the agent to VC, `agent_chat` (`create.py:184`, which already has `request`) builds a
+  bound callback `vc_capture: Callable[[str], None]` and threads it into the agent run;
+  `create_agent` invokes it via `loop.run_in_executor(...)` (the precedent at
+  `create_agent.py:826`) right after `session.space_id` is set. The parameter defaults to
+  `None`, so existing tests and non-VC deployments are unaffected.
+
+### File structure
+- `backend/services/version_control/contracts.py` — append `Origin.CREATE = "create"`
+  (`Origin`, `contracts.py:82`).
+- `backend/tests/fixtures/vc_contracts/enums.json` — append `"create"` to the `Origin` list
+  (`enums.json:26`; golden test `test_vc_contracts.py:32`).
+- `frontend/src/types/version-control.ts` — add `'create'` to the `Origin` union
+  (`version-control.ts:4`).
+- `frontend/src/components/version-control/version-format.ts` — add a `create:` entry to
+  `ORIGIN_META` (`version-format.ts:9`).
+- `backend/services/version_control/platform/app_observe.py` — **new** helper
+  `capture_initial_version(request, space_id)` (VC-D-init1/2/3/4).
+- `backend/routers/create.py` — `create_space_endpoint` gains `request: Request` and calls
+  the helper after creation; `agent_chat` builds and threads the `vc_capture` callback.
+- `backend/services/create_agent.py` — the run/session entrypoint accepts an optional
+  `vc_capture` callback and invokes it (via `run_in_executor`) after the `created` event.
+- `backend/tests/test_vc_create_hook.py` — **new** unit tests for the helper (no-op guards +
+  positive path + swallow-on-raise).
+- `backend/tests/test_create_*.py` — extend the create-endpoint tests to assert creation is
+  unaffected when the hook is present and to assert the hook is invoked once with the new
+  `space_id`.
+
+---
+
+### Task 1 — Introduce `Origin.CREATE` across the wire (LANDS FIRST)
+
+**Files:**
+- Modify: `backend/services/version_control/contracts.py` (`Origin`, `contracts.py:82`)
+- Modify: `backend/tests/fixtures/vc_contracts/enums.json` (`Origin` list, `enums.json:26`)
+- Modify: `frontend/src/types/version-control.ts` (`Origin` union, `version-control.ts:4`)
+- Modify: `frontend/src/components/version-control/version-format.ts` (`ORIGIN_META`, `version-format.ts:9`)
+
+**Why first:** the golden round-trip test asserts the enum's ordered values equal the
+fixture (`test_vc_contracts.py:32` — `[member.value for member in Origin] == values`), and
+`ORIGIN_META` is an exhaustive `Record<Origin, …>` (tsc fails on a missing key). Landing the
+enum before the helper keeps every later Task green.
+
+- [ ] **Step 1: APPEND** `CREATE = "create"` to `Origin` (do **not** reorder existing members
+  — the assertion is order-sensitive, so it must be a pure trailing add):
+
+```python
+class Origin(str, Enum):
+    WORKBENCH = "workbench"
+    EXTERNAL = "external"
+    OPTIMIZER = "optimizer"
+    RESTORE = "restore"
+    PROMOTION = "promotion"
+    UNKNOWN = "unknown"
+    CREATE = "create"
+```
+
+- [ ] **Step 2:** Append `"create"` (same trailing position) to the `Origin` array in
+  `enums.json`, then `./scripts/test.sh -k test_vc_wire_contract_golden_roundtrip` → green.
+
+- [ ] **Step 3:** Add `'create'` to the `Origin` union (`version-control.ts:4`) and a
+  `create:` entry to `ORIGIN_META` (`version-format.ts:9`) — e.g.
+  `create: { label: 'Created', variant: 'success', Icon: <a create-appropriate lucide icon> }`.
+  `cd frontend && npm run test && npm run lint && npx tsc --noEmit` → green (tsc now enforces
+  the exhaustive record).
+
+- [ ] **Step 4:** `./scripts/test.sh` green; `git status -- uv.lock` clean. Mark **LANDED**.
+
+---
+
+### Task 2 — Fail-soft `capture_initial_version` helper
+
+**Files:**
+- Modify: `backend/services/version_control/platform/app_observe.py`
+- Create: `backend/tests/test_vc_create_hook.py`
+
+**Interfaces — Produces:** `capture_initial_version(request, space_id: str) -> None`
+(best-effort; returns `None` always; never raises).
+
+- [ ] **Step 1: Write failing tests** covering the four behaviors — (a) no-op when
+  `request.app.state.vc_observe is None`; (b) no-op when `vc_writes_enabled` is not true;
+  (c) no-op when `request.state.vc_auth is None`; (d) positive path calls
+  `resolve_or_enroll_bound(runtime, space_id=...)` then `runtime.observer.capture_on_open`
+  once with `actor_override` set and a `live_reader`; (e) swallows an exception raised by
+  `capture_on_open` (still returns `None`). Use fakes for `runtime`/`request` (mirror the
+  `_FakeTagStore`/`_runtime` shape in `test_vc_spaces_router.py`).
+
+- [ ] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_create_hook.py`.
+
+- [ ] **Step 3: Implement** the helper:
+
+```python
+# backend/services/version_control/platform/app_observe.py
+import logging
+
+logger = logging.getLogger(__name__)
+
+def capture_initial_version(request, space_id: str) -> None:
+    """Best-effort first VC capture for a freshly created space. Never raises —
+    creation must succeed even when VC is off/unintegrated or the capture fails."""
+    runtime = getattr(request.app.state, "vc_observe", None)
+    if runtime is None:
+        return
+    if runtime.flags.enabled("vc_writes_enabled") is not True:
+        return
+    auth = getattr(request.state, "vc_auth", None)
+    if auth is None:
+        return
+    try:
+        from backend.services.version_control import contracts as vc
+        from backend.services.version_control.observe_optimizer import resolve_or_enroll_bound
+        from backend.services.genie_client import get_genie_space
+        actor = runtime.identity.actor(auth)
+        binding = resolve_or_enroll_bound(runtime, space_id=space_id)
+        runtime.observer.capture_on_open(
+            binding, actor, origin=vc.Origin.CREATE, actor_override=actor,
+            live_reader=lambda: get_genie_space(space_id))
+    except Exception:
+        logger.warning("initial VC capture failed for %s", space_id, exc_info=True)
+```
+
+- [ ] **Step 4:** `./scripts/test.sh` green; print import path + sqlglot version; `git status -- uv.lock` clean. Mark **LANDED**.
+
+---
+
+### Task 3 — Wire the REST wizard (`create_space_endpoint`)
+
+**Files:**
+- Modify: `backend/routers/create.py` (`create_space_endpoint`, currently `create.py:143`)
+
+**Current code:**
+
+```python
+@router.post("", response_model=CreateSpaceResponse)
+async def create_space_endpoint(body: CreateSpaceRequest):
+    try:
+        result = create_genie_space(...)
+    ...
+    return CreateSpaceResponse(space_id=result["genie_space_id"], ...)
+```
+
+- [ ] **Step 1:** Extend the endpoint test to pass a request with a fake `vc_observe`/`vc_auth`
+  and assert (a) 200 + correct body still returned when the hook raises, and (b) the hook is
+  invoked once with `result["genie_space_id"]`.
+
+- [ ] **Step 2:** Add `request: Request` to the signature and call the helper after creation:
+
+```python
+async def create_space_endpoint(body: CreateSpaceRequest, request: Request):
+    ...
+    space_id = result["genie_space_id"]
+    capture_initial_version(request, space_id)   # best-effort, never raises
+    return CreateSpaceResponse(space_id=space_id, ...)
+```
+
+- [ ] **Step 3:** `./scripts/test.sh` green. Mark **LANDED**.
+
+---
+
+### Task 4 — Wire the agentic Create flow (`created` event)
+
+**Files:**
+- Modify: `backend/routers/create.py` (`agent_chat`, `create.py:184`)
+- Modify: `backend/services/create_agent.py` (entrypoint `chat`, `create_agent.py:103`; the
+  TWO `created` emission sites, `create_agent.py:345` and `create_agent.py:850`)
+
+**⚠ Two creation sites — both must fire the hook.** `session.space_id` is set and a `created`
+event emitted in **both** the main tool-result loop (`create_agent.py:345`) **and**
+`_create_space_with_repair` (`create_agent.py:850`, used by the auto-chain and by
+`_fast_create`, `create_agent.py:860`). A hook at only one site silently misses spaces made
+via the repair/fast path. Prefer a single private helper (e.g. `self._emit_created(...)` or a
+`_maybe_capture(session, vc_capture, loop)`) called from both sites so the capture and the
+`created` event stay in lockstep by construction.
+
+- [ ] **Step 1:** Thread an optional `vc_capture: Callable[[str], None] | None = None` from the
+  entrypoint `chat` (`create_agent.py:103`) down to both creation paths (it must reach
+  `_create_space_with_repair` and the main loop). Do NOT store it on the shared agent
+  instance (concurrent sessions) — pass it through the call chain or stash it on the
+  per-request `session`.
+
+- [ ] **Step 2:** At **each** `created` emission (`create_agent.py:345` and `:850`), right after
+  `session.space_id` is set, if `vc_capture` and the id are truthy, invoke it off the event
+  loop: `await loop.run_in_executor(None, vc_capture, session.space_id)` (precedent: the
+  `run_in_executor(handle_tool_call, ...)` calls, `create_agent.py:826`/`:844`). Wrap in
+  try/except so a capture failure never breaks the SSE stream.
+
+- [ ] **Step 3:** In `agent_chat` (`create.py:184`, which has `request`), build the bound
+  callback and thread it into `agent.chat(...)`:
+
+```python
+vc_capture = lambda sid: capture_initial_version(request, sid)
+# agent.chat(..., vc_capture=vc_capture)
+```
+
+- [ ] **Step 4:** Test: assert `created` still fires and `vc_capture` is invoked once with the
+  new `space_id` for **both** paths — the main-loop create AND the repair/fast-create path
+  (`_create_space_with_repair`); assert the default `None` path is unchanged.
+
+- [ ] **Step 5:** `./scripts/test.sh` green. Mark **LANDED**.
+
+---
+
+### Verify (whole §21, on completion)
+- `./scripts/test.sh` — combined suites green at/above baseline **3326**; print the resolved
+  import path + sqlglot version.
+- `git status -- uv.lock` clean.
+- **Enum parity (Task 1):** `test_vc_wire_contract_golden_roundtrip` green — the `Origin`
+  enum (`contracts.py:82`) and the fixture (`enums.json:26`) both end in `create`, appended
+  (not reordered). Frontend `npx tsc --noEmit` green (the exhaustive `ORIGIN_META` record now
+  has a `create` key), vitest + eslint green.
+- Grep sweep (paste output): `capture_initial_version` is called from **both** create paths
+  (`create_space_endpoint` and `agent_chat`) and nowhere re-implements enroll/capture — the
+  only `resolve_or_enroll_bound` + `capture_on_open` call sites remain `vc_spaces.py` and the
+  new helper. The only `Origin.CREATE` producer is the helper.
+- MV-D9: no gap-report sites apply (VC plane, not the mv-advisor surface).

@@ -13,13 +13,21 @@ const vcError = (status: number) =>
   new VersionControlError(status, { code: 'x', message: 'server said no', retryable: false, stale: false })
 
 describe('capture notices', () => {
-  it('reports a new version when changes are captured', () => {
+  it('reports a new version when a previously-unseen version id is captured', () => {
     expect(describeObservation(result({ captured_version: summary })))
       .toEqual({ tone: 'success', message: expect.stringContaining('Saved a new version') })
   })
 
   it('reports no changes when nothing was captured', () => {
     expect(describeObservation(result({})))
+      .toEqual({ tone: 'info', message: expect.stringContaining('No changes') })
+  })
+
+  // Regression: the observer's dedup branch returns the existing HEAD as captured_version on
+  // an unchanged open. If that id was already in our loaded history, nothing new was saved —
+  // it must read as "no changes", not "Saved a new version".
+  it('reports no changes when the returned version id is already known (unchanged head)', () => {
+    expect(describeObservation(result({ captured_version: summary }), new Set(['v1'])))
       .toEqual({ tone: 'info', message: expect.stringContaining('No changes') })
   })
 

@@ -50,7 +50,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   const [restoring, setRestoring] = useState(false)
   const [restoreError, setRestoreError] = useState<string | null>(null)
 
-  const load = useCallback(async (cursor?: string) => {
+  const load = useCallback(async (cursor?: string): Promise<VersionPage | null> => {
     setLoading(true)
     setError(null)
     try {
@@ -58,9 +58,11 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
       setPage(prev => cursor
         ? { items: [...prev.items, ...next.items], next_cursor: next.next_cursor }
         : next)
+      return next
     } catch (err) {
       setPage(EMPTY_PAGE)
       setError(err instanceof VersionControlError ? err.message : 'Failed to load version history.')
+      return null
     } finally {
       setLoading(false)
     }
@@ -77,11 +79,16 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     // Paint the persisted history immediately — the fast read is the source of truth for
     // what renders. The observe below is the slow step (an OBO live GET of the Genie space);
     // it runs in the background and appends a new version only if the live config drifted.
-    await load()
+    // Snapshot the ids we already have BEFORE observing: the observer's dedup branch returns
+    // the existing head as `captured_version` on an unchanged open, so newness is decided by
+    // "is this id one we didn't already have", not "did a version object come back".
+    const before = await load()
+    const knownIds = new Set((before?.items ?? []).map(version => version.version_id))
     setSyncing(true)
     setNotice(null)
     try {
-      setNotice(describeObservation(await api.spaceObserve(spaceId, crypto.randomUUID())))
+      const result = await api.spaceObserve(spaceId, crypto.randomUUID())
+      setNotice(describeObservation(result, knownIds))
       await load()
     } catch (err) {
       setNotice(describeCaptureError(err))
@@ -164,20 +171,26 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
 
   // Tag write handlers: mutate via the Task 4 endpoints, then refresh the whole tag map
   // so the rail badge and detail editor reflect the authoritative server state.
-  const setTag = useCallback(async (versionId: string, label: string, note: string | null) => {
+  const setTag = useCallback(async (versionId: string, label: string, note: string | null): Promise<boolean> => {
     try {
       await api.setVersionTag(spaceId, versionId, { label, note })
       setTags(await api.spaceTags(spaceId))
+      setNotice({ tone: 'success', message: 'Tag saved.' })
+      return true
     } catch (err) {
       setNotice({ tone: 'error', message: errorMessage(err, 'Failed to save the tag.') })
+      return false
     }
   }, [spaceId])
-  const removeTag = useCallback(async (versionId: string) => {
+  const removeTag = useCallback(async (versionId: string): Promise<boolean> => {
     try {
       await api.deleteVersionTag(spaceId, versionId)
       setTags(await api.spaceTags(spaceId))
+      setNotice({ tone: 'success', message: 'Tag removed.' })
+      return true
     } catch (err) {
       setNotice({ tone: 'error', message: errorMessage(err, 'Failed to remove the tag.') })
+      return false
     }
   }, [spaceId])
 
@@ -258,16 +271,19 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     setCapturing(true)
     setError(null)
     setNotice(null)
+    // Ids already shown before this manual capture — an unchanged capture returns the head
+    // (already in this set) and must read as "no changes", not "saved a new version".
+    const knownIds = new Set(page.items.map(version => version.version_id))
     try {
       const result: ObservationResult = await api.spaceObserve(spaceId, crypto.randomUUID())
-      setNotice(describeObservation(result))
+      setNotice(describeObservation(result, knownIds))
       await load()
     } catch (err) {
       setNotice(describeCaptureError(err))
     } finally {
       setCapturing(false)
     }
-  }, [spaceId, load])
+  }, [spaceId, page.items, load])
 
   return (
     <div className="space-y-4">
@@ -400,8 +416,8 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
                     restoreEnabled={restoreEnabled}
                     restoring={restoring && pendingRestore?.version_id === detail.version_id}
                     tag={tags[detail.version_id]}
-                    onSetTag={(label, note) => { void setTag(detail.version_id, label, note) }}
-                    onRemoveTag={() => { void removeTag(detail.version_id) }}
+                    onSetTag={(label, note) => setTag(detail.version_id, label, note)}
+                    onRemoveTag={() => removeTag(detail.version_id)}
                   />
                 </div>
               ) : !detailError && (
