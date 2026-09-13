@@ -12,9 +12,9 @@ const TAG_PRESETS = ['Champion', 'Challenger', 'Baseline', 'v1'] as const
 
 function Fingerprint({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-xs text-muted">{label}</span>
-      <span className="font-mono text-xs text-secondary truncate" title={value}>{shortId(value)}</span>
+    <div className="flex items-start justify-between gap-3">
+      <span className="shrink-0 text-xs text-muted">{label}</span>
+      <span className="min-w-0 break-all text-right font-mono text-xs text-secondary" title={value}>{value}</span>
     </div>
   )
 }
@@ -89,16 +89,12 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
           {meta.label}
         </Badge>
         {isCurrent && <span className={CURRENT_PILL}>Current</span>}
-        <span className="font-mono text-xs text-secondary" title={detail.version_id}>{shortId(detail.version_id)}</span>
-        <button
-          type="button"
-          onClick={() => { void navigator.clipboard?.writeText(detail.version_id) }}
-          title="Copy full version id"
-          aria-label="Copy full version id"
-          className="text-muted hover:text-secondary transition-colors"
-        >
-          <Copy className="w-3 h-3" />
-        </button>
+        {/* Parent version moved up here to save a whole chips row below (issue #1). */}
+        {detail.parent_version_id && (
+          <span className={CHIP} title={`Parent version ${detail.parent_version_id}`}>
+            Parent {shortId(detail.parent_version_id)}
+          </span>
+        )}
         <button
           type="button"
           onClick={onClose}
@@ -110,6 +106,22 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
       </div>
 
       <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+        {/* Full version id (issue #2): shown in full with a copy affordance, no truncation. */}
+        <div className="col-span-2 flex items-start justify-between gap-3">
+          <span className="shrink-0 text-muted">Version</span>
+          <span className="flex min-w-0 items-start gap-1">
+            <span className="break-all text-right font-mono text-secondary" title={detail.version_id}>{detail.version_id}</span>
+            <button
+              type="button"
+              onClick={() => { void navigator.clipboard?.writeText(detail.version_id) }}
+              title="Copy full version id"
+              aria-label="Copy full version id"
+              className="shrink-0 text-muted hover:text-secondary transition-colors"
+            >
+              <Copy className="w-3 h-3" />
+            </button>
+          </span>
+        </div>
         <div className="col-span-2 flex items-start justify-between gap-3">
           <span className="text-muted">Captured</span>
           <span className="text-right text-secondary">
@@ -248,11 +260,8 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
         </div>
       )}
 
-      {(detail.parent_version_id || detail.restored_from_version_id || detail.optimizer_run_id) && (
+      {(detail.restored_from_version_id || detail.optimizer_run_id) && (
         <div className="flex flex-wrap items-center gap-2">
-          {detail.parent_version_id && (
-            <span className={CHIP} title={`Parent version ${detail.parent_version_id}`}>Parent {shortId(detail.parent_version_id)}</span>
-          )}
           {detail.restored_from_version_id && (
             <span className={CHIP} title={`Restored from ${detail.restored_from_version_id}`}>Restored from {shortId(detail.restored_from_version_id)}</span>
           )}

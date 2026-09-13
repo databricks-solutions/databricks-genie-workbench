@@ -1,7 +1,8 @@
 """Space-keyed VC bridge router: history reads + auto-enroll capture for a Genie space."""
 
+import json
 from datetime import datetime, timezone
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -32,8 +33,12 @@ def _runtime(*, history=True, writes=True, restore=True, existing=_BINDING):
     ledger.history.return_value = vc.VersionPage((_summary(),), "cursor-2")
     # get_version -> a snapshot whose serialized_space/restorable_metadata are real JSON
     # (the restore path json.dumps the serialized_space onto the live space).
+    # serialized_space/restorable_metadata are FROZEN in prod (contracts._freeze_json wraps
+    # snapshots in MappingProxyType). Mirror that here so the restore path's json.dumps is
+    # exercised against a mappingproxy -- a plain dict silently hid the serialization bug.
     ledger.get_version.return_value = SimpleNamespace(
-        snapshot=SimpleNamespace(serialized_space={"config": {}}, restorable_metadata={"description": "d"},
+        snapshot=SimpleNamespace(serialized_space=MappingProxyType({"config": MappingProxyType({})}),
+                                 restorable_metadata=MappingProxyType({"description": "d"}),
                                  fingerprints=vc.Fingerprints("a" * 64, "b" * 64, "c" * 64, "vc-c14n/1")))
     registry = Mock()
     registry.find_active_by_space_key.return_value = existing
@@ -203,8 +208,11 @@ def test_space_restore_applies_snapshot_and_records_version(monkeypatch):
     assert runtime.observer.capture.call_args.kwargs["origin"] == vc.Origin.RESTORE
     assert runtime.observer.capture.call_args.kwargs["restored_from_version_id"] == str(UUID(int=1))
     assert runtime.observer.capture.call_args.kwargs["actor_override"] == runtime.actor
-    # The live space was PATCHed as the OBO user.
-    assert client.api_client.do.call_args_list[0].args[0] == "PATCH"
+    # The live space was PATCHed as the OBO user, and the frozen snapshot was thawed to
+    # plain JSON first (regression: a mappingproxy here raises "not JSON serializable" -> 409).
+    patch_call = client.api_client.do.call_args_list[0]
+    assert patch_call.args[0] == "PATCH"
+    assert json.loads(patch_call.kwargs["body"]["serialized_space"]) == {"config": {}}
 
 
 def test_space_restore_409_when_space_drifted(monkeypatch):

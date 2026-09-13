@@ -141,7 +141,12 @@ def restore_space_version(runtime, *, space_id, version_id, expected_current_ver
             },
         )
 
-    live_writer(space_id, historical.snapshot.serialized_space,
+    # Stored snapshots are frozen (contracts._freeze_json wraps them in MappingProxyType +
+    # tuples for immutability), which json.dumps rejects ("Object of type mappingproxy is
+    # not JSON serializable"). to_wire is the canonical thaw back to plain dict/list before
+    # the OBO PATCH re-serializes it onto the live space.
+    serialized_space = vc.to_wire(historical.snapshot.serialized_space)
+    live_writer(space_id, serialized_space,
                 historical.snapshot.restorable_metadata.get("description"))
 
     executor = runtime.identity.executor(runtime.reader_selection)
