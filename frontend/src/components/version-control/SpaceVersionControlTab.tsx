@@ -81,9 +81,6 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     // what renders. The observe below is the slow step (an OBO live GET of the Genie space);
     // it runs in the background and appends a new version only if the live config drifted.
     await load()
-    // Load tags alongside the initial history (best-effort; a tag read failure never
-    // blocks the version rail). Refetched on spaceId change since syncOnOpen re-runs.
-    api.spaceTags(spaceId).then(setTags).catch(() => {})
     setSyncing(true)
     setNotice(null)
     try {
@@ -130,6 +127,15 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     return () => { live = false }
   }, [])
 
+  // Version tags — best-effort; a read failure never blocks the rail. Guarded so a slow
+  // response for a previous space cannot set stale tags after a rapid spaceId switch.
+  useEffect(() => {
+    let live = true
+    setTags({})
+    api.spaceTags(spaceId).then(next => { if (live) setTags(next) }).catch(() => {})
+    return () => { live = false }
+  }, [spaceId])
+
   const selectVersion = useCallback(async (version: VersionSummary) => {
     // Toggle: clicking the open row collapses it.
     if (selectedId === version.version_id) {
@@ -162,12 +168,20 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   // Tag write handlers: mutate via the Task 4 endpoints, then refresh the whole tag map
   // so the rail badge and detail editor reflect the authoritative server state.
   const setTag = useCallback(async (versionId: string, label: string, note: string | null) => {
-    await api.setVersionTag(spaceId, versionId, { label, note })
-    setTags(await api.spaceTags(spaceId))
+    try {
+      await api.setVersionTag(spaceId, versionId, { label, note })
+      setTags(await api.spaceTags(spaceId))
+    } catch (err) {
+      setNotice({ tone: 'error', message: errorMessage(err, 'Failed to save the tag.') })
+    }
   }, [spaceId])
   const removeTag = useCallback(async (versionId: string) => {
-    await api.deleteVersionTag(spaceId, versionId)
-    setTags(await api.spaceTags(spaceId))
+    try {
+      await api.deleteVersionTag(spaceId, versionId)
+      setTags(await api.spaceTags(spaceId))
+    } catch (err) {
+      setNotice({ tone: 'error', message: errorMessage(err, 'Failed to remove the tag.') })
+    }
   }, [spaceId])
 
   // Toggle a version into the compare set; cap at two (rolling — the newest two win).
@@ -406,6 +420,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
               ) : detail ? (
                 <div className={cn('h-full', detailLoading ? 'opacity-60 transition-opacity' : 'transition-opacity')}>
                   <VersionDetailPanel
+                    key={detail.version_id}
                     detail={detail}
                     isCurrent={detail.version_id === page.items[0]?.version_id}
                     onClose={closeDetail}

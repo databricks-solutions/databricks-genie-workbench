@@ -36,6 +36,9 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
   const { Icon } = meta
   const ActorIcon = isHumanActor(detail.observed_by) ? User : Bot
   const snapshot = detail.snapshot
+  // Seeded once per mount from the version's tag. The parent remounts this panel per
+  // version_id (via a React `key`), so a version switch gives a fresh instance and the
+  // input always reflects the CURRENT version's tag (empty for an untagged version).
   const [label, setLabel] = useState(tag?.label ?? '')
   return (
     <section aria-label="Version detail" className="flex h-full flex-col rounded-xl border border-default bg-surface">

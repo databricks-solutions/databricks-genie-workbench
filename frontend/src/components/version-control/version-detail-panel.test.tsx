@@ -1,8 +1,13 @@
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from 'react-dom/server'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import { VersionDetailPanel } from './version-detail-panel'
 import { versionFixture } from './fixtures'
 import type { VersionDetail } from '@/types/version-control'
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const detail: VersionDetail = {
   ...versionFixture,
@@ -81,5 +86,31 @@ describe('VersionDetailPanel tags', () => {
     const html = renderToStaticMarkup(<VersionDetailPanel detail={detail} onClose={vi.fn()} />)
     expect(html).not.toContain('Remove tag')
     expect(html).not.toContain('Tag label')
+  })
+
+  // Regression: switching versions must give the editor the CURRENT version's tag — a
+  // tagged→untagged switch must clear the box, otherwise Save would write the prior
+  // version's label onto the new version. The parent remounts per version_id via a React
+  // `key`, so keying by version_id here reproduces that remount on switch.
+  it('re-seeds the input to empty when the keyed panel switches to an untagged version', async () => {
+    const tagged: VersionDetail = { ...detail, version_id: 'tagged-1' }
+    const untagged: VersionDetail = { ...detail, version_id: 'untagged-2' }
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const inputValue = () => (host.querySelector('#vc-tag-label') as HTMLInputElement | null)?.value
+    try {
+      await act(async () => root.render(
+        <VersionDetailPanel key={tagged.version_id} detail={tagged} onClose={vi.fn()} tag={{ label: 'Golden', note: null }} onSetTag={vi.fn()} onRemoveTag={vi.fn()} />,
+      ))
+      expect(inputValue()).toBe('Golden')
+      // Key changes with the version_id → React remounts → useState re-seeds from the new
+      // (absent) tag, clearing the label.
+      await act(async () => root.render(
+        <VersionDetailPanel key={untagged.version_id} detail={untagged} onClose={vi.fn()} onSetTag={vi.fn()} onRemoveTag={vi.fn()} />,
+      ))
+      expect(inputValue()).toBe('')
+    } finally {
+      await act(async () => root.unmount())
+    }
   })
 })
