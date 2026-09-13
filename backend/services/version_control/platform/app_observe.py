@@ -15,10 +15,13 @@ it can never execute until a real governed-write restore service is wired and
 platform-checked. Promotion / optimizer-apply / reconcile are not built here.
 """
 
+import logging
 from typing import Any
 
 from backend.services.version_control import contracts as vc
 from backend.services.version_control.platform.observe_seams import ObserveRuntime
+
+logger = logging.getLogger(__name__)
 
 _REQUIRED_ENV = (
     "VC_OBSERVE_WORKSPACE_ID",
@@ -113,6 +116,29 @@ def vc_auth_from_request(headers: Any, workspace_id: str, *, dev_email: str | No
     if not subject:
         return None
     return vc.AuthenticatedRequest(subject, workspace_id)
+
+
+def capture_initial_version(request, space_id: str) -> None:
+    """Best-effort first VC capture for a freshly created space. Never raises —
+    creation must succeed even when VC is off/unintegrated or the capture fails."""
+    runtime = getattr(request.app.state, "vc_observe", None)
+    if runtime is None:
+        return
+    if runtime.flags.enabled("vc_writes_enabled") is not True:
+        return
+    auth = getattr(request.state, "vc_auth", None)
+    if auth is None:
+        return
+    try:
+        from backend.services.version_control.observe_optimizer import resolve_or_enroll_bound
+        from backend.services.genie_client import get_genie_space
+        actor = runtime.identity.actor(auth)
+        binding = resolve_or_enroll_bound(runtime, space_id=space_id)
+        runtime.observer.capture_on_open(
+            binding, actor, origin=vc.Origin.CREATE, actor_override=actor,
+            live_reader=lambda: get_genie_space(space_id))
+    except Exception:
+        logger.warning("initial VC capture failed for %s", space_id, exc_info=True)
 
 
 class FailClosedRestore:

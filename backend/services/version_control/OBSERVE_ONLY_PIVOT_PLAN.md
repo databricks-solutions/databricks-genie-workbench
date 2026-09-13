@@ -1466,6 +1466,12 @@ class Origin(str, Enum):
 
 ### Task 2 — Fail-soft `capture_initial_version` helper
 
+**LANDED:** `capture_initial_version(request, space_id)` added to `app_observe.py` (module
+`logger`; lazy imports of `resolve_or_enroll_bound`/`get_genie_space` inside the try;
+`origin=vc.Origin.CREATE`, `actor_override=actor`, OBO `live_reader`). `test_vc_create_hook.py`
+covers all five behaviors (3 no-op guards, positive CREATE-origin capture incl. the
+`live_reader` lambda, swallow-on-raise). Verify: `5 passed`.
+
 **Files:**
 - Modify: `backend/services/version_control/platform/app_observe.py`
 - Create: `backend/tests/test_vc_create_hook.py`
@@ -1473,7 +1479,7 @@ class Origin(str, Enum):
 **Interfaces — Produces:** `capture_initial_version(request, space_id: str) -> None`
 (best-effort; returns `None` always; never raises).
 
-- [ ] **Step 1: Write failing tests** covering the four behaviors — (a) no-op when
+- [x] **Step 1: Write failing tests** covering the four behaviors — (a) no-op when
   `request.app.state.vc_observe is None`; (b) no-op when `vc_writes_enabled` is not true;
   (c) no-op when `request.state.vc_auth is None`; (d) positive path calls
   `resolve_or_enroll_bound(runtime, space_id=...)` then `runtime.observer.capture_on_open`
@@ -1481,9 +1487,9 @@ class Origin(str, Enum):
   `capture_on_open` (still returns `None`). Use fakes for `runtime`/`request` (mirror the
   `_FakeTagStore`/`_runtime` shape in `test_vc_spaces_router.py`).
 
-- [ ] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_create_hook.py`.
+- [x] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_create_hook.py`.
 
-- [ ] **Step 3: Implement** the helper:
+- [x] **Step 3: Implement** the helper:
 
 ```python
 # backend/services/version_control/platform/app_observe.py
@@ -1515,7 +1521,7 @@ def capture_initial_version(request, space_id: str) -> None:
         logger.warning("initial VC capture failed for %s", space_id, exc_info=True)
 ```
 
-- [ ] **Step 4:** `./scripts/test.sh` green; print import path + sqlglot version; `git status -- uv.lock` clean. Mark **LANDED**.
+- [x] **Step 4:** `./scripts/test.sh backend/tests/test_vc_create_hook.py` green (`5 passed`); import resolves inside this checkout; `git status -- uv.lock` clean. **LANDED**.
 
 ---
 
