@@ -276,10 +276,20 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
           // Confirmation renders right here, next to the trigger (issue #1) — not far below
           // the grid. Solid amber Confirm for readable contrast in both themes (issue #2).
           <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
-            <p className="text-xs text-secondary">
-              Restore this version as the live configuration? It is applied as a new version —
-              history is preserved.
-            </p>
+            {restoring ? (
+              // Honest, indeterminate progress: the apply is a single synchronous call
+              // (OBO PATCH + capture, ~15-30s), so the UI can freeze. Tell the user what is
+              // happening and that it can take a while (issue #2).
+              <p className="flex items-center gap-2 text-xs text-secondary">
+                <RotateCcw className="w-3.5 h-3.5 animate-spin" aria-hidden />
+                Applying to the live space, then recording a new version — this can take up to a minute.
+              </p>
+            ) : (
+              <p className="text-xs text-secondary">
+                Restore this version as the live configuration? It is applied as a new version —
+                history is preserved.
+              </p>
+            )}
             {restoreError && (
               <div role="alert" className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-400">
                 {restoreError}
@@ -300,7 +310,7 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
                 disabled={restoring}
                 className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
               >
-                <RotateCcw className="w-4 h-4" />
+                <RotateCcw className={`w-4 h-4 ${restoring ? 'animate-spin' : ''}`} />
                 {restoring ? 'Restoring…' : 'Confirm restore'}
               </button>
             </div>
@@ -310,10 +320,12 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
             <button
               type="button"
               onClick={onRestore}
-              disabled={!restoreEnabled || restoring}
-              title={restoreEnabled
-                ? 'Apply this version as the live configuration (a new reviewed version; history is preserved)'
-                : 'Restore is not enabled on this deployment'}
+              disabled={!restoreEnabled || restoring || isCurrent}
+              title={isCurrent
+                ? 'This version is already the live configuration'
+                : restoreEnabled
+                  ? 'Apply this version as the live configuration (a new reviewed version; history is preserved)'
+                  : 'Restore is not enabled on this deployment'}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-default text-sm font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RotateCcw className="w-4 h-4" />

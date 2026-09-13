@@ -240,6 +240,9 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   // Publish = in-workspace restore (CUJ-1 §4.5): preview current→selected, confirm, apply.
   const beginRestore = useCallback((version: VersionSummary) => {
     const current = page.items[0]?.version_id
+    // Restoring the live head is a no-op the backend now rejects (409 restore_noop_current);
+    // guard the programmatic path so we never open a confirm for it.
+    if (current && version.version_id === current) return
     setRestoreError(null)
     setPendingRestore(version)
     if (current && current !== version.version_id) void compareVersions(current, version.version_id)
@@ -257,9 +260,15 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
         { version_id: pendingRestore.version_id, expected_current_version_id: current },
         crypto.randomUUID(),
       )
-      setNotice(result.captured_version
-        ? { tone: 'success', message: 'Restored this version as the live configuration.' }
-        : { tone: 'info', message: 'The live space already matches this version.' })
+      if (!result.captured_version) {
+        // Fail-soft from the backend (busy/stale, no version appended): the live space may
+        // have been written but recording the new version failed. This is NOT "already
+        // matches" -- surface it as an error and keep the panel open so the user can retry.
+        setRestoreError('The live space was updated but recording the new version failed. Refresh the history and use "Capture current state".')
+        await load()
+        return
+      }
+      setNotice({ tone: 'success', message: 'Restored this version as the live configuration.' })
       setPendingRestore(null)
       setDetail(null)
       setSelectedId(null)

@@ -38,15 +38,20 @@ class Observer:
 
     def capture(self, binding, reason, executor, *, origin=vc.Origin.EXTERNAL,
                 restored_from_version_id=None, actor_override=None,
-                optimizer_run_id=None, champion_id=None):
+                optimizer_run_id=None, champion_id=None, live_reader=None):
         # `actor_override` records the human who initiated a deliberate write (e.g. a
         # restore clicked in the workbench) as the ledger actor, while the GET/lease still
         # run as the SP executor. Defaults to the executor identity (SP-observed captures).
+        # `live_reader`, when supplied, reads the live serialized space under the CALLER's
+        # identity (OBO) instead of the SP-pinned transport -- the restore path injects it so
+        # the post-write capture reflects the user's own view of a space the SP has no grant
+        # on (an SP-pinned read 403s there). Omitted -> SP transport (optimizer/system).
         actor = vc.ActorContext(executor.principal_id, executor.workspace_id, executor.actor_kind)
         return self._capture(binding, reason, executor, self.status_reader(binding, actor),
                              origin=origin, restored_from_version_id=restored_from_version_id,
                              actor_override=actor_override,
-                             optimizer_run_id=optimizer_run_id, champion_id=champion_id)
+                             optimizer_run_id=optimizer_run_id, champion_id=champion_id,
+                             live_reader=live_reader)
 
     @staticmethod
     def _summary_of(version) -> vc.VersionSummary:

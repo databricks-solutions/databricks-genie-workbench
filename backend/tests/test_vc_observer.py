@@ -160,6 +160,32 @@ def test_capture_threads_restore_origin_and_lineage(observer_rig):
     assert context.restored_from_version_id == source
 
 
+def test_capture_reads_live_state_via_injected_obo_reader(observer_rig):
+    """The restore path injects an OBO `live_reader` so the post-write capture reads the
+    just-written serialized space under the caller's identity, never through the SP-pinned
+    transport (the SP often has no grant on a user-owned space -- an SP read 403s and the
+    capture fails soft, recording no version). The lease + ledger append still run as SP."""
+    rig, observer, viewer, status, identity = observer_rig
+    envelope = {"serialized_space": {"instructions": "restored-obo"}, "description": "d"}
+    calls = []
+    result = observer.capture(rig.binding, "restore", rig.executor, origin=vc.Origin.RESTORE,
+                              live_reader=lambda: calls.append("obo") or envelope)
+    assert calls == ["obo"]                        # the injected reader was used
+    rig.transport.get.assert_not_called()          # ...and the SP transport was not
+    assert result.captured_version is not None
+    rig.ledger.append_observation.assert_called_once()
+
+
+def test_capture_without_reader_reads_via_sp_transport(observer_rig):
+    """Omitting `live_reader` keeps the default SP-pinned transport read (optimizer/system
+    callers) -- a regression pin for the 403 that fixing restore's OBO capture addresses."""
+    rig, observer, viewer, status, identity = observer_rig
+    result = observer.capture(rig.binding, "optimizer_after", rig.executor)
+    assert "get" in rig.trace
+    assert rig.transport.get.call_args.args[1] is rig.executor
+    assert result.captured_version is not None
+
+
 def test_capture_records_actor_override_while_reading_as_the_executor(observer_rig):
     """A deliberate write (restore) records the human as the ledger actor, but the GET and
     status read still run under the SP executor identity."""

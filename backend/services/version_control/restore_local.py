@@ -106,6 +106,14 @@ def restore_space_version(runtime, *, space_id, version_id, expected_current_ver
             or runtime.authorize_history(actor, binding) is not True):
         raise PermissionError("Binding history scope denied")
 
+    # Restoring the version the caller already holds as current is a no-op (it would only
+    # dedup to the head). Reject it up front with a specific, friendly 409 rather than doing
+    # a pointless overwrite. Defense-in-depth: the UI also disables restore on the head.
+    if version_id == expected_current_version_id:
+        raise RestoreConflict(
+            "restore_noop_current",
+            "This version is already the live configuration; there's nothing to restore.")
+
     historical = runtime.ledger.get_version(binding, version_id)  # KeyError -> 404
     try:
         expected = runtime.ledger.get_version(binding, expected_current_version_id)
@@ -150,7 +158,12 @@ def restore_space_version(runtime, *, space_id, version_id, expected_current_ver
                 historical.snapshot.restorable_metadata.get("description"))
 
     executor = runtime.identity.executor(runtime.reader_selection)
-    # Record the human who clicked Restore as the ledger actor (the GET/lease still run as
-    # the SP executor); the restore was their deliberate, OBO-authorized write.
+    # Record the human who clicked Restore as the ledger actor (the lease/append still run as
+    # the SP executor); the restore was their deliberate, OBO-authorized write. The
+    # post-write capture MUST read the live space under the SAME user (OBO) via live_reader:
+    # the SP usually has no grant on a user-owned Genie space, so an SP-pinned read 403s and
+    # the capture fails soft -- overwriting live but recording no version (mirrors the observe
+    # path, which injects the OBO reader for exactly this reason).
     return runtime.observer.capture(binding, "restore", executor, origin=vc.Origin.RESTORE,
-                                    restored_from_version_id=version_id, actor_override=actor)
+                                    restored_from_version_id=version_id, actor_override=actor,
+                                    live_reader=lambda: live_reader(space_id))

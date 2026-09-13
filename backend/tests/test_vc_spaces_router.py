@@ -208,6 +208,10 @@ def test_space_restore_applies_snapshot_and_records_version(monkeypatch):
     assert runtime.observer.capture.call_args.kwargs["origin"] == vc.Origin.RESTORE
     assert runtime.observer.capture.call_args.kwargs["restored_from_version_id"] == str(UUID(int=1))
     assert runtime.observer.capture.call_args.kwargs["actor_override"] == runtime.actor
+    # The post-write capture is handed an OBO live_reader so it reads the just-written space
+    # as the user (not the SP transport, which 403s on a user-owned space -> no version).
+    live_reader = runtime.observer.capture.call_args.kwargs["live_reader"]
+    assert live_reader() == {"serialized_space": {}}  # the OBO live GET, per _obo_patch
     # The live space was PATCHed as the OBO user, and the frozen snapshot was thawed to
     # plain JSON first (regression: a mappingproxy here raises "not JSON serializable" -> 409).
     patch_call = client.api_client.do.call_args_list[0]
@@ -242,6 +246,19 @@ def test_space_restore_409_stale_expected_when_head_moved(monkeypatch):
     response = _client(runtime).post(f"/api/version-control/spaces/{SPACE_ID}/restore", json=_RESTORE_BODY)
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "restore_stale_expected"
+    runtime.observer.capture.assert_not_called()
+
+
+def test_space_restore_409_noop_when_version_is_current(monkeypatch):
+    # Restoring the version already held as current is a no-op the backend rejects up front
+    # with a specific 409 (restore_noop_current) -- no overwrite, no capture (#1 hardening).
+    runtime = _runtime()
+    _obo_patch(monkeypatch)
+    same = str(UUID(int=9))
+    body = {"version_id": same, "expected_current_version_id": same}
+    response = _client(runtime).post(f"/api/version-control/spaces/{SPACE_ID}/restore", json=body)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "restore_noop_current"
     runtime.observer.capture.assert_not_called()
 
 
@@ -289,6 +306,21 @@ def test_restore_service_raises_value_error_when_current_version_is_stale():
                               live_reader=lambda sid: {}, live_writer=lambda *a: None)
     assert isinstance(caught.value, ValueError)
     assert caught.value.vc_code == "restore_stale_expected"
+    runtime.observer.capture.assert_not_called()
+
+
+def test_restore_service_rejects_noop_restore_of_current_version():
+    from backend.services.version_control.restore_local import RestoreConflict, restore_space_version
+
+    runtime = _runtime()
+    same = str(UUID(int=7))
+    # version_id == expected_current_version_id -> rejected before any ledger lookup or write.
+    with pytest.raises(RestoreConflict) as caught:
+        restore_space_version(runtime, space_id=SPACE_ID, version_id=same,
+                              expected_current_version_id=same, actor=runtime.actor,
+                              live_reader=lambda sid: {}, live_writer=lambda *a: None)
+    assert caught.value.vc_code == "restore_noop_current"
+    runtime.ledger.get_version.assert_not_called()
     runtime.observer.capture.assert_not_called()
 
 

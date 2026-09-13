@@ -57,6 +57,56 @@ it('detail_panel_restore_enabled_when_flag_on', () => {
   expect(html).toContain('Apply this version as the live configuration')
 })
 
+it('detail_panel_restore_disabled_with_explainer_when_current', () => {
+  // Restoring the version that is already live is a no-op: the trigger is disabled and the
+  // explainer says why, even with the flag on (#1).
+  const html = renderToStaticMarkup(
+    <VersionDetailPanel detail={detail} onClose={vi.fn()} onRestore={vi.fn()} restoreEnabled isCurrent />,
+  )
+  expect(html).toContain('Restore this version')
+  expect(html).toContain('This version is already the live configuration')
+  expect(html).toContain('disabled')
+})
+
+it('detail_panel_confirm_shows_honest_progress_while_restoring', () => {
+  // The inline confirm block shows a spinner + honest "can take up to a minute" copy while
+  // the (synchronous) apply is in flight, instead of a silently frozen UI (#2).
+  const html = renderToStaticMarkup(
+    <VersionDetailPanel
+      detail={detail}
+      onClose={vi.fn()}
+      onRestore={vi.fn()}
+      restoreEnabled
+      awaitingConfirm
+      restoring
+      onConfirmRestore={vi.fn()}
+      onCancelRestore={vi.fn()}
+    />,
+  )
+  expect(html).toContain('this can take up to a minute')
+  expect(html).toContain('animate-spin')
+  expect(html).toContain('Restoring')
+})
+
+it('detail_panel_confirm_surfaces_restore_error', () => {
+  // A fail-soft restore (live written, version not recorded) is surfaced in the confirm
+  // block as an error rather than a false "already matches" success (#3).
+  const html = renderToStaticMarkup(
+    <VersionDetailPanel
+      detail={detail}
+      onClose={vi.fn()}
+      onRestore={vi.fn()}
+      restoreEnabled
+      awaitingConfirm
+      restoreError="recording the new version failed"
+      onConfirmRestore={vi.fn()}
+      onCancelRestore={vi.fn()}
+    />,
+  )
+  expect(html).toContain('recording the new version failed')
+  expect(html).toContain('role="alert"')
+})
+
 describe('VersionDetailPanel tags', () => {
   // The editor is collapsed by default (space-saving). These helpers mount it and click the
   // collapsed affordance to reveal the full editor, mirroring the real interaction.
