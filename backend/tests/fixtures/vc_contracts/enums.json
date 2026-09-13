@@ -29,7 +29,8 @@
     "optimizer",
     "restore",
     "promotion",
-    "unknown"
+    "unknown",
+    "create"
   ],
   "DiffCategory": [
     "sources",

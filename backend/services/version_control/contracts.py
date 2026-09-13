@@ -86,6 +86,7 @@ class Origin(str, Enum):
     RESTORE = "restore"
     PROMOTION = "promotion"
     UNKNOWN = "unknown"
+    CREATE = "create"
 
 
 class Comparison(str, Enum):

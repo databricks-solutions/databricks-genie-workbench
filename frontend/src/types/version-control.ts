@@ -1,7 +1,7 @@
 export type Comparison = 'equal' | 'different' | 'unknown'
 export type DriftState = 'clean' | 'external_ahead' | 'desired_ahead' | 'diverged' | 'unknown' | 'unreachable' | 'applied_unverified' | 'conflicted'
 export type OperationStatus = 'requested' | 'preimage_captured' | 'apply_attempted' | 'applied_unverified' | 'applied_partial' | 'confirmed' | 'conflicted' | 'quarantined' | 'failed' | 'compensation_attempted' | 'compensated' | 'noop'
-export type Origin = 'workbench' | 'external' | 'optimizer' | 'restore' | 'promotion' | 'unknown'
+export type Origin = 'workbench' | 'external' | 'optimizer' | 'restore' | 'promotion' | 'unknown' | 'create'
 export interface BindingRef { binding_id: string; binding_revision: number; space_key: string; workspace_id: string; space_id: string | null; environment: string }
 export interface Heads { observed: string | null; approved: string | null; deployed: string | null }
 export interface Fingerprints { config: string; benchmark: string; metadata: string; canonicalizer_version: string }

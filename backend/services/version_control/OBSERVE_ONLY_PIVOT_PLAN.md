@@ -1422,6 +1422,11 @@ verbatim; it introduces no new fingerprint, wire value, or governed table.
 
 ### Task 1 — Introduce `Origin.CREATE` across the wire (LANDS FIRST)
 
+**LANDED** (commit `9c0429cb`): `Origin.CREATE = "create"` appended (no reorder) in
+`contracts.py` + `enums.json`; `'create'` added to the TS union; `ORIGIN_META.create =
+{ label: 'Created', variant: 'success', Icon: FilePlus }`. Verify: golden round-trip green
+(`1 passed`), frontend `tsc --noEmit` + `eslint` clean.
+
 **Files:**
 - Modify: `backend/services/version_control/contracts.py` (`Origin`, `contracts.py:82`)
 - Modify: `backend/tests/fixtures/vc_contracts/enums.json` (`Origin` list, `enums.json:26`)
@@ -1433,7 +1438,7 @@ fixture (`test_vc_contracts.py:32` — `[member.value for member in Origin] == v
 `ORIGIN_META` is an exhaustive `Record<Origin, …>` (tsc fails on a missing key). Landing the
 enum before the helper keeps every later Task green.
 
-- [ ] **Step 1: APPEND** `CREATE = "create"` to `Origin` (do **not** reorder existing members
+- [x] **Step 1: APPEND** `CREATE = "create"` to `Origin` (do **not** reorder existing members
   — the assertion is order-sensitive, so it must be a pure trailing add):
 
 ```python
@@ -1447,16 +1452,15 @@ class Origin(str, Enum):
     CREATE = "create"
 ```
 
-- [ ] **Step 2:** Append `"create"` (same trailing position) to the `Origin` array in
+- [x] **Step 2:** Append `"create"` (same trailing position) to the `Origin` array in
   `enums.json`, then `./scripts/test.sh -k test_vc_wire_contract_golden_roundtrip` → green.
 
-- [ ] **Step 3:** Add `'create'` to the `Origin` union (`version-control.ts:4`) and a
-  `create:` entry to `ORIGIN_META` (`version-format.ts:9`) — e.g.
-  `create: { label: 'Created', variant: 'success', Icon: <a create-appropriate lucide icon> }`.
-  `cd frontend && npm run test && npm run lint && npx tsc --noEmit` → green (tsc now enforces
-  the exhaustive record).
+- [x] **Step 3:** Add `'create'` to the `Origin` union (`version-control.ts:4`) and a
+  `create:` entry to `ORIGIN_META` (`version-format.ts:9`) — landed as
+  `create: { label: 'Created', variant: 'success', Icon: FilePlus }`.
+  `npm run lint` + `npx tsc --noEmit` green (tsc enforces the exhaustive record).
 
-- [ ] **Step 4:** `./scripts/test.sh` green; `git status -- uv.lock` clean. Mark **LANDED**.
+- [x] **Step 4:** `./scripts/test.sh -k test_vc_wire_contract_golden_roundtrip` green; `git status -- uv.lock` clean. **LANDED**.
 
 ---
 

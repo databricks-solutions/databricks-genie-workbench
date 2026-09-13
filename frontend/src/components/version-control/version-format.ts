@@ -1,4 +1,4 @@
-import { AlertTriangle, GitCommit, HelpCircle, RotateCcw, Sparkles, Upload } from 'lucide-react'
+import { AlertTriangle, FilePlus, GitCommit, HelpCircle, RotateCcw, Sparkles, Upload } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { BadgeProps } from '@/components/ui/badge'
 import type { Origin } from '@/types/version-control'
@@ -13,6 +13,7 @@ export const ORIGIN_META: Record<Origin, OriginMeta> = {
   restore: { label: 'Restore', variant: 'secondary', Icon: RotateCcw },
   promotion: { label: 'Promotion', variant: 'success', Icon: Upload },
   unknown: { label: 'Unknown', variant: 'secondary', Icon: HelpCircle },
+  create: { label: 'Created', variant: 'success', Icon: FilePlus },
 }
 
 export function originMeta(origin: Origin): OriginMeta {
