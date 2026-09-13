@@ -5,5 +5,10 @@ import type { VersionSummary } from '@/types/version-control'
 export function chronoPair(ids: string[], items: VersionSummary[]): [string, string] {
   const at = (id: string) => Date.parse(items.find(v => v.version_id === id)?.observed_at ?? '')
   const [a, b] = ids
-  return at(a) <= at(b) ? [a, b] : [b, a]
+  const ta = at(a)
+  const tb = at(b)
+  // Keep the given order when either timestamp is missing/unparseable (NaN) or equal;
+  // only a strictly-older second id swaps the pair.
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return [a, b]
+  return ta <= tb ? [a, b] : [b, a]
 }
