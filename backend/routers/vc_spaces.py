@@ -15,7 +15,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from backend.services.version_control import contracts as vc
 from backend.services.version_control.observe_optimizer import resolve_or_enroll_bound
@@ -30,6 +30,12 @@ class RestoreSpaceBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version_id: UUID
     expected_current_version_id: UUID
+
+
+class TagBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: Annotated[str, StringConstraints(min_length=1, max_length=60, strip_whitespace=True)]
+    note: str | None = None
 
 
 def _obo_patch_live(client, space_id, serialized_space, description):
@@ -60,6 +66,25 @@ def _invoke(call):
     except Exception as error:
         # Fail closed to the client, but never silently: the server-side cause is the
         # only signal for an opaque evidence_unavailable 503.
+        logger.exception("VC space request failed")
+        raise _error(503, "evidence_unavailable", "Evidence unavailable", stale=True) from error
+
+
+async def _ainvoke(op):
+    """Async twin of ``_invoke`` for the tag routes (which await lakebase). Maps the same
+    exceptions but returns the awaited result verbatim — tag responses are plain dicts, not
+    wire values, so there is no ``to_wire`` wrap here."""
+    try:
+        return await op()
+    except HTTPException:
+        raise
+    except PermissionError as error:
+        raise _error(403, "scope_denied", str(error)) from error
+    except LookupError as error:
+        raise _error(404, "resource_not_found", "Scoped resource not found") from error
+    except (ValueError, TypeError) as error:
+        raise _error(409, "request_conflict", str(error)) from error
+    except Exception as error:
         logger.exception("VC space request failed")
         raise _error(503, "evidence_unavailable", "Evidence unavailable", stale=True) from error
 
@@ -140,5 +165,59 @@ def build_router(*, runtime):
                 live_reader=lambda sid: get_genie_space(sid),
                 live_writer=lambda sid, ss, desc: _obo_patch_live(client, sid, ss, desc))
         return _invoke(restore)
+
+    def resolve_readable(space_id, request):
+        """Mirror the space_versions read gate: authenticate the actor, resolve the
+        space's active binding, and enforce the workspace + history scope. Returns
+        ``(binding, actor)``; binding is None when the space is not yet enrolled."""
+        actor = actor_for(request)
+        binding = registry.find_active_by_space_key(space_id)
+        if binding is not None and (actor.workspace_id != binding.workspace_id
+                                    or authorize_history(actor, binding) is not True):
+            raise PermissionError("Binding history scope denied")
+        return binding, actor
+
+    @router.get("/spaces/{space_id}/tags")
+    async def space_tags(space_id: SpaceId, request: Request):
+        from backend.services import lakebase
+
+        async def op():
+            if flags.enabled("vc_history_enabled") is not True:
+                raise _error(503, "vc_history_disabled", "VC history reads disabled", stale=True)
+            binding, _ = resolve_readable(space_id, request)
+            if binding is None:
+                return {}  # not enrolled yet -> no tags
+            return await lakebase.get_version_tags(space_id)
+        return await _ainvoke(op)
+
+    @router.put("/spaces/{space_id}/versions/{version_id}/tag")
+    async def set_tag(space_id: SpaceId, version_id: UUID, body: TagBody, request: Request):
+        from backend.services import lakebase
+
+        async def op():
+            if flags.enabled("vc_writes_enabled") is not True:
+                raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
+            binding, actor = resolve_readable(space_id, request)
+            if binding is None:
+                raise _error(404, "resource_not_found", "Space is not enrolled in version control")
+            await lakebase.set_version_tag(space_id, str(version_id), body.label, body.note,
+                                           actor.subject_id)
+            return {"version_id": str(version_id), "label": body.label,
+                    "note": body.note, "author": actor.subject_id}
+        return await _ainvoke(op)
+
+    @router.delete("/spaces/{space_id}/versions/{version_id}/tag")
+    async def delete_tag(space_id: SpaceId, version_id: UUID, request: Request):
+        from backend.services import lakebase
+
+        async def op():
+            if flags.enabled("vc_writes_enabled") is not True:
+                raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
+            binding, _ = resolve_readable(space_id, request)
+            if binding is None:
+                raise _error(404, "resource_not_found", "Space is not enrolled in version control")
+            await lakebase.delete_version_tag(space_id, str(version_id))
+            return {"version_id": str(version_id), "deleted": True}
+        return await _ainvoke(op)
 
     return router

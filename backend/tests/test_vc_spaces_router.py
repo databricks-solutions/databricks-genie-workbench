@@ -136,6 +136,9 @@ def test_spaces_router_exposes_exact_routes():
         ("/api/version-control/spaces/{space_id}/versions", ("GET",)),
         ("/api/version-control/spaces/{space_id}/observe", ("POST",)),
         ("/api/version-control/spaces/{space_id}/restore", ("POST",)),
+        ("/api/version-control/spaces/{space_id}/tags", ("GET",)),
+        ("/api/version-control/spaces/{space_id}/versions/{version_id}/tag", ("PUT",)),
+        ("/api/version-control/spaces/{space_id}/versions/{version_id}/tag", ("DELETE",)),
     }
 
 
@@ -230,3 +233,43 @@ def test_restore_service_denies_actor_outside_binding_workspace():
                               expected_current_version_id=str(UUID(int=2)), actor=intruder,
                               live_reader=lambda sid: {}, live_writer=lambda *a: None)
     runtime.ledger.get_version.assert_not_called()
+
+
+# -- version tags (§19 Task 4) ------------------------------------------------
+# The tag store is the real lakebase in-memory fallback (process-global, keyed by
+# version_id). Use a unique version_id per test to avoid cross-test bleed.
+_TAG_VID = "22222222-2222-2222-2222-222222222222"
+
+
+def test_put_get_delete_version_tag():
+    c = _client(_runtime())
+    try:
+        put = c.put(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag",
+                    json={"label": "Golden", "note": "keep"})
+        assert put.status_code == 200
+        assert put.json()["author"] == "user@x"  # stamped with the actor's subject_id
+
+        got = c.get(f"/api/version-control/spaces/{SPACE_ID}/tags").json()
+        assert got[_TAG_VID]["label"] == "Golden"
+
+        assert c.delete(
+            f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag").status_code == 200
+        assert _TAG_VID not in c.get(f"/api/version-control/spaces/{SPACE_ID}/tags").json()
+    finally:
+        c.delete(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag")
+
+
+def test_put_tag_404_when_not_enrolled():
+    c = _client(_runtime(existing=None))
+    response = c.put(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag",
+                     json={"label": "Golden"})
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "resource_not_found"
+
+
+def test_put_tag_fail_closed_when_writes_disabled():
+    c = _client(_runtime(writes=False))
+    response = c.put(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag",
+                     json={"label": "Golden"})
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "vc_writes_disabled"

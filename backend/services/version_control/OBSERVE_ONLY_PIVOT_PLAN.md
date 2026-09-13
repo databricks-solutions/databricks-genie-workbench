@@ -941,6 +941,8 @@ async def get_version_tags(space_id: str) -> dict:
 
 ### Task 4 — Space-keyed tag endpoints
 
+**LANDED:** Added `TagBody` (label 1–60, strip; `note?`), a module-scope async error-mapper `_ainvoke` (mirrors `_invoke`'s exception→HTTP mapping, no `to_wire`), and three routes inside `build_router` reusing the DI closures — `actor_for`/`registry.find_active_by_space_key`/`authorize_history`/`flags` — via a shared `resolve_readable`. GET `/spaces/{space_id}/tags` (gate `vc_history_enabled`, `{}` when not enrolled), PUT/DELETE `…/versions/{version_id}/tag` (gate `vc_writes_enabled`, 404 when not enrolled; author = `actor.subject_id`). Full suite 3321 passed; `test_spaces_router_exposes_exact_routes` extended for the 3 new routes.
+
 **Files:**
 - Modify: `backend/routers/vc_spaces.py` (imports; `_ainvoke` helper; three routes inside `build_router`)
 - Test: `backend/tests/test_vc_spaces_router.py` (extend)
@@ -950,7 +952,7 @@ async def get_version_tags(space_id: str) -> dict:
 - `PUT …/spaces/{space_id}/versions/{version_id}/tag` body `{label, note?}` → the saved tag
 - `DELETE …/spaces/{space_id}/versions/{version_id}/tag` → `{version_id, deleted: true}`
 
-- [ ] **Step 1: Write the failing test** (extend `test_vc_spaces_router.py`, reusing the file's existing router/client fixture)
+- [x] **Step 1: Write the failing test** (extend `test_vc_spaces_router.py`, reusing the file's existing router/client fixture)
 
 ```python
 def test_put_get_delete_version_tag(client):  # `client` = the module's TestClient fixture
@@ -964,9 +966,9 @@ def test_put_get_delete_version_tag(client):  # `client` = the module's TestClie
     assert vid not in client.get(f"/api/version-control/spaces/{space}/tags").json()
 ```
 
-- [ ] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_spaces_router.py` → 404 (routes missing).
+- [x] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_spaces_router.py` → 404 (routes missing).
 
-- [ ] **Step 3: Implement** — imports at top of `vc_spaces.py`:
+- [x] **Step 3: Implement** — imports at top of `vc_spaces.py`:
 
 ```python
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -1051,8 +1053,8 @@ async def _ainvoke(op):
         return await _ainvoke(op)
 ```
 
-- [ ] **Step 4: Run it, confirm it passes** — `./scripts/test.sh backend/tests/test_vc_spaces_router.py`; print import path + sqlglot version; `git status -- uv.lock` clean.
-- [ ] **Step 5: Commit** — `vc(tags): space-keyed tag GET/PUT/DELETE endpoints`. Mark Task 4 LANDED.
+- [x] **Step 4: Run it, confirm it passes** — `./scripts/test.sh backend/tests/test_vc_spaces_router.py`; print import path + sqlglot version; `git status -- uv.lock` clean.
+- [x] **Step 5: Commit** — `vc(tags): space-keyed tag GET/PUT/DELETE endpoints`. Mark Task 4 LANDED.
 
 ---
 
