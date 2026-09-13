@@ -46,18 +46,12 @@ function ValueDiff({ before, after, split }: { before: string; after: string; sp
   )
 }
 
-function ValueBlock({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="space-y-1">
-      <p className="text-xs text-muted">{label}</p>
-      <pre className="max-h-48 overflow-auto rounded-md bg-surface px-2 py-1.5 text-xs text-secondary whitespace-pre-wrap break-words">{value}</pre>
-    </div>
-  )
-}
-
 function DiffItemCard({ item, split }: { item: DiffItem; split: boolean }) {
   const change = CHANGE_META[item.change]
   const { Icon } = change
+  // Every change kind renders through ValueDiff so the split/unified toggle governs the
+  // WHOLE diff, not just modified items. before/after are already null for added/removed,
+  // so toText() yields an empty side: added shows blank→content, removed content→blank.
   return (
     <article className="rounded-lg border border-default bg-surface-secondary/40 p-3 space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
@@ -72,11 +66,7 @@ function DiffItemCard({ item, split }: { item: DiffItem; split: boolean }) {
           {item.category === 'sql' ? 'Manual SQL review required' : 'Manual review required'}
         </p>
       )}
-      {item.change === 'modified'
-        ? <ValueDiff before={toText(item.before)} after={toText(item.after)} split={split} />
-        : item.change === 'added'
-          ? <ValueBlock label="New" value={toText(item.after)} />
-          : <ValueBlock label="Removed" value={toText(item.before)} />}
+      <ValueDiff before={toText(item.before)} after={toText(item.after)} split={split} />
     </article>
   )
 }
@@ -112,13 +102,12 @@ export function SemanticDiffView({ diff }: { diff: SemanticDiff }) {
     (a, b) => categoryOrder(a) - categoryOrder(b),
   )
   const ToggleIcon = split ? Rows2 : Columns2
-  const hasModified = diff.items.some(item => item.change === 'modified')
 
   return (
     <section aria-label="Semantic diff" className="rounded-xl border border-default bg-surface p-4 space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide">Semantic diff</h3>
-        {diff.items.length > 0 && hasModified && (
+        {diff.items.length > 0 && (
           <button
             type="button"
             onClick={() => setSplit(value => !value)}

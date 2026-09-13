@@ -33,10 +33,19 @@ const modified: SemanticDiff = { comparison: 'different', items: [
 ]}
 
 describe('SemanticDiffView toggle', () => {
-  it('hides the split toggle when there are no modified items', () => {
-    expect(renderToStaticMarkup(<SemanticDiffView diff={added} />)).not.toContain('Switch to unified diff')
+  it('shows the split toggle for an added-only diff (added obeys the toggle)', () => {
+    // Every change kind renders through the diff viewer now, so the toggle is meaningful
+    // even when there are no modified items.
+    const html = renderToStaticMarkup(<SemanticDiffView diff={added} />)
+    expect(html).toContain('Switch to unified diff')
+    // added/removed route through ValueDiff, which renders the Before/After columns.
+    expect(html).toContain('Before')
+    expect(html).toContain('After')
   })
   it('shows the split toggle when a modified item is present', () => {
     expect(renderToStaticMarkup(<SemanticDiffView diff={modified} />)).toContain('Switch to unified diff')
+  })
+  it('hides the toggle only when there are no items', () => {
+    expect(renderToStaticMarkup(<SemanticDiffView diff={{ comparison: 'equal', items: [] }} />)).not.toContain('Switch to unified diff')
   })
 })
