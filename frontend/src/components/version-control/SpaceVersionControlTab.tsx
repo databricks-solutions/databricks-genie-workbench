@@ -8,6 +8,7 @@ import { History } from './history'
 import { VersionDetailPanel } from './version-detail-panel'
 import { SemanticDiffView } from './diff'
 import { shortId } from './version-format'
+import { chronoPair } from './compare-order'
 
 type SubTab = 'versions' | 'promote'
 
@@ -170,7 +171,8 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     setCompareDiff(null)
     setCompareDiffError(null)
     setCompareLoading(true)
-    api.diff(bindingId, compareIds[0], compareIds[1])
+    const [olderId, newerId] = chronoPair(compareIds, page.items)
+    api.diff(bindingId, olderId, newerId)
       .then(d => { if (live) setCompareDiff(d) })
       .catch(err => { if (live) setCompareDiffError(errorMessage(err, 'Failed to compare versions.')) })
       .finally(() => { if (live) setCompareLoading(false) })
@@ -361,7 +363,10 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
                 <div className="flex h-full flex-col rounded-xl border border-default bg-surface">
                   <header className="shrink-0 flex flex-wrap items-center gap-2 border-b border-default p-4">
                     <span className="text-xs font-semibold uppercase tracking-wide text-secondary">Comparing</span>
-                    <span className="font-mono text-xs text-secondary">{shortId(compareIds[0])} ↔ {shortId(compareIds[1])}</span>
+                    {(() => {
+                      const [beforeId, afterId] = chronoPair(compareIds, page.items)
+                      return <span className="font-mono text-xs text-secondary">{shortId(beforeId)} → {shortId(afterId)}</span>
+                    })()}
                     <button
                       type="button"
                       onClick={() => setCompareIds([])}

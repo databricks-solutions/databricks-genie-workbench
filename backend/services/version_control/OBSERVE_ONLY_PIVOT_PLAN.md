@@ -603,3 +603,624 @@ disclosure.
   text. Shipped alongside the non-blocking tab open (`SpaceVersionControlTab.tsx`: history read
   is painted before the background OBO live-config observe; rail skeletons decoupled from the
   sync banner).
+
+---
+
+## §19 — Version tagging + diff-direction correctness
+
+> **For agentic workers:** written with the `writing-plans` discipline — bite-sized
+> TDD tasks, real code, frequent commits. Each Task ends with an independently testable
+> deliverable and its own PLAN → VERIFY → commit slice (mark the Task **LANDED** here in
+> the same commit, MV-D9). Steps use `- [ ]` for tracking.
+
+**Goal:** Let a user label ("tag") any captured version to remember it, and fix the
+checkbox-compare diff so Before/After and added/removed read correctly.
+
+**Architecture:** Tags are mutable app-UX metadata, so they live in **Lakebase** (the
+app's own mutable Postgres, `backend/services/lakebase.py`), NOT the append-only, governed
+VC Delta ledger (`ledger.py`; provisioning `OWNER_SPECS` in `platform/provisioning.py`).
+The space-keyed router exposes tag CRUD plus a per-space tag map; the frontend fetches
+versions (ledger) and tags (Lakebase) **separately** and merges by `version_id`. So
+`contracts.py`, `ledger.py`, the governed provisioning/grant matrix, and every fingerprint
+are untouched. The diff fix orders the compare pair chronologically before `api.diff`.
+
+**Tech Stack:** FastAPI + asyncpg (backend); React 19 + TS + Tailwind + vitest (frontend).
+Tests: backend `./scripts/test.sh`; frontend `cd frontend && npm run test` / `npm run lint`.
+
+**Spec:** this doc's CUJ-1 sections + §18, and the design Q&A that motivated §19 —
+tagging is a version-keyed annotation **decoupled** from the fingerprint-dedup capture path
+(capture appends nothing when the config is unchanged, so a tag cannot ride a capture);
+benchmarks are already versioned via `Fingerprints.benchmark` (`contracts.py:290`,
+`config_fingerprint.py:202-207`) so the optional spotlight is presentation-only.
+
+### Global Constraints
+- Frontend-only Tasks keep vitest green (**baseline 540**) and lint clean. Backend Tasks
+  run `./scripts/test.sh` (**baseline 3317**), print the import path + resolved sqlglot
+  version, and leave `git status -- uv.lock` clean.
+- Tags NEVER enter any fingerprint (config/benchmark/metadata) and NEVER affect dedup or
+  drift. Tags do NOT touch the governed Delta store, `OWNER_SPECS`, the grant matrix, or
+  any `contracts.py` wire value.
+- Lakebase is app-instance scoped (AGENTS.md gotcha): tags are in-workspace UX and do not
+  travel via promotion. Accepted for CUJ-1.
+
+### Design decisions
+- **VC-D-tag1 (store):** Lakebase table `genie.vc_version_tags`, mutable CRUD
+  (`INSERT … ON CONFLICT DO UPDATE` / `DELETE`), modeled on `star_space`
+  (`lakebase.py:562-592`). Rationale: a mutable tag row in the VC Delta ledger would force a
+  non-append-only fact table through the strict provisioning `OWNER_SPECS`
+  (`provisioning.py:30-39`) and grant matrix (which grants only `SELECT, MODIFY` and relies
+  on `delta.appendOnly='true'`, `provisioning.py:228-233`). Tags are workbench UX, not
+  governed facts.
+- **VC-D-tag2 (shape):** a tag is `{label: str (1–60 chars), note: str|None}`, keyed by
+  `version_id` (globally-unique UUID) with a `space_id` scope column, authored under OBO and
+  stamped with the human actor. Returned as a separate per-space map
+  (`GET /spaces/{id}/tags` → `{version_id: {label, note, author}}`) and merged client-side.
+  `VersionSummary` and the ledger are untouched.
+- **VC-D-tag3 (auth):** tag writes reuse `actor_for` + `authorize_history(actor, binding)`
+  (the same gate as history reads); the binding is resolved via
+  `registry.find_active_by_space_key` (read-only) — tagging never enrolls.
+- **VC-D-diff (direction):** the checkbox-compare effect orders the two selected ids by
+  `observed_at` ascending (older→`left`/Before, newer→`right`/After) before `api.diff`. The
+  restore preview's intentional `current→target` direction (`SpaceVersionControlTab.tsx`
+  `beginRestore`) is unchanged.
+
+### File structure
+- `frontend/src/components/version-control/compare-order.ts` — **new**; pure `chronoPair`
+  helper (kept out of the component file to satisfy `react-refresh/only-export-components`).
+- `frontend/src/components/version-control/SpaceVersionControlTab.tsx` — use `chronoPair`
+  for the compare effect + header; hold tag state; wire tag handlers.
+- `frontend/src/components/version-control/diff.tsx` — hide the split toggle when no
+  `modified` items.
+- `backend/services/lakebase.py` — tag table + `get_version_tags` / `set_version_tag` /
+  `delete_version_tag`.
+- `backend/routers/vc_spaces.py` — `GET /spaces/{id}/tags`, `PUT`/`DELETE`
+  `/spaces/{id}/versions/{version_id}/tag`.
+- `frontend/src/lib/version-control-api.ts` + `frontend/src/types/version-control.ts` —
+  client methods + `VersionTag` type.
+- `frontend/src/components/version-control/history.tsx`,
+  `version-detail-panel.tsx` — render the tag badge + tag editor.
+
+---
+
+### Task 1 — Diff pair ordered chronologically (fixes bugs #2/#3)
+
+**LANDED:** `chronoPair` helper added in its own module `compare-order.ts` (older `version_id` first, input-order fallback on missing/equal timestamps); wired into the checkbox-compare effect (`api.diff` now passes older→newer) and the "Comparing" header (reads `before → after`). Restore-preview direction untouched. TDD followed (RED module-not-found → GREEN). Frontend suite 542/542, lint clean.
+
+**Files:**
+- Create: `frontend/src/components/version-control/compare-order.ts`
+- Create: `frontend/src/components/version-control/compare-order.test.ts`
+- Modify: `SpaceVersionControlTab.tsx` (compare effect ~L160-174; header ~L356)
+
+**Interfaces — Produces:** `chronoPair(ids: string[], items: VersionSummary[]): [string, string]`
+(older `version_id` first; falls back to input order when timestamps are missing/equal).
+
+- [x] **Step 1: Write the failing test** (`compare-order.test.ts`)
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { chronoPair } from './compare-order'
+import type { VersionSummary } from '@/types/version-control'
+
+const v = (id: string, iso: string) => ({ version_id: id, observed_at: iso } as VersionSummary)
+
+describe('chronoPair', () => {
+  it('returns older id first regardless of selection order', () => {
+    const items = [v('new', '2026-09-12T10:00:00Z'), v('old', '2026-09-12T08:00:00Z')]
+    expect(chronoPair(['new', 'old'], items)).toEqual(['old', 'new'])
+    expect(chronoPair(['old', 'new'], items)).toEqual(['old', 'new'])
+  })
+})
+```
+
+- [x] **Step 2: Run it, confirm it fails** — `cd frontend && npm run test -- compare-order` → FAIL (module not found).
+
+- [x] **Step 3: Implement** (`compare-order.ts`)
+
+```ts
+import type { VersionSummary } from '@/types/version-control'
+
+// Order two selected version ids chronologically (older first) using the loaded page, so a
+// diff reads Before(older) → After(newer). Unknown/equal timestamps keep the given order.
+export function chronoPair(ids: string[], items: VersionSummary[]): [string, string] {
+  const at = (id: string) => Date.parse(items.find(v => v.version_id === id)?.observed_at ?? '')
+  const [a, b] = ids
+  return at(a) <= at(b) ? [a, b] : [b, a]
+}
+```
+
+- [x] **Step 4: Wire it into the effect** (`SpaceVersionControlTab.tsx`) — replace the
+  `api.diff(bindingId, compareIds[0], compareIds[1])` call:
+
+```tsx
+import { chronoPair } from './compare-order'
+// …inside the compareIds effect, after the bindingId guard:
+const [olderId, newerId] = chronoPair(compareIds, page.items)
+api.diff(bindingId, olderId, newerId)
+  .then(d => { if (live) setCompareDiff(d) })
+```
+
+  And make the "Comparing" header read older → newer instead of the ambiguous `↔`:
+
+```tsx
+{compareIds.length === 2 && (() => {
+  const [beforeId, afterId] = chronoPair(compareIds, page.items)
+  return <span className="font-mono text-xs text-secondary">{shortId(beforeId)} → {shortId(afterId)}</span>
+})()}
+```
+
+- [x] **Step 5: Run tests + lint** — `npm run test` (541) and `npm run lint` (clean).
+- [x] **Step 6: Commit** — `git add frontend/src/components/version-control/compare-order.ts compare-order.test.ts SpaceVersionControlTab.tsx` → `vc(diff): order compare pair chronologically (Before=older, After=newer)`. Mark Task 1 LANDED.
+
+---
+
+### Task 2 — Split/unified toggle only shows when it does something (fixes bug #4)
+
+**Files:**
+- Modify: `frontend/src/components/version-control/diff.tsx` (toggle at ~L120-130)
+- Test: `frontend/src/components/version-control/diff.test.tsx` (create if absent)
+
+Rationale: the toggle passes `split` only to `ValueDiff`, which renders solely for
+`modified` items (`diff.tsx:75-79`); `added`/`removed` use the single-column `ValueBlock`
+and have no second side to lay out. Showing the toggle on an add/remove-only diff makes it
+look broken. Hide it unless there is at least one `modified` item.
+
+- [ ] **Step 1: Write the failing test** (`diff.test.tsx`)
+
+```tsx
+import { describe, it, expect } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { SemanticDiffView } from './diff'
+import type { SemanticDiff } from '@/types/version-control'
+
+const added: SemanticDiff = { comparison: 'different', items: [
+  { category: 'questions', path: 'benchmarks.questions[0]', change: 'added', before: null, after: { id: 'q' }, review_required: false },
+]}
+const modified: SemanticDiff = { comparison: 'different', items: [
+  { category: 'instructions', path: 'instructions', change: 'modified', before: 'a', after: 'b', review_required: false },
+]}
+
+describe('SemanticDiffView toggle', () => {
+  it('hides the split toggle when there are no modified items', () => {
+    expect(renderToStaticMarkup(<SemanticDiffView diff={added} />)).not.toContain('Switch to unified diff')
+  })
+  it('shows the split toggle when a modified item is present', () => {
+    expect(renderToStaticMarkup(<SemanticDiffView diff={modified} />)).toContain('Switch to unified diff')
+  })
+})
+```
+
+- [ ] **Step 2: Run it, confirm the first case fails** — `npm run test -- diff` → FAIL (toggle currently always renders).
+
+- [ ] **Step 3: Implement** — in `diff.tsx`, compute and gate:
+
+```tsx
+const hasModified = diff.items.some(item => item.change === 'modified')
+// …in the header, change the guard:
+{diff.items.length > 0 && hasModified && (
+  <button type="button" onClick={() => setSplit(value => !value)} …>
+    <ToggleIcon className="w-3 h-3" />
+    {split ? 'Unified' : 'Side-by-side'}
+  </button>
+)}
+```
+
+- [ ] **Step 4: Run tests + lint** — `npm run test` (543) / `npm run lint`.
+- [ ] **Step 5: Commit** — `vc(diff): hide split toggle when no modified items`. Mark Task 2 LANDED.
+
+> Note (deferred, not this Task): a richer option is to route `added`/`removed` through
+> `ValueDiff` with the opposite side blank so every change kind obeys the toggle. Skipped
+> here to avoid a jsdom-flaky assertion on `react-diff-viewer` internals; revisit only if
+> users ask to see adds/removes side-by-side against an empty column.
+
+---
+
+### Task 3 — Lakebase tag store
+
+**Files:**
+- Modify: `backend/services/lakebase.py` (memory store ~L20-33; `_ensure_schema` ~L182-193; new functions near `star_space` ~L562)
+- Test: `backend/tests/test_vc_version_tags.py` (create)
+
+**Interfaces — Produces (all `async`, in-memory fallback when Lakebase is down):**
+- `get_version_tags(space_id: str) -> dict[str, dict]` → `{version_id: {label, note, author}}`
+- `set_version_tag(space_id, version_id, label, note, author) -> None`
+- `delete_version_tag(space_id, version_id) -> None`
+
+- [ ] **Step 1: Write the failing test** (`test_vc_version_tags.py`)
+
+```python
+import pytest
+from backend.services import lakebase
+
+
+@pytest.mark.asyncio
+async def test_set_get_delete_version_tag_in_memory():
+    sid, vid = "space-tags-1", "11111111-1111-1111-1111-111111111111"
+    await lakebase.set_version_tag(sid, vid, "Golden baseline", "before rollout", "amy@x.io")
+    tags = await lakebase.get_version_tags(sid)
+    assert tags[vid] == {"label": "Golden baseline", "note": "before rollout", "author": "amy@x.io"}
+    # scoped by space
+    assert await lakebase.get_version_tags("other-space") == {}
+    # upsert overwrites
+    await lakebase.set_version_tag(sid, vid, "Renamed", None, "amy@x.io")
+    assert (await lakebase.get_version_tags(sid))[vid]["label"] == "Renamed"
+    # delete
+    await lakebase.delete_version_tag(sid, vid)
+    assert vid not in await lakebase.get_version_tags(sid)
+```
+
+- [ ] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_version_tags.py` → FAIL (functions undefined).
+
+- [ ] **Step 3: Implement** — add the memory bucket to `_memory_store`:
+
+```python
+    "vc_version_tags": {},  # version_id -> {space_id, label, note, author}
+```
+
+  add the table to `_ensure_schema` (next to `starred_spaces`):
+
+```python
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.vc_version_tags (
+                    version_id VARCHAR(64)  PRIMARY KEY,
+                    space_id   VARCHAR(128) NOT NULL,
+                    label      VARCHAR(60)  NOT NULL,
+                    note       TEXT,
+                    author     TEXT,
+                    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_vc_version_tags_space ON genie.vc_version_tags(space_id)"
+            )
+```
+
+  and the CRUD functions (near `star_space`):
+
+```python
+async def set_version_tag(space_id: str, version_id: str, label: str,
+                          note: str | None, author: str | None) -> None:
+    """Create or update the tag on one version (mutable UX metadata; never a VC fact)."""
+    if not _lakebase_available or _pool is None:
+        _memory_store["vc_version_tags"][version_id] = {
+            "space_id": space_id, "label": label, "note": note, "author": author}
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO genie.vc_version_tags (version_id, space_id, label, note, author, updated_at)
+               VALUES ($1, $2, $3, $4, $5, NOW())
+               ON CONFLICT (version_id) DO UPDATE
+                 SET label = EXCLUDED.label, note = EXCLUDED.note,
+                     author = EXCLUDED.author, updated_at = NOW()""",
+            version_id, space_id, label, note, author)
+
+
+async def delete_version_tag(space_id: str, version_id: str) -> None:
+    if not _lakebase_available or _pool is None:
+        _memory_store["vc_version_tags"].pop(version_id, None)
+        return
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM genie.vc_version_tags WHERE version_id = $1 AND space_id = $2",
+            version_id, space_id)
+
+
+async def get_version_tags(space_id: str) -> dict:
+    """Return {version_id: {label, note, author}} for one space."""
+    await _maybe_retry_schema()
+    if not _lakebase_available or _pool is None:
+        return {vid: {"label": t["label"], "note": t.get("note"), "author": t.get("author")}
+                for vid, t in _memory_store["vc_version_tags"].items()
+                if t["space_id"] == space_id}
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT version_id, label, note, author FROM genie.vc_version_tags WHERE space_id = $1",
+            space_id)
+        return {r["version_id"]: {"label": r["label"], "note": r["note"], "author": r["author"]}
+                for r in rows}
+```
+
+- [ ] **Step 4: Run it, confirm it passes** — `./scripts/test.sh backend/tests/test_vc_version_tags.py`.
+- [ ] **Step 5: Commit** — `vc(tags): Lakebase vc_version_tags store (mutable UX, in-memory fallback)`. Mark Task 3 LANDED.
+
+---
+
+### Task 4 — Space-keyed tag endpoints
+
+**Files:**
+- Modify: `backend/routers/vc_spaces.py` (imports; `_ainvoke` helper; three routes inside `build_router`)
+- Test: `backend/tests/test_vc_spaces_router.py` (extend)
+
+**Interfaces — Consumes:** Task 3's `lakebase.*` functions. **Produces:**
+- `GET /api/version-control/spaces/{space_id}/tags` → `{version_id: {label, note, author}}`
+- `PUT …/spaces/{space_id}/versions/{version_id}/tag` body `{label, note?}` → the saved tag
+- `DELETE …/spaces/{space_id}/versions/{version_id}/tag` → `{version_id, deleted: true}`
+
+- [ ] **Step 1: Write the failing test** (extend `test_vc_spaces_router.py`, reusing the file's existing router/client fixture)
+
+```python
+def test_put_get_delete_version_tag(client):  # `client` = the module's TestClient fixture
+    space, vid = "sp_tag", "22222222-2222-2222-2222-222222222222"
+    put = client.put(f"/api/version-control/spaces/{space}/versions/{vid}/tag",
+                     json={"label": "Golden", "note": "keep"})
+    assert put.status_code == 200 and put.json()["author"]  # stamped with the actor
+    got = client.get(f"/api/version-control/spaces/{space}/tags").json()
+    assert got[vid]["label"] == "Golden"
+    assert client.delete(f"/api/version-control/spaces/{space}/versions/{vid}/tag").status_code == 200
+    assert vid not in client.get(f"/api/version-control/spaces/{space}/tags").json()
+```
+
+- [ ] **Step 2: Run it, confirm it fails** — `./scripts/test.sh backend/tests/test_vc_spaces_router.py` → 404 (routes missing).
+
+- [ ] **Step 3: Implement** — imports at top of `vc_spaces.py`:
+
+```python
+from pydantic import BaseModel, ConfigDict, StringConstraints
+```
+
+  add a body model near `RestoreSpaceBody`:
+
+```python
+class TagBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: Annotated[str, StringConstraints(min_length=1, max_length=60, strip_whitespace=True)]
+    note: str | None = None
+```
+
+  add an async error-mapper mirroring `_invoke` (module scope, next to `_invoke`):
+
+```python
+async def _ainvoke(op):
+    try:
+        return await op()
+    except HTTPException:
+        raise
+    except PermissionError as error:
+        raise _error(403, "scope_denied", str(error)) from error
+    except LookupError as error:
+        raise _error(404, "resource_not_found", "Scoped resource not found") from error
+    except (ValueError, TypeError) as error:
+        raise _error(409, "request_conflict", str(error)) from error
+    except Exception as error:
+        logger.exception("VC space request failed")
+        raise _error(503, "evidence_unavailable", "Evidence unavailable", stale=True) from error
+```
+
+  inside `build_router`, add a binding resolver + the three routes:
+
+```python
+    def resolve_readable(space_id, request):
+        actor = actor_for(request)
+        binding = registry.find_active_by_space_key(space_id)
+        if binding is not None and (actor.workspace_id != binding.workspace_id
+                                    or authorize_history(actor, binding) is not True):
+            raise PermissionError("Binding history scope denied")
+        return binding, actor
+
+    @router.get("/spaces/{space_id}/tags")
+    async def space_tags(space_id: SpaceId, request: Request):
+        from backend.services import lakebase
+        async def op():
+            if flags.enabled("vc_history_enabled") is not True:
+                raise _error(503, "vc_history_disabled", "VC history reads disabled", stale=True)
+            binding, _ = resolve_readable(space_id, request)
+            if binding is None:
+                return {}  # not enrolled yet -> no tags
+            return await lakebase.get_version_tags(space_id)
+        return await _ainvoke(op)
+
+    @router.put("/spaces/{space_id}/versions/{version_id}/tag")
+    async def set_tag(space_id: SpaceId, version_id: UUID, body: TagBody, request: Request):
+        from backend.services import lakebase
+        async def op():
+            if flags.enabled("vc_writes_enabled") is not True:
+                raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
+            binding, actor = resolve_readable(space_id, request)
+            if binding is None:
+                raise _error(404, "resource_not_found", "Space is not enrolled in version control")
+            await lakebase.set_version_tag(space_id, str(version_id), body.label, body.note, actor.subject_id)
+            return {"version_id": str(version_id), "label": body.label,
+                    "note": body.note, "author": actor.subject_id}
+        return await _ainvoke(op)
+
+    @router.delete("/spaces/{space_id}/versions/{version_id}/tag")
+    async def delete_tag(space_id: SpaceId, version_id: UUID, request: Request):
+        from backend.services import lakebase
+        async def op():
+            if flags.enabled("vc_writes_enabled") is not True:
+                raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
+            binding, _ = resolve_readable(space_id, request)
+            if binding is None:
+                raise _error(404, "resource_not_found", "Space is not enrolled in version control")
+            await lakebase.delete_version_tag(space_id, str(version_id))
+            return {"version_id": str(version_id), "deleted": True}
+        return await _ainvoke(op)
+```
+
+- [ ] **Step 4: Run it, confirm it passes** — `./scripts/test.sh backend/tests/test_vc_spaces_router.py`; print import path + sqlglot version; `git status -- uv.lock` clean.
+- [ ] **Step 5: Commit** — `vc(tags): space-keyed tag GET/PUT/DELETE endpoints`. Mark Task 4 LANDED.
+
+---
+
+### Task 5 — Tag UI (badge in the rail + editor in the detail panel)
+
+**Files:**
+- Modify: `frontend/src/types/version-control.ts` (add `VersionTag`)
+- Modify: `frontend/src/lib/version-control-api.ts` (client methods)
+- Modify: `SpaceVersionControlTab.tsx` (tag state + handlers, pass down)
+- Modify: `history.tsx` (badge), `version-detail-panel.tsx` (editor)
+- Test: `history.test.tsx` and `version-detail-panel.test.tsx` (create/extend)
+
+**Interfaces — Consumes:** Task 4 endpoints. **Produces:** `VersionTag`,
+`api.spaceTags/setVersionTag/deleteVersionTag`; `History` gains optional `tags?: VersionTagMap`;
+`VersionDetailPanel` gains optional `tag`, `onSetTag`, `onRemoveTag`.
+
+- [ ] **Step 1: Types** (`types/version-control.ts`)
+
+```ts
+export interface VersionTag { label: string; note: string | null; author?: string | null }
+export type VersionTagMap = Record<string, VersionTag>
+```
+
+- [ ] **Step 2: API client** (`version-control-api.ts`, add `VersionTag` to the import list, then methods)
+
+```ts
+  spaceTags(spaceId: string, signal?: AbortSignal) {
+    return this.get<Record<string, VersionTag>>(`/spaces/${encodeURIComponent(spaceId)}/tags`, signal)
+  }
+  setVersionTag(spaceId: string, versionId: string, body: { label: string; note?: string | null }) {
+    return this.request<VersionTag & { version_id: string }>(
+      `/spaces/${encodeURIComponent(spaceId)}/versions/${encodeURIComponent(versionId)}/tag`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  }
+  deleteVersionTag(spaceId: string, versionId: string) {
+    return this.request<{ version_id: string; deleted: boolean }>(
+      `/spaces/${encodeURIComponent(spaceId)}/versions/${encodeURIComponent(versionId)}/tag`,
+      { method: 'DELETE' })
+  }
+```
+
+- [ ] **Step 3: Failing test — rail badge** (`history.test.tsx`)
+
+```tsx
+import { describe, it, expect } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { History } from './history'
+import type { VersionPage } from '@/types/version-control'
+
+const page: VersionPage = { items: [{
+  version_id: 'v1', binding_id: 'b1', observed_at: '2026-09-12T10:00:00Z', origin: 'workbench',
+  observed_by: 'amy@x.io', parent_version_id: null, restored_from_version_id: null,
+  fingerprints: { config: 'c', benchmark: 'bm', metadata: 'm', canonicalizer_version: 'vc-c14n/1' },
+  optimizer_run_id: null, champion_id: null,
+}], next_cursor: null }
+
+describe('History tags', () => {
+  it('renders the tag label when a tag exists for the version', () => {
+    const html = renderToStaticMarkup(
+      <History page={page} onNext={() => {}} onSelect={() => {}} tags={{ v1: { label: 'Golden', note: null } }} />)
+    expect(html).toContain('Golden')
+  })
+})
+```
+
+- [ ] **Step 4: Implement — `history.tsx`** — extend props and render the badge in `VersionRow`:
+
+```tsx
+// HistoryProps: add `tags?: VersionTagMap`; VersionRowProps: add `tag?: VersionTag`.
+// In VersionRow, after the id/copy controls (inside the top flex row):
+{tag && (
+  <Badge variant="secondary" className="gap-1" title={tag.note ?? tag.label}>
+    <Tag className="w-3 h-3" />{tag.label}
+  </Badge>
+)}
+// import { Tag } from 'lucide-react'; pass tag={tags?.[version.version_id]} from History.
+```
+
+- [ ] **Step 5: Failing test — detail editor** (`version-detail-panel.test.tsx`)
+
+```tsx
+// Render VersionDetailPanel with tag={{ label: 'Golden', note: null }} + onSetTag/onRemoveTag noops.
+// Assert the input shows the existing label and a "Remove tag" control is present.
+import { render, screen } from '@testing-library/react'
+// …assert screen.getByDisplayValue('Golden') and screen.getByRole('button', { name: /remove tag/i })
+```
+
+- [ ] **Step 6: Implement — `version-detail-panel.tsx`** — add a small editor in the sticky
+  header (below Fingerprints), controlled by local state seeded from `tag`:
+
+```tsx
+// Props: tag?: VersionTag; onSetTag?: (label: string, note: string | null) => void; onRemoveTag?: () => void
+// A labeled <input maxLength={60}> + Save button (calls onSetTag) and, when tag exists, a
+// "Remove tag" button (calls onRemoveTag). Gate the whole block on `onSetTag` being provided.
+```
+
+- [ ] **Step 7: Wire `SpaceVersionControlTab.tsx`** — add `const [tags, setTags] = useState<VersionTagMap>({})`;
+  fetch after the initial `load()` in `syncOnOpen` (and on `spaceId` change) via
+  `api.spaceTags(spaceId).then(setTags).catch(() => {})`; add handlers:
+
+```tsx
+const setTag = useCallback(async (versionId: string, label: string, note: string | null) => {
+  await api.setVersionTag(spaceId, versionId, { label, note })
+  setTags(await api.spaceTags(spaceId))
+}, [spaceId])
+const removeTag = useCallback(async (versionId: string) => {
+  await api.deleteVersionTag(spaceId, versionId)
+  setTags(await api.spaceTags(spaceId))
+}, [spaceId])
+// pass tags={tags} to <History/>; pass tag/onSetTag/onRemoveTag to <VersionDetailPanel/>.
+```
+
+- [ ] **Step 8: Run tests + lint** — `npm run test` / `npm run lint`.
+- [ ] **Step 9: Commit** — `vc(tags): tag badge in rail + tag editor in detail panel`. Mark Task 5 LANDED.
+
+---
+
+### Task 6 (optional) — Benchmark-changed spotlight
+
+**Files:**
+- Create: `frontend/src/components/version-control/benchmark-change.ts` (+ `.test.ts`)
+- Modify: `history.tsx` (chip on rows whose benchmark fingerprint differs from their parent)
+
+Benchmarks are already versioned (their own `fingerprints.benchmark`); this only surfaces
+"benchmarks changed in this version" — presentation-only, no backend change.
+
+**Interfaces — Produces:** `benchmarkChanged(version: VersionSummary, byId: (id: string) => VersionSummary | undefined): boolean`.
+
+- [ ] **Step 1: Failing test** (`benchmark-change.test.ts`)
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { benchmarkChanged } from './benchmark-change'
+const mk = (id: string, bm: string, parent: string | null) => ({
+  version_id: id, parent_version_id: parent,
+  fingerprints: { config: 'c', benchmark: bm, metadata: 'm', canonicalizer_version: 'v' },
+} as any)
+
+describe('benchmarkChanged', () => {
+  const parent = mk('p', 'BM1', null)
+  const byId = (id: string) => (id === 'p' ? parent : undefined)
+  it('true when the benchmark fingerprint differs from the parent', () => {
+    expect(benchmarkChanged(mk('c', 'BM2', 'p'), byId)).toBe(true)
+  })
+  it('false when unchanged or no parent', () => {
+    expect(benchmarkChanged(mk('c', 'BM1', 'p'), byId)).toBe(false)
+    expect(benchmarkChanged(mk('c', 'BM2', null), byId)).toBe(false)
+  })
+})
+```
+
+- [ ] **Step 2: Implement** (`benchmark-change.ts`)
+
+```ts
+import type { VersionSummary } from '@/types/version-control'
+
+// True when this version's benchmark fingerprint differs from its parent's — i.e. the
+// benchmark question set changed here. No parent (or unknown parent) => not a change.
+export function benchmarkChanged(
+  version: VersionSummary,
+  byId: (id: string) => VersionSummary | undefined,
+): boolean {
+  if (!version.parent_version_id) return false
+  const parent = byId(version.parent_version_id)
+  return !!parent && parent.fingerprints.benchmark !== version.fingerprints.benchmark
+}
+```
+
+- [ ] **Step 3: Wire the chip** — in `History`, build `byId` from `page.items` and render a
+  `Badge variant="info"` "Benchmarks changed" on rows where `benchmarkChanged(version, byId)`.
+- [ ] **Step 4: Run tests + lint; Commit** — `vc(tags): benchmark-changed chip on the timeline`. Mark Task 6 LANDED.
+
+---
+
+### Self-review (writing-plans)
+- **Spec coverage:** #2/#3 → Task 1; #4 → Task 2; tagging (store/endpoints/UI) → Tasks 3-5;
+  optional benchmark spotlight → Task 6. All covered.
+- **Type consistency:** `chronoPair`, `VersionTag`/`VersionTagMap`, `get_version_tags`/
+  `set_version_tag`/`delete_version_tag`, `spaceTags`/`setVersionTag`/`deleteVersionTag`,
+  `benchmarkChanged` are named identically across producer and consumer tasks.
+- **No governed-store contact:** confirmed — tags are Lakebase-only; the Delta ledger,
+  `contracts.py`, `OWNER_SPECS`, and every fingerprint are untouched.
+
+### Suggested order
+Tasks 1-2 first (fast, frontend-only bug fixes, high payoff), then 3 → 4 → 5 (tagging
+end-to-end), then 6 if wanted.
