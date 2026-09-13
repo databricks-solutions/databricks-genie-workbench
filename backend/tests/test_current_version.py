@@ -163,7 +163,6 @@ def _stub_live(monkeypatch, space: dict | None, *, update_time: str | None = Non
 @pytest.mark.parametrize("live_instruction", ["Be helpful", "External edit"])
 def test_current_version_has_no_managed_mutation(client, monkeypatch, live_instruction):
     from backend.services import genie_client
-    from backend.services.version_control.mutation_gate import MutationGate
 
     # Task 17: this adapter only reads managed Genie state; zombie reconciliation
     # may update optimizer telemetry, not config/description, and needs no gate.
@@ -180,7 +179,6 @@ def test_current_version_has_no_managed_mutation(client, monkeypatch, live_instr
     writes = []
     for owner, names in (
         (genie_client.GenieTransport, ("create_once", "patch_config_once", "patch_description_once")),
-        (MutationGate, ("execute", "create")),
         (auto_optimize, ("trigger_optimization", "apply_optimization", "revert_optimization", "discard_optimization")),
     ):
         for name in names:

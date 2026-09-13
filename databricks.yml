@@ -2,36 +2,9 @@ bundle:
   name: "genie-workbench"
   databricks_cli_version: ">= 0.297.2"
 
-include:
-  - resources/version-control/*.yml
-
 variables:
   gso_run_as_principal:
     description: "Explicit app service principal; deployer must have permission to use it"
-    default: ""
-  vc_executor_principal:
-    description: "Explicit nonowner target-local VC executor"
-    default: ""
-  vc_enrollment_principal:
-    description: "Explicit INSERT-only enrollment principal"
-    default: ""
-  vc_provisioner_principal:
-    description: "Explicit owner-migration provisioner, never a runtime identity"
-    default: ""
-  vc_runtime_principal:
-    description: "Fact-table append writer (SELECT+INSERT); usually the executor SP"
-    default: ""
-  vc_observer_principal:
-    description: "vc_snapshots Volume writer"
-    default: ""
-  vc_approval_principal:
-    description: "vc_approval_evidence Volume writer"
-    default: ""
-  vc_source_principal:
-    description: "Cross-workspace source: vc_outbound_packages writer / receipts reader"
-    default: ""
-  vc_governed_config_uri:
-    description: "UC Volume URI of the reviewed governed target config JSON (promotion); loaded in-Job"
     default: ""
   control_schema:
     description: "Unity Catalog schema holding the VC control tables and Volumes"

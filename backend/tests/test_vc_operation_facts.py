@@ -5,8 +5,8 @@ from uuid import UUID, uuid5, NAMESPACE_URL
 import pytest
 
 from backend.services.version_control.contracts import (
-    AdmissionClaim, CreateIntentRef, FactKind, FactStatus, MutationRequest,
-    ObservationRef, OperationFact, OperationFacts, PatchStage, RequestIdentity, StageEvidence,
+    CreateIntentRef, FactKind, FactStatus, MutationRequest,
+    OperationFact, PatchStage, RequestIdentity, StageEvidence,
     to_wire,
 )
 from backend.tests.vc_fakes.fixtures import actor_fixture, binding_fixture
@@ -126,52 +126,6 @@ def test_create_intent_is_durable_without_fake_pre_version():
         durable()[0].append(replace(created, evidence=fact().evidence))
     with pytest.raises(ValueError, match='create intent'):
         durable()[0].append(replace(created, evidence=replace(intent, binding_revision=2)))
-
-
-class ClaimConsumer:
-    def __init__(self, facts: OperationFacts, claim):
-        self.facts = facts
-        self.claim = claim
-        self.unresolved = True
-
-    def finish(self):
-        self.facts.publish_consumption(self.claim)
-        if not self.facts.verify_flush(self.claim):
-            raise PermissionError('Unflushed claim must remain unresolved')
-        self.unresolved = False
-
-
-@pytest.mark.parametrize('boundary', list(CrashBoundary))
-def test_consumption_publish_failure_retains_unresolved_claim(boundary):
-    from backend.tests.test_vc_approvals import approve, setup_approval
-
-    context = setup_approval()
-    approve(context)
-    grant = context.service.authorize(context.request, context.executor)
-    observation = ObservationRef(uid(3), grant.binding.binding_id, 1,
-                                 context.request.expected_base, DIGEST)
-    claim = AdmissionClaim(grant.binding.binding_id, 1, uid(5), 1, 2,
-                           grant.request, observation, grant.approval_id, grant.approval_digest)
-    consumer = ClaimConsumer(context.facts, claim)
-    assert not context.facts.verify_flush(claim)
-    context.store.failures.inject(boundary)
-    with pytest.raises(InjectedCrash):
-        consumer.finish()
-    assert consumer.unresolved
-    restarted, _ = durable(context.store)
-    consumer.facts = restarted
-    consumer.finish()
-    assert not consumer.unresolved
-    assert restarted.verify_flush(claim)
-    assert len(restarted.approval_use(grant.binding, grant.approval_id).consumptions) == 1
-    assert not restarted.verify_flush(replace(claim, generation=2))
-    with pytest.raises((PermissionError, ValueError)):
-        restarted.publish_consumption(replace(claim, attempt_id=uid(55), generation=2))
-    context.service.facts = restarted
-    with pytest.raises(PermissionError, match='consumed'):
-        context.service.authorize(context.request, context.executor)
-
-
 def test_target_delta_adapter_and_owned_ddl_are_append_only_and_default_off():
     import json
     from pathlib import Path
@@ -207,35 +161,6 @@ def test_target_delta_adapter_and_owned_ddl_are_append_only_and_default_off():
         store.append(fact().event_key, to_wire(fact(binding=replace(binding_fixture(), workspace_id='source'))))
     with pytest.raises(ValueError):
         DeltaFactStore(sql, 'catalog; DROP TABLE x', 'control', '123')
-
-
-@pytest.mark.parametrize('mode', ['dev', 'break-glass'])
-def test_consumption_flush_supports_bound_dev_and_break_glass_grants(mode):
-    from datetime import timedelta
-    from backend.services.version_control.contracts import ActorContext, BreakGlassRequest
-    from backend.tests.test_vc_approvals import setup_approval, submit
-
-    context = setup_approval(environment='dev' if mode == 'dev' else 'prod')
-    submit(context)
-    if mode == 'dev':
-        grant = context.service.authorize(context.request, context.executor)
-    else:
-        actor = ActorContext('emergency-human', '123', 'human')
-        context.identity.memberships[(actor.subject_id, '123')] = frozenset({'break-glass'})
-        override = BreakGlassRequest(context.request.identity, context.request.binding, 'incident',
-                                     NOW + timedelta(minutes=15), context.bound.preflight_evidence_digest, True)
-        grant = context.service.break_glass(override, actor)
-    observation = ObservationRef(uid(3), grant.binding.binding_id, 1, context.request.expected_base, DIGEST)
-    claim = AdmissionClaim(grant.binding.binding_id, 1, uid(5), 1, 2,
-                           grant.request, observation, grant.approval_id, grant.approval_digest)
-    reference = context.facts.publish_consumption(claim)
-    restarted, _ = durable(context.store)
-    assert restarted.publish_consumption(claim) == reference
-    assert restarted.verify_flush(claim)
-    with pytest.raises(PermissionError):
-        restarted.publish_consumption(replace(claim, attempt_id=uid(55)))
-
-
 @pytest.mark.parametrize('kind', [FactKind.APPROVAL_REQUEST, FactKind.APPROVAL_VOTE,
                                  FactKind.APPROVAL_GRANTED, FactKind.APPROVAL_INVALIDATED,
                                  FactKind.RELEASE, FactKind.RECEIPT, FactKind.BREAK_GLASS,
@@ -281,38 +206,3 @@ def test_private_evidence_loss_fails_closed_at_durable_read(fault):
         payload['evidence_uri'] = uri + '/../other.json'
     with pytest.raises((PermissionError, ValueError, OSError)):
         adapter.read()
-
-
-@pytest.mark.parametrize('fault', ['generation', 'approval_digest', 'missing_claim'])
-def test_flush_rejects_ambiguous_or_tampered_consumption_rows(fault):
-    from backend.tests.test_vc_approvals import approve, setup_approval
-
-    context = setup_approval()
-    approve(context)
-    grant = context.service.authorize(context.request, context.executor)
-    observation = ObservationRef(uid(3), grant.binding.binding_id, 1, context.request.expected_base, DIGEST)
-    claim = AdmissionClaim(grant.binding.binding_id, 1, uid(5), 1, 2,
-                           grant.request, observation, grant.approval_id, grant.approval_digest)
-    context.facts.publish_consumption(claim)
-    committed = context.store.state.rows[-1]
-    payload = to_wire(committed.payload)
-    if fault == 'missing_claim':
-        payload.pop('admission_claim')
-    elif fault == 'generation':
-        payload['generation'] = 9
-    else:
-        payload['approval_digest'] = 'b' * 64
-    context.store.seed(replace(committed, payload=payload))
-    assert not context.facts.verify_flush(claim)
-
-
-def test_different_request_payload_is_rejected_before_any_append():
-    from backend.tests.test_vc_approvals import setup_approval
-
-    context = setup_approval()
-    before = tuple(context.store.state.rows)
-    different = replace(context.request, description='tampered')
-    with pytest.raises(ValueError, match='request'):
-        context.facts.record_request(different, fact(binding=different.binding, request=different.identity,
-                                                    transition_sequence=8))
-    assert tuple(context.store.state.rows) == before

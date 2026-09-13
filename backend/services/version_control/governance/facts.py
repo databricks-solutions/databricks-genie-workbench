@@ -23,6 +23,19 @@ from backend.services.version_control.contracts import (
 from backend.services.version_control.contracts import fact_key  # noqa: F401
 
 
+def approval_digest(inputs, votes):
+    """Canonical digest over an approval's inputs + ordered votes.
+
+    Inlined from the (removed) governed ``approvals`` module: ``get_request``
+    recomputes it when reconstructing an approval record, and that reader stays on
+    the live coordination-policy path even in the observe-only surface.
+    """
+    return canonical_json_hash('vc-approval/1', {
+        'inputs': to_wire(inputs),
+        'votes': to_wire(sorted(votes, key=lambda vote: vote.approver_id)),
+    })
+
+
 def validate_evidence(fact):
     expected = {
         FactKind.APPROVAL_REQUEST: (ApprovalInputs, ApprovalRecord),
@@ -194,8 +207,6 @@ class DurableOperationFacts:
             raise ValueError('Ambiguous approval evidence')
         record = records[-1].evidence if records else None
         if record is not None and record.status == FactStatus.REQUESTED:
-            from .approvals import approval_digest
-
             votes = {}
             for row in history.facts:
                 if row.fact_kind != FactKind.APPROVAL_VOTE:

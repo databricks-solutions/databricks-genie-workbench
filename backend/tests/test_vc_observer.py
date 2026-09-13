@@ -10,7 +10,7 @@ import pytest
 
 from backend.services.version_control import contracts as vc
 from backend.services.version_control.observer import Observer
-from backend.tests.test_vc_mutation_gate import rig, uid
+from backend.tests._vc_rig import rig, uid
 from backend.tests.vc_fakes.fixtures import actor_fixture
 
 

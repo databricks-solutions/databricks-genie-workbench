@@ -19,7 +19,73 @@ live state and require it to still equal the version the user believed was curre
 409 rather than clobbering the concurrent change.
 """
 
+import logging
+
 from backend.services.version_control import contracts as vc
+
+logger = logging.getLogger(__name__)
+
+# Machine-stable component keys (kept in ``details.mismatch``) mapped to human labels for
+# the surfaced message. The UI already shows these three fingerprints, so naming which one
+# drifted turns the old blanket "space changed" into an actionable, self-explaining error.
+_COMPONENT_LABELS = {
+    "config": "the configuration",
+    "benchmark": "the benchmarks",
+    "metadata": "the description",
+}
+
+
+class RestoreConflict(ValueError):
+    """A restore precondition failed (still a ``ValueError`` so existing 409 mapping holds),
+    but carries a stable ``vc_code`` and structured ``vc_details`` so the router surfaces a
+    SPECIFIC 409 the UI can act on — instead of the generic ``request_conflict`` that made
+    every failure read as an undiagnosable "the space changed"."""
+
+    def __init__(self, code, message, *, details=None):
+        super().__init__(message)
+        self.vc_code = code
+        self.vc_details = details
+
+
+def _mismatched_components(live_snapshot, expected_snapshot):
+    """Return the machine keys of the fingerprint components that differ. Defensive against
+    snapshots without fingerprints (returns ``[]`` -> generic message) so a malformed
+    observation can never mask the conflict behind an AttributeError."""
+    live = getattr(live_snapshot, "fingerprints", None)
+    expected = getattr(expected_snapshot, "fingerprints", None)
+    if live is None or expected is None:
+        return []
+    diffs = []
+    if live.config != expected.config:
+        diffs.append("config")
+    if live.benchmark != expected.benchmark:
+        diffs.append("benchmark")
+    if live.metadata != expected.metadata:
+        diffs.append("metadata")
+    return diffs
+
+
+def _live_mismatch_message(comparison, mismatch):
+    if comparison is vc.Comparison.UNKNOWN:
+        return ("The live space was recorded under a different canonicalizer version, so it "
+                "can't be safely compared. Refresh the history and try again.")
+    if mismatch:
+        labels = ", ".join(_COMPONENT_LABELS.get(name, name) for name in mismatch)
+        return (f"The live space changed since you opened this view — {labels} differ. "
+                "Refresh the history and try again.")
+    return "The live space changed since you opened this view. Refresh the history and try again."
+
+
+def _fingerprint_wire(snapshot):
+    fingerprints = getattr(snapshot, "fingerprints", None)
+    if fingerprints is None:
+        return None
+    return {
+        "config": fingerprints.config,
+        "benchmark": fingerprints.benchmark,
+        "metadata": fingerprints.metadata,
+        "canonicalizer_version": fingerprints.canonicalizer_version,
+    }
 
 
 def restore_space_version(runtime, *, space_id, version_id, expected_current_version_id,
@@ -44,11 +110,36 @@ def restore_space_version(runtime, *, space_id, version_id, expected_current_ver
     try:
         expected = runtime.ledger.get_version(binding, expected_current_version_id)
     except KeyError as error:
-        raise ValueError("Current version is stale; refresh the history and retry") from error
+        logger.warning(
+            "Restore precondition failed (stale_expected) for space %s: "
+            "expected_current_version_id=%s not found in the ledger",
+            space_id, expected_current_version_id)
+        raise RestoreConflict(
+            "restore_stale_expected",
+            "Your history is out of date — the version you had as current no longer is. "
+            "Refresh the history and try again.",
+            details={"expected_current_version_id": expected_current_version_id},
+        ) from error
 
     live = runtime.canonicalizer.observe(live_reader(space_id))
-    if runtime.canonicalizer.compare(live, expected.snapshot) is not vc.Comparison.EQUAL:
-        raise ValueError("The space changed since you last viewed it; refresh and retry")
+    comparison = runtime.canonicalizer.compare(live, expected.snapshot)
+    if comparison is not vc.Comparison.EQUAL:
+        mismatch = _mismatched_components(live, expected.snapshot)
+        expected_fp, live_fp = _fingerprint_wire(expected.snapshot), _fingerprint_wire(live)
+        logger.warning(
+            "Restore precondition failed (live_mismatch) for space %s: comparison=%s "
+            "mismatch=%s expected_fp=%s live_fp=%s",
+            space_id, comparison.value, mismatch, expected_fp, live_fp)
+        raise RestoreConflict(
+            "restore_live_mismatch",
+            _live_mismatch_message(comparison, mismatch),
+            details={
+                "comparison": comparison.value,
+                "mismatch": mismatch,
+                "expected_fingerprints": expected_fp,
+                "live_fingerprints": live_fp,
+            },
+        )
 
     live_writer(space_id, historical.snapshot.serialized_space,
                 historical.snapshot.restorable_metadata.get("description"))

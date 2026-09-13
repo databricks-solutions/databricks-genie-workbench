@@ -1628,3 +1628,65 @@ via the repair/fast path. Prefer a single private helper (e.g. `self._emit_creat
   only `resolve_or_enroll_bound` + `capture_on_open` call sites remain `vc_spaces.py` and the
   new helper. The only `Origin.CREATE` producer is the helper.
 - MV-D9: no gap-report sites apply (VC plane, not the mv-advisor surface).
+
+---
+
+## §22 — Restore create to `main` + full governed-stack decouple/delete — DONE
+
+**Why:** the create flow surfaced `VC writes disabled: durable mutation-gate integration
+required`. Root cause was commit `6c5ae3ae` (the abandoned M04 mutation/observation gate),
+which stubbed `genie_creator.create_genie_space` and `create_agent_tools._create_space`/
+`_update_space` to fail closed. The branch's live direction is observe-only: mutations go
+through the standard Genie APIs and VC passively records them to the immutable ledger via the
+§21 initial-capture hook. The gate/governed control plane was parked, never wired.
+
+**Action (two parts):**
+1. **Restore create to `origin/main`.** `git checkout origin/main --` on `backend/genie_creator.py`
+   and `backend/services/create_agent_tools.py` (each diverged from main by exactly the single
+   `6c5ae3ae` hunk). `git diff origin/main` on both is now empty. Create works; the §21 observe
+   hook records the initial version. `test_create_timeout_dedup.py` restored to main too (same
+   single-hunk divergence).
+2. **Deleted the parked governed-mutation stack** (source + tests): `mutation_gate.py`,
+   `restore.py` (kept `restore_local.py`), `drift/`, `promotion/`, `governance/approvals.py`,
+   `governance/audit.py`, `platform/{jobs,attempt,live_seams}.py`, `backend/jobs/`, governed
+   routers (`vc_approvals`, `vc_operations`, `vc_releases`, `vc_reconcile`), governed
+   `scripts/version_control/*` (promotion/approval authoring), and the live `backend/tests/integration/`
+   harness (its conftest is the governed M08 audit/authorization surface).
+
+**Extracted / re-homed (no behavior change):**
+- New neutral `platform/adapters.py` holds the governed-free shared infra (`_Clock`, `_qualified`,
+  `_selection`, `_clean_status_reader`, `FilesVolumeStore`, and a slimmed `PlatformAdapters`
+  with only the observe-runtime methods). `observe_seams.py` repointed to it.
+- New `backend/tests/_vc_fakes.py` (`FakeAdapters`, `TARGET_HOST`, `SOURCE_HOST`, `MemoryFiles`,
+  `_executor`) and `backend/tests/_vc_rig.py` (governed-free `rig`/`uid`); new
+  `test_vc_adapters.py` (moved adapter unit tests). All ex-`test_vc_live_seams`/`mutation_gate`/
+  `restore`/`packages` importers repointed.
+- `approval_digest` inlined into `governance/facts.py` (kept `get_request` on the live
+  coordination-policy path used it via a now-deleted lazy import).
+
+**Orphan cleanup:**
+- `pyproject.toml`: dropped the `vc-platform` entry point (`platform.jobs:main`).
+- `platform/__init__.py`: dropped the `jobs` export.
+- `databricks.yml`: removed the now-empty `include: resources/version-control/*.yml` (the only
+  file there was the governed jobs bundle `platform.jobs.yml`) and the 8 governed principal
+  variables that only fed it (`vc_executor/enrollment/provisioner/runtime/observer/approval/
+  source_principal`, `vc_governed_config_uri`); **kept** `control_schema` (22 live refs, observe
+  tables) and `gso_run_as_principal` (app target). Removed the empty `resources/version-control/`.
+- **Kept `scripts/version_control/bundle_guard.py`** — it is deploy-**safety** (called by
+  `deploy.sh`/`preflight.sh` `_preflight_check_vc_bundle_content` to block governed genie content
+  in the bundle), not a mutation module.
+- `test_vc_provisioning.py`: kept all load-bearing observe DDL/owner-migration/grant/topology
+  tests; removed the integration-gate meta-tests (they guard the deleted live harness) and the
+  `LANDED_INTEGRATION_BASELINE`. `test_vc_operation_facts.py`: removed 4 approval-consumption
+  tests + the `ClaimConsumer` helper (they need the deleted `test_vc_approvals` setup);
+  `test_current_version.py`: kept the read-only-invariant test, dropped only its `MutationGate`
+  write-guard row.
+
+### Verify (§22) — DONE
+- `./scripts/test.sh` — **2714 passed** (backend **1188** + GSO **1526**), 0 failed. This is a
+  deliberate DROP from the §21 baseline of 3341: the governed stack + its tests were deleted.
+  New live baseline for the observe-only tree: **2714 (1188 backend + 1526 GSO)**.
+- `git diff origin/main -- backend/genie_creator.py backend/services/create_agent_tools.py` empty.
+- Import resolves inside this checkout (`packages/genie-space-optimizer/.../__init__.py`);
+  sqlglot 30.0.3 under `--frozen`. `git status -- uv.lock` clean.
+- Grep sweep: no residual references to any deleted governed module across kept source or tests.

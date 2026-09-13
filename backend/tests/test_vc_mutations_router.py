@@ -10,18 +10,23 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.services.version_control import contracts as vc
-from backend.tests.test_vc_mutation_gate import rig, uid
+from backend.tests._vc_rig import rig, uid
 from backend.tests.test_vc_observer import observer_rig
-from backend.tests.test_vc_restore import restore_rig
 
 
 @pytest.fixture
-def router_rig(restore_rig, observer_rig):
+def router_rig(rig, observer_rig):
     from backend.routers.vc_mutations import build_router
 
-    rig, restore, original, dispatcher, identity, validate = restore_rig
+    # Observe-only surface: restore is wired fail-closed in the deployed app, so the
+    # mounted router's restore path never reaches a real restore service. The router
+    # itself enforces auth/history scope and immutable-request validation before it
+    # would ever call restore.submit, so a mock restore/dispatcher suffices here.
     _, observer, actor, status, _ = observer_rig
-    request = replace(original, approval_id=uid())
+    restore = Mock()
+    dispatcher = Mock(spec=vc.JobDispatcher)
+    identity = Mock(spec=vc.IdentityProvider)
+    request = replace(rig.request, operation_type="restore", approval_id=uid())
     rig.facts.get_request.return_value = vc.ApprovedOperation(request, None)
     now = datetime.now(timezone.utc)
     fact = vc.OperationFact(uid(), vc.FactKind.OPERATION, request.identity.operation_id, 0,
@@ -77,18 +82,6 @@ def test_observe_delegates_to_authorized_observer(router_rig, reason):
     setup.authorize_history.assert_called_once_with(setup.actor, setup.rig.binding)
     setup.identity.actor.assert_called_once_with(setup.authentication)
     setup.dispatcher.submit_local.assert_not_called()
-
-
-def test_restore_enqueues_operation_id_only_without_inline_patch(router_rig):
-    setup = router_rig
-    response = setup.client.post(setup.prefix + "/restore", json=setup.body, headers=setup.headers)
-    assert response.status_code == 202
-    assert response.json()["operation_id"] == setup.request.identity.operation_id
-    setup.dispatcher.submit_local.assert_called_once_with(setup.request.identity.operation_id, "restore")
-    setup.rig.transport.patch_config_once.assert_not_called()
-    setup.rig.transport.patch_description_once.assert_not_called()
-    setup.rig.coordination.reserve.assert_not_called()
-    setup.rig.transport.get.assert_not_called()
 
 
 @pytest.mark.parametrize("disabled", ["default", "vc_writes_enabled", "vc_restore_enabled"])

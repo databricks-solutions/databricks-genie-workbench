@@ -47,9 +47,9 @@ def _obo_patch_live(client, space_id, serialized_space, description):
         client.api_client.do("PATCH", path, body={"description": description})
 
 
-def _error(status, code, message, *, stale=False):
+def _error(status, code, message, *, stale=False, details=None):
     return HTTPException(status, detail=vc.to_wire(vc.ApiError(
-        code=code, message=message, retryable=False, stale=stale)))
+        code=code, message=message, retryable=False, stale=stale, details=details)))
 
 
 def _invoke(call):
@@ -62,7 +62,14 @@ def _invoke(call):
     except LookupError as error:
         raise _error(404, "resource_not_found", "Scoped resource not found") from error
     except (ValueError, TypeError) as error:
-        raise _error(409, "request_conflict", str(error)) from error
+        # A conflicting request. Callers may attach a specific ``vc_code``/``vc_details``
+        # (see restore_local.RestoreConflict) so the client gets an actionable message
+        # instead of the opaque "request_conflict". Always log it: this path used to be
+        # silent server-side, which is exactly what made the restore 409 undiagnosable.
+        code = getattr(error, "vc_code", "request_conflict")
+        details = getattr(error, "vc_details", None)
+        logger.warning("VC request conflict (409) code=%s: %s", code, error)
+        raise _error(409, code, str(error), details=details) from error
     except Exception as error:
         # Fail closed to the client, but never silently: the server-side cause is the
         # only signal for an opaque evidence_unavailable 503.

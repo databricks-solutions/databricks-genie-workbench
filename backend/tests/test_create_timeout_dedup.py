@@ -1,24 +1,20 @@
-"""Pin M04's fail-closed legacy create and isolated timeout/title helpers.
+"""Regression tests for create-on-timeout duplicate spaces.
 
-Display-name-match create-on-timeout reconciliation is RETIRED in favor of
-durable create-intent + gated create (see test_vc_create.py). Legacy create
-must reject calls before any POST, blind replay, listing, or title adoption,
-including adoption of a pre-existing same-named space (a data-loss risk).
+Field report: creating a Genie Space produced many duplicates while the app
+showed "failed" and kept retrying (error: HTTPSConnectionPool ... Read timed
+out). Root cause: the create POST is non-idempotent and the app never recorded
+space_id on timeout, so every retry created another space. Genie appends a
+timestamp to the title on name collision, so duplicates looked distinct.
 
-The timeout/title helpers remain tested in isolation, not as an active create
-path. Hidden SDK retry prevention belongs to test_genie_client.py's
-test_transport_disables_hidden_sdk_retries_for_post_and_both_patches.
+These tests cover the backend half of the fix:
+  - _is_timeout_error detects "Read timed out"
+  - _title_matches_requested matches exact + collision variants, rejects siblings
+  - reconcile adopts the timed-out-but-created space, scoped to THIS attempt
+    (create_time >= request start) so it never binds to a pre-existing space
+  - a non-retrying client is used for the create POST
 """
 
-from unittest.mock import Mock
-
-import pytest
-
 import backend.genie_creator as gc
-import backend.services.genie_client as gcli
-
-
-_DISABLED_CREATE = "VC writes disabled: create requires durable intent and the mutation gate"
 
 
 class _FakeApiClient:
@@ -49,23 +45,13 @@ class _FakeClient:
 
 
 def _patch(monkeypatch, api):
-    monkeypatch.setattr(api, "do", Mock(wraps=api.do))
-    monkeypatch.setattr(gc, "get_workspace_client", Mock(return_value=_FakeClient(api)))
+    monkeypatch.setattr(gc, "get_workspace_client", lambda: _FakeClient(api))
     monkeypatch.setattr(gc, "get_databricks_host", lambda: "https://example.cloud.databricks.com")
     monkeypatch.setattr(gc, "get_sql_warehouse_id", lambda: "wh_123")
-    monkeypatch.setattr(gc, "_non_retrying_client", Mock(side_effect=lambda base: base))
-    monkeypatch.setattr(gc, "_title_matches_requested", Mock(wraps=gc._title_matches_requested))
+    monkeypatch.setattr(gc, "_non_retrying_client", lambda base: base)
+    import backend.services.genie_client as gcli
     monkeypatch.setattr(gcli, "list_genie_spaces",
-                        Mock(side_effect=lambda: api.do("GET", "/api/2.0/genie/spaces")["spaces"]))
-
-
-def _assert_no_legacy_activity(api):
-    api.do.assert_not_called()
-    assert api.post_calls == 0
-    gc.get_workspace_client.assert_not_called()
-    gc._non_retrying_client.assert_not_called()
-    gcli.list_genie_spaces.assert_not_called()
-    gc._title_matches_requested.assert_not_called()
+                        lambda: api.do("GET", "/api/2.0/genie/spaces")["spaces"])
 
 
 # ── _is_timeout_error ────────────────────────────────────────────────────────
@@ -96,16 +82,23 @@ def test_title_matcher_rejects_prefix_siblings():
         assert not gc._title_matches_requested(t, "Sales"), t
 
 
-def test_legacy_create_rejects_exact_title_adoption(monkeypatch):
+# ── reconcile behavior ───────────────────────────────────────────────────────
+
+def test_timeout_reconciles_to_created_space(monkeypatch):
     title = "Ops_Collection_team_SQL_Agent"
-    api = _FakeApiClient(created_title=title, created_id="sp_ok", create_time="2999-01-01T00:00:00Z")
+    api = _FakeApiClient(created_title=title, created_id="sp_ok", create_time="2026-08-12T12:03:55Z")
     _patch(monkeypatch, api)
-    with pytest.raises(PermissionError, match=_DISABLED_CREATE):
-        gc.create_genie_space(display_name=title, merged_config={"data_sources": {"tables": []}})
-    _assert_no_legacy_activity(api)
+    # request_start is computed inside create_genie_space (now - 5s); the fake's
+    # create_time is fixed in the past, so freeze "now" is unnecessary — instead
+    # give the created space a create_time far in the future to sit in-window.
+    api._ct = "2999-01-01T00:00:00Z"
+    result = gc.create_genie_space(display_name=title, merged_config={"data_sources": {"tables": []}})
+    assert result["genie_space_id"] == "sp_ok"
+    assert result.get("reconciled") is True
+    assert api.post_calls == 1
 
 
-def test_legacy_create_rejects_timestamp_renamed_adoption(monkeypatch):
+def test_reconcile_matches_timestamp_renamed_variant(monkeypatch):
     requested = "Ops_Collection_team_SQL_Agent"
 
     class _RenamedApi(_FakeApiClient):
@@ -121,15 +114,15 @@ def test_legacy_create_rejects_timestamp_renamed_adoption(monkeypatch):
 
     api = _RenamedApi(created_title=requested)
     _patch(monkeypatch, api)
-    with pytest.raises(PermissionError, match=_DISABLED_CREATE):
-        gc.create_genie_space(display_name=requested, merged_config={"data_sources": {"tables": []}})
-    _assert_no_legacy_activity(api)
+    result = gc.create_genie_space(display_name=requested, merged_config={"data_sources": {"tables": []}})
+    assert result["genie_space_id"] == "sp_renamed"
+    assert result.get("reconciled") is True
 
 
-def test_legacy_create_never_adopts_preexisting_same_named_space(monkeypatch):
+def test_reconcile_ignores_preexisting_space_outside_window(monkeypatch):
     """CRITICAL (data-loss guard): a same-named space created BEFORE this attempt
-    must NOT be adopted — otherwise a later update_space overwrites it. Legacy
-    create must fail closed before listing spaces or invoking title matching."""
+    must NOT be adopted — otherwise a later update_space overwrites it. With only
+    a pre-existing (old) match and no in-window space, reconcile must raise."""
     requested = "Sales Agent"
 
     class _OldOnlyApi(_FakeApiClient):
@@ -144,12 +137,14 @@ def test_legacy_create_never_adopts_preexisting_same_named_space(monkeypatch):
 
     api = _OldOnlyApi(created_title=requested)
     _patch(monkeypatch, api)
-    with pytest.raises(PermissionError, match=_DISABLED_CREATE):
+    monkeypatch.setattr(gc, "_RECONCILE_ATTEMPTS", 1)  # no long polling in test
+
+    import pytest
+    with pytest.raises(TimeoutError):
         gc.create_genie_space(display_name=requested, merged_config={"data_sources": {"tables": []}})
-    _assert_no_legacy_activity(api)
 
 
-def test_legacy_create_never_selects_between_same_named_spaces(monkeypatch):
+def test_reconcile_prefers_earliest_in_window(monkeypatch):
     requested = "Sales Agent"
 
     class _BothApi(_FakeApiClient):
@@ -166,12 +161,11 @@ def test_legacy_create_never_selects_between_same_named_spaces(monkeypatch):
 
     api = _BothApi(created_title=requested)
     _patch(monkeypatch, api)
-    with pytest.raises(PermissionError, match=_DISABLED_CREATE):
-        gc.create_genie_space(display_name=requested, merged_config={"data_sources": {"tables": []}})
-    _assert_no_legacy_activity(api)
+    result = gc.create_genie_space(display_name=requested, merged_config={"data_sources": {"tables": []}})
+    assert result["genie_space_id"] == "sp_original"  # earliest in-window
 
 
-def test_legacy_create_without_match_rejects_blind_replay(monkeypatch):
+def test_timeout_without_match_raises(monkeypatch):
     class _NoMatchApi(_FakeApiClient):
         def do(self, method, path, body=None, query=None):
             if method == "POST":
@@ -182,34 +176,42 @@ def test_legacy_create_without_match_rejects_blind_replay(monkeypatch):
 
     api = _NoMatchApi(created_title="whatever")
     _patch(monkeypatch, api)
-    for attempt in range(2):
-        with pytest.raises(PermissionError, match=_DISABLED_CREATE):
-            gc.create_genie_space(display_name="Ops_Collection_team_SQL_Agent",
-                                  merged_config={"data_sources": {"tables": []}})
-        _assert_no_legacy_activity(api)
+    monkeypatch.setattr(gc, "_RECONCILE_ATTEMPTS", 1)
+    import pytest
+    with pytest.raises(TimeoutError):
+        gc.create_genie_space(display_name="Ops_Collection_team_SQL_Agent",
+                              merged_config={"data_sources": {"tables": []}})
 
 
-def test_legacy_create_disabled_before_non_retrying_client_selection(monkeypatch):
-    """Legacy create cannot POST, even with a non-retrying client available.
-
-    The gated transport's non-retry guarantee is covered by test_genie_client.py::
-    test_transport_disables_hidden_sdk_retries_for_post_and_both_patches.
-    """
+def test_uses_non_retrying_client_for_create(monkeypatch):
+    """The create POST must go through a NON-retrying client so the SDK cannot
+    silently re-fire the non-idempotent POST on timeout."""
     title = "Client Selection Space"
     used = _FakeApiClient(created_title=title, created_id="sp_ok")
     base = _FakeApiClient(created_title="unused", created_id="sp_wrong")
 
-    _patch(monkeypatch, base)
-    monkeypatch.setattr(gc, "_non_retrying_client", Mock(return_value=_FakeClient(used)))
+    class _C:
+        def __init__(self, api): self.api_client = api
+
+    monkeypatch.setattr(gc, "get_workspace_client", lambda: _C(base))
+    monkeypatch.setattr(gc, "get_databricks_host", lambda: "https://example.cloud.databricks.com")
+    monkeypatch.setattr(gc, "get_sql_warehouse_id", lambda: "wh_123")
+
+    calls = {"n": 0}
+    def fake_non_retrying(b):
+        calls["n"] += 1
+        return _C(used)
+    monkeypatch.setattr(gc, "_non_retrying_client", fake_non_retrying)
 
     def do(method, path, body=None, query=None):
         if method == "POST":
             used.post_calls += 1
             return {"space_id": "sp_ok"}
         raise AssertionError(method)
-    used.do = Mock(side_effect=do)
+    used.do = do
 
-    with pytest.raises(PermissionError, match=_DISABLED_CREATE):
-        gc.create_genie_space(display_name=title, merged_config={"data_sources": {"tables": []}})
-    _assert_no_legacy_activity(base)
-    _assert_no_legacy_activity(used)
+    result = gc.create_genie_space(display_name=title, merged_config={"data_sources": {"tables": []}})
+    assert calls["n"] == 1, "_non_retrying_client not used for the create POST"
+    assert result["genie_space_id"] == "sp_ok"
+    assert used.post_calls == 1
+    assert base.post_calls == 0

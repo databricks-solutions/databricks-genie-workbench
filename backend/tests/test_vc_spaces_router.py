@@ -33,7 +33,8 @@ def _runtime(*, history=True, writes=True, restore=True, existing=_BINDING):
     # get_version -> a snapshot whose serialized_space/restorable_metadata are real JSON
     # (the restore path json.dumps the serialized_space onto the live space).
     ledger.get_version.return_value = SimpleNamespace(
-        snapshot=SimpleNamespace(serialized_space={"config": {}}, restorable_metadata={"description": "d"}))
+        snapshot=SimpleNamespace(serialized_space={"config": {}}, restorable_metadata={"description": "d"},
+                                 fingerprints=vc.Fingerprints("a" * 64, "b" * 64, "c" * 64, "vc-c14n/1")))
     registry = Mock()
     registry.find_active_by_space_key.return_value = existing
     observer = Mock()
@@ -209,9 +210,30 @@ def test_space_restore_applies_snapshot_and_records_version(monkeypatch):
 def test_space_restore_409_when_space_drifted(monkeypatch):
     runtime = _runtime()
     runtime.canonicalizer.compare.return_value = vc.Comparison.DIFFERENT
+    # Live differs from the expected head in config only -> the 409 names which component
+    # drifted (details.mismatch) and carries a specific, diagnosable code (not the opaque
+    # "request_conflict" that made this failure unreadable).
+    runtime.canonicalizer.observe.return_value = SimpleNamespace(
+        fingerprints=vc.Fingerprints("d" * 64, "b" * 64, "c" * 64, "vc-c14n/1"))
     _obo_patch(monkeypatch)
     response = _client(runtime).post(f"/api/version-control/spaces/{SPACE_ID}/restore", json=_RESTORE_BODY)
     assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "restore_live_mismatch"
+    assert detail["details"]["mismatch"] == ["config"]
+    assert "the configuration" in detail["message"]
+    runtime.observer.capture.assert_not_called()
+
+
+def test_space_restore_409_stale_expected_when_head_moved(monkeypatch):
+    runtime = _runtime()
+    historical = runtime.ledger.get_version.return_value
+    # Historical version resolves; the expected-current version no longer exists (head moved).
+    runtime.ledger.get_version.side_effect = [historical, KeyError("gone")]
+    _obo_patch(monkeypatch)
+    response = _client(runtime).post(f"/api/version-control/spaces/{SPACE_ID}/restore", json=_RESTORE_BODY)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "restore_stale_expected"
     runtime.observer.capture.assert_not_called()
 
 
@@ -234,14 +256,18 @@ def test_space_restore_fail_closed_when_restore_disabled(monkeypatch):
 # -- restore_space_version service (branches not reached via the router) -----
 
 def test_restore_service_raises_value_error_when_current_version_is_stale():
-    from backend.services.version_control.restore_local import restore_space_version
+    from backend.services.version_control.restore_local import RestoreConflict, restore_space_version
 
     runtime = _runtime()
     runtime.ledger.get_version.side_effect = [object(), KeyError("gone")]  # historical ok, expected missing
-    with pytest.raises(ValueError, match="stale"):
+    # RestoreConflict is a ValueError subclass (so the router's 409 mapping holds) but carries
+    # a stable vc_code the client can act on.
+    with pytest.raises(RestoreConflict) as caught:
         restore_space_version(runtime, space_id=SPACE_ID, version_id=str(UUID(int=1)),
                               expected_current_version_id=str(UUID(int=2)), actor=runtime.actor,
                               live_reader=lambda sid: {}, live_writer=lambda *a: None)
+    assert isinstance(caught.value, ValueError)
+    assert caught.value.vc_code == "restore_stale_expected"
     runtime.observer.capture.assert_not_called()
 
 

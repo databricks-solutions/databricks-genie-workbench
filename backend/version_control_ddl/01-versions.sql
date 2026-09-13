@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${control_schema}.genie_space_versions (
 -- CHECK constraints are attached via ALTER; inline table DDL supports only
 -- PRIMARY KEY / FOREIGN KEY. DROP IF EXISTS + ADD keeps re-runs idempotent.
 ALTER TABLE ${catalog}.${control_schema}.genie_space_versions DROP CONSTRAINT IF EXISTS valid_origin;
-ALTER TABLE ${catalog}.${control_schema}.genie_space_versions ADD CONSTRAINT valid_origin CHECK (origin IN ('workbench','external','optimizer','restore','promotion','unknown'));
+ALTER TABLE ${catalog}.${control_schema}.genie_space_versions ADD CONSTRAINT valid_origin CHECK (origin IN ('workbench','external','optimizer','restore','promotion','unknown','create'));
 ALTER TABLE ${catalog}.${control_schema}.genie_space_versions DROP CONSTRAINT IF EXISTS valid_revision;
 ALTER TABLE ${catalog}.${control_schema}.genie_space_versions ADD CONSTRAINT valid_revision CHECK (binding_revision > 0);
 ALTER TABLE ${catalog}.${control_schema}.genie_space_versions DROP CONSTRAINT IF EXISTS envelope_present;

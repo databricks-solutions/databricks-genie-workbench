@@ -129,7 +129,7 @@ def test_transport_disables_hidden_sdk_retries_for_post_and_both_patches(monkeyp
     from backend.services.genie_client import GenieTransport
     from backend.services.version_control import contracts as vc
     from backend.tests.vc_fakes.fixtures import binding_fixture, executor_fixture
-    from backend.tests.test_vc_mutation_gate import uid
+    from backend.tests._vc_rig import uid
     binding, executor = binding_fixture(), executor_fixture()
     coordination = Mock(spec=vc.Coordination)
     registry = Mock(spec=vc.Registry)

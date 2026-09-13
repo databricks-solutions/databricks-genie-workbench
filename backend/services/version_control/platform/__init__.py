@@ -16,7 +16,6 @@ _EXPORTS = {
         "permissions": ("verify_artifact_permissions", "verify_coordination_permissions", "verify_fact_permissions"),
         "capabilities": ("FIRST_WRITE_CAPABILITIES", "REQUIRED_WRITER_PATHS", "capabilities_ready", "storage_write_ready", "topology_read_ready"),
         "identity": ("PlatformIdentityProvider", "TrustedSnapshotReader", "verify_configured_job_run_as", "verify_job_run_as"),
-        "jobs": ("GovernedJobRuntime", "LocalJobDispatcher"),
         "termination": ("PlatformTerminationEvidenceProvider",),
     }.items()
     for name in names

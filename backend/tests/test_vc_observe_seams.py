@@ -24,7 +24,7 @@ from backend.services.version_control.platform.observe_seams import (
 )
 from backend.services.version_control.registry import DeltaRegistry
 from backend.services.version_control.version_tags import DeltaVersionTagStore
-from backend.tests.test_vc_live_seams import FakeAdapters, TARGET_HOST
+from backend.tests._vc_fakes import FakeAdapters, TARGET_HOST
 
 
 def _config():

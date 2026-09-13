@@ -13,10 +13,10 @@ and (later) restore. That needs a much smaller graph than the promotion gate:
   target-workspace ``IdentityProvider``,
 * an ``Observer`` bound to a target-local ``_clean_status_reader``.
 
-It reuses the live promotion leaf classes and the ``adapters`` injection seam from
-``live_seams`` verbatim, so offline the whole runtime assembles/type-checks against a
-fake ``adapters`` (see ``test_vc_observe_seams``) and only the lowest-level clients are
-live. Enrollment + observation are *writes* — gated behind ``vc_writes_enabled`` at the
+It reuses the shared platform infrastructure and the ``adapters`` injection seam from
+``platform.adapters`` verbatim, so offline the whole runtime assembles/type-checks
+against a fake ``adapters`` (see ``test_vc_observe_seams``) and only the lowest-level
+clients are live. Enrollment + observation are *writes* — gated behind ``vc_writes_enabled`` at the
 call sites — but the history/status *reads* the routers expose require only
 ``vc_history_enabled``. ``resolve_observe_runtime`` is fully fail-closed: absent or
 incomplete config yields ``None`` so the app mounts no observe surface (deploy-only
@@ -41,7 +41,7 @@ from backend.services.version_control.governance.facts import DurableOperationFa
 from backend.services.version_control.ledger import DeltaVersionLedger
 from backend.services.version_control.observer import Observer
 from backend.services.version_control.platform.feature_flags import FeatureFlags
-from backend.services.version_control.platform.live_seams import (
+from backend.services.version_control.platform.adapters import (
     PlatformAdapters,
     _clean_status_reader,
     _Clock,
@@ -146,10 +146,9 @@ def build_observe_runtime(config: dict, *, adapters: Any = None,
     sql = adapters.sql("executor")
     selection = _selection(config["target_selection"])
 
-    # Trust the app-entry identity for observe reads/capture (Option A): wrap the governed
+    # Trust the app-entry identity for observe reads/capture (Option A): wrap the platform
     # provider so actor() resolves from the proxy-verified forwarded identity, not a second
-    # SCIM lookup. Every other identity method delegates unchanged; the governed promotion
-    # path is untouched (it builds its own provider via build_governed_seams).
+    # SCIM lookup. Every other identity method delegates unchanged.
     identity = _EntryTrustedActorIdentity(adapters.identity_provider("executor"), workspace_id)
     canonicalizer = Canonicalizer()
 

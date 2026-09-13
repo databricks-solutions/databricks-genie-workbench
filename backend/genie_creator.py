@@ -534,5 +534,146 @@ def create_genie_space(
     description: str = "",
     parent_path: str | None = None,
 ) -> dict:
-    """Legacy create is disabled until durable intent and gate integration."""
-    raise PermissionError("VC writes disabled: create requires durable intent and the mutation gate")
+    """Create a new Genie Agent with the given configuration.
+
+    Attempts creation with a fallback chain of parent paths.  If the
+    primary path returns a permission error, the next candidate is
+    tried automatically (configured directory -> /Shared/).
+
+    Args:
+        display_name: The display name for the new Genie Agent
+        merged_config: The merged configuration dict (from optimization)
+        parent_path: Optional workspace path for the parent directory.
+                    If not provided, uses GENIE_TARGET_DIRECTORY or /Shared/.
+
+    Returns:
+        dict with genie_space_id, display_name, space_url, parent_path
+
+    Raises:
+        ValueError: If configuration is invalid
+        PermissionError: If none of the candidate paths are writable
+        TimeoutError: If the request timed out
+    """
+    import time as _time
+
+    if not display_name or not display_name.strip():
+        raise ValueError("Display name is required")
+    display_name = display_name.strip()
+
+    warehouse_id = get_sql_warehouse_id()
+    if not warehouse_id:
+        raise ValueError(
+            "No SQL warehouse available. Ensure you have access to at least "
+            "one running Pro or Serverless SQL warehouse."
+        )
+
+    t0 = _time.monotonic()
+    constrained_config = _enforce_constraints(merged_config)
+    cleaned_config = _clean_config(constrained_config)
+    serialized_space = json.dumps(cleaned_config)
+    t_prep = _time.monotonic() - t0
+    logger.info("Config prep took %.2fs (serialized %d bytes)", t_prep, len(serialized_space))
+
+    client = get_workspace_client()
+    host = get_databricks_host()
+
+    # The create POST is non-idempotent — use a client that does NOT auto-retry,
+    # so a read timeout can't silently re-fire the POST and create duplicates.
+    create_client = _non_retrying_client(client)
+
+    candidates = _build_path_candidates(parent_path)
+    last_error: Exception | None = None
+
+    # Wall-clock instant just before the first POST. Used to scope timeout
+    # reconciliation to spaces created by THIS attempt (the API's create_time
+    # is wall-clock ISO-8601 Z). A small safety margin absorbs minor client/
+    # server clock skew so we don't exclude the space we just created.
+    from datetime import datetime, timedelta, timezone
+    request_start = (
+        (datetime.now(timezone.utc) - timedelta(seconds=5))
+        .strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    )
+
+    for target_path in candidates:
+        logger.info(f"Attempting to create Genie Agent '{display_name}' in {target_path}")
+
+        try:
+            t_api = _time.monotonic()
+            response = create_client.api_client.do(
+                method="POST",
+                path="/api/2.0/genie/spaces",
+                body={
+                    "title": display_name,
+                    "description": description or "Genie Agent created by Genie Workbench",
+                    "parent_path": target_path,
+                    "warehouse_id": warehouse_id,
+                    "serialized_space": serialized_space,
+                },
+            )
+            t_api_done = _time.monotonic() - t_api
+
+            genie_space_id = response.get("space_id")
+            if not genie_space_id:
+                logger.error(f"No space_id in response: {response}")
+                raise ValueError(f"API did not return a space_id. Response: {response}")
+
+            space_url = f"{host}/genie/rooms/{genie_space_id}"
+            logger.info("Created Genie Agent %s in %s (API call %.2fs)", genie_space_id, target_path, t_api_done)
+
+            return {
+                "genie_space_id": genie_space_id,
+                "display_name": display_name,
+                "space_url": space_url,
+                "parent_path": target_path,
+            }
+
+        except Exception as e:
+            last_error = e
+            if _is_permission_error(e) and target_path != candidates[-1]:
+                logger.warning(
+                    f"Permission denied for {target_path}, trying next candidate"
+                )
+                continue
+
+            error_str = str(e).lower()
+            if "400" in error_str or "invalid" in error_str:
+                raise ValueError(f"The configuration is invalid: {e}")
+            if _is_timeout_error(e):
+                # The POST may have succeeded server-side even though the
+                # response timed out. Reconcile by looking the space up by
+                # display name (polling to outlast list lag) so retries are
+                # idempotent and we never leave a phantom failure.
+                logger.warning(
+                    "Create request for '%s' timed out — reconciling against the API",
+                    display_name,
+                )
+                existing = _find_space_by_display_name(
+                    display_name, created_after=request_start, poll=True
+                )
+                if existing:
+                    genie_space_id = existing.get("space_id") or existing.get("id")
+                    space_url = f"{host}/genie/rooms/{genie_space_id}"
+                    logger.info(
+                        "Reconciled timed-out create for '%s' to existing space %s",
+                        display_name, genie_space_id,
+                    )
+                    return {
+                        "genie_space_id": genie_space_id,
+                        "display_name": display_name,
+                        "space_url": space_url,
+                        "parent_path": target_path,
+                        "reconciled": True,
+                    }
+                raise TimeoutError(
+                    "Request timed out and no matching agent was found. "
+                    "Please check your Genie Agents list before retrying."
+                )
+            if _is_permission_error(e):
+                break
+            raise
+
+    raise PermissionError(
+        f"Cannot create Genie Agent — no writable directory found. "
+        f"Tried: {', '.join(candidates)}. "
+        f"Grant the app's service principal 'Can Manage' on a workspace folder."
+    )

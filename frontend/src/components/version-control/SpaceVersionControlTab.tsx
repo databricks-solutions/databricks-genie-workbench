@@ -266,13 +266,21 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
       setDiff(null)
       await load()
     } catch (err) {
-      setRestoreError(err instanceof VersionControlError && err.status === 409
-        ? 'The space changed since you opened this view. Refresh the history and try again.'
-        : errorMessage(err, 'Restore failed.'))
+      // Surface the server's SPECIFIC reason (which component drifted, or a stale view)
+      // rather than a blanket sentence. On a 409 the user's view is out of date, so reload
+      // the history and re-open the diff against the true current head so they can act on it.
+      setRestoreError(errorMessage(err, 'Restore failed.'))
+      if (err instanceof VersionControlError && err.status === 409) {
+        const refreshed = await load()
+        const head = refreshed?.items[0]?.version_id
+        if (head && pendingRestore && head !== pendingRestore.version_id) {
+          void compareVersions(head, pendingRestore.version_id)
+        }
+      }
     } finally {
       setRestoring(false)
     }
-  }, [spaceId, pendingRestore, page.items, load])
+  }, [spaceId, pendingRestore, page.items, load, compareVersions])
 
   const capture = useCallback(async () => {
     setCapturing(true)

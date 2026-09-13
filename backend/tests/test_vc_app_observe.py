@@ -12,7 +12,7 @@ from backend.services.version_control.platform.app_observe import (
     vc_auth_from_request,
 )
 from backend.services.version_control.platform.observe_seams import build_observe_runtime
-from backend.tests.test_vc_live_seams import FakeAdapters, TARGET_HOST
+from backend.tests._vc_fakes import FakeAdapters, TARGET_HOST
 
 _FULL_ENV = {
     "VC_OBSERVE_WORKSPACE_ID": "target",

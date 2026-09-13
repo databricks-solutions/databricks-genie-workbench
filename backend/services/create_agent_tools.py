@@ -3375,13 +3375,72 @@ def _check_sorted(items: list, key_fn, key_name: str, path: str, error_fn) -> No
 
 @mlflow.trace(name="create_space", span_type=SpanType.TOOL)
 def _create_space(display_name: str, description: str = "", config: dict | None = None, parent_path: str | None = None) -> dict:
-    """Legacy managed writes require an immutable mutation-gate request."""
-    return {"success": False, "code": "vc_writes_disabled", "retryable": False,
-            "error": "VC writes disabled: durable mutation-gate integration required"}
+    """Create the Genie Agent via the API.
+
+    Path resolution is automatic: configured directory -> /Shared/.
+    On permission errors the next candidate is tried transparently.
+    """
+    if not config:
+        return {"success": False, "error": "No config provided — call generate_config first"}
+    config = _reconcile_metric_view_sources(copy.deepcopy(config))
+    try:
+        result = create_genie_space(
+            display_name=display_name,
+            description=description,
+            merged_config=config,
+            parent_path=parent_path,
+        )
+        return {
+            "success": True,
+            "space_id": result["genie_space_id"],
+            "display_name": result["display_name"],
+            "space_url": result["space_url"],
+            "parent_path": result.get("parent_path", ""),
+        }
+    except (ValueError, PermissionError, TimeoutError) as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        logger.exception("create_space failed")
+        return {"success": False, "error": str(e)}
 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
 def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None) -> dict:
-    """Legacy managed writes require an immutable mutation-gate request."""
-    return {"success": False, "code": "vc_writes_disabled", "retryable": False,
-            "error": "VC writes disabled: durable mutation-gate integration required"}
+    """Update an existing Genie Agent with a new configuration and/or name."""
+    if not config and not display_name:
+        return {"success": False, "error": "No config or display_name provided"}
+    try:
+        from backend.services.auth import get_workspace_client, get_databricks_host
+        from backend.genie_creator import _enforce_constraints, _clean_config
+
+        body: dict[str, Any] = {}
+
+        if config:
+            config = _reconcile_metric_view_sources(copy.deepcopy(config))
+            constrained = _enforce_constraints(config)
+            cleaned = _clean_config(constrained)
+            body["serialized_space"] = json.dumps(cleaned)
+
+        if display_name:
+            body["display_name"] = display_name
+
+        warehouse_id = get_sql_warehouse_id()
+        if warehouse_id:
+            body["warehouse_id"] = warehouse_id
+
+        client = get_workspace_client()
+        client.api_client.do(
+            method="PATCH",
+            path=f"/api/2.0/genie/spaces/{space_id}",
+            body=body,
+        )
+        host = get_databricks_host()
+        return {
+            "success": True,
+            "space_id": space_id,
+            "url": f"{host}/genie/rooms/{space_id}",
+            "message": "Agent updated successfully.",
+        }
+    except Exception as e:
+        logger.exception("update_space failed")
+        return {"success": False, "error": str(e)}
