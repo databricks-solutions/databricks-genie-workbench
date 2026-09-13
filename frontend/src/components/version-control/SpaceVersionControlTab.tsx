@@ -431,6 +431,10 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
                     onRestore={() => beginRestore(detail)}
                     restoreEnabled={restoreEnabled}
                     restoring={restoring && pendingRestore?.version_id === detail.version_id}
+                    awaitingConfirm={pendingRestore?.version_id === detail.version_id}
+                    restoreError={pendingRestore?.version_id === detail.version_id ? restoreError : null}
+                    onConfirmRestore={() => { void confirmRestore() }}
+                    onCancelRestore={() => { setPendingRestore(null); setRestoreError(null) }}
                     tag={tags[detail.version_id]}
                     onSetTag={(label, note) => setTag(detail.version_id, label, note)}
                     onRemoveTag={() => removeTag(detail.version_id)}
@@ -444,38 +448,9 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
             </div>
           </div>
 
-          {pendingRestore && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 space-y-3">
-              <p className="text-sm text-secondary">
-                Restore version <span className="font-mono text-primary">{shortId(pendingRestore.version_id)}</span> as
-                the live configuration? It is applied as a new version — history is preserved. Review the changes below.
-              </p>
-              {restoreError && (
-                <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
-                  {restoreError}
-                </div>
-              )}
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => { setPendingRestore(null); setRestoreError(null) }}
-                  disabled={restoring}
-                  className="px-3 py-2 rounded-lg border border-default text-sm font-medium text-muted hover:text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { void confirmRestore() }}
-                  disabled={restoring}
-                  className="px-3 py-2 rounded-lg bg-amber-500/20 border border-amber-500/40 text-sm font-medium text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-50"
-                >
-                  {restoring ? 'Restoring…' : 'Confirm restore'}
-                </button>
-              </div>
-            </div>
-          )}
-
+          {/* Restore confirmation now renders inline inside VersionDetailPanel, adjacent to
+              its trigger (issue #1). The diff preview (current -> selected) stays here in the
+              wide area below the grid where there is room for it. */}
           {diffError && (
             <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
               {diffError}

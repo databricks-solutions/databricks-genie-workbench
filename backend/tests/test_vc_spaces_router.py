@@ -244,6 +244,19 @@ def test_space_restore_404_when_not_enrolled(monkeypatch):
     assert response.status_code == 404
 
 
+def test_space_restore_404_when_target_version_missing(monkeypatch):
+    # The historical target lookup raises KeyError (ledger.get_version). KeyError is a
+    # LookupError subclass, so _invoke maps it to 404 -- NOT the generic 503. This locks
+    # that inheritance dependency (the `# KeyError -> 404` contract in restore_local).
+    runtime = _runtime()
+    runtime.ledger.get_version.side_effect = KeyError("no such version")
+    _obo_patch(monkeypatch)
+    response = _client(runtime).post(f"/api/version-control/spaces/{SPACE_ID}/restore", json=_RESTORE_BODY)
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "resource_not_found"
+    runtime.observer.capture.assert_not_called()
+
+
 def test_space_restore_fail_closed_when_restore_disabled(monkeypatch):
     runtime = _runtime(restore=False)
     _obo_patch(monkeypatch)

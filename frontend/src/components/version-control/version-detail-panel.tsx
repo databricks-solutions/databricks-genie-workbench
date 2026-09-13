@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, Check, ChevronUp, Copy, Pencil, RotateCcw, Tag, Trash2, User, X } from 'lucide-react'
+import { Bot, Check, ChevronRight, ChevronUp, Copy, Pencil, RotateCcw, Tag, Trash2, User, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { VersionDetail, VersionTag } from '@/types/version-control'
 import { ConfigView } from './config-view'
@@ -26,6 +26,13 @@ interface VersionDetailPanelProps {
   restoreEnabled?: boolean
   restoring?: boolean
   isCurrent?: boolean
+  // Inline restore confirmation (rendered right next to the trigger, not far below the
+  // grid). When `awaitingConfirm` is true the panel swaps the "Restore this version" button
+  // for a compact confirm row (message + Cancel + Confirm + error).
+  awaitingConfirm?: boolean
+  restoreError?: string | null
+  onConfirmRestore?: () => void
+  onCancelRestore?: () => void
   // Tag editor (Task 5): existing tag for this version + set/remove handlers. The whole
   // editor block is gated on `onSetTag` being provided. Handlers may return a boolean
   // (true = success) so the panel can show a transient "Saved ✓" cue and reset on remove;
@@ -35,7 +42,7 @@ interface VersionDetailPanelProps {
   onRemoveTag?: () => void | boolean | Promise<void | boolean>
 }
 
-export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled, restoring, isCurrent, tag, onSetTag, onRemoveTag }: VersionDetailPanelProps) {
+export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled, restoring, isCurrent, awaitingConfirm, restoreError, onConfirmRestore, onCancelRestore, tag, onSetTag, onRemoveTag }: VersionDetailPanelProps) {
   const meta = originMeta(detail.origin)
   const { Icon } = meta
   const ActorIcon = isHumanActor(detail.observed_by) ? User : Bot
@@ -72,8 +79,10 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
   }
   return (
     <section aria-label="Version detail" className="flex h-full flex-col rounded-xl border border-default bg-surface">
-      {/* Sticky metadata header — stays put while the configuration body scrolls below. */}
-      <header className="shrink-0 space-y-4 border-b border-default p-4">
+      {/* Sticky metadata header — stays put while the configuration body scrolls below.
+          Kept intentionally shallow (tight spacing + fingerprints behind a disclosure) so
+          it does not push the scrollable Configuration off-screen. */}
+      <header className="shrink-0 space-y-3 border-b border-default p-3">
       <div className="flex items-center gap-2 flex-wrap">
         <Badge variant={meta.variant} className="gap-1">
           <Icon className="w-3 h-3" />
@@ -100,7 +109,7 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
         <div className="col-span-2 flex items-start justify-between gap-3">
           <span className="text-muted">Captured</span>
           <span className="text-right text-secondary">
@@ -108,25 +117,32 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
             <span className="text-muted"> · {relativeTime(detail.observed_at)}</span>
           </span>
         </div>
-        <div className="flex items-center justify-between gap-3">
+        <div className="col-span-2 flex items-center justify-between gap-3">
           <span className="text-muted">By</span>
           <span className="flex items-center gap-1 text-secondary truncate" title={detail.observed_by}>
             <ActorIcon className="w-3 h-3 shrink-0" />
             {friendlyActor(detail.observed_by)}
           </span>
         </div>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-muted">Canonicalizer</span>
-          <span className="font-mono text-secondary">{detail.fingerprints.canonicalizer_version}</span>
-        </div>
       </div>
 
-      <div className="space-y-1.5">
-        <p className="text-xs font-semibold text-secondary uppercase tracking-wide">Fingerprints</p>
-        <Fingerprint label="Config" value={detail.fingerprints.config} />
-        <Fingerprint label="Benchmark" value={detail.fingerprints.benchmark} />
-        <Fingerprint label="Metadata" value={detail.fingerprints.metadata} />
-      </div>
+      {/* Fingerprints + canonicalizer are diagnostic detail, rarely needed inline — tuck
+          them behind a disclosure so they don't permanently crowd the header (issue #3). */}
+      <details className="group text-xs">
+        <summary className="flex cursor-pointer list-none items-center gap-1 font-semibold uppercase tracking-wide text-secondary">
+          <ChevronRight className="w-3 h-3 shrink-0 transition-transform group-open:rotate-90" />
+          Fingerprints
+        </summary>
+        <div className="mt-1.5 space-y-1.5">
+          <Fingerprint label="Config" value={detail.fingerprints.config} />
+          <Fingerprint label="Benchmark" value={detail.fingerprints.benchmark} />
+          <Fingerprint label="Metadata" value={detail.fingerprints.metadata} />
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted">Canonicalizer</span>
+            <span className="font-mono text-secondary">{detail.fingerprints.canonicalizer_version}</span>
+          </div>
+        </div>
+      </details>
 
       {onSetTag && (
         <div className="space-y-1.5">
@@ -247,20 +263,55 @@ export function VersionDetailPanel({ detail, onClose, onRestore, restoreEnabled,
       )}
 
       {onRestore && (
-        <div className="flex items-center justify-end">
-          <button
-            type="button"
-            onClick={onRestore}
-            disabled={!restoreEnabled || restoring}
-            title={restoreEnabled
-              ? 'Apply this version as the live configuration (a new reviewed version; history is preserved)'
-              : 'Restore is not enabled on this deployment'}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-default text-sm font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <RotateCcw className="w-4 h-4" />
-            {restoring ? 'Restoring…' : 'Restore this version'}
-          </button>
-        </div>
+        awaitingConfirm ? (
+          // Confirmation renders right here, next to the trigger (issue #1) — not far below
+          // the grid. Solid amber Confirm for readable contrast in both themes (issue #2).
+          <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+            <p className="text-xs text-secondary">
+              Restore this version as the live configuration? It is applied as a new version —
+              history is preserved.
+            </p>
+            {restoreError && (
+              <div role="alert" className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-400">
+                {restoreError}
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onCancelRestore}
+                disabled={restoring}
+                className="rounded-lg border border-default px-3 py-1.5 text-sm font-medium text-secondary transition-colors hover:bg-surface-secondary disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onConfirmRestore}
+                disabled={restoring}
+                className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+              >
+                <RotateCcw className="w-4 h-4" />
+                {restoring ? 'Restoring…' : 'Confirm restore'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={onRestore}
+              disabled={!restoreEnabled || restoring}
+              title={restoreEnabled
+                ? 'Apply this version as the live configuration (a new reviewed version; history is preserved)'
+                : 'Restore is not enabled on this deployment'}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-default text-sm font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RotateCcw className="w-4 h-4" />
+              {restoring ? 'Restoring…' : 'Restore this version'}
+            </button>
+          </div>
+        )
       )}
       </header>
 
