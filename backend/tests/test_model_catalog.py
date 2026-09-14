@@ -216,3 +216,19 @@ def test_validate_chat_model_rejects_malformed_byok_ids(_gateway_byok_on, bad):
     # entity_name trap (no dots), 2-level, 4-level, empty segment, bare name.
     with pytest.raises(model_catalog.ModelValidationError):
         model_catalog.validate_chat_model(bad)
+
+
+@pytest.mark.parametrize("truthy", ["1", "true", "TRUE", "Yes", "on", " on "])
+def test_byok_flag_truthy_variants_enable_acceptance(monkeypatch, truthy):
+    # R7: {1,true,yes,on} case-insensitive, whitespace-tolerant, all enable BYOK.
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.setenv("GENIE_BYOK_ENABLED", truthy)
+    assert model_catalog.validate_chat_model("main.byok.my_model_svc") == "main.byok.my_model_svc"
+
+
+@pytest.mark.parametrize("falsy", ["", "false", "0", "no", "off", "disabled"])
+def test_byok_flag_falsy_variants_keep_acceptance_off(monkeypatch, falsy):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.setenv("GENIE_BYOK_ENABLED", falsy)
+    with pytest.raises(model_catalog.ModelValidationError):
+        model_catalog.validate_chat_model("main.byok.my_model_svc")
