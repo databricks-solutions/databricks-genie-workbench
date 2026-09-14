@@ -99,6 +99,15 @@ env:
     value: "classic"
 
   # ---------------------------------------------------------------------------
+  # BYOK (bring-your-own-model) acceptance (spec §2, §9 Decision 2). Default-off:
+  # only when "true" AND GENIE_LLM_ROUTE=gateway does validate_chat_model also
+  # accept a full 3-level UC model id (catalog.schema.name). Consumed by
+  # backend/services/model_catalog.py.
+  # ---------------------------------------------------------------------------
+  - name: GENIE_BYOK_ENABLED
+    value: "false"
+
+  # ---------------------------------------------------------------------------
   # SQL Warehouse — pulled from the app resource named "sql-warehouse".
   # Configure the warehouse resource in the Databricks Apps UI.
   # Falls back to auto-detect if empty.

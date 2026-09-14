@@ -1,12 +1,14 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.models import LLMModelInfo
 from backend.routers import analysis
 from backend.services import model_catalog
+from backend.services.llm_route import gateway_model_name
 
 
 def _endpoint(
@@ -172,3 +174,45 @@ def test_models_include_optimizer_prompt_budget_metadata(monkeypatch):
 
     assert models[0].optimizerPromptBudgetChars == 75_000
     assert models[0].contextTier == "long"
+
+
+@pytest.fixture
+def _gateway_byok_on(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.setenv("GENIE_BYOK_ENABLED", "true")
+
+
+def test_validate_chat_model_accepts_wellformed_byok_id_on_gateway(_gateway_byok_on):
+    # BYOK id returned verbatim — no strip, no curated gate.
+    assert model_catalog.validate_chat_model("main.byok.my_model_svc") == "main.byok.my_model_svc"
+
+
+def test_validate_chat_model_curated_still_accepted_on_gateway_byok(_gateway_byok_on):
+    assert model_catalog.validate_chat_model("databricks-claude-sonnet-4-6") == "databricks-claude-sonnet-4-6"
+
+
+def test_byok_id_passes_through_seam_unmangled(_gateway_byok_on):
+    # Contract: a validated BYOK id maps to itself through the seam (no strip rule).
+    validated = model_catalog.validate_chat_model("main.byok.my_model_svc")
+    assert gateway_model_name(validated) == "main.byok.my_model_svc"
+
+
+def test_validate_chat_model_rejects_byok_id_on_classic_route(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "classic")
+    monkeypatch.setenv("GENIE_BYOK_ENABLED", "true")
+    with pytest.raises(model_catalog.ModelValidationError):
+        model_catalog.validate_chat_model("main.byok.my_model_svc")
+
+
+def test_validate_chat_model_rejects_byok_id_when_flag_off(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.delenv("GENIE_BYOK_ENABLED", raising=False)
+    with pytest.raises(model_catalog.ModelValidationError):
+        model_catalog.validate_chat_model("main.byok.my_model_svc")
+
+
+@pytest.mark.parametrize("bad", ["gte_large_en_v1_5", "a.b", "a.b.c.d", "a..c", "foo", "main.byok."])
+def test_validate_chat_model_rejects_malformed_byok_ids(_gateway_byok_on, bad):
+    # entity_name trap (no dots), 2-level, 4-level, empty segment, bare name.
+    with pytest.raises(model_catalog.ModelValidationError):
+        model_catalog.validate_chat_model(bad)
