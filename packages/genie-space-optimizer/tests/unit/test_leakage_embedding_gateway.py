@@ -55,6 +55,30 @@ def test_gateway_non_200_returns_none(monkeypatch):
     assert leakage.get_embedding("q", _wc(), endpoint="databricks-bge-large-en") is None
 
 
+def test_gateway_malformed_body_returns_none(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.setattr(leakage.httpx, "post",
+                        lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {}))
+    assert leakage.get_embedding("q", _wc(), endpoint="databricks-bge-large-en") is None
+
+
+def test_gateway_component_override_tags_mv_suggest(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.update(url=url, json=json, headers=headers)
+        return SimpleNamespace(status_code=200, json=lambda: {"data": [{"embedding": [0.5, 0.6]}]})
+
+    monkeypatch.setattr(leakage.httpx, "post", fake_post)
+    out = leakage.get_embedding("q", _wc(), endpoint="databricks-gte-large-en",
+                                component="mv-suggest")
+    assert out == [0.5, 0.6]
+    assert captured["json"]["model"] == "system.ai.gte-large-en"
+    tags = json.loads(captured["headers"]["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags["component"] == "mv-suggest"
+
+
 def test_gateway_exception_returns_none(monkeypatch):
     monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
 
