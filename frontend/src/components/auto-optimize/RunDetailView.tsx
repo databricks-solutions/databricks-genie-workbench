@@ -10,6 +10,7 @@ import { ResourceLinks } from "@/components/auto-optimize/ResourceLinks"
 import { AttemptLadder } from "@/components/auto-optimize/AttemptLadder"
 import { AttemptLedger } from "@/components/auto-optimize/AttemptLedger"
 import { RunActivitySection } from "@/components/auto-optimize/RunActivitySection"
+import { MvRunOutputSection } from "@/components/auto-optimize/MvRunOutputSection"
 import {
   getAutoOptimizeRun,
   getAutoOptimizeIterations,
@@ -17,12 +18,14 @@ import {
   getAutoOptimizeLoopState,
 } from "@/lib/api"
 import { isTerminalStatus } from "@/lib/score-display"
-import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord, GSOAttempt } from "@/types"
+import type { GSOPipelineRun, GSOIterationResult, GSOPublishRecord, GSOAttempt, MvProposal } from "@/types"
 
 interface RunDetailViewProps {
   runId: string
   onBack: () => void
   onRefreshIqScore?: (runId: string, force?: boolean) => Promise<boolean>
+  /** Opens the run config pre-filled in create_and_attach mode (MV-D1 flow). */
+  onRerunWithMv?: (proposal: MvProposal) => void
 }
 
 const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
@@ -39,7 +42,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   QUEUED: "secondary",
 }
 
-export function RunDetailView({ runId, onBack, onRefreshIqScore }: RunDetailViewProps) {
+export function RunDetailView({ runId, onBack, onRefreshIqScore, onRerunWithMv }: RunDetailViewProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
   const [publishRecord, setPublishRecord] = useState<GSOPublishRecord | null>(null)
@@ -173,6 +176,13 @@ export function RunDetailView({ runId, onBack, onRefreshIqScore }: RunDetailView
 
         <PatchesTable runId={runId} iterations={iterations} />
       </RunActivitySection>
+
+      <MvRunOutputSection
+        runId={runId}
+        spaceId={run.spaceId}
+        links={run.links}
+        onRerunWithMv={onRerunWithMv ?? (() => {})}
+      />
 
       {run.links.length > 0 && (
         <RunActivitySection

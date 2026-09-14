@@ -524,6 +524,138 @@ def test_gso_job_settings_mirror_package_bundle_4task():
         assert pkg_bp[key] - gso_bp[key] == set(), key
 
 
+# ---------------------------------------------------------------------------
+# MV-D5 four-place parameter lockstep (Prompt 8)
+# ---------------------------------------------------------------------------
+# The five metric view advisor job parameters must be wired through every mirror
+# that defines the GSO runner job. Prior to Prompt 8 only two of the four mirrors
+# were pinned against each other (test_gso_job_settings_mirror_package_bundle_4task,
+# above), so a parameter could be added to two and silently omitted from the other
+# two — and because run_optimize.py declares every widget with an inline default
+# before reading it, an omitted mirror disables the advisor rather than failing
+# loudly. These tests close both levels of that trap: job-level declaration AND
+# per-task base_parameters pass-through.
+
+_MV_JOB_PARAM_DEFAULTS = {
+    "enable_metric_view_suggestions": "false",
+    "mv_action_mode": "suggest_only",
+    "mv_attach_views": "",
+    "mv_consent_id": "",
+    "mv_min_confidence": "75",
+}
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _load_bundle_job(path: Path) -> dict:
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load(path.read_text())
+    (job,) = doc["resources"]["jobs"].values()
+    return job
+
+
+def _launcher_run_now_params() -> dict:
+    """The job_parameters map the launcher emits when the caller omits every
+    optional knob — i.e. the launcher's declared-parameter surface at its
+    defaults."""
+    from unittest.mock import MagicMock
+
+    from genie_space_optimizer.backend.job_launcher import submit_optimization
+
+    ws = MagicMock()
+    ws.jobs.run_now.return_value = MagicMock(run_id=1)
+    submit_optimization(
+        ws, job_id=1, run_id="r", space_id="s", domain="d", catalog="c", schema="x",
+    )
+    return dict(ws.jobs.run_now.call_args.kwargs["job_parameters"])
+
+
+def test_four_way_declared_param_sets_stay_in_lockstep():
+    """Extends the two-way gso_job<->package pin to all four mirrors (MV-D5):
+    root databricks.yml, the package bundle, gso_job.JOB_PARAMETERS, and the
+    job_launcher run_now map. Sanctioned exceptions kept explicit: ``llm_model``
+    is the Workbench-only extra (absent from the package bundle) and
+    ``benchmark_repair_max_tries`` is declared by every job but intentionally
+    left to its job default in the launcher's run_now map."""
+    from scripts.deploy_lib.gso_job import JOB_PARAMETERS
+
+    repo_root = _repo_root()
+    root_params = {p["name"] for p in _load_bundle_job(repo_root / "databricks.yml")["parameters"]}
+    pkg_params = {
+        p["name"]
+        for p in _load_bundle_job(
+            repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
+        )["parameters"]
+    }
+    gso_params = set(JOB_PARAMETERS)
+    launcher_params = set(_launcher_run_now_params())
+
+    # gso_job.JOB_PARAMETERS and root databricks.yml declare the identical set
+    # (both carry the Workbench-only llm_model).
+    assert gso_params == root_params
+    # Package bundle omits only llm_model.
+    assert root_params - pkg_params == {"llm_model"}
+    assert pkg_params - root_params == set()
+    # The launcher overrides every declared param except benchmark_repair_max_tries.
+    assert root_params - launcher_params == {"benchmark_repair_max_tries"}
+    assert launcher_params - root_params == set()
+
+
+def test_mv_params_declared_in_all_four_mirrors_with_identical_defaults():
+    """Each MV parameter is declared with the SAME default in all four mirrors,
+    so MV-D5 drift (a differing default, or a missing mirror) fails a test."""
+    from scripts.deploy_lib.gso_job import JOB_PARAMETERS
+
+    repo_root = _repo_root()
+    root_params = {
+        p["name"]: p["default"] for p in _load_bundle_job(repo_root / "databricks.yml")["parameters"]
+    }
+    pkg_params = {
+        p["name"]: p["default"]
+        for p in _load_bundle_job(
+            repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
+        )["parameters"]
+    }
+    launcher_params = _launcher_run_now_params()
+
+    for name, default in _MV_JOB_PARAM_DEFAULTS.items():
+        assert root_params.get(name) == default, f"root databricks.yml: {name}"
+        assert pkg_params.get(name) == default, f"package bundle: {name}"
+        assert JOB_PARAMETERS.get(name) == default, f"gso_job.JOB_PARAMETERS: {name}"
+        # The launcher passes the caller default, which equals the job default.
+        assert launcher_params.get(name) == default, f"job_launcher run_now: {name}"
+
+
+def test_mv_params_wired_into_optimize_base_parameters_across_mirrors():
+    """The failure mode Prompt 8 exists to close: a parameter declared in the
+    job's parameters block but omitted from the optimize task's base_parameters
+    never reaches the run_optimize.py widget, and nothing fails. Pin all three
+    definition sites that carry per-task base_parameters for the optimize task —
+    root databricks.yml, the package bundle, and gso_job.py's base_param_keys."""
+    from scripts.deploy_lib.gso_job import TASKS
+
+    repo_root = _repo_root()
+    root_opt = {
+        t["task_key"]: t for t in _load_bundle_job(repo_root / "databricks.yml")["tasks"]
+    }["optimize"]["notebook_task"]["base_parameters"]
+    pkg_opt = {
+        t["task_key"]: t
+        for t in _load_bundle_job(
+            repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
+        )["tasks"]
+    }["optimize"]["notebook_task"]["base_parameters"]
+    (gso_optimize_keys,) = [bp for key, _stem, _dep, bp in TASKS if key == "optimize"]
+    gso_opt = set(gso_optimize_keys)
+
+    for name in _MV_JOB_PARAM_DEFAULTS:
+        template = f"{{{{job.parameters.{name}}}}}"
+        assert root_opt.get(name) == template, f"root databricks.yml optimize: {name}"
+        assert pkg_opt.get(name) == template, f"package bundle optimize: {name}"
+        assert name in gso_opt, f"gso_job.py optimize base_param_keys: {name}"
+
+
 def test_upload_job_notebooks_uploads_all_four_task_notebooks(tmp_path):
     """Exercise the TASKS upload loop end-to-end. Guards against the 4-tuple
     arity regression: upload_job_notebooks must iterate every TASKS entry and
