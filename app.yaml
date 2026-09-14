@@ -91,6 +91,14 @@ env:
     value: "__LLM_MODEL__"
 
   # ---------------------------------------------------------------------------
+  # AI Gateway route (spec §0). Default-off: "classic" keeps the app on the
+  # /serving-endpoints/{name}/invocations path. Flip to "gateway" only after the
+  # soak criteria in spec §9 Decision 4. Consumed by backend/services/llm_route.py.
+  # ---------------------------------------------------------------------------
+  - name: GENIE_LLM_ROUTE
+    value: "classic"
+
+  # ---------------------------------------------------------------------------
   # SQL Warehouse — pulled from the app resource named "sql-warehouse".
   # Configure the warehouse resource in the Databricks Apps UI.
   # Falls back to auto-detect if empty.
