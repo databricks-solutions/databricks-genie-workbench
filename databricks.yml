@@ -109,6 +109,11 @@ resources:
           default: "[]"
         - name: llm_model
           default: ${var.llm_model}
+        # AI Gateway route (spec §4). Workbench-only extra, like llm_model:
+        # declared here + gso_job.py + job_launcher, absent from the package bundle.
+        # Default-off ("classic"); consumed only from Phase 1.
+        - name: genie_llm_route
+          default: "classic"
         # Metric view advisor parameters (MV-D5 four-place lockstep). Only the
         # optimize task consumes them (run_optimize.py). enable_metric_view_suggestions
         # gates the advisor phase; mv_attach_views / mv_consent_id drive the MV-D16
@@ -149,6 +154,7 @@ resources:
               warehouse_id: "{{job.parameters.warehouse_id}}"
               workload_warehouse_ids: "{{job.parameters.workload_warehouse_ids}}"
               llm_model: "{{job.parameters.llm_model}}"
+              genie_llm_route: "{{job.parameters.genie_llm_route}}"
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
@@ -168,6 +174,7 @@ resources:
               benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
+              genie_llm_route: "{{job.parameters.genie_llm_route}}"
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
@@ -189,6 +196,7 @@ resources:
               benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
+              genie_llm_route: "{{job.parameters.genie_llm_route}}"
               # Metric view advisor phase inputs (MV-D5). Passing these as
               # base_parameters is what makes the run_optimize.py widgets receive
               # real job values — a declared job parameter omitted here silently
@@ -218,6 +226,7 @@ resources:
               benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
+              genie_llm_route: "{{job.parameters.genie_llm_route}}"
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0

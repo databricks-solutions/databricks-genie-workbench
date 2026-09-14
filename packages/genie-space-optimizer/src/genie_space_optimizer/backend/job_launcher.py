@@ -75,6 +75,7 @@ def submit_optimization(
     triggered_by: str = "",
     warehouse_id: str = "",
     llm_model: str = "",
+    genie_llm_route: str = "classic",
     target_accuracy: str = "0.90",
     max_attempts: str = "3",
     workload_warehouse_ids: str = "[]",
@@ -128,6 +129,7 @@ def submit_optimization(
                 "triggered_by": triggered_by,
                 "warehouse_id": warehouse_id,
                 "llm_model": llm_model or os.getenv("LLM_MODEL", ""),
+                "genie_llm_route": genie_llm_route or os.getenv("GENIE_LLM_ROUTE", "classic"),
                 "workload_warehouse_ids": workload_warehouse_ids,
                 "benchmark_policy": benchmark_policy,
                 # Metric view advisor parameters (MV-D5). enable_metric_view_suggestions
