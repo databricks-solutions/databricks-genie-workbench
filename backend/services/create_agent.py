@@ -1040,6 +1040,14 @@ class CreateGenieAgent:
                 continue
             break
 
+        # reasoning_effort retry (§2): reasoning-backed models 400 on tool calls unless
+        # reasoning_effort='none' is sent; non-reasoning models 400 if it IS sent. So send
+        # plain first, and retry once only when the 400 body names reasoning_effort.
+        if is_reasoning_effort_400(resp.status_code, resp.text):
+            resp.close()
+            body = {**body, "reasoning_effort": "none"}
+            resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
+
         try:
             if not resp.ok:
                 error_body = resp.text[:1000]

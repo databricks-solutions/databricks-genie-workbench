@@ -86,3 +86,27 @@ def test_stream_terminates_on_iterlines_end_without_done(monkeypatch):
     chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
                                     model="databricks-claude-sonnet-4-6"))
     assert len(chunks) == 1 and chunks[0]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_reasoning_model_retries_once_with_none(monkeypatch):
+    """First plain attempt 400s on reasoning_effort; retry adds reasoning_effort='none' and succeeds."""
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    bad = _Resp(status_code=400, text='{"error":"reasoning_effort is required"}')
+    good = _Resp(lines=[_LINE, "data: [DONE]"])
+    agent, session = _agent_with_session(monkeypatch, [bad, good])
+    chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                                    model="system.ai.gpt-5-6-sol"))
+    assert len(session.calls) == 2
+    assert "reasoning_effort" not in session.calls[0].json          # first attempt is plain
+    assert session.calls[1].json["reasoning_effort"] == "none"      # retry sends the flag
+    assert len(chunks) == 1
+
+
+def test_claude_style_200_does_not_add_flag(monkeypatch):
+    """A model that accepts tools plainly (200) never gets reasoning_effort added."""
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    agent, session = _agent_with_session(monkeypatch, [_Resp(lines=[_LINE, "data: [DONE]"])])
+    list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                           model="databricks-claude-sonnet-4-6"))
+    assert len(session.calls) == 1
+    assert "reasoning_effort" not in session.calls[0].json
