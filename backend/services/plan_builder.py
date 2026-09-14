@@ -179,6 +179,7 @@ def _call_llm_section(prompt: str, max_tokens: int, section_name: str, model: st
             [{"role": "user", "content": prompt}],
             model=model or get_llm_model(),
             max_tokens=max_tokens,
+            component="plan-builder",
         )
         return parse_json_from_llm_response(response)
     except Exception as e:

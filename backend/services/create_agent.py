@@ -704,6 +704,7 @@ class CreateGenieAgent:
                 [{"role": "user", "content": prompt}],
                 model=model or get_llm_model(),
                 max_tokens=16000,
+                component="create-agent",
             )
             repaired = parse_json_from_llm_response(response)
             # Merge repaired sections back into original config
