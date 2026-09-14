@@ -1306,6 +1306,10 @@ AVG_QTY_SQL = (
     "SELECT AVG(l_quantity) AS avg_quantity, l_returnflag "
     f"FROM {LINEITEM} GROUP BY l_returnflag"
 )
+SUM_TAX_SQL = (
+    "SELECT SUM(l_tax) AS total_tax, l_returnflag "
+    f"FROM {LINEITEM} GROUP BY l_returnflag"
+)
 
 
 def _rows(*specs):
@@ -1423,6 +1427,96 @@ def test_when_every_member_is_suppressed_no_bundle_surfaces(monkeypatch) -> None
 
     assert outcome.proposals == ()
     assert outcome.candidates_dropped_suppressed == 2
+
+
+# ── MV-D98: supporting-measure carve-out ─────────────────────────────────
+#
+# A measure that recurs once scores 16 (Y-only) and collapses to
+# VERDICT_SUPPRESSED; a measure that recurs eight times earns MEDIUM on score
+# (``uncapped_tier``, the gate) even though the Y-only coverage cap displays it
+# as LOW. So recurrence 8 = anchor, recurrence 1 = sub-floor rider, and both sit
+# on the one lineitem grain (all GROUP BY l_returnflag over the same table).
+
+
+def _role_counts(bundle) -> dict[str, int]:
+    roles = [m.get("role") for m in bundle.evidence["measures"]]
+    return {r: roles.count(r) for r in set(roles)}
+
+
+def test_a_subfloor_measure_rides_an_anchored_grain_as_supporting(monkeypatch) -> None:
+    """MV-D98: a recurring-but-sub-floor measure is folded into a bundle that has
+    a strong anchor, as a role:"supporting" member — the thin one/two-measure card
+    becomes a richer view instead of the anchor shipping alone."""
+    patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8), (AVG_QTY_SQL, "avg", 1))
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 1
+    bundle = outcome.proposals[0]
+    assert bundle.evidence["measure_count"] == 3
+    counts = _role_counts(bundle)
+    assert counts.get("anchor") == 2
+    assert counts.get("supporting") == 1
+    supporting = [m for m in bundle.evidence["measures"] if m.get("role") == "supporting"]
+    assert "quantity" in supporting[0]["expr"].lower()
+
+
+def test_a_subfloor_measure_alone_creates_no_view(monkeypatch) -> None:
+    """No anchor, no view: a sub-floor measure with no strong measure on its grain
+    never stands up a bundle on its own — riders never surface alone."""
+    patch_writes(monkeypatch)
+    outcome = advise(monkeypatch, [iteration(_rows((AVG_QTY_SQL, "avg", 1)))])
+
+    assert outcome.proposals == ()
+
+
+def test_a_low_scoring_anchor_earns_no_riders(monkeypatch) -> None:
+    """The anchor must EARN MEDIUM+ (uncapped_tier). A grain whose strongest
+    measure only earns LOW on score (recurrence 2 → 25) keeps riders out — a
+    marginal view is not thickened."""
+    patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 2), (AVG_QTY_SQL, "avg", 1))
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 1
+    bundle = outcome.proposals[0]
+    assert bundle.uncapped_tier == "LOW"
+    assert bundle.evidence["measure_count"] == 1
+    assert _role_counts(bundle).get("supporting", 0) == 0
+
+
+def test_riders_are_capped(monkeypatch) -> None:
+    """No thin grain balloons: at most MV_ADVISOR_MAX_BUNDLE_RIDERS supporting
+    measures ride one bundle, even when more sub-floor measures qualify."""
+    monkeypatch.setattr(mv_advisor, "MV_ADVISOR_MAX_BUNDLE_RIDERS", 1)
+    patch_writes(monkeypatch)
+    rows = _rows(
+        (REVENUE_SQL, "rev", 8),
+        (AVG_QTY_SQL, "avg", 1),
+        (SUM_TAX_SQL, "tax", 1),
+    )
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 1
+    bundle = outcome.proposals[0]
+    assert _role_counts(bundle).get("anchor") == 1
+    assert _role_counts(bundle).get("supporting") == 1  # two offered, cap = one
+
+
+def test_riders_never_change_the_views_confidence_or_tier(monkeypatch) -> None:
+    """A supporting member enriches the measure list but never lifts the view:
+    confidence and both tiers are identical with and without the rider."""
+    patch_writes(monkeypatch)
+    anchors = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8))
+    without = advise(monkeypatch, [iteration(anchors)]).proposals[0]
+    with_rider = advise(
+        monkeypatch, [iteration(anchors + _rows((AVG_QTY_SQL, "avg", 1)))]
+    ).proposals[0]
+
+    assert with_rider.evidence["measure_count"] == without.evidence["measure_count"] + 1
+    assert with_rider.confidence_score == without.confidence_score
+    assert with_rider.tier == without.tier
+    assert with_rider.uncapped_tier == without.uncapped_tier
 
 
 def test_the_in_job_advisor_injects_the_suppression_reader(monkeypatch) -> None:
