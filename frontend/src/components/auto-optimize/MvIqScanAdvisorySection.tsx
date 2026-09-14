@@ -22,7 +22,7 @@
  * action — invariant 1) or refused (the reason, nothing recorded — invariant 2).
  */
 import { useEffect, useRef, useState } from "react"
-import { ArrowUpRight, Check, CheckCircle2, ChevronDown, Circle, Link2, Loader2, Network, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
+import { ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronUp, Circle, Link2, Loader2, Network, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
@@ -539,11 +539,20 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate, onProposalsCh
                   </button>
                 ) : (
                   <>
-                    <p className="text-xs text-muted">
-                      {primary.length === 0
-                        ? `All ${low.length} ${low.length === 1 ? "suggestion is" : "suggestions are"} ranked lower by demand evidence — each is still validated and executable.`
-                        : "Ranked lower by demand evidence — each is still validated and executable."}
-                    </p>
+                    {/* The disclosure is a toggle, not a one-way door: the same
+                        row that describes the split (MV-D35 evidence-not-doubt copy,
+                        preserved verbatim) collapses it back with a ChevronUp. */}
+                    <button
+                      onClick={() => setShowLow(false)}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-default px-3 py-2 text-left text-xs text-muted transition-colors hover:text-accent"
+                    >
+                      <span>
+                        {primary.length === 0
+                          ? `All ${low.length} ${low.length === 1 ? "suggestion is" : "suggestions are"} ranked lower by demand evidence — each is still validated and executable.`
+                          : "Ranked lower by demand evidence — each is still validated and executable."}
+                      </span>
+                      <ChevronUp className="h-3.5 w-3.5 shrink-0" />
+                    </button>
                     {low.map((proposal) => {
                       const isHi = highlightSuggestionId === proposal.suggestion_id
                       return (
