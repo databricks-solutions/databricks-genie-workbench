@@ -69,6 +69,7 @@ from genie_space_optimizer.common.config import (
     MV_ADVISOR_MAX_BUNDLE_RIDERS,
     MV_ADVISOR_MAX_CANDIDATES,
     MV_ADVISOR_PHASE_NAME,
+    MV_SIGNAL_EMPTY,
     MV_SIGNAL_UNAVAILABLE,
 )
 
@@ -840,7 +841,9 @@ def _bundle_grain(source_tables: Sequence[str]) -> tuple[str | None, str]:
     return f"{catalog}.{schema}.{concept}", concept
 
 
-def advisor_statuses(lineage: SignalResult, demand: SignalResult) -> dict[str, str]:
+def advisor_statuses(
+    lineage: SignalResult, demand: SignalResult, *, curated: bool = False
+) -> dict[str, str]:
     """The L and D statuses this phase measured for one candidate (MV-D15).
 
     Reports each producer's *actual* status — ``COMPUTED`` / ``EMPTY`` /
@@ -849,8 +852,23 @@ def advisor_statuses(lineage: SignalResult, demand: SignalResult) -> dict[str, s
     caller cannot mutate a shared map. **S is absent on purpose** —
     ``score_candidate`` derives it from the embedding attempt, and naming it here
     would overwrite the endpoint's own report.
+
+    ``curated`` relaxes MV-D15 for a **curated** candidate (MV-D99): a
+    measured-zero usage read (``EMPTY`` — an untrafficked space, or a
+    ``column_lineage`` preview/retention gap) is *not* evidence against a measure
+    a human hand-authored, so it is folded to ``UNAVAILABLE`` and dropped from the
+    blend's divisor. ``COMPUTED`` (real usage was measured) and ``UNAVAILABLE``
+    (the read never landed) are untouched, so an inaccessible read is already
+    dropped regardless of ``curated``. Default ``False`` keeps every non-curated
+    caller byte-identical, which is what preserves the pinned POV worked examples
+    and MV-D15's "nobody uses it is real evidence" brake on generated candidates.
     """
-    return {"L": lineage.status, "D": demand.status}
+    if not curated:
+        return {"L": lineage.status, "D": demand.status}
+    return {
+        "L": MV_SIGNAL_UNAVAILABLE if lineage.status == MV_SIGNAL_EMPTY else lineage.status,
+        "D": MV_SIGNAL_UNAVAILABLE if demand.status == MV_SIGNAL_EMPTY else demand.status,
+    }
 
 
 def _candidate_signals(
@@ -1461,7 +1479,11 @@ def advise_from_corpus(
             instructions=trusted_assets,
             intent_texts=intent_texts,
             embedding_client=embedding_client,
-            statuses=advisor_statuses(lineage_result, demand_result),
+            statuses=advisor_statuses(
+                lineage_result,
+                demand_result,
+                curated=measure.curated_provenance_count > 0,
+            ),
             auth_identity="SP",
         )
         proposal = _with_signal_evidence(proposal, lineage_result, demand_result)

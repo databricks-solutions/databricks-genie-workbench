@@ -381,6 +381,50 @@ def test_advisor_statuses_cannot_be_mutated_by_a_caller() -> None:
     )
 
 
+def test_advisor_statuses_curated_drops_measured_zero_usage() -> None:
+    """MV-D99: for a curated candidate, a measured-zero L/D (``EMPTY``) is folded
+    to ``UNAVAILABLE`` so it leaves the blend divisor.
+
+    ``EMPTY`` is a real read of an untrafficked space or a ``column_lineage``
+    retention gap; counting it against a human-authored measure buries strong
+    curated evidence below the suppress floor, which is the divergence MV-D99
+    closes. Nothing here penalizes the measure for the emptiness.
+    """
+    lineage = SignalResult(LineageOverlap(), config.MV_SIGNAL_EMPTY, "no footprint")
+    demand = SignalResult(
+        DemandSignal(), config.MV_SIGNAL_EMPTY, "no query history in window"
+    )
+    statuses = mv_advisor.advisor_statuses(lineage, demand, curated=True)
+
+    assert statuses["L"] == config.MV_SIGNAL_UNAVAILABLE
+    assert statuses["D"] == config.MV_SIGNAL_UNAVAILABLE
+
+
+def test_advisor_statuses_curated_leaves_measured_and_inaccessible_signals_untouched() -> None:
+    """MV-D99 folds only ``EMPTY``. A ``COMPUTED`` read (real usage measured) still
+    counts, and an ``UNAVAILABLE`` read (the read never landed) is already dropped
+    regardless of ``curated`` — so an inaccessible signal is not rewritten into
+    something it is not."""
+    lineage = SignalResult(LineageOverlap(), config.MV_SIGNAL_COMPUTED)
+    demand = SignalResult(DemandSignal(), config.MV_SIGNAL_UNAVAILABLE, "missing_grant")
+    statuses = mv_advisor.advisor_statuses(lineage, demand, curated=True)
+
+    assert statuses["L"] == config.MV_SIGNAL_COMPUTED
+    assert statuses["D"] == config.MV_SIGNAL_UNAVAILABLE
+
+
+def test_advisor_statuses_non_curated_still_counts_measured_zero_usage() -> None:
+    """MV-D99 is curated-only. For a generated candidate an ``EMPTY`` usage read
+    stays ``EMPTY`` and keeps its weight — MV-D15's "nobody uses it is real
+    evidence" brake on purely-generated candidates is unchanged."""
+    lineage = SignalResult(LineageOverlap(), config.MV_SIGNAL_EMPTY, "no footprint")
+    demand = SignalResult(DemandSignal(), config.MV_SIGNAL_EMPTY, "no history")
+    statuses = mv_advisor.advisor_statuses(lineage, demand, curated=False)
+
+    assert statuses["L"] == config.MV_SIGNAL_EMPTY
+    assert statuses["D"] == config.MV_SIGNAL_EMPTY
+
+
 def test_a_reachable_endpoint_raises_coverage_to_one_half(monkeypatch) -> None:
     """With S computed but no signal reader, coverage is Y + S = 0.50.
 
@@ -1124,6 +1168,64 @@ def test_a_bodyless_sql_function_is_skipped_not_harvested(monkeypatch) -> None:
 
     assert outcome.status == mv_advisor.STATUS_COMPLETE
     assert outcome.proposals[0].evidence["ast_curated_provenance_count"] == 0
+
+
+def test_a_curated_measure_is_not_buried_by_empty_usage(monkeypatch) -> None:
+    """MV-D99, end to end: a curated measure whose usage reads come back EMPTY
+    still surfaces.
+
+    The reader answers both system tables with no rows, so the genuine L and D
+    producers report ``EMPTY`` — an untrafficked/new space, not an inaccessible
+    one. For this curated candidate that measured-zero is folded to
+    ``UNAVAILABLE`` and dropped from the divisor, so the human-authored measure
+    scores on the evidence that exists (Y, curated-upweighted) instead of being
+    diluted below the suppress floor. Coverage is Y-only (0.30), which the
+    coverage cap holds at LOW — a best-effort suggestion, not silence.
+    """
+    patch_writes(monkeypatch)
+    empty_reader = dispatching_reader(footprint=[], history=[])
+    outcome = advise(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring(times=1))],
+            {"instructions": {"example_question_sqls": [{"id": "eq_c", "sql": REVENUE_SQL}]}},
+        ),
+        wide_schema_inventory=INVENTORY,
+        signal_reader=empty_reader,
+    )
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert outcome.proposals, "a curated measure must survive empty usage reads"
+    proposal = outcome.proposals[0]
+    assert proposal.evidence["ast_curated_provenance_count"] >= 1
+    # The blend dropped the measured-zero L/D: the components statuses (what the
+    # score used) read UNAVAILABLE, so they leave the divisor.
+    assert proposal.components.status_of("L") == config.MV_SIGNAL_UNAVAILABLE
+    assert proposal.components.status_of("D") == config.MV_SIGNAL_UNAVAILABLE
+    # But the audit trail stays honest: the producers genuinely READ the tables
+    # and measured zero, so the evidence preserves EMPTY (measurement), not the
+    # scoring fold. MV-D99 is a scoring-policy transform, not a re-measurement.
+    assert proposal.evidence["signal_status"]["L"]["status"] == config.MV_SIGNAL_EMPTY
+    assert proposal.evidence["signal_status"]["D"]["status"] == config.MV_SIGNAL_EMPTY
+    # Only Y remains in the divisor once the empty usage signals leave it.
+    assert proposal.components.evidence_coverage == pytest.approx(config.MV_SCORE_WEIGHT_Y)
+
+
+def test_a_generated_measure_still_feels_empty_usage(monkeypatch) -> None:
+    """MV-D99 is curated-only: the same lone occurrence with no curated provenance
+    is NOT rescued. Its Y is not up-weighted and its EMPTY usage still counts, so
+    it scores under the floor and never persists — the negative-evidence brake on
+    purely-generated candidates stands."""
+    patch_writes(monkeypatch)
+    empty_reader = dispatching_reader(footprint=[], history=[])
+    outcome = advise(
+        monkeypatch,
+        [iteration(recurring(times=1))],
+        wide_schema_inventory=INVENTORY,
+        signal_reader=empty_reader,
+    )
+
+    assert not outcome.proposals
 
 
 def test_a_governed_measure_is_excluded_from_the_seed_set(monkeypatch) -> None:

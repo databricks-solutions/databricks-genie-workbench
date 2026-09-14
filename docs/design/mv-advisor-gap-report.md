@@ -806,7 +806,9 @@ named (MV-D15) — never a silent zero.
 into `run_mv_advisor_phase`; `_advise` runs `lineage_signal` and `demand_signal` per candidate
 (`_candidate_signals` in `mv_advisor.py`), passes their payloads into `candidate_from_measure` (the
 `LineageOverlap()` / `DemandSignal()` empty defaults are now optional fallbacks, not the only
-value), reports each producer's real status through `advisor_statuses(lineage, demand)`, and folds
+value), reports each producer's real status through `advisor_statuses(lineage, demand, *, curated)`
+— which for a curated candidate folds a measured-zero `EMPTY` L/D to `UNAVAILABLE` (MV-D99), leaving
+`COMPUTED` and `UNAVAILABLE` untouched — and folds
 the status + UNAVAILABLE reason into the proposal evidence (`_with_signal_evidence`, under
 `evidence["signal_status"]`). Coverage is now a per-workspace fact: where the grant and data are
 present L and D lift `evidence_coverage` toward 1.0 and HIGH (`>= 0.80`) is reachable; where they
