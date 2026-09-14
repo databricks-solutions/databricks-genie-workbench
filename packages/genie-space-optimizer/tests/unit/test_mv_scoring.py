@@ -1560,7 +1560,7 @@ def test_the_prod_adapter_l2_normalizes_whatever_the_endpoint_returns() -> None:
 
     original = leakage.get_embedding
     try:
-        leakage.get_embedding = lambda text, w, endpoint=None: [3.0, 4.0, 0.0]
+        leakage.get_embedding = lambda text, w, endpoint=None, *, component="leakage-embed": [3.0, 4.0, 0.0]
         vectors = client.embed(["anything"])
     finally:
         leakage.get_embedding = original

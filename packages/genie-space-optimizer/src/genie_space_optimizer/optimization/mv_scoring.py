@@ -363,7 +363,7 @@ class FoundationModelEmbeddingClient:
 
         out: list[list[float]] = []
         for text in texts:
-            raw = get_embedding(text, self._w, endpoint=self._endpoint) if text else None
+            raw = get_embedding(text, self._w, endpoint=self._endpoint, component="mv-suggest") if text else None
             out.append(_l2_normalize(raw or []))
         return out
 

@@ -194,7 +194,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (math.sqrt(na) * math.sqrt(nb))
 
 
-def get_embedding(text: str, w: Any, endpoint: str | None = None) -> list[float] | None:
+def get_embedding(text: str, w: Any, endpoint: str | None = None, *, component: str = "leakage-embed") -> list[float] | None:
     """Return an embedding for ``text`` via Databricks Foundation Model API.
 
     Returns ``None`` on any failure so callers fall back to the n-gram +
@@ -208,7 +208,7 @@ def get_embedding(text: str, w: Any, endpoint: str | None = None) -> list[float]
     try:
         if route is LLMRoute.GATEWAY:
             host = w.config.host.rstrip("/")
-            rc = resolve_embeddings(host, ep, "leakage-embed", route=route)
+            rc = resolve_embeddings(host, ep, component, route=route)
             r = httpx.post(
                 rc.url,
                 json={"model": rc.model, "input": [text]},
