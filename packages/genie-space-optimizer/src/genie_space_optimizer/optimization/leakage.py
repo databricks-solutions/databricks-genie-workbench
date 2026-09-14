@@ -27,6 +27,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+import httpx
+
+from genie_space_optimizer.optimization.llm_route import (
+    LLMRoute,
+    get_llm_route,
+    resolve_embeddings,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -196,13 +204,28 @@ def get_embedding(text: str, w: Any, endpoint: str | None = None) -> list[float]
     if not text or not text.strip() or w is None:
         return None
     ep = endpoint or EMBEDDING_ENDPOINT
+    route = get_llm_route()
     try:
-        resp = w.serving_endpoints.query(name=ep, input=[text])
+        if route is LLMRoute.GATEWAY:
+            host = w.config.host.rstrip("/")
+            rc = resolve_embeddings(host, ep, "leakage-embed", route=route)
+            r = httpx.post(
+                rc.url,
+                json={"model": rc.model, "input": [text]},
+                headers={**w.config.authenticate(), **rc.extra_headers},
+                timeout=30,
+            )
+            if r.status_code != 200:
+                logger.debug("get_embedding gateway HTTP %s for endpoint=%s", r.status_code, ep)
+                return None
+            resp = r.json()
+        else:
+            resp = w.serving_endpoints.query(name=ep, input=[text])
     except Exception as exc:
         logger.debug("get_embedding failed for endpoint=%s: %s", ep, exc)
         return None
-    # Databricks serving endpoints return either OpenAI-compatible shape
-    # (data[0].embedding) or a raw list. Handle both defensively.
+    # Databricks serving endpoints AND the gateway embeddings route both return
+    # the OpenAI-compatible shape (data[0].embedding) — or a raw list. Parse both.
     try:
         data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
         if data and isinstance(data, list):
