@@ -2,6 +2,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from backend.services import create_agent
 
 
@@ -20,6 +22,29 @@ class _Resp:
 
     def close(self):
         self.closed = True
+
+
+class _NoTextResp(_Resp):
+    """A 200 streaming response whose ``.text`` explodes if ever touched.
+
+    Guards the SSE-streaming contract: reading ``requests.Response.text`` forces
+    ``.content`` (a full ``iter_content`` buffer), which defeats incremental
+    streaming. ``_stream_llm`` must never read ``.text`` on a 200 response.
+    """
+
+    def __init__(self, lines=None):
+        # Do NOT call ``_Resp.__init__`` — it assigns ``self.text``, which the
+        # read-only property below would reject. Set the rest by hand.
+        self.status_code = 200
+        self.ok = True
+        self.headers = {}
+        self.encoding = None
+        self._lines = lines or []
+        self.closed = False
+
+    @property
+    def text(self):  # type: ignore[override]
+        raise AssertionError("resp.text must not be read on a 200 streaming response")
 
 
 class _Session:
@@ -110,3 +135,23 @@ def test_claude_style_200_does_not_add_flag(monkeypatch):
                            model="databricks-claude-sonnet-4-6"))
     assert len(session.calls) == 1
     assert "reasoning_effort" not in session.calls[0].json
+
+
+@pytest.mark.parametrize("route", [None, "gateway"])
+def test_stream_never_reads_text_on_200(monkeypatch, route):
+    """SSE-streaming contract: a 200 streaming response must be consumed without
+    ever reading ``.text`` (which forces ``.content`` and defeats streaming).
+
+    Runs under BOTH classic (route=None) and gateway env. ``_NoTextResp.text``
+    raises AssertionError if the guard evaluates it on the 200 response.
+    """
+    if route is None:
+        monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    else:
+        monkeypatch.setenv("GENIE_LLM_ROUTE", route)
+    agent, session = _agent_with_session(monkeypatch, [_NoTextResp(lines=[_LINE, "data: [DONE]"])])
+    chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                                    model="databricks-claude-sonnet-4-6"))
+    assert len(chunks) == 1
+    assert chunks[0]["choices"][0]["delta"]["content"] == "hi"
+    assert len(session.calls) == 1  # no retry POST fired
