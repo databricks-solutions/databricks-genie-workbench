@@ -21,6 +21,12 @@ from genie_space_optimizer.common.config import (
     LLM_TEMPERATURE,
     get_llm_endpoint,
 )
+from genie_space_optimizer.optimization.llm_route import (
+    LLMRoute,
+    gateway_model_name,
+    get_llm_route,
+    tag_header,
+)
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -123,14 +129,17 @@ def get_openai_client(w: "WorkspaceClient | None") -> Any:
     host = wc.config.host.rstrip("/")
     token = _resolve_bearer_token(wc)
 
-    if host not in _openai_client_cache:
-        _openai_client_cache[host] = OpenAI(
-            api_key=token,
-            base_url=f"{host}/serving-endpoints",
-        )
+    route = get_llm_route()
+    base_url = (
+        f"{host}/ai-gateway/mlflow/v1" if route is LLMRoute.GATEWAY
+        else f"{host}/serving-endpoints"
+    )
+    cache_key = f"{host}|{route.value}"
+    if cache_key not in _openai_client_cache:
+        _openai_client_cache[cache_key] = OpenAI(api_key=token, base_url=base_url)
     else:
-        _openai_client_cache[host].api_key = token
-    return _openai_client_cache[host]
+        _openai_client_cache[cache_key].api_key = token
+    return _openai_client_cache[cache_key]
 
 
 def call_llm(
@@ -168,12 +177,19 @@ def call_llm(
 
     client = get_openai_client(w)
     model = get_llm_endpoint()
+    route = get_llm_route()
+    if route is LLMRoute.GATEWAY:
+        model = gateway_model_name(model)
 
     call_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "timeout": eval_llm_timeout_seconds(),
     }
+    if route is LLMRoute.GATEWAY:
+        call_kwargs["extra_headers"] = tag_header(
+            "gso-optimize", run_id=os.getenv("GSO_RUN_ID") or None
+        )
     # Do not send temperature: Claude Opus 4.7/4.8 and some GPT 5.x endpoints reject it.
     if max_tokens is not None:
         call_kwargs["max_tokens"] = max_tokens
