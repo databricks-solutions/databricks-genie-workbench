@@ -497,7 +497,7 @@ def test_gso_job_settings_mirror_package_bundle_4task():
     (packages/genie-space-optimizer/databricks.yml, validated by
     test_phase7_job_dag.py) must not silently drift: identical task keys/order,
     entrypoints, per-task base_parameters and declared params, EXCEPT for the
-    Workbench-specific ``llm_model`` extra."""
+    Workbench-specific ``llm_model`` and ``genie_llm_route`` extras."""
     yaml = pytest.importorskip("yaml")
     repo_root = Path(__file__).resolve().parents[2]
     bundle_path = repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
@@ -517,17 +517,17 @@ def test_gso_job_settings_mirror_package_bundle_4task():
         _stem(t["notebook_task"]["notebook_path"]) for t in pkg_job["tasks"]
     ]
 
-    # Declared params identical except llm_model.
+    # Declared params identical except the Workbench-only extras.
     gso_params = {p["name"] for p in settings["parameters"]}
     pkg_params = {p["name"] for p in pkg_job["parameters"]}
-    assert gso_params - pkg_params == {"llm_model"}
+    assert gso_params - pkg_params == {"llm_model", "genie_llm_route"}
     assert pkg_params - gso_params == set()
 
-    # Per-task base_parameters identical except llm_model.
+    # Per-task base_parameters identical except the Workbench-only extras.
     gso_bp = {t["task_key"]: set(t["notebook_task"]["base_parameters"]) for t in settings["tasks"]}
     pkg_bp = {t["task_key"]: set(t["notebook_task"].get("base_parameters", {})) for t in pkg_job["tasks"]}
     for key in gso_bp:
-        assert gso_bp[key] - pkg_bp[key] == {"llm_model"}, key
+        assert gso_bp[key] - pkg_bp[key] == {"llm_model", "genie_llm_route"}, key
         assert pkg_bp[key] - gso_bp[key] == set(), key
 
 
@@ -583,9 +583,9 @@ def test_four_way_declared_param_sets_stay_in_lockstep():
     """Extends the two-way gso_job<->package pin to all four mirrors (MV-D5):
     root databricks.yml, the package bundle, gso_job.JOB_PARAMETERS, and the
     job_launcher run_now map. Sanctioned exceptions kept explicit: ``llm_model``
-    is the Workbench-only extra (absent from the package bundle) and
-    ``benchmark_repair_max_tries`` is declared by every job but intentionally
-    left to its job default in the launcher's run_now map."""
+    and ``genie_llm_route`` are the Workbench-only extras (both absent from the
+    package bundle) and ``benchmark_repair_max_tries`` is declared by every job
+    but intentionally left to its job default in the launcher's run_now map."""
     from scripts.deploy_lib.gso_job import JOB_PARAMETERS
 
     repo_root = _repo_root()
@@ -602,8 +602,8 @@ def test_four_way_declared_param_sets_stay_in_lockstep():
     # gso_job.JOB_PARAMETERS and root databricks.yml declare the identical set
     # (both carry the Workbench-only llm_model).
     assert gso_params == root_params
-    # Package bundle omits only llm_model.
-    assert root_params - pkg_params == {"llm_model"}
+    # Package bundle omits the two Workbench-only extras (llm_model, genie_llm_route).
+    assert root_params - pkg_params == {"llm_model", "genie_llm_route"}
     assert pkg_params - root_params == set()
     # The launcher overrides every declared param except benchmark_repair_max_tries.
     assert root_params - launcher_params == {"benchmark_repair_max_tries"}
@@ -1285,3 +1285,42 @@ def test_lakebase_existing_mode_rejects_soft_deleted_project():
 
     assert w.postgres.created_projects == []
     assert w.postgres.purged_projects == []
+
+
+def test_genie_llm_route_declared_default_off_across_workbench_mirrors():
+    """AI Gateway Phase 0 (spec §4): genie_llm_route is a second Workbench-only
+    extra, declared "classic" in root databricks.yml, gso_job.JOB_PARAMETERS,
+    and the launcher run_now map; intentionally absent from the package bundle
+    (mirrors llm_model)."""
+    from scripts.deploy_lib.gso_job import JOB_PARAMETERS
+
+    repo_root = _repo_root()
+    root_params = {
+        p["name"]: p["default"] for p in _load_bundle_job(repo_root / "databricks.yml")["parameters"]
+    }
+    pkg_params = {
+        p["name"]
+        for p in _load_bundle_job(
+            repo_root / "packages" / "genie-space-optimizer" / "databricks.yml"
+        )["parameters"]
+    }
+    launcher_params = _launcher_run_now_params()
+
+    assert root_params.get("genie_llm_route") == "classic"
+    assert JOB_PARAMETERS.get("genie_llm_route") == "classic"
+    assert launcher_params.get("genie_llm_route") == "classic"
+    assert "genie_llm_route" not in pkg_params  # package bundle omits it, like llm_model
+
+
+def test_genie_llm_route_reaches_every_task_base_parameters():
+    """Like llm_model, the route param rides into every task's base_parameters in
+    both Workbench job definitions (root databricks.yml + gso_job.TASKS)."""
+    from scripts.deploy_lib.gso_job import TASKS
+
+    repo_root = _repo_root()
+    root_tasks = _load_bundle_job(repo_root / "databricks.yml")["tasks"]
+    for t in root_tasks:
+        bp = t["notebook_task"]["base_parameters"]
+        assert bp.get("genie_llm_route") == "{{job.parameters.genie_llm_route}}", t["task_key"]
+    for _key, _stem, _dep, base_param_keys in TASKS:
+        assert "genie_llm_route" in base_param_keys, _key

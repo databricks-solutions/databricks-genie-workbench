@@ -44,6 +44,7 @@ TASKS = [
             "levers", "max_attempts", "target_accuracy",
             "benchmark_repair_max_tries", "triggered_by",
             "benchmark_policy", "warehouse_id", "workload_warehouse_ids", "llm_model",
+            "genie_llm_route",
         ],
     ),
     (
@@ -53,6 +54,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "benchmark_repair_max_tries", "warehouse_id", "llm_model",
+            "genie_llm_route",
             "benchmark_policy",
         ],
     ),
@@ -64,6 +66,7 @@ TASKS = [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
             "benchmark_policy", "warehouse_id", "llm_model",
+            "genie_llm_route",
             # Metric view advisor phase inputs (MV-D5). Present as base_parameters
             # so run_optimize.py's widgets receive real job values — a job
             # parameter omitted here silently resolves to the widget default.
@@ -78,6 +81,7 @@ TASKS = [
         [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "target_accuracy", "max_attempts", "warehouse_id", "llm_model",
+            "genie_llm_route",
             "benchmark_policy",
         ],
     ),
@@ -105,6 +109,7 @@ JOB_PARAMETERS = {
     "warehouse_id": "",
     "workload_warehouse_ids": "[]",
     "llm_model": "",
+    "genie_llm_route": "classic",  # AI Gateway route (spec §4); default-off, consumed from Phase 1
     # Metric view advisor parameters (MV-D5 four-place lockstep). Defaults mirror
     # both databricks.yml bundles. mv_action_mode / mv_min_confidence are
     # declared-but-unconsumed today (see run_optimize.py and gap report §2.2).
