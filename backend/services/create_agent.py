@@ -17,7 +17,7 @@ from backend.services.auth import get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
 from backend.services import plan_builder
-from backend.services.llm_route import resolve_chat, is_reasoning_effort_400
+from backend.services.llm_route import resolve_chat, is_reasoning_effort_400, get_llm_route, LLMRoute
 from backend.prompts_create import assemble_system_prompt, detect_step
 
 logger = logging.getLogger(__name__)
@@ -1043,7 +1043,18 @@ class CreateGenieAgent:
         # reasoning_effort retry (§2): reasoning-backed models 400 on tool calls unless
         # reasoning_effort='none' is sent; non-reasoning models 400 if it IS sent. So send
         # plain first, and retry once only when the 400 body names reasoning_effort.
-        if is_reasoning_effort_400(resp.status_code, resp.text):
+        #
+        # Gateway-only, 400-only, and short-circuit ordered: the ``status_code == 400``
+        # term MUST precede the ``is_reasoning_effort_400(..., resp.text)`` term so that
+        # ``resp.text`` is never evaluated on a 200 — reading it forces ``.content``
+        # (a full ``iter_content`` buffer) and would defeat incremental SSE streaming.
+        # On classic the behavior stays byte-identical to before this phase (fail-safe).
+        # This retry POST is deliberately outside the 429/502/503 backoff loop above.
+        if (
+            get_llm_route() is LLMRoute.GATEWAY
+            and resp.status_code == 400
+            and is_reasoning_effort_400(resp.status_code, resp.text)
+        ):
             resp.close()
             body = {**body, "reasoning_effort": "none"}
             resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)

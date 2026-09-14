@@ -72,3 +72,14 @@ def test_call_llm_gateway_maps_model_and_tags_with_run_id(monkeypatch):
     assert kwargs["model"] == "system.ai.claude-sonnet-4-6"
     tags = json.loads(kwargs["extra_headers"]["Databricks-Ai-Gateway-Request-Tags"])
     assert tags == {"application": "genie-workbench", "component": "gso-optimize", "run_id": "run-42"}
+
+
+def test_call_llm_gateway_tags_without_run_id(monkeypatch):
+    """Absent GSO_RUN_ID: tags carry no run_id key (empty scoped extras dropped)."""
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    monkeypatch.delenv("GSO_RUN_ID", raising=False)
+    completions = _fake_openai_client(monkeypatch)
+    llm_client.call_llm(_fake_wc(), messages=[{"role": "user", "content": "hi"}])
+    kwargs = completions.create.call_args.kwargs
+    tags = json.loads(kwargs["extra_headers"]["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags == {"application": "genie-workbench", "component": "gso-optimize"}
