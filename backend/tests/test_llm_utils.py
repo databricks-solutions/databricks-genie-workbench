@@ -76,6 +76,57 @@ def test_call_serving_endpoint_normalizes_structured_content(monkeypatch):
     assert result == '{"findings": []}'
 
 
+def _capture_post(monkeypatch, status=200):
+    """Stub get_workspace_client + httpx.post; return the captured-call list."""
+    captured = []
+    client = SimpleNamespace(
+        config=SimpleNamespace(
+            host="https://example.databricks.com/",
+            authenticate=lambda: {"Authorization": "Bearer test"},
+        )
+    )
+    response = SimpleNamespace(
+        status_code=status,
+        text="",
+        json=lambda: {"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.append(SimpleNamespace(url=url, json=json, headers=headers))
+        return response
+
+    monkeypatch.setattr(llm_utils, "get_workspace_client", lambda: client)
+    monkeypatch.setattr(llm_utils.httpx, "post", fake_post)
+    return captured
+
+
+def test_call_serving_endpoint_classic_is_unchanged(monkeypatch):
+    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    captured = _capture_post(monkeypatch)
+    llm_utils.call_serving_endpoint(
+        [{"role": "user", "content": "hi"}], model="databricks-claude-sonnet-4-6"
+    )
+    call = captured[0]
+    assert call.url == "https://example.databricks.com/serving-endpoints/databricks-claude-sonnet-4-6/invocations"
+    assert "model" not in call.json                       # model stays in the URL
+    assert "Databricks-Ai-Gateway-Request-Tags" not in call.headers
+
+
+def test_call_serving_endpoint_gateway_tags_and_maps(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    captured = _capture_post(monkeypatch)
+    llm_utils.call_serving_endpoint(
+        [{"role": "user", "content": "hi"}],
+        model="databricks-claude-sonnet-4-6",
+        component="plan-builder",
+    )
+    call = captured[0]
+    assert call.url == "https://example.databricks.com/ai-gateway/mlflow/v1/chat/completions"
+    assert call.json["model"] == "system.ai.claude-sonnet-4-6"   # mapped, in the body
+    tags = json.loads(call.headers["Databricks-Ai-Gateway-Request-Tags"])
+    assert tags == {"application": "genie-workbench", "component": "plan-builder"}
+
+
 # ---------------------------------------------------------------------------
 # _repair_json
 # ---------------------------------------------------------------------------

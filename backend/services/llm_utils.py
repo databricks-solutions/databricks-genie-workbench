@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from backend.services.auth import get_workspace_client
+from backend.services.llm_route import resolve_chat
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ def call_serving_endpoint(
     model: str | None = None,
     max_tokens: int | None = None,
     timeout: float = 600,
+    component: str = "workbench",
 ) -> str:
     """Call the LLM serving endpoint using httpx with explicit timeout.
 
@@ -83,10 +85,14 @@ def call_serving_endpoint(
     # (PAT, oauth-m2m service principal, OBO user token, etc.)
     auth_headers = client.config.authenticate()
 
-    url = f"{host}/serving-endpoints/{model}/invocations"
+    rc = resolve_chat(host, model, component)
+    url = rc.url
     body: dict = {"messages": messages}
+    if rc.model is not None:
+        body["model"] = rc.model          # gateway puts the model in the body
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
+    headers = {**auth_headers, **rc.extra_headers}
 
     logger.info(f"Calling serving endpoint: {model}")
 
@@ -94,7 +100,7 @@ def call_serving_endpoint(
         resp = httpx.post(
             url,
             json=body,
-            headers=auth_headers,
+            headers=headers,
             timeout=timeout,
         )
 
