@@ -33,8 +33,11 @@ def test_wrong_run_as_fails_startup_without_self_healing():
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text()
     assert "ensure_job_run_as" not in source
     tree = ast.parse(source)
-    startup = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "startup")
-    first = startup.body[0]
+    # Startup logic lives in the FastAPI `lifespan` context manager. Its first
+    # statement must still be the identity verification — verify Job run_as
+    # first, never self-heal.
+    lifespan = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan")
+    first = lifespan.body[0]
     assert ast.unparse(first) == (
         "app.state.gso_run_as = await asyncio.to_thread(_verify_gso_job_run_as)")
 
