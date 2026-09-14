@@ -17,6 +17,7 @@ from backend.services.auth import get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
 from backend.services import plan_builder
+from backend.services.llm_route import resolve_chat, is_reasoning_effort_400
 from backend.prompts_create import assemble_system_prompt, detect_step
 
 logger = logging.getLogger(__name__)
@@ -201,7 +202,9 @@ class CreateGenieAgent:
             tool_calls_acc: dict[int, dict] = {}
             tool_call_signaled = False
             effective_model = self._effective_model(session)
-            async for chunk in self._async_stream_llm(messages, tools=step_tool_defs, model=effective_model):
+            async for chunk in self._async_stream_llm(
+                messages, tools=step_tool_defs, model=effective_model, space_id=session.space_id
+            ):
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -982,6 +985,7 @@ class CreateGenieAgent:
         messages: list[dict],
         tools: list[dict] | None = None,
         model: str | None = None,
+        space_id: str | None = None,
     ) -> Generator[dict, None, None]:
         """Stream LLM response chunks from the serving endpoint (sync).
 
@@ -1004,7 +1008,10 @@ class CreateGenieAgent:
             body["tools"] = effective_tools
 
         effective_model = model or get_llm_model()
-        url = f"{host}/serving-endpoints/{effective_model}/invocations"
+        rc = resolve_chat(host, effective_model, "create-agent", space_id=space_id)
+        url = rc.url
+        if rc.model is not None:
+            body["model"] = rc.model
         logger.info("Streaming LLM call to %s with %d messages", effective_model, len(messages))
         if logger.isEnabledFor(logging.DEBUG):
             for i, m in enumerate(messages):
@@ -1020,7 +1027,7 @@ class CreateGenieAgent:
         _RETRYABLE_STATUSES = {429, 502, 503}
         session = client.api_client._api_client._session
         for attempt in range(self._MAX_LLM_RETRIES + 1):
-            resp = session.post(url, json=body, stream=True, timeout=120)
+            resp = session.post(url, json=body, stream=True, timeout=120, headers=rc.extra_headers)
             if resp.status_code in _RETRYABLE_STATUSES:
                 resp.close()
                 if attempt >= self._MAX_LLM_RETRIES:
@@ -1060,6 +1067,7 @@ class CreateGenieAgent:
         messages: list[dict],
         tools: list[dict] | None = None,
         model: str | None = None,
+        space_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Async wrapper that bridges the sync streaming generator to async.
 
@@ -1069,7 +1077,7 @@ class CreateGenieAgent:
         import contextvars as _cv
         loop = asyncio.get_event_loop()
         ctx = _cv.copy_context()
-        gen = self._stream_llm(messages, tools=tools, model=model)
+        gen = self._stream_llm(messages, tools=tools, model=model, space_id=space_id)
         _sentinel = object()
 
         while True:

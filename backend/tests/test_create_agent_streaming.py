@@ -18,7 +18,7 @@ def test_structured_content_blocks_stream_as_plain_text():
     agent = CreateGenieAgent()
     agent._build_messages = lambda session: []
 
-    async def fake_stream(messages, tools=None, model=None):
+    async def fake_stream(messages, tools=None, model=None, space_id=None):
         yield {
             "choices": [{
                 "delta": {
@@ -51,7 +51,7 @@ def test_structured_content_blocks_do_not_break_tool_calling(monkeypatch):
     agent = CreateGenieAgent()
     agent._build_messages = lambda session: []
 
-    async def fake_stream(messages, tools=None, model=None):
+    async def fake_stream(messages, tools=None, model=None, space_id=None):
         yield {
             "choices": [{
                 "delta": {
