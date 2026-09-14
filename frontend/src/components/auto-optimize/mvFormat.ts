@@ -98,18 +98,53 @@ function effectiveTier(proposal: MvProposal): string | null {
   return isCappedStrong(proposal) ? proposal.uncapped_tier : proposal.tier
 }
 
+// ── MV-D100 — a curated, fact-passing LOW surfaces by default ──────────────
+//
+// MV-D99 stopped empty (measured-zero) usage/lineage reads from burying a
+// curated candidate's SCORE, but a genuinely cold space can still leave a
+// curated proposal at a served LOW tier that is NOT coverage-capped-strong
+// (uncapped LOW too — there is simply no demand signal to lift it). Under the
+// tier-only split (MV-D30) plus the capped-strong promotion (MV-D32) that
+// proposal still sat behind the "ranked lower by evidence" disclosure — a
+// measure the user themselves curated greeted them hidden. MV-D100 promotes a
+// curated, fact-passing LOW proposal into the default list: provenance the user
+// authored is not weak evidence, it is DIFFERENT evidence (curated, not demand-
+// proven). The card already carries that honesty in its evidence-poor caption
+// ("Based on curated SQL only — no usage history yet."); the split just stops
+// hiding it. FACTS STILL GATE — a curated proposal that does not PASS its
+// validated+executable checks is never promoted, so a broken body can never
+// surface by default. The served tier and score are untouched; generated LOW
+// stays disclosed. `ast_curated_provenance_count` (POV Part 4 evidence) is the
+// engine's own curated-provenance count and the authoritative curated signal.
+export function isCuratedFactPassing(proposal: MvProposal): boolean {
+  const ev = proposal.evidence
+  const curated =
+    !!ev &&
+    typeof ev === "object" &&
+    Number((ev as Record<string, unknown>).ast_curated_provenance_count ?? 0) > 0
+  if (!curated) return false
+  const checks = proposal.checks
+  if (!checks || typeof checks !== "object") return false
+  const c = checks as Record<string, string>
+  // The servable-body invariants must have PASSED. `no_overlap` is advisory (a
+  // key present only when the dedup gate ran), so it must merely not be a FAIL.
+  return c.validated === "PASS" && c.executable === "PASS" && c.no_overlap !== "FAIL"
+}
+
 export interface SplitProposals {
-  /** MEDIUM+ (and unlabeled) + coverage-capped-strong renderable proposals — surfaced by default. */
+  /** MEDIUM+ (and unlabeled) + coverage-capped-strong + curated-fact-passing (MV-D100) renderable proposals — surfaced by default. */
   primary: MvProposal[]
-  /** Plain LOW-confidence renderable proposals — behind the disclosure. */
+  /** Generated (or fact-failing) LOW renderable proposals — behind the disclosure. */
   low: MvProposal[]
 }
 
 export function splitProposalsByConfidence(proposals: MvProposal[]): SplitProposals {
   const renderable = proposals.filter(hasProposedObject)
   // A capped-strong proposal joins the default list even when its SERVED tier is
-  // LOW; a plain LOW (not capped-strong) stays behind the disclosure.
-  const inPrimary = (p: MvProposal) => !isLowConfidence(p.tier) || isCappedStrong(p)
+  // LOW; so does a curated, fact-passing LOW (MV-D100). A generated (or fact-
+  // failing) plain LOW stays behind the disclosure.
+  const inPrimary = (p: MvProposal) =>
+    !isLowConfidence(p.tier) || isCappedStrong(p) || isCuratedFactPassing(p)
   return {
     primary: renderable.filter(inPrimary),
     low: renderable.filter((p) => !inPrimary(p)),

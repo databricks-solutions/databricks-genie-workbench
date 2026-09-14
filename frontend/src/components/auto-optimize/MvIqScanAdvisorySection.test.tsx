@@ -258,6 +258,33 @@ describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 f
     expect(html).not.toContain(">LOW<")
     expect(html).not.toContain("Strong (evidence-limited)")
   })
+
+  it("a curated, fact-passing proposal wears a factual 'Curated' provenance chip; a non-curated one does not (MV-D100)", () => {
+    // MV-D100 promotes a curated fact-passing LOW into the default list. The
+    // marker is a PROVENANCE fact (not a strength/confidence badge, which MV-D35
+    // retired) — the evidence-limited honesty stays in the caption below it.
+    const curated: MvProposal = {
+      ...bundle,
+      tier: "LOW",
+      checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
+      evidence: { ast_curated_provenance_count: 1 },
+    }
+    const curatedHtml = render(<MvProposalCard proposal={curated} defaultExpanded={false} />)
+    expect(curatedHtml).toContain("Curated")
+    // Still MV-D35-clean: no percent, no "confidence".
+    expect(curatedHtml).not.toMatch(/\d+%/)
+    expect(curatedHtml.toLowerCase()).not.toContain("confidence")
+
+    // A generated (non-curated) proposal shows no such chip.
+    const generated: MvProposal = {
+      ...bundle,
+      tier: "LOW",
+      checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
+      evidence: { ast_curated_provenance_count: 0 },
+    }
+    const generatedHtml = render(<MvProposalCard proposal={generated} defaultExpanded={false} />)
+    expect(generatedHtml).not.toContain("Curated")
+  })
 })
 
 describe("IQ Scan advisory — per-card justification (MV-D30)", () => {

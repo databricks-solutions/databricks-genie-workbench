@@ -22,6 +22,7 @@ import {
   evidenceGrowth,
   evidenceSummary,
   factsChecks,
+  isCuratedFactPassing,
   joinStrategyLabel,
   proposalGainSentence,
 } from "@/components/auto-optimize/mvFormat"
@@ -259,6 +260,12 @@ export function MvProposalCard({
   const facts = factsChecks(proposal)
   const confidence = confidenceDisplay(proposal)
   const growth = evidenceGrowth(proposal)
+  // MV-D100 — a factual PROVENANCE chip (not a strength/confidence badge, which
+  // MV-D35 retired): marks a proposal drawn from curated SQL the user authored.
+  // The evidence-limited honesty is carried by the evidence-poor caption below;
+  // this only names the provenance so a curated proposal promoted into the
+  // default list (MV-D100) reads as curated, not as a demand-proven MEDIUM+.
+  const curated = isCuratedFactPassing(proposal)
 
   return (
     <div
@@ -317,6 +324,12 @@ export function MvProposalCard({
             <Badge variant="high">
               <Link2 className="mr-1 h-3 w-3" />
               Attached
+            </Badge>
+          )}
+          {curated && (
+            <Badge variant="secondary">
+              <FlaskConical className="mr-1 h-3 w-3" />
+              Curated
             </Badge>
           )}
           {joinLabel && (

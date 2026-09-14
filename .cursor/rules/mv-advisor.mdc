@@ -114,7 +114,8 @@ FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
 - Materialization is a separate consent (mv_materialize); never bundled.
 - SUGGEST-SURFACE CONTRACT (from the first human smoke run): a proposal is a
   metric VIEW bundling the measures of one grain, never one card per measure;
-  MEDIUM+ surfaces by default, LOW behind explicit disclosure, and a proposal
+  MEDIUM+ (and a curated, fact-passing LOW — MV-D100) surface by default,
+  other LOW behind explicit disclosure, and a proposal
   with no proposed_object never renders; no proposal surfaces without a
   servable DDL body (a render failure is loud in the run outcome, never a
   silent gate); every surfaced card carries its

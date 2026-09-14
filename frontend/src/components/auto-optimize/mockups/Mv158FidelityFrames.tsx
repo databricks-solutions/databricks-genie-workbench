@@ -132,3 +132,44 @@ export function RunOutput158Frame() {
     />
   )
 }
+
+// MV-D100 — a curated, fact-passing LOW proposal on a genuinely cold space: the
+// facts row all PASS, but usage (D) and lineage (L) are UNAVAILABLE, so the
+// served tier is LOW and it is NOT coverage-capped-strong. Before MV-D100 this
+// card hid behind the "ranked lower by evidence" disclosure; now it surfaces in
+// the default list wearing a factual "Curated" provenance chip, with the
+// evidence-limited honesty carried (unchanged) by the "Based on curated SQL
+// only — no usage history yet." caption. NOT a strength/confidence badge — those
+// stay retired from the card face (MV-D35).
+const proposalCuratedLow: MvProposal = {
+  ...proposalMargin,
+  suggestion_id: "sug_curated_1a2b",
+  dedup_fingerprint: "curated1a2b3c4d",
+  confidence_score: 41,
+  tier: "LOW",
+  uncapped_tier: "LOW",
+  tier_capped_by_coverage: false,
+  proposed_object: "finance.sales.avg_order_value",
+  measures: [
+    { display_name: "avg_order_value", expr: "SUM(orders.revenue) / COUNT(DISTINCT orders.order_id)", dedup_fingerprint: "m_aov", recurrence: 1, provenance_count: 1, benchmark_question_ids: ["sql_snippet:measures:01f13a"] },
+  ],
+  checks: { validated: "PASS", executable: "PASS", no_overlap: "PASS" },
+  // The cold-space signal profile: Y (curated) present, S available, but L and D
+  // never landed → the evidence-poor caption reads "curated SQL only".
+  score_components: { statuses: { L: "UNAVAILABLE", Y: "COMPUTED", S: "COMPUTED", D: "UNAVAILABLE" }, L: 0, Y: 0.71, S: 0.3, D: 0 },
+  evidence: { ast_curated_provenance_count: 1, benchmark_question_ids: ["sql_snippet:measures:01f13a"] },
+}
+
+export function IqScanCuratedLowFrame() {
+  return (
+    <div className="space-y-4">
+      <ScanProposalCard
+        proposal={proposalCuratedLow}
+        ddl={undefined}
+        onReviewCreate={() => {}}
+        onClaim={() => {}}
+        defaultExpanded
+      />
+    </div>
+  )
+}
