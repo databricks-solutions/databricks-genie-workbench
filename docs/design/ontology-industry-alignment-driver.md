@@ -175,8 +175,7 @@ structural propagation → semantic sanity), emitting TYPED correspondences
 (exact/narrower/broader/derived/not-equivalent) + gap-domain hypotheses. Provenance-
 gated (T2/T3): may suggest and name, NEVER outranks a T0/curated fact (rank.py
 ladder). Folds into the Phase-4/17h Context Pack + firewall (MV-D38). Toggle off by
-default (MV-D44). Additive persistence (MV-D49). Offline code + green tests; STOP
-before deploy.
+default (MV-D44). Additive persistence (MV-D49).
 
 SPEC: docs/design/ontology-curation-redesign-build.md §9 (primary), §2/§4/§7/§11/§12;
 ontology-engine-architecture.md §6 (provenance ladder, plug-points). DECISIONS:
@@ -184,12 +183,12 @@ mv-advisor-playbook.md MV-D58 depending on MV-D38/D44/D60/D59; honor MV-D43/D45/
 D50. Read first. The Context Pack builder (Phase-4) and the eval harness (§10/MV-D59)
 are NOT in scope here — this build consumes the pack and emits the aligned reference.
 
-CONTEXT: Structure (membership) comes from the graph and is fixed before alignment
-runs — alignment is a naming/description/hypothesis layer only. rank.py already runs
-the L4→L5 naming + L5 gap-check plug-points and the provenance ladder. Config
+CONTEXT: Membership comes from the graph and is fixed before alignment runs —
+alignment is a naming/description/hypothesis layer only. rank.py already runs the
+L4→L5 naming + L5 gap-check plug-points and the provenance ladder. Config
 industry_alignment={enabled,reference_model} lives in ont_settings (idempotent ADD
-COLUMN IF NOT EXISTS), mirrored to types.ts + SettingsForm. Alignment relations ride
-the evidence JSON where possible.
+COLUMN IF NOT EXISTS), mirrored to types.ts + SettingsForm. Relations ride the
+evidence JSON where possible.
 
 BUILD A — alignment module (new ontology/alignment.py): load the reference model for
 `reference_model`; run the four ordered passes (string, embedding-seed-anchor,
@@ -216,20 +215,19 @@ HARD GUARDRAILS: read-only — NO SET/UNSET/CREATE GOVERNED TAG, no manage_uc_ta
 web_search, no apply-path (17i) edit. NO structural change (no graph/cluster/Leiden/
 edge-weight edits) — alignment never changes membership. NO new dependency (uv.lock
 untouched, MV-D45). Additive DDL only (MV-D49). OBO-default reads (MV-D50). Degrade-
-not-hang (MV-D43). Off by default (MV-D44). Do NOT edit mv-advisor-playbook.md or the
-Context-Pack builder / eval harness.
+not-hang (MV-D43). Off by default (MV-D44). Do NOT edit mv-advisor-playbook.md.
 
 ACCEPTANCE (offline): enabled=false ⇒ byte-identical materialize run (no leaves, no
-hypotheses, no new rows). Every correspondence is exactly one of exact/narrower/
-broader/derived/not-equivalent. Gap hypotheses rank below evidence-backed proposals,
+hypotheses, no new rows). Every correspondence is exactly one of the five typed
+relations. Gap hypotheses rank below evidence-backed proposals,
 never auto-created. A T2/T3 name conflicting with a T0 lineage fact / curated tag ⇒
 T0/curated wins, alignment becomes corroborating evidence. Same estate + same
 reference_model + fixed seeds ⇒ identical output. Missing/empty model ⇒ run completes,
 alignment skipped. ./scripts/test.sh + GSO suite green; npm run lint + tsc clean.
 
-WORKFLOW: branch `ontology` (schedule against the Ontology Build Queue, after Stage-
-4.1c and the Phase-4 Context Pack it depends on). Do NOT deploy or run the job. When
-offline-green, STOP and report the diff + test summary; a human runs deploy-verify.
+WORKFLOW: branch `ontology` (schedule against the Ontology Build Queue). Do NOT
+deploy or run the job. When offline-green, STOP and report the diff + test summary;
+a human runs deploy-verify.
 
 ---
 
