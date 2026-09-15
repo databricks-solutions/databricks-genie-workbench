@@ -1140,7 +1140,9 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > harness caught:** precision reads **0.117 = 17 surfaced-aligned / 145 total rows** — P/R/F +
 > structural health score over ALL raw pre-gate clusters (incl. the 128 suppressed dev/migration
 > rows) instead of the **surfaced** estate (17). **Next (small, gated by `compare_reports`):** scope
-> the eval to surfaced domains so the baseline is meaningful.
+> the eval to surfaced domains so the baseline is meaningful — **DRAFTED (build-ready):**
+> `ontology-eval-surfaced-scoping-driver.md` (filter to surfaced at `assemble_eval_report`; pure
+> `compute_*` builders unchanged; first live `compare_reports` dogfood on re-baseline).
 >
 > **Phase 5 (17i) — offline finish LANDED on `ontology`** (subsystem's only governed-tag writer;
 > additive, no dep, `uv.lock`/npm-lock untouched — MV-D45). Closed the offline slice's remaining
