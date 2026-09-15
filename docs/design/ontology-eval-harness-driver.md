@@ -1,6 +1,46 @@
 # Ontology — Evaluation & trust harness Goal-Mode driver (MV-D59)
 
-## ⚙️ Parallel-build lane header — Lane 1 of Wave 2 (READ FIRST)
+## ✅ STATUS (2026-09-15) — the offline harness is BUILT; the build prompt below is HISTORICAL
+
+Read this first — it supersedes the lane header and build prompt that follow.
+
+- **The offline harness is BUILT + landed (commit `7120a6df`, Sep 8), offline-green.**
+  `packages/genie-space-optimizer/src/genie_space_optimizer/ontology/eval_harness.py`
+  already implements all four builds — `compute_precision_recall_f1` (A),
+  `compute_structural_health` (B), `run_llm_sanity_monitor` (C, injectable),
+  `build_spot_review_queue` (D) — plus `assemble_eval_report`, `compare_reports`
+  (the before/after gate), and `report_to_dict` / `dict_to_report`. Tested in
+  `test_ontology_eval_harness.py`. **Do NOT re-run the build prompt below — it would
+  re-create an existing module.** The Wave-2 parallel-lane header is historical (that
+  wave merged).
+- **§9 industry alignment (MV-D58) is now BUILT + deploy-verified (commit `de65f480`,
+  2026-09-15)** — it emits `aligned_reference` in *this harness's exact shape*
+  (`alignment._aligned_reference`, `{domains, alignments}`). So the driver's earlier
+  "§9 is still spec-only → the first live pass is degraded (P/R/F = N/A)" language is
+  **stale**: full discovered-vs-reference scoring is now possible.
+- **The ONE genuine remaining gap = a live entrypoint + the aligned-reference glue.**
+  The harness is a pure *library*; nothing invokes it on a real run yet (no job,
+  reader, or route calls `assemble_eval_report`). And §9's `aligned_reference` is
+  **report/log-only — it is NOT persisted** (only the per-domain
+  `evidence.rank.alignment` relations land in `genie_ont_domains`). So a live P/R/F
+  pass must first *obtain* the aligned reference by one of:
+  1. **capture the materialize run report** (it already carries `aligned_reference`), or
+  2. **reconstruct it read-only** — pull each surfaced domain's
+     `evidence.rank.alignment` (`domain_id` → `reference_id`) from `genie_ont_domains`
+     and join `alignment.load_reference_model(<model>)` for the reference `domains`
+     (names + members), then call `compute_precision_recall_f1`.
+  Option 2 stays inside the harness's read-only/no-DDL contract (MV-D49/D50). This
+  small glue (a thin reader + a run entrypoint) is the only thing left to write; the
+  scoring logic itself is done.
+
+**So "up to date" means:** the *build* is complete; what remains is the **deploy-gated
+live baseline pass** — wire the thin reader/entrypoint, run it against the airline
+estate (which now has §9's persisted correspondences), and capture the first real
+P/R/F + structural-health report as the regression baseline (§10's stated role).
+
+---
+
+## ⚙️ Parallel-build lane header — Lane 1 of Wave 2 (HISTORICAL — harness already merged)
 
 You run in an **isolated git worktree** off the `ontology` HEAD (`isolation: worktree`,
 `worktree.baseRef: "head"`). Two sibling lanes edit the repo concurrently. This lane owns a
@@ -78,7 +118,11 @@ dependency** (MV-D45), so `uv.lock` is untouched.
 
 ---
 
-## Driver prompt (paste verbatim)
+## Driver prompt (HISTORICAL — already executed in `7120a6df`; do NOT re-run)
+
+> This prompt built the now-landed `eval_harness.py`. It is kept for provenance only.
+> Re-running it would re-create an existing module. For the remaining work, see
+> **STATUS** and **After the run** above (the thin reader/entrypoint + live baseline pass).
 
 ```text
 GOAL: Build the OFFLINE evaluation & trust harness (MV-D59) for the ontology curation engine.
@@ -160,14 +204,23 @@ the diff + test summary; a human runs the deploy-gated live pass.
 
 ---
 
-## After the run (human-gated)
+## After the run (human-gated) — UPDATED 2026-09-15
 
-Deploy `SKIP_FRONTEND_BUILD=1 ./scripts/deploy.sh --update` (fevm-serverless) and run the
-harness against a materialized estate (e.g. `serverless_stable_6t92c3_catalog`) as the OBO
-admin. Because §9 industry alignment (MV-D58) is still spec-only, the **first** live pass
-exercises the **degraded** path — structural health, the LLM sanity monitor, and the spot-review
-queue render, and precision/recall/F report **N/A** with a plain reason. Full
-discovered-vs-reference scoring lights up once §9 materializes the aligned reference. Capture
-the report as the **baseline** so subsequent signal/threshold changes can be gated against it
-(§10's stated role). Record the live pass in the playbook's Ontology Build Queue / live-evidence
-log (human edit — the agent never touches the playbook).
+**§9 is now landed + deploy-verified**, so the first live pass is **no longer degraded** —
+full precision/recall/F is available once the aligned reference is obtained (see STATUS
+option 1/2). The remaining live-pass steps:
+
+1. Write the thin glue (harness's read-only contract): a reader that reconstructs
+   `aligned_reference` from persisted `evidence.rank.alignment` + `load_reference_model`
+   (STATUS option 2), or capture it from the materialize run report (option 1); and a
+   small entrypoint that pulls the domain/sub-domain/page rows and calls
+   `assemble_eval_report`.
+2. Deploy `SKIP_FRONTEND_BUILD=1 ./scripts/deploy.sh --update` (fevm-serverless) and run
+   the harness against the materialized estate (`serverless_stable_6t92c3_catalog`,
+   `reference_model=airline`) as the OBO admin. The airline snapshot already carries §9's
+   correspondences (16/16 surfaced domains, verified 2026-09-15), so P/R/F, structural
+   health, the LLM sanity monitor, and the spot-review queue all render.
+3. Capture the report as the **baseline** so subsequent signal/threshold changes can be
+   gated against it via `compare_reports` (§10's stated role). Record the live pass in the
+   playbook's Ontology Build Queue / live-evidence log (human edit — the agent never
+   touches the playbook).
