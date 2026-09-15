@@ -493,6 +493,71 @@ def report_to_dict(report: EvalReport) -> dict[str, Any]:
     return asdict(report)
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON encoder fallback: the match statuses carry ``set`` members (not JSON
+    types), so serialize sets as sorted lists for a deterministic, comparable blob."""
+    if isinstance(obj, (set, frozenset)):
+        return sorted(obj)
+    raise TypeError(f"not JSON serializable: {type(obj).__name__}")
+
+
+def report_to_json(report: EvalReport) -> str:
+    """Serialize an EvalReport to a deterministic JSON string (sets → sorted lists)."""
+    return json.dumps(report_to_dict(report), default=_json_default, sort_keys=True)
+
+
+def eval_report_to_row(report: EvalReport) -> dict[str, Any]:
+    """Lift one persisted ``genie_ont_eval`` row from an EvalReport (MV-D59, §10).
+
+    The report JSON rides ``report``; the top-level metrics are lifted columns for
+    cheap SELECTs. precision/recall/f1 are ``None`` (→ NULL) when the run had no
+    aligned reference; structural health is always present so the rates/depth are
+    real numbers even on an alignment-off run. ``workspace_id`` is NOT set here —
+    the caller stitches its own install provenance (the report is provenance-free).
+    """
+    prf = report.precision_recall_f1
+    health = report.structural_health
+    total = health.total_domains if health else 0
+    singleton_rate = round(health.singleton_count / total, 6) if health and total else 0.0
+    orphan_rate = round(health.orphan_count / total, 6) if health and total else 0.0
+    return {
+        "metastore_id": report.metastore_id,
+        "report": report_to_json(report),
+        "precision": prf.precision,
+        "recall": prf.recall,
+        "f1": prf.f1,
+        "singleton_rate": singleton_rate,
+        "orphan_rate": orphan_rate,
+        "max_depth": health.tree_depth if health else 0,
+        "branching_factor": health.branching_factor_avg if health else 0.0,
+        "run_id": report.run_id,
+        "as_of": report.timestamp,
+    }
+
+
+def failed_eval_row(
+    run_id: str, metastore_id: str, as_of: str, error: str,
+) -> dict[str, Any]:
+    """A minimal ``genie_ont_eval`` row recording a harness failure (MV-D43).
+
+    All metrics NULL; ``report`` carries the error marker. Used when the harness or
+    the primary row-build raised, so the eval slot for the run is never silently
+    empty. ``workspace_id`` is stitched by the caller."""
+    return {
+        "metastore_id": metastore_id,
+        "report": json.dumps({"status": "failed", "error": error, "run_id": run_id}, sort_keys=True),
+        "precision": None,
+        "recall": None,
+        "f1": None,
+        "singleton_rate": None,
+        "orphan_rate": None,
+        "max_depth": None,
+        "branching_factor": None,
+        "run_id": run_id,
+        "as_of": as_of,
+    }
+
+
 def dict_to_report(data: dict[str, Any]) -> EvalReport:
     """Deserialize a dict back to EvalReport."""
     return EvalReport(**data)

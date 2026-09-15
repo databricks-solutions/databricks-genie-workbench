@@ -557,3 +557,70 @@ def test_acceptance_comparator():
     """(Comparator) BEFORE/AFTER deltas are computed correctly."""
     test_compare_reports_deltas()
     test_compare_reports_regression_detection()
+
+
+# ── MV-D59 (§10): report → genie_ont_eval row helper (live-wiring) ──────────
+
+def test_eval_report_to_row_with_aligned_reference():
+    """The row lifts real P/R/F + structural rates and carries a JSON-parseable report
+    blob (sets in the match statuses serialize as sorted lists)."""
+    domains = _fixture_domains_simple()
+    members = _fixture_members_simple()
+    ref = _fixture_aligned_reference()
+    report = eval_harness.assemble_eval_report(
+        "run1", "ms1", "2026-09-15T00:00:00+00:00", domains, members, aligned_reference=ref,
+    )
+    row = eval_harness.eval_report_to_row(report)
+
+    # Metrics lifted from the report (reference present ⇒ real numbers).
+    assert row["precision"] == round(2 / 3, 4)
+    assert row["recall"] == round(2 / 3, 4)
+    assert row["f1"] == round(2 / 3, 4)
+    # Structural rates over 3 domains: 1 singleton, 3 orphans (no parents), depth 1.
+    assert row["singleton_rate"] == round(1 / 3, 6)
+    assert row["orphan_rate"] == round(3 / 3, 6)
+    assert row["max_depth"] == 1
+    assert isinstance(row["branching_factor"], float)
+    # Keys + FK/provenance.
+    assert row["metastore_id"] == "ms1" and row["run_id"] == "run1"
+    assert row["as_of"] == "2026-09-15T00:00:00+00:00"
+    assert "workspace_id" not in row  # caller stitches install provenance
+    # The report blob round-trips through JSON despite the set-valued match members.
+    parsed = json.loads(row["report"])
+    assert parsed["run_id"] == "run1"
+    assert isinstance(parsed["domain_match_statuses"][0]["discovered_members"], list)
+
+
+def test_eval_report_to_row_without_reference_pf_null():
+    """No aligned reference ⇒ P/R/F are None (→ NULL); structural rates still real."""
+    report = eval_harness.assemble_eval_report(
+        "run1", "ms1", "t", _fixture_domains_simple(), _fixture_members_simple(),
+        aligned_reference=None,
+    )
+    row = eval_harness.eval_report_to_row(report)
+    assert row["precision"] is None and row["recall"] is None and row["f1"] is None
+    assert isinstance(row["singleton_rate"], float)
+    assert isinstance(row["orphan_rate"], float)
+    assert row["max_depth"] >= 1
+
+
+def test_report_to_json_is_deterministic_and_set_safe():
+    """report_to_json is stable across calls and never trips on the set-valued members."""
+    report = eval_harness.assemble_eval_report(
+        "run1", "ms1", "t", _fixture_domains_simple(), _fixture_members_simple(),
+        aligned_reference=_fixture_aligned_reference(),
+    )
+    a = eval_harness.report_to_json(report)
+    b = eval_harness.report_to_json(report)
+    assert a == b
+    assert json.loads(a) == json.loads(b)
+
+
+def test_failed_eval_row_shape():
+    """The MV-D43 fallback row: metrics all NULL, error marker in the report blob."""
+    row = eval_harness.failed_eval_row("run1", "ms1", "t", "boom")
+    assert row["metastore_id"] == "ms1" and row["run_id"] == "run1" and row["as_of"] == "t"
+    for k in ("precision", "recall", "f1", "singleton_rate", "orphan_rate", "max_depth", "branching_factor"):
+        assert row[k] is None, k
+    report = json.loads(row["report"])
+    assert report["status"] == "failed" and report["error"] == "boom"

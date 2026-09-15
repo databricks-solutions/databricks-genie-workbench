@@ -405,6 +405,83 @@ def test_industry_alignment_bad_reference_degrades_run_succeeds(monkeypatch):
     assert writer.tables["genie_ont_domains"]  # snapshots still committed
 
 
+# ── MV-D59 (§10): the eval & trust harness hook through the materializer ─────
+
+
+def test_eval_report_written_with_aligned_reference():
+    """A run WITH an aligned reference writes one genie_ont_eval row carrying real
+    precision/recall/f1 (the reference was present) plus the always-computed structural
+    health, keyed by metastore, with install provenance stitched in."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(
+        _FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+        industry_reference=_fin_reference(),
+    )
+    row = writer.tables[ddl.TABLE_ONT_EVAL][("ms1",)]
+    # P/R/F are real numbers (reference present) — never NULL on an alignment-on run.
+    for k in ("precision", "recall", "f1"):
+        assert row[k] is not None and 0.0 <= row[k] <= 1.0, k
+    # Structural health is always computed.
+    assert row["max_depth"] >= 1
+    assert isinstance(row["branching_factor"], float)
+    assert 0.0 <= row["singleton_rate"] <= 1.0 and 0.0 <= row["orphan_rate"] <= 1.0
+    # Provenance + FK + the serialized report blob.
+    assert row["metastore_id"] == "ms1" and row["workspace_id"] == "ws1"
+    assert row["run_id"] == "r1" and row["as_of"] == _AS_OF
+    report = json.loads(row["report"])  # report_to_dict JSON is parseable (sets → lists)
+    assert report["run_id"] == "r1" and report["metastore_id"] == "ms1"
+
+
+def test_eval_report_written_without_aligned_reference_pf_null_structure_present():
+    """Alignment OFF (the default): P/R/F are NULL (no reference) but structural health
+    is still computed and persisted — the harness runs every materialize (MV-D59)."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    row = writer.tables[ddl.TABLE_ONT_EVAL][("ms1",)]
+    assert row["precision"] is None and row["recall"] is None and row["f1"] is None
+    # Structural metrics are real numbers even with no reference.
+    assert row["max_depth"] >= 1
+    assert isinstance(row["branching_factor"], float)
+    assert isinstance(row["singleton_rate"], float) and isinstance(row["orphan_rate"], float)
+    assert row["workspace_id"] == "ws1" and row["run_id"] == "r1"
+    report = json.loads(row["report"])
+    assert report["precision_recall_f1"]["precision"] is None
+
+
+def test_eval_harness_failure_run_succeeds_and_snapshots_intact(monkeypatch):
+    """MV-D43 degrade-not-hang: a booby-trapped harness never fails the run nor corrupts
+    the snapshots already committed — the eval slot records a failed row instead."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+
+    def _boom(*a, **k):
+        raise RuntimeError("eval harness blew up")
+
+    monkeypatch.setattr(materialize.eval_harness, "assemble_eval_report", _boom)
+    run = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    # The run still succeeds and the other snapshots are intact.
+    assert run["state"] == "succeeded"
+    assert writer.tables["genie_ont_domains"] and writer.tables["genie_ont_graph_snapshot"]
+    # The eval slot carries a failed row: metrics NULL, error marker in the report.
+    row = writer.tables[ddl.TABLE_ONT_EVAL][("ms1",)]
+    assert row["precision"] is None and row["f1"] is None
+    assert row["workspace_id"] == "ws1" and row["run_id"] == "r1"
+    report = json.loads(row["report"])
+    assert report["status"] == "failed" and "blew up" in report["error"]
+
+
+def test_eval_table_registered_in_ddl_table_list():
+    """The eval table is a real, rendered ontology table (created at startup like the rest)."""
+    assert ddl.TABLE_ONT_EVAL == "genie_ont_eval"
+    assert ddl.EVAL_TABLES == ("genie_ont_eval",)
+    assert ddl.EVAL_KEYS == ["metastore_id"]
+    rendered = ddl.all_ddl("c", "s")
+    assert ddl.TABLE_ONT_EVAL in rendered
+    assert rendered[ddl.TABLE_ONT_EVAL].startswith("CREATE TABLE IF NOT EXISTS c.s.genie_ont_eval")
+
+
 def test_domain_adjacency_from_signal_graph_fk_edges():
     """_domain_adjacency maps FK/lineage asset↔asset edges to the domains they connect
     (read-only — never changes membership)."""
@@ -512,12 +589,13 @@ def test_consents_suppressions_never_written_pages_now_written():
     _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
     written = set(writer.tables)
     # Phase 3c now MERGEs genie_ont_pages too (even when the estate mines zero Pages —
-    # the empty MERGE clears stale rows); Phase 3e adds the graph snapshot (MV-D48).
+    # the empty MERGE clears stale rows); Phase 3e adds the graph snapshot (MV-D48);
+    # MV-D59 adds the eval report (written every run, P/R/F NULL when alignment is off).
     # Only the 17g ledger tables stay empty.
     assert written == {
         "genie_ont_tag_graph", "genie_ont_taxonomy_snapshot", "genie_ont_identity",
         "genie_ont_domains", "genie_ont_members", "genie_ont_pages",
-        "genie_ont_graph_snapshot",
+        "genie_ont_graph_snapshot", "genie_ont_eval",
     }
     for t in ddl.PHASE3_TABLES:
         assert t not in written
@@ -909,12 +987,12 @@ def test_ddl_shape_all_tables_no_deferred_tokens():
     assert set(rendered) == (
         set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES)
         | set(ddl.PAGE_TABLES) | set(ddl.PHASE3_TABLES) | set(ddl.APPLY_TABLES)
-        | set(ddl.CONTEXT_TABLES)
+        | set(ddl.CONTEXT_TABLES) | set(ddl.EVAL_TABLES)
     )
     # 5 snapshot (+ graph_snapshot, Phase 3e) + 2 proposal + 1 page (now written)
     # + 2 still-empty (consents/suppressions) + 1 apply audit (Phase 5) + 2 context
-    # (Phase 4 Stage B) = 13 total.
-    assert len(rendered) == 13
+    # (Phase 4 Stage B) + 1 eval report (MV-D59, §10) = 14 total.
+    assert len(rendered) == 14
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():
         assert stmt.startswith("CREATE TABLE IF NOT EXISTS maincat.gso_schema.")

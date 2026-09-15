@@ -81,6 +81,29 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_graph_snapshot (
 ) USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
 
+# Eval & trust harness snapshot (MV-D59, §10): one queryable EvalReport per
+# metastore per materialize run, so the gate can diff runs. Mirrors the
+# graph_snapshot shape (metastore-keyed single-row-per-run, MERGE-idempotent).
+# ``report`` rides the ``report_to_dict`` JSON; the top-level metrics are lifted
+# columns for cheap SELECTs. precision/recall/f1 are NULL when the run had no
+# aligned reference (alignment off) — structural health is always present.
+_GENIE_ONT_EVAL_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_eval (
+    metastore_id     STRING     COMMENT 'Derived PK (MV-D49) — one eval report per metastore',
+    workspace_id     STRING     COMMENT 'provenance — which install/workspace triggered the run; NOT a key',
+    report           STRING     COMMENT 'JSON: the full EvalReport (report_to_dict)',
+    precision        DOUBLE     COMMENT 'Domain precision vs aligned reference; NULL when no reference',
+    recall           DOUBLE     COMMENT 'Domain recall vs aligned reference; NULL when no reference',
+    f1               DOUBLE     COMMENT 'Domain F1 vs aligned reference; NULL when no reference',
+    singleton_rate   DOUBLE     COMMENT 'Structural health: single-member domains / total domains',
+    orphan_rate      DOUBLE     COMMENT 'Structural health: parentless domains / total domains',
+    max_depth        INT        COMMENT 'Structural health: max taxonomy tree depth',
+    branching_factor DOUBLE     COMMENT 'Structural health: average children per domain',
+    run_id           STRING     COMMENT 'FK to genie_ont_runs.run_id',
+    as_of            TIMESTAMP  COMMENT 'Materialization time'
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
+
 # ── Empty Phase-3 tables (schema only; NOT written in Phase 2) ──────────────
 
 _GENIE_ONT_DOMAINS_DDL = """\
@@ -249,6 +272,18 @@ APPLY_TABLES: tuple[str, ...] = (
     TABLE_ONT_APPLIED,
 )
 
+# ── Eval & trust harness table (MV-D59, §10): WRITTEN every materialize ─────
+# The eval report is an additive, orthogonal write — one row per metastore, MERGEd
+# on metastore_id like the graph snapshot. Runs every materialize (P/R/F NULL when
+# alignment is off; structural health always computed). Additive/no-dep (MV-D45/D49):
+# a new table + a post-materialize hook, no change to any existing table/grain.
+TABLE_ONT_EVAL = "genie_ont_eval"
+EVAL_KEYS = ["metastore_id"]
+
+EVAL_TABLES: tuple[str, ...] = (
+    TABLE_ONT_EVAL,
+)
+
 # ── Phase 4 Stage B (17h): external Context Pack tables (additive, MV-D49/D38) ──
 # Created empty at startup; WRITTEN only when the external-context tier is enabled AND a
 # source is available (DEFAULT OFF ⇒ zero rows ⇒ byte-identical estate-only). No key/grain
@@ -314,6 +349,7 @@ _ONT_ALL_DDL: dict[str, str] = {
     TABLE_ONT_APPLIED: _GENIE_ONT_APPLIED_DDL,
     TABLE_ONT_CONTEXT_PACK: _GENIE_ONT_CONTEXT_PACK_DDL,
     TABLE_ONT_CONTEXT_SOURCES: _GENIE_ONT_CONTEXT_SOURCES_DDL,
+    TABLE_ONT_EVAL: _GENIE_ONT_EVAL_DDL,
 }
 
 

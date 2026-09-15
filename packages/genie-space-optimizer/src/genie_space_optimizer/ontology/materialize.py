@@ -29,6 +29,7 @@ from genie_space_optimizer.ontology import (
     context_pack as context_pack_mod,
     ddl,
     er,
+    eval_harness,
     graph,
     layout,
     pages,
@@ -57,6 +58,9 @@ MEMBER_KEYS = ["metastore_id", "domain_id", "asset_fqn"]
 # Page proposals (Phase 3c) — concept-anchored derived PK, metastore-scoped (§7).
 PAGE_KEYS = ["metastore_id", "page_id"]
 GRAPH_SNAPSHOT_KEYS = ["metastore_id"]
+# Eval & trust harness (MV-D59, §10): one EvalReport row per metastore, MERGEd
+# metastore-keyed like the graph snapshot. Written EVERY materialize (additive).
+EVAL_KEYS = list(ddl.EVAL_KEYS)
 # Phase 4 Stage B (17h): the external Context Pack tables (additive, MV-D49). Written
 # ONLY when a resolved ``context_pack`` is threaded in (tier enabled + a source available);
 # the default estate-only run never touches them (byte-identical, MV-D44).
@@ -927,6 +931,36 @@ def run_materialize(
             metastore_id=metastore_id, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
         )
         writer.merge(ddl.TABLE_ONT_GRAPH_SNAPSHOT, [graph_row], GRAPH_SNAPSHOT_KEYS, metastore_id)
+
+        # Eval & trust harness (MV-D59, §10) — the ADDITIVE-ORTHOGONAL write: assemble ONE
+        # queryable EvalReport from the just-materialized domain/member rows + the in-memory
+        # §9 aligned reference (no reconstruction) and MERGE it into genie_ont_eval so the
+        # gate can diff runs. Runs EVERY materialize: alignment off ⇒ aligned_reference None
+        # ⇒ precision/recall/f1 NULL, structural health still computed. The injectable LLM
+        # monitor reuses the run's wheel-native namer if present (MV-D65) — report-only, it
+        # never touches the persisted P/R/F or structural numbers. Read-only w.r.t. the
+        # estate: the ONLY write is this new table. Degrade-not-hang (MV-D43) — a harness or
+        # MERGE error records a failed eval row and NEVER corrupts the snapshots already
+        # committed above nor fails the run.
+        try:
+            eval_report = eval_harness.assemble_eval_report(
+                run_id, metastore_id, as_of,
+                expanded["domain_rows"], expanded["member_rows"],
+                aligned_reference=(aligned_reference or None),
+                llm_client=namer,
+            )
+            eval_row = {**eval_harness.eval_report_to_row(eval_report), "workspace_id": workspace_id}
+            writer.merge(ddl.TABLE_ONT_EVAL, [eval_row], EVAL_KEYS, metastore_id)
+        except Exception as exc:  # noqa: BLE001 — degrade-not-hang (MV-D43): run must still succeed
+            logger.warning("ontology eval harness degraded; recording failed eval row: %s", exc)
+            try:
+                failed_row = {
+                    **eval_harness.failed_eval_row(run_id, metastore_id, as_of, str(exc)),
+                    "workspace_id": workspace_id,
+                }
+                writer.merge(ddl.TABLE_ONT_EVAL, [failed_row], EVAL_KEYS, metastore_id)
+            except Exception:  # noqa: BLE001 — even the fallback must never fail the run
+                logger.exception("ontology eval harness fallback row also failed; skipping")
 
         # Phase 4 Stage B persistence (MV-D49 additive): MERGE the resolved Context Pack +
         # its per-leaf citation index. Written ONLY when a pack was resolved (tier enabled +
