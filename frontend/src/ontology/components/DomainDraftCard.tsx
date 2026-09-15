@@ -8,10 +8,10 @@
  * (17i). No DDL, grants, table names, or backend jargon appears in the copy.
  */
 import { useState } from "react"
-import { Check, Copy, FolderTree, Loader2, Sparkles, X } from "lucide-react"
+import { Check, Copy, ExternalLink, FolderTree, Loader2, Sparkles, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import type { DecisionAction, DomainDraft, EvidenceChip } from "@/ontology/types"
+import type { DecisionAction, DomainDraft, DomainDraftSource, EvidenceChip } from "@/ontology/types"
 
 // Bulk "Draft this sub-domain with AI" progress, owned by DraftsView and passed
 // down. Only meaningful for a kind="subdomain" card (Stage 4.1d Step 4, MV-D66).
@@ -71,6 +71,40 @@ export function EvidenceChips({ chips }: { chips: EvidenceChip[] }) {
           {c.label}
         </span>
       ))}
+    </div>
+  )
+}
+
+// Stage C (MV-D23/D35): the labeled/dated "Sources" chip. Rendered only when a
+// suggestion's NAME came from an applied external context source; each chip links its
+// citation when present. Never surfaces the pack, provenance tier, or provider name.
+export function SourcesChips({ sources }: { sources?: DomainDraftSource[] }) {
+  if (!sources || sources.length === 0) return null
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted">Sources</p>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {sources.map((s, i) => {
+          const text = s.as_of ? `${s.label} · ${s.as_of}` : s.label
+          const cls =
+            "inline-flex items-center gap-1 rounded-full border border-default bg-elevated px-2.5 py-0.5 text-xs text-secondary"
+          return s.url ? (
+            <a
+              key={`${s.label}-${i}`}
+              href={s.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`${cls} hover:text-primary`}
+            >
+              <ExternalLink className="h-3 w-3" /> {text}
+            </a>
+          ) : (
+            <span key={`${s.label}-${i}`} className={cls}>
+              {text}
+            </span>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -157,6 +191,10 @@ export function DomainDraftCard({
 
       {/* The honest confidence: band + signals present + the one useful gap (MV-D56). */}
       {draft.confidence && <ConfidenceLine confidence={draft.confidence} />}
+
+      {/* Stage C (MV-D23/D35): a labeled/dated Sources chip — shown ONLY when the name
+          came from an applied external context source. No pack / tier / provider jargon. */}
+      <SourcesChips sources={draft.sources} />
 
       {draft.subdomains.length > 0 && (
         <div>

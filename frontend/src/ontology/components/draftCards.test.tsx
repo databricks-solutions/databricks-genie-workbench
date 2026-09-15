@@ -155,6 +155,27 @@ describe("DomainDraftCard — zero-burden render (17.0d)", () => {
     assertZeroBurden(done)
   })
 
+  it("renders a labeled/dated Sources chip only when the name came from a source (Stage C)", () => {
+    // With an applied source: the labeled + dated chip links its citation.
+    const withSource = renderToStaticMarkup(
+      <DomainDraftCard
+        draft={domain({
+          sources: [{ label: "Industry reference", url: "https://example.com/m", as_of: "2025-06-01" }],
+        })}
+        onDecide={noop}
+      />,
+    )
+    expect(withSource).toContain("Sources")
+    expect(withSource).toContain("Industry reference")
+    expect(withSource).toContain("2025-06-01")
+    expect(withSource).toContain("https://example.com/m")
+    assertZeroBurden(withSource)
+
+    // No sources ⇒ no chip (estate-only / curated name).
+    const without = renderToStaticMarkup(<DomainDraftCard draft={domain()} onDecide={noop} />)
+    expect(without).not.toContain("Sources")
+  })
+
   it("renders the honest confidence band + signals + gap, never a percent (MV-D56/D35)", () => {
     const html = renderToStaticMarkup(
       <DomainDraftCard

@@ -1,8 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
-import type { OntologyPreflight, PermissionTier } from "@/ontology/types"
+import type { OntologyPreflight, PermissionTier, SourceStatus } from "@/ontology/types"
 import { PermissionBanner } from "./PermissionBanner"
-import { copyButtonLabel, grantCopyText, identityLabel, showGrantCopy } from "./permissionTiers"
+import {
+  copyButtonLabel,
+  executeStatusToTier,
+  grantCopyText,
+  identityLabel,
+  showGrantCopy,
+} from "./permissionTiers"
 
 function tier(overrides: Partial<PermissionTier>): PermissionTier {
   return {
@@ -85,5 +91,72 @@ describe("PermissionBanner render (MV-D50)", () => {
     const text = html.replace(/\s+/g, " ").toLowerCase()
     expect(text).toContain("optional upgrade")
     expect(text).toContain("no service-principal grant is required to view")
+  })
+})
+
+// ── Phase 4 Stage C: the per-source Context Sources sub-panel ──────────────────
+function source(overrides: Partial<SourceStatus> = {}): SourceStatus {
+  return {
+    id: "web_search",
+    label: "Web search (AI Gateway)",
+    klass: "external",
+    provenance_tier: "T3",
+    influence: "naming, descriptions, synonyms, gap hypotheses, recent context",
+    execute_status: "missing",
+    grant_line: "GRANT EXECUTE ON `system.ai.web_search` TO `app-sp`",
+    reason: "The app service principal has no EXECUTE grant on this source.",
+    ...overrides,
+  }
+}
+
+describe("PermissionBanner execute-status mapping (Stage C)", () => {
+  it("maps ok→ok and every non-ok EXECUTE status to the warning (degraded) pill", () => {
+    expect(executeStatusToTier("ok")).toBe("ok")
+    expect(executeStatusToTier("missing")).toBe("degraded")
+    expect(executeStatusToTier("blocked")).toBe("degraded")
+    expect(executeStatusToTier("unavailable")).toBe("degraded")
+  })
+})
+
+describe("PermissionBanner context sources panel (Stage C)", () => {
+  it("renders a per-source row (label, class, tier, influence) + a GRANT EXECUTE when missing", () => {
+    const html = renderToStaticMarkup(
+      <PermissionBanner
+        preflight={preflight([
+          tier({
+            id: "external_enrichment",
+            identity: "batch",
+            status: "degraded",
+            sources: [source()],
+          }),
+        ])}
+      />,
+    )
+    expect(html).toContain("Web search (AI Gateway)")
+    expect(html).toContain("external") // class badge
+    expect(html).toContain("T3") // provenance tier badge
+    expect(html).toContain("May inform:")
+    // A missing EXECUTE surfaces the copy-ready GRANT EXECUTE line + copy button.
+    expect(html).toContain("GRANT EXECUTE ON `system.ai.web_search`")
+    expect(html).toContain("Copy GRANT EXECUTE")
+  })
+
+  it("keeps the plain reason and shows no source panel when the tier reports no sources (off)", () => {
+    const html = renderToStaticMarkup(
+      <PermissionBanner
+        preflight={preflight([
+          tier({
+            id: "external_enrichment",
+            identity: "batch",
+            status: "not_exercised",
+            sources: [],
+            reason: "External context is off (the default) — the engine runs estate-only.",
+          }),
+        ])}
+      />,
+    )
+    expect(html).toContain("estate-only")
+    expect(html).not.toContain("May inform:")
+    expect(html).not.toContain("Copy GRANT EXECUTE")
   })
 })

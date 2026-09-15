@@ -206,6 +206,11 @@ export default function OntologyPage() {
             {tab === "settings" && settings && (
               <SettingsForm
                 settings={settings}
+                // Stage C: the context sources the preflight reports (empty when off) drive
+                // the per-source checkboxes.
+                sources={
+                  preflight?.tiers.find((t) => t.id === "external_enrichment")?.sources ?? []
+                }
                 onSaved={(next) => {
                   setSettings(next)
                   // Re-resolve scope + re-read once catalogs change.

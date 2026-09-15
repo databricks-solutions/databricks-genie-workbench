@@ -195,6 +195,14 @@ export interface ConfidenceBand {
   gap: string
 }
 
+// Phase 4 Stage C (MV-D23/D35): one labeled/dated source behind a suggestion whose name
+// came from the external Context Pack. 1:1 with backend DomainDraftSource.
+export interface DomainDraftSource {
+  label: string
+  url: string
+  as_of: string
+}
+
 export interface DomainDraft {
   proposal_id: string
   kind: "domain" | "subdomain" | "reassign"
@@ -208,6 +216,9 @@ export interface DomainDraft {
   evidence: EvidenceChip[]
   tier: DraftTier
   confidence?: ConfidenceBand | null
+  // Stage C: labeled/dated sources — present only when the name came from an APPLIED
+  // external Context Pack prior. Additive + optional so a pre-Phase-4 payload still parses.
+  sources?: DomainDraftSource[]
 }
 
 export interface PageDraft {

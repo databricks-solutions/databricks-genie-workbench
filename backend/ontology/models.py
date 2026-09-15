@@ -334,6 +334,16 @@ class ConfidenceBand(BaseModel):
     gap: str = ""
 
 
+class DomainDraftSource(BaseModel):
+    """One labeled, dated source behind a suggestion whose NAME came from the external
+    Context Pack (Phase 4 Stage C, MV-D23/D35). Compact + zero-burden: a plain-language
+    ``label`` (never the pack / tier / provenance jargon), the citation ``url``, and the
+    ``as_of`` date. Assembled server-side ONLY when ``evidence.rank.naming_prior.applied``."""
+    label: str  # plain-language source name (e.g. "Industry reference")
+    url: str = ""  # citation URL the chip links to (may be empty)
+    as_of: str = ""  # the source's as-of date, plain string
+
+
 class DomainDraft(BaseModel):
     proposal_id: str  # = domain_id (member-fingerprint-derived, metastore-stable)
     kind: Literal["domain", "subdomain", "reassign"]
@@ -349,6 +359,10 @@ class DomainDraft(BaseModel):
     # Stage 3 (MV-D56): the honest confidence band, additive. The card renders this in
     # place of the bare tier; ``tier`` stays for ordering + back-compat.
     confidence: ConfidenceBand | None = None
+    # Phase 4 Stage C (MV-D23/D35): labeled/dated sources, additive + defaulted []. Non-empty
+    # ONLY when the name came from an APPLIED external Context Pack prior; the card renders a
+    # "Sources" chip. A pre-Phase-4 row (or a curated/estate-only name) → [] → no chip.
+    sources: list[DomainDraftSource] = Field(default_factory=list)
 
 
 class PageDraft(BaseModel):

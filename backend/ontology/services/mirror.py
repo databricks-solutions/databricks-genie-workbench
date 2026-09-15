@@ -358,6 +358,38 @@ def _domain_why(kind: str, name: str, tag_decision: str, member_count: int, conf
     return f"“{name}” groups {member_count} related assets that aren't organized under a shared domain yet."
 
 
+# Plain-language source labels for the "Sources" chip (MV-D23 — no pack / tier / provider
+# jargon leaks to the curator). Keyed by the pack leaf's ``source_kind``; anything else
+# falls back to a neutral "Industry reference".
+_SOURCE_KIND_LABEL = {
+    "system_table": "Verified data",
+    "filing": "Company filing",
+    "industry_model": "Industry reference",
+    "standards_body": "Standards reference",
+    "web": "Web reference",
+    "llm_synthesis": "Industry reference",
+}
+
+
+def _domain_sources(evidence: dict[str, Any]) -> list[dict[str, str]]:
+    """The labeled/dated sources behind a suggestion whose NAME came from the external
+    Context Pack (Phase 4 Stage C, MV-D23/D35). Returns ``[{label, url, as_of}]`` ONLY when
+    ``evidence.rank.naming_prior.applied`` is true — the pack name was actually adopted (a
+    curated/T0 name that merely corroborated is NOT applied). ``[]`` otherwise, so a
+    pre-Phase-4 row, a curated name, or an estate-only run surfaces no chip."""
+    prior = (evidence.get("rank") or {}).get("naming_prior")
+    if not isinstance(prior, dict) or not prior.get("applied"):
+        return []
+    url = prior.get("source_url")
+    kind = str(prior.get("source_kind") or "")
+    as_of = prior.get("as_of")
+    return [{
+        "label": _SOURCE_KIND_LABEL.get(kind, "Industry reference"),
+        "url": str(url) if url else "",
+        "as_of": str(as_of) if as_of else "",
+    }]
+
+
 def _confidence_of(evidence: dict[str, Any]) -> dict[str, Any] | None:
     """The honest confidence band (MV-D56) from ``evidence.rank.confidence``, or None
     for a pre-Stage-3 mirror row. Shape ``{band, signals_present, gap}`` — the wheel
@@ -401,6 +433,9 @@ def _assemble_domain_draft(
         # carried in evidence.rank.confidence; served additively (the card renders it
         # in place of the bare tier). A pre-Stage-3 mirror row without it → None.
         "confidence": _confidence_of(evidence),
+        # Phase 4 Stage C (MV-D23/D35): labeled/dated sources — non-empty only when the
+        # name came from an APPLIED external Context Pack prior (the "Sources" chip).
+        "sources": _domain_sources(evidence),
     }
 
 

@@ -3,11 +3,16 @@
 // choose catalogs). Backed by GET/PUT /api/ontology/settings — the only write,
 // and it writes our own config, never Unity Catalog.
 import { useState } from "react"
-import { Building2, Check, Database, Filter, Loader2, SlidersHorizontal, UserCog } from "lucide-react"
+import { Building2, Check, Database, Filter, Globe, Loader2, SlidersHorizontal, UserCog } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { saveSettings } from "@/ontology/api"
-import type { IndustryAlignment, OntologySettings, ReadIdentity } from "@/ontology/types"
+import type {
+  IndustryAlignment,
+  OntologySettings,
+  ReadIdentity,
+  SourceStatus,
+} from "@/ontology/types"
 
 // "Read as" options (MV-D50). Default is the viewing admin (OBO) — no SP grant
 // needed to view. SP / Auto are opt-in upgrades (shared cross-user cache).
@@ -20,9 +25,13 @@ const READ_IDENTITY_OPTIONS: { value: ReadIdentity; label: string }[] = [
 export function SettingsForm({
   settings,
   onSaved,
+  sources = [],
 }: {
   settings: OntologySettings
   onSaved: (next: OntologySettings) => void
+  // Phase 4 Stage C: the context sources the preflight tier reports (empty when the
+  // feature is off). The per-source checkboxes iterate exactly this list.
+  sources?: SourceStatus[]
 }) {
   const [company, setCompany] = useState(settings.company_name ?? "")
   const [allowlistText, setAllowlistText] = useState(settings.catalog_allowlist.join(", "))
@@ -51,6 +60,11 @@ export function SettingsForm({
     enabled: false,
     reference_model: null,
   }
+  // Phase 4 Stage C (MV-D44 DEFAULT OFF): the one opt-in toggle + per-source overrides.
+  const [externalEnabled, setExternalEnabled] = useState(settings.external_context?.enabled ?? false)
+  const [externalSources, setExternalSources] = useState<Record<string, boolean>>(
+    settings.external_context?.sources ?? {},
+  )
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -85,6 +99,8 @@ export function SettingsForm({
         domain_max_diffuse_schemas: Number.parseInt(maxDiffuseSchemas, 10) || 0,
         domain_min_home_concentration: Number.parseFloat(minHomeConcentration) || 0,
         industry_alignment: industryAlignment,
+        // Phase 4 Stage C: the opt-in toggle + per-source overrides (DEFAULT OFF).
+        external_context: { enabled: externalEnabled, sources: externalSources },
       })
       onSaved(next)
       setSavedAt(Date.now())
@@ -329,6 +345,48 @@ export function SettingsForm({
             </label>
           </div>
         </div>
+      </div>
+
+      {/* ── Phase 4 Stage C: one opt-in toggle for industry context (MV-D23/D44) ──
+          Plain language only — no pack / provider / tier jargon. DEFAULT OFF ⇒ only the
+          toggle shows; the per-source checkboxes appear once it is on and sources exist. */}
+      <div className="space-y-3 border-t border-default pt-4">
+        <div>
+          <label className="flex items-center gap-2 text-sm font-semibold text-primary">
+            <Globe className="h-4 w-4 text-accent" />
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-default"
+              checked={externalEnabled}
+              onChange={(e) => setExternalEnabled(e.target.checked)}
+            />
+            Use industry context to improve naming
+          </label>
+          <p className="mt-0.5 max-w-prose text-xs text-muted">
+            When on, suggestions can borrow clearer, industry-standard names and synonyms.
+            It never changes which assets belong together — only how a group is named — and
+            every borrowed name is shown with its source. Off by default.
+          </p>
+        </div>
+
+        {externalEnabled && sources.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-secondary">Sources to draw from</p>
+            {sources.map((s) => (
+              <label key={s.id} className="flex items-center gap-2 text-xs text-secondary">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-default"
+                  checked={externalSources[s.id] ?? true}
+                  onChange={(e) =>
+                    setExternalSources((prev) => ({ ...prev, [s.id]: e.target.checked }))
+                  }
+                />
+                {s.label}
+              </label>
+            ))}
+          </div>
+        )}
       </div>
 
       {error && <p className="text-xs text-danger-foreground">{error}</p>}

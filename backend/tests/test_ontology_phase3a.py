@@ -67,6 +67,8 @@ _MAPV2_MODELS = {"OntologyGraphExpand"}
 # Phase 4 Stage A (17h): the external Context Sources tier surface — the per-source
 # status row + the DEFAULT-OFF config object. Additive; nothing removed or renamed.
 _PHASE4_STAGEA_MODELS = {"SourceStatus", "ExternalContext"}
+# Phase 4 Stage C (17h): the labeled/dated Sources chip on a DomainDraft (additive).
+_PHASE4_STAGEC_MODELS = {"DomainDraftSource"}
 
 
 def test_no_new_api_model_added_in_phase3a():
@@ -83,6 +85,7 @@ def test_no_new_api_model_added_in_phase3a():
     allowed = (
         _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE3E_MODELS
         | _PHASE5_MODELS | _STAGE41D_MODELS | _MAPV2_MODELS | _PHASE4_STAGEA_MODELS
+        | _PHASE4_STAGEC_MODELS
     )
     assert defined == allowed, (
         f"unexpected model surface change: {defined ^ allowed}"

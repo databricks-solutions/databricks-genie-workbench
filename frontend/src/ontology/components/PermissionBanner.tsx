@@ -6,8 +6,14 @@ import { useState } from "react"
 import { Building2, Check, Copy, Info, Lock, Minus, ShieldAlert, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import type { OntologyPreflight, PermissionTier, TierStatus } from "@/ontology/types"
-import { copyButtonLabel, grantCopyText, identityLabel, showGrantCopy } from "./permissionTiers"
+import type { OntologyPreflight, PermissionTier, SourceStatus, TierStatus } from "@/ontology/types"
+import {
+  copyButtonLabel,
+  executeStatusToTier,
+  grantCopyText,
+  identityLabel,
+  showGrantCopy,
+} from "./permissionTiers"
 
 function StatusPill({ status }: { status: TierStatus }) {
   if (status === "ok") {
@@ -52,6 +58,62 @@ function CopyGrantButton({ tier }: { tier: PermissionTier }) {
       )}
       {copied ? "Copied!" : copyButtonLabel(tier)}
     </Button>
+  )
+}
+
+// A copy-to-clipboard button for one source's GRANT EXECUTE line (Stage C). Mirrors
+// CopyGrantButton but copies a single source's grant rather than a tier's grant list.
+function CopySourceGrant({ line }: { line: string }) {
+  const [copied, setCopied] = useState(false)
+  const onClick = async () => {
+    try {
+      await navigator.clipboard?.writeText(line)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard unavailable (permissions / insecure context) — no-op.
+    }
+  }
+  return (
+    <Button size="sm" variant="secondary" onClick={onClick} aria-live="polite">
+      {copied ? (
+        <Check className="mr-1 h-3 w-3 text-success-foreground" />
+      ) : (
+        <Copy className="mr-1 h-3 w-3" />
+      )}
+      {copied ? "Copied!" : "Copy GRANT EXECUTE"}
+    </Button>
+  )
+}
+
+// Phase 4 Stage C: the per-source sub-panel for the external-enrichment tier. Each row
+// shows the source label, its class + provenance tier badges, the plain-language
+// influence, an EXECUTE status pill, and a copy-ready GRANT EXECUTE when one is missing.
+// Rendered only when the tier reports sources; otherwise the tier keeps its plain reason.
+function SourcePanel({ sources }: { sources: SourceStatus[] }) {
+  return (
+    <div className="mt-2 space-y-2 border-t border-default pt-2">
+      {sources.map((s) => (
+        <div key={s.id} className="flex items-start gap-2.5">
+          <StatusPill status={executeStatusToTier(s.execute_status)} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm font-medium text-primary">{s.label}</span>
+              <Badge variant={s.klass === "external" ? "secondary" : "default"}>{s.klass}</Badge>
+              <Badge variant="secondary">{s.provenance_tier}</Badge>
+            </div>
+            <p className="text-xs text-muted">May inform: {s.influence}</p>
+            {s.reason && <p className="text-xs text-muted">{s.reason}</p>}
+            {s.grant_line && (
+              <div className="mt-1 space-y-1">
+                <p className="break-all font-mono text-xs text-secondary">{s.grant_line}</p>
+                <CopySourceGrant line={s.grant_line} />
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -110,6 +172,12 @@ export function PermissionBanner({ preflight }: { preflight: OntologyPreflight }
                   <div className="mt-1.5">
                     <CopyGrantButton tier={t} />
                   </div>
+                )}
+                {/* Stage C: per-source panel — external-enrichment tier only, when the
+                    preflight reports sources (i.e. external context is on). Off ⇒ no
+                    sources ⇒ the tier keeps today's plain reason above. */}
+                {t.id === "external_enrichment" && t.sources && t.sources.length > 0 && (
+                  <SourcePanel sources={t.sources} />
                 )}
               </div>
               <Badge variant={t.identity === "sp" ? "secondary" : "default"}>

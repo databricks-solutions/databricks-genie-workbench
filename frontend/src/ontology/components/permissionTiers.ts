@@ -1,6 +1,6 @@
 // Pure helpers for PermissionBanner (kept out of the component file so Fast
 // Refresh only sees component exports). MV-D50 identity + copy-button logic.
-import type { PermissionTier } from "@/ontology/types"
+import type { ExecuteStatus, PermissionTier, TierStatus } from "@/ontology/types"
 
 const IDENTITY_LABEL: Record<PermissionTier["identity"], string> = {
   obo: "OBO",
@@ -30,4 +30,11 @@ export function copyButtonLabel(tier: PermissionTier): string {
 
 export function grantCopyText(tier: PermissionTier): string {
   return tier.grants.join("\n")
+}
+
+// Phase 4 Stage C: map a source's EXECUTE probe outcome to the shared StatusPill
+// vocabulary — "ok" stays ok; "missing" | "blocked" | "unavailable" all read as a
+// warning (rendered via the "degraded" pill).
+export function executeStatusToTier(status: ExecuteStatus): TierStatus {
+  return status === "ok" ? "ok" : "degraded"
 }

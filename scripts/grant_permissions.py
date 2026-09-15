@@ -46,6 +46,33 @@ SP_SCHEMA_PRIVILEGES = {
     "MANAGE",
 }
 
+# ── Phase 4 Stage C: external Context Sources — GRANT EXECUTE + OAuth scopes ──
+# DEFAULT OFF (MV-D44): with no enabled source ids these are a no-op. The OAuth scopes
+# are what the app's OBO managed-MCP path needs to reach the enabled MCP services (§1
+# Stage C); they are additive to the app's existing user_api_scopes.
+CONTEXT_MCP_OAUTH_SCOPES = ("genie", "sql", "unity-catalog", "ai-search")
+
+
+def context_source_grant_statements(enabled_ids: list[str], principal: str) -> list[str]:
+    """Copy-ready ``GRANT EXECUTE`` statements for each ENABLED context source that is a
+    Unity Catalog securable (a dotted managed-MCP name). Internal workspace-path MCPs
+    (``/api/2.0/mcp/*``) are not grantable securables and are skipped. Returns ``[]`` when
+    nothing is enabled — DEFAULT OFF is a no-op (MV-D44). Reuses the wheel's
+    ``grant_execute_line`` so the deploy grant matches the banner's copy exactly."""
+    from genie_space_optimizer.ontology.context_registry import get_source, grant_execute_line
+
+    statements: list[str] = []
+    for source_id in enabled_ids:
+        entry = get_source(source_id.strip())
+        if entry is None:
+            continue
+        fqn = entry.mcp_fqn
+        if fqn.startswith("/") or "." not in fqn:
+            continue  # workspace-path MCP — not a grantable UC securable
+        statements.append(grant_execute_line(entry, principal))
+    return statements
+
+
 def _run(cmd: list[str]) -> str:
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
@@ -338,6 +365,13 @@ def main() -> int:
         "in-app 'Refresh ontology' button can launch it (MV-D41/D50).",
     )
     parser.add_argument(
+        "--context-sources",
+        default="",
+        help="Phase 4 Stage C: comma-separated context source ids to GRANT EXECUTE for "
+        "(e.g. web_search,confluence). Empty (the default) is a no-op — external context "
+        "is OFF by default (MV-D44).",
+    )
+    parser.add_argument(
         "--job-run-grant-only",
         action="store_true",
         help="Only resolve the app SP and grant CAN_MANAGE_RUN on --ontology-job-id, "
@@ -498,6 +532,14 @@ def main() -> int:
     # issue these, so failures are warnings, not hard errors.
     _grant_watch_system_tables(profile=args.profile, principal=principal)
 
+    # Phase 4 Stage C: external Context Source GRANT EXECUTE + OAuth scopes — a no-op
+    # unless --context-sources names enabled sources (external context is OFF by default).
+    enabled_ctx = [s for s in args.context_sources.split(",") if s.strip()]
+    _grant_context_sources(
+        profile=args.profile, warehouse_id=args.warehouse_id,
+        principal=principal, enabled_ids=enabled_ctx,
+    )
+
     # Ontology job-run grant (when the id is supplied to a full run — e.g. a manual
     # invocation). deploy.sh normally does this via a second --job-run-grant-only
     # pass once the bundle resolves the job id.
@@ -507,6 +549,49 @@ def main() -> int:
         )
 
     return 0
+
+
+def _grant_context_sources(
+    *, profile: str, warehouse_id: str | None, principal: str, enabled_ids: list[str],
+) -> None:
+    """Phase 4 Stage C: GRANT EXECUTE on each enabled external Context Source's MCP
+    securable + surface the OAuth scopes the OBO managed-MCP path needs. Additive and
+    best-effort; a no-op when no sources are enabled (DEFAULT OFF, MV-D44). Never fails
+    the deploy — a denial logs the copy-ready statement for a UC admin to run."""
+    statements = context_source_grant_statements(enabled_ids, principal)
+    if not statements:
+        return  # nothing enabled ⇒ no-op
+    for stmt in statements:
+        if not warehouse_id:
+            print(
+                f"[grant-permissions] Context source (manual — no --warehouse-id):\n    {stmt}",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            result = _sql_exec(profile=profile, warehouse_id=warehouse_id, statement=stmt)
+            state = (result.get("status") or {}).get("state", "")
+            if state == "SUCCEEDED":
+                print(f"[grant-permissions] Context source grant applied: {stmt}")
+            else:
+                err_msg = (result.get("status") or {}).get("error", {}).get("message", "unknown")
+                print(
+                    f"[grant-permissions] WARNING: context source grant failed ({state}): "
+                    f"{err_msg}\n    A UC admin can run: {stmt}",
+                    file=sys.stderr,
+                )
+        except Exception as err:  # noqa: BLE001 — best-effort, never fail the deploy
+            last = str(err).splitlines()[-1] if str(err).strip() else str(err)
+            print(
+                f"[grant-permissions] WARNING: could not apply context source grant "
+                f"({last}). A UC admin can run: {stmt}",
+                file=sys.stderr,
+            )
+    print(
+        "[grant-permissions] External context enabled — add these OAuth scopes to the app "
+        "so the OBO managed-MCP path can reach the enabled sources: "
+        + ", ".join(CONTEXT_MCP_OAUTH_SCOPES)
+    )
 
 
 def _grant_watch_system_tables(*, profile: str, principal: str) -> None:
