@@ -291,6 +291,15 @@ offline harness reads to compute precision/recall/F of discovered vs reference
 domains; §9 only guarantees that output exists and is stable.
 
 ## 10. Evaluation & trust harness · MV-D59
+> **Status: BUILT + live-wired + deploy-verified (2026-09-15).** Offline harness
+> (`eval_harness.py`, `7120a6df`) is invoked by a post-materialize hook (`233da3cd`)
+> that persists one `EvalReport` per run to the additive `genie_ont_eval` table.
+> First airline baseline: **recall 0.77**, precision 0.117 (see finding below).
+> **Open finding:** P/R/F + structural health currently score over ALL raw pre-gate
+> rows (145 incl. 128 suppressed) instead of the **surfaced** estate (17), deflating
+> precision (17/145 = 0.117) and the structural rates. Next small change (dogfooded
+> through `compare_reports`): scope the eval to surfaced domains.
+
 Offline harness reporting, per run: gold-standard precision/recall/F of discovered
 domains vs the aligned reference; structural health (singleton/orphan rate, depth,
 branching — the metrics the Vibe repo itself reports); a cheap reference-free LLM

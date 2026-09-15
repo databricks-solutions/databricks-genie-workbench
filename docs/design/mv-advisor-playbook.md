@@ -1132,12 +1132,15 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > `match_pass`/`score`; **`applied_renames=0`** — no T0/curated fact outranked (curated wins,
 > `outranked_by=curated`). Semantically sound (Yield Management *narrower* Revenue; Commercial
 > *broader* Loyalty). Gap hypotheses are report-only (never auto-created). Replaces the mistargeted
-> token-overlap prior. **Next:** §10 eval harness (MV-D59) is now unblocked — §9 emits the aligned
-> reference it scores against. The offline harness is already built (`7120a6df`); the remaining
-> step is a thin **live-wiring** slice — **DRAFTED (build-ready):**
-> `ontology-eval-harness-livewire-driver.md` (post-materialize hook using the in-memory
-> `aligned_reference` + an additive `genie_ont_eval` table) to capture the first real P/R/F
-> baseline that `compare_reports` gates against.
+> token-overlap prior. **§10 eval harness (MV-D59) — BUILT + live-wired + deploy-verified
+> (2026-09-15, `233da3cd`):** the offline harness (`7120a6df`) is now invoked by a post-materialize
+> hook that persists one `EvalReport` per run to the additive `genie_ont_eval` table (driver
+> `ontology-eval-harness-livewire-driver.md`). First live baseline on the airline estate:
+> **recall 0.77** (~77% of the airline reference taxonomy covered), max_depth 2. **Finding the
+> harness caught:** precision reads **0.117 = 17 surfaced-aligned / 145 total rows** — P/R/F +
+> structural health score over ALL raw pre-gate clusters (incl. the 128 suppressed dev/migration
+> rows) instead of the **surfaced** estate (17). **Next (small, gated by `compare_reports`):** scope
+> the eval to surfaced domains so the baseline is meaningful.
 >
 > **Phase 5 (17i) — offline finish LANDED on `ontology`** (subsystem's only governed-tag writer;
 > additive, no dep, `uv.lock`/npm-lock untouched — MV-D45). Closed the offline slice's remaining
