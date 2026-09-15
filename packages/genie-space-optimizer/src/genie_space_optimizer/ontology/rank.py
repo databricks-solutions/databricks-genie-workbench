@@ -270,6 +270,74 @@ def context_gap_hypotheses(pack: Any | None, surfaced_domain_names: Iterable[str
     return sorted(out, key=lambda h: h["name"].lower())
 
 
+# ── Plug-point 1b (17h / §9, MV-D58): industry-reference alignment as a typed prior ──
+# ``alignment.py`` runs the four-pass hybrid match (string → embedding seed anchors →
+# structural propagation → semantic sanity) and hands this function the TYPED correspondences
+# (``exact``/``narrower``/``broader``/``derived``/``not-equivalent``) as plain dicts (rank stays
+# decoupled from the alignment module — no import). This records each correspondence on the
+# domain's ``evidence.rank.alignment`` as a PROVENANCED prior and, like the pack naming prior,
+# renames ONLY a surfaced pure-engine ``create`` cluster on an ``exact`` match — a curated
+# governed-tag Domain (reuse/reassign — a T0/curated name) is NEVER renamed; the correspondence
+# becomes corroborating evidence (``applied=false``, ``outranked_by="curated"``). Empty
+# ``correspondences`` (alignment off / no match) is a NO-OP ⇒ byte-identical (MV-D44).
+
+
+def apply_alignment(
+    domain_rows: list[dict[str, Any]],
+    correspondences: Sequence[Mapping[str, Any]],
+) -> int:
+    """Apply industry-reference typed correspondences to Domain rows IN PLACE (plug-point 1b,
+    MV-D58). Returns the number of rows renamed.
+
+    Each correspondence (a dict from ``alignment.Correspondence.to_dict``) is recorded on
+    ``evidence.rank.alignment`` with its relation + provenance envelope. A row is renamed to
+    the reference name ONLY when it is a surfaced pure-engine ``create`` cluster matched
+    ``exact`` — the same T0/curated-wins discipline as :func:`apply_context_prior`: a curated
+    Domain (``tag_decision`` in ``{reuse, reassign}``) keeps its name and the correspondence is
+    recorded as corroborating evidence. A ``not-equivalent`` (rejected near-miss) is recorded
+    too but never applied. No correspondences ⇒ a NO-OP (zero rows touched, byte-identical)."""
+    if not correspondences:
+        return 0
+    by_domain: dict[str, Mapping[str, Any]] = {}
+    for c in correspondences:
+        did = str(c.get("discovered_domain_id") or "")
+        if did and did not in by_domain:  # first (deterministically-sorted) correspondence wins
+            by_domain[did] = c
+    renamed = 0
+    for row in domain_rows:
+        corr = by_domain.get(str(row.get("domain_id") or ""))
+        if corr is None:
+            continue
+        ev = _load_evidence(row)
+        rank = ev.get("rank")
+        if not isinstance(rank, dict):
+            rank = {}
+        curated = str(row.get("tag_decision") or "") in ("reuse", "reassign")
+        relation = str(corr.get("relation") or "")
+        prov = corr.get("provenance") if isinstance(corr.get("provenance"), Mapping) else {}
+        applied = (not curated) and bool(ev.get("surfaced")) and relation == "exact"
+        rank["alignment"] = {
+            "reference_name": corr.get("reference_name"),
+            "reference_id": corr.get("reference_id"),
+            "relation": relation,
+            "match_pass": corr.get("match_pass"),
+            "score": corr.get("score"),
+            "tier": str(prov.get("tier") or "T2"),
+            "source_url": prov.get("source_url"),
+            "source_kind": prov.get("source_kind"),
+            "as_of": prov.get("as_of"),
+            # A curated (T0) name always wins — record why alignment did NOT rename.
+            "applied": applied,
+            "outranked_by": "curated" if curated else None,
+        }
+        ev["rank"] = rank
+        if applied:
+            row["name"] = str(corr.get("reference_name") or row.get("name"))
+            renamed += 1
+        row["evidence"] = json.dumps(ev, sort_keys=True)
+    return renamed
+
+
 def _pack_domain_priors(pack: Any) -> list[tuple[str, dict[str, Any]]]:
     """``[(name, name_leaf)]`` from the pack's canonical domains (duck-typed on
     ``canonical_domain_names``; falls back to reading ``canonical_domains`` dicts)."""
@@ -704,6 +772,7 @@ __all__ = [
     "FACTOR_WEIGHTS",
     "PROVENANCE_TIER_STRENGTH",
     "RankSignals",
+    "apply_alignment",
     "apply_context_prior",
     "blend",
     "context_gap_hypotheses",

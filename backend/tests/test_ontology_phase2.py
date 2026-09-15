@@ -201,6 +201,8 @@ def test_trigger_launches_when_idle(monkeypatch):
         "join_col_denylist", "max_diffuse_schemas", "min_home_concentration",
         # Stage 4.1d bounded auto-drafting (MV-D66).
         "page_autodraft_min_corroboration", "page_autodraft_max_pages",
+        # §9 industry-reference alignment (MV-D58) — forwarded from stored config (default off).
+        "industry_alignment_enabled", "industry_alignment_reference_model", "company_name",
     }
 
 

@@ -147,6 +147,9 @@ def _launch(
     min_home_concentration: float = 0.5,
     page_autodraft_min_corroboration: int = 3,
     page_autodraft_max_pages: int = 50,
+    industry_alignment_enabled: bool = False,
+    industry_alignment_reference_model: str | None = None,
+    company_name: str | None = None,
 ) -> str | None:
     """Trigger the materialize job via run_now. Returns the job run id, or None.
 
@@ -183,6 +186,11 @@ def _launch(
             # Stage 4.1d bounded auto-drafting (MV-D66).
             "page_autodraft_min_corroboration": str(int(page_autodraft_min_corroboration)),
             "page_autodraft_max_pages": str(int(page_autodraft_max_pages)),
+            # §9 industry-reference alignment (MV-D58) — DEFAULT OFF; a blank reference_model
+            # keeps it off even if enabled. company_name gives alignment its business context.
+            "industry_alignment_enabled": "true" if industry_alignment_enabled else "false",
+            "industry_alignment_reference_model": str(industry_alignment_reference_model or ""),
+            "company_name": str(company_name or ""),
         },
     )
     return str(getattr(waiter, "run_id", "")) or None
@@ -218,6 +226,11 @@ async def trigger() -> OntologyRefreshStatus:
             min_home_concentration=settings.domain_min_home_concentration,
             page_autodraft_min_corroboration=settings.page_autodraft_min_corroboration,
             page_autodraft_max_pages=settings.page_autodraft_max_pages,
+            # §9 industry-reference alignment (MV-D58) — forwarded from the stored config
+            # (default off). company_name gives alignment its business context.
+            industry_alignment_enabled=bool(settings.industry_alignment.enabled),
+            industry_alignment_reference_model=settings.industry_alignment.reference_model,
+            company_name=settings.company_name,
         )
     except Exception as e:  # noqa: BLE001 — surface plainly, never 500 the button
         logger.warning("ontology refresh launch failed: %s", e)

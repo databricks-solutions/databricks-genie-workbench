@@ -322,6 +322,109 @@ def test_context_pack_off_is_byte_identical_to_omitting_it():
         assert w_none.tables[t] == w_omit.tables[t]
 
 
+# ── §9 industry-reference alignment (MV-D58) through the materializer ────────
+
+
+def _fin_reference():
+    """A tiny reference model that matches the fixture's curated ``Finance`` Domain and
+    carries a gap domain (``Payments``) the estate lacks."""
+    from genie_space_optimizer.ontology.alignment import ReferenceDomain, ReferenceModel
+
+    return ReferenceModel(
+        model_id="fin", label="Finance", source_url="https://ref.example/fin",
+        as_of="2026-09-15", tier="T2",
+        domains=(
+            ReferenceDomain("Finance", synonyms=("ledger", "accounting")),
+            ReferenceDomain("Payments", description="settlements"),
+        ),
+    )
+
+
+def test_industry_alignment_off_is_byte_identical_to_omitting_it():
+    """DEFAULT OFF (MV-D44): industry_reference=None must be byte-identical to omitting it —
+    no alignment leaves, no gap hypotheses, no naming change."""
+    catalog_rows, assign_rows = _fixture_rows()
+    w_none, w_omit = _FakeWriter(), _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), w_none, run_id="r1", industry_reference=None)
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), w_omit, run_id="r1")
+    assert set(w_none.tables) == set(w_omit.tables)
+    for t in w_none.tables:
+        assert w_none.tables[t] == w_omit.tables[t]
+
+
+def test_industry_alignment_off_writes_no_alignment_output():
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    run = _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+    assert run["aligned_reference"] == {}
+    assert run["alignment_gap_hypotheses"] == []
+    assert run["alignment_correspondence_count"] == 0
+
+
+def test_industry_alignment_on_records_correspondence_and_gap():
+    """With a reference model, the curated Finance Domain records a typed correspondence
+    (never renamed — T0/curated wins) and the reference-only Payments domain becomes a gap."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+    run = _run(
+        _FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+        industry_reference=_fin_reference(),
+    )
+    assert run["state"] == "succeeded"
+    ar = run["aligned_reference"]
+    assert ar["reference_model"] == "fin"
+    assert {"domains", "alignments"} <= set(ar)
+    assert "Payments" in [g["name"] for g in run["alignment_gap_hypotheses"]]
+    assert run["alignment_correspondence_count"] >= 1
+    # The curated "Finance" governed-tag Domain kept its name (T0 wins) but records the
+    # correspondence as corroborating evidence.
+    fin = [r for r in writer.tables["genie_ont_domains"].values() if r.get("name") == "Finance"]
+    assert fin, "the curated Finance Domain kept its T0/curated name"
+    a = json.loads(fin[0]["evidence"])["rank"]["alignment"]
+    assert a["reference_name"] == "Finance"
+    assert a["applied"] is False and a["outranked_by"] == "curated"
+    assert a["tier"] == "T2" and a["source_url"] == "https://ref.example/fin"
+
+
+def test_industry_alignment_bad_reference_degrades_run_succeeds(monkeypatch):
+    """A crash inside alignment degrades to estate-only naming; the run still succeeds and the
+    committed snapshots are intact (MV-D43)."""
+    catalog_rows, assign_rows = _fixture_rows()
+    writer = _FakeWriter()
+
+    def _boom(*a, **k):
+        raise RuntimeError("alignment blew up")
+
+    monkeypatch.setattr(materialize.alignment_mod, "align", _boom)
+    run = _run(
+        _FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1",
+        industry_reference=_fin_reference(),
+    )
+    assert run["state"] == "succeeded"
+    assert run["aligned_reference"] == {}  # degraded to no alignment
+    assert writer.tables["genie_ont_domains"]  # snapshots still committed
+
+
+def test_domain_adjacency_from_signal_graph_fk_edges():
+    """_domain_adjacency maps FK/lineage asset↔asset edges to the domains they connect
+    (read-only — never changes membership)."""
+    sg = {
+        "edges": [
+            {"src": "asset:c.s.a", "dst": "asset:c.s.b", "kind": "join_key"},
+            {"src": "asset:c.s.b", "dst": "asset:c.s.c", "kind": "lineage_adjacency"},
+            {"src": "schema:c.s", "dst": "asset:c.s.a", "kind": "schema_affinity"},  # ignored (hub edge)
+        ]
+    }
+    members = {"d1": ["c.s.a"], "d2": ["c.s.b"], "d3": ["c.s.c"]}
+    adj = materialize._domain_adjacency(members, sg)
+    assert adj["d1"] == ["d2"]
+    assert sorted(adj["d2"]) == ["d1", "d3"]
+    assert adj["d3"] == ["d2"]
+    # No members / empty graph ⇒ {} (no propagation).
+    assert materialize._domain_adjacency({}, sg) == {}
+    assert materialize._domain_adjacency(members, {"edges": []}) == {}
+
+
 def test_context_pack_on_writes_pack_and_source_rows():
     """With a resolved pack, the two context tables are MERGEd (metastore-scoped) and the
     naming prior is recorded on the curated Domain (never renaming it — T0/curated wins)."""

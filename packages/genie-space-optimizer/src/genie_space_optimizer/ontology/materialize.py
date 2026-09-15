@@ -19,10 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from typing import Any, Protocol
 
 from genie_space_optimizer.ontology import (
+    alignment as alignment_mod,
     cluster,
     context_pack as context_pack_mod,
     ddl,
@@ -492,6 +494,38 @@ def _governance_map(graph_struct: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _domain_adjacency(
+    members_by_domain: Mapping[str, Sequence[str]], signal_graph: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """``{domain_id: sorted[neighbour_domain_id]}`` from the FK/join + lineage structural
+    edges — the READ-ONLY input to §9's structural-propagation pass (MV-D58). Maps each
+    asset↔asset structural edge (``join_key`` / ``lineage_adjacency`` / ``co_query``) to the
+    domains its endpoints belong to and connects those domains. Never changes membership —
+    it only reports which discovered domains are structurally adjacent so a matched anchor can
+    pull its neighbours. Empty graph / no members ⇒ ``{}`` (no propagation, MV-D43)."""
+    asset_to_domains: dict[str, set[str]] = {}
+    for did, members in (members_by_domain or {}).items():
+        for m in members or ():
+            asset_to_domains.setdefault(str(m), set()).add(str(did))
+    if not asset_to_domains:
+        return {}
+    adj: dict[str, set[str]] = {}
+    for e in signal_graph.get("edges", []) or ():
+        if e.get("kind") not in ("join_key", "lineage_adjacency", "co_query"):
+            continue
+        src, dst = e.get("src"), e.get("dst")
+        if not (isinstance(src, str) and isinstance(dst, str) and src.startswith("asset:") and dst.startswith("asset:")):
+            continue
+        a_domains = asset_to_domains.get(src.split(":", 1)[1], set())
+        b_domains = asset_to_domains.get(dst.split(":", 1)[1], set())
+        for da in a_domains:
+            for db in b_domains:
+                if da != db:
+                    adj.setdefault(da, set()).add(db)
+                    adj.setdefault(db, set()).add(da)
+    return {did: sorted(neigh) for did, neigh in sorted(adj.items())}
+
+
 def _has_scope(allowlist: list[str] | None) -> bool:
     """True iff the catalog allowlist names at least one catalog.
 
@@ -538,6 +572,7 @@ def run_materialize(
     er_adjudicate_min_score: float = er.ESCALATE_LOW,
     er_adjudicate_max_workers: int = 1,
     context_pack: Any | None = None,
+    industry_reference: Any | None = None,
 ) -> dict[str, Any]:
     """Materialize the governed-tag graph + taxonomy snapshots for one metastore
     (MV-D49 grain), then resolve identity (L3 ER) and MERGE the identity map +
@@ -789,6 +824,34 @@ def run_materialize(
             # Plug-point 2 (MV-D28 subsumed): the Page Recent-context overlay — labeled,
             # sourced, dated, certify-no. Rides evidence; never touches body/certify.
             context_pack_mod.apply_recent_context(page_rows, context_pack)
+
+        # §9 industry-reference alignment (MV-D58) — the typed, provenance-gated naming +
+        # hypothesis layer. Runs ONLY when a reference model loaded (tier enabled); the
+        # ``industry_reference=None`` default is a no-op ⇒ byte-identical (MV-D44). It reads
+        # the surfaced Domains + their members + the FK/join domain adjacency (read-only),
+        # emits typed correspondences (recorded on ``evidence.rank.alignment`` — rename only a
+        # surfaced ``create`` cluster on ``exact``, never a curated T0 name) + gap hypotheses,
+        # and the harness-shaped aligned reference. Additive/idempotent like ranking; a
+        # failure degrades to no alignment (MV-D43), never corrupts the committed snapshots.
+        aligned_reference: dict[str, Any] = {}
+        alignment_gap_hypotheses: list[dict[str, Any]] = []
+        alignment_correspondence_count = 0
+        if industry_reference is not None:
+            try:
+                result = alignment_mod.align(
+                    expanded["domain_rows"], industry_reference,
+                    members_by_domain=members_by_domain,
+                    domain_adjacency=_domain_adjacency(members_by_domain, signal_graph),
+                    embedder=embedder, as_of=as_of,
+                )
+                rank.apply_alignment(
+                    expanded["domain_rows"], [c.to_dict() for c in result.correspondences],
+                )
+                aligned_reference = result.aligned_reference
+                alignment_gap_hypotheses = result.gap_hypotheses
+                alignment_correspondence_count = len(result.correspondences)
+            except Exception as exc:  # noqa: BLE001 — degrade-not-hang: no alignment, run continues
+                logger.warning("ontology industry-alignment degraded; estate-only naming: %s", exc)
         writer.merge(ddl.TABLE_ONT_DOMAINS, expanded["domain_rows"], DOMAIN_KEYS, metastore_id)
         # Step 2 (MV-D66): re-merge pages with preserved bodies for curator rows.
         writer.merge(
@@ -901,6 +964,13 @@ def run_materialize(
             # columns (no DDL, MV-D49) — the writer drops keys absent from the schema.
             "context_pack_rows": context_pack_rows,
             "context_gap_hypotheses": gap_hypotheses,
+            # §9 industry alignment (MV-D58): the harness-shaped aligned reference + typed-
+            # correspondence count + gap hypotheses (empty when off). Returned + logged, NOT
+            # persisted columns (evidence-first, MV-D49) — the writer drops keys absent from
+            # the schema. Correspondences themselves ride the domain rows' evidence.
+            "aligned_reference": aligned_reference,
+            "alignment_correspondence_count": alignment_correspondence_count,
+            "alignment_gap_hypotheses": alignment_gap_hypotheses,
         }
         writer.upsert_run(run_row)
         return run_row

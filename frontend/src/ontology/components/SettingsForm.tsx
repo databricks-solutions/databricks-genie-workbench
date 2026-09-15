@@ -3,7 +3,7 @@
 // choose catalogs). Backed by GET/PUT /api/ontology/settings — the only write,
 // and it writes our own config, never Unity Catalog.
 import { useState } from "react"
-import { Building2, Check, Database, Filter, Globe, Loader2, SlidersHorizontal, UserCog } from "lucide-react"
+import { Building2, Check, Compass, Database, Filter, Globe, Loader2, SlidersHorizontal, UserCog } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { saveSettings } from "@/ontology/api"
@@ -55,11 +55,11 @@ export function SettingsForm({
   )
   const [maxDiffuseSchemas, setMaxDiffuseSchemas] = useState(String(settings.domain_max_diffuse_schemas ?? 6))
   const [minHomeConcentration, setMinHomeConcentration] = useState(String(settings.domain_min_home_concentration ?? 0.5))
-  // Industry alignment (MV-D58) is STORED + DORMANT (§9 is Phase 4) — preserved as-is.
-  const industryAlignment: IndustryAlignment = settings.industry_alignment ?? {
-    enabled: false,
-    reference_model: null,
-  }
+  // Industry-reference alignment (MV-D58, §9) — the opt-in toggle + reference-model id.
+  // DEFAULT OFF (MV-D44): off ⇒ a run is byte-identical estate-only (no typed correspondences,
+  // no gap hypotheses). The reference_model is the Vibe industry model id (e.g. "airline").
+  const [alignmentEnabled, setAlignmentEnabled] = useState(settings.industry_alignment?.enabled ?? false)
+  const [alignmentModel, setAlignmentModel] = useState(settings.industry_alignment?.reference_model ?? "")
   // Phase 4 Stage C (MV-D44 DEFAULT OFF): the one opt-in toggle + per-source overrides.
   const [externalEnabled, setExternalEnabled] = useState(settings.external_context?.enabled ?? false)
   const [externalSources, setExternalSources] = useState<Record<string, boolean>>(
@@ -98,7 +98,11 @@ export function SettingsForm({
         domain_join_col_denylist: splitList(joinDenylistText),
         domain_max_diffuse_schemas: Number.parseInt(maxDiffuseSchemas, 10) || 0,
         domain_min_home_concentration: Number.parseFloat(minHomeConcentration) || 0,
-        industry_alignment: industryAlignment,
+        // §9 industry-reference alignment (MV-D58) — DEFAULT OFF; a blank model id disables it.
+        industry_alignment: {
+          enabled: alignmentEnabled,
+          reference_model: alignmentModel.trim() || null,
+        } satisfies IndustryAlignment,
         // Phase 4 Stage C: the opt-in toggle + per-source overrides (DEFAULT OFF).
         external_context: { enabled: externalEnabled, sources: externalSources },
       })
@@ -386,6 +390,47 @@ export function SettingsForm({
               </label>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* ── §9 industry-reference alignment (MV-D58) — the one opt-in toggle + a model id ──
+          Off by default (MV-D44): off ⇒ a run is byte-identical (no industry naming, no gaps).
+          When on, discovered domains pick up business-language names + typed correspondences,
+          and industry domains the estate lacks surface as ranked-below hints. */}
+      <div className="space-y-3 border-t border-default pt-4">
+        <div>
+          <label className="flex items-center gap-2 text-sm font-semibold text-primary">
+            <Compass className="h-4 w-4 text-accent" />
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-default"
+              checked={alignmentEnabled}
+              onChange={(e) => setAlignmentEnabled(e.target.checked)}
+            />
+            Align to an industry reference model
+          </label>
+          <p className="mt-0.5 max-w-prose text-xs text-muted">
+            When on, domains are matched against a standard industry model to borrow clearer
+            names and to flag industry areas your estate has none for — as suggestions ranked
+            below everything found in your data. It never changes which assets belong together,
+            and a curated name always wins. Off by default.
+          </p>
+        </div>
+
+        {alignmentEnabled && (
+          <label className="block text-xs text-secondary">
+            Reference model
+            <Input
+              className="mt-1 w-64"
+              value={alignmentModel}
+              placeholder="e.g. airline"
+              onChange={(e) => setAlignmentModel(e.target.value)}
+            />
+            <span className="mt-1 block text-muted">
+              The industry model to align against (e.g. <code>airline</code>, <code>retail</code>).
+              Leave blank to keep alignment off.
+            </span>
+          </label>
         )}
       </div>
 

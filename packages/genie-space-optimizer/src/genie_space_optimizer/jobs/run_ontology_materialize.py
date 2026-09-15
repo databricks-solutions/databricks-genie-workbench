@@ -133,6 +133,12 @@ dbutils.widgets.text("external_context_enabled", "false")
 dbutils.widgets.text("external_context_sources", "{}")
 dbutils.widgets.text("company_name", "")
 dbutils.widgets.text("external_context_hipaa_baa", "false")
+# §9 industry-reference alignment (MV-D58) — job_parameters, DEFAULT OFF. A param-less run
+# (nightly, older launcher) leaves the tier off ⇒ no reference model is loaded and the run is
+# byte-identical estate-only (no alignment leaves, no gap hypotheses). ``reference_model`` is
+# the Vibe industry model id / alias / NAICS (e.g. "airline"); empty ⇒ off even if enabled.
+dbutils.widgets.text("industry_alignment_enabled", "false")
+dbutils.widgets.text("industry_alignment_reference_model", "")
 
 metastore_id = dbutils.widgets.get("metastore_id").strip()
 workspace_id = dbutils.widgets.get("workspace_id").strip()
@@ -230,6 +236,10 @@ except (TypeError, ValueError, AttributeError):
     external_context_sources = {}
 company_name = dbutils.widgets.get("company_name").strip() or None
 external_context_hipaa_baa = (dbutils.widgets.get("external_context_hipaa_baa").strip().lower() or "false") == "true"
+
+# §9 industry-reference alignment (MV-D58), parsed defensively → DEFAULT OFF (MV-D43).
+industry_alignment_enabled = (dbutils.widgets.get("industry_alignment_enabled").strip().lower() or "false") == "true"
+industry_alignment_reference_model = dbutils.widgets.get("industry_alignment_reference_model").strip() or None
 
 
 def _resolve_metastore_id() -> str:
@@ -982,6 +992,18 @@ if external_context_enabled and not external_context_hipaa_baa:
     _log("Context Pack resolved", enabled=external_context_enabled,
          providers=_enabled_providers, resolved=_context_pack is not None)
 
+# §9 industry-reference alignment (MV-D58/D44): load the matching Vibe reference model ONCE
+# when the tier is enabled AND a reference_model is set — else leave it None so run_materialize
+# stays byte-identical estate-only (no alignment). The default bundled loader reads the wheel's
+# reference_models; a real deployment can inject a loader pointing at lakehouse-industry-data-models.
+# NEVER raises: an unknown/unloadable model degrades to None (alignment then no-ops, MV-D43).
+_industry_reference = None
+if industry_alignment_enabled and industry_alignment_reference_model:
+    from genie_space_optimizer.ontology import alignment as _alignment
+    _industry_reference = _alignment.load_reference_model(industry_alignment_reference_model)
+    _log("Industry reference loaded", enabled=industry_alignment_enabled,
+         reference_model=industry_alignment_reference_model, resolved=_industry_reference is not None)
+
 writer = materialize.SparkSnapshotWriter(spark, catalog, schema)
 run = materialize.run_materialize(
     SparkSystemTableReader(
@@ -1034,6 +1056,9 @@ run = materialize.run_materialize(
     # Phase 4 Stage B (MV-D38): the read-only external Context Pack prior (None ⇒ off ⇒
     # byte-identical estate-only). Threaded into rank naming + Page Recent-context only.
     context_pack=_context_pack,
+    # §9 industry-reference alignment (MV-D58): the loaded Vibe reference model (None ⇒ off ⇒
+    # byte-identical estate-only). Emits typed correspondences + gap hypotheses, read-only.
+    industry_reference=_industry_reference,
 )
 _log("Materialize complete", metastore_id=metastore_id, state=run["state"], tags=run.get("tag_count"),
      domains=run.get("domain_count"), identities=run.get("identity_count"), pages=run.get("page_count"))
