@@ -294,11 +294,15 @@ domains; §9 only guarantees that output exists and is stable.
 > **Status: BUILT + live-wired + deploy-verified (2026-09-15).** Offline harness
 > (`eval_harness.py`, `7120a6df`) is invoked by a post-materialize hook (`233da3cd`)
 > that persists one `EvalReport` per run to the additive `genie_ont_eval` table.
-> First airline baseline: **recall 0.77**, precision 0.117 (see finding below).
-> **Open finding:** P/R/F + structural health currently score over ALL raw pre-gate
-> rows (145 incl. 128 suppressed) instead of the **surfaced** estate (17), deflating
-> precision (17/145 = 0.117) and the structural rates. Next small change (dogfooded
-> through `compare_reports`): scope the eval to surfaced domains.
+> First airline baseline: **recall 0.77**, precision 0.117 — deflated because P/R/F +
+> structural health scored over ALL raw pre-gate rows (145 incl. 128 suppressed) instead
+> of the **surfaced** estate. **Surfaced-scoping fix — BUILT + deploy-verified (2026-09-15,
+> `8c6af04e`):** `assemble_eval_report(surfaced_only=True)` filters `domain_rows` to
+> `evidence.surfaced` (+ members) before the four builds; pure `compute_*` math and DDL
+> untouched. Live re-baseline (airline): **precision 0.117 → 1.00, F1 0.204 → 0.865,
+> recall steady ~0.77 → 0.762**; `domain_match_statuses`/`spot_review_queue` 145/50 → 16/16.
+> Remaining eval gap: `compare_reports` needs a JSON→`EvalReport` deserializer to run off
+> the persisted `genie_ont_eval.report` blobs (report-only today).
 
 Offline harness reporting, per run: gold-standard precision/recall/F of discovered
 domains vs the aligned reference; structural health (singleton/orphan rate, depth,

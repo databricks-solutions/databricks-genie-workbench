@@ -1137,12 +1137,16 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > hook that persists one `EvalReport` per run to the additive `genie_ont_eval` table (driver
 > `ontology-eval-harness-livewire-driver.md`). First live baseline on the airline estate:
 > **recall 0.77** (~77% of the airline reference taxonomy covered), max_depth 2. **Finding the
-> harness caught:** precision reads **0.117 = 17 surfaced-aligned / 145 total rows** — P/R/F +
-> structural health score over ALL raw pre-gate clusters (incl. the 128 suppressed dev/migration
-> rows) instead of the **surfaced** estate (17). **Next (small, gated by `compare_reports`):** scope
-> the eval to surfaced domains so the baseline is meaningful — **DRAFTED (build-ready):**
-> `ontology-eval-surfaced-scoping-driver.md` (filter to surfaced at `assemble_eval_report`; pure
-> `compute_*` builders unchanged; first live `compare_reports` dogfood on re-baseline).
+> harness caught:** precision read **0.117 = 17 surfaced-aligned / 145 total rows** — P/R/F +
+> structural health scored over ALL raw pre-gate clusters (incl. the 128 suppressed dev/migration
+> rows) instead of the **surfaced** estate. **Surfaced-scoping fix (MV-D59) — BUILT + deploy-verified
+> (2026-09-15, `8c6af04e`):** `assemble_eval_report(surfaced_only=True)` filters `domain_rows` to
+> `evidence.surfaced` (+ their members) before the four builds; pure `compute_*` math, report shape,
+> and DDL untouched (`ontology-eval-surfaced-scoping-driver.md`). Live re-baseline on the airline
+> estate (run `db43149…`): **precision 0.117 → 1.00, F1 0.204 → 0.865, recall steady 0.77 → 0.762**;
+> `domain_match_statuses` 145 → 16 and `spot_review_queue` 50 → 16 (now a human-reviewable set). The
+> denominator is now what users see. `compare_reports(before, after)` still needs a JSON→`EvalReport`
+> deserializer to run off the persisted blobs (report-only today — the one remaining eval gap).
 >
 > **Phase 5 (17i) — offline finish LANDED on `ontology`** (subsystem's only governed-tag writer;
 > additive, no dep, `uv.lock`/npm-lock untouched — MV-D45). Closed the offline slice's remaining
