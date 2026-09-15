@@ -184,10 +184,12 @@ def _pack_with_domains(*names):
     )
 
 
-def _domain_row(domain_id, name, tag_decision):
+def _domain_row(domain_id, name, tag_decision, *, surfaced=True):
+    # ``surfaced`` defaults True: mark_surfaced runs before apply_context_prior, and the
+    # prior now only touches surfaced rows (MV-D38 targeting, tightened 2026-09-15).
     return {
         "domain_id": domain_id, "name": name, "tag_decision": tag_decision,
-        "evidence": json.dumps({"rank": {"provenance_tier": "T0"}}),
+        "evidence": json.dumps({"rank": {"provenance_tier": "T0"}, "surfaced": surfaced}),
     }
 
 
@@ -214,7 +216,30 @@ def test_context_prior_renames_a_create_cluster_but_never_a_curated_one():
 def test_context_prior_none_pack_is_a_noop():
     row = _domain_row("d1", "orig", "create")
     assert rank.apply_context_prior([row], None, members_by_domain={"d1": ["c.s.t"]}) == 0
-    assert row["name"] == "orig" and json.loads(row["evidence"]) == {"rank": {"provenance_tier": "T0"}}
+    assert row["name"] == "orig"
+    assert json.loads(row["evidence"]) == {"rank": {"provenance_tier": "T0"}, "surfaced": True}
+
+
+def test_context_prior_skips_an_unsurfaced_cluster():
+    # A below-bar / dev / migration cluster (surfaced=false) is never renamed and gets no
+    # recorded prior, so a pack name can't land on hidden junk (the observed
+    # "Loyalty & Mileage Plan Programs → Migration" mis-label). MV-D38 targeting.
+    hidden = _domain_row("d1", "cat.migration.stuff group", "create", surfaced=False)
+    members = {"d1": ["cat.migration.loyalty_stage"]}  # an incidental loyalty stem
+    pack = _pack_with_domains("Loyalty & Mileage Plan Programs")
+    assert rank.apply_context_prior([hidden], pack, members_by_domain=members) == 0
+    assert hidden["name"] == "cat.migration.stuff group"
+    assert "naming_prior" not in json.loads(hidden["evidence"]).get("rank", {})
+
+
+def test_context_prior_requires_a_meaningful_match():
+    # One incidental shared token (a single member stem) is NOT a match for a multi-word
+    # canonical name — the stronger-match bar (≥2 tokens) rejects it.
+    create = _domain_row("d1", "cat.ops.maintenance group", "create")
+    members = {"d1": ["cat.ops.loyalty_flag"]}  # only "loyalty" overlaps
+    pack = _pack_with_domains("Loyalty & Mileage Plan Programs")
+    assert rank.apply_context_prior([create], pack, members_by_domain=members) == 0
+    assert create["name"] == "cat.ops.maintenance group"
 
 
 def test_gap_hypotheses_rank_below_graph_and_skip_covered():

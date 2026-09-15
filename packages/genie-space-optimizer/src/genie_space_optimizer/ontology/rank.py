@@ -179,13 +179,21 @@ def apply_context_prior(
     """Apply the Context Pack's business-language names as PROVENANCED priors to ``create``
     Domain rows IN PLACE (plug-point 1, MV-D38). Returns the number of rows renamed.
 
+    **Targeting (MV-D38 — tightened after the 2026-09-15 deploy-verify):** the prior only
+    touches a domain the gate will SURFACE. A row whose ``evidence.surfaced`` is not true (a
+    below-bar / diffuse / dev / migration / demo cluster the gate suppressed) is SKIPPED
+    entirely — no rename, no recorded prior — so a pack name can never land on hidden junk
+    (the observed "Loyalty & Mileage Plan Programs → Migration" mis-label). ``mark_surfaced``
+    runs before this in ``materialize.py``, so ``surfaced`` is authoritative here.
+
     A curated governed-tag Domain (``tag_decision`` in ``{reuse, reassign}`` — a T0/curated
     name) is NEVER renamed: the pack name is recorded on ``evidence["rank"]["naming_prior"]``
     as corroborating provenance but the name is left untouched (T0/curated wins, MV-D35/D38).
     A pure engine ``create`` cluster (an anchor-derived default name, not a curated fact) may
     take a matching pack name; the prior + its provenance envelope are recorded on the rank
-    block. ``pack=None`` (the estate-only default) is a NO-OP — zero rows touched,
-    byte-identical."""
+    block. The match itself is quality-gated (``_best_prior`` requires a meaningful overlap,
+    not one incidental shared member stem). ``pack=None`` (the estate-only default) is a
+    NO-OP — zero rows touched, byte-identical."""
     if pack is None:
         return 0
     priors = _pack_domain_priors(pack)
@@ -194,13 +202,17 @@ def apply_context_prior(
     members = members_by_domain or {}
     renamed = 0
     for row in domain_rows:
+        ev = _load_evidence(row)
+        # Targeting gate: the prior never touches an unsurfaced cluster (MV-D38). This is
+        # the single load-bearing guard against naming hidden dev/migration/demo junk.
+        if not ev.get("surfaced"):
+            continue
         row_members = members.get(str(row.get("domain_id") or ""), ())
         row_toks = _row_name_tokens(row, row_members)
         match = _best_prior(priors, row_toks)
         if match is None:
             continue
         name, leaf = match
-        ev = _load_evidence(row)
         rank = ev.get("rank")
         if not isinstance(rank, dict):
             rank = {}
@@ -275,13 +287,30 @@ def _pack_domain_priors(pack: Any) -> list[tuple[str, dict[str, Any]]]:
     return out
 
 
-def _best_prior(priors: Sequence[tuple[str, dict[str, Any]]], row_toks: set[str]) -> tuple[str, dict[str, Any]] | None:
-    """The pack name with the most token overlap with a cluster (deterministic tie-break by
-    name); ``None`` when nothing overlaps."""
+# A meaningful pack-name match needs more than one incidental shared token (e.g. a single
+# member-table stem): a multi-word canonical name must overlap on ≥ this many tokens. A
+# single-token canonical name ("Revenue") still matches on its one token (full coverage).
+_MIN_PRIOR_OVERLAP = 2
+
+
+def _best_prior(
+    priors: Sequence[tuple[str, dict[str, Any]]],
+    row_toks: set[str],
+    *,
+    min_overlap: int = _MIN_PRIOR_OVERLAP,
+) -> tuple[str, dict[str, Any]] | None:
+    """The pack name with the strongest MEANINGFUL token overlap with a cluster (deterministic
+    tie-break by name); ``None`` when nothing clears the bar. The bar rejects a lone incidental
+    token (the "Migration cluster has one `loyalty` table" false match): a multi-word name needs
+    ``min_overlap`` shared tokens, while a single-token name qualifies on its one full token."""
     best: tuple[int, str, dict[str, Any]] | None = None
     for name, leaf in priors:
-        overlap = len(_tokens(name) & row_toks)
+        name_toks = _tokens(name)
+        overlap = len(name_toks & row_toks)
         if overlap <= 0:
+            continue
+        # Strong match: ≥ min_overlap shared tokens, OR a single-token name fully matched.
+        if overlap < min_overlap and not (len(name_toks) == 1 and overlap >= 1):
             continue
         if best is None or overlap > best[0] or (overlap == best[0] and name.lower() < best[1].lower()):
             best = (overlap, name, leaf)
