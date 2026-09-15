@@ -223,6 +223,8 @@ def _edge_detail(edge: dict[str, Any], mv_measure_count: dict[str, int]) -> dict
         return {"similarity": _sim_band(float(weight))}
     if kind == "agent_scope":
         return {"role": "queries"}
+    if kind == "dashboard_scope":
+        return {"role": "reads"}
     return None  # unlisted kind → no detail (Lane P2 degrades to verb + endpoints)
 
 

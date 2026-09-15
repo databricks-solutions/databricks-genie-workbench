@@ -131,24 +131,34 @@ def fk_edges(
     referential_rows: Iterable[dict[str, Any]],
     key_column_rows: Iterable[dict[str, Any]],
     constraint_column_rows: Iterable[dict[str, Any]],
-) -> list[tuple[str, str]]:
-    """Reconstruct FK asset→asset pairs (``referencing_table``, ``referenced_table``).
+) -> list[tuple[str, str, tuple[str, ...]]]:
+    """Reconstruct FK asset→asset pairs with their join column(s).
 
-    ``referential_constraints`` enumerates the FK constraints (it contains ONLY
-    referential constraints). For each FK constraint:
+    Returns ``(referencing_table, referenced_table, join_columns)`` — the join
+    columns are the referencing (child) side's ``key_column_usage.column_name`` rows for
+    that FK constraint (MV-D88: name the key so the map reads "shares key ``route_id``",
+    not a bare verb). ``referential_constraints`` enumerates the FK constraints (it
+    contains ONLY referential constraints). For each FK constraint:
     - the **referencing** (child) table is its entry in ``key_column_usage``;
     - the **referenced** (parent) table is its entry in ``constraint_column_usage``
       (falling back to the linked unique/PK constraint's ``key_column_usage`` row).
-    Deterministic (sorted, de-duplicated); a self-referential FK is dropped (no
-    edge). Missing/partial rows degrade to fewer edges, never an error.
+    Deterministic (sorted, de-duplicated; columns unioned + sorted); a self-referential
+    FK is dropped (no edge). Missing/partial rows degrade to fewer edges (and, when the
+    ``column_name`` is absent, to an empty column tuple), never an error.
     """
-    # constraint (cat, sch, name) → table fqn
+    # constraint (cat, sch, name) → table fqn + its referencing join column(s)
     kcu: dict[tuple[str, str, str], str] = {}
+    kcu_cols: dict[tuple[str, str, str], list[str]] = {}
     for r in key_column_rows:
         ck = _constraint_key(r, "constraint")
         fqn = _fqn(r, "table_catalog", "table_schema", "table_name")
         if ck and fqn:
             kcu.setdefault(ck, fqn)
+        col = r.get("column_name")
+        if ck and col:
+            cols = kcu_cols.setdefault(ck, [])
+            if str(col) not in cols:
+                cols.append(str(col))
     ccu: dict[tuple[str, str, str], str] = {}
     for r in constraint_column_rows:
         ck = _constraint_key(r, "constraint")
@@ -156,7 +166,9 @@ def fk_edges(
         if ck and fqn:
             ccu.setdefault(ck, fqn)
 
-    edges: set[tuple[str, str]] = set()
+    # (referencing, referenced) → union of the FK's referencing join column(s). A pair
+    # reachable via >1 constraint unions their columns so the label names every key.
+    edges: dict[tuple[str, str], set[str]] = {}
     for r in referential_rows:
         fk = _constraint_key(r, "constraint")
         if fk is None:
@@ -168,8 +180,8 @@ def fk_edges(
             if uc is not None:
                 referenced = kcu.get(uc)
         if referencing and referenced and referencing != referenced:
-            edges.add((referencing, referenced))
-    return sorted(edges)
+            edges.setdefault((referencing, referenced), set()).update(kcu_cols.get(fk, []))
+    return [(a, b, tuple(sorted(cols))) for (a, b), cols in sorted(edges.items())]
 
 
 def shared_join_column_edges(
@@ -180,7 +192,7 @@ def shared_join_column_edges(
     max_tables: int = MAX_TABLES_PER_SHARED_COLUMN,
     max_schemas: int = MAX_SCHEMAS_PER_SHARED_COLUMN,
     name_denylist: frozenset[str] = GENERIC_JOIN_COLUMN_DENYLIST,
-) -> list[tuple[str, str, float, str]]:
+) -> list[tuple[str, str, float, str, tuple[str, ...]]]:
     """Shared-join-column proxy edges (a lower-weight FK proxy, MV-D52).
 
     Tables that share a join-shaped column (name ends in one of ``join_suffixes``,
@@ -192,11 +204,15 @@ def shared_join_column_edges(
     outright; a column touching more than ``max_tables`` tables is a generic unit; and a
     column whose tables span more than ``max_schemas`` distinct ``catalog.schema`` is a
     generic cross-schema bridge, not a bounded-context key. Each edge carries weight
-    ``SHARED_JOIN_WEIGHT`` and source ``"shared_join_column"``.
+    ``SHARED_JOIN_WEIGHT``, source ``"shared_join_column"``, and the shared column name
+    (so the map can read "shares column ``booking_id``", MV-D88).
     """
     suffixes = tuple(join_suffixes)
     denied = frozenset(str(n).casefold() for n in (name_denylist or ()))
+    # Group by casefolded name (dedup), keeping the first-seen ORIGINAL spelling for the
+    # display label (the edge names the real column, not a casefolded proxy).
     by_column: dict[str, set[str]] = {}
+    display_name: dict[str, str] = {}
     for r in column_rows:
         col = r.get("column_name")
         if not col:
@@ -209,8 +225,9 @@ def shared_join_column_edges(
         fqn = _fqn(r, "table_catalog", "table_schema", "table_name")
         if fqn:
             by_column.setdefault(name, set()).add(fqn)
+            display_name.setdefault(name, str(col))
 
-    edges: list[tuple[str, str, float, str]] = []
+    edges: list[tuple[str, str, float, str, tuple[str, ...]]] = []
     for _col, tables in sorted(by_column.items()):
         if not (min_tables <= len(tables) <= max_tables):
             continue
@@ -220,8 +237,9 @@ def shared_join_column_edges(
             continue
         ordered = sorted(tables)
         hub = ordered[0]
+        cols = (display_name.get(_col, _col),)
         for other in ordered[1:]:
-            edges.append((hub, other, SHARED_JOIN_WEIGHT, "shared_join_column"))
+            edges.append((hub, other, SHARED_JOIN_WEIGHT, "shared_join_column", cols))
     return edges
 
 
@@ -237,12 +255,18 @@ def join_key_edges(
     name_denylist: frozenset[str] = GENERIC_JOIN_COLUMN_DENYLIST,
 ) -> list[tuple]:
     """Combine declared FK edges (decisive) + shared-join-column proxy edges (strong)
-    into the one ``join_key_edges`` list ``graph.build_signal_graph`` accepts. FK pairs
-    default to source ``"foreign_key"``; proxies carry ``"shared_join_column"``. The
-    proxy knobs (``join_suffixes`` / ``max_tables`` / ``max_schemas`` / ``name_denylist``,
-    MV-D61) thread through to :func:`shared_join_column_edges`; ``fk_edges`` is unchanged
-    — a declared FK is decisive and never span-capped."""
-    out: list[tuple] = list(fk_edges(referential_rows, key_column_rows, constraint_column_rows))
+    into the one ``join_key_edges`` list ``graph.build_signal_graph`` accepts. Every item
+    is the 5-slot ``(a, b, weight, source, columns)`` shape the graph reads by position:
+    an FK is ``(a, b, None, "foreign_key", cols)`` (weight-less, decisive); a proxy is
+    ``(hub, other, SHARED_JOIN_WEIGHT, "shared_join_column", (col,))``. ``columns`` names
+    the join key(s) so the map reads "shares key ``route_id``" (MV-D88). The proxy knobs
+    (``join_suffixes`` / ``max_tables`` / ``max_schemas`` / ``name_denylist``, MV-D61)
+    thread through to :func:`shared_join_column_edges`; ``fk_edges`` is unchanged — a
+    declared FK is decisive and never span-capped."""
+    out: list[tuple] = [
+        (a, b, None, "foreign_key", cols)
+        for a, b, cols in fk_edges(referential_rows, key_column_rows, constraint_column_rows)
+    ]
     out += shared_join_column_edges(
         column_rows,
         join_suffixes=join_suffixes,

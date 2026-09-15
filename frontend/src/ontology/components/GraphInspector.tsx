@@ -14,6 +14,12 @@ export interface InspectorRelationship {
   /** "part of" | "contains" | a typed cross-link verb, etc. */
   verb: string
   xdom: boolean
+  /**
+   * Evidence key/values from the edge's pre-seed `detail` bag (MV-D88) — e.g.
+   * `["shares key", "route_id"]`. Empty/absent for structural (part-of / contains) rows;
+   * shown inline under the row so the relationship reads without hovering the arc.
+   */
+  detail?: [string, string][]
 }
 
 export interface InspectorData {
@@ -29,6 +35,12 @@ export interface InspectorData {
   /** Technical detail (Expression / Path / Source) — behind the disclosure (§9-C). */
   technical: string[]
   relationships: InspectorRelationship[]
+  /**
+   * A domain/org that has sub-containers AND gated directly-attached assets (#1): the explicit
+   * "Show / Hide N direct assets" control. Null when there are none to reveal (asset-only
+   * domains already reveal on open; leaves have no children).
+   */
+  directAssets?: { id: string; count: number; drilled: boolean } | null
   isProposal?: boolean
   band?: "High" | "Medium" | "Low" | null
 }
@@ -36,12 +48,14 @@ export interface InspectorData {
 export function GraphInspector({
   data,
   onSelectRelationship,
+  onToggleDirectAssets,
   onClose,
   onApprove,
   onDismiss,
 }: {
   data: InspectorData | null
   onSelectRelationship: (targetId: string) => void
+  onToggleDirectAssets?: (id: string) => void
   onClose: () => void
   onApprove?: () => void
   onDismiss?: () => void
@@ -98,6 +112,22 @@ export function GraphInspector({
         </dl>
       )}
 
+      {data.directAssets && onToggleDirectAssets && (
+        <button
+          onClick={() => onToggleDirectAssets(data.directAssets!.id)}
+          className="flex w-full items-center justify-between gap-2 rounded-md border border-default px-2 py-1.5 text-xs font-medium text-secondary hover:bg-elevated hover:text-primary"
+          aria-pressed={data.directAssets.drilled}
+        >
+          <span>
+            {data.directAssets.drilled ? "Hide" : "Show"} {data.directAssets.count}{" "}
+            {data.directAssets.count === 1 ? "direct asset" : "direct assets"}
+          </span>
+          <ChevronRight
+            className={`h-3.5 w-3.5 shrink-0 text-muted transition-transform ${data.directAssets.drilled ? "rotate-90" : ""}`}
+          />
+        </button>
+      )}
+
       {data.pages && data.pages.length > 0 && (
         <div className="space-y-1">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
@@ -135,6 +165,18 @@ export function GraphInspector({
                   )}
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
                 </button>
+                {/* Evidence bag (MV-D88): the why behind the arc, inline so it reads without
+                    hovering — e.g. "shares key · route_id". Absent for structural rows. */}
+                {r.detail && r.detail.length > 0 && (
+                  <dl className="ml-1.5 mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 pl-1.5 text-[11px] leading-tight">
+                    {r.detail.map(([k, v]) => (
+                      <span key={k} className="inline-flex gap-1">
+                        <dt className="text-muted">{k}</dt>
+                        <dd className="text-secondary">{v}</dd>
+                      </span>
+                    ))}
+                  </dl>
+                )}
               </li>
             ))}
           </ul>

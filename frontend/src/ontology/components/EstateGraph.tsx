@@ -192,6 +192,7 @@ export function EstateGraph({
   estateName = null,
   initialDomainPanelOpen = false,
   initialExpandAll = false,
+  initialSelectedId = null,
   onReady,
 }: {
   graph: OntologyGraph
@@ -208,6 +209,12 @@ export function EstateGraph({
    * mounts default to the clean Estate→Domain→Sub-domain view (asset gating on).
    */
   initialExpandAll?: boolean
+  /**
+   * Dev-harness / static-test only: seed the selected node so a non-interactive render shows
+   * that node's relationship arcs (arcs are focus-gated — off at rest, R4). Real UI mounts start
+   * with no selection (a clean tree; arcs appear on click).
+   */
+  initialSelectedId?: string | null
   onReady?: (handle: EstateGraphHandle) => void
 }) {
   const { resolvedTheme } = useTheme()
@@ -215,7 +222,7 @@ export function EstateGraph({
   const tokens = graphTokens(theme)
 
   const [provenance, setProvenance] = useState<Provenance>(initialOrigin === "proposed" ? "proposed" : "applied")
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId)
   const [query, setQuery] = useState("")
   const [searchHits, setSearchHits] = useState<Set<string>>(new Set())
   const [typeFocus, setTypeFocus] = useState<NodeType | null>(null)
@@ -654,7 +661,31 @@ export function EstateGraph({
     }
   }, [layout.nodes, applyLiveDrag])
 
+  // Background click-to-deselect (#1): a genuine click on empty canvas clears the selection
+  // (so its relationship arcs disappear). We record the pointer-down position and only treat it
+  // as a deselect click when the pointer barely moved — a pan (drag) must not deselect.
+  const bgDownRef = useRef<{ x: number; y: number } | null>(null)
+  const onBackgroundClick = useCallback((e: { clientX: number; clientY: number }) => {
+    const down = bgDownRef.current
+    bgDownRef.current = null
+    if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return // a pan, not a click
+    setSelectedId(null)
+    setRelVerbFocus(null)
+  }, [])
+
   // ── Selection / expand / navigation ─────────────────────────────────────────
+  // Owner directive (#1): click is DETERMINISTIC and predictable — select ≠ dump assets.
+  //   • Any click SELECTS the node (docks the inspector, reveals its relationship arcs).
+  //   • A container (org/domain/sub-domain) additionally TOGGLES open/closed: a closed one
+  //     opens its sub-containers, an open one collapses. It never silently swaps sub-domains
+  //     for a flood of leaf assets (the old confusing 3-state cycle).
+  //   • A domain/org whose ONLY children are assets (no sub-containers) drills those on open,
+  //     so opening it is never an empty no-op; collapsing always un-drills.
+  //   • A domain/org that HAS sub-containers keeps its directly-attached assets gated — the
+  //     curator reveals them with the explicit "Show N direct assets" control in the inspector
+  //     (`toggleDirectAssets`), so a single click can't crowd the tree.
+  // Expand/collapse is a functional toggle off `prev`, so a rapid double-click is a clean
+  // open→close (no stale-closure flip-flop).
   const onNodeClick = useCallback(
     (id: string) => {
       setSelectedId(id)
@@ -666,37 +697,45 @@ export function EstateGraph({
       const isDomainOrOrg = n.type === "domain" || n.type === "org"
       const hasContainerKids = kids.some((k) => isCont(k.type))
       const hasAssetKids = kids.some((k) => !isCont(k.type))
-      const inExpanded = expanded.has(id)
-      const assetsDrilled = assetsExpanded.has(id)
-      // Progressive disclosure: a CLOSED container opens its sub-containers first; an OPEN
-      // domain/org still hiding its own directly-attached assets drills those next; a fully
-      // open node collapses. Sub-domains/assets (no domain gate) just open/close in one step.
-      if (!inExpanded) {
-        setExpanded((prev) => new Set(prev).add(id))
-        // A domain/org with no sub-containers (assets only) drills in the same click so it
-        // never dead-ends on an empty expand.
-        if (isDomainOrOrg && !hasContainerKids && hasAssetKids) {
-          setAssetsExpanded((prev) => new Set(prev).add(id))
-        }
-      } else if (isDomainOrOrg && hasAssetKids && !assetsDrilled) {
-        setAssetsExpanded((prev) => new Set(prev).add(id))
-      } else {
-        setExpanded((prev) => {
+      // Only asset-only domains/orgs drill on open (else the open would reveal nothing).
+      const drillOnOpen = isDomainOrOrg && !hasContainerKids && hasAssetKids
+      const wasExpanded = expanded.has(id)
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+      if (!isDomainOrOrg) return // sub-domain/asset children aren't gated — the expand set is enough
+      setAssetsExpanded((prev) => {
+        // Keep the asset-drill flag coherent with open/close (the gate hides drilled assets
+        // whenever the node is collapsed, so a residual flag is invisible either way):
+        //   collapse → un-drill; open an asset-only node → drill; open a node with
+        //   sub-containers → leave assets gated (inspector reveals them on demand).
+        if (wasExpanded) {
+          if (!prev.has(id)) return prev
           const next = new Set(prev)
           next.delete(id)
           return next
-        })
-        if (assetsDrilled) {
-          setAssetsExpanded((prev) => {
-            const next = new Set(prev)
-            next.delete(id)
-            return next
-          })
         }
-      }
+        return drillOnOpen ? new Set(prev).add(id) : prev
+      })
     },
-    [nodeById, vizModel, expanded, assetsExpanded],
+    [nodeById, vizModel, expanded],
   )
+
+  // Explicit direct-asset drill (#1): the inspector's "Show / Hide N direct assets" control for
+  // a domain/org that has sub-containers AND gated directly-attached assets. Toggling ensures the
+  // node is open, then flips its entry in the asset-drill set.
+  const toggleDirectAssets = useCallback((id: string) => {
+    setExpanded((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+    setAssetsExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
 
   // A reveal (search hit, relationship nav, harness `select`) auto-expands paths and can
   // grow the tree past the last Fit — request one reframe so the revealed node and its
@@ -853,12 +892,24 @@ export function EstateGraph({
     for (const c of vizModel.childrenByParent.get(mn.id) ?? []) {
       rels.push({ targetId: c.id, label: c.label, verb: "contains", xdom: false })
     }
-    // Typed cross-links.
+    // Typed cross-links — carry the edge's evidence bag (MV-D88) so the "why" reads
+    // inline in the docked inspector, not only on arc hover (R25).
     for (const e of vizModel.crossEdges) {
       if (e.src === mn.id || e.dst === mn.id) {
         const otherId = e.src === mn.id ? e.dst : e.src
         const other = vizModel.nodes.find((x) => x.id === otherId)
-        if (other) rels.push({ targetId: otherId, label: other.label, verb: e.verb, xdom: e.relClass === "xdom" })
+        if (other) {
+          const detail = e.detail
+            ? Object.entries(e.detail).filter(([, v]) => v != null && `${v}`.trim() !== "").slice(0, 4)
+            : undefined
+          rels.push({
+            targetId: otherId,
+            label: other.label,
+            verb: e.verb,
+            xdom: e.relClass === "xdom",
+            detail: detail && detail.length ? detail : undefined,
+          })
+        }
       }
     }
     const technical: string[] = []
@@ -868,6 +919,19 @@ export function EstateGraph({
       ? Object.entries(mn.meta).map(([k, v]) => [k, `${v}`] as [string, string])
       : undefined
     const pages = mn.type === "subdomain" ? pagesFromExpansions(hydrationRef.current.get(mn.id)) : []
+    // Direct-asset drill (#1): only offered for a domain/org that ALSO has sub-containers, so
+    // its directly-attached assets stay gated behind an explicit reveal (an asset-only domain
+    // reveals its assets on open, so no toggle is needed there).
+    let directAssets: InspectorData["directAssets"] = null
+    if (mn.type === "domain" || mn.type === "org") {
+      const kids = vizModel.childrenByParent.get(mn.id) ?? []
+      const isCont = (t: NodeType) => t === "org" || t === "domain" || t === "subdomain"
+      const assetKidCount = kids.filter((k) => !isCont(k.type)).length
+      const hasContainerKids = kids.some((k) => isCont(k.type))
+      if (assetKidCount > 0 && hasContainerKids) {
+        directAssets = { id: mn.id, count: assetKidCount, drilled: assetsExpanded.has(mn.id) }
+      }
+    }
     return {
       title: mn.label,
       typeLabel: TYPE_LABEL[mn.type],
@@ -877,10 +941,11 @@ export function EstateGraph({
       pages: pages.length ? pages : undefined,
       technical,
       relationships: rels.slice(0, 24),
+      directAssets,
     }
     // hydrationRef is read for attached Pages; hydrationVersion gates recompute.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, vizModel, nodeById, hydrationVersion])
+  }, [selectedId, vizModel, nodeById, hydrationVersion, assetsExpanded])
 
   // Hover-snippet content (R6/R21) — prefers real description/meta, degrades to generic copy
   // (R13). Skips the synthetic "+N more" chip (not a model node → no tooltip).
@@ -1283,7 +1348,17 @@ export function EstateGraph({
                   </marker>
                 ))}
               </defs>
-              <rect x="0" y="0" width="100%" height="100%" fill="url(#ontgrid)" />
+              <rect
+                x="0"
+                y="0"
+                width="100%"
+                height="100%"
+                fill="url(#ontgrid)"
+                onPointerDown={(e) => {
+                  bgDownRef.current = { x: e.clientX, y: e.clientY }
+                }}
+                onClick={onBackgroundClick}
+              />
               <g ref={gRef} transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
                 {/* Spine links — a NEUTRAL hierarchy stroke (§5/R21e), not the domain tint, so
                     containment reads as structure and never sweeps a coloured arc off-canvas.
@@ -1654,7 +1729,7 @@ export function EstateGraph({
                 </span>
               ))}
             </div>
-            <p className="text-[10px] text-muted">click to drill · drag to move · hover for details · → shows direction</p>
+            <p className="text-[10px] text-muted">click to open · drag to move · hover for details · → shows direction</p>
           </div>
         </div>
 
@@ -1674,6 +1749,7 @@ export function EstateGraph({
             <GraphInspector
               data={inspector}
               onSelectRelationship={reveal}
+              onToggleDirectAssets={toggleDirectAssets}
               onClose={() => setSelectedId(null)}
               onApprove={inspector?.isProposal ? () => setHint("Approve is wired to the Phase-5 apply gate.") : undefined}
               onDismiss={inspector?.isProposal ? () => setSelectedId(null) : undefined}

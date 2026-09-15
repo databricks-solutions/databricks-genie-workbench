@@ -58,8 +58,10 @@ def build_signal_graph(
     Stage-1 structural signals (MV-D52), all opt-in:
     - ``join_key_edges``: asset↔asset FK/PK + shared-join-column proxy edges, kind
       ``join_key``. Each item is ``(a, b)`` | ``(a, b, weight)`` | ``(a, b, weight,
-      source)``; ``source`` defaults to ``"foreign_key"`` (use ``"shared_join_column"``
-      for the lower-weight proxy) so the clusterer can name the grouping reason.
+      source)`` | ``(a, b, weight, source, columns)``; ``source`` defaults to
+      ``"foreign_key"`` (use ``"shared_join_column"`` for the lower-weight proxy) so the
+      clusterer can name the grouping reason, and the optional ``columns`` names the join
+      key(s) so the map's edge detail reads "shares key ``route_id``" (MV-D88).
     - ``mv_membership``: ``{mv_fqn: [source_table_fqn, ...]}``. Emits a metric-view hub
       node (``mv:<fqn>``) → each source asset, kind ``mv_membership``.
     - ``schema_affinity``: ``{schema_key: [asset_fqn, ...]}``. Emits a schema hub node
@@ -89,10 +91,17 @@ def build_signal_graph(
     def add_edge(
         src: str, dst: str, kind: str, source: str,
         weight: float | None = None, tag_value: str | None = None,
+        columns: Iterable[str] | None = None,
     ) -> None:
         edge: dict[str, Any] = {"src": src, "dst": dst, "kind": kind, "source": source, "as_of": stamp}
         if weight is not None:
             edge["weight"] = float(weight)
+        # Join column name(s) for a join_key edge (MV-D88): reveal-don't-invent, so an
+        # empty/absent list is omitted (the layout's _edge_detail drops ``columns`` then).
+        if columns:
+            named = [str(c) for c in columns if c is not None and str(c) != ""]
+            if named:
+                edge["columns"] = named
         # Stage-2 (MV-D54): a value-carrying assignment's ``tag_value`` rides the
         # edge ADDITIVELY — present only when the member carries one, so a value-free
         # assignment edge stays byte-identical to the Phase-2 scaffold shape.
@@ -172,14 +181,16 @@ def build_signal_graph(
 
     # Join-key structural edges (Stage 1, MV-D52): FK/PK relationships +
     # shared-join-column proxies, asset↔asset. Accepts ``(a, b)`` | ``(a, b, weight)``
-    # | ``(a, b, weight, source)``; ``source`` names FK vs proxy for the grouping reason.
+    # | ``(a, b, weight, source)`` | ``(a, b, weight, source, columns)``; ``source`` names
+    # FK vs proxy for the grouping reason, ``columns`` names the join key(s) (MV-D88).
     for item in join_key_edges or []:
         a, b = item[0], item[1]
         weight = item[2] if len(item) > 2 else None
         source = item[3] if len(item) > 3 else "foreign_key"
+        columns = item[4] if len(item) > 4 else None
         add_asset(a)
         add_asset(b)
-        add_edge(f"asset:{a}", f"asset:{b}", "join_key", source, weight)
+        add_edge(f"asset:{a}", f"asset:{b}", "join_key", source, weight, columns=columns)
 
     # Metric-view membership (Stage 1, MV-D52): an MV → its source tables, projected
     # from a metric-view hub node so the clusterer can group an MV's sources.

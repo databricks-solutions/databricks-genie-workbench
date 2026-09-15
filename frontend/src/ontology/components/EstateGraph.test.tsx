@@ -186,7 +186,7 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     expect(html).toContain("Hierarchy")
     expect(html).toContain("Shared key")
     expect(html).toContain("Cross-domain")
-    expect(html).toContain("click to drill · drag to move · hover for details")
+    expect(html).toContain("click to open · drag to move · hover for details")
   })
 
   // ── MV-D87 (Lane P2) — nav & relationship legibility ───────────────────────
@@ -238,10 +238,50 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     )
     g.assets.edges = [{ src: "t:a", dst: "t:b", kind: "join_key", verb: "shares key with", rel_class: "shared" }]
     // Domain-attached tables are gated in the default view — drill them via initialExpandAll.
-    const html = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll />)
+    // Arcs are focus-gated now (off at rest, R4) — seed a selection on an endpoint to draw it.
+    const html = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll initialSelectedId="t:a" />)
     expect(html).toContain('data-edge-kind="cross"')
     expect(html).toContain('data-relclass="shared"')
     expect(html).toContain("data-cross-line")
+  })
+
+  it("offers an explicit 'Show N direct assets' drill for a selected domain with gated assets (#1)", () => {
+    const g = northstar()
+    // d_fin already has a sub-domain (s_rev); add a directly-attached table so its assets are
+    // gated behind the explicit inspector drill (a single click won't dump them).
+    g.assets.nodes.push(
+      node({ id: "t:dir", label: "gl_ledger", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+    )
+    // Default view: assets gated → the control reads "Show".
+    const closed = renderToStaticMarkup(<EstateGraph graph={g} initialSelectedId="d_fin" />)
+    expect(closed).toContain("Show 1 direct asset")
+    // Drilled (initialExpandAll seeds the asset-drill set) → the control reads "Hide".
+    const open = renderToStaticMarkup(<EstateGraph graph={g} initialSelectedId="d_fin" initialExpandAll />)
+    expect(open).toContain("Hide 1 direct asset")
+  })
+
+  it("surfaces the edge evidence bag inline in the inspector relationship row (#4, MV-D88)", () => {
+    const g = northstar()
+    g.assets.nodes.push(
+      node({ id: "t:a", label: "table_a", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+      node({ id: "t:b", label: "table_b", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied" }),
+    )
+    // A join_key arc carrying the MV-D88 evidence bag (columns + FK vs proxy).
+    g.assets.edges = [
+      {
+        src: "t:a",
+        dst: "t:b",
+        kind: "join_key",
+        verb: "shares key with",
+        rel_class: "shared",
+        detail: { columns: "route_id", kind: "foreign key" },
+      },
+    ]
+    // Select an endpoint (docks the inspector) and expand so the other endpoint resolves.
+    const html = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll initialSelectedId="t:a" />)
+    // The docked inspector row shows the "why" inline (not only on arc hover).
+    expect(html).toContain("route_id")
+    expect(html).toContain("foreign key")
   })
 
   it("keeps node <g> tagged with data-node-id (the drag + glide handle)", () => {
@@ -257,7 +297,7 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
 // frozen theme). We stub a minimal `document` since the node test env has no DOM.
 describe("EstateGraph — palette follows the applied theme (useTheme reactivity)", () => {
   const DARK_DOMAIN_FILL = "#94A3B8" // graphTokens DARK typeFill.domain
-  const LIGHT_DOMAIN_FILL = "#1B3139" // graphTokens LIGHT typeFill.domain
+  const LIGHT_DOMAIN_FILL = "#234A57" // graphTokens LIGHT typeFill.domain
 
   function stubHtmlDark(hasDark: boolean) {
     vi.stubGlobal("document", {

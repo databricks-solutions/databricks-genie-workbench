@@ -9,6 +9,30 @@ export type TierId =
   | "membership_write"
   | "external_enrichment"
 
+// ── Phase 4 Stage A (17h): external Context Sources tier (MV-D38/D44/D47) ──
+// 1:1 with backend/ontology/models.py.
+export type ContextClass = "internal" | "external"
+export type ProvenanceTier = "T0" | "T1" | "T2" | "T3"
+export type ExecuteStatus = "ok" | "missing" | "blocked" | "unavailable"
+
+export interface SourceStatus {
+  id: string
+  label: string
+  klass: ContextClass
+  provenance_tier: ProvenanceTier
+  influence: string
+  execute_status: ExecuteStatus
+  grant_line?: string | null
+  reason: string
+}
+
+// External-context config (MV-D44 DEFAULT OFF). `enabled=false` ⇒ estate-only;
+// `sources` overrides a source's registry default (id → bool).
+export interface ExternalContext {
+  enabled: boolean
+  sources: Record<string, boolean>
+}
+
 export interface PermissionTier {
   id: TierId
   label: string
@@ -16,6 +40,9 @@ export interface PermissionTier {
   status: TierStatus
   grants: string[]
   reason?: string | null
+  // Stage A (17h): per-source status rows on the enrichment tier. Additive + optional
+  // so every other tier (and a pre-Phase-4 payload) still parses.
+  sources?: SourceStatus[]
 }
 
 export interface OntologyPreflight {
@@ -125,6 +152,8 @@ export interface OntologySettings {
   domain_max_diffuse_schemas?: number
   domain_min_home_concentration?: number
   industry_alignment?: IndustryAlignment
+  // Phase 4 Stage A (17h): external Context Sources — additive + defaulted (DEFAULT OFF).
+  external_context?: ExternalContext
 }
 
 // ── Phase 2: refresh / freshness surface (the one new model) ───────────────

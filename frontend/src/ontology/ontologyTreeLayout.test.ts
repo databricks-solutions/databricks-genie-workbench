@@ -123,9 +123,11 @@ describe("layoutTree", () => {
 
   it("bows xdom cross-links wider than shared ones", () => {
     const model = buildEstateModel(graph())
-    // Expand the MV too so its child table (a cross-link endpoint) is visible.
+    // Expand the MV too so its child table (a cross-link endpoint) is visible. Arcs are
+    // focus-gated now (R4: off at rest), so select t:sales — it touches BOTH the shared join
+    // to t:cal and the xdom co-query to t:ops.
     const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
-    const l = layoutTree(model, exp, noOffsets)
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:sales" })
     const shared = l.crossLinks.find((c) => c.relClass === "shared")
     const xdom = l.crossLinks.find((c) => c.relClass === "xdom")
     expect(shared).toBeDefined()
@@ -139,7 +141,8 @@ describe("layoutTree", () => {
   it("trims cross-link endpoints off the node discs so the arrowhead clears the target (R25)", () => {
     const model = buildEstateModel(graph())
     const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
-    const l = layoutTree(model, exp, noOffsets)
+    // Arcs are focus-gated (R4) — select an endpoint to reveal its arc.
+    const l = layoutTree(model, exp, noOffsets, DEFAULT_LAYOUT, { focusId: "t:sales" })
     const c = l.crossLinks[0]
     expect(c).toBeDefined()
     const tgt = l.nodes.find((n) => n.id === c.targetId)!
@@ -254,16 +257,17 @@ describe("layoutTree — per-parent child cap (R3)", () => {
 
 // ── Cross-link overlay gating (§6 / R4 — no hairball) ────────────────────────
 describe("layoutTree — cross-link gating (R4)", () => {
-  it("draws every visible arc UNLABELLED when nothing is focused and under the cap", () => {
+  it("draws NO arcs at rest and reports the count for a click-to-trace affordance", () => {
     const model = buildEstateModel(graph())
     const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"]) // reveal t:sales endpoints
     const l = layoutTree(model, exp, noOffsets)
-    expect(l.crossLinks.length).toBe(2)
-    expect(l.crossLinks.every((c) => c.showLabel === false)).toBe(true)
-    expect(l.crossLinkOverflow).toBe(0)
+    // Relationships are off at rest (owner directive: appear on click) — the count is surfaced
+    // so the UI can show "+N links — select a node to trace".
+    expect(l.crossLinks.length).toBe(0)
+    expect(l.crossLinkOverflow).toBe(2)
   })
 
-  it("suppresses the overlay mat above the cap and reports the count (+N links)", () => {
+  it("keeps arcs off at rest regardless of the cap, still reporting the count", () => {
     const model = buildEstateModel(graph())
     const exp = new Set([...initialExpanded(model), "s_rev", "mv:a"])
     const l = layoutTree(model, exp, noOffsets, { ...DEFAULT_LAYOUT, crossLinkCap: 1 })

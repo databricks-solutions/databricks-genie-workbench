@@ -471,9 +471,11 @@ export function layoutTree(
   // Cross-links (§3.3 / §6 / R4). Two-stage gate so the typed overlay reads as structure,
   // never a hairball:
   //   1. VISIBLE-ONLY — both endpoints must currently be on the tree (expanded).
-  //   2. FOCUS/CAP — with a selection, draw ONLY that node's arcs, each with its verb
-  //      label; with no selection, draw every arc unlabelled up to `crossLinkCap`, and
-  //      above the cap suppress the mat entirely (surface a "+N links" affordance instead).
+  //   2. FOCUS — relationships are OFF at rest (owner directive: appear on click, disappear
+  //      on click). A node selection draws ONLY that node's arcs, each with its verb label; a
+  //      legend verb-focus draws every visible arc of that verb. With NO focus, no arcs draw —
+  //      `crossLinkOverflow` reports how many are available so the UI can offer a
+  //      "click a node to trace" affordance. (`crossLinkCap` no longer gates the at-rest mat.)
   const radiusById = new Map(laid.map((n) => [n.id, n.radius]))
   const candidates: CrossLink[] = []
   for (const e of model.crossEdges) {
@@ -508,9 +510,8 @@ export function layoutTree(
   } else if (verbFocus) {
     // Legend rel-type highlight (R25): reveal every visible arc of this verb, labelled.
     crossLinks = candidates.filter((c) => c.verb === verbFocus).map((c) => ({ ...c, showLabel: true }))
-  } else if (candidates.length <= cfg.crossLinkCap) {
-    crossLinks = candidates
   } else {
+    // At rest: no arcs (edges-on-focus, not edges-at-rest) — report the count instead.
     crossLinks = []
     crossLinkOverflow = candidates.length
   }

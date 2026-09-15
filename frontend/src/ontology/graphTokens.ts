@@ -125,10 +125,14 @@ const LIGHT: GraphTokens = {
   plateBg: "#FFFFFF",
   plateOpacity: 0.92,
   plateText: "#1B3139", // Navy ink — high-contrast labels
+  // Container tiers are a deliberately STEPPED navy ramp (§9-B: ink shades, hue reserved for
+  // type). The prior set (#0B2026/#1B3139/#1B5162) put Estate and Domain ~1.25:1 apart, so the
+  // top two tiers read as one colour. These widen every adjacent step past ~1.4:1 luminance so
+  // Estate → Domain → Sub-domain are legible at a glance (radius + tint still carry it too).
   typeFill: {
-    org: "#0B2026", // near-black navy
-    domain: "#1B3139", // Navy
-    subdomain: "#1B5162", // Navy-700
+    org: "#0B2026", // Estate — near-black navy (deepest)
+    domain: "#234A57", // Domain — mid navy (clear step up from Estate)
+    subdomain: "#35617A", // Sub-domain — light navy (clear step up from Domain; stays bluer than the slate table hue)
     agent: "#FF3621", // Lava — agents only
     dashboard: "#4359FF", // Blue
     metric_view: "#00A972", // Green
@@ -137,7 +141,7 @@ const LIGHT: GraphTokens = {
   },
   glyphStroke: "#FFFFFF",
   nodeStroke: "#FFFFFF",
-  ringOpacity: 0.6,
+  ringOpacity: 0.72, // lifted so the per-domain tint ring reads on top of the stepped tier fills
   selectedRing: "#1B3139",
   searchRing: "#0891B2",
   hoverRing: "#1B3139",

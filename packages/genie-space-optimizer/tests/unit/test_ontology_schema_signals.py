@@ -29,7 +29,8 @@ def test_fk_edges_referencing_to_referenced():
     key_col = [_kcu("fk_rev", "c", "revenue", "fact_revenue", "route_id")]
     constr_col = [_kcu("fk_rev", "c", "revenue", "dim_route", "route_id")]
     edges = ss.fk_edges(referential, key_col, constr_col)
-    assert edges == [("c.revenue.fact_revenue", "c.revenue.dim_route")]
+    # MV-D88: the edge names the referencing join column so the map reads "shares key route_id".
+    assert edges == [("c.revenue.fact_revenue", "c.revenue.dim_route", ("route_id",))]
 
 
 def test_fk_edges_falls_back_to_unique_constraint_kcu():
@@ -45,7 +46,7 @@ def test_fk_edges_falls_back_to_unique_constraint_kcu():
         _kcu("pk_pnr", "c", "res", "pnr", "pnr_id"),
     ]
     edges = ss.fk_edges(referential, key_col, [])
-    assert edges == [("c.res.bookings", "c.res.pnr")]
+    assert edges == [("c.res.bookings", "c.res.pnr", ("pnr_id",))]
 
 
 def test_fk_edges_drops_self_reference_and_dedupes():
@@ -77,7 +78,11 @@ def test_shared_join_column_star_edges_and_suffix_filter():
     # 3 tables in 2 schemas share route_id → a 2-edge star from the sorted-first table.
     assert len(edges) == 2
     hub = sorted({"c.rev.fact_revenue", "c.route.segments", "c.route.legs"})[0]
-    assert all(a == hub and w == ss.SHARED_JOIN_WEIGHT and src == "shared_join_column" for (a, b, w, src) in edges)
+    # MV-D88: each proxy edge names the shared column so the map reads "shares column route_id".
+    assert all(
+        a == hub and w == ss.SHARED_JOIN_WEIGHT and src == "shared_join_column" and cols == ("route_id",)
+        for (a, b, w, src, cols) in edges
+    )
     # A column on a single table produces no edge (min_tables).
     assert ss.shared_join_column_edges([_col("c", "rev", "t", "x_id")]) == []
 

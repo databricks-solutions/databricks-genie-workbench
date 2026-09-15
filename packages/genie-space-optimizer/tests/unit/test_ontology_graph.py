@@ -41,6 +41,26 @@ def test_join_key_layer_populated_fk_and_proxy_with_sources():
     assert proxy["weight"] == 0.5
 
 
+def test_join_key_edge_threads_named_columns():
+    """MV-D88: a 5-slot join_key edge ``(a, b, weight, source, columns)`` threads the
+    join column name(s) onto the built edge (so the layout's ``_edge_detail`` can name
+    the key); an empty/absent column list is omitted (reveal-don't-invent)."""
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        join_key_edges=[
+            ("c.rev.fact", "c.rev.dim", None, "foreign_key", ("route_id",)),          # FK, named
+            ("c.rev.book", "c.res.pnr", 0.5, "shared_join_column", ("booking_id",)),  # proxy, named
+            ("c.rev.fact", "c.rev.other", None, "foreign_key", ()),                   # empty → omitted
+            ("c.rev.a", "c.rev.b"),                                                   # legacy 2-tuple → omitted
+        ],
+    )
+    jk = {(e["src"], e["dst"]): e for e in sig["edges"] if e["kind"] == "join_key"}
+    assert jk[("asset:c.rev.fact", "asset:c.rev.dim")]["columns"] == ["route_id"]
+    assert jk[("asset:c.rev.book", "asset:c.res.pnr")]["columns"] == ["booking_id"]
+    assert "columns" not in jk[("asset:c.rev.fact", "asset:c.rev.other")]
+    assert "columns" not in jk[("asset:c.rev.a", "asset:c.rev.b")]
+
+
 def test_mv_membership_hub_edges():
     sig = graph.build_signal_graph(
         {"tags": []},
@@ -801,12 +821,14 @@ def test_semantic_sim_bands_track_l3_thresholds():
 
 def test_lineage_agent_and_mv_membership_detail():
     """Directional + role verbs: lineage_adjacency → ``flow`` "feeds", agent_scope →
-    ``role`` "queries", mv_membership → ``role`` "aggregates" + measure count from snippets."""
+    ``role`` "queries", dashboard_scope → ``role`` "reads", mv_membership → ``role``
+    "aggregates" + measure count from snippets."""
     # Stage-1: the mv_membership edge reattaches to the typed ``asset:<fqn>`` (the hub folds
     # in); its ``detail`` still reads the original ``mv:``-keyed edge, so the measure count
     # from snippets is unchanged.
     sig = {"nodes": [
         {"id": "agent:sales", "kind": "agent"},
+        {"id": "dashboard:ops", "kind": "dashboard"},
         {"id": "asset:c.m.rev_mv", "kind": "metric_view"},
         {"id": "mv:c.m.rev_mv", "kind": "metric_view"},
         {"id": "asset:c.rev.fact", "kind": "table"},
@@ -814,9 +836,11 @@ def test_lineage_agent_and_mv_membership_detail():
     ], "edges": [
         {"src": "asset:c.rev.fact", "dst": "asset:c.rev.dim", "kind": "lineage_adjacency"},
         {"src": "agent:sales", "dst": "asset:c.rev.fact", "kind": "agent_scope"},
+        {"src": "dashboard:ops", "dst": "asset:c.rev.fact", "kind": "dashboard_scope"},
         {"src": "mv:c.m.rev_mv", "dst": "asset:c.rev.fact", "kind": "mv_membership"},
     ]}
-    blob = _snap(sig, {"c.rev.fact": "d1", "c.rev.dim": "d1", "c.m.rev_mv": "d1"},
+    blob = _snap(sig, {"c.rev.fact": "d1", "c.rev.dim": "d1", "c.m.rev_mv": "d1",
+                       "dashboard:ops": "d1", "agent:sales": "d1"},
                  domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
                  snippets_in={"measures": {"c.m.rev_mv": [
                      {"ref": "c.m.rev_mv.m0", "name": "m0", "expression": "SUM(x)", "fmt": ""},
@@ -825,6 +849,7 @@ def test_lineage_agent_and_mv_membership_detail():
     edges = {e["kind"]: e for e in blob["assets"]["edges"]}
     assert edges["lineage_adjacency"]["detail"] == {"flow": "feeds"}
     assert edges["agent_scope"]["detail"] == {"role": "queries"}
+    assert edges["dashboard_scope"]["detail"] == {"role": "reads"}
     assert edges["mv_membership"]["detail"] == {"role": "aggregates", "measures": "2"}
 
 
