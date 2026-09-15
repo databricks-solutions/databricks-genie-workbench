@@ -16,7 +16,13 @@ from genie_space_optimizer.ontology import eval_harness
 # ── Fixtures: sample domain/member rows ────────────────────────────────────
 
 def _fixture_domains_simple():
-    """Simple fixture: 3 domains, 2 with multiple members, 1 singleton."""
+    """Simple fixture: 3 domains, 2 with multiple members, 1 singleton.
+
+    All three are ``surfaced`` — the fixture models a healthy surfaced estate, so the
+    assemble-level tests (which now default to ``surfaced_only=True``, MV-D59) score
+    over all three exactly as before. The field is inert for the pure ``compute_*``
+    tests that pass these rows straight to a builder.
+    """
     return [
         {
             "domain_id": "dom_finance",
@@ -26,6 +32,7 @@ def _fixture_domains_simple():
             "evidence": json.dumps({
                 "reason": "grouped by foreign key",
                 "rank": {"score": 85.0},
+                "surfaced": True,
             }),
         },
         {
@@ -36,6 +43,7 @@ def _fixture_domains_simple():
             "evidence": json.dumps({
                 "reason": "grouped by shared schema",
                 "rank": {"score": 60.0},
+                "surfaced": True,
             }),
         },
         {
@@ -46,6 +54,7 @@ def _fixture_domains_simple():
             "evidence": json.dumps({
                 "reason": "grouped by metric view",
                 "rank": {"score": 72.0},
+                "surfaced": True,
             }),
         },
     ]
@@ -298,6 +307,149 @@ def test_spot_review_queue_carries_evidence():
         assert item.confidence_band in ["Low", "Medium", "High", "Unknown"]
 
 
+# ── MV-D59 surfaced-scoping: assemble scores the SURFACED estate ───────────
+
+def _fixture_domains_mixed():
+    """A mix of surfaced + suppressed domains (the airline shape: a few surfaced
+    domains buried in many suppressed pre-gate clusters). ``dom_a``/``dom_b`` surface
+    and both align to the reference; ``dom_sup1``/``dom_sup2`` are suppressed clusters
+    the alignment never matches (an all-rows score counts them as false positives)."""
+    return [
+        {"domain_id": "dom_a", "name": "A", "members": ["a.1", "a.2"], "parent_id": None,
+         "evidence": json.dumps({"reason": "fk", "rank": {"score": 85.0}, "surfaced": True})},
+        {"domain_id": "dom_b", "name": "B", "members": ["b.1", "b.2"], "parent_id": None,
+         "evidence": json.dumps({"reason": "schema", "rank": {"score": 70.0}, "surfaced": True})},
+        {"domain_id": "dom_sup1", "name": "Sup1", "members": ["s.1"], "parent_id": None,
+         "evidence": json.dumps({"reason": "schema-only", "rank": {"score": 20.0}, "surfaced": False})},
+        {"domain_id": "dom_sup2", "name": "Sup2", "members": ["t.1", "t.2", "t.3"], "parent_id": None,
+         "evidence": json.dumps({"reason": "schema-only", "rank": {"score": 15.0}, "surfaced": False})},
+    ]
+
+
+def _fixture_members_mixed():
+    return [
+        {"domain_id": "dom_a", "asset_fqn": "a.1"},
+        {"domain_id": "dom_a", "asset_fqn": "a.2"},
+        {"domain_id": "dom_b", "asset_fqn": "b.1"},
+        {"domain_id": "dom_b", "asset_fqn": "b.2"},
+        {"domain_id": "dom_sup1", "asset_fqn": "s.1"},  # a suppressed singleton
+        {"domain_id": "dom_sup2", "asset_fqn": "t.1"},
+        {"domain_id": "dom_sup2", "asset_fqn": "t.2"},
+        {"domain_id": "dom_sup2", "asset_fqn": "t.3"},
+    ]
+
+
+def _fixture_reference_mixed():
+    """Reference aligns ONLY the two surfaced domains (alignment never matches a
+    suppressed cluster — alignment.py skips non-surfaced rows)."""
+    return {
+        "domains": [
+            {"id": "ref_a", "name": "A", "members": ["a.1", "a.2"]},
+            {"id": "ref_b", "name": "B", "members": ["b.1", "b.2"]},
+        ],
+        "alignments": [
+            {"discovered_id": "dom_a", "reference_id": "ref_a"},
+            {"discovered_id": "dom_b", "reference_id": "ref_b"},
+        ],
+    }
+
+
+def test_assemble_scopes_prf_to_surfaced_subset():
+    """(1) P/R/F is scored over the SURFACED subset only. Both surfaced domains align
+    ⇒ precision 1.0 (denominator is the surfaced count, not all rows); the suppressed
+    clusters never appear as false positives."""
+    report = eval_harness.assemble_eval_report(
+        "run", "ms", "t",
+        _fixture_domains_mixed(), _fixture_members_mixed(),
+        aligned_reference=_fixture_reference_mixed(),
+    )
+    assert report.precision_recall_f1.precision == 1.0
+    assert report.precision_recall_f1.recall == 1.0
+    assert report.precision_recall_f1.f1 == 1.0
+    # Only the two surfaced domains carry match statuses; no suppressed "extra".
+    ids = {m.domain_id for m in report.domain_match_statuses}
+    assert ids == {"dom_a", "dom_b"}
+    assert all(m.match_type == "exact" for m in report.domain_match_statuses)
+
+
+def test_assemble_scopes_structural_health_to_surfaced_subset():
+    """(2) Structural health (singleton/orphan/depth/branching) is computed over the
+    surfaced subset — the suppressed singleton (dom_sup1) is not counted."""
+    report = eval_harness.assemble_eval_report(
+        "run", "ms", "t",
+        _fixture_domains_mixed(), _fixture_members_mixed(),
+        aligned_reference=_fixture_reference_mixed(),
+    )
+    health = report.structural_health
+    assert health.total_domains == 2          # only surfaced domains
+    assert health.total_members == 4          # only their members (a.1/a.2/b.1/b.2)
+    assert health.singleton_count == 0        # the suppressed singleton is excluded
+    assert health.orphan_count == 2           # both surfaced domains are top-level
+    assert health.tree_depth == 1
+    # Spot-review queue is scoped too: only surfaced domains appear.
+    assert {q.domain_id for q in report.spot_review_queue} == {"dom_a", "dom_b"}
+
+
+def test_assemble_surfaced_only_false_reproduces_all_rows_numbers():
+    """(3) surfaced_only=False reproduces the pre-scoping all-rows numbers — proving
+    the default is purely an input-scoping switch, not a change to the math. All-rows:
+    2 aligned of 4 discovered ⇒ precision 0.5; structural health over all 4 domains."""
+    all_rows = eval_harness.assemble_eval_report(
+        "run", "ms", "t",
+        _fixture_domains_mixed(), _fixture_members_mixed(),
+        aligned_reference=_fixture_reference_mixed(),
+        surfaced_only=False,
+    )
+    # The all-rows score matches computing the builders directly over every row.
+    prf_direct, _ = eval_harness.compute_precision_recall_f1(
+        _fixture_domains_mixed(), _fixture_reference_mixed(),
+    )
+    health_direct = eval_harness.compute_structural_health(
+        _fixture_domains_mixed(), _fixture_members_mixed(),
+    )
+    assert all_rows.precision_recall_f1.precision == prf_direct.precision == 0.5
+    assert all_rows.precision_recall_f1.recall == prf_direct.recall == 1.0
+    assert all_rows.structural_health.total_domains == health_direct.total_domains == 4
+    assert all_rows.structural_health.total_members == health_direct.total_members == 8
+    assert all_rows.structural_health.singleton_count == health_direct.singleton_count == 1
+    # …and it differs from the surfaced-scoped default (precision 1.0 → 0.5).
+    scoped = eval_harness.assemble_eval_report(
+        "run", "ms", "t",
+        _fixture_domains_mixed(), _fixture_members_mixed(),
+        aligned_reference=_fixture_reference_mixed(),
+    )
+    assert scoped.precision_recall_f1.precision == 1.0
+
+
+def test_assemble_zero_surfaced_degrades_not_hangs():
+    """(4) Degrade-not-hang (MV-D43): zero surfaced domains ⇒ P/R/F N/A, zeroed
+    structural health, empty spot-review queue — never a raise, even with a reference."""
+    suppressed = [
+        {"domain_id": "dom_x", "name": "X", "members": ["x.1"], "parent_id": None,
+         "evidence": json.dumps({"reason": "schema-only", "surfaced": False})},
+        {"domain_id": "dom_y", "name": "Y", "members": ["y.1"], "parent_id": None,
+         "evidence": json.dumps({"reason": "schema-only", "surfaced": False})},
+    ]
+    members = [{"domain_id": "dom_x", "asset_fqn": "x.1"}, {"domain_id": "dom_y", "asset_fqn": "y.1"}]
+
+    report = eval_harness.assemble_eval_report(
+        "run", "ms", "t", suppressed, members,
+        aligned_reference=_fixture_reference_mixed(),  # reference present, but nothing surfaced
+    )
+    assert report.precision_recall_f1.precision is None
+    assert report.precision_recall_f1.recall is None
+    assert report.precision_recall_f1.f1 is None
+    assert "surfaced" in report.precision_recall_f1.na_reason
+    assert report.domain_match_statuses == []
+    # Structural health is a zeroed StructuralHealth (not None), queue is empty.
+    assert report.structural_health is not None
+    assert report.structural_health.total_domains == 0
+    assert report.structural_health.singleton_count == 0
+    assert report.structural_health.orphan_count == 0
+    assert report.structural_health.tree_depth == 0
+    assert report.spot_review_queue == []
+
+
 # ── REPORT + GATE: assembling and comparing reports ──────────────────────
 
 def test_assemble_eval_report_complete():
@@ -366,7 +518,7 @@ def test_compare_reports_deltas():
             "name": "Sales",
             "members": ["sales.orders.main"],
             "parent_id": None,
-            "evidence": json.dumps({"reason": "grouped by tag", "rank": {"score": 80.0}}),
+            "evidence": json.dumps({"reason": "grouped by tag", "rank": {"score": 80.0}, "surfaced": True}),
         },
     ]
     members2 = members1 + [{"domain_id": "dom_sales", "asset_fqn": "sales.orders.main"}]
@@ -401,10 +553,13 @@ def test_compare_reports_regression_detection():
         ],
     }
 
-    # "Before" report: perfect match (P=1, R=1, F=1)
+    # "Before" report: perfect match (P=1, R=1, F=1). Both domains surfaced so the
+    # default surfaced-scoping keeps them (MV-D59).
     domains_before = [
-        {"domain_id": "d1", "name": "D1", "members": ["a", "b"], "parent_id": None, "evidence": "{}"},
-        {"domain_id": "d2", "name": "D2", "members": ["c"], "parent_id": None, "evidence": "{}"},
+        {"domain_id": "d1", "name": "D1", "members": ["a", "b"], "parent_id": None,
+         "evidence": json.dumps({"surfaced": True})},
+        {"domain_id": "d2", "name": "D2", "members": ["c"], "parent_id": None,
+         "evidence": json.dumps({"surfaced": True})},
     ]
     members_before = [
         {"domain_id": "d1", "asset_fqn": "a"},
@@ -433,7 +588,8 @@ def test_compare_reports_regression_detection():
     }
 
     domains_after = [
-        {"domain_id": "d1", "name": "D1", "members": ["a", "b"], "parent_id": None, "evidence": "{}"},
+        {"domain_id": "d1", "name": "D1", "members": ["a", "b"], "parent_id": None,
+         "evidence": json.dumps({"surfaced": True})},
     ]
     members_after = [
         {"domain_id": "d1", "asset_fqn": "a"},

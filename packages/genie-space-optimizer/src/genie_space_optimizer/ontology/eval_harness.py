@@ -402,23 +402,46 @@ def assemble_eval_report(
     member_rows: Sequence[dict[str, Any]],
     aligned_reference: dict[str, Any] | None = None,
     llm_client: Any | None = None,
+    surfaced_only: bool = True,
 ) -> EvalReport:
     """Assemble the complete evaluation report from a materialized run.
 
     All inputs are read-only snapshots; the report is immutable and serializable.
     Degrade-not-hang: missing reference or LLM error yields marked-partial report.
-    """
-    # BUILD A: Precision/Recall/F1
-    prf, domain_matches = compute_precision_recall_f1(domain_rows, aligned_reference)
 
-    # BUILD B: Structural health
-    health = compute_structural_health(domain_rows, member_rows)
+    ``surfaced_only`` (default True, MV-D59): score over the **surfaced** estate the
+    user actually sees — the domains the gate surfaced (``evidence.surfaced`` truthy,
+    MV-D56) and the members of those domains — not the raw pre-gate clusters (which
+    deflated precision, since suppressed clusters that the alignment never matches
+    count as false positives). Only the INPUT to the four builds is scoped here; the
+    pure ``compute_*`` builders are unchanged. ``surfaced_only=False`` scores over all
+    rows (the pre-scoping behavior — an escape hatch the builder unit tests rely on).
+    """
+    if surfaced_only:
+        scoped_domains = [d for d in domain_rows if _load_evidence(d).get("surfaced")]
+        surfaced_ids = {d.get("domain_id") for d in scoped_domains}
+        scoped_members = [m for m in member_rows if m.get("domain_id") in surfaced_ids]
+    else:
+        scoped_domains = list(domain_rows)
+        scoped_members = list(member_rows)
+
+    # BUILD A: Precision/Recall/F1. Degrade-not-hang (MV-D43): a surfaced-scoped run
+    # with zero surfaced domains has nothing to score against the reference → N/A (not
+    # a misleading 0.0); the other sections still render over the (empty) subset.
+    if surfaced_only and not scoped_domains:
+        prf = PrecisionRecallF1(None, None, None, "no surfaced domains")
+        domain_matches: list[DomainMatchStatus] = []
+    else:
+        prf, domain_matches = compute_precision_recall_f1(scoped_domains, aligned_reference)
+
+    # BUILD B: Structural health (zeroed StructuralHealth when the subset is empty)
+    health = compute_structural_health(scoped_domains, scoped_members)
 
     # BUILD C: LLM sanity monitor (injectable, skippable)
-    sanity = run_llm_sanity_monitor(domain_rows, llm_client)
+    sanity = run_llm_sanity_monitor(scoped_domains, llm_client)
 
     # BUILD D: Spot-review queue
-    queue = build_spot_review_queue(domain_rows, member_rows)
+    queue = build_spot_review_queue(scoped_domains, scoped_members)
 
     return EvalReport(
         run_id=run_id,
