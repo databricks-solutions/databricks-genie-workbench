@@ -926,6 +926,16 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > `docs/design/reference/`. Only the specs below remain at the `docs/design/` root because
 > they are still to build.
 >
+> **UPDATE (2026-09-09) — `backlog.md` is the current sequencing source of truth.** Since this
+> note was written, the **entire Ontology Map stack shipped + deploy-verified** (v2 shell
+> MV-D73/74/75; v3-fable harness/theme MV-D77–80; Lanes R/D/D2/P/P2 MV-D81/82/85/86/87; Lane E
+> MV-D88; Typed Estate Assets MV-D89–92; buttery-interactions + UX papercuts) — so **Phase 3e /
+> 17k is delivered** (as d3/SVG per MV-D84, superseding the Cytoscape bakeoff below). All those
+> build/driver specs moved to `implemented/`. A **map-interaction/visual pass (#1 deterministic
+> click model, #2 relationships-on-focus, #3 tier-colour contrast)** plus **#4** (richer edge
+> detail: FK/join columns threaded end-to-end into the inspector) all **landed + deploy-verified
+> 2026-09-09** on `ontology` (committed `67ad4cff`). See `backlog.md` for the live ordered list.
+>
 > **Batch engine COMPLETE** (Stages 1–3.2, 4, 4.1a–4.1f all LANDED + deploy-verified; the
 > timeout saga closed by 4.1f/MV-D68). The remaining work is the curator loop + roadmap, and
 > most of it **parallelizes** — see the two waves below.

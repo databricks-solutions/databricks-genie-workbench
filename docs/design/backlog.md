@@ -1,9 +1,15 @@
 # Ontology + MV-Advisor — single ordered backlog
 
-One drivable list across **both** tracks in `docs/design/`. Reconciled against code
-on branch `ontology` (2026-09-05, post-4.1f). This is the sequencing source of truth; the
-per-phase build specs / drivers remain the *content* source of truth, and
-`mv-advisor-playbook.md` remains the MV-D register.
+One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
+branch `ontology` (**2026-09-14**, post #1–#4 deploy-verify + Stage A/#4 committed). This is the sequencing
+source of truth; the per-phase build specs / drivers remain the *content* source of truth,
+and `mv-advisor-playbook.md` remains the MV-D register.
+
+**Doc layout:** landed build/driver specs are archived under `docs/design/implemented/`;
+older mv-advisor origin analysis under `docs/design/reference/`; §8 render scorecards under
+`docs/design/reviews/`. Only **unbuilt** specs + **living** docs (this backlog,
+`mv-advisor-playbook.md`, `ontology-engine-architecture.md`, `ontology-map-DESIGN.md`,
+`page-archetypes.md`, findings/notes) remain at the `docs/design/` root.
 
 ## Status legend
 
@@ -17,197 +23,194 @@ per-phase build specs / drivers remain the *content* source of truth, and
 
 ---
 
+## What's DONE (context, not backlog — specs archived under `implemented/`)
+
+**Batch proposal engine — ✅ BUILT + deploy-verified.** Curation redesign Stages 1 / 2 /
+3 / 3.1 / 3.2, Stage 4 Pages, and 4.1a–4.1f + 4.1g/4.1h/**4.1i** (MV-D51–D70). The
+batch-timeout saga is **closed** (4.1f/MV-D68, run `31641283089969` in **20.8 min**);
+batch page-body drafting yield is **complete** (4.1i/MV-D70, `llm_auto` 26/26). Snapshot on
+the airline estate: surfaced Domains + 641 Pages, `certify` working.
+
+**Ontology Map ("Estate Graph", = Phase 3e / 17k) — ✅ BUILT + deploy-verified** on
+`fevm-serverless`. Shipped as **d3-hierarchy + thin SVG** (MV-D84 — the Cytoscape/Sigma
+bakeoff was superseded), not the old LOD segmented-control model:
+- **Data contract** — Lane D (MV-D82): org root + `parent_id`/`attach_level` + per-edge
+  `verb`/`rel_class`; Lane D2 (MV-D86): node `description` + compact `meta` + deeper
+  containment; Lane E (MV-D88): per-edge `detail` evidence bag (merged; surfaced via the
+  hover tooltip).
+- **Renderer** — Lane R (MV-D81/D83): React-controlled SVG tidy-tree, expand/collapse,
+  typed verb overlay, Ungrouped tray + dashed "Suggested" hulls; Lane P (MV-D85) polish;
+  Lane P2 (MV-D87) navigation + relationship legibility (incl. the parent-domain-closure
+  dangling-`parent_id` fix).
+- **Visual system** — v2 shell (MV-D73/74/75), v3-fable harness + theme tokens
+  (MV-D77/78/79/80): dual-theme `graphTokens`, dev Vite harness + headless-browser diff loop.
+- **Typed estate assets** — Stages 1/2/3 (MV-D89/90/91/92): typed display-kinds (table /
+  metric_view / measure / agent / dashboard), MV double-emit dedupe, Genie Agents +
+  Dashboards placed by their APPLIED governed tag via the `entity-tag-assignments` API.
+- **Interactions** — buttery-interactions (O(1)/frame imperative drag + zoom, rAF glide) +
+  UX papercuts (`useTheme` live-flip, `FreshnessControls` reload-on-refresh-complete).
+
+**Foundations — ✅ BUILT + deploy-verified.** Phase 1 spine · Phase 2 batch + Lakebase
+mirror · Phase 3a signal graph + ER · 3b clustering · 3c page miners · 3d rank + serve ·
+Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
+
+---
+
 ## The ordered backlog (drive top-to-bottom)
 
-### P0 — Batch engine complete; small UX papercuts to finish the loop
-1. **Stage 4 + 4.1a–4.1f — the batch proposal engine** · ✅ BUILT + deploy-verified
-   - The full Stage-4 Pages path plus 4.1a (warehouse wiring), 4.1b (coded columns +
-     Page-attachment gate, MV-D63/64), 4.1c (single wheel-native LLM client, MV-D65),
-     4.1d (bounded page drafting + deterministic certify, MV-D66), 4.1e (gate-bounded
-     naming, MV-D67), and **4.1f (bounded ER + naming caps, MV-D68, commit `90fdff6c`)**
-     all landed. **The batch-timeout saga is closed**: run `31641283089969` succeeded in
-     **20.8 min**; snapshot has 17 surfaced Domains, 641 Pages, `certify` working.
-   - **No further action on the engine** — further tuning (super-sure auto-draft yield,
-     attachment %) is diminishing-returns backlog, not critical path.
-2. **UX papercuts — finish the review loop** · ✏️ UNDRAFTED (tiny)
-   - (a) **Drafts/Taxonomy do not auto-reload** after a refresh completes — the user must
-     revisit the page to see new drafts (`FreshnessControls` polls status but never
-     re-fetches taxonomy/tags/drafts). This is the "couldn't see domains" report.
-   - (b) **Page `body` is not rendered** on `PageDraftCard` — it rides the copy payload
-     only, so the curator can't read a proposed Page in-app.
-   - **Next action:** one tiny `ontology-ux-papercuts-{build,driver}.md` (or fold into the
-     Phase-5 build) — reload-on-refresh-complete. NOTE: papercut (b) (render Page `body`)
-     is **already done** — `PageDraftCard` renders `draft.body`. Frontend-only, no dep.
-2b. **Ontology Map visual + interaction polish** · 🟡 PARTIAL / 📝 DRAFTED
-   - **Shipped inline on `ontology`:** graph canvas now follows the app theme (transparent
-     SVG over `bg-sunken`, flips light/dark via CSS — commit `5e3ff17b`); north-star LIGHT
-     palette + tiered labels; default view `Estate→Domain→Sub-domain` (sub-domains collapsed);
-     folded-MV measures from the snippet index.
-   - **DRAFTED — "buttery interactions"** · driver `ontology-map-buttery-interactions-driver.md`:
-     O(1)/frame imperative drag + zoom (drops the per-pointer-move `layoutTree()` relayout),
-     hand-rolled rAF glide on expand/collapse (nodes AND edges tween together), transitioned
-     Fit/Reset camera — **no new npm dep**, reduced-motion aware, harness renders the final
-     frame. Doubles as the render-side **scale** lever (see "Scale hardening" below).
-   - **DRAFTED — UX papercuts "Run 1"** · driver `ontology-ux-papercuts-driver.md`: `useTheme`
-     multi-instance staleness fix (map node/edge/plate palette must flip live with the toggle;
-     the background already does, `5e3ff17b`) + `FreshnessControls` reload-on-refresh-complete.
-     Frontend-only, no dep.
-   - **Next action:** run `ontology-map-buttery-interactions-driver.md` in Goal Mode → STOP →
-     human deploy-verify eyeball.
+### P0 — Map-interaction polish loop · ✅ DONE (deploy-verified 2026-09-09)
+1. **Map interaction + visual fixes (#1/#2/#3)** · ✅ BUILT + deploy-verified (2026-09-09)
+   - Landed on `ontology` (629 frontend tests green, `tsc`/eslint clean, prod build OK),
+     frontend-only, additive:
+     - **#3 tier contrast** — `graphTokens.ts` light-theme container ramp widened to three
+       clearly-stepped navies (`#0B2026`→`#234A57`→`#35617A`, ≥~1.4:1 each step) + ring tint
+       lifted; hue stays reserved for type (§9-B).
+     - **#2 relationships-on-focus** — `ontologyTreeLayout.ts` cross-links now draw only on a
+       node/verb selection (nothing at rest; `+N links — select a node to trace` affordance)
+       + background-click-to-deselect.
+     - **#1 deterministic click model** — `EstateGraph.tsx`: click = select + expand/collapse
+       (functional toggle, no stale-closure flip-flop); the confusing "double-click dumps
+       assets" 3-state cycle is gone; a domain's direct assets now reveal via an explicit
+       "Show N direct assets" control in the inspector.
+   - **Done:** deploy-verified 2026-09-09 on `fevm-serverless` (app RUNNING); the frontend map
+     deltas are committed on `ontology` (`67ad4cff`, alongside the earlier `6eb20d16`).
+2. **Map relational-line detail (#4)** · ✅ BUILT + deploy-verified (2026-09-09)
+   - Landed on `ontology` (wheel 346 ontology tests + frontend 150 green, `tsc`/eslint clean),
+     additive + reveal-don't-invent:
+     - **Producer** — `schema_signals.fk_edges`/`shared_join_column_edges`/`join_key_edges`
+       thread the join **column name(s)** end-to-end (`(a,b,weight,source,columns)`);
+       `graph.add_edge`/`build_signal_graph` set `edge["columns"]` (empty ⇒ omitted);
+       `layout._edge_detail` already surfaced `columns` + gained `dashboard_scope → {role:"reads"}`.
+     - **Inspector** — `InspectorRelationship.detail` + `GraphInspector` render the evidence
+       bag inline per relationship row (an FK now reads `shares key · route_id`), not only in
+       the fleeting hover tooltip.
+   - **Done:** re-materialized 2026-09-09 (run `1018106709723767`, SUCCESS); FK column names are
+     live in the snapshot (`detail.columns`, e.g. `aircraft_id`) and render inline in the
+     inspector. Committed on `ontology` (`67ad4cff`).
 
 ### P1 — Quality scoreboard (gates all later tuning)
-2. **§10 Evaluation & trust harness (MV-D59)** · ⚙️ SCORER BUILT-OFFLINE · GATE DRAFTED
-   - **Scorer — BUILT + committed** (`7120a6df`, 28 tests green): `ontology/eval_harness.py`
-     — `assemble_eval_report` + `compare_reports` (gold-standard P/R/F vs aligned reference,
-     structural health singleton/orphan/depth/branching, injectable reference-free LLM sanity
-     monitor, seeded spot-review queue, BEFORE/AFTER deltas + regression warnings). Driver of
-     record: `ontology-eval-harness-driver.md`.
-   - **Gap — it is INERT:** referenced only by its own test; nothing reads a materialized run
-     into it and nothing runs it, so it can't yet gate anything.
-   - **DRAFTED — the wiring & gate** · driver `ontology-eval-harness-gate-driver.md`: read-only
+3. **§10 Evaluation & trust harness (MV-D59)** · ⚙️ SCORER BUILT-OFFLINE · GATE DRAFTED
+   - **Scorer — BUILT** (`7120a6df`, 28 tests): `ontology/eval_harness.py`
+     (`assemble_eval_report` + `compare_reports`). Driver of record
+     `ontology-eval-harness-driver.md`. **Gap: INERT** — nothing reads a materialized run
+     into it, so it can't gate yet.
+   - **DRAFTED — the wiring & gate** · `ontology-eval-harness-gate-driver.md`: read-only
      reader (`genie_ont_domains`/`genie_ont_members` → scorer shape), a runnable
-     `jobs/run_ontology_eval.py` that emits+persists a report JSON (no new table, MV-D49),
-     baseline-vs-current gating (non-zero exit on regression), and an optional airline gold
-     reference to light up P/R/F. Wheel-only, additive, no new dep (MV-D45). **Build-ready.**
-   - **Next action:** run the gate driver, then human baseline-capture at the deploy gate.
-   - **Why here:** MV-D59 gates every subsequent signal/threshold change, so the gate must be
-     runnable before further Stage/threshold tuning, Phase-4 alignment, and **P6**.
+     `jobs/run_ontology_eval.py` (report JSON, no new table — MV-D49), baseline-vs-current
+     gating, optional airline gold reference. Wheel-only, additive, no new dep. **Build-ready.**
+   - **Why here:** MV-D59 gates every subsequent signal/threshold change, so it must be
+     runnable before further tuning, Phase-4 alignment, and **P6**.
+   - **Next action:** run the gate driver → human baseline-capture at the deploy gate.
 
-### P2 — Drafted + independent (parallelizable read-only win)
-3. **Phase 3e / 17k — Estate Graph ("Ontology Map")** · 📝 DRAFTED
-   - Specs: `ontology-phase3e-{build,driver}.md` (MV-D48). Not built (no
-     `ontology/layout.py`, no `genie_ont_graph_snapshot`).
-   - **Blocker:** frontend-library **bakeoff** STOP gate (Sigma.js v3 vs Reagraph
-     vs Cytoscape.js) — a human eyeballs 3 static mockups and records the winner
-     **before** any npm dep / component lands.
-   - **Next action:** run/record the bakeoff decision → build the offline slice.
-   - Independent of 17h/17i; runnable any time after P0.
-
-### P3 — External enrichment
-4. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 📝 DRAFTED (Stage A build-ready)
-   - **Build spec:** `ontology-phase4-external-build.md` (§1 → §12), staged **A → B → C**
-     with a human STOP between each, all DEFAULT OFF (MV-D44), estate-only byte-identical when
-     off. Honors MV-D38 (Context Pack + provenance firewall + zero burden), MV-D46/D47 (AI
-     Gateway MCP Context Sources registry, firewalled by class), MV-D45 (no net-new service).
-   - **Stage A (safe backbone) — build-ready:** `ontology-phase4-external-stageA-driver.md`
-     (paste-ready, 3.9k). Registry + firewall-by-class + capability probe + `external_context`
-     config + a real tier-5 banner; **NO egress, no Context Pack** (those are Stage B). Inert
-     and safe to land first.
-   - **Stage B / C** — specified in the build doc; drivers authored once Stage A lands (B = the
-     batch Context Pack resolver + `system.ai.web_search` MCP + LeakageOracle self-validation +
-     the two plug-points; C = tier-5 Context Sources panel + `GRANT EXECUTE`/OAuth scopes).
-   - **§9 industry alignment (MV-D58) — already drafted:** `ontology-industry-alignment-driver.md`
-     (typed `exact/narrower/broader/derived/not-equivalent`, T2/T3 provenance-gated). *Consumes*
-     the Stage B pack seam — schedule **after Stage B**.
-   - **Next action:** run `ontology-phase4-external-stageA-driver.md` in Goal Mode → STOP →
-     human deploy-verify → author the Stage B driver.
-
-### P4 — The one write path (drafted) — **NOW THE #1 BUILD (post-4.1f pivot)**
-5. **Phase 5 / 17i — consented `SET TAG` apply (L9)** · 📝 DRAFTED — **QUEUED NEXT**
-   - Specs: `ontology-phase5-apply-{build,driver}.md` (MV-D37/D26/D50/D23/D27). Not
-     built (no `ontology/apply.py`; only firewall tests asserting *no* writes exist).
-   - Consumes the 17g `genie_ont_consents` ledger (✅ built). Dry-run-first,
-     default-OFF, OBO-attributed, request-time only (never in the batch job).
-   - **Why now:** the engine lands a trustworthy set (4.1f), so the value-unlock is
-     *acting on it* — apply is the gap between "discovery aid" and "ontology builder."
-   - **Driver is paste-ready** (verified). Prereqs 17g consents / MV-D49 re-grain /
-     MV-D50 OBO all shipped; `certify` now works (4.1d), satisfying its trust caveat.
-   - **Next action:** run `ontology-phase5-apply-driver.md` in Goal Mode → STOP at the
+### P2 — The one write path — **THE VALUE-UNLOCK**
+4. **Phase 5 / 17i — consented `SET TAG` apply (L9)** · 🟡 OFFLINE SLICE BUILT · live apply human-gated
+   - Offline slice **LANDED** (`9e1a82c4`): `apply.py` service + `apply/preview` +
+     `apply/execute` routes; firewall tests assert no writes by default. **Remaining:**
+     `execute` identity wiring + `ApplyPreview.tsx` + the *live* apply (dry-run-first,
+     default-OFF, OBO-attributed, request-time only — never in the batch job).
+   - Specs: `ontology-phase5-apply-{build,driver}.md` (MV-D37/D26/D50/D23/D27). Consumes the
+     17g `genie_ont_consents` ledger (✅ built); prereqs (re-grain / OBO / `certify`) all shipped.
+   - **Why now:** the engine lands a trustworthy set — apply is the gap between "discovery
+     aid" and "ontology builder."
+   - **Next action:** finish the `apply.py` execute path + `ApplyPreview.tsx` → STOP at the
      apply-safety checkpoint → human deploy-verify.
 
-### P5 — Track hardening (needs drafting)
-6. **17j — Ontology hardening + E2E** · ✏️ UNDRAFTED
-   - Register entry only (`mv-advisor-playbook.md`): the track's own hardening + E2E,
-     undo/rollback of an applied membership, docs / changelog / PR. **No doc.**
-   - **Next action:** draft `ontology-17j-hardening-{build,driver}.md`; run after 17i
-     lands (rollback needs the `genie_ont_applied` audit rows).
+### P3 — Curator enrichment loop (finish the review UX)
+5. **Stage 4.1d Steps 2–4 — curator Draft-with-AI** · 🟡 PARTIAL
+   - **Step 2** (`body_source` preservation across re-materialize) — **BUILT** (`7bc610c9`).
+   - **Steps 3 & 4** — 📝 DRAFTED: on-demand single-Page "Draft with AI" (OBO) and bulk
+     "Draft this sub-domain with AI" (OBO). Drivers `…-stage4.1d-step3/step4-driver.md`
+     (+ `ontology-stage4.1d-step34-backend-driver.md` backend half); build spec
+     `ontology-curation-redesign-stage4.1d-build.md`.
+   - **Next action:** build Steps 3 & 4 (backend routes + `PageDraftCard` actions).
 
-### P6 — Signal authority (OntoRank-style enrichment) — **build LAST, gated on P1**
-7. **Ontology Signal Authority — popularity + certification into the ranker (MV-D93–D97)** · 📝 DRAFTED (build spec exists; driver pending)
-   - Build spec: `ontology-signal-authority-build.md` (MV-D93 umbrella + MV-D94 popularity /
-     MV-D95 certification / MV-D96 PageRank+seeding / MV-D97 visual). Driver `…-driver.md` to write.
-   - Scope: the L6 ranker already reserves a `usage(0.40) × centrality(0.35) × governance(0.25)`
-     blend but sources neither the usage factor (`usage_signals()` returns `{}`) nor the
-     `curated` certified-authority rung (`_governance_map` only emits `governed`). Four stages:
-     wire `system.query.history`+`table_lineage` popularity (percentile-normalized, honest-gap);
-     feed `system.certification_status` into the authority rung + make `deprecated` a rank
-     firewall; upgrade degree→`igraph` PageRank over the full fused graph + certified-seeded
-     domain assignment + usage-weighted clustering; encode popularity=size / certified=ring on
-     the map. Additive/read-only, reuses GenieWatch's SP system-table plumbing + the `igraph`
-     already lazy in `cluster.py` (no new dep — MV-D45/D49/D26).
-   - **HARD GATE (MV-D59):** it changes signals + thresholds, so it **must land after P1** (the
-     §10 eval harness) to be measured, not eyeballed — Stage 3 (PageRank/seeding) especially.
-   - **Why last:** highest ceiling (this is the "make the ontology builder propose *better*
-     assets, categorize by earned authority, and visualize trust" work), but it depends on the
-     scoreboard and reads best on top of the Typed Estate Assets map (MV-D89–D92).
-   - **Next action:** write `ontology-signal-authority-driver.md`, then build Stage 1 first
-     (smallest change, unblocks the 0.40 factor) once the harness exists.
+### P4 — External enrichment
+6. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 📝 DRAFTED (Stage A build-ready)
+   - Build spec `ontology-phase4-external-build.md` (§1→§12), staged **A→B→C** with a human
+     STOP between each, all DEFAULT OFF (MV-D44), estate-only byte-identical when off.
+   - **Stage A (safe backbone) — 🟡 BUILT-OFFLINE:** `context_sources.py` registry +
+     firewall-by-class + capability probe + `external_context` config + real tier-5 banner
+     (**NO egress**, DEFAULT OFF, byte-identical when off; 2907 backend tests green). MV-D47
+     `web_search` is named as a registry **securable only** (narrow `_WEB_SEARCH_NAMING_ALLOWED`
+     exemption in `context_sources.py`); the Stage-B egress path stays token-banned everywhere else.
+   - **Stage B (resolver + egress + influence) — 🟡 BUILT-OFFLINE (committed `56904422`, Sep 10):**
+     `ontology-phase4-external-stageB-driver.md` — Context Pack resolver (batch identity) + web
+     search (AI-Gateway MCP `system.ai.web_search` + fallback ladder) + `Provenanced<T>`
+     self-validation + the two read-only plug-points (naming/gap hypotheses + Page Recent-context)
+     + additive DDL (`genie_ont_context_pack`/`_context_sources`), still DEFAULT OFF. First
+     single-sources the registry + firewall into the **wheel** (the resolver can't import
+     `backend.*`), then builds on them.
+   - **§9 industry alignment (MV-D58):** `ontology-industry-alignment-driver.md` (drafted) —
+     *consumes* the Stage B pack seam; schedule **after Stage B**.
+   - **Next action:** **deploy-verify Stage B** (built @`56904422`, offline-green 2946 tests) —
+     enable one source; names/synonyms/gap hypotheses appear as labeled/sourced priors; off ⇒
+     byte-identical (no regression). Then author + build **Stage C** (frontend panel).
+
+### P5 — Track hardening (needs drafting)
+7. **17j — Ontology hardening + E2E** · ✏️ UNDRAFTED
+   - Register entry only: hardening + E2E, undo/rollback of an applied membership, docs /
+     changelog / PR. **Next action:** draft `ontology-17j-hardening-{build,driver}.md`; run
+     after 17i lands (rollback needs the `genie_ont_applied` audit rows).
+
+### P6 — Signal authority (OntoRank-style) — **build LAST, gated on P1**
+8. **Ontology Signal Authority (MV-D93–D97)** · 📝 DRAFTED (build spec exists; driver pending)
+   - `ontology-signal-authority-build.md`: wire `system.query.history`+`table_lineage`
+     popularity into the reserved `usage×centrality×governance` blend; feed
+     `system.certification_status` into the authority rung (+ `deprecated` firewall); upgrade
+     degree→`igraph` PageRank + certified-seeded assignment + usage-weighted clustering;
+     encode popularity=size / certified=ring on the map. Additive/read-only; reuses
+     GenieWatch SP plumbing + the `igraph` already lazy in `cluster.py` (no new dep).
+   - **HARD GATE (MV-D59):** changes signals + thresholds → **must land after P1**.
+   - **Next action:** write `ontology-signal-authority-driver.md`, then build Stage 1 once
+     the harness exists.
 
 ---
 
 ## Track A — MV-Advisor / Semantic Graph (parallel, independent of ontology)
 
-7. **Semantic Blueprint v4 — Join-Advisor candidate source** · 📝 DRAFTED (feature
-   BUILT behind flag)
-   - Built: `frontend/src/components/model/SemanticBlueprint.tsx` + `blueprint/`
-     modules + Phase-2 backend, behind the `blueprint` canvas toggle. Gates green.
-   - **Deploy-gated remainder:** server-side FK / name-type discovery + containment
-     probe (the advisor's *candidate source*) and wiring `onSeed` to a real
-     Auto-Optimize run. Until then it renders its honest-empty state.
-   - Spec: `semantic-graph-v4-build-prompt.md` / `semantic-graph-v4-blueprint-note.md`.
-   - **Next action:** build the candidate-source backend + `onSeed` wiring → deploy-
-     verify. Closest-to-done, high-visibility, independent of everything ontology.
-
-8. **MV-Advisor main track — HEAD deployment review** · ✅ BUILT (verification gap)
-   - `reference/mv-advisor-gap-report.md`: code-complete through create-and-attach / Genie-v2
-     round-trip + current Blueprint, but **no deployment review of current HEAD**.
-   - **Next action:** a deployed human-review round on current HEAD (not a build).
-
----
-
-## Reference — built ontology foundation (context, not backlog)
-
-✅ Phase 1 spine · ✅ Phase 2 batch + Lakebase mirror · ✅ Phase 3a signal graph + ER ·
-✅ Phase 3b clustering · ✅ Phase 3c page miners · ✅ Phase 3d rank + serve ·
-✅ Re-grain to metastore (MV-D49) · ✅ OBO-first foundations (MV-D50) ·
-✅ Curation redesign Stages 1 / 2 / 3 / 3.1 / 3.2 (deploy-verified) ·
-✅ Stage 4 Pages + 4.1a–4.1f (coded columns, attachment gate, LLM-client consolidation,
-bounded drafting/naming/ER; MV-D63–D68; timeout resolved, run in ~21 min, deploy-verified).
+9. **Semantic Blueprint v4 — Join-Advisor candidate source** · 📝 DRAFTED (feature BUILT behind flag)
+   - Built: `SemanticBlueprint.tsx` + `blueprint/` modules + Phase-2 backend, behind the
+     `blueprint` canvas toggle. **Deploy-gated remainder:** server-side FK / name-type
+     discovery + containment probe + wiring `onSeed` to a real Auto-Optimize run. Specs
+     `semantic-graph-v4-build-prompt.md` / `…-blueprint-note.md`.
+   - **Next action:** build the candidate-source backend + `onSeed` → deploy-verify.
+10. **MV-Advisor main track — HEAD deployment review** · ✅ BUILT (verification gap)
+    - `reference/mv-advisor-gap-report.md`: code-complete through create-and-attach / Genie-v2
+      round-trip + Blueprint, but **no deployment review of current HEAD**.
+    - **Next action:** a deployed human-review round on current HEAD (not a build).
 
 🧊 `semantic-graph-v2-note.md`, `semantic-graph-v3-note.md` — superseded by v4.
+🧊 `ontology-frontend-batch-driver.md`, `ontology-wave2-launcher.md`,
+`ontology-wave3-launcher.md` — historical Wave-2/3 orchestration; the work re-sliced into the
+per-lane drivers now in `implemented/`. `ontology-phase3e-{build,driver}.md` — the estate
+graph shipped via the map lanes (d3/SVG, MV-D84); kept as the original spec of record.
 
 ---
 
 ## Scale hardening (enterprise levers — context, not yet scheduled)
 
 The architecture bounds the problem by design — reads are **catalog-allowlist scoped**, the
-served graph is **capped at `TOP_N_BY_CENTRALITY = 2000`** display nodes (so the snapshot
-payload does NOT grow with estate size), the tree is **progressively disclosed** (default
-`Estate→Domain→Sub-domain`, per-parent `+N more`, cross-link overflow gating), and reads are
-**Lakebase-mirrored + TTL-cached**. Correctness and payload size hold at enterprise scale.
-Two levers remain for true-enterprise estates, neither yet scheduled:
+served graph is **capped at `TOP_N_BY_CENTRALITY = 2000`** display nodes, the tree is
+**progressively disclosed** (default `Estate→Domain→Sub-domain`, per-parent `+N more`,
+relationships-on-focus), and reads are **Lakebase-mirrored + TTL-cached**. Two levers remain
+for true-enterprise estates, neither yet scheduled:
 
 1. **Batch runtime + LLM cost → catalog sharding.** The batch materialize is the time/cost
-   cliff (~21 min, 641 Pages on the airline estate; Page/naming/ER are LLM fan-out that scales
-   ~linearly with candidate count). For 10×+ estates, materialize **per-catalog and union**
-   (and/or raise the job timeout deliberately). Bounded today by the MV-D66/67/68 caps + the
-   attachment gate — but not yet sharded.
-2. **Render → O(1)/frame interactions + virtualization.** The visual is safe by default
-   (collapsed = tens of nodes) but the current per-drag `layoutTree()` relayout + per-zoom
-   React re-render would stutter on a fully-expanded estate near the 2000 cap. The
-   **buttery-interactions driver** (P0 item 2b) fixes the per-frame cost as its first job; if
-   routine thousand-node expansion is ever needed, add **viewport virtualization / LOD**
-   (render only in-frame nodes) — a WebGL renderer (a new dep) only if that isn't enough.
+   cliff (~21 min, 641 Pages on the airline estate). For 10×+ estates, materialize
+   **per-catalog and union** (and/or raise the job timeout deliberately).
+2. **Render → virtualization.** The buttery-interactions work fixed per-frame drag/zoom cost;
+   if routine thousand-node expansion near the 2000 cap is needed, add **viewport
+   virtualization / LOD** (WebGL renderer only if that isn't enough).
 
 ---
 
 ## Suggested execution order
 
-Batch engine is **done** (P0 item 1). **Build P4 (Phase 5 apply) NEXT** — it's the
-value-unlock that closes the curator loop and its driver is paste-ready. Fold the P0
-UX papercuts in alongside (or just before) it. Then the **4.1d Steps 2→4** curator
-enrichment loop, **P2** (Estate Graph, read-only win), **P1** (§10 harness, so quality
-stops regressing silently), **P3** (external) and **P5** (hardening) later. **P6**
-(Signal Authority / OntoRank enrichment) is the **last ontology build** — it needs the
-P1 harness as its scoreboard, so it deliberately follows everything above. **Track A #7**
-(Blueprint remainder) can run in parallel by anyone not on the ontology branch work.
+Batch engine + Ontology Map are **done**, and the **P0 map-interaction/#4 pass is
+deploy-verified + committed** (`67ad4cff`). **Next: deploy-verify Stage B** (P4, built
+`56904422`) — it's the freshest offline-green code. Then **(P2) Phase 5 apply** — the
+value-unlock that closes the curator loop (its offline slice already landed). Stand up **(P1)
+the §10 harness** before any further signal/threshold tuning so quality stops regressing
+silently. Then **P3** (curator Draft-with-AI Steps 3–4), the rest of **P4** (Stage C + §9
+alignment), **P5** (hardening). **P6 (Signal Authority) is the last ontology build** — it needs
+the P1 harness as its scoreboard. **Track A** can run in parallel by anyone off the ontology branch.
