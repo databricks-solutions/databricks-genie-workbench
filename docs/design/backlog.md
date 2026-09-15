@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-14**, post #1–#4 deploy-verify + Stage A/#4 committed). This is the sequencing
+branch `ontology` (**2026-09-15**, post Stage B deploy-verify + web_search parser fix). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -133,18 +133,31 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      (**NO egress**, DEFAULT OFF, byte-identical when off; 2907 backend tests green). MV-D47
      `web_search` is named as a registry **securable only** (narrow `_WEB_SEARCH_NAMING_ALLOWED`
      exemption in `context_sources.py`); the Stage-B egress path stays token-banned everywhere else.
-   - **Stage B (resolver + egress + influence) — 🟡 BUILT-OFFLINE (committed `56904422`, Sep 10):**
+   - **Stage B (resolver + egress + influence) — ✅ BUILT + deploy-verified (2026-09-15):**
      `ontology-phase4-external-stageB-driver.md` — Context Pack resolver (batch identity) + web
      search (AI-Gateway MCP `system.ai.web_search` + fallback ladder) + `Provenanced<T>`
      self-validation + the two read-only plug-points (naming/gap hypotheses + Page Recent-context)
-     + additive DDL (`genie_ont_context_pack`/`_context_sources`), still DEFAULT OFF. First
-     single-sources the registry + firewall into the **wheel** (the resolver can't import
-     `backend.*`), then builds on them.
+     + additive DDL (`genie_ont_context_pack`/`_context_sources`), DEFAULT OFF. Single-sources the
+     registry + firewall into the **wheel** (the resolver can't import `backend.*`), then builds on them.
+     - **Deploy-verify (`fevm-serverless`, Alaska Airlines, tier ON):** run `826181768666957` /
+       ontology run `a5225591…` SUCCESS in 30.3 min. Pack written: `industry_code=481111`
+       (Scheduled Passenger Air Transportation), industry label T2-sourced; **26 sourced leaves /
+       3 URLs** in the egress log; `canonical_domains[0].is_template=true` (firewall held); estate
+       byte-stable (2642 tags · 134 domains · 378 pages · 1995 identities). OFF ⇒ empty pack, no egress.
+     - **Live fix (`69bf9ec6`):** the managed `system.ai.web_search` MCP returns a synthesized
+       **markdown answer + citations**, not a JSON hit array — `web_search._extract_hits` now parses
+       inline `[title](url)` citations (uncited ⇒ [] ⇒ degrade), which is what turned the positive
+       path on. Committed with 2 unit tests against the captured live payload.
+   - **Stage C (user surface) — 📝 DRAFTED (build-ready):** `ontology-phase4-external-stageC-driver.md`
+     — render-only over Stage B's persisted pack: per-source Context Sources panel in the banner
+     (`PermissionBanner` renders the tier-5 `sources` Stage A already returns) + one opt-in Settings
+     toggle + a labeled/dated Sources chip on a suggestion whose name came from the pack
+     (`mirror.py` reads `evidence.rank.naming_prior`) + `GRANT EXECUTE`/OAuth wiring. Additive,
+     read-only, DEFAULT OFF ⇒ byte-identical. Fits the 4000-char Goal-Mode limit (3931).
    - **§9 industry alignment (MV-D58):** `ontology-industry-alignment-driver.md` (drafted) —
-     *consumes* the Stage B pack seam; schedule **after Stage B**.
-   - **Next action:** **deploy-verify Stage B** (built @`56904422`, offline-green 2946 tests) —
-     enable one source; names/synonyms/gap hypotheses appear as labeled/sourced priors; off ⇒
-     byte-identical (no regression). Then author + build **Stage C** (frontend panel).
+     *consumes* the Stage B pack seam; schedule after Stage C.
+   - **Next action:** build **Stage C** (Goal Mode) → STOP → deploy-verify; then wire **§9 industry
+     alignment** onto the live pack seam.
 
 ### P5 — Track hardening (needs drafting)
 7. **17j — Ontology hardening + E2E** · ✏️ UNDRAFTED
@@ -206,11 +219,12 @@ for true-enterprise estates, neither yet scheduled:
 
 ## Suggested execution order
 
-Batch engine + Ontology Map are **done**, and the **P0 map-interaction/#4 pass is
-deploy-verified + committed** (`67ad4cff`). **Next: deploy-verify Stage B** (P4, built
-`56904422`) — it's the freshest offline-green code. Then **(P2) Phase 5 apply** — the
-value-unlock that closes the curator loop (its offline slice already landed). Stand up **(P1)
-the §10 harness** before any further signal/threshold tuning so quality stops regressing
-silently. Then **P3** (curator Draft-with-AI Steps 3–4), the rest of **P4** (Stage C + §9
-alignment), **P5** (hardening). **P6 (Signal Authority) is the last ontology build** — it needs
-the P1 harness as its scoreboard. **Track A** can run in parallel by anyone off the ontology branch.
+Batch engine + Ontology Map are **done**, the **P0 map-interaction/#4 pass is
+deploy-verified + committed** (`67ad4cff`), and **Phase 4 Stage B is now deploy-verified**
+(`69bf9ec6`) — the external Context Pack resolves live and is DEFAULT-OFF-safe. **Next: (P2)
+Phase 5 apply** — the value-unlock that closes the curator loop (its offline slice already
+landed). Stand up **(P1) the §10 harness** before any further signal/threshold tuning so
+quality stops regressing silently. Then **P3** (curator Draft-with-AI Steps 3–4), the rest of
+**P4** (Stage C + §9 alignment), **P5** (hardening). **P6 (Signal Authority) is the last
+ontology build** — it needs the P1 harness as its scoreboard. **Track A** can run in parallel
+by anyone off the ontology branch.
