@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -142,6 +143,12 @@ def _extract_hits(node: Any) -> list[Any]:
             try:
                 parsed = json.loads(text)
             except (ValueError, TypeError):
+                # The managed ``system.ai.web_search`` MCP returns a synthesized markdown
+                # ANSWER with inline ``[title](url)`` citations + a "Sources" list, NOT a
+                # JSON hit array (MV-D46 live-probe finding). Parse the citations as hits so
+                # the positive path works against the real Gateway; a citation-free answer
+                # yields [] and the ladder degrades to the next rung / estate-only (MV-D43).
+                collected.extend(_hits_from_text_answer(text))
                 continue
             collected.extend(_extract_hits(parsed))
         if collected:
@@ -151,6 +158,46 @@ def _extract_hits(node: Any) -> list[Any]:
         if isinstance(v, list):
             return v
     return []
+
+
+# A markdown link ``[label](url)`` restricted to citable http(s) targets; ``label`` may be
+# empty (a bare ``[](url)`` still yields a citable hit).
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
+# Cap the answer prose reused as a per-citation snippet so a long synthesized answer never
+# bloats the resolver's synthesis prompt / the egress row (MV-D46). The LLM only needs the
+# substance, not the whole essay.
+_ANSWER_SNIPPET_MAX = 1500
+
+
+def _hits_from_text_answer(text: str) -> list[dict[str, Any]]:
+    """Parse a synthesized markdown ANSWER (the managed ``system.ai.web_search`` shape) into
+    hit dicts. Extracts inline ``[title](url)`` citations, de-duped by url in first-seen
+    order; each hit carries the flattened answer prose as its snippet so the resolver's LLM
+    synthesis sees the substance. Returns [] when no citable http(s) url is present — the
+    resolver drops any leaf without a ``source_url`` (MV-D38), so an uncited answer never
+    seeds a naming prior. Never raises (MV-D43)."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    snippet = _plain_text(text)[:_ANSWER_SNIPPET_MAX]
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for label, url in _MD_LINK_RE.findall(text):
+        u = url.strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        out.append({"title": label.strip(), "url": u, "snippet": snippet})
+    return out
+
+
+def _plain_text(md: str) -> str:
+    """A light markdown→text flatten for the snippet: collapse ``[label](url)`` to its label
+    (or the url when unlabeled) and drop emphasis/heading/bullet markers, then collapse
+    whitespace. Deterministic; never raises."""
+    text = _MD_LINK_RE.sub(lambda m: m.group(1) or m.group(2), md)
+    text = re.sub(r"[*_`#>]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 def web_search(

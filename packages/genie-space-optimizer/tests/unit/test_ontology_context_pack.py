@@ -320,6 +320,46 @@ def test_web_search_drops_a_result_without_a_url():
     assert web_search.web_search("q", enabled_providers=["web_search"], transport=_transport) == []
 
 
+# The captured LIVE shape of the managed ``system.ai.web_search`` MCP (deploy-verify
+# 2026-09-15): a synthesized markdown ANSWER with inline [title](url) citations + a
+# "Sources" list — NOT a JSON hit array. The same url appears inline and in Sources.
+_LIVE_MCP_ANSWER = (
+    "Alaska Airlines operates in the **commercial aviation industry**, specifically the "
+    "**U.S. passenger airline industry**.\n\n"
+    "- **Industry:** Transportation / Aviation\n"
+    "- **Parent company:** Alaska Air Group, Inc. "
+    "([sec.gov](https://www.sec.gov/Archives/edgar/data/766421/000076642126000010/alk-20251231.htm?utm_source=openai))\n\n"
+    "### Sources\n"
+    "- [alk-20251231](https://www.sec.gov/Archives/edgar/data/766421/000076642126000010/alk-20251231.htm?utm_source=openai)"
+)
+
+
+def test_web_search_parses_managed_markdown_answer_with_citations():
+    # MV-D46 live-probe finding: the managed MCP returns a markdown answer, not a JSON hit
+    # array. The parser must extract the citation(s) so the positive path actually resolves.
+    def _transport(path, body):
+        return {"result": {"content": [{"type": "text", "text": _LIVE_MCP_ANSWER}]}}
+
+    out = web_search.web_search("Alaska Airlines industry", enabled_providers=["web_search"], transport=_transport)
+    # Same url cited twice ⇒ de-duped to one hit, first-seen title wins.
+    assert [r.url for r in out] == [
+        "https://www.sec.gov/Archives/edgar/data/766421/000076642126000010/alk-20251231.htm?utm_source=openai"
+    ]
+    assert out[0].title == "sec.gov"
+    # The answer prose is flattened into the snippet so the resolver's synthesis sees it.
+    assert "commercial aviation industry" in out[0].snippet
+    assert "**" not in out[0].snippet  # emphasis markers stripped by the flatten
+
+
+def test_web_search_uncited_markdown_answer_degrades_to_empty():
+    # A prose answer with no citable http(s) url yields [] — the resolver drops unsourced
+    # leaves (MV-D38), so the ladder degrades rather than seeding an uncited naming prior.
+    def _transport(path, body):
+        return {"result": {"content": [{"type": "text", "text": "Just prose, no links here."}]}}
+
+    assert web_search.web_search("q", enabled_providers=["web_search"], transport=_transport) == []
+
+
 # ── DDL: additive context tables (MV-D49) ────────────────────────────────────
 
 
