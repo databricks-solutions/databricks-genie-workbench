@@ -223,10 +223,13 @@ Offline; grain unchanged (sub-domains stay `genie_ont_domains` rows with `parent
 - Read-only; no Agent-instruction write (MV-D27); `page_id` stays concept-anchored.
 
 ## 9. Industry-reference alignment · MV-D58
-> **Status:** dependencies now met — the Phase-4 Context Pack seam (17h Stage B) is
-> **landed + deploy-verified (2026-09-15)** and Stage-4.1c (wheel-native LLM) is
-> built, so §9 is **build-ready**. Goal-Mode driver:
-> `docs/design/ontology-industry-alignment-driver.md`.
+> **Status: BUILT + deploy-verified (2026-09-15, commit `de65f480` on `ontology`).**
+> `alignment.py` + `reference_models.py` run the 4 ordered passes and emit typed
+> correspondences via `rank.apply_alignment`; additive, off-by-default (byte-
+> identical), evidence-first. Live verify (`reference_model=airline`): 16/16 surfaced
+> domains carry a typed correspondence (`narrower`×12 / `broader`×4) with
+> `reference_name` + a T2 Provenanced leaf; `applied_renames=0` (no curated fact
+> outranked). Driver: `docs/design/ontology-industry-alignment-driver.md`.
 
 **Why this replaces the token-overlap naming prior (2026-09-15 live finding).** The
 Phase-4 Context Pack today feeds domain names through `rank.apply_context_prior` as a
@@ -317,12 +320,11 @@ fixes the root cause the live inventory exposes.
 **Status (2026-09):** Stages **1, 2, 3, 3.1, 3.2, 4, 4.1a, 4.1b — LANDED +
 deploy-verified** (drivers archived under `docs/design/implemented/`; live evidence in
 §A.1–§A.4 and playbook §9). **Stage-4.1c** (MV-D65, wheel-native LLM client) is the next
-build — it unblocks batch `certify`. **§9 (17h alignment, MV-D58) is now build-ready**
-— its Phase-4 Context Pack dependency is landed + deploy-verified (2026-09-15), §9
-above is authoritative, and the Goal-Mode driver
-(`ontology-industry-alignment-driver.md`) is written. **§10 (MV-D59)** has its driver
-(`ontology-eval-harness-driver.md`) but reports P/R/F only once §9 emits the aligned
-reference. Canonical order: the **Ontology Build Queue** in `mv-advisor-playbook.md`.
+build — it unblocks batch `certify`. **§9 (17h alignment, MV-D58) is BUILT +
+deploy-verified (2026-09-15, `de65f480`)** — see §9 above. **§10 (MV-D59)** is now
+**unblocked** (§9 emits the aligned reference it scores against); its driver
+(`ontology-eval-harness-driver.md`) is written. Canonical order: the **Ontology Build
+Queue** in `mv-advisor-playbook.md`.
 
 ## 14. Definition of Done (per stage)
 - `./scripts/test.sh` green incl. the stage's new tests; `npm run lint` + `tsc` +
