@@ -2,14 +2,21 @@
 
 ## Status / positioning (READ FIRST)
 
-**Future work — not a lane in the current parallel batch.** Industry-reference
-alignment (§9 of the curation-redesign build spec, MV-D58) is still **spec-only**:
-Stages 1 → 4.1b are LANDED + deploy-verified, Stage-4.1c (MV-D65, wheel-native LLM
-client) is the next build, and §9 folds into **Phase 4 / 17h** after the Context
-Pack seam exists. This driver exists so that build can start from a written GOAL
-rather than re-deriving §9. Build order of record is the **Ontology Build Queue**
-in `mv-advisor-playbook.md` — schedule this against that queue; do **not** front-run
-Stage-4.1c or the Phase-4 Context Pack it depends on.
+**BUILD-READY — dependencies met (2026-09-15).** The Phase-4 Context Pack seam
+(17h Stage B) is **landed + deploy-verified** and Stage-4.1c (MV-D65, wheel-native
+LLM client) is built, so the two things §9 waited on now exist. §9 of the
+curation-redesign build spec (`ontology-curation-redesign-build.md`) is now the
+**authoritative** behavior source (expanded 2026-09-15); honor it exactly.
+
+**Why now (live finding motivating this build).** A 2026-09-15 re-verify of the
+Phase-4 naming prior showed `rank.apply_context_prior`'s token-overlap match
+mistargets: pack names landed on suppressed dev/migration clusters while the estate's
+16 **surfaced** domains are all **curated governed tags** (zero surfaced `create`
+clusters), so the prior only ever produced noisy `applied=false` corroboration. The
+prior was hardened (surfaced-gate + ≥2-token match), but the durable fix is §9's
+typed, confidence-gated correspondence + gap detection — which is what this build
+delivers. Build order of record is the **Ontology Build Queue** in
+`mv-advisor-playbook.md`.
 
 Because it is future work, this driver carries **no parallel-build lane header** — it
 is not competing with sibling worktrees today. When it is scheduled, re-confirm the

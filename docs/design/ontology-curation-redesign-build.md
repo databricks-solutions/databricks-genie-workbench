@@ -223,13 +223,69 @@ Offline; grain unchanged (sub-domains stay `genie_ont_domains` rows with `parent
 - Read-only; no Agent-instruction write (MV-D27); `page_id` stays concept-anchored.
 
 ## 9. Industry-reference alignment · MV-D58
-Load the matching **Vibe industry model** (domain taxonomy + ontology JSON); hybrid
-match (string + embedding seed anchors → structural propagation → semantic sanity)
-emitting **typed** correspondences (`exact` / `narrower` / `broader` / `derived` /
-`not-equivalent`) + gap-domain hypotheses. **Provenance-gated** (T2/T3): it can
-suggest and name but **never outranks** a T0/curated fact (`rank.py` ladder). Folds
-into the Phase-4 / 17h Context Pack + firewall (MV-D38); toggle off by default
-(MV-D44).
+> **Status:** dependencies now met — the Phase-4 Context Pack seam (17h Stage B) is
+> **landed + deploy-verified (2026-09-15)** and Stage-4.1c (wheel-native LLM) is
+> built, so §9 is **build-ready**. Goal-Mode driver:
+> `docs/design/ontology-industry-alignment-driver.md`.
+
+**Why this replaces the token-overlap naming prior (2026-09-15 live finding).** The
+Phase-4 Context Pack today feeds domain names through `rank.apply_context_prior` as a
+crude **token-overlap** match against a cluster's name + member stems. A live re-verify
+on the Alaska estate showed this mistargets: the pack name *"Loyalty & Mileage Plan
+Programs"* landed on suppressed `Migration` / `Cost Attribution` / dev clusters (one
+incidental `loyalty` table stem was enough), while the 16 **surfaced** domains — all
+**curated governed tags** (`reuse`×15 / `reassign`×1), zero surfaced `create` clusters
+— got only noisy `applied=false` corroboration (`Alaska Airlines Operations ←
+"Hawaiian Airlines Operations"`). The prior was hardened (surfaced-gate + ≥2-token
+match, MV-D38) to stop the mislabels, but that hardening also confirms the real lesson:
+**on a curated-heavy estate the value is not renaming — it is typed, confidence-gated
+correspondence + gap detection.** §9 is that proper mechanism.
+
+**Load the matching Vibe industry model.** Given the run's resolved industry
+(company → NAICS/GICS, already a Context-Pack input), load the corresponding taxonomy
++ ontology JSON from the `lakehouse-industry-data-models` repo. This is a **T2
+industry-canonical** reference (architecture §6) — vocabulary + structure only, never
+a structural writer.
+
+**Hybrid match, four ordered passes (deterministic; fixed embedding seed anchors).**
+(a) **string** match discovered domains against reference names/synonyms; (b)
+**embedding** match on **seed anchors** to catch renamed-but-equivalent domains;
+(c) **structural propagation** across the FK/join graph so a matched anchor pulls its
+connected neighbours; (d) a **semantic-sanity** pass that rejects lexically/embedding-
+close but structurally-incoherent matches. Same estate + same reference ⇒ same result.
+This replaces the single-pass token overlap in `apply_context_prior` (§ above).
+
+**Emit typed correspondences.** Every discovered ↔ reference link is exactly one of
+`exact` / `narrower` / `broader` / `derived` / `not-equivalent` (MV-D60 map-not-merge).
+No untyped or free-text relation. On the current curated-heavy estate these land as
+**corroborating evidence on curated domains** (raising confidence + carrying a labeled,
+dated source), not as renames — a curated `reuse`/`reassign` name is a T0 fact and
+wins.
+
+**Emit gap-domain hypotheses.** Where the reference has a domain the estate lacks (e.g.
+industry has *In-flight Catering*, estate has none), emit a **hypothesis** ranked
+**below** every evidence-backed proposal, **never auto-created**.
+
+**Provenance-gate everything (T2/T3).** Alignment may suggest + name but **never
+outranks** a T0/curated fact — the `rank.py` ladder decides (T0 internal-verified > T1
+company-official > T2 industry-canonical > T3 web-inferred). A naming hint never
+overrides membership, a measure definition, lineage, or a curator decision (MV-D38).
+
+**Fold into the Phase-4 / 17h Context Pack + firewall (MV-D38).** Alignment consumes
+the versioned, cached, per-company Context Pack as a read-only prior and emits
+`Provenanced<T>` leaves (tier + source + as-of) so L6 ranking treats pack and graph
+facts uniformly, under the same firewall (PII on tag names; no structural writes).
+
+**Config + persistence.** Gated by additive config `industry_alignment={enabled,
+reference_model}` (§7; idempotent `ADD COLUMN IF NOT EXISTS`, mirrored to `types.ts`,
+one opt-in `SettingsForm` toggle). `enabled=false` (default, MV-D44) ⇒ byte-identical
+run. Relations + hypotheses ride the existing `evidence` JSON; the optional additive
+`genie_ont_alignment` table (§11, metastore-keyed, CDF-on, no retired cols) only if
+`evidence` cannot carry them.
+
+**Feed the eval harness (§10 / MV-D59).** Emit the aligned reference in the shape the
+offline harness reads to compute precision/recall/F of discovered vs reference
+domains; §9 only guarantees that output exists and is stable.
 
 ## 10. Evaluation & trust harness · MV-D59
 Offline harness reporting, per run: gold-standard precision/recall/F of discovered
@@ -261,9 +317,12 @@ fixes the root cause the live inventory exposes.
 **Status (2026-09):** Stages **1, 2, 3, 3.1, 3.2, 4, 4.1a, 4.1b — LANDED +
 deploy-verified** (drivers archived under `docs/design/implemented/`; live evidence in
 §A.1–§A.4 and playbook §9). **Stage-4.1c** (MV-D65, wheel-native LLM client) is the next
-build — it unblocks batch `certify`. **§9 (17h) and §10 (MV-D59) are still spec-only** —
-each needs a Goal-Mode driver drafted before it can be built. Canonical order: the
-**Ontology Build Queue** in `mv-advisor-playbook.md`.
+build — it unblocks batch `certify`. **§9 (17h alignment, MV-D58) is now build-ready**
+— its Phase-4 Context Pack dependency is landed + deploy-verified (2026-09-15), §9
+above is authoritative, and the Goal-Mode driver
+(`ontology-industry-alignment-driver.md`) is written. **§10 (MV-D59)** has its driver
+(`ontology-eval-harness-driver.md`) but reports P/R/F only once §9 emits the aligned
+reference. Canonical order: the **Ontology Build Queue** in `mv-advisor-playbook.md`.
 
 ## 14. Definition of Done (per stage)
 - `./scripts/test.sh` green incl. the stage's new tests; `npm run lint` + `tsc` +

@@ -1122,8 +1122,13 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > remaining human check.
 >
 > **Human gates that stay OUT of the autonomous lanes:** Phase-5 *live* `SET TAG` apply, and the
-> eval-harness / draft-body live deploy-verify passes. **Blocked (not launchable):** §9 industry
-> alignment (MV-D58) — waits on the Phase-4 Context Pack seam.
+> eval-harness / draft-body live deploy-verify passes. **§9 industry alignment (MV-D58) — now
+> BUILD-READY (2026-09-15):** its Phase-4 Context Pack dependency (17h Stage B) is landed +
+> deploy-verified, §9 of `ontology-curation-redesign-build.md` is now authoritative, and the driver
+> `ontology-industry-alignment-driver.md` is written. Motivated by the 2026-09-15 finding that the
+> token-overlap naming prior (`rank.apply_context_prior`) mistargets on a curated-heavy estate
+> (hardened with a surfaced-gate + ≥2-token match as a stopgap; §9 is the durable fix — typed,
+> confidence-gated correspondence + gap detection). Schedule against the Ontology Build Queue.
 >
 > **Phase 5 (17i) — offline finish LANDED on `ontology`** (subsystem's only governed-tag writer;
 > additive, no dep, `uv.lock`/npm-lock untouched — MV-D45). Closed the offline slice's remaining
