@@ -26,6 +26,7 @@ from backend.ontology.models import (
     DEFAULT_DOMAIN_JOIN_COL_DENYLIST,
     DEFAULT_DOMAIN_JOIN_COL_SUFFIXES,
     DEFAULT_DOMAIN_SCHEMA_DENYLIST,
+    ExternalContext,
     IndustryAlignment,
     OntologySettings,
 )
@@ -102,6 +103,20 @@ def _industry_alignment(raw) -> IndustryAlignment:
     return IndustryAlignment()
 
 
+def _external_context(raw) -> ExternalContext:
+    """Coerce the stored ``external_context`` (dict/JSON/None) into the model,
+    defaulting to disabled (DEFAULT OFF, MV-D44)."""
+    if isinstance(raw, ExternalContext):
+        return raw
+    if isinstance(raw, dict):
+        sources = raw.get("sources")
+        return ExternalContext(
+            enabled=bool(raw.get("enabled", False)),
+            sources={str(k): bool(v) for k, v in sources.items()} if isinstance(sources, dict) else {},
+        )
+    return ExternalContext()
+
+
 async def get_settings() -> OntologySettings:
     """Read the stored company name + catalog allowlist + curation policy (defaults if
     unset). Every Stage-3 field is additive/defaulted (MV-D50/D57): an old row missing
@@ -158,6 +173,7 @@ async def get_settings() -> OntologySettings:
             if row.get("page_autodraft_max_pages") is not None else 50
         ),
         industry_alignment=_industry_alignment(row.get("industry_alignment")),
+        external_context=_external_context(row.get("external_context")),
     )
 
 
@@ -173,6 +189,7 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
     join_suffixes = _norm_str_list(settings.domain_join_col_suffixes)
     join_denylist = _norm_str_list(settings.domain_join_col_denylist)
     industry = settings.industry_alignment or IndustryAlignment()
+    external = settings.external_context or ExternalContext()
     await lakebase.ont_upsert_settings(
         _workspace_id(), company, allowlist, read_identity,
         domain_facet_denylist=facet_denylist,
@@ -188,6 +205,7 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
         page_autodraft_min_corroboration=int(settings.page_autodraft_min_corroboration),
         page_autodraft_max_pages=int(settings.page_autodraft_max_pages),
         industry_alignment=industry.model_dump(mode="json"),
+        external_context=external.model_dump(mode="json"),
     )
     # NOTE: we deliberately do NOT auto-grant BROWSE to the app SP here. The app's
     # OBO token is scoped read-only for Unity Catalog (catalog.*:read + sql, no
@@ -209,4 +227,5 @@ async def save_settings(settings: OntologySettings) -> OntologySettings:
         page_autodraft_min_corroboration=int(settings.page_autodraft_min_corroboration),
         page_autodraft_max_pages=int(settings.page_autodraft_max_pages),
         industry_alignment=industry,
+        external_context=external,
     )

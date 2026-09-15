@@ -383,6 +383,14 @@ async def _ensure_schema():
                 "ALTER TABLE genie.genie_ont_settings "
                 "ADD COLUMN IF NOT EXISTS page_autodraft_max_pages INT NOT NULL DEFAULT 50"
             )
+            # Phase 4 Stage A (17h, MV-D44/D49): external Context Sources config —
+            # additive + defaulted DEFAULT OFF, so an old row reads as disabled and a
+            # materialize run stays byte-identical estate-only. Idempotent on restart.
+            await conn.execute(
+                "ALTER TABLE genie.genie_ont_settings "
+                "ADD COLUMN IF NOT EXISTS external_context JSONB NOT NULL "
+                "DEFAULT '{\"enabled\": false, \"sources\": {}}'"
+            )
         _lakebase_available = True
         logger.info("Lakebase schema ready (5 workbench tables + 5 watch tables + 1 ontology table)")
     except Exception as e:
@@ -1149,7 +1157,7 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
                 "domain_join_col_suffixes, domain_join_col_max_schemas, "
                 "domain_join_col_denylist, domain_max_diffuse_schemas, "
                 "domain_min_home_concentration, page_autodraft_min_corroboration, "
-                "page_autodraft_max_pages, industry_alignment, updated_at "
+                "page_autodraft_max_pages, industry_alignment, external_context, updated_at "
                 "FROM genie.genie_ont_settings WHERE workspace_id = $1",
                 workspace_id,
             )
@@ -1190,6 +1198,8 @@ async def ont_get_settings(workspace_id: str) -> Optional[dict]:
             "page_autodraft_min_corroboration": row["page_autodraft_min_corroboration"],
             "page_autodraft_max_pages": row["page_autodraft_max_pages"],
             "industry_alignment": _json(row["industry_alignment"], None),
+            # Phase 4 Stage A (MV-D44) — external Context Sources; JSONB parsed defensively.
+            "external_context": _json(row["external_context"], None),
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
     except Exception:
@@ -1216,6 +1226,7 @@ async def ont_upsert_settings(
     page_autodraft_min_corroboration: int = 3,
     page_autodraft_max_pages: int = 50,
     industry_alignment: dict | None = None,
+    external_context: dict | None = None,
 ) -> dict:
     """Upsert the Ontology settings row for a workspace. Fails closed. The Stage-3 /
     Stage-3.2 curation-policy fields are keyword-only + defaulted, so an older caller
@@ -1229,6 +1240,9 @@ async def ont_upsert_settings(
     ]
     industry = industry_alignment if isinstance(industry_alignment, dict) else {
         "enabled": False, "reference_model": None
+    }
+    external = external_context if isinstance(external_context, dict) else {
+        "enabled": False, "sources": {}
     }
     record = {
         "company_name": company_name,
@@ -1247,6 +1261,7 @@ async def ont_upsert_settings(
         "page_autodraft_min_corroboration": int(page_autodraft_min_corroboration),
         "page_autodraft_max_pages": int(page_autodraft_max_pages),
         "industry_alignment": industry,
+        "external_context": external,
         "updated_at": datetime.utcnow().isoformat(),
     }
 
@@ -1264,8 +1279,8 @@ async def ont_upsert_settings(
                  domain_join_col_suffixes, domain_join_col_max_schemas,
                  domain_join_col_denylist, domain_max_diffuse_schemas,
                  domain_min_home_concentration, page_autodraft_min_corroboration,
-                 page_autodraft_max_pages, industry_alignment, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+                 page_autodraft_max_pages, industry_alignment, external_context, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
             ON CONFLICT (workspace_id) DO UPDATE SET
                 company_name             = EXCLUDED.company_name,
                 catalog_allowlist        = EXCLUDED.catalog_allowlist,
@@ -1283,6 +1298,7 @@ async def ont_upsert_settings(
                 page_autodraft_min_corroboration = EXCLUDED.page_autodraft_min_corroboration,
                 page_autodraft_max_pages = EXCLUDED.page_autodraft_max_pages,
                 industry_alignment       = EXCLUDED.industry_alignment,
+                external_context         = EXCLUDED.external_context,
                 updated_at               = NOW()
             """,
             workspace_id,
@@ -1302,5 +1318,6 @@ async def ont_upsert_settings(
             record["page_autodraft_min_corroboration"],
             record["page_autodraft_max_pages"],
             json.dumps(industry),
+            json.dumps(external),
         )
     return record

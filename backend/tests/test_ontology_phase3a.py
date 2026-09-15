@@ -64,6 +64,10 @@ _STAGE41D_MODELS = {
 # a field, not a new model; nothing removed or renamed.)
 _MAPV2_MODELS = {"OntologyGraphExpand"}
 
+# Phase 4 Stage A (17h): the external Context Sources tier surface — the per-source
+# status row + the DEFAULT-OFF config object. Additive; nothing removed or renamed.
+_PHASE4_STAGEA_MODELS = {"SourceStatus", "ExternalContext"}
+
 
 def test_no_new_api_model_added_in_phase3a():
     defined = {
@@ -75,10 +79,10 @@ def test_no_new_api_model_added_in_phase3a():
         f"a frozen model was removed/renamed: {_EXPECTED_MODELS - defined}"
     )
     # … and the ONLY additions are the append-only Phase-3d, Stage-3, Phase-3e, Phase-5,
-    # and Stage-4.1d models.
+    # Stage-4.1d, Map-v2, and Phase-4 Stage-A models.
     allowed = (
         _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE3E_MODELS
-        | _PHASE5_MODELS | _STAGE41D_MODELS | _MAPV2_MODELS
+        | _PHASE5_MODELS | _STAGE41D_MODELS | _MAPV2_MODELS | _PHASE4_STAGEA_MODELS
     )
     assert defined == allowed, (
         f"unexpected model surface change: {defined ^ allowed}"

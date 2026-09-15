@@ -18,10 +18,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
-from backend.ontology.models import OntologyPreflight, PermissionTier
-from backend.ontology.services import grants, inventory, ont_settings, tag_graph
+from backend.ontology.models import ExternalContext, OntologyPreflight, PermissionTier, SourceStatus
+from backend.ontology.services import context_sources, grants, inventory, ont_settings, tag_graph
 from backend.services import lakebase
-from backend.services.auth import get_databricks_host, get_workspace_client
+from backend.services.auth import (
+    get_databricks_host,
+    get_service_principal_client,
+    get_workspace_client,
+)
 from backend.watch.services import system_tables
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,85 @@ _OPTIONAL_UPGRADE = (
     "cache / consumer-safe serving) — not required to view. The taxonomy renders "
     "as the signed-in admin (OBO)."
 )
+
+
+def _probe_client():
+    """The app service principal client used to probe EXECUTE on the enabled MCP
+    sources (the enrichment tier runs at batch identity, MV-D50). Degrades to ``None``
+    off-platform / on any resolution failure — the probe then reports ``unavailable``."""
+    try:
+        return get_service_principal_client()
+    except Exception as e:  # noqa: BLE001 — preflight never raises (MV-D43)
+        logger.info("enrichment tier: no SP client for EXECUTE probe: %s", e)
+        return None
+
+
+def _build_enrichment_tier(ext: ExternalContext, sp_id: str | None) -> PermissionTier:
+    """Make tier-5 real (Stage A, 17h). DEFAULT OFF (MV-D44): when ``ext.enabled`` is
+    false the tier is a plain disabled reason with NO probing and NO egress — the
+    engine stays byte-identical estate-only. When enabled, probe each enabled source
+    for EXECUTE and report per-source ``{class, tier, influence, execute_status}`` + a
+    copy-ready GRANT EXECUTE when missing. Never raises (MV-D43)."""
+    label = "Context sources (external enrichment)"
+    if not ext.enabled:
+        return PermissionTier(
+            id="external_enrichment",
+            label=label,
+            identity="batch",
+            status="not_exercised",
+            grants=_with_sp(_ENRICHMENT_GRANTS, sp_id),
+            reason=(
+                "External context is off (the default) — the engine runs estate-only. "
+                "Turn it on in Settings to enrich naming with opt-in context sources."
+            ),
+            sources=[],
+        )
+
+    client = _probe_client()
+    statuses: list[SourceStatus] = []
+    for entry in context_sources.CONTEXT_SOURCES:
+        if not ext.sources.get(entry.id, entry.default_enabled):
+            continue
+        try:
+            statuses.append(context_sources.probe_source(entry, client, sp=sp_id))
+        except Exception as e:  # noqa: BLE001 — a probe never blocks the banner
+            logger.info("enrichment probe for %s failed: %s", entry.id, e)
+            statuses.append(
+                SourceStatus(
+                    id=entry.id, label=entry.label, klass=entry.klass,
+                    provenance_tier=entry.provenance_tier, influence=entry.influence,
+                    execute_status="unavailable",
+                    grant_line=context_sources.grant_execute_line(entry, sp_id),
+                    reason="This source could not be probed.",
+                )
+            )
+
+    if not statuses:
+        status: str = "not_exercised"
+        reason: str | None = (
+            "External context is on, but no context sources are enabled. "
+            "Enable a source in Settings."
+        )
+    elif any(s.execute_status == "ok" for s in statuses):
+        status = "ok"
+        reason = None
+    else:
+        status = "degraded"
+        reason = (
+            "External context needs a source the app can EXECUTE; none is available "
+            "in this workspace. Run the copy-ready GRANT EXECUTE below, or the engine "
+            "stays estate-only."
+        )
+    grant_lines = [s.grant_line for s in statuses if s.grant_line]
+    return PermissionTier(
+        id="external_enrichment",
+        label=label,
+        identity="batch",
+        status=status,  # type: ignore[arg-type]
+        grants=grant_lines or _with_sp(_ENRICHMENT_GRANTS, sp_id),
+        reason=reason,
+        sources=statuses,
+    )
 
 
 @router.get("/preflight")
@@ -192,14 +275,14 @@ async def preflight() -> dict:
         grants=_MEMBERSHIP_WRITE_GRANTS,
         reason="Not used in Phase 1 — Ontology is read-only; nothing is written to Unity Catalog.",
     )
-    enrichment_tier = PermissionTier(
-        id="external_enrichment",
-        label="Context sources (external enrichment)",
-        identity="batch",
-        status="not_exercised",
-        grants=_ENRICHMENT_GRANTS,
-        reason="Not used in Phase 1 — no external context / web-search path exists yet.",
-    )
+    # Tier-5 (Stage A, 17h): DEFAULT OFF ⇒ a plain disabled reason with no probing;
+    # when enabled, the EXECUTE probes are cheap SDK round-trips run off the event loop.
+    if settings.external_context.enabled:
+        enrichment_tier = await asyncio.to_thread(
+            _build_enrichment_tier, settings.external_context, sp_id
+        )
+    else:
+        enrichment_tier = _build_enrichment_tier(settings.external_context, sp_id)
 
     return OntologyPreflight(
         tiers=[inventory_tier, signals_tier, tag_tier, membership_tier, enrichment_tier],

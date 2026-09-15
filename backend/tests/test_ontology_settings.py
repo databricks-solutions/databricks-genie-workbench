@@ -41,6 +41,8 @@ def fake_store(monkeypatch):
             "page_autodraft_min_corroboration": kw.get("page_autodraft_min_corroboration", 3),
             "page_autodraft_max_pages": kw.get("page_autodraft_max_pages", 50),
             "industry_alignment": kw.get("industry_alignment"),
+            # Phase 4 Stage A (MV-D44) — external Context Sources, additive keyword-only.
+            "external_context": kw.get("external_context"),
         }
         return store[ws]
 
@@ -111,6 +113,29 @@ async def test_curation_policy_round_trips_and_old_row_reads_defaults(fake_store
     assert d.domain_require_connection is True
     assert d.domain_facet_denylist  # falls back to the shipped default list
     assert d.industry_alignment.enabled is False
+
+
+async def test_external_context_round_trips_and_defaults_off(fake_store):
+    # Phase 4 Stage A (MV-D44): an explicit external-context config round-trips…
+    from backend.ontology.models import ExternalContext
+
+    saved = await ont_settings.save_settings(
+        OntologySettings(
+            catalog_allowlist=["finance"],
+            external_context=ExternalContext(enabled=True, sources={"web_search": True}),
+        )
+    )
+    assert saved.external_context.enabled is True
+    assert saved.external_context.sources == {"web_search": True}
+    reread = await ont_settings.get_settings()
+    assert reread.external_context.enabled is True
+    assert reread.external_context.sources == {"web_search": True}
+
+    # …and an old row missing the column (additive/defaulted) reads as DEFAULT OFF.
+    fake_store["ws1"] = {"company_name": "Acme", "catalog_allowlist": ["finance"]}
+    d = await ont_settings.get_settings()
+    assert d.external_context.enabled is False
+    assert d.external_context.sources == {}
 
 
 async def test_stage32_policy_round_trips_and_old_row_reads_defaults(fake_store):

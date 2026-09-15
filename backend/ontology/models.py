@@ -23,6 +23,41 @@ TierId = Literal[
     "external_enrichment",
 ]
 
+# ── Phase 4 Stage A (17h): external Context Sources tier (MV-D38/D44/D47) ──
+# A source is classified by class (internal UC-backed vs external/overlay MCP),
+# a provenance tier (T0 verified > T1 company docs > … > T3 web, MV-D35), and the
+# influence it may exert. Firewall-by-class (services/context_sources.py) is what
+# enforces which targets each class may reach; these mirror types.ts 1:1.
+ContextClass = Literal["internal", "external"]
+ProvenanceTier = Literal["T0", "T1", "T2", "T3"]
+ExecuteStatus = Literal["ok", "missing", "blocked", "unavailable"]
+
+
+class SourceStatus(BaseModel):
+    """Per-source capability status surfaced by the preflight enrichment tier (§4).
+
+    ``execute_status`` is the probe outcome: ``ok`` (EXECUTE present), ``missing``
+    (resolved, no EXECUTE), ``blocked`` (resolving EXECUTE was denied), or
+    ``unavailable`` (could not resolve — off-platform / unsupported securable).
+    A non-``ok`` status carries a copy-ready ``grant_line`` (MV-D43 degrade-not-hang)."""
+    id: str
+    label: str
+    klass: ContextClass
+    provenance_tier: ProvenanceTier
+    influence: str  # plain-language summary of the targets this source may reach
+    execute_status: ExecuteStatus
+    grant_line: str | None = None  # copy-ready GRANT EXECUTE … when not ok
+    reason: str = ""  # plain-language, why this status
+
+
+class ExternalContext(BaseModel):
+    """External-context config (MV-D44 DEFAULT OFF). ``enabled=false`` ⇒ the engine
+    is byte-identical estate-only; ``sources`` overrides a source's default_enabled
+    (a registry id → bool map). Additive + defaulted so an old settings row (no
+    column / NULL) reads as disabled with no per-source overrides."""
+    enabled: bool = False
+    sources: dict[str, bool] = Field(default_factory=dict)
+
 
 class PermissionTier(BaseModel):
     id: TierId
@@ -31,6 +66,9 @@ class PermissionTier(BaseModel):
     status: TierStatus
     grants: list[str] = Field(default_factory=list)  # copy-ready grant/entitlement lines
     reason: str | None = None  # why blocked/degraded, plain language
+    # Phase 4 Stage A (17h): per-source status rows for the enrichment tier. Additive
+    # + defaulted empty so every other tier (and a pre-Phase-4 client) is unaffected.
+    sources: list[SourceStatus] = Field(default_factory=list)
 
 
 class OntologyPreflight(BaseModel):
@@ -247,6 +285,10 @@ class OntologySettings(BaseModel):
     page_autodraft_min_corroboration: int = 3
     page_autodraft_max_pages: int = 50
     industry_alignment: IndustryAlignment = Field(default_factory=IndustryAlignment)
+    # ── Phase 4 Stage A (17h): external Context Sources (MV-D44) — additive + defaulted,
+    # DEFAULT OFF. An old row (missing the column / NULL) reads as disabled, so a
+    # materialize run stays byte-identical estate-only until an admin opts in. ──
+    external_context: ExternalContext = Field(default_factory=ExternalContext)
 
 
 # ── Phase 2: refresh / freshness surface (the ONLY new model) ──────────────

@@ -21,7 +21,10 @@ _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
 # ── Contract-frozen guard: Phase-1 models are byte-identical ────────────────
 
 _PHASE1_FIELDS = {
-    "PermissionTier": {"id", "label", "identity", "status", "grants", "reason"},
+    # PermissionTier grows additively for the Phase-4 Stage-A enrichment tier: it now
+    # carries per-source status rows (``sources``), defaulted empty so every other tier
+    # and a pre-Phase-4 payload is byte-identical.
+    "PermissionTier": {"id", "label", "identity", "status", "grants", "reason", "sources"},
     "OntologyPreflight": {"tiers", "can_render_taxonomy", "company_name", "catalog_allowlist", "as_of"},
     "OntologyInventory": {"catalogs_scanned", "metric_view_count", "genie_agent_count", "governed_tag_count", "as_of"},
     "MemberAsset": {"fqn", "asset_type"},
@@ -46,6 +49,8 @@ _PHASE1_FIELDS = {
         "domain_max_diffuse_schemas", "domain_min_home_concentration",
         # Stage 4.1d bounded auto-drafting (MV-D66).
         "page_autodraft_min_corroboration", "page_autodraft_max_pages",
+        # Phase 4 Stage A external Context Sources (MV-D44), additive + DEFAULT OFF.
+        "external_context",
     },
 }
 
