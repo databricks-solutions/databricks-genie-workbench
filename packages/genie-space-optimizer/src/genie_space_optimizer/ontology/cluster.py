@@ -837,6 +837,31 @@ def cluster(
     # (it has ≥1 sub-tag under the Domain/Sub convention) → the R1 authoritative rule.
     curated_domain_keys = {t.split("/", 1)[0] for t in tag_members if "/" in t}
 
+    # MV-D98 — Virtual parent for a slash-KEY-only governed taxonomy. A Domain/Sub-domain
+    # taxonomy may encode the Domain ONLY as the prefix of its slash sub-tags, with NO
+    # standalone parent tag (only ``<Domain>/<Sub>`` keys exist, never a bare ``<Domain>``).
+    # Without a slash-less parent, the domain-level binder below (which only considers
+    # ``"/" not in t`` tags) cannot bind the R1 curated group → it downgrades to a ``create``
+    # Domain with a schema-derived name, and its governed slash sub-tags never become
+    # sub-domains (``_derive_subdomains`` rule (1) needs a bound ``domain_tag_key``).
+    # Synthesize a virtual parent tag whose members are the UNION of its sub-tags' so the
+    # group binds ``reuse`` to the Domain and the real governed sub-domains surface. Estates
+    # that already ship a standalone parent tag are untouched (the ``dkey in tag_members``
+    # guard). NOTE: an estate that DOES ship a bare parent alongside its sub-tags (e.g. the
+    # 7-Eleven Loyalty estate) relies on ER keeping those slash tags DISTINCT (MV-D99) so the
+    # bare parent stays in ``tag_members`` and this synthesis is a no-op there.
+    virtual_parents: dict[str, set[str]] = {}
+    for dkey in sorted(curated_domain_keys):
+        if dkey in tag_members:
+            continue
+        merged: set[str] = set()
+        for t, m in tag_members.items():
+            if "/" in t and t.split("/", 1)[0] == dkey:
+                merged |= m
+        if merged:
+            virtual_parents[dkey] = merged
+    tag_members.update(virtual_parents)
+
     # Asset vertex universe (everything the layers, hubs, or rules touch).
     assets: set[str] = set(asset_type)
     for pairs in struct.values():

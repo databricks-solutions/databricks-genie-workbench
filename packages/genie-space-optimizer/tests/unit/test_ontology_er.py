@@ -64,6 +64,40 @@ def test_embedding_signal_collapses_paraphrase():
     assert len(v) == 1 and v[0].verdict == "merge" and v[0].method == "embedding"
 
 
+def test_slash_hierarchy_tags_never_merge(monkeypatch):
+    # MV-D99 — a governed Domain/Sub-domain taxonomy (bare parent + slash children) must
+    # survive ER as FOUR distinct tags. Left unguarded the children share the parent's whole
+    # token set, embed near-1.0, and union-find collapses the tree into `7-Eleven Loyalty`
+    # (the 2026-09-16 live finding that dropped the domain to an FK/schema fallback).
+    cands = [
+        C("7-Eleven Loyalty", "tag", "7-Eleven Loyalty", "7-Eleven Loyalty"),
+        C("7-Eleven Loyalty/Membership", "tag", "7-Eleven Loyalty/Membership", "membership"),
+        C("7-Eleven Loyalty/Points", "tag", "7-Eleven Loyalty/Points", "points"),
+        C("7-Eleven Loyalty/Redemption", "tag", "7-Eleven Loyalty/Redemption", "redemption"),
+    ]
+    # Boobytrap the merge signal: even at a perfect score the family must stay distinct.
+    monkeypatch.setattr(er, "_pair_scores", lambda a, b, backend, vectors: (1.0, 1.0))
+    v = er.run_er(cands, backend=similarity.InProcessCosineBackend(), vectors={}, adjudicator=None)
+    # Four singleton canonical groups — nothing merged.
+    assert len(v) == 4
+    assert all(len(x.members) == 1 and x.verdict != "merge" for x in v)
+    ids = {_canonical_of(v, c.ref) for c in cands}
+    assert len(ids) == 4
+
+
+def test_cross_family_subtags_still_eligible_to_merge(monkeypatch):
+    # MV-D99 guard is SAME-family only: two sub-tags under DIFFERENT domains (a genuine
+    # cross-context "Revenue" duplication) are NOT slash-related, so the guard lets them
+    # through to normal scoring/adjudication (proven here with a forced high score).
+    cands = [
+        C("Finance/Revenue", "tag", "Finance/Revenue", "revenue"),
+        C("Sales/Revenue", "tag", "Sales/Revenue", "revenue"),
+    ]
+    monkeypatch.setattr(er, "_pair_scores", lambda a, b, backend, vectors: (1.0, 1.0))
+    v = er.run_er(cands, backend=similarity.InProcessCosineBackend(), vectors={}, adjudicator=None)
+    assert len(v) == 1 and v[0].verdict == "merge"
+
+
 def test_true_distinct_pair_never_merges():
     cands = [
         C("m.headcount", "measure", "headcount metric", "employee headcount"),

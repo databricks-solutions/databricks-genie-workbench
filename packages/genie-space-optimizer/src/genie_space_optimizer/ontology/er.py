@@ -241,6 +241,26 @@ def _relation(a: DedupeCandidate, b: DedupeCandidate) -> CorrespondenceRelation:
     return "related"
 
 
+def _slash_hierarchy(a: DedupeCandidate, b: DedupeCandidate) -> bool:
+    """True iff two governed-TAG candidates sit in the SAME ``Domain/Sub`` slash family —
+    a parent and its child (``X`` ↔ ``X/Y``) or two siblings (``X/Y`` ↔ ``X/Z``). Such
+    keys encode an INTENTIONAL taxonomy hierarchy, never a duplication, so ER must NOT
+    merge them (MV-D99). Left unguarded, a child shares its whole parent token set, scores
+    ≥ ``MERGE_THRESHOLD`` on the near-identical prefix, and union-find collapses the whole
+    ``Domain/Sub`` tree into the parent — which empties ``cluster.curated_domain_keys`` and
+    drops the domain to an FK/schema fallback with no real sub-domains (the live 7-Eleven
+    Loyalty finding, 2026-09-16). Two top-level tags (no slash on either side) are normal
+    dedup candidates and stay eligible; cross-family sub-tags (``Finance/Revenue`` vs
+    ``Sales/Revenue``) differ in ``domain_part`` and remain eligible too (the MV-D60
+    map-not-merge path still applies there)."""
+    if a.kind != "tag" or b.kind != "tag":
+        return False
+    ka, kb = a.ref, b.ref
+    if ka == kb or ("/" not in ka and "/" not in kb):
+        return False
+    return ka.split("/", 1)[0] == kb.split("/", 1)[0]
+
+
 def run_er(
     candidates: Sequence[DedupeCandidate],
     *,
@@ -306,6 +326,13 @@ def run_er(
     band_pairs: list[tuple[str, str, float, Method]] = []
     for a_ref, b_ref in candidate_pairs(block(survivors)):
         a, b = by_ref[a_ref], by_ref[b_ref]
+        # Same-family ``Domain/Sub`` slash tags encode a taxonomy hierarchy, not a
+        # duplication — never merge them (MV-D99). Skip scoring/adjudication entirely;
+        # each stays distinct so the sub-domain tree survives into clustering.
+        if _slash_hierarchy(a, b):
+            _note_band(a_ref, "distinct", "string", 0.0, None)
+            _note_band(b_ref, "distinct", "string", 0.0, None)
+            continue
         # Exact name match is a merge with no scoring needed.
         if a.name.casefold() == b.name.casefold():
             if _cross_context(a, b):
