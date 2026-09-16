@@ -1134,7 +1134,13 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 > `match_pass`/`score`; **`applied_renames=0`** — no T0/curated fact outranked (curated wins,
 > `outranked_by=curated`). Semantically sound (Yield Management *narrower* Revenue; Commercial
 > *broader* Loyalty). Gap hypotheses are report-only (never auto-created). Replaces the mistargeted
-> token-overlap prior. **§10 eval harness (MV-D59) — BUILT + live-wired + deploy-verified
+> token-overlap prior. **Retail-alignment run (2026-09-16, tbzqg7 run `754948517366591`,
+> `reference_model=retail`):** on the 7-Eleven convenience estate the retail reference fits far
+> better than airline — harness **precision 1.00 / recall 0.9231 / F1 0.96**, singletons 0,
+> max_depth 2 (12/13 retail reference domains covered; up from airline recall 0.77 / F1 0.87).
+> 12/15 surfaced domains carry a typed correspondence (Inventory *exact* Inventory; Points *exact*
+> Loyalty; Forecourt/Fuel Sales *narrower* Sales; Loyalty/Membership/Redemption *broader* Customer),
+> 3 left unmatched (Baskets/Drivers/Prices — not forced), `applied_renames=0`. **§10 eval harness (MV-D59) — BUILT + live-wired + deploy-verified
 > (2026-09-15, `233da3cd`):** the offline harness (`7120a6df`) is now invoked by a post-materialize
 > hook that persists one `EvalReport` per run to the additive `genie_ont_eval` table (driver
 > `ontology-eval-harness-livewire-driver.md`). First live baseline on the airline estate:
