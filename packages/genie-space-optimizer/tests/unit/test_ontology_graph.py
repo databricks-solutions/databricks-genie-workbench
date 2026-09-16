@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from genie_space_optimizer.ontology import graph, layout
+from genie_space_optimizer.ontology import graph, layout, rank
 
 
 def test_lineage_only_call_is_byte_identical_scaffold():
@@ -1166,3 +1166,79 @@ def test_layout_places_dashboard_node_in_its_applied_domain():
     assert dash["kind"] == "dashboard" and dash["domain_id"] == "d1"
     dom = {d["id"]: d for d in blob["domains"]["nodes"]}
     assert dom["d1"]["origin"] == "applied"
+
+
+# ── PageRank centrality (Stage 3 §5.1, MV-D96) ──────────────────────────────
+
+
+def test_pagerank_spine_outranks_leaf_and_is_deterministic():
+    """The load-bearing spine everything joins to is the normalized peak (1.0) and
+    outranks a peripheral leaf; identical output across two calls (determinism)."""
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        lineage_edges=[
+            ("c.s.src1", "c.s.spine"),
+            ("c.s.src2", "c.s.spine"),
+            ("c.s.src3", "c.s.spine"),  # spine has heavy fan-in
+            ("c.s.leaf", "c.s.out"),    # leaf is a peripheral source
+        ],
+    )
+    c = graph.pagerank_centrality(sig)
+    assert c["c.s.spine"] == 1.0                       # busiest asset -> normalized peak
+    assert c["c.s.spine"] > c["c.s.leaf"]              # spine outranks the leaf
+    assert c["c.s.out"] > c["c.s.leaf"]                # ordering matches PageRank flow
+    assert graph.pagerank_centrality(sig) == c         # deterministic across two runs
+
+
+def test_pagerank_hub_edges_lift_authority_the_degree_proxy_misses():
+    """An asset reachable ONLY via mv_membership/agent_scope/dashboard_scope gets a
+    non-zero, higher score than a peripheral leaf — proving the hub kinds are included
+    (the degree proxy over lineage/co_query alone would miss it entirely)."""
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        lineage_edges=[("c.s.leaf", "c.s.sink")],       # visible to the degree proxy
+        agent_scopes={"a1": ["c.s.hub_fed"]},
+        dashboard_scopes={"d1": ["c.s.hub_fed"]},
+        mv_membership={"c.s.mv": ["c.s.hub_fed"]},       # hub_fed reachable only via hubs
+    )
+    pr = graph.pagerank_centrality(sig)
+    deg = graph.lineage_centrality(sig)
+    assert "c.s.hub_fed" not in deg                      # the degree proxy misses it
+    assert pr["c.s.hub_fed"] > 0                         # PageRank sees the three hubs
+    assert pr["c.s.hub_fed"] > pr.get("c.s.leaf", 0.0)   # hub connectivity lifts authority
+
+
+def test_pagerank_degrades_to_degree_when_igraph_unavailable(monkeypatch):
+    """igraph unavailable -> output equals lineage_centrality exactly (never raise)."""
+    import sys
+
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        lineage_edges=[("c.s.a", "c.s.b"), ("c.s.b", "c.s.c")],
+    )
+    degree = graph.lineage_centrality(sig)
+    assert degree  # non-trivial: the equality below is not just {} == {}
+    monkeypatch.setitem(sys.modules, "igraph", None)  # `import igraph` now raises
+    assert graph.pagerank_centrality(sig) == degree
+
+
+def test_pagerank_edgeless_graph_is_empty():
+    """An edgeless graph -> {} (matches lineage_centrality on edgeless)."""
+    assert graph.pagerank_centrality({"nodes": [], "edges": []}) == {}
+    # tag_assignment is not a propagation kind -> still edgeless -> {}.
+    sig = graph.build_signal_graph({"tags": [{"tag_key": "T", "members": [{"fqn": "c.s.a"}]}]})
+    assert graph.pagerank_centrality(sig) == {}
+
+
+def test_pagerank_output_feeds_blend_centrality_factor_unchanged():
+    """A proposal whose anchor gains centrality has factors.centrality.present == true;
+    the blend/tier code is unchanged (it just reads a better centrality input)."""
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        lineage_edges=[("c.s.src", "c.s.spine"), ("c.s.src2", "c.s.spine")],
+    )
+    centrality = graph.pagerank_centrality(sig)
+    assert centrality.get("c.s.spine", 0.0) > 0
+    b = rank.blend(["c.s.spine"], rank.RankSignals(centrality=centrality))
+    assert b["factors"]["centrality"]["present"] is True
+    assert b["factors"]["centrality"]["value"] > 0

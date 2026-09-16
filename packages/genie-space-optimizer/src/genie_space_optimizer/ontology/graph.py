@@ -242,3 +242,68 @@ def lineage_centrality(signal_graph: dict[str, Any]) -> dict[str, float]:
     if peak <= 0:
         return {}
     return {fqn: round(count / peak, 6) for fqn, count in degree.items()}
+
+
+# ── PageRank centrality (Stage 3 §5.1, MV-D96) ──────────────────────────────
+
+# Structural + hub edge kinds authority propagates over. The two asset↔asset kinds
+# (``lineage_adjacency`` + ``co_query``) are exactly what ``lineage_centrality``'s degree
+# proxy counts; the four extra kinds (``join_key`` FK spines, and the ``mv_membership`` /
+# ``agent_scope`` / ``dashboard_scope`` hubs) let authority flow from heavily-connected
+# MVs / Agents / dashboards INTO the tables they touch — connectivity a bare degree count
+# over the two asset↔asset kinds cannot see.
+_PAGERANK_EDGE_KINDS: frozenset[str] = frozenset(
+    {"lineage_adjacency", "co_query", "join_key", "mv_membership", "agent_scope", "dashboard_scope"}
+)
+_PAGERANK_DAMPING = 0.85
+
+
+def pagerank_centrality(signal_graph: dict[str, Any]) -> dict[str, float]:
+    """Per-asset PageRank centrality on the fused subgraph, normalized to [0, 1] — a
+    richer drop-in for ``lineage_centrality`` as the ``centrality`` factor the L6 ranker
+    (``rank.py``) reads. Authority flows over the structural + hub edge kinds
+    (``_PAGERANK_EDGE_KINDS``), so a table many dashboards / Agents / MVs and FK spines
+    point at outranks a leaf — connectivity the degree proxy over the two asset↔asset
+    kinds alone would miss. Same contract as ``lineage_centrality``: keyed by bare asset
+    FQN (the ``asset:`` prefix stripped), values in [0, 1] with the busiest asset at 1.0.
+
+    ``igraph`` is lazy-imported INSIDE the function (already a lazy dependency for
+    ``cluster.py``). If ``igraph`` is unavailable OR the graph is edgeless over the
+    propagation kinds, DEGRADE to ``lineage_centrality`` (MV-D43/D45) — never raise, never
+    a false 0. Deterministic: vertices + edges are sorted before building, and igraph's
+    PRPACK solver is a direct (non-iterative) solve, so two runs are identical."""
+    # Collect the directed edges authority flows along (hub → asset, spine → table).
+    edge_pairs: list[tuple[str, str]] = []
+    for e in signal_graph.get("edges", []):
+        if e.get("kind") not in _PAGERANK_EDGE_KINDS:
+            continue
+        src, dst = e.get("src"), e.get("dst")
+        if isinstance(src, str) and isinstance(dst, str) and src != dst:
+            edge_pairs.append((src, dst))
+    if not edge_pairs:
+        # Edgeless over the propagation kinds — nothing for PageRank to flow through;
+        # fall back to the degree proxy (itself ``{}`` for a truly edgeless graph).
+        return lineage_centrality(signal_graph)
+
+    try:
+        import igraph as ig  # lazy — keeps the module importable without the graph lib
+    except Exception:
+        return lineage_centrality(signal_graph)
+
+    # Deterministic vertex + edge order (identical output across runs — MV-D82).
+    vertices = sorted({v for pair in edge_pairs for v in pair})
+    idx = {v: i for i, v in enumerate(vertices)}
+    e_idx = sorted((idx[a], idx[b]) for a, b in edge_pairs)
+
+    g = ig.Graph(n=len(vertices), directed=True)
+    g.add_edges(e_idx)
+    scores = g.pagerank(directed=True, damping=_PAGERANK_DAMPING)
+
+    # Keep the asset vertices only, key by bare FQN, normalize by the max asset score.
+    asset_scores = {
+        v.split(":", 1)[1]: scores[idx[v]] for v in vertices if v.startswith("asset:")
+    }
+    peak = max(asset_scores.values(), default=0.0)
+    if peak <= 0:
+        return lineage_centrality(signal_graph)
+    return {fqn: round(s / peak, 6) for fqn, s in asset_scores.items()}

@@ -818,7 +818,7 @@ def run_materialize(
         certification = _gather_certification(reader, allowlist)
         signals = rank.RankSignals(
             usage=_gather_usage(reader, allowlist),
-            centrality=graph.lineage_centrality(signal_graph),
+            centrality=graph.pagerank_centrality(signal_graph),
             governance=_governance_map(graph_struct, certification),
             deprecated=frozenset(fqn for fqn, status in certification.items() if status == "deprecated"),
         )
