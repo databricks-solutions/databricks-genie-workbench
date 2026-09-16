@@ -84,6 +84,11 @@ class RankSignals:
     usage: Mapping[str, float] = field(default_factory=dict)
     centrality: Mapping[str, float] = field(default_factory=dict)
     governance: Mapping[str, str] = field(default_factory=dict)
+    # Deprecation firewall input (Signal Authority Stage 2, MV-D94): the set of asset
+    # FQNs tagged ``deprecated``. A proposal anchored on any of them is BLOCKED at the
+    # firewall (never surfaced), the direct analogue of OntoRank steering away from a
+    # stale source. Empty by default ⇒ no proposal is deprecation-blocked (today's bytes).
+    deprecated: frozenset[str] = field(default_factory=frozenset)
 
 
 # ── Firewalls (must pass ALL to surface) ────────────────────────────────────
@@ -658,6 +663,11 @@ def _score_row(
             if hit:
                 blocked, reason = True, why
                 break
+    # Deprecation firewall (MV-D94): a proposal anchored on ANY deprecated asset is steered
+    # away from — blocked, never surfaced even at a high raw score — mirroring the PII block.
+    # Applies to Domains and Pages alike (a deprecated table poisons either).
+    if not blocked and any(a in signals.deprecated for a in assets):
+        blocked, reason = True, "deprecated_asset"
     if not blocked:
         ok, why = policy_conform(kind, row.get("tag_decision"), evidence)
         if not ok:

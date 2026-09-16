@@ -963,6 +963,40 @@ class SparkSystemTableReader:
                 rows.append({"fqn": str(fqn), "reads": r.get("reads"), "users": r.get("users")})
         return usage.normalize_usage(rows)
 
+    def certification_status(self, allowlist: list[str]) -> dict[str, str]:
+        """Stage 2 (MV-D94) authority signal: {fqn -> "certified" | "deprecated"}.
+
+        Read the certification tags off ``system.information_schema.table_tags`` for the
+        allowlisted catalogs — both the native ``system.certification_status`` (value
+        ``certified``/``deprecated``) and the boolean ``certified`` tag (``true`` →
+        certified) — and hand the rows to the PURE ``certification.certification_map``.
+        FQNs are built ``catalog.schema.table`` exactly as ``transforms.member_fqn_of``
+        builds the governed-tag members, so a certified FQN lines up with the governed map
+        in ``_governance_map``. Read as the job's run_as identity, allowlist-scoped.
+
+        Honest-gap / degrade-not-hang (MV-D43): an empty allowlist ⇒ {} (byte-identical to
+        no-certification-grant, so the live default is today's bytes); any read failure or
+        missing grant ⇒ {} (via ``_rows_safe``, which never raises), so authority is simply
+        absent rather than a faked map. ``certified=false`` / absent tags ⇒ omitted by the
+        pure map (never inferred ``ungoverned``)."""
+        if not allowlist:
+            return {}
+        from genie_space_optimizer.ontology import certification
+        cats = _in_list(allowlist)
+        rows: list[dict[str, Any]] = []
+        for r in self._rows_safe(
+            "SELECT tag_name, catalog_name, schema_name, table_name, tag_value "
+            "FROM system.information_schema.table_tags "
+            f"WHERE catalog_name IN ({cats}) "
+            "AND lower(tag_name) IN ('system.certification_status', 'certified')",
+            "certification_status",
+        ):
+            parts = [r.get("catalog_name"), r.get("schema_name"), r.get("table_name")]
+            fqn = ".".join(str(p) for p in parts if p)
+            if fqn:
+                rows.append({"fqn": fqn, "tag_name": r.get("tag_name"), "tag_value": r.get("tag_value")})
+        return certification.certification_map(rows)
+
 
 # COMMAND ----------
 

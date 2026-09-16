@@ -105,6 +105,9 @@ class MaterializeReader(Protocol):
     # reader without them degrades to empty, MV-D43). ``suppressions`` is a READ-ONLY
     # fetch of the ledger the backend writes; the wheel never writes it.
     def usage_signals(self, allowlist: list[str]) -> dict[str, float]: ...
+    # Stage 2 (MV-D94) authority signal: {fqn -> "certified" | "deprecated"} — optional;
+    # the wheel calls it defensively (an older reader without it degrades to {}, MV-D43).
+    def certification_status(self, allowlist: list[str]) -> dict[str, str]: ...
     def suppressions(self, metastore_id: str) -> list[dict[str, Any]]: ...
 
 
@@ -466,6 +469,23 @@ def _gather_usage(reader: Any, allowlist: list[str]) -> dict[str, float]:
         return {}
 
 
+def _gather_certification(reader: Any, allowlist: list[str]) -> dict[str, str]:
+    """The Stage 2 (MV-D94) certification/deprecation map (fqn → ``certified``/``deprecated``)
+    for the L6 blend, if the reader surfaces it, else empty (MV-D43 degrade — a reader
+    without it, or a missing certification grant, just leaves the authority rung unpopulated
+    and blocks no deprecated asset, byte-identical to today). ``certified`` lifts the
+    governance rung to ``curated``; ``deprecated`` seeds the rank-time firewall."""
+    fn = getattr(reader, "certification_status", None)
+    if fn is None:
+        return {}
+    try:
+        got = fn(allowlist)
+        return {str(k): str(v) for k, v in dict(got or {}).items()}
+    except Exception as exc:  # noqa: BLE001 — a missing signal never fails the run
+        logger.info("ontology certification signal unavailable (%s)", exc)
+        return {}
+
+
 def _gather_suppressions(reader: Any, metastore_id: str) -> list[dict[str, Any]]:
     """READ-ONLY fetch of the suppression-ledger rows for this metastore (the backend
     is the ONLY writer, MV-D26). The read goes through the injected reader method (the
@@ -483,18 +503,28 @@ def _gather_suppressions(reader: Any, metastore_id: str) -> list[dict[str, Any]]
         return []
 
 
-def _governance_map(graph_struct: dict[str, Any]) -> dict[str, str]:
-    """Governance rung (fqn → ``governed``) for the L6 blend, from the governed-tag
-    graph: an asset carrying ≥1 governed tag is ``governed``. ``curated`` (certified)
-    is a richer rung not read in the offline slice; an untagged asset is simply absent
-    (the governance factor then leaves the blend rather than scoring it ``ungoverned``
-    — the honest-gap discipline, architecture §5)."""
+def _governance_map(
+    graph_struct: dict[str, Any], certification: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Governance rung (fqn → ``governed`` / ``curated``) for the L6 blend.
+
+    An asset carrying ≥1 governed aboutness tag is ``governed`` (1.0), from the governed-tag
+    graph. Stage 2 (MV-D94) then populates the ``curated`` (0.6) rung the ladder reserves for
+    certified assets: a ``certified`` FQN that is NOT already ``governed`` is emitted as
+    ``curated`` — an already-governed FQN keeps ``governed`` (``_governance_factor`` takes the
+    max rung, so certification never demotes an aboutness-governed asset). A ``deprecated``
+    FQN is NOT a rung here (it is a rank-time firewall, wired separately in ``RankSignals``).
+    An untagged asset is simply absent (the honest-gap discipline — never scored ``ungoverned``
+    from a missing tag). ``certification`` empty/None ⇒ byte-identical to the governed-only map."""
     out: dict[str, str] = {}
     for t in graph_struct.get("tags", []):
         for m in t.get("members", []):
             fqn = m.get("fqn")
             if fqn:
                 out[str(fqn)] = "governed"
+    for fqn, status in sorted((certification or {}).items()):
+        if status == "certified" and str(fqn) not in out:
+            out[str(fqn)] = "curated"
     return out
 
 
@@ -782,10 +812,15 @@ def run_materialize(
         # the metastore-scoped NOT-MATCHED-BY-SOURCE delete prunes nothing it
         # shouldn't. Ranking is additive/idempotent — it never corrupts the snapshots
         # committed above, so a rank error records `failed` without losing them.
+        # Stage 2 (MV-D94): certification/deprecation authority. ``certified`` lifts the
+        # governance rung to ``curated``; ``deprecated`` seeds the rank-time firewall. Empty
+        # (no grant / older reader) ⇒ byte-identical to the pre-Stage-2 signals.
+        certification = _gather_certification(reader, allowlist)
         signals = rank.RankSignals(
             usage=_gather_usage(reader, allowlist),
             centrality=graph.lineage_centrality(signal_graph),
-            governance=_governance_map(graph_struct),
+            governance=_governance_map(graph_struct, certification),
+            deprecated=frozenset(fqn for fqn, status in certification.items() if status == "deprecated"),
         )
         members_by_domain: dict[str, list[str]] = {}
         for m in expanded["member_rows"]:
