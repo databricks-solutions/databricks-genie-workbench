@@ -45,7 +45,7 @@ class DomainMatchStatus:
     reference_id: str | None = None  # Matched reference ID, if any
     reference_name: str | None = None
     reference_members: set[str] = field(default_factory=set)
-    match_type: str = "no_match"  # "exact", "partial", "no_match", "extra"
+    match_type: str = "no_match"  # "exact", "partial", "no_match", "extra", "curated"
 
 
 @dataclass(frozen=True)
@@ -120,6 +120,30 @@ def _load_evidence(row: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+
+# Curated rung of the rank governance ladder. rank._GOVERNANCE_VALUE maps
+# {"governed": 1.0, "curated": 0.6, "ungoverned": 0.2}; 0.6 is the curated rung,
+# so governed (1.0) and curated (0.6) pass and ungoverned (0.2) does not. Pinned
+# as a literal here (with rank not imported) to avoid an import cycle.
+_CURATED_GOV_MIN = 0.6
+
+
+def _is_curated(domain: dict[str, Any]) -> bool:
+    """True if a domain is human-governed at or above the curated rung.
+
+    Reads ``evidence.rank.factors.governance`` ({"present": bool, "value": float}).
+    Degrade-safe: a domain with no evidence/governance signal is treated as
+    not-curated (so an unmatched such domain remains a false positive).
+    """
+    gov = (
+        _load_evidence(domain)
+        .get("rank", {})
+        .get("factors", {})
+        .get("governance", {})
+    )
+    return bool(gov.get("present")) and float(gov.get("value") or 0.0) >= _CURATED_GOV_MIN
+
+
 def _get_confidence_band(score: float | None) -> str:
     """Convert a score to a readable confidence band."""
     if score is None:
@@ -176,15 +200,24 @@ def compute_precision_recall_f1(
     unmatched_discovered = set(discovered_by_id.keys()) - matched_discovered
     unmatched_reference = {r.get("id") for r in reference_domains} - matched_reference
 
+    # A curated/governed discovered domain with no reference match is ground
+    # truth the generic industry model simply lacks — it counts toward precision
+    # legitimacy, not against it. Ungoverned-unmatched domains stay false
+    # positives (junk still caught). Recall is untouched: a curated-unmatched
+    # domain covers no reference domain, so it must not enter recall.
+    curated_unmatched = {d for d in unmatched_discovered if _is_curated(discovered_by_id[d])}
+
     tp = len(matched_discovered)
-    fp = len(unmatched_discovered)
+    fp = len(unmatched_discovered - curated_unmatched)  # ungoverned-unmatched only
     fn = len(unmatched_reference)
 
     total_discovered = len(discovered_by_id)
     total_reference = len(reference_domains)
 
-    # Precision, recall, F1
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    # Precision, recall, F1. Precision's legitimacy numerator is matched +
+    # curated-unmatched; recall stays tp / (tp + fn).
+    legit = tp + len(curated_unmatched)
+    precision = legit / (legit + fp) if (legit + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
@@ -195,7 +228,12 @@ def compute_precision_recall_f1(
         ref_id = match_map.get(d_id)
         ref_data = next((r for r in reference_domains if r.get("id") == ref_id), None)
         ref_members = set(str(m) for m in ref_data.get("members", [])) if ref_data else set()
-        match_type = "exact" if ref_id else "extra"
+        if ref_id:
+            match_type = "exact"
+        elif d_id in curated_unmatched:
+            match_type = "curated"
+        else:
+            match_type = "extra"
 
         match_statuses.append(
             DomainMatchStatus(

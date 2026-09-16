@@ -171,6 +171,102 @@ def test_precision_recall_f1_no_match():
     assert prf.f1 == 0.0
 
 
+# ── BUILD A (MV-D59): curated-unmatched is legitimacy, not a false positive ──
+
+def _gov_domain(domain_id, name, members, *, gov_value=None, present=None):
+    """A domain row whose evidence carries a rank governance factor.
+
+    gov_value=1.0/present=True models a governed domain; 0.2 an ungoverned one.
+    gov_value=None (present defaults False) models governance absent entirely.
+    """
+    if present is None:
+        present = gov_value is not None
+    governance = {"present": present, "value": gov_value} if (present or gov_value is not None) else {}
+    return {
+        "domain_id": domain_id,
+        "name": name,
+        "members": members,
+        "parent_id": None,
+        "evidence": json.dumps({"rank": {"factors": {"governance": governance}}}),
+    }
+
+
+def _one_matched_ref():
+    """Reference with a single domain aligned to ``d_match`` (no other reference)."""
+    return {
+        "domains": [{"id": "r_match", "name": "Matched", "members": ["m.1", "m.2"]}],
+        "alignments": [{"discovered_id": "d_match", "reference_id": "r_match"}],
+    }
+
+
+def test_governed_unmatched_is_not_a_false_positive():
+    """A governed (value 1.0) discovered domain absent from the reference counts as
+    legitimacy, not FP: precision stays 1.0 and its match_type is 'curated'."""
+    domains = [
+        _gov_domain("d_match", "Matched", ["m.1", "m.2"], gov_value=1.0),
+        _gov_domain("d_gov", "Traceability", ["trace.1"], gov_value=1.0),  # governed, unmatched
+    ]
+    prf, matches = eval_harness.compute_precision_recall_f1(domains, _one_matched_ref())
+
+    # tp=1, curated_unmatched={d_gov} ⇒ fp=0, legit=2 ⇒ precision 1.0.
+    assert prf.precision == 1.0
+    gov_match = next(m for m in matches if m.domain_id == "d_gov")
+    assert gov_match.match_type == "curated"
+    assert gov_match.reference_id is None
+
+
+def test_ungoverned_unmatched_is_still_a_false_positive():
+    """An ungoverned (value 0.2) OR governance-absent unmatched domain stays a FP:
+    precision drops below 1.0 — junk is still caught."""
+    for junk in (
+        _gov_domain("d_junk", "Junk", ["junk.1"], gov_value=0.2),   # ungoverned rung
+        _gov_domain("d_junk", "Junk", ["junk.1"]),                  # governance absent
+    ):
+        domains = [_gov_domain("d_match", "Matched", ["m.1", "m.2"], gov_value=1.0), junk]
+        prf, matches = eval_harness.compute_precision_recall_f1(domains, _one_matched_ref())
+
+        # tp=1, curated_unmatched={} ⇒ fp=1, legit=1 ⇒ precision 0.5.
+        assert prf.precision == 0.5
+        junk_match = next(m for m in matches if m.domain_id == "d_junk")
+        assert junk_match.match_type == "extra"
+
+
+def test_curated_unmatched_never_inflates_recall():
+    """Recall is identical with and without a curated-unmatched domain — a curated
+    domain covers no reference domain, so it must not enter recall."""
+    ref_with_miss = {
+        "domains": [
+            {"id": "r_match", "name": "Matched", "members": ["m.1", "m.2"]},
+            {"id": "r_missed", "name": "Missed", "members": ["x.1"]},  # unmatched reference
+        ],
+        "alignments": [{"discovered_id": "d_match", "reference_id": "r_match"}],
+    }
+    matched_only = [_gov_domain("d_match", "Matched", ["m.1", "m.2"], gov_value=1.0)]
+    with_curated = matched_only + [_gov_domain("d_gov", "Extra", ["e.1"], gov_value=1.0)]
+
+    prf_without, _ = eval_harness.compute_precision_recall_f1(matched_only, ref_with_miss)
+    prf_with, _ = eval_harness.compute_precision_recall_f1(with_curated, ref_with_miss)
+
+    # recall = tp/(tp+fn) = 1/(1+1) = 0.5 in both cases.
+    assert prf_without.recall == 0.5
+    assert prf_with.recall == prf_without.recall
+
+
+def test_matched_domain_scores_unchanged_by_governance():
+    """A matched domain scores exactly as before — governance on an aligned domain
+    changes nothing (no behavior change on aligned domains)."""
+    ref = _one_matched_ref()
+    plain = [{"domain_id": "d_match", "name": "Matched", "members": ["m.1", "m.2"]}]
+    governed = [_gov_domain("d_match", "Matched", ["m.1", "m.2"], gov_value=1.0)]
+
+    prf_plain, _ = eval_harness.compute_precision_recall_f1(plain, ref)
+    prf_gov, _ = eval_harness.compute_precision_recall_f1(governed, ref)
+
+    # Perfect match either way: P=R=F1=1.0, and identical across the two.
+    assert (prf_plain.precision, prf_plain.recall, prf_plain.f1) == (1.0, 1.0, 1.0)
+    assert (prf_gov.precision, prf_gov.recall, prf_gov.f1) == (prf_plain.precision, prf_plain.recall, prf_plain.f1)
+
+
 # ── BUILD B: Structural health ─────────────────────────────────────────────
 
 def test_structural_health_simple():
