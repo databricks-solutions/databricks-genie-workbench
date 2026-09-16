@@ -438,6 +438,40 @@ def blend(assets: Sequence[str], signals: RankSignals) -> dict[str, Any]:
     }
 
 
+# ── Surfacing predicate: usage RANKS, it never GATES (MV-D93/D94) ───────────
+# The blend (usage × centrality × governance) ORDERS the reviewer's queue, but the
+# usage factor must never be the *reason* a cluster surfaces. A heavily-queried but
+# ungoverned, structureless junk cluster (Migration, the GSO's own cost tables,
+# dev/demo datasets — usage≈1.0, governance≈0.2) would otherwise clear the tier
+# threshold on demand alone. The surfacing test recomputes the SAME coverage-normalized
+# blend over the NON-USAGE factors only (centrality, governance): a cluster whose only
+# present evidence is usage scores 0 there ⇒ no tier ⇒ not a surfacing basis (honest-gap,
+# MV-D43). The DISPLAYED tier / score / coverage / factors keep the full usage-inclusive
+# blend — usage still ranks. Touches neither ``blend`` nor any firewall (MV-D35).
+_NON_USAGE_FACTORS: tuple[str, ...] = ("centrality", "governance")
+
+
+def _surfacing_ok(factors: Mapping[str, Any]) -> bool:
+    """Whether a proposal has a NON-USAGE surfacing basis (MV-D93/D94).
+
+    Recompute the blend score over the present non-usage factors only (centrality,
+    governance) with the SAME coverage-normalized formula as :func:`blend`
+    (``100 * Σ w·value / Σ w`` over present non-usage factors; ``0`` when none present),
+    then require a real tier. A cluster whose only present evidence is usage scores 0
+    here ⇒ :func:`transforms.tier_of` returns ``None`` ⇒ it is not a surfacing basis
+    (usage ranks, it never gates). Reuses ``FACTOR_WEIGHTS``; pure and deterministic."""
+    numerator = 0.0
+    coverage = 0.0
+    for name in _NON_USAGE_FACTORS:
+        factor = factors.get(name) or {}
+        if factor.get("present"):
+            w = FACTOR_WEIGHTS[name]
+            numerator += w * float(factor.get("value") or 0.0)
+            coverage += w
+    score = 0.0 if coverage <= 0 else 100.0 * (numerator / coverage)
+    return transforms.tier_of(score) is not None
+
+
 # ── Row-level scoring (operates on the built Delta row dicts) ───────────────
 
 
@@ -640,9 +674,13 @@ def _score_row(
     rank["confidence"] = transforms.confidence_band(rank)
     row["score"] = rank["score"]
     evidence["rank"] = rank
-    # Tentative: surfaced iff it cleared threshold AND passed every firewall. The
-    # ledger pass (mark_surfaced) may still flip it to false for a dismissed proposal.
-    evidence["surfaced"] = bool(rank["tier"] is not None and not blocked)
+    # Tentative: surfaced iff it cleared threshold AND passed every firewall AND has a
+    # non-usage surfacing basis (usage RANKS, it never GATES — MV-D93/D94). The ledger
+    # pass (mark_surfaced) may still flip it to false for a dismissed proposal.
+    rank["surface_basis"] = "non_usage_evidence"
+    evidence["surfaced"] = bool(
+        rank["tier"] is not None and not blocked and _surfacing_ok(rank["factors"])
+    )
     # Legitimacy bar (MV-D57) — top-level Domains only; below-bar rows are kept but
     # not surfaced, with an "add to existing domain" hint (§Appendix A junk pruning).
     if kind == "domain":

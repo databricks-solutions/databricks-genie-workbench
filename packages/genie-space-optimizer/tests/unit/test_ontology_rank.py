@@ -496,3 +496,76 @@ def test_ledger_match_is_by_kind_and_id_not_workspace():
     supp = [{"metastore_id": "ms1", "workspace_id": "ws-other", "proposal_kind": "domain", "proposal_id": "sug_dom"}]
     rank.mark_surfaced([row], [], supp)
     assert _ev(row)["surfaced"] is False
+
+
+# ── Stage 1 (Signal Authority): usage RANKS, it never GATES (MV-D93/D94) ─────
+# The 0.40 usage factor lifts a proposal's demand-ranking but must never be the reason
+# it surfaces: a heavily-queried but ungoverned, structureless junk cluster (Migration,
+# the GSO's own cost tables, dev/demo datasets — usage≈1.0, governance≈0.2) would else
+# clear the tier threshold on demand alone (the harness precision 1.00→0.426 regression).
+
+
+def test_usage_only_cluster_does_not_surface_even_at_max_usage():
+    # The regression fixture: ONLY usage present, at the ceiling. The displayed blend
+    # still tiers it (usage ranks) but it has no non-usage basis, so it does NOT surface.
+    # Legitimacy bar off so the surfacing predicate is demonstrably the gate.
+    row = _domain_row("sug_usage_junk")
+    signals = rank.RankSignals(usage={"c.s.a": 1.0})
+    rank.score_proposals([row], [], members_by_domain={"sug_usage_junk": ["c.s.a"]},
+                         signals=signals, min_tables=1, min_schemas=1, require_connection=False)
+    r = _ev(row)
+    factors = r["rank"]["factors"]
+    assert factors["usage"]["present"] is True
+    assert factors["centrality"]["present"] is False and factors["governance"]["present"] is False
+    assert r["rank"]["tier"] is not None                 # the displayed blend still ranks it
+    assert r["surfaced"] is False                        # …but usage is not a surfacing basis
+    assert r["rank"]["surface_basis"] == "non_usage_evidence"
+
+
+def test_governed_domain_surfaces_with_and_without_usage_and_usage_only_ranks():
+    # A governed domain surfaces on its governance evidence with OR without usage; adding
+    # usage lifts the displayed tier/score (it ranks) but never changes WHETHER it surfaces.
+    def score(signals):
+        row = _domain_row("sug_gov")
+        rank.score_proposals([row], [], members_by_domain={"sug_gov": ["c.s.a"]},
+                             signals=signals, min_tables=1, min_schemas=1, require_connection=False)
+        ev = _ev(row)
+        return ev["rank"], ev["surfaced"]
+
+    no_usage_rank, no_usage_surf = score(rank.RankSignals(governance={"c.s.a": "curated"}))
+    with_usage_rank, with_usage_surf = score(
+        rank.RankSignals(governance={"c.s.a": "curated"}, usage={"c.s.a": 1.0}))
+
+    assert no_usage_surf is True and with_usage_surf is True
+    order = ("low", "medium", "high")
+    assert order.index(with_usage_rank["tier"]) > order.index(no_usage_rank["tier"])
+    assert with_usage_rank["score"] > no_usage_rank["score"]
+
+
+def test_domain_surfaces_on_centrality_alone_without_usage():
+    # Structural centrality is a valid surfacing basis on its own — no usage needed.
+    row = _domain_row("sug_central")
+    rank.score_proposals([row], [], members_by_domain={"sug_central": ["c.s.a"]},
+                         signals=rank.RankSignals(centrality={"c.s.a": 0.9}),
+                         min_tables=1, min_schemas=1, require_connection=False)
+    r = _ev(row)
+    assert r["rank"]["factors"]["centrality"]["present"] is True
+    assert r["rank"]["factors"]["usage"]["present"] is False
+    assert r["surfaced"] is True
+
+
+def test_surfacing_ok_predicate_unit_cases():
+    # The pure predicate, deterministic: only-usage⇒False; governance-only⇒True;
+    # centrality-only⇒True; no-factors⇒False.
+    def factors(**present):
+        return {
+            name: {"present": present.get(name) is not None, "value": float(present.get(name) or 0.0)}
+            for name in ("usage", "centrality", "governance")
+        }
+
+    assert rank._surfacing_ok(factors(usage=1.0)) is False          # only usage ⇒ no basis
+    assert rank._surfacing_ok(factors(governance=1.0)) is True      # governed evidence ⇒ basis
+    assert rank._surfacing_ok(factors(centrality=0.9)) is True      # structural evidence ⇒ basis
+    assert rank._surfacing_ok(factors()) is False                   # no factors ⇒ no basis
+    # Deterministic: same input, same verdict.
+    assert rank._surfacing_ok(factors(usage=1.0)) == rank._surfacing_ok(factors(usage=1.0))
