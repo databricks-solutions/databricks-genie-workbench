@@ -816,15 +816,24 @@ def run_materialize(
         # governance rung to ``curated``; ``deprecated`` seeds the rank-time firewall. Empty
         # (no grant / older reader) ⇒ byte-identical to the pre-Stage-2 signals.
         certification = _gather_certification(reader, allowlist)
+        members_by_domain: dict[str, list[str]] = {}
+        for m in expanded["member_rows"]:
+            members_by_domain.setdefault(m["domain_id"], []).append(m["asset_fqn"])
+        # Stage 3.2 (MV-D96): seed personalized PageRank on each domain's CERTIFIED members
+        # so the legitimacy gate can steer a below-bar fragment toward the domain its members
+        # flow closest to. No certification ⇒ empty seeds ⇒ trusted_home={} = today's bytes.
+        seeds_by_domain = {
+            did: seeds
+            for did, members in members_by_domain.items()
+            if (seeds := [m for m in members if certification.get(m) == "certified"])
+        }
         signals = rank.RankSignals(
             usage=_gather_usage(reader, allowlist),
             centrality=graph.pagerank_centrality(signal_graph),
             governance=_governance_map(graph_struct, certification),
             deprecated=frozenset(fqn for fqn, status in certification.items() if status == "deprecated"),
+            trusted_home=graph.certified_home(signal_graph, seeds_by_domain),
         )
-        members_by_domain: dict[str, list[str]] = {}
-        for m in expanded["member_rows"]:
-            members_by_domain.setdefault(m["domain_id"], []).append(m["asset_fqn"])
         rank.score_proposals(
             expanded["domain_rows"], page_rows,
             members_by_domain=members_by_domain, signals=signals,

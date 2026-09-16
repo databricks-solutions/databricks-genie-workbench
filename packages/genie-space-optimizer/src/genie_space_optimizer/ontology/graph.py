@@ -23,7 +23,7 @@ scaffold back, so existing callers/tests are byte-identical.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 
 def _now_iso() -> str:
@@ -307,3 +307,81 @@ def pagerank_centrality(signal_graph: dict[str, Any]) -> dict[str, float]:
     if peak <= 0:
         return lineage_centrality(signal_graph)
     return {fqn: round(s / peak, 6) for fqn, s in asset_scores.items()}
+
+
+# ── Certified-seeded home assignment (Stage 3 §5.2, MV-D96) ─────────────────
+
+
+def certified_home(
+    signal_graph: dict[str, Any],
+    seeds_by_domain: Mapping[str, Sequence[str]],
+) -> dict[str, str]:
+    """Assign each asset to the domain whose CERTIFIED anchors it flows closest to —
+    personalized PageRank seeded on each domain's certified assets (§5.2, MV-D96). The
+    legitimacy gate (``rank.py``) reads the result to steer a below-bar fragment toward
+    the domain its members actually belong to (by trusted-anchor gravity), a sharper
+    "add to existing domain" hint than the bare shared-schema guess.
+
+    ``seeds_by_domain`` maps a ``domain_id`` → the CERTIFIED asset FQNs anchoring it.
+    Builds the SAME directed fused graph as :func:`pagerank_centrality` (the six
+    ``_PAGERANK_EDGE_KINDS``). For each domain with ≥1 seed present in the graph, runs
+    ``personalized_pagerank(reset_vertices=<that domain's seed vertices>, damping=0.85)``;
+    every asset vertex is then assigned to the domain whose seeded run gives it the
+    highest mass. Returns ``{bare_fqn: domain_id}`` (the ``asset:`` prefix stripped, to
+    match how ``rank`` addresses assets).
+
+    Deterministic (MV-D82): domains, seeds, and vertices are all sorted, and a vertex
+    ties to the lexicographically-smallest ``domain_id`` (domains are visited in sorted
+    order and a home is replaced only on strictly-greater mass, so the first — smallest —
+    domain to reach a given peak keeps it). ``igraph`` is lazy-imported INSIDE; if it is
+    unavailable, the graph is edgeless over the propagation kinds, or no seed lands on a
+    vertex, return ``{}`` (MV-D43/D45) — never raise. An empty result leaves the gate on
+    its schema-hint fallback, byte-identical to the pre-Stage-3.2 path."""
+    if not seeds_by_domain:
+        return {}
+    # The same directed edges authority flows along as pagerank_centrality.
+    edge_pairs: list[tuple[str, str]] = []
+    for e in signal_graph.get("edges", []):
+        if e.get("kind") not in _PAGERANK_EDGE_KINDS:
+            continue
+        src, dst = e.get("src"), e.get("dst")
+        if isinstance(src, str) and isinstance(dst, str) and src != dst:
+            edge_pairs.append((src, dst))
+    if not edge_pairs:
+        return {}
+
+    try:
+        import igraph as ig  # lazy — keeps the module importable without the graph lib
+    except Exception:
+        return {}
+
+    # Deterministic vertex + edge order (identical output across runs — MV-D82).
+    vertices = sorted({v for pair in edge_pairs for v in pair})
+    idx = {v: i for i, v in enumerate(vertices)}
+    e_idx = sorted((idx[a], idx[b]) for a, b in edge_pairs)
+
+    g = ig.Graph(n=len(vertices), directed=True)
+    g.add_edges(e_idx)
+
+    # Per-vertex winner: the domain whose seeded PPR run gives it the most mass. Visiting
+    # domains in sorted order + replacing only on STRICTLY-greater mass makes ties resolve
+    # to the lexicographically-smallest domain_id.
+    best_domain: dict[int, str] = {}
+    best_mass: dict[int, float] = {}
+    for did in sorted(seeds_by_domain):
+        seed_vs = sorted({idx[f"asset:{s}"] for s in seeds_by_domain[did] if f"asset:{s}" in idx})
+        if not seed_vs:
+            continue
+        scores = g.personalized_pagerank(reset_vertices=seed_vs, damping=_PAGERANK_DAMPING, directed=True)
+        for vi, mass in enumerate(scores):
+            if vi not in best_mass or mass > best_mass[vi]:
+                best_mass[vi] = mass
+                best_domain[vi] = did
+
+    if not best_domain:
+        return {}
+    return {
+        v.split(":", 1)[1]: best_domain[idx[v]]
+        for v in vertices
+        if v.startswith("asset:") and idx[v] in best_domain
+    }

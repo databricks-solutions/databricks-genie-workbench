@@ -1242,3 +1242,47 @@ def test_pagerank_output_feeds_blend_centrality_factor_unchanged():
     b = rank.blend(["c.s.spine"], rank.RankSignals(centrality=centrality))
     assert b["factors"]["centrality"]["present"] is True
     assert b["factors"]["centrality"]["value"] > 0
+
+
+# ── Certified-seeded home assignment (Stage 3 §5.2, MV-D96) ─────────────────
+
+
+def test_certified_home_assigns_bridge_to_seeded_closest_domain():
+    """A bridge asset that is a schema-mate of B but structurally adjacent to A's
+    certified anchor is assigned to A (seeded-PPR gravity), not to its schema."""
+    pytest.importorskip("igraph")
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        lineage_edges=[
+            ("c.a.anchor", "c.b.bridge"),  # bridge is one hop from A's certified anchor
+            ("c.b.anchor", "c.b.mate"),    # B's anchor flows to its own schema-mate
+        ],
+    )
+    home = graph.certified_home(sig, {"A": ["c.a.anchor"], "B": ["c.b.anchor"]})
+    assert home["c.b.bridge"] == "A"       # trusted-anchor gravity beats the c.b schema
+    assert home["c.b.mate"] == "B"
+    assert home["c.a.anchor"] == "A" and home["c.b.anchor"] == "B"
+
+
+def test_certified_home_is_deterministic():
+    pytest.importorskip("igraph")
+    sig = graph.build_signal_graph(
+        {"tags": []},
+        lineage_edges=[("c.a.anchor", "c.x.t1"), ("c.b.anchor", "c.x.t2"), ("c.x.t1", "c.x.t2")],
+    )
+    seeds = {"A": ["c.a.anchor"], "B": ["c.b.anchor"]}
+    assert graph.certified_home(sig, seeds) == graph.certified_home(sig, seeds)
+
+
+def test_certified_home_empty_without_seeds_or_igraph_or_edges(monkeypatch):
+    import sys
+
+    sig = graph.build_signal_graph({"tags": []}, lineage_edges=[("c.a.anchor", "c.a.t1")])
+    # No seeds at all, and seeds naming assets absent from the graph → {}.
+    assert graph.certified_home(sig, {}) == {}
+    assert graph.certified_home(sig, {"A": ["c.z.absent"]}) == {}
+    # Edgeless graph → {} even with valid-looking seeds.
+    assert graph.certified_home({"nodes": [], "edges": []}, {"A": ["c.a.anchor"]}) == {}
+    # igraph unavailable → {} (never raise).
+    monkeypatch.setitem(sys.modules, "igraph", None)
+    assert graph.certified_home(sig, {"A": ["c.a.anchor"]}) == {}

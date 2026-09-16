@@ -262,6 +262,83 @@ def test_curated_domain_is_exempt_from_legitimacy_bar():
     assert r["surfaced"] is True
 
 
+# ── Signal Authority Stage 3.2: certified-seeded home hint (MV-D96) ─────────
+
+
+def _governed_signals_with_home(fqn, trusted_home):
+    return rank.RankSignals(
+        usage={fqn: 0.9}, centrality={fqn: 0.9}, governance={fqn: "governed"},
+        trusted_home=trusted_home,
+    )
+
+
+def test_below_bar_hint_uses_certified_ppr_target():
+    # A below-bar fragment whose member flows (certified-seeded PPR) toward an existing
+    # domain gets a hint naming THAT domain, basis certified_ppr — not the schema guess.
+    row = _domain_row("sug_small", evidence={"reason": "grouped by shared schema: c.bakehouse"})
+    signals = _governed_signals_with_home("c.bakehouse.sales", {"c.bakehouse.sales": "dom_finance"})
+    rank.score_proposals([row], [], members_by_domain={"sug_small": ["c.bakehouse.sales"]}, signals=signals)
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is False
+    assert r["surfaced"] is False                                   # surfacing decision unchanged
+    assert r["gate_hint"] == "add to existing domain: dom_finance"  # PPR target, not the schema
+    assert r["rank"]["legitimacy_home_basis"] == "certified_ppr"
+    assert r["rank"]["legitimacy_home_target"] == "dom_finance"
+
+
+def test_below_bar_hint_falls_back_to_schema_when_no_certified_target():
+    # A non-empty trusted_home with no member pointing elsewhere → the schema hint, marked
+    # basis=="schema"; the hint string itself is byte-identical to the pre-Stage-3.2 path.
+    row = _domain_row("sug_small", evidence={"reason": "grouped by shared schema: c.bakehouse"})
+    signals = _governed_signals_with_home("c.bakehouse.sales", {"c.other.thing": "dom_x"})
+    rank.score_proposals([row], [], members_by_domain={"sug_small": ["c.bakehouse.sales"]}, signals=signals)
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is False
+    assert r["gate_hint"] == "add to existing domain: c.bakehouse"  # schema home, as today
+    assert r["rank"]["legitimacy_home_basis"] == "schema"
+    assert "legitimacy_home_target" not in r["rank"]
+
+
+def test_below_bar_target_excludes_the_fragments_own_domain():
+    # A member whose PPR home is the fragment's OWN domain_id is no hint (excluded) →
+    # falls back to the schema hint, not "fold sug_small into sug_small".
+    row = _domain_row("sug_small", evidence={"reason": "grouped by shared schema: c.bakehouse"})
+    signals = _governed_signals_with_home("c.bakehouse.sales", {"c.bakehouse.sales": "sug_small"})
+    rank.score_proposals([row], [], members_by_domain={"sug_small": ["c.bakehouse.sales"]}, signals=signals)
+    r = _ev(row)
+    assert r["gate_hint"] == "add to existing domain: c.bakehouse"
+    assert r["rank"]["legitimacy_home_basis"] == "schema"
+
+
+def test_below_bar_empty_trusted_home_is_byte_identical():
+    # Guardrail: an empty trusted_home (no certification / no igraph) writes NO basis key —
+    # the schema hint is byte-identical to the pre-Stage-3.2 path.
+    row = _domain_row("sug_small", evidence={"reason": "grouped by shared schema: c.bakehouse"})
+    rank.score_proposals([row], [], members_by_domain={"sug_small": ["c.bakehouse.sales"]},
+                         signals=_governed_signals("c.bakehouse.sales"))
+    r = _ev(row)
+    assert r["gate_hint"] == "add to existing domain: c.bakehouse"
+    assert "legitimacy_home_basis" not in r["rank"]
+    assert "legitimacy_home_target" not in r["rank"]
+
+
+def test_curated_domain_never_gated_even_with_trusted_home():
+    # The curated governed-tag exemption is untouched by Stage 3.2: no gate, no hint, no
+    # basis key, still surfaced — even when trusted_home would name another domain.
+    row = _domain_row("sug_curated", tag_decision="reuse", tag_key="Alaska Airlines Maintenance",
+                      tag_value="Alaska Airlines Maintenance",
+                      evidence={"reason": "grouped by curated domain tag: Alaska Airlines Maintenance"})
+    signals = _governed_signals_with_home("c.airline_maint.ad_compliance",
+                                          {"c.airline_maint.ad_compliance": "dom_other"})
+    rank.score_proposals([row], [], members_by_domain={"sug_curated": ["c.airline_maint.ad_compliance"]},
+                         signals=signals)
+    r = _ev(row)
+    assert r["rank"]["legitimate"] is True
+    assert "gate_hint" not in r
+    assert "legitimacy_home_basis" not in r["rank"]
+    assert r["surfaced"] is True
+
+
 # ── Stage 3.2: Gate-B diffuseness net (MV-D62) ──────────────────────────────
 
 

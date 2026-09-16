@@ -89,6 +89,14 @@ class RankSignals:
     # firewall (never surfaced), the direct analogue of OntoRank steering away from a
     # stale source. Empty by default ⇒ no proposal is deprecation-blocked (today's bytes).
     deprecated: frozenset[str] = field(default_factory=frozenset)
+    # Certified-seeded home map (Signal Authority Stage 3.2, MV-D96): {asset_fqn ->
+    # domain_id} from ``graph.certified_home`` — the domain each asset flows closest to
+    # under personalized PageRank seeded on each domain's CERTIFIED anchors. The
+    # legitimacy gate reads it to steer a below-bar fragment toward the domain its
+    # members actually belong to (trusted-anchor gravity), a sharper "add to existing
+    # domain" hint than the bare shared-schema guess. Empty by default ⇒ the gate stays
+    # on its schema-hint fallback (today's bytes).
+    trusted_home: Mapping[str, str] = field(default_factory=dict)
 
 
 # ── Firewalls (must pass ALL to surface) ────────────────────────────────────
@@ -535,9 +543,28 @@ def _legitimacy_home(members: Sequence[str], evidence: Mapping[str, Any]) -> str
     return _schema_of(str(anchor)) if anchor else "another domain"
 
 
+def _certified_home_target(
+    members: Sequence[str], trusted_home: Mapping[str, str], own_domain_id: str,
+) -> str | None:
+    """The domain a below-bar fragment's members most flow toward under certified-seeded
+    PPR (``signals.trusted_home``, MV-D96), majority-voted and EXCLUDING the fragment's
+    own ``domain_id`` (folding a fragment back into itself is no hint). ``None`` when
+    ``trusted_home`` is empty or no member points elsewhere — the caller then falls back
+    to the schema hint. Deterministic: alphabetical tie-break (``max(sorted(...))``)."""
+    counts: dict[str, int] = {}
+    for m in members:
+        target = trusted_home.get(str(m))
+        if target and target != own_domain_id:
+            counts[target] = counts.get(target, 0) + 1
+    if not counts:
+        return None
+    return max(sorted(counts), key=lambda d: counts[d])
+
+
 def _apply_legitimacy_gate(
     row: dict[str, Any], evidence: dict[str, Any], members: Sequence[str], rank: dict[str, Any],
     *, min_tables: int, min_schemas: int, require_connection: bool,
+    trusted_home: Mapping[str, str] | None = None,
 ) -> None:
     """The legitimacy bar (MV-D57), applied to a top-level Domain proposal in place: a
     below-bar group is KEPT but ``surfaced=false`` with an "add to existing domain"
@@ -545,7 +572,14 @@ def _apply_legitimacy_gate(
     already live inside a domain or name a governed conflict); a curated governed-tag
     Domain is likewise exempt — a human already asserted it as a bounded context
     (MV-D53 precedence #1), so it is legitimate by fiat (Stage-3.1, §A.3). Records the
-    verdict on ``rank`` so the run report and the serve layer can read it."""
+    verdict on ``rank`` so the run report and the serve layer can read it.
+
+    The SURFACING decision is unchanged (below-bar ⇒ not surfaced); only the below-bar
+    hint TARGET is sharpened (Stage-3.2, MV-D96): when ``trusted_home`` (certified-seeded
+    PPR homes) points the fragment's members at an existing domain, the hint names that
+    domain (``legitimacy_home_basis="certified_ppr"``); otherwise it falls back to the
+    existing schema hint. An empty ``trusted_home`` leaves the schema hint byte-identical
+    to the pre-Stage-3.2 path (no basis key written)."""
     if _is_curated_domain(evidence):
         rank["legitimate"] = True
         return
@@ -558,9 +592,21 @@ def _apply_legitimacy_gate(
     )
     rank["legitimate"] = ok
     if not ok:
-        home = _legitimacy_home(members, evidence)
         rank["legitimacy_reason"] = reason
-        evidence["gate_hint"] = f"add to existing domain: {home}"
+        trusted_home = trusted_home or {}
+        target = _certified_home_target(members, trusted_home, str(row.get("domain_id") or ""))
+        if target is not None:
+            evidence["gate_hint"] = f"add to existing domain: {target}"
+            rank["legitimacy_home_basis"] = "certified_ppr"
+            rank["legitimacy_home_target"] = target
+        else:
+            home = _legitimacy_home(members, evidence)
+            evidence["gate_hint"] = f"add to existing domain: {home}"
+            # A non-empty trusted_home that simply had no elsewhere-pointing member marks
+            # the hint's basis; an EMPTY map (no certification / no igraph this run) leaves
+            # the pre-Stage-3.2 schema hint byte-identical (no basis key).
+            if trusted_home:
+                rank["legitimacy_home_basis"] = "schema"
         evidence["surfaced"] = False
 
 
@@ -697,6 +743,7 @@ def _score_row(
         _apply_legitimacy_gate(
             row, evidence, members, rank,
             min_tables=min_tables, min_schemas=min_schemas, require_connection=require_connection,
+            trusted_home=signals.trusted_home,
         )
         # Gate-B (MV-D62) — the diffuseness net, right AFTER the legitimacy bar: a diffuse
         # cross-schema structural hairball is kept but not surfaced (spec §2.2).
