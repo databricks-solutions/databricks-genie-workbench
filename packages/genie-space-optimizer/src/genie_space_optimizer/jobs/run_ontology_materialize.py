@@ -928,11 +928,40 @@ class SparkSystemTableReader:
             return []
 
     def usage_signals(self, allowlist: list[str]) -> dict[str, float]:
-        """The L2 usage/cost signal for the L6 blend. Not wired in the offline slice
-        (query.history/billing demand normalization is a serve-pass concern), so this
-        degrades to {} — the usage factor is simply absent, lowering coverage rather
-        than faking a zero (the honest-gap discipline)."""
-        return {}
+        """Stage 1 (MV-D93) popularity signal for the L6 blend: {fqn -> demand in [0,1]}.
+
+        Attribute read demand to tables over a trailing 30-day window from
+        ``system.access.table_lineage`` (the same SP read-attribution surface GenieWatch
+        and ``dashboard_scopes`` use), then hand the rows to the PURE
+        ``usage.normalize_usage`` percentile-ranker. Read as the job's run_as identity and
+        scoped to the allowlisted catalogs so an out-of-scope table never enters the map.
+
+        Honest-gap / degrade-not-hang (MV-D43): an empty allowlist ⇒ {} (byte-identical to
+        the pre-Stage-1 stub); any read failure or missing grant ⇒ {} (via ``_rows_safe``,
+        which never raises), so the usage factor is simply absent (lowering coverage)
+        rather than a faked zero map. Zero-read tables are omitted by the normalizer."""
+        if not allowlist:
+            return {}
+        from genie_space_optimizer.ontology import usage
+        cats = {str(c).strip() for c in allowlist if str(c).strip()}
+
+        def _in_scope(fqn: str) -> bool:
+            return str(fqn).split(".", 1)[0] in cats
+
+        rows: list[dict[str, Any]] = []
+        for r in self._rows_safe(
+            "SELECT lower(source_table_full_name) AS fqn, "
+            "COUNT(*) AS reads, COUNT(DISTINCT created_by) AS users "
+            "FROM system.access.table_lineage "
+            "WHERE source_table_full_name IS NOT NULL "
+            "AND event_time >= current_timestamp() - INTERVAL 30 DAYS "
+            "GROUP BY lower(source_table_full_name)",
+            "usage_signals",
+        ):
+            fqn = r.get("fqn")
+            if fqn and _in_scope(str(fqn)):
+                rows.append({"fqn": str(fqn), "reads": r.get("reads"), "users": r.get("users")})
+        return usage.normalize_usage(rows)
 
 
 # COMMAND ----------
