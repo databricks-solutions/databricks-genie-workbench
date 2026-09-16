@@ -439,6 +439,45 @@ def test_slash_subtag_becomes_subdomain_under_parent():
     assert pnr.evidence["reason"] == "sub-tag: Reservation/PNR"
 
 
+def test_slash_key_only_taxonomy_binds_virtual_parent(monkeypatch):
+    # MV-D98 — a governed Domain/Sub-domain taxonomy encoded ONLY as slash sub-tags with
+    # NO standalone parent tag (the 7-Eleven estate shape). Without the virtual-parent
+    # synthesis the R1 curated group can't bind → downgrades to a schema-named `create`
+    # Domain and the sub-tags never become sub-domains. With it, the Domain binds `reuse`
+    # to the (virtual) parent key and the real governed sub-domains surface.
+    fine = _fine_calls(monkeypatch)  # an explicit boundary exists → Leiden is NOT consulted
+    tags = [
+        {"tag_key": "7-Eleven Loyalty/Membership", "members": [{"fqn": f} for f in (
+            "cat.loy.loyalty_program", "cat.loy.loyalty_tier", "cat.loy.loyalty_membership")]},
+        {"tag_key": "7-Eleven Loyalty/Points", "members": [{"fqn": f} for f in (
+            "cat.loy.loyalty_points_ledger", "cat.loy.points_ledger")]},
+        {"tag_key": "7-Eleven Loyalty/Redemption", "members": [{"fqn": f} for f in (
+            "cat.loy.loyalty_redemption", "cat.loy.reward")]},
+    ]
+    sig = graph.build_signal_graph({"tags": tags}, [])
+    props = cluster.cluster(sig, namer=lambda i, a, c: None)
+
+    dom = next(p for p in props if p.parent_id is None)
+    assert dom.tag_key == "7-Eleven Loyalty" and dom.tag_decision == "reuse"
+    assert dom.name == "7-eleven Loyalty"
+    # The parent lists every governed member (union of its sub-tags').
+    assert len(dom.members) == 7
+
+    subs = {p.tag_key: p for p in props if p.parent_id == dom.domain_id}
+    assert set(subs) == {
+        "7-Eleven Loyalty/Membership", "7-Eleven Loyalty/Points", "7-Eleven Loyalty/Redemption"}
+    for tk, s in subs.items():
+        assert s.tag_decision == "reuse"
+        assert s.evidence["reason"] == f"sub-tag: {tk}"
+    assert subs["7-Eleven Loyalty/Membership"].name == "Membership"
+    assert set(subs["7-Eleven Loyalty/Points"].members) == {
+        "cat.loy.loyalty_points_ledger", "cat.loy.points_ledger"}
+    # No standalone `create` Domain named after a schema was minted.
+    assert not any(p.tag_decision == "create" for p in props)
+    # An explicit boundary (slash sub-tags) means the finer Leiden split never runs.
+    assert not any(g == cluster.GAMMA_FINE for g, _ in fine)
+
+
 def test_value_carrying_tag_names_subdomains_by_value(monkeypatch):
     # A value-carrying tag (mvm_subdomain=fare_pricing / route_ops) over the Domain's
     # assets -> one sub-domain per distinct value (reuse of the tag+value); Leiden is
