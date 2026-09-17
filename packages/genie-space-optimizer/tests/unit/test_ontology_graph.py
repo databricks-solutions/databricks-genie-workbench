@@ -693,6 +693,52 @@ def test_certification_none_and_unmatched_are_byte_identical():
     assert unmatched == base
 
 
+# --- MV-D97 §6 Stage 4b: PageRank centrality → node_scores → render radius (size) ---
+
+def _size_sig():
+    """Three plain asset nodes, no edges (sizing is driven purely by ``node_scores``)."""
+    return {"nodes": [{"id": "asset:c.rev.hot", "kind": "table"},
+                      {"id": "asset:c.rev.mid", "kind": "table"},
+                      {"id": "asset:c.rev.cold", "kind": "table"}], "edges": []}
+
+
+def _size_dom():
+    return {"c.rev.hot": "d1", "c.rev.mid": "d1", "c.rev.cold": "d1"}
+
+
+def test_node_scores_scale_size_high_score_largest():
+    """MV-D97 §6: with a ``node_scores`` map keyed by ``asset:<fqn>``, a high-score asset
+    gets size>1.0 and the top-scoring asset the largest — the [0.5,2.0] curve of
+    _compute_node_size (``0.5 + score``) is driven by the re-keyed PageRank authority."""
+    pytest.importorskip("igraph")
+    row = layout.build_graph_snapshot(
+        _size_sig(), _size_dom(),
+        node_scores={"asset:c.rev.hot": 1.0, "asset:c.rev.mid": 0.7, "asset:c.rev.cold": 0.0},
+        domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
+        metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
+    )
+    a = _assets_by_id(json.loads(row["graph"]))
+    assert a["asset:c.rev.hot"]["size"] > 1.0             # score 1.0 → 1.5, boosted radius
+    assert a["asset:c.rev.mid"]["size"] > 1.0             # score 0.7 → 1.2, boosted (>0.5)
+    assert a["asset:c.rev.cold"]["size"] == 1.0           # score 0.0 → default radius
+    # Score orders the radii, top-scoring asset the largest of the three.
+    assert a["asset:c.rev.hot"]["size"] > a["asset:c.rev.mid"]["size"] > a["asset:c.rev.cold"]["size"]
+    assert a["asset:c.rev.hot"]["size"] == max(n["size"] for n in a.values())
+
+
+def test_empty_node_scores_all_sizes_default_to_one():
+    """MV-D97 §6 guardrail (MV-D43/D45/D82): an empty ``node_scores`` map (the igraph-
+    unavailable / edgeless degrade path) ⇒ every asset size=1.0, byte-identical to the
+    no-node_scores call today."""
+    pytest.importorskip("igraph")
+    kw = dict(domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
+              metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00")
+    empty = layout.build_graph_snapshot(_size_sig(), _size_dom(), node_scores={}, **kw)["graph"]
+    base = layout.build_graph_snapshot(_size_sig(), _size_dom(), **kw)["graph"]
+    assert empty == base                                  # {} ⇒ today's bytes exactly
+    assert all(n["size"] == 1.0 for n in json.loads(empty)["assets"]["nodes"])
+
+
 def test_containment_depth_reaches_agent_metric_view_table():
     """MV-D86 accept (c): with an ``agent_scope`` (agent→table) and an ``mv_membership``
     (mv→table) over the SAME table, the tree nests agent ⊃ metric_view ⊃ table — the MV

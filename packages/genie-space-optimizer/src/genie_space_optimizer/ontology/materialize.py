@@ -832,9 +832,15 @@ def run_materialize(
             for did, members in members_by_domain.items()
             if (seeds := [m for m in members if certification.get(m) == "certified"])
         }
+        # Stage 4b (MV-D97 §6): compute PageRank centrality ONCE — it feeds BOTH the L6
+        # ranker's ``centrality`` factor (below) and the layout's node-sizing (the
+        # ``node_scores`` map at the build_graph_snapshot call). Empty (igraph unavailable
+        # OR an edgeless graph ⇒ ``pagerank_centrality`` returns {}) ⇒ node_scores={} ⇒
+        # every size=1.0 ⇒ snapshot byte-identical to today (MV-D43/D45/D82).
+        centrality = graph.pagerank_centrality(signal_graph)
         signals = rank.RankSignals(
             usage=usage,
-            centrality=graph.pagerank_centrality(signal_graph),
+            centrality=centrality,
             governance=_governance_map(graph_struct, certification),
             deprecated=frozenset(fqn for fqn, status in certification.items() if status == "deprecated"),
             trusted_home=graph.certified_home(signal_graph, seeds_by_domain),
@@ -974,8 +980,13 @@ def run_materialize(
         # unchanged); dashboards ride only the layout node→domain map (MV-D49/D82).
         dashboard_tags = _gather_entity_tags(reader, "dashboards")
         dashboard_domain = agent_domain_placement(dashboard_tags, proposals)
+        # Stage 4b (MV-D97 §6): re-key the once-computed PageRank centrality (keyed by BARE
+        # fqn) into the layout node-id space (``asset:<fqn>``, what _compute_node_size looks
+        # up) so each asset's render radius scales with its authority. Empty ⇒ {} ⇒ every
+        # size=1.0 ⇒ byte-identical (MV-D43/D45/D82). Additive: only ``size`` VALUES change.
+        node_scores = {f"asset:{fqn}": v for fqn, v in centrality.items()}
         graph_row = layout.build_graph_snapshot(
-            signal_graph, {**asset_domain, **agent_domain, **dashboard_domain}, node_scores=None, domain_meta=domain_meta,
+            signal_graph, {**asset_domain, **agent_domain, **dashboard_domain}, node_scores=node_scores, domain_meta=domain_meta,
             snippets_in=snippets_in,
             # Stage-2 authority (MV-D94 → MV-D97, §6): stamp additive certified/deprecated meta
             # onto matching asset nodes so the map can encode certification. Empty ⇒ byte-identical.

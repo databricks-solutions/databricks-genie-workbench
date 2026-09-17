@@ -502,6 +502,44 @@ def test_domain_adjacency_from_signal_graph_fk_edges():
     assert materialize._domain_adjacency(members, {"edges": []}) == {}
 
 
+def test_node_scores_derived_from_pagerank_centrality_and_rekeyed(monkeypatch):
+    """Seam (MV-D97 §6 Stage 4b): run_materialize computes PageRank centrality ONCE and
+    threads it into build_graph_snapshot as ``node_scores`` re-keyed from the BARE fqn
+    (centrality's key space) to the layout ``asset:<fqn>`` node-id space — so a centrality
+    entry lands on the matching asset node's render ``size``."""
+    import pytest
+
+    pytest.importorskip("igraph")
+    catalog_rows, assign_rows = _fixture_rows()
+
+    # Force a known centrality map (keyed by BARE fqn) — the busiest asset at the peak.
+    fake_centrality = {"finance.tax.filings": 1.0, "finance.core.ledger": 0.2}
+    monkeypatch.setattr(
+        materialize.graph, "pagerank_centrality", lambda sg: dict(fake_centrality))
+
+    # Spy on the node_scores kwarg while delegating to the real snapshot builder.
+    captured: dict = {}
+    real_snapshot = materialize.layout.build_graph_snapshot
+
+    def _spy(signal_graph, node_domain_id, node_scores=None, **kw):
+        captured["node_scores"] = node_scores
+        return real_snapshot(signal_graph, node_domain_id, node_scores=node_scores, **kw)
+
+    monkeypatch.setattr(materialize.layout, "build_graph_snapshot", _spy)
+
+    writer = _FakeWriter()
+    _run(_FakeReader(catalog_rows, assign_rows, [], []), writer, run_id="r1")
+
+    # Derived + re-keyed: bare fqn → asset:<fqn>, values preserved exactly.
+    assert captured["node_scores"] == {
+        "asset:finance.tax.filings": 1.0, "asset:finance.core.ledger": 0.2}
+
+    # ...and it lands on size: the peak-centrality asset is boosted above the default 1.0.
+    (row,) = list(writer.tables[ddl.TABLE_ONT_GRAPH_SNAPSHOT].values())
+    assets = {n["id"]: n for n in json.loads(row["graph"])["assets"]["nodes"]}
+    assert assets["asset:finance.tax.filings"]["size"] > 1.0
+
+
 def test_context_pack_on_writes_pack_and_source_rows():
     """With a resolved pack, the two context tables are MERGEd (metastore-scoped) and the
     naming prior is recorded on the curated Domain (never renaming it — T0/curated wins)."""
