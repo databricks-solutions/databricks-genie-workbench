@@ -55,7 +55,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from genie_space_optimizer.ontology import er, transforms
 
@@ -93,6 +93,15 @@ PRIOR_KINDS = ("tag_assignment", "agent_scope")
 # seed is what pins the refinement randomness.
 LEIDEN_SEED = 1_729
 N_ITERATIONS = 5
+
+# Usage-weighted clustering (Stage 3, MV-D96 §5.3): the STRUCTURAL join_key / co_query
+# edge weights are scaled by a BOUNDED endpoint-usage factor before Leiden, so a
+# trafficked spine pulls harder than an incidental FK. The factor is
+# ``1 + USAGE_BETA * mean(usage[a], usage[b])`` over pre-normalized [0,1] demand, so the
+# maximum boost is a fixed 1.5× (both endpoints fully trafficked) — usage NUDGES the
+# structural boundary, it never dominates the structural signal, and empty usage ⇒
+# factor exactly 1.0 ⇒ a byte-identical partition (MV-D45). Fixed constant ⇒ deterministic.
+USAGE_BETA = 0.5
 
 # Curated-tag-absorbs-structural threshold (Stage 3, MV-D56/57): when a curated
 # (governed-tag) Domain and an FK-component Domain overlap by at least this fraction
@@ -203,6 +212,32 @@ class _UF:
         if ra != rb:
             lo, hi = (ra, rb) if ra < rb else (rb, ra)  # stable, order-independent
             self.parent[hi] = lo
+
+
+# ── Usage-weighted structural edges (Stage 3, MV-D96 §5.3) ──────────────────
+
+
+def _usage_scaled(
+    kind: str,
+    pairs: list[tuple[str, str, float]],
+    usage: Mapping[str, float],
+) -> list[tuple[str, str, float]]:
+    """Scale the STRUCTURAL ``join_key`` / ``co_query`` edge weights by a BOUNDED
+    endpoint-usage factor (MV-D96 §5.3): ``w * (1 + USAGE_BETA * mean(usage[a], usage[b]))``
+    — a trafficked spine pulls harder than an incidental FK, but the boost is capped
+    (max 1.5×) so usage only NUDGES the structural boundary and never dominates the
+    structural signal. Only ``join_key`` / ``co_query`` are scaled (the lineage backbone
+    and semantic glue, and the non-structural prior layers, pass through untouched). Empty
+    usage — or an endpoint absent from ``usage`` — yields factor exactly 1.0, so the
+    default path is byte-identical (MV-D45). Deterministic (fixed ``USAGE_BETA``, input
+    order preserved)."""
+    if not usage or kind not in ("join_key", "co_query"):
+        return pairs
+    out: list[tuple[str, str, float]] = []
+    for a, b, w in pairs:
+        factor = 1.0 + USAGE_BETA * ((usage.get(a, 0.0) + usage.get(b, 0.0)) / 2.0)
+        out.append((a, b, w * factor))
+    return out
 
 
 # ── Multiplex Leiden (soft-seeded, CPM) ─────────────────────────────────────
@@ -564,11 +599,14 @@ def _leiden_communities(
     tag_members: dict[str, set[str]],
     agent_members: dict[str, set[str]],
     gamma: float,
+    usage: Mapping[str, float] = {},
 ) -> list[set[str]]:
     """Soft-seeded multiplex Leiden over the REMAINDER only (MV-D53). Structural layers
     direct + tag/agent priors projected to cliques (restricted to ``subset``); the
     thin-signal fallback prior is the catalog.schema prefix. Mirrors the shipped 17e
-    coarse pass, now scoped to the assets no rule resolved."""
+    coarse pass, now scoped to the assets no rule resolved. ``usage`` scales the
+    ``join_key`` / ``co_query`` layer weights by the bounded endpoint-usage factor
+    (MV-D96 §5.3); empty ⇒ byte-identical."""
     verts = sorted(subset)
     if not verts:
         return []
@@ -576,6 +614,7 @@ def _leiden_communities(
     coarse_layers: dict[str, list[tuple[str, str, float]]] = {}
     for kind in STRUCTURAL_KINDS:
         pairs = [(a, b, w) for (a, b, w) in struct.get(kind, []) if a in subset and b in subset]
+        pairs = _usage_scaled(kind, pairs, usage)
         if pairs:
             coarse_layers[kind] = pairs
     tag_clique = _clique_edges([{a for a in mem if a in subset} for mem in tag_members.values()])
@@ -629,6 +668,40 @@ def _sorted_subgroups(groups: list[_SubGroup]) -> list[_SubGroup]:
     """Deterministic order (largest first, then first sorted member) so sub-domain
     ids/binding are stable across runs."""
     return sorted(groups, key=lambda g: (-len(g[0]), g[0][0] if g[0] else ""))
+
+
+def _domain_pageranks(
+    community: Sequence[str], struct: dict[str, list[tuple[str, str, float]]],
+) -> dict[str, float] | None:
+    """Per-domain PageRank over the Domain's ``join_key`` + ``co_query`` subgraph (Stage 3,
+    MV-D96 §5.3): igraph lazy, damping ``0.85``, deterministic sorted inputs. Returns
+    ``{fqn -> score}`` used to name/anchor the FK/MV structural-fallback sub-groups by
+    their most-central hub, or ``None`` when igraph is unavailable OR the subgraph is
+    edgeless — the caller then keeps today's FK/MV naming exactly. Pure/offline; never
+    touches membership."""
+    try:
+        import igraph as ig  # lazy — the module stays importable without the graph lib
+    except Exception:  # noqa: BLE001 — no igraph ⇒ keep today's FK/MV naming (MV-D43)
+        return None
+    ordered = sorted(set(community))
+    idx = {a: i for i, a in enumerate(ordered)}
+    e_idx: list[tuple[int, int]] = []
+    for kind in ("join_key", "co_query"):
+        for a, b, _w in struct.get(kind, []):
+            ia, ib = idx.get(a), idx.get(b)
+            if ia is not None and ib is not None and ia != ib:
+                e_idx.append((ia, ib))
+    if not e_idx:
+        return None
+    g = ig.Graph(n=len(ordered), directed=False)
+    g.add_edges(e_idx)
+    scores = g.pagerank(damping=0.85)
+    return {ordered[i]: float(scores[i]) for i in range(len(ordered))}
+
+
+def _top_hub(members: Sequence[str], pageranks: dict[str, float]) -> str:
+    """The highest-PageRank table of a sub-group; deterministic tie-break by smallest FQN."""
+    return sorted(members, key=lambda m: (-pageranks.get(m, 0.0), m))[0]
 
 
 def _derive_subdomains(
@@ -689,17 +762,30 @@ def _derive_subdomains(
         )
 
     # (4) MV / FK component within the Domain: ≥2 FK components (or ≥2 MV source sets).
+    # When this structural fallback fires (rules (1)-(3) found NO explicit boundary), each
+    # sub-group is named/anchored by its top-PageRank hub over the Domain's join_key+co_query
+    # subgraph (Stage 3, MV-D96 §5.3) — a ``hub: <fqn>`` boundary reason. MEMBERSHIP is
+    # unchanged; igraph-unavailable OR an edgeless subgraph keeps today's FK/MV naming exactly.
+    # These sub-groups carry no governed-tag bind, so no curated sub-domain is ever overridden.
     jk = [(a, b, w) for (a, b, w) in struct.get("join_key", []) if a in sset and b in sset]
     fk_comps = [c for c in _components(sorted(sset), jk) if len(c) >= 2] if jk else []
     if len(fk_comps) >= 2:
-        return _sorted_subgroups(
-            [(sorted(c), "foreign-key component within domain", None, None) for c in fk_comps]
-        )
+        ranks = _domain_pageranks(community, struct)
+        return _sorted_subgroups([
+            (sorted(c),
+             f"hub: {_top_hub(c, ranks)}" if ranks else "foreign-key component within domain",
+             None, None)
+            for c in fk_comps
+        ])
     mv_groups = [(mv, mem & sset) for mv, mem in sorted(mv_members.items()) if len(mem & sset) >= 2]
     if len(mv_groups) >= 2:
-        return _sorted_subgroups(
-            [(sorted(mem), f"metric view: {mv}", None, None) for mv, mem in mv_groups]
-        )
+        ranks = _domain_pageranks(community, struct)
+        return _sorted_subgroups([
+            (sorted(mem),
+             f"hub: {_top_hub(mem, ranks)}" if ranks else f"metric view: {mv}",
+             None, None)
+            for mv, mem in mv_groups
+        ])
 
     return None
 
@@ -777,6 +863,7 @@ def cluster(
     facet_denylist: frozenset[str] | list[str] | None = None,
     gamma_coarse: float = GAMMA_COARSE,
     gamma_fine: float = GAMMA_FINE,
+    usage: Mapping[str, float] = {},
 ) -> list[DomainProposal]:
     """Cluster the fused signal graph into a Domain -> Sub-Domain proposal tree.
 
@@ -785,8 +872,11 @@ def cluster(
     real job passes :func:`default_namer`). ``facet_tiebreaker`` is an optional injected
     facet/aboutness resolver for genuinely ambiguous tag names (degrades, MV-D43).
     ``facet_denylist`` (Stage 3, MV-D57 config) adds enterprise facet patterns on top of
-    the shipped constants. Rules-first (MV-D53): decisive signals group deterministically,
-    Leiden handles the remainder. Deterministic and offline.
+    the shipped constants. ``usage`` (Stage 3, MV-D96 §5.3) scales the ``join_key`` /
+    ``co_query`` structural edge weights by the bounded endpoint-usage factor so a
+    trafficked spine pulls harder than an incidental FK — empty ``usage`` (the default) ⇒
+    factor 1.0 ⇒ a byte-identical partition (MV-D45). Rules-first (MV-D53): decisive
+    signals group deterministically, Leiden handles the remainder. Deterministic and offline.
     """
     canon_tag = _tag_canonical_map(identity)
     denylist = transforms._normalize_denylist(facet_denylist)
@@ -889,7 +979,7 @@ def cluster(
     ]
     for comm in _leiden_communities(
         remainder, struct=struct, tag_members=tag_members,
-        agent_members=agent_members, gamma=gamma_coarse,
+        agent_members=agent_members, gamma=gamma_coarse, usage=usage,
     ):
         # A leftover community with no internal structure is tag-only — a tag never
         # solo-creates a Domain (MV-D52), so it is dropped rather than surfaced.
@@ -933,7 +1023,9 @@ def cluster(
         # Fallback: the finer Leiden split over STRUCTURAL layers (finer γ, fixed seed).
         sset = set(community)
         sub_layers = {
-            k: [(a, b, w) for (a, b, w) in struct[k] if a in sset and b in sset]
+            k: _usage_scaled(
+                k, [(a, b, w) for (a, b, w) in struct[k] if a in sset and b in sset], usage,
+            )
             for k in STRUCTURAL_KINDS
         }
         sub_layers = {k: v for k, v in sub_layers.items() if v}

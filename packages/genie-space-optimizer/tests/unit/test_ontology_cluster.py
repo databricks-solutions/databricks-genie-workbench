@@ -852,3 +852,163 @@ def test_rename_surfaced_caps_to_top_n_by_score():
     assert by_id[props[1].domain_id]["name"] == "Bravo"           # score 0.8 → renamed
     assert by_id[props[2].domain_id]["name"] == "anchor-charlie"  # 0.4 → deterministic
     assert by_id[props[3].domain_id]["name"] == "anchor-delta"    # 0.2 → deterministic
+
+
+# ── Stage 3.3 (MV-D96 §5.3): usage-weighted clustering ──────────────────────
+#
+# The STRUCTURAL join_key / co_query edge weights are scaled by a BOUNDED
+# endpoint-usage factor so a trafficked spine pulls harder than an incidental FK —
+# usage NUDGES the boundary, never dominates. Empty usage ⇒ byte-identical.
+
+
+def _usage_bridge_graph() -> dict:
+    """Two single-schema lineage blobs bridged by ONE co_query edge (weight 2.0), sitting
+    right at the coarse-Leiden tipping point: the incidental bridge alone leaves them two
+    Domains, but a bounded usage boost on the bridge endpoints pulls them into one."""
+    lineage = [("u.a.t1", "u.a.t2"), ("u.b.t3", "u.b.t4")]
+    coquery = [("u.a.t1", "u.b.t3", 2.0)]
+    return graph.build_signal_graph({"tags": []}, lineage, co_query_edges=coquery)
+
+
+def test_usage_shifts_a_boundary_and_empty_usage_is_byte_identical():
+    sig = _usage_bridge_graph()
+    base = cluster.cluster(sig, namer=lambda i, a, c: None)
+    empty = cluster.cluster(sig, namer=lambda i, a, c: None, usage={})
+    # Empty usage ⇒ factor exactly 1.0 ⇒ byte-identical partition (MV-D45).
+    assert [p.domain_id for p in empty] == [p.domain_id for p in base]
+    assert [p.members for p in empty] == [p.members for p in base]
+    # Baseline: the incidental bridge leaves two separate Domains, no sub-domains.
+    assert len([p for p in base if p.parent_id is None]) == 2
+    assert not any(p.parent_id is not None for p in base)
+
+    # A trafficked co-query bridge pulls the two blobs into ONE Domain (the boundary
+    # shifts); the merged Domain then splits back out by schema.
+    usage = {"u.a.t1": 1.0, "u.b.t3": 1.0}
+    hot = cluster.cluster(sig, namer=lambda i, a, c: None, usage=usage)
+    hot_tops = [p for p in hot if p.parent_id is None]
+    assert len(hot_tops) == 1
+    assert set(hot_tops[0].members) == {"u.a.t1", "u.a.t2", "u.b.t3", "u.b.t4"}
+    assert {p.evidence["reason"] for p in hot if p.parent_id is not None} == {"schema: u.a", "schema: u.b"}
+
+
+def test_usage_weighted_clustering_is_deterministic():
+    sig = _usage_bridge_graph()
+    usage = {"u.a.t1": 1.0, "u.b.t3": 1.0}
+    run1 = cluster.cluster(sig, namer=lambda i, a, c: None, usage=usage)
+    run2 = cluster.cluster(sig, namer=lambda i, a, c: None, usage=usage)
+    assert [p.domain_id for p in run1] == [p.domain_id for p in run2]
+    assert [p.members for p in run1] == [p.members for p in run2]
+
+
+# ── Stage 3.3 (MV-D96 §5.3): PageRank sub-domain hubs (slot (4) ONLY) ────────
+#
+# When rules (1)-(3) find NO explicit boundary and the FK/MV structural fallback (4)
+# produces ≥2 sub-groups, each is named/anchored by its top-PageRank hub over the
+# Domain's join_key+co_query subgraph. Membership is unchanged; igraph-unavailable or an
+# edgeless subgraph keeps today's FK/MV naming exactly; an explicit boundary always wins.
+
+
+def _fk_fallback_struct() -> dict:
+    """A single-schema (``c.d``) domain with TWO FK components: component A is a star
+    (``a1`` centre), component B a pair — so slot (4) fires and PageRank picks a
+    deterministic hub for each (the star centre; the smaller FQN on a tie)."""
+    return {
+        "lineage_adjacency": [], "semantic_sim": [], "co_query": [],
+        "join_key": [
+            ("c.d.a1", "c.d.a2", 1.0), ("c.d.a1", "c.d.a3", 1.0),  # A: a1 is the hub
+            ("c.d.b1", "c.d.b2", 1.0),                              # B: tie → smaller fqn
+        ],
+    }
+
+
+def test_pagerank_hub_names_each_fk_fallback_subgroup():
+    community = ["c.d.a1", "c.d.a2", "c.d.a3", "c.d.b1", "c.d.b2"]
+    subs = cluster._derive_subdomains(
+        community, domain_tag_key=None, struct=_fk_fallback_struct(),
+        tag_members={}, tag_values={}, mv_members={},
+    )
+    assert subs is not None
+    # MEMBERSHIP is the FK fallback's — only the naming/anchor changes.
+    assert {frozenset(m) for m, _, _, _ in subs} == {
+        frozenset({"c.d.a1", "c.d.a2", "c.d.a3"}), frozenset({"c.d.b1", "c.d.b2"})}
+    # Each sub-group is anchored on its top-PageRank hub (a1 = star centre; b1 = tie-break).
+    assert {r for _, r, _, _ in subs} == {"hub: c.d.a1", "hub: c.d.b1"}
+    # slot (4) sub-groups carry no governed-tag bind (never override a curated sub-domain).
+    assert all(bind is None and vbind is None for _, _, bind, vbind in subs)
+
+
+def test_pagerank_hub_names_each_mv_fallback_subgroup():
+    # No FK components (<2) but ≥2 MV source sets in one schema → slot (4) MV branch names
+    # each sub-group by its co_query PageRank hub (co_query IS part of the hub subgraph).
+    community = ["c.d.m1", "c.d.m2", "c.d.n1", "c.d.n2"]
+    struct = {
+        "lineage_adjacency": [], "semantic_sim": [], "join_key": [],
+        "co_query": [("c.d.m1", "c.d.m2", 1.0), ("c.d.n1", "c.d.n2", 1.0)],
+    }
+    mv_members = {"c.mv.rev": {"c.d.m1", "c.d.m2"}, "c.mv.ops": {"c.d.n1", "c.d.n2"}}
+    subs = cluster._derive_subdomains(
+        community, domain_tag_key=None, struct=struct,
+        tag_members={}, tag_values={}, mv_members=mv_members,
+    )
+    assert {r for _, r, _, _ in subs} == {"hub: c.d.m1", "hub: c.d.n1"}
+
+
+def test_domain_pageranks_spans_join_key_and_co_query_and_degrades_edgeless():
+    struct = {
+        "join_key": [("s.a.hub", "s.a.x", 1.0), ("s.a.hub", "s.a.y", 1.0)],
+        "co_query": [("s.a.hub", "s.a.z", 1.0)],  # co_query IS part of the hub subgraph
+        "lineage_adjacency": [], "semantic_sim": [],
+    }
+    ranks = cluster._domain_pageranks(["s.a.hub", "s.a.x", "s.a.y", "s.a.z"], struct)
+    assert ranks is not None
+    assert cluster._top_hub(["s.a.x", "s.a.y", "s.a.z", "s.a.hub"], ranks) == "s.a.hub"
+    # Only join_key/co_query form the subgraph — a lineage-only community is edgeless → None.
+    assert cluster._domain_pageranks(
+        ["p.q.r", "p.q.s"],
+        {"lineage_adjacency": [("p.q.r", "p.q.s", 1.0)], "join_key": [], "co_query": []},
+    ) is None
+
+
+def test_explicit_schema_boundary_wins_over_pagerank_hub():
+    # A domain spanning TWO schemas with two FK components: rule (3) schema boundary wins;
+    # slot (4)'s hub naming never runs.
+    comm = ["a.x.a1", "a.x.a2", "a.y.b1", "a.y.b2"]
+    struct = {
+        "lineage_adjacency": [], "semantic_sim": [], "co_query": [],
+        "join_key": [("a.x.a1", "a.x.a2", 1.0), ("a.y.b1", "a.y.b2", 1.0)],
+    }
+    subs = cluster._derive_subdomains(
+        comm, domain_tag_key=None, struct=struct, tag_members={}, tag_values={}, mv_members={})
+    assert {r for _, r, _, _ in subs} == {"schema: a.x", "schema: a.y"}
+    assert not any(r.startswith("hub: ") for _, r, _, _ in subs)
+
+
+def test_governed_slash_subtag_wins_over_pagerank_hub():
+    # A curated governed slash sub-tag (rule 1) is never overridden by slot (4) hub naming.
+    comm = ["c.d.a1", "c.d.a2", "c.d.a3", "c.d.b1", "c.d.b2"]
+    tag_members = {"Dom": set(comm), "Dom/Core": {"c.d.a1", "c.d.a2"}}
+    subs = cluster._derive_subdomains(
+        comm, domain_tag_key="Dom", struct=_fk_fallback_struct(),
+        tag_members=tag_members, tag_values={}, mv_members={})
+    assert {r for _, r, _, _ in subs} == {"sub-tag: Dom/Core"}  # rule (1) wins
+
+
+def test_pagerank_hub_degrades_to_fk_naming_when_igraph_unavailable(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def _no_igraph(name, *args, **kwargs):
+        if name == "igraph":
+            raise ImportError("igraph unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_igraph)
+    community = ["c.d.a1", "c.d.a2", "c.d.a3", "c.d.b1", "c.d.b2"]
+    subs = cluster._derive_subdomains(
+        community, domain_tag_key=None, struct=_fk_fallback_struct(),
+        tag_members={}, tag_values={}, mv_members={})
+    # Identical to today's FK output — the deterministic FK reason, no PageRank hub.
+    assert {r for _, r, _, _ in subs} == {"foreign-key component within domain"}
+    # Membership unchanged regardless of the naming path.
+    assert {frozenset(m) for m, _, _, _ in subs} == {
+        frozenset({"c.d.a1", "c.d.a2", "c.d.a3"}), frozenset({"c.d.b1", "c.d.b2"})}

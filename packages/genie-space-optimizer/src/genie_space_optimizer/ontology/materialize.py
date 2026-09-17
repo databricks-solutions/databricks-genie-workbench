@@ -757,9 +757,14 @@ def run_materialize(
         # MV-D67: cluster with DETERMINISTIC names (namer=None). The LLM namer is deferred
         # to `cluster.rename_surfaced` below, run only over gate-survivors — naming per raw
         # cluster (pre-gate) was the batch-timeout hog.
+        # Stage 3.3 (MV-D96 §5.3): read the L2 usage/demand signal ONCE here and thread it
+        # into BOTH clustering (a trafficked join/co-query spine pulls harder than an
+        # incidental FK — usage NUDGES the structural boundary, never dominates) and the L6
+        # RankSignals below. Empty (older reader / no signal) ⇒ byte-identical (MV-D43/D45).
+        usage = _gather_usage(reader, allowlist)
         proposals = cluster.cluster(
             signal_graph, identity=er_verdicts, namer=None, company=company,
-            facet_denylist=facet_denylist,
+            facet_denylist=facet_denylist, usage=usage,
         )
         expanded = build_domain_rows(
             proposals, metastore_id=metastore_id, workspace_id=workspace_id,
@@ -828,7 +833,7 @@ def run_materialize(
             if (seeds := [m for m in members if certification.get(m) == "certified"])
         }
         signals = rank.RankSignals(
-            usage=_gather_usage(reader, allowlist),
+            usage=usage,
             centrality=graph.pagerank_centrality(signal_graph),
             governance=_governance_map(graph_struct, certification),
             deprecated=frozenset(fqn for fqn, status in certification.items() if status == "deprecated"),
