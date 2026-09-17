@@ -11,6 +11,8 @@ import {
   layoutHash,
   layoutTree,
   moreSentinelId,
+  RADIUS_SIZE_MAX,
+  scaleRadius,
   spinePath,
   viewportContentRect,
   type Point,
@@ -516,5 +518,81 @@ describe("minimap + camera math (P1-a, R26)", () => {
     expect(100 * t.k + t.x).toBeCloseTo(400)
     expect(50 * t.k + t.y).toBeCloseTo(300)
     expect(t.k).toBe(2)
+  })
+})
+
+// ── Visual encoding: popularity → radius, join strength → CrossLink.weight (MV-D97 §6) ──
+describe("scaleRadius — popularity → radius (MV-D97 §6)", () => {
+  it("no size ⇒ base radius EXACTLY (degrade, MV-D43)", () => {
+    expect(scaleRadius(20, undefined)).toBe(20)
+    expect(scaleRadius(20, null)).toBe(20)
+  })
+
+  it("grows monotonically with size", () => {
+    const base = 10
+    expect(scaleRadius(base, 0.5)).toBeGreaterThan(base)
+    expect(scaleRadius(base, 2.0)).toBeGreaterThan(scaleRadius(base, 0.5))
+  })
+
+  it("is bounded — never exceeds RADIUS_SIZE_MAX×, clamps at the cap for a huge size", () => {
+    const base = 10
+    expect(scaleRadius(base, 1000)).toBeLessThanOrEqual(base * RADIUS_SIZE_MAX + 1e-9)
+    expect(scaleRadius(base, 1e6)).toBeCloseTo(base * RADIUS_SIZE_MAX, 6)
+  })
+
+  it("size 0 or negative ⇒ base radius (log floored)", () => {
+    expect(scaleRadius(10, 0)).toBe(10)
+    expect(scaleRadius(10, -5)).toBe(10)
+  })
+})
+
+describe("layoutTree — reads node size + threads edge weight (MV-D97 §6)", () => {
+  function sizedGraph(): OntologyGraph {
+    return {
+      root: node({ id: "org", label: "Org", kind: "org" }),
+      domains: { nodes: [node({ id: "d", label: "D", kind: "domain", origin: "applied" })], edges: [], truncated: false },
+      assets: {
+        nodes: [
+          node({ id: "big", label: "big", kind: "table", domain_id: "d", attach_level: "domain", origin: "applied", size: 2.0 }),
+          node({ id: "small", label: "small", kind: "table", domain_id: "d", attach_level: "domain", origin: "applied", size: 0.5 }),
+        ],
+        edges: [{ src: "big", dst: "small", kind: "join_key", weight: 7, verb: "shares key with", rel_class: "shared" }],
+        truncated: false,
+      },
+      layout: "tree",
+      node_count: 4,
+      edge_count: 1,
+      state: "fresh",
+      as_of: null,
+    }
+  }
+
+  it("lays out a popular node with a bigger radius than a quiet same-type node, bounded by the cap", () => {
+    const model = buildEstateModel(sizedGraph())
+    // Gating OFF (no assetsExpanded opt): an expanded domain reveals its direct assets.
+    const l = layoutTree(model, new Set(["org", "d"]), noOffsets)
+    const big = l.nodes.find((n) => n.id === "big")!
+    const small = l.nodes.find((n) => n.id === "small")!
+    const base = DEFAULT_LAYOUT.radius.table
+    expect(big.radius).toBeGreaterThan(small.radius)
+    expect(small.radius).toBeGreaterThan(base) // size 0.5 still reads a touch bigger than base
+    expect(big.radius).toBeLessThanOrEqual(base * RADIUS_SIZE_MAX + 1e-9)
+  })
+
+  it("threads the cross-edge weight onto the laid CrossLink (drives arc thickness)", () => {
+    const model = buildEstateModel(sizedGraph())
+    const l = layoutTree(model, new Set(["org", "d"]), noOffsets, DEFAULT_LAYOUT, { focusId: "big" })
+    const shared = l.crossLinks.find((c) => c.relClass === "shared")!
+    expect(shared).toBeDefined()
+    expect(shared.weight).toBe(7)
+  })
+
+  it("threads node meta (certified/deprecated flags) onto the laid node for the renderer", () => {
+    const g = sizedGraph()
+    g.assets.nodes.find((n) => n.id === "big")!.meta = { certified: "true" }
+    const model = buildEstateModel(g)
+    const l = layoutTree(model, new Set(["org", "d"]), noOffsets)
+    expect(l.nodes.find((n) => n.id === "big")!.meta).toEqual({ certified: "true" })
+    expect(l.nodes.find((n) => n.id === "small")!.meta).toBeNull()
   })
 })

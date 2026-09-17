@@ -977,6 +977,9 @@ def run_materialize(
         graph_row = layout.build_graph_snapshot(
             signal_graph, {**asset_domain, **agent_domain, **dashboard_domain}, node_scores=None, domain_meta=domain_meta,
             snippets_in=snippets_in,
+            # Stage-2 authority (MV-D94 → MV-D97, §6): stamp additive certified/deprecated meta
+            # onto matching asset nodes so the map can encode certification. Empty ⇒ byte-identical.
+            certification=certification,
             metastore_id=metastore_id, workspace_id=workspace_id, run_id=run_id, as_of=as_of,
         )
         writer.merge(ddl.TABLE_ONT_GRAPH_SNAPSHOT, [graph_row], GRAPH_SNAPSHOT_KEYS, metastore_id)

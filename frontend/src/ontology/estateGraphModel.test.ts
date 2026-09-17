@@ -482,3 +482,26 @@ describe("relTypeLegend — verb rows with live counts (R25)", () => {
     expect(rows.map((r) => r.verb)).toEqual(["joins calendar"])
   })
 })
+
+// ── Visual encoding threading: size → EstateNode.size, weight → EstateCrossEdge.weight (MV-D97 §6) ──
+describe("size + weight threading (MV-D97 §6)", () => {
+  it("threads OntologyGraphNode.size onto EstateNode (root, domain, asset)", () => {
+    const g = northstarGraph()
+    g.root!.size = 1.9
+    g.domains.nodes.find((n) => n.id === "d_fin")!.size = 1.8
+    g.assets.nodes.find((n) => n.id === "table:cal")!.size = 0.7
+    const m = buildEstateModel(g)
+    const byId = new Map(m.nodes.map((n) => [n.id, n]))
+    expect(m.root!.size).toBe(1.9)
+    expect(byId.get("d_fin")!.size).toBe(1.8)
+    expect(byId.get("table:cal")!.size).toBe(0.7)
+  })
+
+  it("threads OntologyGraphEdge.weight onto the cross-edge (null when absent)", () => {
+    const m = buildEstateModel(northstarGraph())
+    const shared = m.crossEdges.find((e) => e.verb === "joins calendar")!
+    const xdom = m.crossEdges.find((e) => e.verb === "also queried with")!
+    expect(shared.weight).toBe(2)
+    expect(xdom.weight).toBe(1)
+  })
+})

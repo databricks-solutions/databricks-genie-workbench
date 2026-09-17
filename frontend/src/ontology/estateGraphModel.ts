@@ -57,6 +57,14 @@ export interface EstateNode {
   kind: string
   memberCount: number | null
   cost: number | null
+  /**
+   * Popularity/importance scalar from the snapshot (MV-D97, §6) — the backend's
+   * `OntologyGraphNode.size` (clamped [0.5, 2.0], driven by the L6 rank score's 0.40 usage
+   * factor + cost). The layout scales the base per-type radius by a bounded log of it so a
+   * popular hub reads bigger. Optional so a synthetic node (the `+N more` chip) carries none
+   * and keeps the base radius exactly (MV-D43).
+   */
+  size?: number
   /** Total descendants in the full tree (the collapsed `+N` badge count). */
   descendantCount: number
   /**
@@ -78,6 +86,12 @@ export interface EstateCrossEdge {
   verb: string
   relClass: RelClass
   kind: string
+  /**
+   * Join/co-query strength from the snapshot (MV-D97, §6) — the backend
+   * `OntologyGraphEdge.weight` (co-query count / similarity cosine). The renderer scales the
+   * cross-link arc's stroke by a bounded log of it; absent ⇒ today's fixed stroke (MV-D43).
+   */
+  weight?: number | null
   /**
    * Compact optional evidence bag for the hover edge-tooltip (MV-D88, Lane E → MV-D87,
    * Lane P2): e.g. { "Shares": "customer_id, flight_id", "Co-queried": "42 sessions" }.
@@ -258,6 +272,7 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
     kind: "org",
     memberCount: graph.root?.member_count ?? null,
     cost: null,
+    size: graph.root?.size,
     descendantCount: 0,
     description: graph.root?.description ?? null,
     meta: graph.root?.meta ?? null,
@@ -289,6 +304,7 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
       kind: d.kind,
       memberCount: d.member_count ?? null,
       cost: d.cost ?? null,
+      size: d.size,
       descendantCount: 0,
       description: d.description ?? null,
       meta: d.meta ?? null,
@@ -336,6 +352,7 @@ export function buildEstateModel(graph: OntologyGraph, opts: BuildModelOpts = {}
       kind: a.kind,
       memberCount: a.member_count ?? null,
       cost: a.cost ?? null,
+      size: a.size,
       descendantCount: 0,
       description: a.description ?? null,
       meta: a.meta ?? null,
@@ -450,6 +467,7 @@ function buildCrossEdges(
       verb: verbForEdge(edge),
       relClass: classForEdge(edge, domainOfNode),
       kind: edge.kind,
+      weight: edge.weight ?? null,
       detail: edge.detail ?? null,
     })
   }

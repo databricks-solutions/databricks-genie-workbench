@@ -56,6 +56,14 @@ export interface GraphTokens {
   bandHigh: string
   bandMedium: string
   bandLow: string
+  /**
+   * Authority encoding (MV-D97, §6). `certifiedRing` — the green ring + check on a
+   * certified asset; `deprecatedInk` — the muted stroke/ink for a deprecated asset's
+   * de-emphasis (Catalog-Explorer restricted style). Both authored to clear WCAG AA
+   * (≥3:1 vs the ground) in BOTH themes (MV-D79).
+   */
+  certifiedRing: string
+  deprecatedInk: string
   /** Collapse `+N` badge. */
   badgeFill: string
   badgeText: string
@@ -109,6 +117,10 @@ const DARK: GraphTokens = {
   bandHigh: "#34D399",
   bandMedium: "#FBBF24",
   bandLow: "#94A3B8",
+  // Emerald on near-black ground ≈ 6:1 (AA graphical ≥3:1, MV-D79). Muted slate ink
+  // de-emphasizes a deprecated asset without vanishing.
+  certifiedRing: "#34D399",
+  deprecatedInk: "#64748B",
   badgeFill: "#0D1321",
   badgeText: "#F8FAFC",
   domainTint: DARK_DOMAIN_TINT,
@@ -160,6 +172,11 @@ const LIGHT: GraphTokens = {
   bandHigh: "#00A972",
   bandMedium: "#D97706",
   bandLow: "#8CA0A8",
+  // Deep emerald on the Oat ground ≈ 5:1 (the brand green #00A972 is only ~2.8:1 there,
+  // short of the 3:1 graphical bar — MV-D79 — so the ring uses a darker step). Muted
+  // taupe-slate ink de-emphasizes a deprecated asset.
+  certifiedRing: "#047857",
+  deprecatedInk: "#8CA0A8",
   badgeFill: "#1B3139",
   badgeText: "#F8FAFC",
   domainTint: LIGHT_DOMAIN_TINT,

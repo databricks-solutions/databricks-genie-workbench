@@ -92,6 +92,37 @@ export function moreSentinelId(parentId: string): string {
   return `${parentId}::more`
 }
 
+/**
+ * Popularity → radius (MV-D97, §6). Scales a base per-type radius by a BOUNDED log of the
+ * node's `size` (the L6 rank score's usage/cost popularity, clamped [0.5, 2.0] server-side)
+ * so a popular hub reads bigger WITHOUT blowing up into a hairball. Deterministic (fixed
+ * `k`), monotonic in `size`, and clamped to `RADIUS_SIZE_MAX`×. Degrade-clean (MV-D43): a
+ * node with no `size` (a synthetic chip, a pre-enrichment blob) keeps the base radius
+ * EXACTLY. A non-positive size is floored at 0 so `ln(1+size)` never goes negative/NaN.
+ */
+export const RADIUS_SIZE_K = 0.5
+export const RADIUS_SIZE_MAX = 1.6
+export function scaleRadius(base: number, size?: number | null): number {
+  if (size == null) return base
+  const s = Math.max(0, size)
+  const factor = Math.min(RADIUS_SIZE_MAX, 1 + RADIUS_SIZE_K * Math.log(1 + s))
+  return base * factor
+}
+
+/**
+ * Join strength → arc thickness (MV-D97, §6). Scales a cross-link's base per-class stroke by
+ * a BOUNDED log of its `weight` (co-query count / similarity), so a strongly-joined pair reads
+ * thicker without a thick tangle. Degrade-clean (MV-D43): a missing/non-positive weight ⇒
+ * today's fixed base stroke EXACTLY. Deterministic (fixed `k`, clamped `CROSS_WEIGHT_MAX`×).
+ * Lives here (not in the renderer) so it stays pure + unit-testable.
+ */
+export const CROSS_WEIGHT_K = 0.35
+export const CROSS_WEIGHT_MAX = 2.4
+export function crossStrokeWidth(base: number, weight?: number | null): number {
+  if (weight == null || weight <= 0) return base
+  return base * Math.min(CROSS_WEIGHT_MAX, 1 + CROSS_WEIGHT_K * Math.log(1 + weight))
+}
+
 const EMPTY_SET: ReadonlySet<string> = new Set<string>()
 
 export interface LaidNode {
@@ -108,6 +139,12 @@ export interface LaidNode {
   parentId: string | null
   kind: string
   radius: number
+  /**
+   * Compact key/value bag from the snapshot (MV-D86 + MV-D97) — carries the additive
+   * `certified`/`deprecated` authority flags the renderer reads. Optional/absent on a
+   * synthetic node (the `+N more` chip) or a pre-enrichment blob (degrade → plain node).
+   */
+  meta?: Record<string, string> | null
   /** True when this node has children that are currently collapsed. */
   collapsed: boolean
   /** Descendant count for the `+N` badge (0 when expanded / leaf). */
@@ -140,6 +177,11 @@ export interface CrossLink {
   path: string
   /** Midpoint of the arc — where the verb plate sits. */
   labelAt: Point
+  /**
+   * Join/co-query strength (MV-D97, §6) — the renderer scales the arc stroke by a bounded
+   * log of it; null/absent ⇒ the fixed per-class stroke (MV-D43).
+   */
+  weight?: number | null
   /**
    * Whether to draw the verb plate. Only the focused node's arcs are labelled (R4) so
    * realistic scale never paints a red verb-label cloud.
@@ -441,7 +483,8 @@ export function layoutTree(
       domainId: node.domainId,
       parentId: node.parentId,
       kind: node.kind,
-      radius: cfg.radius[node.type] ?? 10,
+      radius: scaleRadius(cfg.radius[node.type] ?? 10, node.size),
+      meta: node.meta ?? null,
       collapsed: badge > 0,
       badge,
       memberCount: node.memberCount,
@@ -497,6 +540,7 @@ export function layoutTree(
       path,
       labelAt: mid,
       showLabel: false,
+      weight: e.weight ?? null,
       detail: e.detail ?? null,
     })
   }

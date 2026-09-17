@@ -49,6 +49,7 @@ import {
   collapsedToDomainTier,
   contentBounds,
   crossPath,
+  crossStrokeWidth,
   initialExpanded,
   layoutHash,
   layoutTree,
@@ -142,6 +143,11 @@ const LABEL_MAX = 16
 const LABEL_MAX_CONTAINER = 24
 function clampLabel(s: string, max: number = LABEL_MAX): string {
   return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s
+}
+
+/** True when the node's additive authority meta flag (MV-D97, §6) is set. */
+function metaFlag(meta: Record<string, string> | null | undefined, key: string): boolean {
+  return meta?.[key] === "true"
 }
 
 /** Generic plain-language copy by type — the fallback when a node has no real description. */
@@ -1347,6 +1353,17 @@ export function EstateGraph({
                     <path d="M0,0 L10,5 L0,10 z" fill={m.color} />
                   </marker>
                 ))}
+                {/* Deprecated de-emphasis (MV-D97, §6) — a muted diagonal hatch over a
+                    deprecated asset's disc (Catalog-Explorer restricted style). */}
+                <pattern
+                  id="ont-deprecated-hatch"
+                  width="6"
+                  height="6"
+                  patternUnits="userSpaceOnUse"
+                  patternTransform="rotate(45)"
+                >
+                  <line x1="0" y1="0" x2="0" y2="6" stroke={tokens.deprecatedInk} strokeWidth="1.4" strokeOpacity="0.6" />
+                </pattern>
               </defs>
               <rect
                 x="0"
@@ -1419,7 +1436,7 @@ export function EstateGraph({
                           d={c.path}
                           fill="none"
                           stroke={stroke}
-                          strokeWidth={c.relClass === "xdom" ? 1.4 : 1}
+                          strokeWidth={crossStrokeWidth(c.relClass === "xdom" ? 1.4 : 1, c.weight)}
                           strokeDasharray="4 3"
                           strokeOpacity={c.showLabel ? 0.9 : 0.6}
                           markerEnd={marker}
@@ -1576,12 +1593,19 @@ export function EstateGraph({
                             ? tint
                             : tokens.nodeStroke
                     const fade = dimmed(n.type)
+                    // Authority encoding (MV-D97, §6) — additive, read-only, degrade-clean: a
+                    // certified asset gets a green ring + check; a deprecated one is muted +
+                    // hatched (Catalog-Explorer restricted style). No flag ⇒ a plain node.
+                    const certified = metaFlag(n.meta, "certified")
+                    const deprecated = metaFlag(n.meta, "deprecated")
                     return (
                       <g
                         key={n.id}
                         data-node-id={n.id}
+                        data-certified={certified ? "true" : undefined}
+                        data-deprecated={deprecated ? "true" : undefined}
                         transform={`translate(${n.x},${n.y})`}
-                        opacity={fade ? 0.2 : 1}
+                        opacity={fade ? 0.2 : deprecated ? 0.55 : 1}
                         style={{ cursor: "pointer" }}
                         tabIndex={0}
                         role="treeitem"
@@ -1612,6 +1636,28 @@ export function EstateGraph({
                           strokeWidth={selectedId === n.id || searchHits.has(n.id) ? 2.5 : isContainer ? 2 : 1.25}
                           strokeOpacity={selectedId === n.id || searchHits.has(n.id) ? 1 : isContainer ? tokens.ringOpacity : 1}
                         />
+                        {/* Deprecated (MV-D97, §6): a muted diagonal hatch over the disc +
+                            a dashed muted ring — the whole node is also dimmed via the group
+                            opacity above. Reads as "restricted / don't build here". */}
+                        {deprecated && (
+                          <circle
+                            r={n.radius}
+                            fill="url(#ont-deprecated-hatch)"
+                            stroke={tokens.deprecatedInk}
+                            strokeWidth={1.25}
+                            strokeDasharray="3 2"
+                          />
+                        )}
+                        {/* Certified (MV-D97, §6): a green authority ring just outside the disc.
+                            The check glyph rides a small badge below (see the certified badge). */}
+                        {certified && (
+                          <circle
+                            r={n.radius + 3.5}
+                            fill="none"
+                            stroke={tokens.certifiedRing}
+                            strokeWidth={2}
+                          />
+                        )}
                         {/* De-chrome containers (§5/R23): org/domain/subdomain carry NO glyph —
                             their identity is fill + ring + size — so sub-areas never read as a
                             "hamburger menu". Leaf assets keep their type glyph (R11). */}
@@ -1643,6 +1689,21 @@ export function EstateGraph({
                           </text>
                         </g>
                         <title>{n.label}</title>
+                        {/* Certified check badge (MV-D97, §6) — top-left so it never collides
+                            with the top-right +N collapse badge. */}
+                        {certified && (
+                          <g data-certified-badge transform={`translate(${-n.radius * 0.72},${-n.radius * 0.72})`}>
+                            <circle r={7} fill={tokens.plateBg} fillOpacity={tokens.plateOpacity} stroke={tokens.certifiedRing} strokeWidth={1.2} />
+                            <path
+                              d="M-3,0 L-1,2.2 L3.2,-2.6"
+                              fill="none"
+                              stroke={tokens.certifiedRing}
+                              strokeWidth={1.7}
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </g>
+                        )}
                         {/* Collapse +N badge */}
                         {n.collapsed && n.badge > 0 && (
                           <g transform={`translate(${n.radius * 0.7},${-n.radius * 0.7})`}>

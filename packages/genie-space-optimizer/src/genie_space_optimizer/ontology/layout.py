@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -259,6 +260,7 @@ def build_graph_snapshot(
     *,
     domain_meta: dict[str, dict[str, Any]] | None = None,
     snippets_in: dict[str, Any] | None = None,
+    certification: Mapping[str, str] | None = None,
     metastore_id: str,
     workspace_id: str,
     run_id: str,
@@ -294,6 +296,12 @@ def build_graph_snapshot(
       "pages": {domain_id → [{page_id,title,archetype,domain_id}]}}``. Measures re-key to
       the ``mv:<fqn>`` hub node id, pages key to the sub-domain rollup ``domain_id``; both
       are capped per parent. Absent → the ``snippets`` blob key is omitted (byte-stable).
+    - ``certification``: Optional Stage-2 (MV-D94) authority map ``{fqn → "certified" |
+      "deprecated"}``. When an asset node's bare FQN maps to a status, an additive
+      ``meta["certified"]="true"`` / ``meta["deprecated"]="true"`` flag is stamped so the map
+      can encode certification (green ring) / deprecation (muted) — MV-D97, §6. Reveal-don't-
+      invent: an unmatched FQN and an absent/empty map stamp nothing, so the snapshot is
+      BYTE-IDENTICAL to today (MV-D45/D82). Never demotes or drops a node.
     - ``metastore_id``: The storage grain (MV-D49).
     - ``workspace_id``: Provenance (which install ran this).
     - ``run_id``: FK to genie_ont_runs.run_id.
@@ -311,6 +319,7 @@ def build_graph_snapshot(
     node_domain_id = node_domain_id or {}
     node_scores = node_scores or {}
     domain_meta = domain_meta or {}
+    certification = certification or {}
 
     nodes = signal_graph.get("nodes", [])
     edges = signal_graph.get("edges", [])
@@ -449,6 +458,14 @@ def build_graph_snapshot(
             if n_measures and not (meta or {}).get("measures"):
                 meta = {**(meta or {}), "measures": str(n_measures)}
             meta = meta or None
+
+        # Stage-2 authority (MV-D94 → MV-D97, §6): stamp an additive ``certified``/``deprecated``
+        # flag on the asset's meta when its FQN carries a status. Reveal-don't-invent — an
+        # unmatched FQN and an empty map stamp NOTHING, so the snapshot stays byte-identical
+        # (MV-D45/D82). Never demotes or drops the node.
+        status = certification.get(_fqn_of(node_id)) or certification.get(node_id)
+        if status in ("certified", "deprecated"):
+            meta = {**(meta or {}), status: "true"}
 
         asset_nodes.append({
             "id": node_id,

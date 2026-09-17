@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
+import { graphTokens } from "@/ontology/graphTokens"
+import { crossStrokeWidth, CROSS_WEIGHT_MAX } from "@/ontology/ontologyTreeLayout"
 import { EstateGraph } from "./EstateGraph"
 
 function node(p: Partial<OntologyGraphNode> & { id: string }): OntologyGraphNode {
@@ -318,5 +320,71 @@ describe("EstateGraph — palette follows the applied theme (useTheme reactivity
     const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
     expect(html).toContain(LIGHT_DOMAIN_FILL)
     expect(html).not.toContain(DARK_DOMAIN_FILL)
+  })
+})
+
+// ── MV-D97 §6 — authority visual encoding (certification ring, deprecated muted, arc thickness) ──
+describe("EstateGraph — certification ring + deprecated de-emphasis (MV-D97 §6)", () => {
+  function withAsset(meta?: Record<string, string> | null): OntologyGraph {
+    return {
+      root: node({ id: "org", label: "Acme", kind: "org" }),
+      domains: {
+        nodes: [node({ id: "d_fin", label: "Finance", kind: "domain", origin: "applied" })],
+        edges: [],
+        truncated: false,
+      },
+      assets: {
+        nodes: [node({ id: "t:gold", label: "gold_table", kind: "table", domain_id: "d_fin", attach_level: "domain", origin: "applied", meta })],
+        edges: [],
+        truncated: false,
+      },
+      layout: "tree",
+      node_count: 3,
+      edge_count: 0,
+      state: "fresh",
+    }
+  }
+
+  it("draws the green certified ring + check badge iff meta.certified (else a plain node)", () => {
+    const certified = renderToStaticMarkup(<EstateGraph graph={withAsset({ certified: "true" })} initialExpandAll />)
+    expect(certified).toContain('data-certified="true"')
+    expect(certified).toContain("data-certified-badge")
+    // The ring uses the resolved-theme certified token (light or dark — both clear AA, MV-D79).
+    const ringPresent =
+      certified.includes(graphTokens("light").certifiedRing) ||
+      certified.includes(graphTokens("dark").certifiedRing)
+    expect(ringPresent).toBe(true)
+    // A plain asset (no meta) carries neither the flag nor the badge.
+    const plain = renderToStaticMarkup(<EstateGraph graph={withAsset(null)} initialExpandAll />)
+    expect(plain).not.toContain('data-certified="true"')
+    expect(plain).not.toContain("data-certified-badge")
+  })
+
+  it("applies the muted hatch de-emphasis iff meta.deprecated (else a plain node)", () => {
+    const deprecated = renderToStaticMarkup(<EstateGraph graph={withAsset({ deprecated: "true" })} initialExpandAll />)
+    expect(deprecated).toContain('data-deprecated="true"')
+    expect(deprecated).toContain("url(#ont-deprecated-hatch)")
+    const plain = renderToStaticMarkup(<EstateGraph graph={withAsset(null)} initialExpandAll />)
+    expect(plain).not.toContain('data-deprecated="true"')
+  })
+
+  it("defines the deprecated hatch pattern in defs", () => {
+    const html = renderToStaticMarkup(<EstateGraph graph={withAsset(null)} />)
+    expect(html).toContain('id="ont-deprecated-hatch"')
+  })
+})
+
+describe("crossStrokeWidth — join strength → arc thickness (MV-D97 §6)", () => {
+  it("missing/non-positive weight ⇒ the fixed base stroke exactly (degrade, MV-D43)", () => {
+    expect(crossStrokeWidth(1, undefined)).toBe(1)
+    expect(crossStrokeWidth(1, null)).toBe(1)
+    expect(crossStrokeWidth(1.4, 0)).toBe(1.4)
+    expect(crossStrokeWidth(1, -3)).toBe(1)
+  })
+
+  it("grows with weight and is bounded by CROSS_WEIGHT_MAX×", () => {
+    expect(crossStrokeWidth(1, 5)).toBeGreaterThan(1)
+    expect(crossStrokeWidth(1, 50)).toBeGreaterThan(crossStrokeWidth(1, 5))
+    expect(crossStrokeWidth(1, 1e6)).toBeLessThanOrEqual(CROSS_WEIGHT_MAX + 1e-9)
   })
 })

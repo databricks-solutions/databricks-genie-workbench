@@ -112,13 +112,17 @@ def test_tag_value_threads_onto_assignment_edge_additively():
 
 # --- L7 estate-graph rollup: prefix key fix + hierarchy enrichment (MV-D71) ---
 
-def _snap(signal_graph, node_domain_id, domain_meta=None, snippets_in=None):
+def _snap(signal_graph, node_domain_id, domain_meta=None, snippets_in=None, certification=None):
+    return json.loads(_snap_row(signal_graph, node_domain_id, domain_meta, snippets_in, certification)["graph"])
+
+
+def _snap_row(signal_graph, node_domain_id, domain_meta=None, snippets_in=None, certification=None):
     pytest.importorskip("igraph")
-    row = layout.build_graph_snapshot(
+    return layout.build_graph_snapshot(
         signal_graph, node_domain_id, domain_meta=domain_meta, snippets_in=snippets_in,
+        certification=certification,
         metastore_id="m", workspace_id="w", run_id="r", as_of="2026-01-01T00:00:00+00:00",
     )
-    return json.loads(row["graph"])
 
 
 def test_prefixed_asset_nodes_colored_by_bare_fqn_map():
@@ -648,6 +652,45 @@ def test_meta_bag_carries_type_appropriate_keys_and_omits_absent():
     assert "freshness" not in mv["meta"]
     assert a["agent:sales"]["meta"] == {"queries_28d": "128"}  # sample_questions omitted
     assert a["asset:c.plain.tbl"]["meta"] is None  # no signals at all
+
+
+# --- MV-D97 §6: certification → additive meta.certified/deprecated (thin producer hop) ---
+
+def test_certification_stamps_certified_and_deprecated_meta_on_matching_assets():
+    """MV-D97 §6: an asset whose bare FQN is ``certified``/``deprecated`` in the Stage-2 map
+    gets an additive ``meta["certified"]``/``["deprecated"]="true"`` flag; the flag rides the
+    existing meta bag (a node without prior meta gets a flag-only bag). Reveal-don't-invent —
+    an unmatched FQN is left untouched."""
+    sig = {"nodes": [
+        {"id": "asset:c.rev.gold", "kind": "table", "row_count": 100},  # certified + prior meta
+        {"id": "asset:c.rev.raw", "kind": "table"},                     # deprecated, no prior meta
+        {"id": "asset:c.rev.plain", "kind": "table"},                   # unmatched → untouched
+    ], "edges": []}
+    blob = _snap(
+        sig, {"c.rev.gold": "d1", "c.rev.raw": "d1", "c.rev.plain": "d1"},
+        domain_meta={"d1": {"name": "Revenue", "parent_id": None}},
+        certification={"c.rev.gold": "certified", "c.rev.raw": "deprecated"},
+    )
+    a = _assets_by_id(blob)
+    assert a["asset:c.rev.gold"]["meta"]["certified"] == "true"
+    assert a["asset:c.rev.gold"]["meta"]["rows"] == "100"  # additive — rides the existing bag
+    assert "deprecated" not in a["asset:c.rev.gold"]["meta"]
+    assert a["asset:c.rev.raw"]["meta"] == {"deprecated": "true"}  # flag-only bag (no prior meta)
+    assert a["asset:c.rev.plain"]["meta"] is None  # unmatched → untouched
+
+
+def test_certification_none_and_unmatched_are_byte_identical():
+    """MV-D97 §6 guardrail (MV-D45/D82): ``certification=None`` AND a map with only unmatched
+    FQNs each yield a graph blob byte-identical to the no-certification call."""
+    sig = {"nodes": [{"id": "asset:c.rev.fact", "kind": "table", "row_count": 5},
+                     {"id": "asset:c.rev.dim", "kind": "table"}], "edges": []}
+    dom = {"c.rev.fact": "d1", "c.rev.dim": "d1"}
+    dm = {"d1": {"name": "Revenue", "parent_id": None}}
+    base = _snap_row(sig, dom, domain_meta=dm)["graph"]
+    none_map = _snap_row(sig, dom, domain_meta=dm, certification=None)["graph"]
+    unmatched = _snap_row(sig, dom, domain_meta=dm, certification={"c.not.here": "certified"})["graph"]
+    assert none_map == base
+    assert unmatched == base
 
 
 def test_containment_depth_reaches_agent_metric_view_table():
