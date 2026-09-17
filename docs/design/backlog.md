@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-15**, post Stage B deploy-verify + web_search parser fix). This is the sequencing
+branch `ontology` (**2026-09-17**, post P1 harness + P6 Signal Authority Stages 1–4 deploy-verify). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -88,19 +88,19 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      live in the snapshot (`detail.columns`, e.g. `aircraft_id`) and render inline in the
      inspector. Committed on `ontology` (`67ad4cff`).
 
-### P1 — Quality scoreboard (gates all later tuning)
-3. **§10 Evaluation & trust harness (MV-D59)** · ⚙️ SCORER BUILT-OFFLINE · GATE DRAFTED
+### P1 — Quality scoreboard (gates all later tuning) · ✅ DONE (deploy-verified)
+3. **§10 Evaluation & trust harness (MV-D59)** · ✅ BUILT + deploy-verified (`8c6af04e`)
    - **Scorer — BUILT** (`7120a6df`, 28 tests): `ontology/eval_harness.py`
      (`assemble_eval_report` + `compare_reports`). Driver of record
-     `ontology-eval-harness-driver.md`. **Gap: INERT** — nothing reads a materialized run
-     into it, so it can't gate yet.
-   - **DRAFTED — the wiring & gate** · `ontology-eval-harness-gate-driver.md`: read-only
-     reader (`genie_ont_domains`/`genie_ont_members` → scorer shape), a runnable
+     `ontology-eval-harness-driver.md`.
+   - **Wiring & gate — BUILT + deploy-verified** (`8c6af04e`): read-only reader
+     (`genie_ont_domains`/`genie_ont_members` → scorer shape), runnable
      `jobs/run_ontology_eval.py` (report JSON, no new table — MV-D49), baseline-vs-current
-     gating, optional airline gold reference. Wheel-only, additive, no new dep. **Build-ready.**
-   - **Why here:** MV-D59 gates every subsequent signal/threshold change, so it must be
-     runnable before further tuning, Phase-4 alignment, and **P6**.
-   - **Next action:** run the gate driver → human baseline-capture at the deploy gate.
+     gating, `genie_ont_eval` results, optional industry gold reference. Wheel-only, additive,
+     no new dep. The gate is **LIVE** — every P6 Signal Authority stage recorded its
+     before/after on it.
+   - **Done:** the harness reads materialized runs and gates real changes (it caught the
+     Stage-1 junk-surfacing regression, precision 1.00→0.426, forcing the rank-only fix).
 
 ### P2 — The one write path — **THE VALUE-UNLOCK**
 4. **Phase 5 / 17i — consented `SET TAG` apply (L9)** · 🟡 OFFLINE SLICE BUILT · live apply human-gated
@@ -165,17 +165,30 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      changelog / PR. **Next action:** draft `ontology-17j-hardening-{build,driver}.md`; run
      after 17i lands (rollback needs the `genie_ont_applied` audit rows).
 
-### P6 — Signal authority (OntoRank-style) — **build LAST, gated on P1**
-8. **Ontology Signal Authority (MV-D93–D97)** · 📝 DRAFTED (build spec exists; driver pending)
-   - `ontology-signal-authority-build.md`: wire `system.query.history`+`table_lineage`
-     popularity into the reserved `usage×centrality×governance` blend; feed
-     `system.certification_status` into the authority rung (+ `deprecated` firewall); upgrade
-     degree→`igraph` PageRank + certified-seeded assignment + usage-weighted clustering;
-     encode popularity=size / certified=ring on the map. Additive/read-only; reuses
-     GenieWatch SP plumbing + the `igraph` already lazy in `cluster.py` (no new dep).
-   - **HARD GATE (MV-D59):** changes signals + thresholds → **must land after P1**.
-   - **Next action:** write `ontology-signal-authority-driver.md`, then build Stage 1 once
-     the harness exists.
+### P6 — Signal authority (OntoRank-style) · ✅ BUILT + deploy-verified (Stages 1–4)
+8. **Ontology Signal Authority (MV-D93–D97)** · ✅ BUILT + deploy-verified on tbzqg7
+   - `ontology-signal-authority-build.md`: wired `system.query.history`+`table_lineage`
+     popularity into the reserved `usage×centrality×governance` blend; fed certification into
+     the authority rung (+ `deprecated` firewall); upgraded degree→`igraph` PageRank +
+     certified-seeded assignment + usage-weighted clustering; encoded popularity=size /
+     certified=ring on the map. Additive/read-only; reused GenieWatch SP plumbing + the
+     `igraph` already lazy in `cluster.py` (no new dep). Each stage recorded before/after on
+     the P1 harness (MV-D59).
+   - **Stage 1** (popularity, MV-D94) + curated-groundtruth harness refinement — ✅ deploy-verified
+     (precision 1.00 / F1 0.872, run `543453527733713`). Drivers `…-stage1{,b}-driver.md`,
+     `ontology-eval-curated-groundtruth-driver.md`.
+   - **Stage 2** (certification authority + `deprecated` firewall, MV-D95) — ✅ deploy-verified
+     (`aaba5214`, tbzqg7 run `471095489310894`). Driver `…-stage2-driver.md`.
+   - **Stage 3** (MV-D96) — ✅ deploy-verified, three sub-parts: **3a** PageRank centrality
+     (`09491fbd`, run `938908355620342`), **3b** certified-seeded PPR assignment (`6c5ce11e`,
+     run `898722223308820`), **3c** usage-weighted clustering + PageRank sub-domain hubs
+     (`612d1047`, run `441962027551109`). Drivers `…-stage3{,b,c}-driver.md`.
+   - **Stage 4** (visual encoding: popularity=size, certification=ring, MV-D97) — ✅ deploy-verified
+     (`49afccf4`, run `742471949652671`; 17 certified rings live, harness flat). Driver `…-stage4-driver.md`.
+   - **Stage 4b** (thread PageRank centrality → `node_scores` → size) — 📝 DRAFTED + building
+     (`9a7980c5`): backend-only follow-on — Stage 4 confirmed asset `size` renders uniform because
+     `materialize` passes `node_scores=None`; 4b re-keys the already-computed `pagerank_centrality`
+     into `node_scores` so hubs read bigger. Driver `…-stage4b-driver.md`. Harness-gated.
 
 ---
 
@@ -220,11 +233,9 @@ for true-enterprise estates, neither yet scheduled:
 ## Suggested execution order
 
 Batch engine + Ontology Map are **done**, the **P0 map-interaction/#4 pass is
-deploy-verified + committed** (`67ad4cff`), and **Phase 4 Stage B is now deploy-verified**
-(`69bf9ec6`) — the external Context Pack resolves live and is DEFAULT-OFF-safe. **Next: (P2)
+deploy-verified + committed** (`67ad4cff`), **Phase 4 Stage B is deploy-verified** (`69bf9ec6`),
+**P1 (the §10 harness, MV-D59) is LIVE + deploy-verified** (`8c6af04e`), and **P6 (Signal
+Authority, MV-D93–D97) is fully deploy-verified** (Stages 1–4; Stage 4b in flight). **Next: (P2)
 Phase 5 apply** — the value-unlock that closes the curator loop (its offline slice already
-landed). Stand up **(P1) the §10 harness** before any further signal/threshold tuning so
-quality stops regressing silently. Then **P3** (curator Draft-with-AI Steps 3–4), the rest of
-**P4** (Stage C + §9 alignment), **P5** (hardening). **P6 (Signal Authority) is the last
-ontology build** — it needs the P1 harness as its scoreboard. **Track A** can run in parallel
-by anyone off the ontology branch.
+landed). Then **P3** (curator Draft-with-AI Steps 3–4), the rest of **P4** (Stage C + §9
+alignment), **P5** (hardening). **Track A** can run in parallel by anyone off the ontology branch.
