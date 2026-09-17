@@ -185,10 +185,13 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      (`612d1047`, run `441962027551109`). Drivers `…-stage3{,b,c}-driver.md`.
    - **Stage 4** (visual encoding: popularity=size, certification=ring, MV-D97) — ✅ deploy-verified
      (`49afccf4`, run `742471949652671`; 17 certified rings live, harness flat). Driver `…-stage4-driver.md`.
-   - **Stage 4b** (thread PageRank centrality → `node_scores` → size) — 📝 DRAFTED + building
-     (`9a7980c5`): backend-only follow-on — Stage 4 confirmed asset `size` renders uniform because
-     `materialize` passes `node_scores=None`; 4b re-keys the already-computed `pagerank_centrality`
-     into `node_scores` so hubs read bigger. Driver `…-stage4b-driver.md`. Harness-gated.
+   - **Stage 4b** (thread PageRank centrality → `node_scores` → size) — ✅ deploy-verified
+     (`b2da7c2b`, tbzqg7 run `1076509192463517`): backend-only follow-on — Stage 4 confirmed asset
+     `size` rendered uniform because `materialize` passed `node_scores=None`; 4b computes
+     `pagerank_centrality` once and re-keys it into `node_scores` (`asset:<fqn>`) so hubs read bigger.
+     Live: asset `size` distinct **1→5** (FK-spine hubs `format` 1.5 / `location` 1.38 at the top;
+     127 leaves stay 1.0 — the `max(1.0, 0.5+score)` curve only lifts centrality > 0.5), harness
+     **flat** (P1.00/R0.923/F0.96). Driver `…-stage4b-driver.md`. Signal Authority arc COMPLETE.
 
 ---
 
