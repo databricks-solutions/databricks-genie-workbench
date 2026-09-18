@@ -100,3 +100,64 @@ async def execute_apply(req: models.ApplyExecuteRequest, request: Request) -> di
         # Degrade-not-hang: return empty result.
         empty_result = models.ApplyResult(as_of="")
         return empty_result.model_dump(mode="json")
+
+
+@router.post("/apply/undo-preview")
+async def undo_preview_apply(req: models.ApplyUndoRequest) -> dict:
+    """Dry-run undo: build the inverse plan for the applied memberships of ``proposal_ids``.
+    Writes nothing (reads the applied audit trail, MV-D49). Reuses ApplyUndoRequest; only
+    ``proposal_ids`` is read here (``plan_hash`` / ``confirm`` are for the /undo gate)."""
+    try:
+        metastore_id = ont_settings._metastore_id()
+        plan = await apply_service.build_undo_plan(metastore_id, req.proposal_ids or [])
+        return plan.model_dump(mode="json")
+    except Exception as e:
+        logger.exception("undo_preview_apply failed: %s", e)
+        # Degrade-not-hang: return empty plan.
+        empty_plan = models.ApplyPlan(
+            items=[],
+            executable_count=0,
+            blocked_count=0,
+            plan_hash="",
+            source="cold",
+            as_of="",
+        )
+        return empty_plan.model_dump(mode="json")
+
+
+@router.post("/apply/undo")
+async def undo_apply(req: models.ApplyUndoRequest, request: Request) -> dict:
+    """Execute the consented undo: run the inverse statements under OBO, append undo audit
+    rows, re-flip consent applied→approved. plan_hash + confirm=true gate (mirrors execute).
+    Per-statement fail-soft; a blocked inverse degrades to copy-ready, never a 500."""
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="confirm must be true")
+
+    try:
+        metastore_id = ont_settings._metastore_id()
+        workspace_id = ont_settings._workspace_id()
+        applied_by = _obo_email(request)
+
+        # Rebuild the inverse plan to verify plan_hash (consent gate).
+        plan = await apply_service.build_undo_plan(metastore_id, req.proposal_ids or [])
+        if plan.plan_hash != req.plan_hash:
+            raise HTTPException(
+                status_code=409,
+                detail=f"plan_hash mismatch: expected {req.plan_hash}, got {plan.plan_hash}",
+            )
+
+        result = await apply_service.execute_undo_plan(
+            plan=plan,
+            metastore_id=metastore_id,
+            workspace_id=workspace_id,
+            applied_by=applied_by,
+        )
+        return result.model_dump(mode="json")
+    except HTTPException:
+        # The consent gate (409 plan_hash mismatch) must surface, not degrade.
+        raise
+    except Exception as e:
+        logger.exception("undo_apply failed: %s", e)
+        # Degrade-not-hang: return empty result.
+        empty_result = models.ApplyResult(as_of="")
+        return empty_result.model_dump(mode="json")

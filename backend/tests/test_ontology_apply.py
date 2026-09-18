@@ -531,3 +531,369 @@ def test_consent_flip_binds_values_and_in_list(monkeypatch):
     by_name = {p.name: p.value for p in captured["params"]}
     assert by_name["metastore_id"] == "ms1"
     assert sorted([by_name["pid0"], by_name["pid1"]]) == ["a", "b"]
+
+
+# ══ Phase 5 (17j): UNDO ════════════════════════════════════════════════════════
+# The inverse of a recorded genie_ont_applied membership row. Offline-testable: the
+# inverse-statement table, create_tag exclusion + note, the unset pre-value capture
+# (BUILD A), the no-op guard, the SP consent re-flip, and the new-append audit model.
+
+
+def _patch_applied(monkeypatch, rows):
+    """Stub the applied-audit reader the undo plan builder consumes."""
+
+    async def _applied(_ms, _ids):
+        return list(rows)
+
+    monkeypatch.setattr(mirror, "read_applied_memberships", _applied)
+
+
+def _applied_row(**over):
+    row = {
+        "proposal_kind": "domain",
+        "proposal_id": "sug_a",
+        "shape": "set_tag",
+        "statement": "SET TAG ON TABLE `c`.`s`.`t` `biz` = `Rev`",
+        "target_fqn": "c.s.t",
+        "tag_key": "biz",
+        "tag_value": "Rev",
+        "prev_value": None,
+    }
+    row.update(over)
+    return row
+
+
+# ── §2 inverse-statement table ────────────────────────────────────────────────
+
+
+async def test_undo_inverse_statement_table(monkeypatch):
+    _patch_applied(
+        monkeypatch,
+        [
+            # set_tag + prev NULL (an add) → UNSET
+            _applied_row(
+                shape="set_tag", target_fqn="c.s.orders", tag_key="biz", tag_value="Rev",
+                prev_value=None, statement="SET TAG ON TABLE `c`.`s`.`orders` `biz` = `Rev`",
+            ),
+            # set_tag + prev <old> (a move) → SET = `<old>` (securable keyword recovered = VIEW)
+            _applied_row(
+                shape="set_tag", target_fqn="c.s.v", tag_key="biz", tag_value="Rev",
+                prev_value="Legacy", statement="SET TAG ON VIEW `c`.`s`.`v` `biz` = `Rev`",
+            ),
+            # unset_tag + prev <old> → SET = `<old>`
+            _applied_row(
+                shape="unset_tag", target_fqn="c.s.t", tag_key="legacy", tag_value=None,
+                prev_value="OldVal", statement="UNSET TAG ON TABLE `c`.`s`.`t` `legacy`",
+            ),
+        ],
+    )
+    plan = await apply_service.build_undo_plan("ms1", ["sug_a"])
+    stmts = _statements(plan)
+    assert "UNSET TAG ON TABLE `c`.`s`.`orders` `biz`" in stmts       # add → remove
+    assert "SET TAG ON VIEW `c`.`s`.`v` `biz` = `Legacy`" in stmts     # move → restore (VIEW kw)
+    assert "SET TAG ON TABLE `c`.`s`.`t` `legacy` = `OldVal`" in stmts # unset → re-add
+    assert plan.source == "mirror"
+
+
+async def test_undo_inverse_escapes_restored_identifier(monkeypatch):
+    # The restored value rides a backtick identifier — an embedded backtick is doubled.
+    _patch_applied(
+        monkeypatch,
+        [_applied_row(shape="unset_tag", tag_key="k", tag_value=None, prev_value="a`b",
+                      statement="UNSET TAG ON TABLE `c`.`s`.`t` `k`")],
+    )
+    plan = await apply_service.build_undo_plan("ms1", ["sug_a"])
+    assert _statements(plan) == ["SET TAG ON TABLE `c`.`s`.`t` `k` = `a``b`"]
+
+
+# ── §3 create_tag is not undoable (excluded + noted) ──────────────────────────
+
+
+async def test_undo_excludes_create_tag_and_notes_it(monkeypatch):
+    _patch_applied(
+        monkeypatch,
+        [
+            _applied_row(shape="create_tag", target_fqn="biz", tag_key="biz", tag_value=None,
+                         statement="CREATE GOVERNED TAG `biz`"),
+            _applied_row(shape="set_tag", target_fqn="c.s.t", tag_key="biz", tag_value="Rev",
+                         prev_value=None, statement="SET TAG ON TABLE `c`.`s`.`t` `biz` = `Rev`"),
+        ],
+    )
+    plan = await apply_service.build_undo_plan("ms1", ["sug_a"])
+    # Only the member set_tag is reversed (→ UNSET); the create_tag is left in place.
+    assert _statements(plan) == ["UNSET TAG ON TABLE `c`.`s`.`t` `biz`"]
+    assert plan.notes and "1 grouping" in plan.notes[0]
+    # The note is plain-language (never the tag/DDL mechanics — MV-D23 zero-burden).
+    assert "governed tag" not in plan.notes[0].lower()
+
+
+async def test_undo_skips_unset_with_no_captured_pre_value(monkeypatch):
+    # An unset whose pre-value was never captured (NULL) is honestly non-undoable → dropped.
+    _patch_applied(
+        monkeypatch,
+        [_applied_row(shape="unset_tag", tag_key="k", tag_value=None, prev_value=None,
+                      statement="UNSET TAG ON TABLE `c`.`s`.`t` `k`")],
+    )
+    plan = await apply_service.build_undo_plan("ms1", ["sug_a"])
+    assert plan.items == []
+
+
+async def test_undo_empty_when_no_applied_rows(monkeypatch):
+    _patch_applied(monkeypatch, [])
+    plan = await apply_service.build_undo_plan("ms1", ["sug_a"])
+    assert plan.items == [] and plan.source == "mirror"
+
+
+# ── BUILD A: the unset pre-value is now captured on the apply plan ────────────
+
+
+async def test_reassign_captures_unset_pre_value(monkeypatch):
+    _patch_mirror(
+        monkeypatch,
+        consents=[
+            {
+                "proposal_kind": "reassign", "proposal_id": "sug_c", "name": "Revenue",
+                "tag_decision": "reassign", "tag_key": "business_domain",
+                "tag_value": "Revenue", "conflict_tag": "legacy_domain",
+            }
+        ],
+        members_by_domain={},
+        tag_members={"legacy_domain": [{"asset_fqn": "cat.sch.txns"}]},
+    )
+    # The current value of the tag we UNSET is captured as the unset item's current_value,
+    # so the audit row's prev_value persists and the unset is reversible (17j BUILD A).
+    monkeypatch.setattr(
+        grants, "current_tag_value",
+        lambda _c, _fqn, key, **k: "LegacyVal" if key == "legacy_domain" else None,
+    )
+    plan = await apply_service.build_apply_plan("ms1")
+    unset = next(i for i in plan.items if i.shape == "unset_tag")
+    assert unset.current_value == "LegacyVal"
+
+
+# ── the no-op guard + new-append audit model + OBO/SP split ───────────────────
+
+
+class _OkResp:
+    statement_id = "sid"
+    status = types.SimpleNamespace(state=StatementState.SUCCEEDED, error=None)
+
+
+def _obo_exec(monkeypatch, executed):
+    class _Exec:
+        def execute_statement(self, warehouse_id, statement, wait_timeout=None, parameters=None):
+            executed.append(statement)
+            return _OkResp()
+
+        def get_statement(self, statement_id):
+            return _OkResp()
+
+    monkeypatch.setattr(
+        apply_service, "require_obo_workspace_client",
+        lambda: types.SimpleNamespace(statement_execution=_Exec()),
+    )
+    monkeypatch.setenv("SQL_WAREHOUSE_ID", "wh1")
+
+
+async def test_undo_noop_guard_skips_when_already_at_post_value(monkeypatch):
+    executed: list[str] = []
+    audited: list[dict] = []
+    _obo_exec(monkeypatch, executed)
+    monkeypatch.setattr(apply_service, "_write_audit_row", lambda **k: audited.append(k))
+    monkeypatch.setattr(apply_service, "_reflip_consents", lambda **k: None)
+    # The asset is ALREADY at the post-undo value → the inverse is a no-op (double-undo safe).
+    monkeypatch.setattr(grants, "current_tag_value", lambda *a, **k: "Legacy")
+
+    item = models.ApplyItem(
+        proposal_id="s", proposal_kind="reassign", shape="set_tag", target_fqn="c.s.t",
+        tag_key="k", tag_value="Legacy", current_value="Rev",
+        statement="SET TAG ON TABLE `c`.`s`.`t` `k` = `Legacy`", executable=True,
+    )
+    plan = models.ApplyPlan(
+        items=[item], executable_count=1, blocked_count=0, plan_hash="h", source="mirror", as_of="t"
+    )
+    result = await apply_service.execute_undo_plan(
+        plan=plan, metastore_id="ms1", workspace_id="ws1", applied_by="u@x"
+    )
+    assert executed == []                       # nothing was written to the warehouse
+    assert audited and audited[0]["state"] == "noop"  # the no-op is recorded in the audit trail
+    assert [o.state for o in result.applied] == ["applied"]  # user-facing: already reverted
+
+
+async def test_undo_appends_new_audit_row_with_inverse_shape(monkeypatch):
+    executed: list[str] = []
+    audited: list[dict] = []
+    _obo_exec(monkeypatch, executed)
+    monkeypatch.setattr(apply_service, "_write_audit_row", lambda **k: audited.append(k))
+    monkeypatch.setattr(apply_service, "_reflip_consents", lambda **k: None)
+    # The asset currently carries "Rev" (what the original add set); target None → UNSET runs.
+    monkeypatch.setattr(grants, "current_tag_value", lambda *a, **k: "Rev")
+
+    # The inverse of an add: UNSET, tag_value None, current_value = the value reverted FROM.
+    item = models.ApplyItem(
+        proposal_id="s", proposal_kind="domain", shape="unset_tag", target_fqn="c.s.t",
+        tag_key="biz", tag_value=None, current_value="Rev",
+        statement="UNSET TAG ON TABLE `c`.`s`.`t` `biz`", executable=True,
+    )
+    plan = models.ApplyPlan(
+        items=[item], executable_count=1, blocked_count=0, plan_hash="h", source="mirror", as_of="t"
+    )
+    result = await apply_service.execute_undo_plan(
+        plan=plan, metastore_id="ms1", workspace_id="ws1", applied_by="u@x"
+    )
+    assert executed == ["UNSET TAG ON TABLE `c`.`s`.`t` `biz`"]
+    assert [o.state for o in result.applied] == ["applied"]
+    row = audited[0]
+    assert row["shape"] == "unset_tag"          # the NEW row carries the inverse shape
+    assert row["state"] == "applied"
+    assert row["prev_value"] == "Rev"           # the value reverted FROM
+    # The inverse apply_id is derived from the inverse shape/value (idempotent on repeat).
+    assert row["apply_id"] == apply_service._apply_id("s", "unset_tag", "c.s.t", None)
+
+
+async def test_undo_blocked_item_is_copy_ready_not_executed(monkeypatch):
+    executed: list[str] = []
+    _obo_exec(monkeypatch, executed)
+    monkeypatch.setattr(apply_service, "_write_audit_row", lambda **k: None)
+    monkeypatch.setattr(apply_service, "_reflip_consents", lambda **k: None)
+    monkeypatch.setattr(grants, "current_tag_value", lambda *a, **k: "x")
+
+    blocked = models.ApplyItem(
+        proposal_id="s", proposal_kind="domain", shape="unset_tag", target_fqn="c.s.b",
+        tag_key="biz", tag_value=None, current_value="Rev",
+        statement="UNSET TAG ON TABLE `c`.`s`.`b` `biz`", executable=False,
+        blocked_reason="needs a grant",
+        required_grants=["GRANT APPLY TAG ON TABLE `c`.`s`.`b` TO `you`"],
+    )
+    plan = models.ApplyPlan(
+        items=[blocked], executable_count=0, blocked_count=1, plan_hash="h", source="mirror", as_of="t"
+    )
+    result = await apply_service.execute_undo_plan(
+        plan=plan, metastore_id="ms1", workspace_id="ws1", applied_by="u@x"
+    )
+    assert executed == []                                   # the blocked inverse never ran
+    assert [o.target_fqn for o in result.blocked] == ["c.s.b"]
+    assert result.applied == [] and result.failed == []
+
+
+def test_reflip_consents_binds_values_and_flips_applied_to_approved(monkeypatch):
+    captured: dict = {}
+
+    class _Resp:
+        statement_id = None
+        status = None
+
+    class _Exec:
+        def execute_statement(self, warehouse_id, statement, wait_timeout=None, parameters=None):
+            captured["sql"] = statement
+            captured["params"] = parameters
+            return _Resp()
+
+    import backend.services.auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod, "get_service_principal_client",
+        lambda: types.SimpleNamespace(statement_execution=_Exec()),
+    )
+    monkeypatch.setenv("SQL_WAREHOUSE_ID", "wh1")
+
+    apply_service._reflip_consents(
+        metastore_id="ms1", workspace_id="ws1", proposal_ids={"a", "b"}, applied_by="u@x"
+    )
+    sql = captured["sql"]
+    # The inverse of _flip_consents: applied → approved (re-surfaces the proposal).
+    assert "SET state = 'approved'" in sql
+    assert "state = 'applied'" in sql
+    assert ":pid0" in sql and ":pid1" in sql  # one bound marker per id
+    by_name = {p.name: p.value for p in captured["params"]}
+    assert by_name["metastore_id"] == "ms1"
+    assert sorted([by_name["pid0"], by_name["pid1"]]) == ["a", "b"]
+
+
+# ── mirror: the applied-audit reader is metastore + applied scoped ────────────
+
+
+async def test_read_applied_memberships_scopes_applied_and_ids(monkeypatch):
+    captured: dict = {}
+
+    def _delta(sql, params=None):
+        captured["sql"] = sql
+        return [_applied_row()]
+
+    monkeypatch.setattr(mirror, "_delta_query", _delta)
+    out = await mirror.read_applied_memberships("ms1", ["sug_a"])
+    assert "state = 'applied'" in captured["sql"]
+    assert "proposal_id IN ('sug_a')" in captured["sql"]
+    assert out and out[0]["shape"] == "set_tag"
+    # Empty id list → no read (byte-identical to "nothing to undo").
+    assert await mirror.read_applied_memberships("ms1", []) == []
+
+
+# ── undo routes: dry-run purity + the two-step consent gate ───────────────────
+
+
+def test_undo_preview_writes_nothing(client, monkeypatch):
+    calls = {"build": 0}
+
+    async def _plan(_ms, _ids):
+        calls["build"] += 1
+        return models.ApplyPlan(
+            items=[], executable_count=0, blocked_count=0, plan_hash="h", source="mirror", as_of="t"
+        )
+
+    def _no_exec(**k):
+        raise AssertionError("undo-preview must never execute")
+
+    monkeypatch.setattr(apply_service, "build_undo_plan", _plan)
+    monkeypatch.setattr(apply_service, "execute_undo_plan", _no_exec)
+    resp = client.post(
+        "/api/ontology/apply/undo-preview",
+        json={"plan_hash": "", "confirm": False, "proposal_ids": ["sug_a"]},
+    )
+    assert resp.status_code == 200
+    assert calls["build"] == 1
+
+
+def test_undo_requires_confirm(client):
+    resp = client.post(
+        "/api/ontology/apply/undo",
+        json={"plan_hash": "abc", "confirm": False, "proposal_ids": ["sug_a"]},
+    )
+    assert resp.status_code == 400
+
+
+def test_undo_409_on_plan_hash_mismatch(client, monkeypatch):
+    async def _plan(_ms, _ids):
+        return models.ApplyPlan(
+            items=[], executable_count=0, blocked_count=0, plan_hash="real", source="mirror", as_of="t"
+        )
+
+    monkeypatch.setattr(apply_service, "build_undo_plan", _plan)
+    resp = client.post(
+        "/api/ontology/apply/undo",
+        json={"plan_hash": "stale", "confirm": True, "proposal_ids": ["sug_a"]},
+    )
+    assert resp.status_code == 409
+
+
+def test_undo_runs_and_attributes_to_obo_caller(client, monkeypatch):
+    async def _plan(_ms, _ids):
+        return models.ApplyPlan(
+            items=[], executable_count=0, blocked_count=0, plan_hash="h", source="mirror", as_of="t"
+        )
+
+    captured: dict = {}
+
+    async def _exec(*, plan, metastore_id, workspace_id, applied_by):
+        captured.update(metastore_id=metastore_id, workspace_id=workspace_id, applied_by=applied_by)
+        return models.ApplyResult(as_of="t")
+
+    monkeypatch.setattr(apply_service, "build_undo_plan", _plan)
+    monkeypatch.setattr(apply_service, "execute_undo_plan", _exec)
+    resp = client.post(
+        "/api/ontology/apply/undo",
+        json={"plan_hash": "h", "confirm": True, "proposal_ids": ["sug_a"]},
+        headers={"x-forwarded-email": "curator@databricks.com"},
+    )
+    assert resp.status_code == 200
+    assert captured == {"metastore_id": "ms1", "workspace_id": "ws1", "applied_by": "curator@databricks.com"}

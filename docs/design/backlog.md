@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-18**, post P1 harness + P6 Signal Authority Stages 1–4 + P2 Phase 5 apply Stage 2 deploy-verify). This is the sequencing
+branch `ontology` (**2026-09-18**, post P1 harness + P6 Signal Authority Stages 1–4 + P2 Phase 5 apply Stage 2 deploy-verify + P5/17j apply hardening+undo built offline-green). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -170,12 +170,30 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
    - **Next action:** build **Stage C** (Goal Mode) → STOP → deploy-verify; then wire **§9 industry
      alignment** onto the live pack seam.
 
-### P5 — Track hardening (needs drafting)
-7. **17j — Ontology hardening + E2E** · ✏️ UNDRAFTED
-   - Register entry only: hardening + E2E, undo/rollback of an applied membership, docs /
-     changelog / PR. **Now UNBLOCKED** — 17i (apply) is deploy-verified (2026-09-18), so the
-     `genie_ont_applied` audit rows that rollback depends on are being written. **Next action:**
-     draft `ontology-17j-hardening-{build,driver}.md`.
+### P5 — Track hardening · ✅ BUILT (offline-green) — pending human deploy-verify
+7. **17j — Ontology hardening + undo + E2E (MV-D100)** · ✅ BUILT (offline-green), deploy-verify pending (§10)
+   - **Built (additive, `ontology`):** an applied governed-tag membership is now **reversible**
+     under OBO from the `genie_ont_applied.prev_value` trail, and undo **never drops the governed
+     tag** (MV-D100). BUILD A unset pre-value capture (`_reassign_items` probes
+     `grants.current_tag_value`); BUILD B read-only `mirror.read_applied_memberships`
+     (metastore-scoped, MV-D49); BUILD C `build_undo_plan`/`execute_undo_plan` in
+     `services/apply.py` (single writer — inverse `set`/`unset tag` ONLY, never drop/alter;
+     `create_tag` excluded + counted into `ApplyPlan.notes`; OBO write + SP audit/consent re-flip
+     applied→approved; no-op guard; per-statement fail-soft); BUILD D `POST /apply/undo-preview`
+     (writes nothing) + `POST /apply/undo` (confirm 400 + plan_hash 409) in the existing
+     `routers/apply.py` (no new file); BUILD E `ApplyPlan.notes` + `ApplyUndoRequest` + an Undo
+     affordance that opens ONLY from a persisted applied result (terminal-state rule) → inverse
+     diff via the same `ApplyDiff` → confirm → undo, wrapped in a new `OntologyErrorBoundary`.
+   - **Reviewed:** `/review` (Isaac frontend pipeline) run twice → **Approve** (0 P0/P1); a11y
+     live-regions + focus-to-heading + undo error retry + error boundary added.
+   - **Offline-green:** `./scripts/test.sh` 3103; `frontend` tsc/lint clean + vitest 658;
+     lockfiles clean; single-writer carve + POST-allowlist + OBO/SP identity-split firewall tests
+     extended to cover `execute_undo_plan` + the consent re-flip; offline E2E
+     `test_ontology_apply_e2e` (approve→preview→execute→undo round-trip).
+   - **Next action:** human deploy-verify (§10 of `ontology-17j-hardening-build.md`) —
+     `./scripts/deploy.sh --update` (reads `GENIE_DEPLOY_PROFILE` from `.env.deploy`,
+     `fevm-serverless`/6t92c3), apply→undo→re-apply on a live estate, then flip this entry to
+     **deploy-verified**.
 
 ### P6 — Signal authority (OntoRank-style) · ✅ BUILT + deploy-verified (Stages 1–4)
 8. **Ontology Signal Authority (MV-D93–D97)** · ✅ BUILT + deploy-verified on tbzqg7
@@ -252,6 +270,8 @@ deploy-verified + committed** (`67ad4cff`), **Phase 4 Stage B is deploy-verified
 **P1 (the §10 harness, MV-D59) is LIVE + deploy-verified** (`8c6af04e`), **P6 (Signal
 Authority, MV-D93–D97) is fully deploy-verified** (Stages 1–4 + 4b), and **P2 (Phase 5 apply,
 17i) is BUILT + deploy-verified** (`cf92ef58`; Stage 2 harden live on 6t92c3) — the value-unlock
-that closes the curator loop. **Next: (P3)** curator Draft-with-AI Steps 3–4, then the rest of
-**P4** (Stage C + §9 alignment) and **P5 / 17j** (apply hardening + E2E + undo/rollback — now
-unblocked by apply landing). **Track A** can run in parallel by anyone off the ontology branch.
+that closes the curator loop. **P5 / 17j** (apply hardening + E2E + undo/rollback, MV-D100) is now
+**BUILT offline-green** — undo is reversible from the `genie_ont_applied` trail and never drops the
+governed tag; `/review` Approve — pending only the human deploy-verify (§10). **Next: (P3)** curator
+Draft-with-AI Steps 3–4, then the rest of **P4** (Stage C + §9 alignment). **Track A** can run in
+parallel by anyone off the ontology branch.

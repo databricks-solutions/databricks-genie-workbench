@@ -390,9 +390,20 @@ export interface ApplyPlan {
   plan_hash: string
   source: "mirror" | "live" | "cold"
   as_of: string
+  // Phase 5 (17j): informational lines for an undo plan (e.g. "N groupings left in
+  // place — undo never removes a grouping"). Absent/empty for an apply plan.
+  notes?: string[]
 }
 
 export interface ApplyExecuteRequest {
+  plan_hash: string
+  confirm: boolean
+  proposal_ids?: string[] | null
+}
+
+// Phase 5 (17j): undo request — same shape as ApplyExecuteRequest (the undo plan is an
+// apply plan of inverse statements). undo-preview reads only proposal_ids.
+export interface ApplyUndoRequest {
   plan_hash: string
   confirm: boolean
   proposal_ids?: string[] | null

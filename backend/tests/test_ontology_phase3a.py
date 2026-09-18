@@ -49,6 +49,9 @@ _PHASE3E_MODELS = {
 _PHASE5_MODELS = {
     "ApplyItem", "ApplyPlan", "ApplyExecuteRequest",
     "ApplyOutcome", "ApplyResult",
+    # 17j: undo request (same shape as ApplyExecuteRequest; the undo plan is an
+    # apply plan of inverse statements).
+    "ApplyUndoRequest",
 }
 
 # Stage 4.1d (Steps 3–4, MV-D66) APPEND-ONLY curator "Draft with AI" models — the

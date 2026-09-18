@@ -430,12 +430,26 @@ class ApplyPlan(BaseModel):
     plan_hash: str                   # fingerprint of the ordered statements — execute must echo it
     source: Literal["mirror", "live", "cold"]
     as_of: str
+    # Phase 5 (17j): informational lines for an undo plan — e.g. "N groupings left in
+    # place (undo never removes a grouping)" for the create_tag rows the inverse excludes
+    # (§3, a governed tag is never auto-dropped). Default [] ⇒ byte-identical for apply.
+    notes: list[str] = Field(default_factory=list)
 
 
 class ApplyExecuteRequest(BaseModel):
     plan_hash: str                   # must equal the preview's — else 409 (stale plan)
     confirm: bool                    # must be True — the explicit second consent
     proposal_ids: list[str] | None = None  # optional filter (default: the whole plan)
+
+
+class ApplyUndoRequest(BaseModel):
+    """Phase 5 (17j): undo the applied memberships of the given proposals. Same fields as
+    ``ApplyExecuteRequest`` (the undo plan is an apply plan of inverse statements). The undo
+    is gated on ``confirm=true`` + the ``plan_hash`` echoed from ``undo-preview`` (409 on
+    mismatch); ``undo-preview`` uses the same model and reads only ``proposal_ids``."""
+    plan_hash: str                   # must equal undo-preview's — else 409 (stale plan)
+    confirm: bool                    # must be True — the explicit second consent
+    proposal_ids: list[str] | None = None  # the applied proposals to reverse
 
 
 class ApplyOutcome(BaseModel):

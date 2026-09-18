@@ -271,3 +271,24 @@ def test_phase5_apply_identity_split_write_obo_bookkeeping_sp():
     for src in (audit_src, flip_src):
         assert "get_service_principal_client" in src
         assert "require_obo_workspace_client" not in src
+
+
+def test_phase5_undo_identity_split_write_obo_bookkeeping_sp():
+    """Phase 5 (17j) firewall: the UNDO preserves the SAME identity split as apply — the
+    inverse governed-tag WRITE runs under OBO; the undo audit row (via the shared SP
+    _write_audit_row) and the consent RE-flip (applied→approved) run as the SERVICE
+    PRINCIPAL. Asserted structurally so an undo refactor can't widen the write identity or
+    narrow the bookkeeping identity."""
+    import inspect
+
+    from backend.ontology.services import apply as apply_service
+
+    undo_src = inspect.getsource(apply_service.execute_undo_plan)
+    # The inverse governed-tag write client is the OBO client (never the SP).
+    assert "require_obo_workspace_client()" in undo_src
+    assert "get_service_principal_client" not in undo_src
+
+    # The consent RE-flip is SP-owned (mirrors _flip_consents' identity).
+    reflip_src = inspect.getsource(apply_service._reflip_consents)
+    assert "get_service_principal_client" in reflip_src
+    assert "require_obo_workspace_client" not in reflip_src

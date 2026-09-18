@@ -91,4 +91,11 @@ describe("ApplyPreview shell", () => {
     }
     expect(html).toContain("Apply approved changes")
   })
+
+  it("does not render the Undo affordance before an apply has landed (terminal-state rule)", () => {
+    // The Undo control initializes ONLY from a persisted applied result (17j §7). On the
+    // pre-preview shell there is no result, so no Undo affordance is present.
+    const html = renderToStaticMarkup(<ApplyPreview onClose={() => {}} />)
+    expect(html).not.toContain("Undo these changes")
+  })
 })

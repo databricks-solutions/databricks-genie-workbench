@@ -654,3 +654,42 @@ async def read_tag_members(metastore_id: str, conflict_tag: str) -> list[dict[st
         for m in member_rows
         if str(m.get("domain_id") or "") in conflicted_ids and m.get("asset_fqn")
     ]
+
+
+# ── Phase 5 (17j): applied-audit reader (backs undo, metastore grain) ─────────
+# The undo plan is computed from the audit trail alone (17j §2), so it reads the
+# ``state='applied'`` rows of ``genie_ont_applied`` for the consented proposals.
+# The applied audit table is app-written live via the warehouse (not part of the
+# batch snapshot), so — like the consent ledger in ``read_approved_consents`` — it
+# is read via ``_delta_query`` (SP), not the synced pool. Read-only; NO UC write.
+
+
+async def read_applied_memberships(
+    metastore_id: str, proposal_ids: list[str]
+) -> list[dict[str, Any]]:
+    """The ``state='applied'`` audit rows (``genie_ont_applied``) for the given proposals,
+    metastore-scoped (MV-D49). Returns the fields the inverse plan needs — ``proposal_kind``,
+    ``proposal_id``, ``shape``, ``statement`` (carries the original securable keyword),
+    ``target_fqn``, ``tag_key``, ``tag_value``, ``prev_value``. ``failed`` / ``blocked``
+    rows never wrote UC, so they are excluded. [] on empty ids or any failure."""
+    ids = sorted({str(p) for p in (proposal_ids or []) if str(p)})
+    if not ids:
+        return []
+    import asyncio
+
+    from genie_space_optimizer.ontology import ddl
+
+    # Read-only SP read; escape single quotes in the interpolated filters (matching the
+    # ``read_approved_consents`` style — these are SP reads, not the OBO write path).
+    def _q(v: str) -> str:
+        return "'" + v.replace("'", "''") + "'"
+
+    in_list = ", ".join(_q(i) for i in ids)
+    rows = await asyncio.to_thread(
+        _delta_query,
+        f"SELECT proposal_kind, proposal_id, shape, statement, target_fqn, tag_key, "
+        f"tag_value, prev_value FROM {_gso_fqn(ddl.TABLE_ONT_APPLIED)} "
+        f"WHERE metastore_id = {_q(metastore_id)} AND state = 'applied' "
+        f"AND proposal_id IN ({in_list})",
+    )
+    return rows

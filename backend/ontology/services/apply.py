@@ -368,9 +368,15 @@ async def _reassign_items(
             continue
         asset_type = member.get("asset_type", "table")
 
-        # unset_tag: remove from old.
+        # unset_tag: remove from old. Capture the CURRENT value of the tag we remove as
+        # the item's current_value — exactly as the sibling set_tag below probes it — so the
+        # audit row's prev_value is persisted and the unset becomes undoable (17j BUILD A).
+        # Absent / indeterminate ⇒ None (byte-identical: that unset simply stays non-undoable).
         unset_ok, unset_reason, unset_grants = _probe_write(
             client, asset_fqn, conflict_tag, asset_type, principal
+        )
+        unset_current = grants.current_tag_value(
+            client, asset_fqn, conflict_tag, asset_type=asset_type
         )
         unset_item = models.ApplyItem(
             proposal_id=reassign_id,
@@ -379,7 +385,7 @@ async def _reassign_items(
             target_fqn=asset_fqn,
             tag_key=conflict_tag,
             tag_value=None,
-            current_value=None,
+            current_value=unset_current,
             statement=_unset_tag_statement(asset_fqn, asset_type, conflict_tag),
             executable=unset_ok,
             blocked_reason=unset_reason,
@@ -695,3 +701,399 @@ WHERE metastore_id = :metastore_id AND proposal_id IN ({placeholders}) AND state
                 resp = client.statement_execution.get_statement(statement_id=resp.statement_id)
     except Exception as e:
         logger.warning("consent flip failed (non-fatal): %s", e)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 5 (17j): UNDO — the inverse of a recorded genie_ont_applied membership row.
+#
+# An applied membership can be undone by the same consenting human, under OBO, from
+# the audit trail alone (17j §2). The inverse reuses the SAME allowed tokens (SET TAG
+# / UNSET TAG) in THIS file only — it NEVER drops or alters a governed tag (§3): the
+# create_tag is not undoable, so undoing a domain reverts its member set_tags and
+# leaves the empty governed tag in place, surfaced as an informational note. Same
+# guardrails as apply: grant probe → copy-ready, per-statement fail-soft, plan_hash +
+# confirm gate, and the OBO-write / SP-bookkeeping identity split (MV-D50).
+#
+#   | applied row            | prev_value | inverse           |
+#   | set_tag  (an add)      | NULL       | UNSET TAG         |
+#   | set_tag  (a move)      | <old>      | SET TAG = `<old>` |
+#   | unset_tag              | <old>      | SET TAG = `<old>` |
+#   | create_tag             | —          | none (§3, noted)  |
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Reverse of _SECURABLE_KW: the applied row stores the securable keyword inside its
+# `statement`, not asset_type, so the inverse recovers a representative asset_type from
+# the parsed keyword (any asset_type mapping to the same keyword yields an identical
+# statement, so a representative is exact for the inverse write).
+_ASSET_TYPE_FROM_KW = {
+    "TABLE": "table",
+    "VIEW": "view",
+    "SCHEMA": "schema",
+    "CATALOG": "catalog",
+    "VOLUME": "volume",
+    "FUNCTION": "function",
+    "COLUMN": "column",
+}
+
+
+def _asset_type_from_statement(statement: str) -> str:
+    """Recover the securable asset_type from an applied statement's keyword — the token
+    after ``ON`` (``… TAG ON TABLE `c`.`s`.`t` …``). Defaults to ``table`` when unparseable,
+    so the inverse targets the SAME securable type the original write did."""
+    toks = str(statement).split()
+    for i, tok in enumerate(toks):
+        if tok.upper() == "ON" and i + 1 < len(toks):
+            return _ASSET_TYPE_FROM_KW.get(toks[i + 1].upper(), "table")
+    return "table"
+
+
+def _norm(value: str | None) -> str | None:
+    """Normalize a tag value for the no-op comparison: ``""`` ⇒ ``None`` (absent)."""
+    if value is None:
+        return None
+    s = str(value)
+    return s or None
+
+
+def _invert_row(shape: str, prev_value: str | None) -> tuple[str, str | None] | None:
+    """The inverse (shape, tag_value) of a recorded membership row, or None if not
+    reversible (17j §2). ``create_tag`` is handled by the caller (excluded + noted)."""
+    prev = _norm(prev_value)
+    if shape == "set_tag":
+        # add (prev NULL) → UNSET; move (prev <old>) → SET = <old>.
+        return ("unset_tag", None) if prev is None else ("set_tag", prev)
+    if shape == "unset_tag":
+        # re-add the removed value — only when the pre-value was captured (17j BUILD A).
+        return ("set_tag", prev) if prev is not None else None
+    return None
+
+
+async def build_undo_plan(
+    metastore_id: str,
+    proposal_ids: list[str],
+) -> models.ApplyPlan:
+    """Dry-run: read the ``state='applied'`` audit rows for ``proposal_ids`` and compute the
+    inverse ApplyPlan (17j §2). ``create_tag`` rows are excluded and counted into
+    ``notes`` (a governed tag is never auto-dropped, §3). Fingerprinted with the SAME
+    ``_plan_hash`` so execute must echo it. Writes nothing. Degrade-not-hang (cold plan)."""
+    try:
+        rows = await mirror.read_applied_memberships(metastore_id, proposal_ids)
+        if not rows:
+            return models.ApplyPlan(
+                items=[],
+                executable_count=0,
+                blocked_count=0,
+                plan_hash=_plan_hash([]),
+                source="mirror",
+                as_of=datetime.now(timezone.utc).isoformat(),
+            )
+
+        # Read-only probe client (write grants), resolved once; None off-platform → fail-soft.
+        client = _probe_client()
+        principal = _probe_principal(client)
+
+        items: list[models.ApplyItem] = []
+        create_left = 0
+        for row in rows:
+            shape = str(row.get("shape") or "")
+            if shape == "create_tag":
+                create_left += 1  # never auto-dropped (§3) — counted for the note.
+                continue
+
+            target_fqn = str(row.get("target_fqn") or "")
+            tag_key = str(row.get("tag_key") or "")
+            if not target_fqn or not tag_key:
+                continue
+
+            inverse = _invert_row(shape, row.get("prev_value"))
+            if inverse is None:
+                continue  # not reversible (e.g. an unset with no captured pre-value)
+            inv_shape, inv_value = inverse
+
+            asset_type = _asset_type_from_statement(str(row.get("statement") or ""))
+            kind = str(row.get("proposal_kind") or "domain")
+            if kind not in ("domain", "subdomain", "reassign"):
+                kind = "domain"
+
+            if inv_shape == "unset_tag":
+                inv_statement = _unset_tag_statement(target_fqn, asset_type, tag_key)
+            else:
+                inv_statement = _set_tag_statement(target_fqn, asset_type, tag_key, inv_value)
+
+            executable, blocked_reason, required_grants = _probe_write(
+                client, target_fqn, tag_key, asset_type, principal
+            )
+            # current_value carries the value being reverted FROM (the value the original
+            # applied row put on the asset) — for the diff and the new audit row's prev_value.
+            reverted_from = str(row["tag_value"]) if row.get("tag_value") else None
+            items.append(
+                models.ApplyItem(
+                    proposal_id=str(row.get("proposal_id") or ""),
+                    proposal_kind=kind,  # type: ignore[arg-type]
+                    shape=inv_shape,  # type: ignore[arg-type]
+                    target_fqn=target_fqn,
+                    tag_key=tag_key,
+                    tag_value=inv_value,
+                    current_value=reverted_from,
+                    statement=inv_statement,
+                    executable=executable,
+                    blocked_reason=blocked_reason,
+                    required_grants=required_grants,
+                )
+            )
+
+        notes: list[str] = []
+        if create_left:
+            plural = "s" if create_left != 1 else ""
+            notes.append(
+                f"{create_left} grouping{plural} left in place — undo never removes a grouping."
+            )
+
+        executable_count = sum(1 for item in items if item.executable)
+        return models.ApplyPlan(
+            items=items,
+            executable_count=executable_count,
+            blocked_count=len(items) - executable_count,
+            plan_hash=_plan_hash(items),
+            source="mirror",
+            as_of=datetime.now(timezone.utc).isoformat(),
+            notes=notes,
+        )
+    except Exception as e:
+        logger.exception("build_undo_plan failed: %s", e)
+        return models.ApplyPlan(
+            items=[],
+            executable_count=0,
+            blocked_count=0,
+            plan_hash=_plan_hash([]),
+            source="cold",
+            as_of=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+async def execute_undo_plan(
+    plan: models.ApplyPlan,
+    metastore_id: str,
+    workspace_id: str,
+    applied_by: str,
+) -> models.ApplyResult:
+    """Execute the inverse plan under OBO — the mirror of ``execute_apply_plan``. Per-statement
+    fail-soft; a current-value no-op guard (already at the post-undo value ⇒ ``state='noop'``,
+    so a double-undo is safe); each action appends a NEW ``genie_ont_applied`` row for the
+    inverse shape (the original row is never mutated), with the value being reverted FROM as
+    its ``prev_value``; then the consumed consents flip ``applied → approved`` (SP). Idempotent:
+    the inverse ``apply_id`` collides on a repeat, and the consent re-flip is a no-op re-run."""
+    result = models.ApplyResult(as_of=datetime.now(timezone.utc).isoformat())
+
+    try:
+        client = require_obo_workspace_client()
+        warehouse_id = os.environ.get("SQL_WAREHOUSE_ID", "").strip()
+        if not warehouse_id:
+            logger.error("SQL_WAREHOUSE_ID not configured; cannot execute undo")
+            return result
+
+        for item in plan.items:
+            if not item.executable:
+                result.blocked.append(
+                    models.ApplyOutcome(
+                        proposal_id=item.proposal_id,
+                        shape=item.shape,
+                        target_fqn=item.target_fqn,
+                        ok=False,
+                        state="blocked",
+                        error=item.blocked_reason,
+                    )
+                )
+                continue
+
+            asset_type = _asset_type_from_statement(item.statement)
+            apply_id = _apply_id(item.proposal_id, item.shape, item.target_fqn, item.tag_value)
+
+            # Current-value no-op guard (17j §2): if the asset is already at the post-undo
+            # value (item.tag_value; None ⇒ tag absent), the undo is a no-op — record it and
+            # skip the write, so a double-undo never re-writes or errors.
+            current = grants.current_tag_value(
+                client, item.target_fqn, item.tag_key, asset_type=asset_type
+            )
+            if _norm(current) == _norm(item.tag_value):
+                _write_audit_row(
+                    metastore_id=metastore_id,
+                    apply_id=apply_id,
+                    workspace_id=workspace_id,
+                    proposal_kind=item.proposal_kind,
+                    proposal_id=item.proposal_id,
+                    shape=item.shape,
+                    statement=item.statement,
+                    target_fqn=item.target_fqn,
+                    tag_key=item.tag_key,
+                    tag_value=item.tag_value,
+                    prev_value=_norm(current),
+                    state="noop",
+                    applied_by=applied_by,
+                    error=None,
+                )
+                result.applied.append(
+                    models.ApplyOutcome(
+                        proposal_id=item.proposal_id,
+                        shape=item.shape,
+                        target_fqn=item.target_fqn,
+                        ok=True,
+                        state="applied",
+                        error=None,
+                    )
+                )
+                continue
+
+            try:
+                resp = client.statement_execution.execute_statement(
+                    warehouse_id=warehouse_id,
+                    statement=item.statement,
+                    wait_timeout="30s",
+                )
+                statement_id = resp.statement_id if resp else None
+                deadline = time.monotonic() + 40
+                while (
+                    resp
+                    and resp.status
+                    and resp.status.state in (StatementState.PENDING, StatementState.RUNNING)
+                ):
+                    if time.monotonic() > deadline or not statement_id:
+                        raise RuntimeError("statement execution timed out")
+                    time.sleep(1.0)
+                    resp = client.statement_execution.get_statement(statement_id=statement_id)
+
+                if resp is None or resp.status is None or resp.status.state != StatementState.SUCCEEDED:
+                    error_detail = getattr(getattr(resp, "status", None), "error", None)
+                    raise RuntimeError(f"statement failed: {error_detail}")
+
+                # Append a NEW audit row for the inverse action (never mutate the original).
+                # prev_value = the value being reverted FROM (the value the asset carried).
+                _write_audit_row(
+                    metastore_id=metastore_id,
+                    apply_id=apply_id,
+                    workspace_id=workspace_id,
+                    proposal_kind=item.proposal_kind,
+                    proposal_id=item.proposal_id,
+                    shape=item.shape,
+                    statement=item.statement,
+                    target_fqn=item.target_fqn,
+                    tag_key=item.tag_key,
+                    tag_value=item.tag_value,
+                    prev_value=item.current_value,
+                    state="applied",
+                    applied_by=applied_by,
+                    error=None,
+                )
+
+                result.applied.append(
+                    models.ApplyOutcome(
+                        proposal_id=item.proposal_id,
+                        shape=item.shape,
+                        target_fqn=item.target_fqn,
+                        ok=True,
+                        state="applied",
+                        error=None,
+                    )
+                )
+
+            except Exception as e:
+                error_str = str(e)
+                state = "failed" if "PERMISSION_DENIED" not in error_str else "blocked"
+                _write_audit_row(
+                    metastore_id=metastore_id,
+                    apply_id=apply_id,
+                    workspace_id=workspace_id,
+                    proposal_kind=item.proposal_kind,
+                    proposal_id=item.proposal_id,
+                    shape=item.shape,
+                    statement=item.statement,
+                    target_fqn=item.target_fqn,
+                    tag_key=item.tag_key,
+                    tag_value=item.tag_value,
+                    prev_value=item.current_value,
+                    state=state,
+                    applied_by=applied_by,
+                    error=error_str,
+                )
+                outcome = models.ApplyOutcome(
+                    proposal_id=item.proposal_id,
+                    shape=item.shape,
+                    target_fqn=item.target_fqn,
+                    ok=False,
+                    state=state,
+                    error=error_str,
+                )
+                if state == "blocked":
+                    result.blocked.append(outcome)
+                else:
+                    result.failed.append(outcome)
+                logger.warning("undo item failed: %s/%s (%s)", item.proposal_id, item.shape, error_str)
+
+        # Re-surface the undone proposals: flip their consents applied → approved (SP).
+        _reflip_consents(
+            metastore_id=metastore_id,
+            workspace_id=workspace_id,
+            proposal_ids={item.proposal_id for item in plan.items},
+            applied_by=applied_by,
+        )
+
+    except Exception as e:
+        logger.exception("execute_undo_plan failed: %s", e)
+
+    return result
+
+
+def _reflip_consents(
+    metastore_id: str,
+    workspace_id: str,
+    proposal_ids: set[str],
+    applied_by: str,
+) -> None:
+    """Flip the undone consents ``applied → approved`` (the inverse of ``_flip_consents``) so
+    an undone proposal re-surfaces as actionable. Idempotent; degrade-not-hang. Every value —
+    including the IN list — is bound via ``StatementParameterListItem``. BUILD D identity split:
+    this consent re-flip is a SERVICE-PRINCIPAL write (the SP owns the ledger); only the
+    governed-tag write itself is OBO."""
+    if not proposal_ids:
+        return
+    try:
+        from backend.services.auth import get_service_principal_client
+
+        client = get_service_principal_client()
+        warehouse_id = os.environ.get("SQL_WAREHOUSE_ID", "").strip()
+        if not warehouse_id:
+            return
+
+        target = _fqn(_CONSENTS)
+        ordered_ids = sorted(proposal_ids)
+        placeholders = ", ".join(f":pid{i}" for i in range(len(ordered_ids)))
+        params = [
+            StatementParameterListItem(name="workspace_id", value=workspace_id),
+            StatementParameterListItem(name="metastore_id", value=metastore_id),
+        ]
+        params += [
+            StatementParameterListItem(name=f"pid{i}", value=pid)
+            for i, pid in enumerate(ordered_ids)
+        ]
+
+        sql = f"""
+UPDATE {target}
+SET state = 'approved', workspace_id = :workspace_id
+WHERE metastore_id = :metastore_id AND proposal_id IN ({placeholders}) AND state = 'applied'
+"""
+        resp = client.statement_execution.execute_statement(
+            warehouse_id=warehouse_id, statement=sql, parameters=params, wait_timeout="10s"
+        )
+        if resp and resp.statement_id:
+            deadline = time.monotonic() + 15
+            while (
+                resp
+                and resp.status
+                and resp.status.state in (StatementState.PENDING, StatementState.RUNNING)
+            ):
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.5)
+                resp = client.statement_execution.get_statement(statement_id=resp.statement_id)
+    except Exception as e:
+        logger.warning("consent re-flip failed (non-fatal): %s", e)

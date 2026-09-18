@@ -51,6 +51,35 @@ describe("ApplyDiff — adds / moves / blocked-copy-ready rows", () => {
     }
   })
 
+  it("renders the inverse diff (undo) through the SAME component + the notes line", () => {
+    // Phase 5 (17j): an undo plan is an apply plan of inverse statements — the same
+    // ApplyDiff renders it. The create_tag left in place surfaces as an informational note.
+    const inverse = [
+      item({ shape: "unset_tag", tag_key: "business_domain" }), // inverse of an add → remove
+      item({
+        target_fqn: "finance.core.ledger",
+        current_value: "Revenue",
+        tag_value: "Legacy",
+      }), // inverse of a move → restore the prior grouping
+    ]
+    const notes = ["1 grouping left in place — undo never removes a grouping."]
+    const html = renderToStaticMarkup(
+      <ApplyDiff executable={inverse} blocked={[]} grants={[]} notes={notes} />,
+    )
+    expect(html).toContain("Remove orders from “business_domain”")
+    expect(html).toContain("Move ledger from “Revenue” to “Legacy”")
+    // The note renders as an informational line (never the tag/DDL mechanics, never an error).
+    expect(html).toContain("1 grouping left in place — undo never removes a grouping.")
+    for (const token of FORBIDDEN) {
+      expect(html.toLowerCase(), `inverse diff leaked jargon: "${token}"`).not.toContain(token)
+    }
+  })
+
+  it("renders no notes block for an apply plan (byte-identical to pre-17j)", () => {
+    const html = renderToStaticMarkup(<ApplyDiff executable={[item()]} blocked={[]} grants={[]} />)
+    expect(html).not.toContain("left in place")
+  })
+
   it("renders blocked items as copy-ready grant steps (never executed inline)", () => {
     const blocked = [
       item({

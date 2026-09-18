@@ -6,6 +6,7 @@ import type {
   ApplyExecuteRequest,
   ApplyPlan,
   ApplyResult,
+  ApplyUndoRequest,
   BulkDraftStart,
   BulkDraftStatus,
   DecisionRequest,
@@ -133,6 +134,20 @@ export const applyPreview = () => fetchJson<ApplyPlan>("/apply/preview", { metho
 
 export const applyExecute = (req: ApplyExecuteRequest) =>
   fetchJson<ApplyResult>("/apply/execute", {
+    method: "POST",
+    body: JSON.stringify(req),
+  })
+
+// Phase 5 (17j): undo — dry-run the inverse plan for the applied proposals, then execute
+// it behind the same confirm + plan_hash gate. undo-preview writes nothing.
+export const applyUndoPreview = (proposalIds: string[]) =>
+  fetchJson<ApplyPlan>("/apply/undo-preview", {
+    method: "POST",
+    body: JSON.stringify({ plan_hash: "", confirm: false, proposal_ids: proposalIds } satisfies ApplyUndoRequest),
+  })
+
+export const applyUndo = (req: ApplyUndoRequest) =>
+  fetchJson<ApplyResult>("/apply/undo", {
     method: "POST",
     body: JSON.stringify(req),
   })
