@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-17**, post P1 harness + P6 Signal Authority Stages 1–4 deploy-verify). This is the sequencing
+branch `ontology` (**2026-09-18**, post P1 harness + P6 Signal Authority Stages 1–4 + P2 Phase 5 apply Stage 2 deploy-verify). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -102,18 +102,29 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
    - **Done:** the harness reads materialized runs and gates real changes (it caught the
      Stage-1 junk-surfacing regression, precision 1.00→0.426, forcing the rank-only fix).
 
-### P2 — The one write path — **THE VALUE-UNLOCK**
-4. **Phase 5 / 17i — consented `SET TAG` apply (L9)** · 🟡 OFFLINE SLICE BUILT · live apply human-gated
-   - Offline slice **LANDED** (`9e1a82c4`): `apply.py` service + `apply/preview` +
-     `apply/execute` routes; firewall tests assert no writes by default. **Remaining:**
-     `execute` identity wiring + `ApplyPreview.tsx` + the *live* apply (dry-run-first,
-     default-OFF, OBO-attributed, request-time only — never in the batch job).
-   - Specs: `ontology-phase5-apply-{build,driver}.md` (MV-D37/D26/D50/D23/D27). Consumes the
-     17g `genie_ont_consents` ledger (✅ built); prereqs (re-grain / OBO / `certify`) all shipped.
-   - **Why now:** the engine lands a trustworthy set — apply is the gap between "discovery
-     aid" and "ontology builder."
-   - **Next action:** finish the `apply.py` execute path + `ApplyPreview.tsx` → STOP at the
-     apply-safety checkpoint → human deploy-verify.
+### P2 — The one write path — **THE VALUE-UNLOCK** · ✅ DONE (deploy-verified 2026-09-18)
+4. **Phase 5 / 17i — consented `SET TAG` apply (L9)** · ✅ BUILT + deploy-verified
+   - **Stage 1 — offline slice LANDED** (`9e1a82c4`): `apply.py` service + `apply/preview` +
+     `apply/execute` routes; firewall tests assert no writes by default.
+   - **Stage 2 — harden + go-live BUILT + deploy-verified** (`cf92ef58`; driver `518f949d`):
+     governed-tag statements injection-safe by backtick-escaping (FQN/key/value are identifier
+     positions) + `VALUES('…')` literal for CREATE; audit INSERT + consent UPDATE fully bound via
+     `StatementParameterListItem`; `grants.membership_write_probe` (read-only `get_effective`,
+     fail-soft per MV-D43) wired per-item so the preflight `membership_write` tier is real
+     (ok/blocked + copy-ready GRANT lines); `grants.current_tag_value` drives the add-vs-move
+     diff; OBO write / SP bookkeeping split reconciled (firewall guard test). `ApplyPreview.tsx`
+     + `ApplyDiff.tsx` render the plan. Default-OFF; execute gated on `confirm=true` + `plan_hash`.
+   - **Deploy-verify (`fevm-serverless` / 6t92c3, active deployment 2026-09-18T20:18:28Z):** app
+     RUNNING, clean startup, all 9 ontology routers mounted; ontology routes respond **200 live
+     under OBO**. Governed-tag SQL contract verified on the app's own workspace/metastore —
+     `CREATE GOVERNED TAG … VALUES('…')` (NOT `WITH ALLOWED_VALUES`), `GRANT ASSIGN ON GOVERNED
+     TAG`, and the full `SET`/`UNSET TAG` + `information_schema.*_tags` read-back round-trip all
+     pass; `get_effective` probe readable.
+   - Specs: `ontology-phase5-apply-{build,driver}.md` + `ontology-phase5-apply-harden-driver.md`
+     (MV-D37/D26/D50/D23/D27). Consumed the 17g `genie_ont_consents` ledger (✅ built).
+   - **Scoped remaining → P5 / 17j:** a full UI-driven E2E apply (preview → confirm → execute
+     against a real asset) + undo/rollback of an applied membership (needs `genie_ont_applied`
+     audit rows). The write path is live and SQL-verified; E2E + undo are the 17j deliverables.
 
 ### P3 — Curator enrichment loop (finish the review UX)
 5. **Stage 4.1d Steps 2–4 — curator Draft-with-AI** · 🟡 PARTIAL
@@ -162,8 +173,9 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
 ### P5 — Track hardening (needs drafting)
 7. **17j — Ontology hardening + E2E** · ✏️ UNDRAFTED
    - Register entry only: hardening + E2E, undo/rollback of an applied membership, docs /
-     changelog / PR. **Next action:** draft `ontology-17j-hardening-{build,driver}.md`; run
-     after 17i lands (rollback needs the `genie_ont_applied` audit rows).
+     changelog / PR. **Now UNBLOCKED** — 17i (apply) is deploy-verified (2026-09-18), so the
+     `genie_ont_applied` audit rows that rollback depends on are being written. **Next action:**
+     draft `ontology-17j-hardening-{build,driver}.md`.
 
 ### P6 — Signal authority (OntoRank-style) · ✅ BUILT + deploy-verified (Stages 1–4)
 8. **Ontology Signal Authority (MV-D93–D97)** · ✅ BUILT + deploy-verified on tbzqg7
@@ -237,8 +249,9 @@ for true-enterprise estates, neither yet scheduled:
 
 Batch engine + Ontology Map are **done**, the **P0 map-interaction/#4 pass is
 deploy-verified + committed** (`67ad4cff`), **Phase 4 Stage B is deploy-verified** (`69bf9ec6`),
-**P1 (the §10 harness, MV-D59) is LIVE + deploy-verified** (`8c6af04e`), and **P6 (Signal
-Authority, MV-D93–D97) is fully deploy-verified** (Stages 1–4; Stage 4b in flight). **Next: (P2)
-Phase 5 apply** — the value-unlock that closes the curator loop (its offline slice already
-landed). Then **P3** (curator Draft-with-AI Steps 3–4), the rest of **P4** (Stage C + §9
-alignment), **P5** (hardening). **Track A** can run in parallel by anyone off the ontology branch.
+**P1 (the §10 harness, MV-D59) is LIVE + deploy-verified** (`8c6af04e`), **P6 (Signal
+Authority, MV-D93–D97) is fully deploy-verified** (Stages 1–4 + 4b), and **P2 (Phase 5 apply,
+17i) is BUILT + deploy-verified** (`cf92ef58`; Stage 2 harden live on 6t92c3) — the value-unlock
+that closes the curator loop. **Next: (P3)** curator Draft-with-AI Steps 3–4, then the rest of
+**P4** (Stage C + §9 alignment) and **P5 / 17j** (apply hardening + E2E + undo/rollback — now
+unblocked by apply landing). **Track A** can run in parallel by anyone off the ontology branch.
