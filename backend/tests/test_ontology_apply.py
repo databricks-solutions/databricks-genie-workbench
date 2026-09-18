@@ -17,21 +17,26 @@ No warehouse, no UC write, no OBO round trip — the live apply is deploy-gated.
 
 from __future__ import annotations
 
+import types
+
 import pytest
+from databricks.sdk.service.sql import StatementState
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.ontology import models
 from backend.ontology.routers.apply import router as apply_router
 from backend.ontology.services import apply as apply_service
-from backend.ontology.services import mirror, ont_settings
+from backend.ontology.services import grants, mirror, ont_settings
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
 def _patch_mirror(monkeypatch, *, consents, members_by_domain, tag_members=None):
-    """Stub the three Phase-5 mirror readers apply_service calls."""
+    """Stub the three Phase-5 mirror readers apply_service calls, plus the two read-only
+    OBO probes (grant + current-value) so the shape tests are hermetic and deterministic
+    regardless of the local Databricks env (the probes fail-soft to executable/no-value)."""
 
     async def _consents(_ms):
         return list(consents)
@@ -45,6 +50,8 @@ def _patch_mirror(monkeypatch, *, consents, members_by_domain, tag_members=None)
     monkeypatch.setattr(mirror, "read_approved_consents", _consents)
     monkeypatch.setattr(mirror, "read_domain_members", _domain_members)
     monkeypatch.setattr(mirror, "read_tag_members", _tag_members)
+    monkeypatch.setattr(grants, "membership_write_probe", lambda *a, **k: (True, []))
+    monkeypatch.setattr(grants, "current_tag_value", lambda *a, **k: None)
 
 
 def _statements(plan):
@@ -73,8 +80,9 @@ async def test_reuse_domain_emits_set_tag_only(monkeypatch):
     plan = await apply_service.build_apply_plan("ms1")
     stmts = _statements(plan)
     assert not any(s.startswith("CREATE GOVERNED TAG") for s in stmts)
-    assert "ALTER ASSET `cat.sch.orders` SET TAG `business_domain` = 'Revenue'" in stmts
-    assert "ALTER ASSET `cat.sch.line_items` SET TAG `business_domain` = 'Revenue'" in stmts
+    # Verified syntax (STEP 0): SET TAG ON <securable> `fqn` `key` = `value` (value is an identifier).
+    assert "SET TAG ON TABLE `cat`.`sch`.`orders` `business_domain` = `Revenue`" in stmts
+    assert "SET TAG ON TABLE `cat`.`sch`.`line_items` `business_domain` = `Revenue`" in stmts
     assert plan.executable_count == 2
     assert plan.source == "mirror"
 
@@ -97,8 +105,10 @@ async def test_create_subdomain_emits_create_then_set(monkeypatch):
     )
     plan = await apply_service.build_apply_plan("ms1")
     stmts = _statements(plan)
-    assert stmts[0] == "CREATE GOVERNED TAG `business_subdomain` WITH ALLOWED_VALUES ('Revenue/Billing')"
-    assert "ALTER ASSET `cat.sch.invoices` SET TAG `business_subdomain` = 'Revenue/Billing'" in stmts
+    # Verified syntax (STEP 0): CREATE GOVERNED TAG `key` VALUES ('literal'); the sub-domain
+    # value follows the {parent}/{child} convention and its slash rides a backtick identifier.
+    assert stmts[0] == "CREATE GOVERNED TAG `business_subdomain` VALUES ('Revenue/Billing')"
+    assert "SET TAG ON TABLE `cat`.`sch`.`invoices` `business_subdomain` = `Revenue/Billing`" in stmts
 
 
 async def test_reassign_emits_unset_then_set(monkeypatch):
@@ -120,12 +130,12 @@ async def test_reassign_emits_unset_then_set(monkeypatch):
     )
     plan = await apply_service.build_apply_plan("ms1")
     stmts = _statements(plan)
-    assert "ALTER ASSET `cat.sch.txns` UNSET TAG `legacy_domain`" in stmts
-    assert "ALTER ASSET `cat.sch.txns` SET TAG `business_domain` = 'Revenue'" in stmts
+    unset = "UNSET TAG ON TABLE `cat`.`sch`.`txns` `legacy_domain`"
+    set_new = "SET TAG ON TABLE `cat`.`sch`.`txns` `business_domain` = `Revenue`"
+    assert unset in stmts
+    assert set_new in stmts
     # order: unset precedes set for the moved asset
-    assert stmts.index("ALTER ASSET `cat.sch.txns` UNSET TAG `legacy_domain`") < stmts.index(
-        "ALTER ASSET `cat.sch.txns` SET TAG `business_domain` = 'Revenue'"
-    )
+    assert stmts.index(unset) < stmts.index(set_new)
 
 
 async def test_page_consent_excluded(monkeypatch):
@@ -282,13 +292,16 @@ async def test_read_approved_consents_skips_aged_out_proposal(monkeypatch):
 async def test_read_domain_members_filters_by_domain(monkeypatch):
     async def _rows(_table, _ms):
         return [
-            {"domain_id": "sug_a", "asset_fqn": "cat.sch.a"},
+            {"domain_id": "sug_a", "asset_fqn": "cat.sch.a", "asset_type": "view"},
             {"domain_id": "sug_b", "asset_fqn": "cat.sch.b"},
             {"domain_id": "sug_a", "asset_fqn": ""},  # empty fqn dropped
         ]
 
     monkeypatch.setattr(mirror, "_read_table", _rows)
-    assert await mirror.read_domain_members("ms1", "sug_a") == [{"asset_fqn": "cat.sch.a"}]
+    # asset_type rides along (drives the SET TAG securable keyword); missing → "table".
+    assert await mirror.read_domain_members("ms1", "sug_a") == [
+        {"asset_fqn": "cat.sch.a", "asset_type": "view"}
+    ]
 
 
 async def test_read_tag_members_scopes_to_conflicted_proposals(monkeypatch):
@@ -308,5 +321,213 @@ async def test_read_tag_members_scopes_to_conflicted_proposals(monkeypatch):
 
     monkeypatch.setattr(mirror, "_read_table", _read_table)
     out = await mirror.read_tag_members("ms1", "legacy_domain")
-    assert out == [{"asset_fqn": "cat.sch.txns"}]  # only the conflicted proposal's members
+    # only the conflicted proposal's members; asset_type defaults to "table" when absent
+    assert out == [{"asset_fqn": "cat.sch.txns", "asset_type": "table"}]
     assert await mirror.read_tag_members("ms1", "") == []  # empty tag → no read
+
+
+# ── STEP 0 / BUILD A: statement builders escape identifiers + literals safely ──
+
+
+def test_set_tag_statement_uses_verified_syntax_and_securable_keyword():
+    # A view member yields a VIEW securable keyword; a 3-part FQN is quoted per segment.
+    assert apply_service._set_tag_statement("c.s.orders", "view", "biz", "Revenue") == (
+        "SET TAG ON VIEW `c`.`s`.`orders` `biz` = `Revenue`"
+    )
+    # Sub-domain value with a slash rides a backtick identifier (the {parent}/{child} form).
+    assert apply_service._set_tag_statement("c.s.t", "table", "biz", "Finance/Tax") == (
+        "SET TAG ON TABLE `c`.`s`.`t` `biz` = `Finance/Tax`"
+    )
+
+
+def test_set_tag_value_with_quote_or_backtick_is_injection_safe():
+    # The SET TAG value is an IDENTIFIER position: a single quote is inert inside backticks,
+    # and an embedded backtick is doubled — no way to break out of the value.
+    stmt = apply_service._set_tag_statement("c.s.t", "table", "k", "a'b`c")
+    assert stmt == "SET TAG ON TABLE `c`.`s`.`t` `k` = `a'b``c`"
+
+
+def test_create_tag_statement_escapes_string_literal():
+    # The CREATE GOVERNED TAG allowed value IS a string literal → a single quote is doubled.
+    assert apply_service._create_tag_statement("k", "a'b") == "CREATE GOVERNED TAG `k` VALUES ('a''b')"
+    assert apply_service._create_tag_statement("k", None) == "CREATE GOVERNED TAG `k`"
+
+
+# ── BUILD B: the grant probe blocks an item → copy-ready, not executed ─────────
+
+
+async def test_grant_probe_blocks_item_with_copy_ready_grants(monkeypatch):
+    _patch_mirror(
+        monkeypatch,
+        consents=[
+            {
+                "proposal_kind": "domain",
+                "proposal_id": "sug_a",
+                "name": "Revenue",
+                "tag_decision": "reuse",
+                "tag_key": "business_domain",
+                "tag_value": "Revenue",
+                "conflict_tag": "",
+            }
+        ],
+        members_by_domain={"sug_a": [{"asset_fqn": "cat.sch.orders"}]},
+    )
+    # A probe that positively finds a missing grant blocks the item (copy-ready lines).
+    monkeypatch.setattr(
+        grants,
+        "membership_write_probe",
+        lambda *a, **k: (False, ["GRANT APPLY TAG ON TABLE `cat`.`sch`.`orders` TO `you`"]),
+    )
+    plan = await apply_service.build_apply_plan("ms1")
+    assert plan.executable_count == 0 and plan.blocked_count == 1
+    item = plan.items[0]
+    assert item.executable is False
+    assert item.blocked_reason
+    assert item.required_grants == ["GRANT APPLY TAG ON TABLE `cat`.`sch`.`orders` TO `you`"]
+
+
+async def test_blocked_item_is_copy_ready_not_executed(monkeypatch):
+    """execute skips a blocked item (no statement runs for it) and returns it as copy-ready."""
+    executed: list[str] = []
+
+    class _Resp:
+        statement_id = "sid"
+        status = types.SimpleNamespace(state=StatementState.SUCCEEDED, error=None)
+
+    class _Exec:
+        def execute_statement(self, warehouse_id, statement, wait_timeout=None, parameters=None):
+            executed.append(statement)
+            return _Resp()
+
+        def get_statement(self, statement_id):
+            return _Resp()
+
+    fake_client = types.SimpleNamespace(statement_execution=_Exec())
+    monkeypatch.setattr(apply_service, "require_obo_workspace_client", lambda: fake_client)
+    monkeypatch.setattr(apply_service, "_write_audit_row", lambda **k: None)
+    monkeypatch.setattr(apply_service, "_flip_consents", lambda **k: None)
+    monkeypatch.setenv("SQL_WAREHOUSE_ID", "wh1")
+
+    ok_item = models.ApplyItem(
+        proposal_id="s", proposal_kind="domain", shape="set_tag", target_fqn="c.s.a",
+        tag_key="biz", tag_value="Rev", statement="SET TAG ON TABLE `c`.`s`.`a` `biz` = `Rev`",
+        executable=True,
+    )
+    blocked_item = models.ApplyItem(
+        proposal_id="s", proposal_kind="domain", shape="set_tag", target_fqn="c.s.b",
+        tag_key="biz", tag_value="Rev", statement="SET TAG ON TABLE `c`.`s`.`b` `biz` = `Rev`",
+        executable=False, blocked_reason="needs a grant",
+        required_grants=["GRANT APPLY TAG ON TABLE `c`.`s`.`b` TO `you`"],
+    )
+    plan = models.ApplyPlan(
+        items=[ok_item, blocked_item], executable_count=1, blocked_count=1,
+        plan_hash="h", source="mirror", as_of="t",
+    )
+
+    result = await apply_service.execute_apply_plan(
+        plan=plan, metastore_id="ms1", workspace_id="ws1", applied_by="u@x"
+    )
+    # Only the executable statement ran; the blocked one was never sent to the warehouse.
+    assert executed == ["SET TAG ON TABLE `c`.`s`.`a` `biz` = `Rev`"]
+    assert [o.target_fqn for o in result.applied] == ["c.s.a"]
+    assert [o.target_fqn for o in result.blocked] == ["c.s.b"]
+    assert result.failed == []
+
+
+# ── BUILD C: current_value drives add-vs-move ──────────────────────────────────
+
+
+async def test_current_value_add_vs_move(monkeypatch):
+    cfg = dict(
+        consents=[
+            {
+                "proposal_kind": "domain", "proposal_id": "sug_a", "name": "Revenue",
+                "tag_decision": "reuse", "tag_key": "business_domain",
+                "tag_value": "Revenue", "conflict_tag": "",
+            }
+        ],
+        members_by_domain={"sug_a": [{"asset_fqn": "cat.sch.orders"}]},
+    )
+    # No current value → an "add" (current_value stays None).
+    _patch_mirror(monkeypatch, **cfg)
+    plan = await apply_service.build_apply_plan("ms1")
+    assert plan.items[0].current_value is None
+
+    # A differing current value → a "move" (current_value carried through for the diff).
+    _patch_mirror(monkeypatch, **cfg)
+    monkeypatch.setattr(grants, "current_tag_value", lambda *a, **k: "Legacy")
+    plan = await apply_service.build_apply_plan("ms1")
+    assert plan.items[0].current_value == "Legacy"
+
+
+# ── BUILD A: audit INSERT + consent flip bind every value (no interpolation) ───
+
+
+def test_audit_insert_binds_values_no_interpolation(monkeypatch):
+    captured: dict = {}
+
+    class _Resp:
+        statement_id = None
+        status = None
+
+    class _Exec:
+        def execute_statement(self, warehouse_id, statement, wait_timeout=None, parameters=None):
+            captured["sql"] = statement
+            captured["params"] = parameters
+            return _Resp()
+
+    import backend.services.auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod, "get_service_principal_client",
+        lambda: types.SimpleNamespace(statement_execution=_Exec()),
+    )
+    monkeypatch.setenv("SQL_WAREHOUSE_ID", "wh1")
+
+    nasty = "SET TAG ON TABLE `c`.`s`.`t` `k` = `O'Brien`"  # a value carrying a single quote
+    apply_service._write_audit_row(
+        metastore_id="ms1", apply_id="ap_1", workspace_id="ws1", proposal_kind="domain",
+        proposal_id="s", shape="set_tag", statement=nasty, target_fqn="c.s.t",
+        tag_key="k", tag_value="O'Brien", prev_value=None, state="applied",
+        applied_by="u@x", error=None,
+    )
+    # The statement text is a bound parameter, never interpolated into the INSERT SQL.
+    assert ":statement" in captured["sql"]
+    assert nasty not in captured["sql"]
+    by_name = {p.name: p.value for p in captured["params"]}
+    assert by_name["statement"] == nasty
+    assert by_name["applied_by"] == "u@x"
+    assert by_name["tag_value"] == "O'Brien"
+    assert by_name["run_ref"] is None
+
+
+def test_consent_flip_binds_values_and_in_list(monkeypatch):
+    captured: dict = {}
+
+    class _Resp:
+        statement_id = None
+        status = None
+
+    class _Exec:
+        def execute_statement(self, warehouse_id, statement, wait_timeout=None, parameters=None):
+            captured["sql"] = statement
+            captured["params"] = parameters
+            return _Resp()
+
+    import backend.services.auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod, "get_service_principal_client",
+        lambda: types.SimpleNamespace(statement_execution=_Exec()),
+    )
+    monkeypatch.setenv("SQL_WAREHOUSE_ID", "wh1")
+
+    apply_service._flip_consents(
+        metastore_id="ms1", workspace_id="ws1", proposal_ids={"a", "b"}, applied_by="u@x"
+    )
+    sql = captured["sql"]
+    assert ":metastore_id" in sql and ":workspace_id" in sql
+    assert ":pid0" in sql and ":pid1" in sql  # one named marker per proposal id (bound IN list)
+    by_name = {p.name: p.value for p in captured["params"]}
+    assert by_name["metastore_id"] == "ms1"
+    assert sorted([by_name["pid0"], by_name["pid1"]]) == ["a", "b"]

@@ -44,11 +44,8 @@ _TAG_GRAPH_GRANTS = [
     "GRANT USE SCHEMA ON SCHEMA system.tags TO `<app-service-principal>`",
     "GRANT SELECT ON TABLE system.tags.governed_tags TO `<app-service-principal>`",
 ]
-# Informational only — Phase 1 never exercises these (write / enrichment tiers).
-_MEMBERSHIP_WRITE_GRANTS = [
-    "MANAGE DISCOVERY + ASSIGN on each governed tag",
-    "APPLY TAG / USE SCHEMA / USE CATALOG on target assets (OBO)",
-]
+# Phase 5 (17i) Stage 2: the membership_write tier's grant lines are now produced by
+# ``grants.membership_write_status`` (a real OBO probe), not a static placeholder.
 _ENRICHMENT_GRANTS = [
     "EXECUTE on the enabled Unity AI Gateway MCP services (opt-in, default OFF)",
 ]
@@ -267,13 +264,28 @@ async def preflight() -> dict:
         grants=tag_grants,
         reason=tag_reason,
     )
+    # Phase 5 (17i) Stage 2: the membership_write tier is now REAL (mirrors the
+    # enrichment tier's ok/blocked shape) — a read-only probe of the OBO viewer's apply
+    # grants (BUILD B). The write itself is OBO (MV-D50); the probe client is resolved
+    # ONLY on-platform (DATABRICKS_HOST set) so the offline suite never networks, and it
+    # fails soft to "ok" when it cannot verify (the exact per-change grants are re-checked
+    # at preview time). No catalogs in scope → "not_exercised" (nothing to probe yet).
+    membership_client = None
+    if os.environ.get("DATABRICKS_HOST", "").strip():
+        try:
+            membership_client = get_workspace_client()
+        except Exception as e:  # noqa: BLE001 — preflight never raises (MV-D43)
+            logger.info("membership_write tier: no OBO client: %s", e)
+    ms_status, ms_grants, ms_reason = await asyncio.to_thread(
+        grants.membership_write_status, membership_client, settings.catalog_allowlist, sp_id
+    )
     membership_tier = PermissionTier(
         id="membership_write",
         label="Membership write (optional apply)",
         identity="obo",
-        status="not_exercised",
-        grants=_MEMBERSHIP_WRITE_GRANTS,
-        reason="Not used in Phase 1 — Ontology is read-only; nothing is written to Unity Catalog.",
+        status=ms_status,  # type: ignore[arg-type]
+        grants=ms_grants,
+        reason=ms_reason,
     )
     # Tier-5 (Stage A, 17h): DEFAULT OFF ⇒ a plain disabled reason with no probing;
     # when enabled, the EXECUTE probes are cheap SDK round-trips run off the event loop.

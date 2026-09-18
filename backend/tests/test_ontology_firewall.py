@@ -247,3 +247,27 @@ def test_phase5_applied_audit_table_not_written_by_materialize():
     assert ddl.TABLE_ONT_APPLIED == "genie_ont_applied"
     assert hasattr(ddl, "APPLY_TABLES")
     assert ddl.TABLE_ONT_APPLIED in ddl.APPLY_TABLES
+
+
+def test_phase5_apply_identity_split_write_obo_bookkeeping_sp():
+    """Phase 5 (17i) Stage 2 firewall (BUILD D · MV-D50): the governed-tag WRITE runs under
+    OBO (attributed to the consenting human, gated on THEIR grants); the audit
+    (genie_ont_applied) and consent-flip (approved→applied) bookkeeping run as the SERVICE
+    PRINCIPAL (the SP owns those app-state tables). This split is deliberate — do NOT move
+    the audit / consent-flip to OBO. Asserted structurally so a refactor can't silently
+    widen the write identity or narrow the bookkeeping identity."""
+    import inspect
+
+    from backend.ontology.services import apply as apply_service
+
+    write_src = inspect.getsource(apply_service.execute_apply_plan)
+    # The governed-tag write client is the OBO client (never the SP).
+    assert "require_obo_workspace_client()" in write_src
+    assert "get_service_principal_client" not in write_src
+
+    # The bookkeeping writes are SP-owned (the SP owns genie_ont_applied + the consent ledger).
+    audit_src = inspect.getsource(apply_service._write_audit_row)
+    flip_src = inspect.getsource(apply_service._flip_consents)
+    for src in (audit_src, flip_src):
+        assert "get_service_principal_client" in src
+        assert "require_obo_workspace_client" not in src

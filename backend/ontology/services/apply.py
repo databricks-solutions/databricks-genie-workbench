@@ -5,6 +5,51 @@ The ONLY write module in the ontology subsystem. Two pure-ish phases:
 2. execute_apply_plan(): executes statements under OBO, audits to genie_ont_applied, flips consent
 
 The statement builder is shared by preview and execute, and by the copy-ready card.
+
+──────────────────────────────────────────────────────────────────────────────
+VERIFIED GOVERNED-TAG SYNTAX (STEP 0 — reconciled against the Databricks docs
+on 2026-09-17; supersedes the Stage-1 ``ALTER ASSET … SET TAG`` / ``WITH
+ALLOWED_VALUES`` drafts, which diverged):
+
+  - CREATE GOVERNED TAG <tag_key> [ VALUES ( '<v>' [, …] ) ]
+      docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-governed-tag
+      · tag_key is an identifier (we backtick-quote it to escape).
+      · allowed values are SINGLE-QUOTED STRING LITERALS (we double any ``'``).
+
+  - SET TAG ON { CATALOG | SCHEMA | TABLE | VIEW | VOLUME | FUNCTION | COLUMN }
+        <name> <tag_key> [ = <tag_value> ]
+      docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-set-tag
+      · the securable TYPE is a required keyword (from the member's asset_type).
+      · <name> is a dotted identifier; each segment is backtick-quoted.
+      · BOTH tag_key AND tag_value are IDENTIFIERS (e.g. ``= hr`` / ``= `hr` ``),
+        NOT string literals — so we backtick-quote the value too. A sub-domain
+        value follows the verified {parent}/{child} convention (e.g. ``Finance/Tax``,
+        docs.databricks.com/aws/en/uc-semantics/domains); the ``/`` REQUIRES the
+        backtick-quoting we already apply.
+
+  - UNSET TAG ON <securable_type> <name> <tag_key>
+
+SQL SAFETY (BUILD A): the governed-tag statement is fully self-contained — every
+piece that lands in it is an IDENTIFIER position (asset FQN, tag_key, and — per the
+verified syntax — the SET TAG value), so it is made injection-safe by backtick
+ESCAPING (doubling internal backticks), NOT by parameter binding: the SQL Statement
+Execution API's ``:name`` markers bind VALUE literals, and there is no value literal
+in a SET/UNSET TAG statement. (BUILD A's "bind tag values" premise assumed a literal
+position; STEP 0 corrected that.) The CREATE GOVERNED TAG allowed-value IS a literal,
+so it is single-quote escaped. Where genuine value literals DO exist — the
+``genie_ont_applied`` audit INSERT and the consent-flip UPDATE — every column is bound
+via ``StatementParameterListItem`` (see ``_write_audit_row`` / ``_flip_consents``).
+``plan_hash`` fingerprints the ordered, fully-inlined statements; because the write
+carries no bound params, the statement string IS the template+values, so preview and
+execute (which rebuilds the plan) still match exactly.
+
+IDENTITY SPLIT (BUILD D · MV-D50): the governed-tag WRITE runs under OBO
+(``require_obo_workspace_client`` — attributed to the consenting human, gated on THEIR
+grants). The bookkeeping — the ``genie_ont_applied`` audit INSERT and the consent
+``approved → applied`` flip — runs as the SERVICE PRINCIPAL (``get_service_principal_client``),
+because the SP owns those app-state tables. This split is deliberate: DO NOT move the
+audit / consent-flip to OBO.
+──────────────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
@@ -20,7 +65,7 @@ from typing import Any
 from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 
 from backend.ontology import models
-from backend.ontology.services import mirror
+from backend.ontology.services import grants, mirror
 from backend.services.auth import get_workspace_client, require_obo_workspace_client
 
 logger = logging.getLogger(__name__)
@@ -28,12 +73,71 @@ logger = logging.getLogger(__name__)
 _CONSENTS = "genie_ont_consents"
 _APPLIED = "genie_ont_applied"
 
+# asset_type → the SET/UNSET TAG securable-type keyword (verified syntax above).
+_SECURABLE_KW = {
+    "table": "TABLE",
+    "view": "VIEW",
+    "materialized_view": "TABLE",
+    "streaming_table": "TABLE",
+    "schema": "SCHEMA",
+    "catalog": "CATALOG",
+    "volume": "VOLUME",
+    "function": "FUNCTION",
+    "column": "COLUMN",
+}
+
+_BLOCKED_REASON = "You need a permission to apply this change."
+
 
 def _fqn(table: str) -> str:
     """Fully qualified table name."""
     catalog = os.environ.get("GSO_CATALOG", "")
     schema = os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
     return f"{catalog}.{schema}.{table}"
+
+
+def _securable_kw(asset_type: str) -> str:
+    return _SECURABLE_KW.get((asset_type or "table").lower(), "TABLE")
+
+
+def _bt(name: str) -> str:
+    """Backtick-quote a single identifier, doubling any internal backtick (injection-safe)."""
+    return "`" + str(name).replace("`", "``") + "`"
+
+
+def _bt_fqn(fqn: str) -> str:
+    """Backtick-quote each dotted segment of an asset FQN (``a.b.c`` → `` `a`.`b`.`c` ``)."""
+    parts = [p for p in str(fqn).split(".") if p != ""]
+    return ".".join(_bt(p) for p in parts) if parts else _bt(fqn)
+
+
+def _sq(literal: str) -> str:
+    """Single-quote a string literal, doubling any internal single quote (injection-safe)."""
+    return "'" + str(literal).replace("'", "''") + "'"
+
+
+# ── statement builders (the single source shared by preview + execute) ──────────
+
+
+def _create_tag_statement(tag_key: str, tag_value: str | None) -> str:
+    """CREATE GOVERNED TAG `<key>` [ VALUES ('<value>') ] — value is a STRING LITERAL."""
+    stmt = f"CREATE GOVERNED TAG {_bt(tag_key)}"
+    if tag_value:
+        stmt += f" VALUES ({_sq(tag_value)})"
+    return stmt
+
+
+def _set_tag_statement(asset_fqn: str, asset_type: str, tag_key: str, tag_value: str | None) -> str:
+    """SET TAG ON <type> `<fqn>` `<key>` [ = `<value>` ] — key AND value are IDENTIFIERS."""
+    stmt = f"SET TAG ON {_securable_kw(asset_type)} {_bt_fqn(asset_fqn)} {_bt(tag_key)}"
+    if tag_value:
+        stmt += f" = {_bt(tag_value)}"
+    return stmt
+
+
+def _unset_tag_statement(asset_fqn: str, asset_type: str, tag_key: str) -> str:
+    """UNSET TAG ON <type> `<fqn>` `<key>`."""
+    return f"UNSET TAG ON {_securable_kw(asset_type)} {_bt_fqn(asset_fqn)} {_bt(tag_key)}"
 
 
 def _apply_id(proposal_id: str, shape: str, target_fqn: str, tag_value: str | None) -> str:
@@ -44,9 +148,39 @@ def _apply_id(proposal_id: str, shape: str, target_fqn: str, tag_value: str | No
 
 
 def _plan_hash(items: list[models.ApplyItem]) -> str:
-    """Fingerprint the ordered statements so execute matches preview exactly."""
+    """Fingerprint the ordered statements so execute matches preview exactly.
+
+    The write statements are fully inlined (no bound params — every substituted piece is
+    an identifier position, escaped in place), so the statement string already captures
+    the "template + values" BUILD A calls for; hashing the ordered statements is the whole
+    fingerprint. Execute rebuilds the plan and rejects a hash it does not echo (409)."""
     statements_json = json.dumps([item.statement for item in items], sort_keys=True)
     return hashlib.sha256(statements_json.encode()).hexdigest()[:16]
+
+
+def _probe_client():
+    """The OBO client used ONLY for the read-only preview probes (write grants +
+    current tag value). Resolved on-platform (``DATABRICKS_HOST`` set); ``None`` off-platform
+    or on any failure, so the offline suite never touches the network and the probes
+    fail-soft (MV-D43). This client is NOT the write client — the write resolves its own
+    ``require_obo_workspace_client`` inside ``execute_apply_plan``."""
+    if not os.environ.get("DATABRICKS_HOST", "").strip():
+        return None
+    try:
+        return get_workspace_client()
+    except Exception as e:  # noqa: BLE001 — a probe never blocks (MV-D43)
+        logger.info("probe client unavailable: %s", e)
+        return None
+
+
+def _probe_principal(client) -> str | None:
+    """The OBO viewer's user name (for copy-ready GRANT lines). None on any failure."""
+    if client is None:
+        return None
+    try:
+        return (client.current_user.me().user_name or "").strip() or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def build_apply_plan(
@@ -75,6 +209,11 @@ async def build_apply_plan(
                 as_of=datetime.now(timezone.utc).isoformat(),
             )
 
+        # Read-only probe client (write grants + current value), resolved once. None
+        # off-platform → both probes fail-soft, so the plan is byte-identical to Stage 1.
+        client = _probe_client()
+        principal = _probe_principal(client)
+
         items: list[models.ApplyItem] = []
         for consent in consents:
             proposal_kind = consent.get("proposal_kind", "")
@@ -88,11 +227,13 @@ async def build_apply_plan(
             # Expand domain/subdomain/reassign consents to statements.
             if proposal_kind in ("domain", "subdomain"):
                 domain_items = await _domain_items(
-                    metastore_id, proposal_id, consent, proposal_kind
+                    metastore_id, proposal_id, consent, proposal_kind, client, principal
                 )
                 items.extend(domain_items)
             elif proposal_kind == "reassign":
-                reassign_items = await _reassign_items(metastore_id, proposal_id, consent)
+                reassign_items = await _reassign_items(
+                    metastore_id, proposal_id, consent, client, principal
+                )
                 items.extend(reassign_items)
 
         # Compute counts and fingerprint.
@@ -121,21 +262,40 @@ async def build_apply_plan(
         )
 
 
+def _probe_write(
+    client, target_fqn: str, tag_key: str, asset_type: str, principal: str | None
+) -> tuple[bool, str | None, list[str]]:
+    """Grant probe for one write target → (executable, blocked_reason, required_grants).
+    Probe failure/indeterminate ⇒ executable=True (MV-D43)."""
+    ok, missing = grants.membership_write_probe(
+        client, target_fqn, tag_key, asset_type=asset_type, principal=principal
+    )
+    if ok:
+        return True, None, []
+    return False, _BLOCKED_REASON, missing
+
+
 async def _domain_items(
-    metastore_id: str, domain_id: str, domain_consent: dict[str, Any], proposal_kind: str
+    metastore_id: str,
+    domain_id: str,
+    domain_consent: dict[str, Any],
+    proposal_kind: str,
+    client=None,
+    principal: str | None = None,
 ) -> list[models.ApplyItem]:
     """Expand a domain/subdomain consent to create_tag + set_tag statements."""
     items: list[models.ApplyItem] = []
     tag_decision = domain_consent.get("tag_decision", "")
     tag_key = domain_consent.get("tag_key", "")
     tag_value = domain_consent.get("tag_value")
-    name = domain_consent.get("name", "")
 
     if not tag_key:
         logger.warning("domain consent missing tag_key: %s", domain_id)
         return items
 
     # create_tag: CREATE GOVERNED TAG (sub-domain value in {parent}/{child} convention).
+    # The account-level create privilege is not probeable per-asset; leave it executable and
+    # let the OBO execute degrade to copy-ready on a real denial (MV-D43).
     if tag_decision == "create":
         create_item = models.ApplyItem(
             proposal_id=domain_id,
@@ -145,9 +305,8 @@ async def _domain_items(
             tag_key=tag_key,
             tag_value=tag_value,
             current_value=None,
-            statement=f"CREATE GOVERNED TAG `{tag_key}`" +
-                     (f" WITH ALLOWED_VALUES ('{tag_value}')" if tag_value else ""),
-            executable=True,  # TODO: probe MANAGE DISCOVERY + ASSIGN / CREATE GOVERNED TAG
+            statement=_create_tag_statement(tag_key, tag_value),
+            executable=True,
             blocked_reason=None,
             required_grants=[],
         )
@@ -159,11 +318,12 @@ async def _domain_items(
         asset_fqn = member.get("asset_fqn", "")
         if not asset_fqn:
             continue
+        asset_type = member.get("asset_type", "table")
 
-        if tag_value:
-            statement = f"ALTER ASSET `{asset_fqn}` SET TAG `{tag_key}` = '{tag_value}'"
-        else:
-            statement = f"ALTER ASSET `{asset_fqn}` SET TAG `{tag_key}`"
+        executable, blocked_reason, required_grants = _probe_write(
+            client, asset_fqn, tag_key, asset_type, principal
+        )
+        current_value = grants.current_tag_value(client, asset_fqn, tag_key, asset_type=asset_type)
 
         set_item = models.ApplyItem(
             proposal_id=domain_id,
@@ -172,11 +332,11 @@ async def _domain_items(
             target_fqn=asset_fqn,
             tag_key=tag_key,
             tag_value=tag_value,
-            current_value=None,  # TODO: probe current value
-            statement=statement,
-            executable=True,  # TODO: probe APPLY TAG / USE SCHEMA / USE CATALOG
-            blocked_reason=None,
-            required_grants=[],
+            current_value=current_value,
+            statement=_set_tag_statement(asset_fqn, asset_type, tag_key, tag_value),
+            executable=executable,
+            blocked_reason=blocked_reason,
+            required_grants=required_grants,
         )
         items.append(set_item)
 
@@ -184,7 +344,11 @@ async def _domain_items(
 
 
 async def _reassign_items(
-    metastore_id: str, reassign_id: str, reassign_consent: dict[str, Any]
+    metastore_id: str,
+    reassign_id: str,
+    reassign_consent: dict[str, Any],
+    client=None,
+    principal: str | None = None,
 ) -> list[models.ApplyItem]:
     """Expand a reassign consent to unset_tag + set_tag statements (move members)."""
     items: list[models.ApplyItem] = []
@@ -202,9 +366,12 @@ async def _reassign_items(
         asset_fqn = member.get("asset_fqn", "")
         if not asset_fqn:
             continue
+        asset_type = member.get("asset_type", "table")
 
         # unset_tag: remove from old.
-        unset_stmt = f"ALTER ASSET `{asset_fqn}` UNSET TAG `{conflict_tag}`"
+        unset_ok, unset_reason, unset_grants = _probe_write(
+            client, asset_fqn, conflict_tag, asset_type, principal
+        )
         unset_item = models.ApplyItem(
             proposal_id=reassign_id,
             proposal_kind="reassign",
@@ -213,18 +380,18 @@ async def _reassign_items(
             tag_key=conflict_tag,
             tag_value=None,
             current_value=None,
-            statement=unset_stmt,
-            executable=True,  # TODO: probe
-            blocked_reason=None,
-            required_grants=[],
+            statement=_unset_tag_statement(asset_fqn, asset_type, conflict_tag),
+            executable=unset_ok,
+            blocked_reason=unset_reason,
+            required_grants=unset_grants,
         )
         items.append(unset_item)
 
         # set_tag: add to new.
-        if new_tag_value:
-            set_stmt = f"ALTER ASSET `{asset_fqn}` SET TAG `{new_tag_key}` = '{new_tag_value}'"
-        else:
-            set_stmt = f"ALTER ASSET `{asset_fqn}` SET TAG `{new_tag_key}`"
+        set_ok, set_reason, set_grants = _probe_write(
+            client, asset_fqn, new_tag_key, asset_type, principal
+        )
+        current_value = grants.current_tag_value(client, asset_fqn, new_tag_key, asset_type=asset_type)
         set_item = models.ApplyItem(
             proposal_id=reassign_id,
             proposal_kind="reassign",
@@ -232,11 +399,11 @@ async def _reassign_items(
             target_fqn=asset_fqn,
             tag_key=new_tag_key,
             tag_value=new_tag_value,
-            current_value=None,
-            statement=set_stmt,
-            executable=True,  # TODO: probe
-            blocked_reason=None,
-            required_grants=[],
+            current_value=current_value,
+            statement=_set_tag_statement(asset_fqn, asset_type, new_tag_key, new_tag_value),
+            executable=set_ok,
+            blocked_reason=set_reason,
+            required_grants=set_grants,
         )
         items.append(set_item)
 
@@ -251,8 +418,10 @@ async def execute_apply_plan(
 ) -> models.ApplyResult:
     """Execute the plan under OBO: run statements, audit to genie_ont_applied, flip consent.
 
-    Per-statement fail-soft: PERMISSION_DENIED records state='failed' + degrades to copy-ready;
-    other errors still run; never 500. Idempotent: flip consent approved→applied.
+    The governed-tag WRITE runs under OBO (MV-D50) — attributed to ``applied_by``. Per-statement
+    fail-soft: PERMISSION_DENIED records state='failed' + degrades to copy-ready; other errors
+    still run; never 500. The audit + consent-flip bookkeeping is SP (BUILD D). Idempotent: the
+    consent flips approved→applied so a re-run is a no-op.
     """
     result = models.ApplyResult(as_of=datetime.now(timezone.utc).isoformat())
 
@@ -371,7 +540,7 @@ async def execute_apply_plan(
 
                 logger.warning("apply item failed: %s/%s (%s)", item.proposal_id, item.shape, error_str)
 
-        # Flip consents: approved → applied (idempotent MERGE).
+        # Flip consents: approved → applied (idempotent).
         _flip_consents(
             metastore_id=metastore_id,
             workspace_id=workspace_id,
@@ -401,33 +570,57 @@ def _write_audit_row(
     applied_by: str,
     error: str | None,
 ) -> None:
-    """Write one row to genie_ont_applied (audit table). Degrade-not-hang on failure."""
+    """Write one row to genie_ont_applied (audit table). Degrade-not-hang on failure.
+
+    BUILD A: every VALUE is bound via ``StatementParameterListItem`` — never string-
+    interpolated — so a statement / error / email carrying a quote can never break out.
+    BUILD D: this bookkeeping write runs as the SERVICE PRINCIPAL (the SP owns the table);
+    only the governed-tag write itself is OBO."""
     try:
         from genie_space_optimizer.ontology import ddl
 
         applied_at = datetime.now(timezone.utc).isoformat()
         target = _fqn(ddl.TABLE_ONT_APPLIED)
 
-        # INSERT into applied table (idempotent on apply_id).
+        # INSERT into applied table — all VALUES bound; applied_at cast to TIMESTAMP.
         sql = f"""
 INSERT INTO {target} (
     metastore_id, apply_id, workspace_id, proposal_kind, proposal_id,
     shape, statement, target_fqn, tag_key, tag_value, prev_value,
     state, applied_by, applied_at, error, run_ref
 ) VALUES (
-    '{metastore_id}', '{apply_id}', '{workspace_id}', '{proposal_kind}', '{proposal_id}',
-    '{shape}', '{statement}', '{target_fqn}', '{tag_key}', {repr(tag_value)},
-    {repr(prev_value)}, '{state}', '{applied_by}', '{applied_at}', {repr(error)}, NULL
+    :metastore_id, :apply_id, :workspace_id, :proposal_kind, :proposal_id,
+    :shape, :statement, :target_fqn, :tag_key, :tag_value, :prev_value,
+    :state, :applied_by, CAST(:applied_at AS TIMESTAMP), :error, :run_ref
 )
 """
-        # Execute as SP (best-effort audit; failure does not fail the apply).
+        params = [
+            StatementParameterListItem(name="metastore_id", value=metastore_id),
+            StatementParameterListItem(name="apply_id", value=apply_id),
+            StatementParameterListItem(name="workspace_id", value=workspace_id),
+            StatementParameterListItem(name="proposal_kind", value=proposal_kind),
+            StatementParameterListItem(name="proposal_id", value=proposal_id),
+            StatementParameterListItem(name="shape", value=shape),
+            StatementParameterListItem(name="statement", value=statement),
+            StatementParameterListItem(name="target_fqn", value=target_fqn),
+            StatementParameterListItem(name="tag_key", value=tag_key),
+            StatementParameterListItem(name="tag_value", value=tag_value),
+            StatementParameterListItem(name="prev_value", value=prev_value),
+            StatementParameterListItem(name="state", value=state),
+            StatementParameterListItem(name="applied_by", value=applied_by),
+            StatementParameterListItem(name="applied_at", value=applied_at),
+            StatementParameterListItem(name="error", value=error),
+            StatementParameterListItem(name="run_ref", value=None),
+        ]
+
+        # Execute as SP (best-effort audit; failure does not fail the apply — BUILD D).
         from backend.services.auth import get_service_principal_client
 
         client = get_service_principal_client()
         warehouse_id = os.environ.get("SQL_WAREHOUSE_ID", "").strip()
         if warehouse_id:
             resp = client.statement_execution.execute_statement(
-                warehouse_id=warehouse_id, statement=sql, wait_timeout="10s"
+                warehouse_id=warehouse_id, statement=sql, parameters=params, wait_timeout="10s"
             )
             if resp and resp.statement_id:
                 deadline = time.monotonic() + 15
@@ -453,7 +646,12 @@ def _flip_consents(
     proposal_ids: set[str],
     applied_by: str,
 ) -> None:
-    """Flip consumed consents from approved → applied (idempotent). Degrade-not-hang on failure."""
+    """Flip consumed consents from approved → applied (idempotent). Degrade-not-hang on failure.
+
+    BUILD A: the metastore_id / workspace_id / proposal-id list are all bound via
+    ``StatementParameterListItem`` (the IN list gets one named marker per id). BUILD D: this
+    consent-flip is a SERVICE-PRINCIPAL write (the SP owns the ledger); only the governed-tag
+    write itself is OBO."""
     if not proposal_ids:
         return
     try:
@@ -465,16 +663,24 @@ def _flip_consents(
             return
 
         target = _fqn(_CONSENTS)
-        applied_at = datetime.now(timezone.utc).isoformat()
-        proposal_list = ", ".join(f"'{pid}'" for pid in proposal_ids)
+        ordered_ids = sorted(proposal_ids)
+        placeholders = ", ".join(f":pid{i}" for i in range(len(ordered_ids)))
+        params = [
+            StatementParameterListItem(name="workspace_id", value=workspace_id),
+            StatementParameterListItem(name="metastore_id", value=metastore_id),
+        ]
+        params += [
+            StatementParameterListItem(name=f"pid{i}", value=pid)
+            for i, pid in enumerate(ordered_ids)
+        ]
 
         sql = f"""
 UPDATE {target}
-SET state = 'applied', workspace_id = '{workspace_id}'
-WHERE metastore_id = '{metastore_id}' AND proposal_id IN ({proposal_list}) AND state = 'approved'
+SET state = 'applied', workspace_id = :workspace_id
+WHERE metastore_id = :metastore_id AND proposal_id IN ({placeholders}) AND state = 'approved'
 """
         resp = client.statement_execution.execute_statement(
-            warehouse_id=warehouse_id, statement=sql, wait_timeout="10s"
+            warehouse_id=warehouse_id, statement=sql, parameters=params, wait_timeout="10s"
         )
         if resp and resp.statement_id:
             deadline = time.monotonic() + 15

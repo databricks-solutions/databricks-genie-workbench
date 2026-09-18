@@ -12,10 +12,10 @@
  * gate; a stale plan is rejected server-side and surfaced as a refresh prompt.
  */
 import { useEffect, useState } from "react"
-import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, Lock, Plus, X } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { applyExecute, applyPreview } from "@/ontology/api"
-import { describeChange } from "@/ontology/applyDescribe"
+import { ApplyDiff } from "@/ontology/components/ApplyDiff"
 import type { ApplyPlan, ApplyResult } from "@/ontology/types"
 
 type Phase = "loading" | "preview" | "executing" | "done" | "error"
@@ -113,39 +113,7 @@ export function ApplyPreview({ onClose }: { onClose: () => void }) {
 
         {(phase === "preview" || phase === "executing") && plan && (executable.length > 0 || blocked.length > 0) && (
           <>
-            {executable.length > 0 && (
-              <ul className="space-y-1.5">
-                {executable.map((item, idx) => (
-                  <li key={`${item.proposal_id}-${idx}`} className="flex items-start gap-2 text-sm text-primary">
-                    {item.shape === "create_tag" ? (
-                      <Plus className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
-                    ) : (
-                      <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
-                    )}
-                    <span>{describeChange(item)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {blocked.length > 0 && (
-              <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5">
-                <p className="flex items-center gap-1.5 text-xs font-semibold text-warning-foreground">
-                  <Lock className="h-3.5 w-3.5" />
-                  {blocked.length} change{blocked.length === 1 ? "" : "s"} need a permission first
-                </p>
-                {grants.length > 0 && (
-                  <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-secondary">
-                    {grants.map((g) => (
-                      <li key={g}>{g}</li>
-                    ))}
-                  </ul>
-                )}
-                <p className="mt-1.5 text-xs text-muted">
-                  Ask an account admin to grant these, then preview again.
-                </p>
-              </div>
-            )}
+            <ApplyDiff executable={executable} blocked={blocked} grants={grants} />
 
             {executable.length > 0 && (
               <div className="mt-4 border-t border-default pt-3">

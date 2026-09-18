@@ -30,7 +30,7 @@ function item(overrides: Partial<ApplyItem> = {}): ApplyItem {
     tag_key: "business_domain",
     tag_value: "Revenue",
     current_value: null,
-    statement: "ALTER ASSET `finance.core.orders` SET TAG `business_domain` = 'Revenue'",
+    statement: "SET TAG ON TABLE `finance`.`core`.`orders` `business_domain` = `Revenue`",
     executable: true,
     blocked_reason: null,
     required_grants: [],

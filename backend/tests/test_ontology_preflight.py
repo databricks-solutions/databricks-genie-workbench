@@ -5,6 +5,8 @@ does not raise."""
 
 from __future__ import annotations
 
+import types
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,7 +14,7 @@ from fastapi.testclient import TestClient
 from backend.ontology.models import OntologySettings
 from backend.ontology.routers import preflight as preflight_mod
 from backend.ontology.routers.preflight import router as preflight_router
-from backend.ontology.services import inventory, ont_settings, tag_graph
+from backend.ontology.services import grants, inventory, ont_settings, tag_graph
 from backend.watch.services import system_tables
 
 
@@ -52,7 +54,11 @@ def test_preflight_all_read_tiers_ok(monkeypatch):
     assert tiers["inventory"]["status"] == "ok"
     assert tiers["signals"]["status"] == "ok"
     assert tiers["tag_graph"]["status"] == "ok"
-    assert tiers["membership_write"]["status"] == "not_exercised"
+    # Phase 5 (17i) Stage 2: the write tier is REAL now. Off-platform (no DATABRICKS_HOST in
+    # the test env) the OBO probe is indeterminate and fails soft to "ok" with informational
+    # grant lines (the exact per-change grants are re-checked at preview time).
+    assert tiers["membership_write"]["status"] == "ok"
+    assert tiers["membership_write"]["grants"]  # informational apply-grant guidance present
     assert tiers["external_enrichment"]["status"] == "not_exercised"
 
 
@@ -141,6 +147,63 @@ def test_preflight_frames_sp_grants_as_optional_upgrade(monkeypatch):
     signals = tiers["signals"]
     assert signals["grants"]
     assert "optional upgrade" in (signals["reason"] or "").lower()
+
+
+def test_preflight_membership_write_blocked_surfaces_copy_ready_grants(monkeypatch):
+    """BUILD B: when the OBO viewer positively lacks the apply grants, the membership_write
+    tier is 'blocked' with copy-ready GRANT lines (mirrors the enrichment tier's shape)."""
+    _patch_settings(monkeypatch, ["finance"])
+    monkeypatch.setattr(tag_graph, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(system_tables, "system_tables_status", lambda: True)
+    _patch_membership(monkeypatch, sp_seen=7, obo_seen=7)
+    monkeypatch.setattr(
+        grants,
+        "membership_write_status",
+        lambda *a, **k: ("blocked", ["GRANT APPLY TAG ON CATALOG `finance` TO `you`"], "needs a grant"),
+    )
+
+    data = _client().get("/api/ontology/preflight").json()
+    tier = {t["id"]: t for t in data["tiers"]}["membership_write"]
+    assert tier["status"] == "blocked"
+    assert any("APPLY TAG" in g for g in tier["grants"])
+    assert tier["reason"]
+    # A blocked write tier never gates rendering (read-only page is unaffected).
+    assert data["can_render_taxonomy"] is True
+
+
+def test_membership_write_status_shapes():
+    """The pure tier resolver (BUILD B): no catalogs → not_exercised; no client (off-platform)
+    → ok fail-soft; a probe that blocks → blocked + copy-ready lines."""
+    # No catalogs to probe yet.
+    status, lines, reason = grants.membership_write_status(None, [], None)
+    assert status == "not_exercised" and lines and reason
+
+    # Off-platform / indeterminate → ok (grants re-checked per change at preview).
+    status, lines, reason = grants.membership_write_status(None, ["finance"], None)
+    assert status == "ok" and lines
+
+    # A client whose effective read shows privileges WITHOUT APPLY TAG → blocked + grants.
+    priv = types.SimpleNamespace(privilege="USE_CATALOG")
+    assignment = types.SimpleNamespace(privileges=[priv])
+    fake = types.SimpleNamespace(
+        grants=types.SimpleNamespace(
+            get_effective=lambda **k: types.SimpleNamespace(privilege_assignments=[assignment])
+        )
+    )
+    status, lines, reason = grants.membership_write_status(fake, ["finance"], None, principal="u@x")
+    assert status == "blocked"
+    assert any("APPLY TAG" in ln for ln in lines)
+    assert any("`u@x`" in ln for ln in lines)
+
+
+def test_write_grant_lines_escape_identifiers():
+    lines = grants.write_grant_lines("cat.sch.orders", "biz`tag", asset_type="table", principal="u@x")
+    joined = "\n".join(lines)
+    assert "GRANT APPLY TAG ON TABLE `cat`.`sch`.`orders` TO `u@x`" in joined
+    assert "GRANT USE SCHEMA ON SCHEMA `cat`.`sch` TO `u@x`" in joined
+    assert "GRANT USE CATALOG ON CATALOG `cat` TO `u@x`" in joined
+    # tag_key with a backtick is doubled (injection-safe) and not a create/alter/drop.
+    assert "GRANT ASSIGN ON GOVERNED TAG `biz``tag` TO `u@x`" in joined
 
 
 def test_preflight_default_obo_does_not_touch_sp(monkeypatch):

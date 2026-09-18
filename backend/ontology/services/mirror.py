@@ -621,10 +621,12 @@ async def read_approved_consents(metastore_id: str) -> list[dict[str, Any]]:
 
 async def read_domain_members(metastore_id: str, domain_id: str) -> list[dict[str, Any]]:
     """The member assets of a domain proposal (``genie_ont_members`` where
-    ``domain_id == proposal_id``). Returns ``[{"asset_fqn": ...}]``. [] on any failure."""
+    ``domain_id == proposal_id``). Returns ``[{"asset_fqn": ..., "asset_type": ...}]``
+    (asset_type drives the securable keyword for the tag write; defaults to "table").
+    [] on any failure."""
     rows = await _read_table("genie_ont_members", metastore_id)
     return [
-        {"asset_fqn": str(m.get("asset_fqn") or "")}
+        {"asset_fqn": str(m.get("asset_fqn") or ""), "asset_type": str(m.get("asset_type") or "table")}
         for m in rows
         if str(m.get("domain_id") or "") == domain_id and m.get("asset_fqn")
     ]
@@ -648,7 +650,7 @@ async def read_tag_members(metastore_id: str, conflict_tag: str) -> list[dict[st
         return []
     member_rows = await _read_table("genie_ont_members", metastore_id)
     return [
-        {"asset_fqn": str(m.get("asset_fqn") or "")}
+        {"asset_fqn": str(m.get("asset_fqn") or ""), "asset_type": str(m.get("asset_type") or "table")}
         for m in member_rows
         if str(m.get("domain_id") or "") in conflicted_ids and m.get("asset_fqn")
     ]
