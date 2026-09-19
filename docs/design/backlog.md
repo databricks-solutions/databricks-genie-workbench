@@ -145,8 +145,14 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      `CAST(map/struct AS STRING)` display form — NOT JSON — into the JSON `evidence` column and
      set a non-existent `updated_at` column, so the write never actually persisted / would corrupt
      evidence; now the merge is done in Python and the whole evidence JSON is bound as a parameter
-     (no phantom column). +8 behavioral/SQL-shape tests (`test_ontology_draft_body.py`) reproduce
-     each. `./scripts/test.sh` **3114**.
+     (no phantom column). A **live deploy-verify** on 6t92c3 then surfaced a **7th**: the on-demand
+     identifier gate ran against `frozenset(source_fqns)` only, so a Routing page that legitimately
+     cites its metric-view **measure name** (not a Source FQN — the batch admits it via
+     `build_universe`'s `m.name`) was falsely rejected as an invented identifier. Fixed by grounding
+     the on-demand universe in `source_fqns ∪ related_fqns ∪` the backticks already proven in the
+     persisted stub body (emitted by `_stub_body`, gate-passed at materialize) — honest, nothing
+     outside the gate-proven set is admitted. +9 behavioral/SQL-shape tests
+     (`test_ontology_draft_body.py`) reproduce each. `./scripts/test.sh` **3115**.
    - **Next action:** deploy-verify the live "Draft with AI" / "Draft pages with AI" buttons
      against `genie_ont_pages` (`evidence.body_source ∈ {llm_ondemand, llm_bulk}`; on-demand /
      bulk bodies survive a batch refresh — Step-2 preservation).

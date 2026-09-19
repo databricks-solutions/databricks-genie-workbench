@@ -197,6 +197,27 @@ _DRAFT_NO_ID_IN_DEFINITION = (
     "- Answer total from `cat.sch.mv`; never re-aggregate its sources.\n"
 )
 
+# A stub body that backticks a metric-view MEASURE NAME (spaces/parens) — a legitimate
+# identifier that is NOT a Source FQN. The batch admits it via build_universe (m.name);
+# the on-demand path must admit it via the persisted-body harvest, not reject it.
+_ROW_BODY_WITH_MEASURE = (
+    "Description: The governed answer.\n"
+    "\n"
+    "Definition:\n"
+    "  Answer `Avg Delay (min)` from `cat.sch.mv`.\n"
+    "\n"
+    "Rules:\n"
+    "  - Route `Avg Delay (min)` to `cat.sch.mv`.\n"
+)
+
+# An LLM draft that legitimately cites the measure name present in the stored stub.
+_DRAFT_CITES_MEASURE = (
+    "Description: Average arrival delay in minutes.\n"
+    "Definition: `Avg Delay (min)` is the governed answer from `cat.sch.mv`.\n"
+    "Rules:\n"
+    "- Route `Avg Delay (min)` to `cat.sch.mv`; never hand-write the aggregate.\n"
+)
+
 
 def _page_row(page_id: str, *, domain_id: str = "d1", facts_hash: str | None = None) -> dict:
     evidence: dict = {"canonical_id": f"c_{page_id}", "corroboration": 3}
@@ -315,6 +336,23 @@ def test_draft_one_canonicalizes_before_gates(monkeypatch):
     # The reassembled Definition carries the deterministic, in-universe identifier.
     assert "Definition:" in writes[0]["body"]
     assert "`cat.sch.mv`" in writes[0]["body"].split("Rules:")[0]
+
+
+def test_draft_one_admits_measure_name_grounded_in_stored_body(monkeypatch):
+    """Regression: a Routing page over a metric view cites the MEASURE NAME (`Avg Delay
+    (min)`), which is NOT a Source FQN. The batch admits it via build_universe(m.name); the
+    on-demand gate must admit it via the grounded-universe harvest of the persisted stub's
+    backticks — NOT reject it as an invented identifier (identifier_gate failed)."""
+    row = _page_row("p1")
+    row["body"] = _ROW_BODY_WITH_MEASURE  # the stub already backticks `Avg Delay (min)`
+    _patch_mirror(monkeypatch, [row])
+    _patch_drafter(monkeypatch, _DRAFT_CITES_MEASURE)
+    writes = _capture_writes(monkeypatch)
+
+    result = draft_body.draft_one("p1", metastore_id="ms1", w=object())
+
+    assert result["ok"] is True, result.get("reason")
+    assert "`Avg Delay (min)`" in writes[0]["body"]
 
 
 def test_draft_one_empty_draft_degrades(monkeypatch):

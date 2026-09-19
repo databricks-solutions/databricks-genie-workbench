@@ -27,9 +27,10 @@ from typing import TYPE_CHECKING, Any
 from backend.ontology.services import mirror, ont_settings
 from genie_space_optimizer.common.llm import call_llm_core
 from genie_space_optimizer.ontology.pages import (
-    _DraftSpec,
+    _backticked,
     _canonical_body,
     _compute_facts_hash,
+    _DraftSpec,
     chunk_safe_gate,
     default_page_drafter,
     identifier_gate,
@@ -258,8 +259,24 @@ def _spec_from_row(row: dict[str, Any]) -> "_DraftSpec":
     )
 
 
-def _validate_draft(body: str, source_fqns: list[str], w: "WorkspaceClient") -> tuple[bool, str | None]:
-    """Validate the drafted body against all gates.
+def _grounded_universe(spec: "_DraftSpec", current_body: str) -> frozenset[str]:
+    """The identifier allowlist for the on-demand gate. The batch runs against
+    ``build_universe`` (estate-wide: member assets + metric-view / measure names +
+    coded columns + serving Agents), which the app can't reconstruct from a single row.
+    Instead we admit only PROVEN-grounded identifiers: the row's Sources + Related plus
+    every backtick ALREADY in the persisted stub body — the stub was emitted by
+    ``_stub_body`` from the same spec and passed ``identifier_gate`` against the full
+    universe at materialize, so its identifiers (e.g. the metric-view measure name a
+    Routing page legitimately cites, which is NOT a Source FQN) are genuine. This stops
+    the on-demand gate from falsely rejecting a draft that names the measure while staying
+    honest — nothing outside the already-gate-proven set is admitted."""
+    return frozenset(
+        [*spec.source_fqns, *spec.related_fqns, *_backticked(current_body or "")]
+    )
+
+
+def _validate_draft(body: str, source_fqns: list[str], universe: frozenset[str]) -> tuple[bool, str | None]:
+    """Validate the drafted body against all gates (the SAME gates as the batch).
 
     Returns (is_valid, failure_reason). On success, is_valid=True, reason=None.
     On gate failure, reason is a short string explaining which gate failed.
@@ -275,11 +292,9 @@ def _validate_draft(body: str, source_fqns: list[str], w: "WorkspaceClient") -> 
     if not specificity_gate(body):
         return False, "specificity_gate failed: missing backticked identifier in Definition or Rules"
 
-    # Identifier gate: all backticked identifiers and source FQNs must be in the universe
-    # For now, we'll build the universe from the source_fqns (since we don't have a full member list)
-    # The gates are lenient in the on-demand path (not in batch).
-    universe_stub = frozenset(source_fqns)
-    is_ok, invented = identifier_gate(body, source_fqns, universe_stub)
+    # Identifier gate: every backticked identifier + Source FQN must be in the grounded
+    # universe (Sources + Related + identifiers already proven in the persisted body).
+    is_ok, invented = identifier_gate(body, source_fqns, universe)
     if not is_ok:
         return False, f"identifier_gate failed: invented identifiers {invented[:3]}"  # Show first 3
 
@@ -357,8 +372,11 @@ def draft_one(
         result["reason"] = "canonical reassembly failed"
         return result
 
-    # Validate the reassembled body against the same gates the batch runs.
-    is_valid, reason = _validate_draft(reassembled, list(spec.source_fqns), w)
+    # Validate the reassembled body against the same gates the batch runs, using a
+    # universe grounded in the row's Sources/Related + the persisted body's proven backticks
+    # (so a legitimately-cited metric-view measure name is not falsely "invented").
+    universe = _grounded_universe(spec, current_body)
+    is_valid, reason = _validate_draft(reassembled, list(spec.source_fqns), universe)
     if not is_valid:
         logger.info("draft_one: gate validation failed for %s: %s", page_id, reason)
         result["reason"] = reason or "gate validation failed"
