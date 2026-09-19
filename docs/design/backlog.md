@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-18**, post P1 harness + P6 Signal Authority Stages 1–4 + P2 Phase 5 apply Stage 2 deploy-verify + P5/17j apply hardening+undo built offline-green). This is the sequencing
+branch `ontology` (**2026-09-19**, post P1 harness + P6 Signal Authority Stages 1–4 + P2 Phase 5 apply Stage 2 deploy-verify + P5/17j apply hardening+undo deploy-verified + MV-D101 reuse no-op Drafts gate). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -170,8 +170,8 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
    - **Next action:** build **Stage C** (Goal Mode) → STOP → deploy-verify; then wire **§9 industry
      alignment** onto the live pack seam.
 
-### P5 — Track hardening · ✅ BUILT (offline-green) — pending human deploy-verify
-7. **17j — Ontology hardening + undo + E2E (MV-D100)** · ✅ BUILT (offline-green), deploy-verify pending (§10)
+### P5 — Track hardening · ✅ BUILT + deploy-verified
+7. **17j — Ontology hardening + undo + E2E (MV-D100)** · ✅ BUILT + deploy-verified (6t92c3, 2026-09-19)
    - **Built (additive, `ontology`):** an applied governed-tag membership is now **reversible**
      under OBO from the `genie_ont_applied.prev_value` trail, and undo **never drops the governed
      tag** (MV-D100). BUILD A unset pre-value capture (`_reassign_items` probes
@@ -190,15 +190,18 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      lockfiles clean; single-writer carve + POST-allowlist + OBO/SP identity-split firewall tests
      extended to cover `execute_undo_plan` + the consent re-flip; offline E2E
      `test_ontology_apply_e2e` (approve→preview→execute→undo round-trip).
-   - **Next action:** human deploy-verify (§10 of `ontology-17j-hardening-build.md`) —
-     `./scripts/deploy.sh --update` (reads `GENIE_DEPLOY_PROFILE` from `.env.deploy`,
-     `fevm-serverless`/6t92c3), apply→undo→re-apply on a live estate, then flip this entry to
-     **deploy-verified**.
+   - **Deploy-verified (`fevm-serverless` / 6t92c3, 2026-09-19):** live UI apply→undo round-trip
+     on a `create` sub-domain. Apply wrote `create_tag` + 5× `set_tag` (`state=applied`, OBO
+     email); undo wrote 5× `unset_tag` (`prev_value` captured), clearing every member; **the
+     governed tag remained** (confirmed via `SHOW GOVERNED TAGS`; no `drop`/`alter` row in the
+     audit — the MV-D100 invariant held); consent re-flipped `applied→approved`. 11-row audit
+     trail complete, OBO-write / SP-bookkeeping split held. (Re-apply idempotency not exercised —
+     optional; the core gate is proven.)
    - **Follow-up (surfacing quality, 17j-adjacent, MV-D101) — ✅ BUILT (offline-green):** an
      already-governed `reuse` proposal no longer surfaces as **actionable** when its effect is
-     already fully realized. Observed live (6t92c3, run `a6af31be…`): the `reuse` card "Alaska
-     Airlines Commercial" surfaced HIGH though **all 56 proposed members already carried** the
-     tag — applying it was a **pure no-op**. **Built:** the producer stamps
+     already fully realized. Observed live (6t92c3, run `a6af31be…`): a governed-tag `reuse` card
+     surfaced HIGH though **all of its proposed members already carried** the reused tag —
+     applying it was a **pure no-op**. **Built:** the producer stamps
      `evidence["reuse_coverage"] = {already_tagged, total}` in `cluster._make_proposal` (from the
      governed-tag membership it already holds); shared pure predicate
      `transforms.reuse_fully_governed(tag_decision, evidence)` (True iff reuse + total>0 +
@@ -288,7 +291,8 @@ deploy-verified + committed** (`67ad4cff`), **Phase 4 Stage B is deploy-verified
 Authority, MV-D93–D97) is fully deploy-verified** (Stages 1–4 + 4b), and **P2 (Phase 5 apply,
 17i) is BUILT + deploy-verified** (`cf92ef58`; Stage 2 harden live on 6t92c3) — the value-unlock
 that closes the curator loop. **P5 / 17j** (apply hardening + E2E + undo/rollback, MV-D100) is now
-**BUILT offline-green** — undo is reversible from the `genie_ont_applied` trail and never drops the
-governed tag; `/review` Approve — pending only the human deploy-verify (§10). **Next: (P3)** curator
+**BUILT + deploy-verified** (6t92c3, 2026-09-19) — the live apply→undo round-trip reversed a
+membership from the `genie_ont_applied` trail and left the governed tag in place; the reuse-no-op
+Drafts gate (MV-D101) is BUILT offline-green (rides the next deploy). **Next: (P3)** curator
 Draft-with-AI Steps 3–4, then the rest of **P4** (Stage C + §9 alignment). **Track A** can run in
 parallel by anyone off the ontology branch.
