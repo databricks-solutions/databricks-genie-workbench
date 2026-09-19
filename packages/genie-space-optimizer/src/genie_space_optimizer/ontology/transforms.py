@@ -751,6 +751,30 @@ def proposal_kind_of(domain_row: dict[str, Any]) -> str:
     return "domain"
 
 
+def reuse_fully_governed(tag_decision: str | None, evidence: dict[str, Any]) -> bool:
+    """True iff a ``reuse`` Domain proposal is ALREADY 100% realized — every proposed
+    member already carries the reused governed tag, so applying it is a pure no-op.
+
+    Drives the Drafts *actionable* gate (a fully-applied reuse must not surface as an
+    action the curator can take) WITHOUT touching ``evidence["surfaced"]``: the domain
+    is real and still renders on the estate map / by curated-by-fiat (MV-D53 #1). The
+    producer stamps ``evidence["reuse_coverage"] = {already_tagged, total}`` from the
+    governed-tag membership it already holds. Any non-reuse decision, a missing/partial
+    coverage bag, or ``total == 0`` ⇒ False (byte-identical — partial reuse still
+    surfaces, scoped to its untagged remainder)."""
+    if str(tag_decision or "") != "reuse":
+        return False
+    cov = evidence.get("reuse_coverage")
+    if not isinstance(cov, dict):
+        return False
+    try:
+        total = int(cov.get("total") or 0)
+        already = int(cov.get("already_tagged") or 0)
+    except (TypeError, ValueError):
+        return False
+    return total > 0 and already >= total
+
+
 def identity_map_rows(
     verdicts: list[Any],
     *,

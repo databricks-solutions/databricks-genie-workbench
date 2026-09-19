@@ -1125,6 +1125,19 @@ def _make_proposal(
     }
     if conflict is not None:
         evidence["conflict"] = conflict
+    # Realized coverage of a reuse (MV-D101): how many of THIS proposal's members already
+    # carry the reused governed tag. A 100%-covered reuse is a pure no-op — the serve
+    # layer drops it from the actionable Drafts list (transforms.reuse_fully_governed)
+    # WITHOUT unsurfacing it (the domain still renders on the map). Absent for
+    # create/reassign ⇒ byte-identical. When the tag isn't in tag_members (e.g. a
+    # value-bound sub that keys elsewhere) already_tagged degrades to 0 ⇒ never a false
+    # no-op suppression.
+    if tag_decision == "reuse" and tag_key:
+        existing = tag_members.get(tag_key, set())
+        evidence["reuse_coverage"] = {
+            "already_tagged": len(s & existing),
+            "total": len(s),
+        }
 
     return DomainProposal(
         domain_id=domain_id_of(members),

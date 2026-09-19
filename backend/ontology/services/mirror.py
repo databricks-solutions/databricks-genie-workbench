@@ -467,6 +467,11 @@ async def read_domain_drafts(metastore_id: str) -> list[dict[str, Any]]:
         tier = _tier_of_row(row, evidence)
         if tier is None:
             continue
+        # A reuse already 100% realized is a pure no-op — never an ACTIONABLE draft
+        # (MV-D101). The domain still surfaces on the estate map; only its Drafts action
+        # is dropped. Partial reuse (some members untagged) still surfaces.
+        if transforms.reuse_fully_governed(row.get("tag_decision"), evidence):
+            continue
         did = str(row.get("domain_id") or "")
         drafts.append(
             _assemble_domain_draft(

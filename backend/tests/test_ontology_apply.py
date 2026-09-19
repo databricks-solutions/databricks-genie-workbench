@@ -326,6 +326,44 @@ async def test_read_tag_members_scopes_to_conflicted_proposals(monkeypatch):
     assert await mirror.read_tag_members("ms1", "") == []  # empty tag → no read
 
 
+# ── MV-D101: an already-100%-governed reuse is a no-op → dropped from Drafts ───
+
+
+def test_reuse_fully_governed_predicate():
+    from genie_space_optimizer.ontology import transforms
+
+    full = {"reuse_coverage": {"already_tagged": 3, "total": 3}}
+    part = {"reuse_coverage": {"already_tagged": 1, "total": 3}}
+    assert transforms.reuse_fully_governed("reuse", full) is True
+    assert transforms.reuse_fully_governed("reuse", part) is False       # partial still surfaces
+    assert transforms.reuse_fully_governed("create", full) is False      # only reuse is gated
+    assert transforms.reuse_fully_governed("reassign", full) is False
+    assert transforms.reuse_fully_governed("reuse", {}) is False         # no coverage bag
+    assert transforms.reuse_fully_governed("reuse", {"reuse_coverage": {"already_tagged": 0, "total": 0}}) is False
+
+
+async def test_read_domain_drafts_drops_fully_governed_reuse(monkeypatch):
+    surfaced = {"surfaced": True, "rank": {"tier": "high"}}
+
+    async def _read_table(table, _ms):
+        if table == "genie_ont_domains":
+            return [
+                {"domain_id": "d_full", "name": "Full", "tag_decision": "reuse", "score": 90.0,
+                 "evidence": {**surfaced, "reuse_coverage": {"already_tagged": 3, "total": 3}}},
+                {"domain_id": "d_part", "name": "Partial", "tag_decision": "reuse", "score": 90.0,
+                 "evidence": {**surfaced, "reuse_coverage": {"already_tagged": 1, "total": 3}}},
+                {"domain_id": "d_new", "name": "New", "tag_decision": "create", "score": 90.0,
+                 "evidence": dict(surfaced)},
+            ]
+        return []  # no members needed for the surfacing gate
+
+    monkeypatch.setattr(mirror, "_read_table", _read_table)
+    drafts = await mirror.read_domain_drafts("ms1")
+    names = {d["name"] for d in drafts}
+    # The pure no-op reuse is gone; the partial reuse and the create still surface.
+    assert names == {"Partial", "New"}
+
+
 # ── STEP 0 / BUILD A: statement builders escape identifiers + literals safely ──
 
 

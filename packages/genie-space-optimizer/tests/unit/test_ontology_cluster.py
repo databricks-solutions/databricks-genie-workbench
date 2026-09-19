@@ -184,6 +184,23 @@ def test_reuse_domain_create_subs_no_duplicate_tag():
     assert [p.tag_key for p in props].count("Commercial") == 1
 
 
+def test_reuse_stamps_realized_coverage_for_the_noop_gate():
+    # A reuse Domain records how many of its members already carry the reused tag
+    # (MV-D101). Every Commercial member is already tagged -> 100% covered, so the serve
+    # layer drops it from the actionable Drafts list (transforms.reuse_fully_governed)
+    # while it still renders on the map. A create sub carries no coverage bag
+    # (byte-identical).
+    props = cluster.qualify_subdomain_keys(cluster.cluster(_commercial_graph(), namer=_schema_namer))
+    dom = next(p for p in props if p.parent_id is None)
+    assert dom.tag_decision == "reuse"
+    cov = dom.evidence["reuse_coverage"]
+    assert cov == {"already_tagged": len(dom.members), "total": len(dom.members)}
+    assert cov["already_tagged"] == cov["total"] and cov["total"] > 0
+    for s in (p for p in props if p.parent_id is not None):
+        assert s.tag_decision == "create"
+        assert "reuse_coverage" not in s.evidence
+
+
 def test_reuse_subdomain_when_governed_subtag_exists():
     # A Commercial/Sales governed tag already anchors the sales assets -> the Sales
     # sub-domain reuses it (never mints a duplicate).

@@ -194,6 +194,23 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      `./scripts/deploy.sh --update` (reads `GENIE_DEPLOY_PROFILE` from `.env.deploy`,
      `fevm-serverless`/6t92c3), apply→undo→re-apply on a live estate, then flip this entry to
      **deploy-verified**.
+   - **Follow-up (surfacing quality, 17j-adjacent, MV-D101) — ✅ BUILT (offline-green):** an
+     already-governed `reuse` proposal no longer surfaces as **actionable** when its effect is
+     already fully realized. Observed live (6t92c3, run `a6af31be…`): the `reuse` card "Alaska
+     Airlines Commercial" surfaced HIGH though **all 56 proposed members already carried** the
+     tag — applying it was a **pure no-op**. **Built:** the producer stamps
+     `evidence["reuse_coverage"] = {already_tagged, total}` in `cluster._make_proposal` (from the
+     governed-tag membership it already holds); shared pure predicate
+     `transforms.reuse_fully_governed(tag_decision, evidence)` (True iff reuse + total>0 +
+     already≥total); `mirror.read_domain_drafts` drops a fully-covered reuse from the **Drafts
+     actionable list ONLY** — `evidence["surfaced"]` is untouched, so the domain still renders on
+     the estate map and **curated-by-fiat (MV-D53 #1) is preserved**. Partial reuse still surfaces
+     (scoped to the untagged remainder); create/reassign byte-identical. Harness **flat** (an
+     additive evidence key — score/tier/`surfaced` unchanged). Tests: `test_ontology_cluster`
+     (coverage stamp) + `test_ontology_apply` (predicate + Drafts-gate). Offline `./scripts/test.sh`
+     **3106** (+3). **Not a 17j regression** — pre-existing in the surfacing path.
+     **Next action:** rides the next deploy-verify (confirm the Alaska no-op card no longer
+     appears in Drafts on 6t92c3).
 
 ### P6 — Signal authority (OntoRank-style) · ✅ BUILT + deploy-verified (Stages 1–4)
 8. **Ontology Signal Authority (MV-D93–D97)** · ✅ BUILT + deploy-verified on tbzqg7
