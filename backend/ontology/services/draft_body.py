@@ -27,6 +27,9 @@ from typing import TYPE_CHECKING, Any
 from backend.ontology.services import mirror, ont_settings
 from genie_space_optimizer.common.llm import call_llm_core
 from genie_space_optimizer.ontology.pages import (
+    _DraftSpec,
+    _canonical_body,
+    _compute_facts_hash,
     chunk_safe_gate,
     default_page_drafter,
     identifier_gate,
@@ -55,33 +58,24 @@ def _gso_fqn(table: str) -> str:
     return f"{catalog}.{schema}.{table}"
 
 
-def _update_page_body_sql(metastore_id: str, page_id: str, body: str, body_source: str) -> tuple[str, list]:
-    """Build an UPDATE statement for genie_ont_pages with body + evidence mutation.
+def _update_page_body_sql(
+    metastore_id: str, page_id: str, body: str, evidence_json: str
+) -> tuple[str, list]:
+    """Build an UPDATE statement for genie_ont_pages (body + evidence).
 
-    Updates body, body_source (via evidence JSON), facts_hash, and body_stale.
-    Uses named parameters (StatementParameterListItem) so values are not interpolated.
-    Returns (statement, params_list).
+    The evidence JSON is assembled in Python (``draft_one`` merges body_source /
+    facts_hash / body_stale over the row's existing evidence) and bound WHOLE as a
+    parameter. This avoids SQL-side JSON manipulation: ``genie_ont_pages.evidence`` is a
+    JSON *text* column read by ``mirror._evidence_of`` via ``json.loads``, and Spark's
+    ``CAST(map/struct AS STRING)`` emits the ``{k -> v}`` display form (NOT JSON), so any
+    in-SQL merge would corrupt the column. Every value is a named parameter
+    (``StatementParameterListItem``) — never interpolated. ``genie_ont_pages`` has no
+    ``updated_at`` column, so none is set. Returns (statement, params_list).
     """
     table = _gso_fqn("genie_ont_pages")
 
-    # The statement will mutate the evidence JSON to set body_source and update facts_hash.
-    # We compute facts_hash as a simple hash of the body to track changes.
-    import hashlib
-    facts_hash = hashlib.sha256(body.encode()).hexdigest()[:16]
-
-    # Escape single quotes in the body for the JSON update
-    body_escaped = body.replace("'", "''") if body else ""
-    body_source_escaped = body_source.replace("'", "''") if body_source else ""
-
-    # Build UPDATE that merges the evidence JSON with new body_source/facts_hash
     stmt = (
-        f"UPDATE {table} SET "
-        f"  body = :body, "
-        f"  evidence = IF(evidence IS NULL OR evidence = '', "
-        f"    CAST(map('body_source', :body_source, 'facts_hash', :facts_hash, 'body_stale', false) AS STRING), "
-        f"    CAST(from_json(evidence, 'struct<*>') MERGE (body_source := :body_source, facts_hash := :facts_hash, body_stale := false) AS STRING) "
-        f"  ), "
-        f"  updated_at = current_timestamp() "
+        f"UPDATE {table} SET body = :body, evidence = :evidence "
         f"WHERE metastore_id = :metastore_id AND page_id = :page_id"
     )
 
@@ -91,8 +85,7 @@ def _update_page_body_sql(metastore_id: str, page_id: str, body: str, body_sourc
         StatementParameterListItem(name="metastore_id", value=metastore_id),
         StatementParameterListItem(name="page_id", value=page_id),
         StatementParameterListItem(name="body", value=body),
-        StatementParameterListItem(name="body_source", value=body_source),
-        StatementParameterListItem(name="facts_hash", value=facts_hash),
+        StatementParameterListItem(name="evidence", value=evidence_json),
     ]
     return stmt, params
 
@@ -102,7 +95,7 @@ def _execute_update_via_warehouse(
     metastore_id: str,
     page_id: str,
     body: str,
-    body_source: str,
+    evidence_json: str,
 ) -> bool:
     """Execute an UPDATE on genie_ont_pages via the SQL warehouse (OBO identity).
 
@@ -116,7 +109,7 @@ def _execute_update_via_warehouse(
     from databricks.sdk.service.sql import StatementState
 
     try:
-        stmt, params = _update_page_body_sql(metastore_id, page_id, body, body_source)
+        stmt, params = _update_page_body_sql(metastore_id, page_id, body, evidence_json)
         resp = w.statement_execution.execute_statement(
             warehouse_id=warehouse_id,
             statement=stmt,
@@ -138,50 +131,37 @@ def _execute_update_via_warehouse(
             logger.warning("page body update failed for %s/%s: %s", metastore_id, page_id, detail)
             return False
 
-        logger.info("ontology page body updated: %s/%s (source=%s)", metastore_id, page_id, body_source)
+        logger.info("ontology page body updated: %s/%s", metastore_id, page_id)
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning("page body update exception for %s/%s: %s", metastore_id, page_id, e)
         return False
 
 
-def _read_page_by_id_sync(metastore_id: str, page_id: str) -> dict[str, Any] | None:
-    """Read a single Page from the mirror by page_id (sync wrapper for asyncio context).
-
-    Returns the raw row dict or None if not found/failed (degrade-not-hang).
-    """
+def _all_pages_sync(metastore_id: str) -> list[dict[str, Any]]:
+    """Read every genie_ont_pages row for a metastore (sync wrapper — draft_one/
+    draft_subdomain always run in a worker thread with no running loop, via
+    ``asyncio.to_thread`` from the routes or the bulk ThreadPoolExecutor, so
+    ``asyncio.run`` is safe here). Returns [] on any failure (degrade-not-hang)."""
     try:
-        # Try to use the async function if we're in an event loop context
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in an async context; run as thread-safe sync read
-                return asyncio.run_coroutine_threadsafe(
-                    mirror._read_table("genie_ont_pages", metastore_id), loop
-                ).result(timeout=10)
-        except RuntimeError:
-            pass
-        # Fall back to direct async-to-sync via a new loop
-        rows = asyncio.run(mirror._read_table("genie_ont_pages", metastore_id))
-        for row in rows:
-            if row.get("page_id") == page_id:
-                return row
+        return asyncio.run(mirror._read_table("genie_ont_pages", metastore_id))
     except Exception:  # noqa: BLE001
-        logger.info("failed to read page %s/%s from mirror", metastore_id, page_id, exc_info=True)
+        logger.info("failed to read pages from mirror for %s", metastore_id, exc_info=True)
+        return []
+
+
+def _read_page_by_id_sync(metastore_id: str, page_id: str) -> dict[str, Any] | None:
+    """Read a single Page from the mirror BY page_id. Returns the matching row dict or
+    None if not found/failed (degrade-not-hang)."""
+    for row in _all_pages_sync(metastore_id):
+        if row.get("page_id") == page_id:
+            return row
     return None
 
 
 def _read_pages_by_domain_sync(metastore_id: str, domain_id: str) -> list[dict[str, Any]]:
-    """Read all Pages for a sub-domain from the mirror (sync wrapper).
-
-    Returns [] on any failure (degrade-not-hang).
-    """
-    try:
-        rows = asyncio.run(mirror._read_table("genie_ont_pages", metastore_id))
-        return [row for row in rows if row.get("domain_id") == domain_id]
-    except Exception:  # noqa: BLE001
-        logger.info("failed to read pages for domain %s/%s from mirror", metastore_id, domain_id, exc_info=True)
-    return []
+    """Read all Pages for a sub-domain from the mirror. Returns [] on any failure."""
+    return [row for row in _all_pages_sync(metastore_id) if row.get("domain_id") == domain_id]
 
 
 def _extract_page_facts(row: dict[str, Any]) -> dict[str, Any]:
@@ -237,6 +217,47 @@ def _extract_page_facts(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _spec_from_row(row: dict[str, Any]) -> "_DraftSpec":
+    """Reconstruct the wheel ``_DraftSpec`` from a persisted page row so the on-demand
+    path drives the SAME drafter prompt (``spec.facts()``) and the SAME canonical
+    reassembly (``_canonical_body``) the batch's ``_autodraft`` uses — reuse, no fork
+    (MV-D65/MV-D70). Prose fields (description/definition/rules) are parsed back from the
+    stored body; structural fields come from the row/evidence. ``key_ids``/``nl_question``
+    are only used for page_id derivation / optional routing validation, neither of which
+    the on-demand path performs, so an empty default is byte-safe."""
+    facts = _extract_page_facts(row)
+    evidence = facts["evidence"] if isinstance(facts.get("evidence"), dict) else {}
+    rules_str = str(facts.get("rules") or "").strip()
+    try:
+        corroboration = int(evidence.get("corroboration") or row.get("corroboration") or 0)
+    except (TypeError, ValueError):
+        corroboration = 0
+    try:
+        confidence = float(row.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return _DraftSpec(
+        archetype=str(facts.get("archetype") or "Routing"),
+        canonical_id=str(row.get("canonical_id") or evidence.get("canonical_id") or ""),
+        domain_id=str(row.get("domain_id") or ""),
+        concept_name=str(facts.get("concept") or facts.get("title") or ""),
+        title=str(facts.get("title") or ""),
+        description=str(facts.get("description") or ""),
+        definition=str(facts.get("definition") or ""),
+        rules=(rules_str,) if rules_str else (),
+        key_ids=(),
+        synonyms=tuple(facts.get("synonyms") or ()),
+        synonym_classes=frozenset(str(c) for c in (evidence.get("synonym_classes") or [])),
+        related_fqns=tuple(mirror._as_list(row.get("related_fqns"))),
+        source_fqns=tuple(facts.get("sources") or ()),
+        corroboration=corroboration,
+        certify_shape=bool(row.get("certify")),
+        confidence=confidence,
+        evidence=evidence,
+        nl_question=str(evidence.get("nl_question") or ""),
+    )
+
+
 def _validate_draft(body: str, source_fqns: list[str], w: "WorkspaceClient") -> tuple[bool, str | None]:
     """Validate the drafted body against all gates.
 
@@ -270,12 +291,19 @@ def draft_one(
     *,
     metastore_id: str,
     w: "WorkspaceClient",
+    body_source: str = "llm_ondemand",
 ) -> dict[str, Any]:
     """Draft a single Page body with the LLM, run gates, and UPDATE genie_ont_pages.
 
-    Returns {ok, page_id, body, body_source, as_of}.
-    On success: ok=true, body=new_body, body_source="llm_ondemand".
-    On failure: ok=false, body=current_body, reason=<explanation>.
+    Mirrors the batch's ``_autodraft`` (MV-D66/MV-D70): draft prose from ``spec.facts()``,
+    reassemble into the canonical skeleton (``_canonical_body`` — guarantees the Definition
+    carries a real in-universe backticked identifier, falling back to the evidence-derived
+    definition when the model paraphrased it away), THEN run the identifier/chunk/specificity
+    gates on the reassembled body. ``body_source`` is ``"llm_ondemand"`` for a single draft and
+    ``"llm_bulk"`` when invoked by :func:`draft_subdomain`.
+
+    Returns {ok, page_id, body, body_source, as_of, reason}. On any failure or a failed gate:
+    ok=false, body=current_body, reason=<explanation> (degrade-not-hang, MV-D43).
     """
     result = {
         "ok": False,
@@ -285,64 +313,103 @@ def draft_one(
         "as_of": _now_iso(),
     }
 
-    # Read the page from the mirror
+    # Read THIS page from the mirror (by page_id).
     page_row = _read_page_by_id_sync(metastore_id, page_id)
 
     if not page_row:
         logger.warning("page not found: %s/%s", metastore_id, page_id)
-        result["body"] = ""
+        result["reason"] = "page not found"
         return result
 
     # Current body (fallback for ok=false case)
     current_body = str(page_row.get("body") or "")
     result["body"] = current_body
 
-    # Extract facts for the drafter
-    facts = _extract_page_facts(page_row)
+    # Reconstruct the wheel spec so the drafter prompt + canonical reassembly match batch.
+    try:
+        spec = _spec_from_row(page_row)
+    except Exception as e:  # noqa: BLE001
+        logger.info("draft_one: spec reconstruction failed for %s: %s", page_id, e)
+        result["reason"] = "spec reconstruction failed"
+        return result
 
-    # Build the drafter (via default_page_drafter, which uses call_llm_core internally)
+    # Draft prose from the SAME facts the batch feeds (spec.facts()).
     try:
         drafter = default_page_drafter(model=None, w=w)
-        draft_body = drafter(facts)
+        raw = drafter(spec.facts())
     except Exception as e:  # noqa: BLE001
         logger.info("draft_one drafter failed for %s: %s", page_id, e)
-        result["body"] = current_body
+        result["reason"] = "drafter failed"
         return result
 
-    if not draft_body or not draft_body.strip():
+    if not raw or not raw.strip():
         logger.info("draft_one: drafter returned empty for %s", page_id)
-        result["body"] = current_body
+        result["reason"] = "drafter returned empty"
         return result
 
-    # Validate the draft against gates
-    source_fqns = mirror._as_list(page_row.get("source_fqns"))
-    is_valid, reason = _validate_draft(draft_body, source_fqns, w)
+    # MV-D70: reassemble into the canonical plain-text skeleton BEFORE the gates, exactly
+    # as _autodraft does — so a draft that paraphrased the identifier away is salvaged via
+    # the deterministic definition rather than needlessly rejected.
+    try:
+        reassembled, _def_source = _canonical_body(raw, spec)
+    except Exception as e:  # noqa: BLE001
+        logger.info("draft_one: canonical reassembly failed for %s: %s", page_id, e)
+        result["reason"] = "canonical reassembly failed"
+        return result
 
+    # Validate the reassembled body against the same gates the batch runs.
+    is_valid, reason = _validate_draft(reassembled, list(spec.source_fqns), w)
     if not is_valid:
         logger.info("draft_one: gate validation failed for %s: %s", page_id, reason)
-        result["body"] = current_body
         result["reason"] = reason or "gate validation failed"
         return result
 
-    # Update the page in the warehouse via OBO
+    # Step 2 (MV-D66): PRESERVE the batch-computed facts_hash — the curator re-drafts the
+    # prose, not the concept, so the facts hash must not change (else the next re-materialize
+    # would falsely flag the body stale). Fall back to recomputing the batch way only when the
+    # row carries none (pre-Step-2 rows).
+    existing_evidence = spec.evidence if isinstance(spec.evidence, dict) else {}
+    facts_hash = str(existing_evidence.get("facts_hash") or "")
+    if not facts_hash:
+        try:
+            facts_hash = _compute_facts_hash(spec)
+        except Exception:  # noqa: BLE001
+            facts_hash = ""
+
+    # Merge body_source / facts_hash / body_stale OVER the row's existing evidence in
+    # Python and bind the whole JSON as a parameter (evidence is a JSON text column;
+    # an in-SQL CAST(map/struct AS STRING) would emit non-JSON and corrupt it).
+    merged_evidence = {
+        **existing_evidence,
+        "body_source": body_source,
+        "facts_hash": facts_hash,
+        "body_stale": False,
+    }
+    try:
+        evidence_json = json.dumps(merged_evidence)
+    except (TypeError, ValueError):
+        evidence_json = json.dumps(
+            {"body_source": body_source, "facts_hash": facts_hash, "body_stale": False}
+        )
+
+    # Update the page in the warehouse via OBO.
     success = _execute_update_via_warehouse(
         w,
         metastore_id,
         page_id,
-        draft_body,
-        "llm_ondemand",
+        reassembled,
+        evidence_json,
     )
 
     if not success:
         logger.warning("draft_one: warehouse update failed for %s", page_id)
-        result["body"] = current_body
         result["reason"] = "database write failed"
         return result
 
     # Success
     result["ok"] = True
-    result["body"] = draft_body
-    result["body_source"] = "llm_ondemand"
+    result["body"] = reassembled
+    result["body_source"] = body_source
     return result
 
 
@@ -350,9 +417,10 @@ def _draft_one_sync_wrapper(
     page_id: str,
     metastore_id: str,
     w: "WorkspaceClient",
+    body_source: str,
 ) -> dict[str, Any]:
     """Synchronous wrapper for draft_one for use in ThreadPoolExecutor."""
-    return draft_one(page_id, metastore_id=metastore_id, w=w)
+    return draft_one(page_id, metastore_id=metastore_id, w=w, body_source=body_source)
 
 
 def draft_subdomain(
@@ -393,7 +461,7 @@ def draft_subdomain(
                 page_id = str(row.get("page_id") or "")
                 if not page_id:
                     continue
-                future = executor.submit(_draft_one_sync_wrapper, page_id, metastore_id, w)
+                future = executor.submit(_draft_one_sync_wrapper, page_id, metastore_id, w, "llm_bulk")
                 futures[future] = page_id
 
             for future in futures:

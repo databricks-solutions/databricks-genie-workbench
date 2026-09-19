@@ -112,16 +112,24 @@ async def post_draft_body(page_id: str, request: Request) -> dict:
     """Draft a single Page body with the LLM under OBO (MV-D65, MV-D50).
 
     Returns DraftBodyResponse {ok, page_id, body, body_source, as_of, reason}.
+    Degrade-not-hang (MV-D43): any failure returns a typed ok=false payload, never a 500.
     """
-    ms = ont_settings._metastore_id()
-    w = get_workspace_client()
-    result = await asyncio.to_thread(
-        draft_body.draft_one,
-        page_id,
-        metastore_id=ms,
-        w=w,
-    )
-    return DraftBodyResponse(**result).model_dump(mode="json")
+    try:
+        ms = ont_settings._metastore_id()
+        w = get_workspace_client()
+        result = await asyncio.to_thread(
+            draft_body.draft_one,
+            page_id,
+            metastore_id=ms,
+            w=w,
+        )
+        return DraftBodyResponse(**result).model_dump(mode="json")
+    except Exception:  # noqa: BLE001 — degrade-not-hang: typed ok=false, never a 500
+        logger.info("ontology draft-body failed for %s; degrading", page_id, exc_info=True)
+        return DraftBodyResponse(
+            ok=False, page_id=page_id, body="", body_source="unknown",
+            as_of=_now(), reason="draft failed",
+        ).model_dump(mode="json")
 
 
 @router.post("/subdomains/{domain_id}/draft-bodies")
@@ -129,17 +137,22 @@ async def post_bulk_draft(domain_id: str, request: Request) -> dict:
     """Start a bulk draft task for all Pages in a sub-domain under OBO (async).
 
     Returns BulkDraftStart {task_id, total}. Results are polled via the status endpoint.
+    Degrade-not-hang (MV-D43): a failed start returns an empty task, never a 500.
     """
-    ms = ont_settings._metastore_id()
-    w = get_workspace_client()
-    task_id, total, _ = await asyncio.to_thread(
-        draft_body.draft_subdomain,
-        domain_id,
-        metastore_id=ms,
-        w=w,
-        max_workers=4,
-    )
-    return BulkDraftStart(task_id=task_id, total=total).model_dump(mode="json")
+    try:
+        ms = ont_settings._metastore_id()
+        w = get_workspace_client()
+        task_id, total, _ = await asyncio.to_thread(
+            draft_body.draft_subdomain,
+            domain_id,
+            metastore_id=ms,
+            w=w,
+            max_workers=4,
+        )
+        return BulkDraftStart(task_id=task_id, total=total).model_dump(mode="json")
+    except Exception:  # noqa: BLE001 — degrade-not-hang: an empty task, never a 500
+        logger.info("ontology bulk draft start failed for %s; degrading", domain_id, exc_info=True)
+        return BulkDraftStart(task_id="", total=0).model_dump(mode="json")
 
 
 @router.get("/subdomains/{domain_id}/draft-bodies/status")
@@ -148,20 +161,25 @@ async def get_bulk_draft_status(domain_id: str, task_id: str, request: Request) 
 
     Returns BulkDraftStatus {done, total, running, results} where results is
     [{page_id, ok, reason}]. Results are persisted in-process; they are best-effort
-    and expire when the app restarts.
+    and expire when the app restarts. Degrade-not-hang (MV-D43): a terminal empty
+    status on any failure, never a 500.
     """
-    status = draft_body.get_bulk_draft_status(task_id)
-    if status is None:
-        # Task not found or expired; return an empty/terminal status
-        return BulkDraftStatus(done=0, total=0, running=False, results=[]).model_dump(mode="json")
+    try:
+        status = draft_body.get_bulk_draft_status(task_id)
+        if status is None:
+            # Task not found or expired; return an empty/terminal status
+            return BulkDraftStatus(done=0, total=0, running=False, results=[]).model_dump(mode="json")
 
-    results = [
-        {"page_id": r.get("page_id"), "ok": r.get("ok"), "reason": r.get("reason")}
-        for r in (status.get("results") or [])
-    ]
-    return BulkDraftStatus(
-        done=status.get("done", 0),
-        total=status.get("total", 0),
-        running=status.get("running", False),
-        results=results,
-    ).model_dump(mode="json")
+        results = [
+            {"page_id": r.get("page_id"), "ok": r.get("ok"), "reason": r.get("reason")}
+            for r in (status.get("results") or [])
+        ]
+        return BulkDraftStatus(
+            done=status.get("done", 0),
+            total=status.get("total", 0),
+            running=status.get("running", False),
+            results=results,
+        ).model_dump(mode="json")
+    except Exception:  # noqa: BLE001 — degrade-not-hang: a terminal empty status, never a 500
+        logger.info("ontology bulk draft status failed for %s; degrading", task_id, exc_info=True)
+        return BulkDraftStatus(done=0, total=0, running=False, results=[]).model_dump(mode="json")

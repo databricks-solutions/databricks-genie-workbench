@@ -127,13 +127,29 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      audit rows). The write path is live and SQL-verified; E2E + undo are the 17j deliverables.
 
 ### P3 — Curator enrichment loop (finish the review UX)
-5. **Stage 4.1d Steps 2–4 — curator Draft-with-AI** · 🟡 PARTIAL
+5. **Stage 4.1d Steps 2–4 — curator Draft-with-AI** · ✅ BUILT + hardened (offline-green)
    - **Step 2** (`body_source` preservation across re-materialize) — **BUILT** (`7bc610c9`).
-   - **Steps 3 & 4** — 📝 DRAFTED: on-demand single-Page "Draft with AI" (OBO) and bulk
-     "Draft this sub-domain with AI" (OBO). Drivers `…-stage4.1d-step3/step4-driver.md`
-     (+ `ontology-stage4.1d-step34-backend-driver.md` backend half); build spec
-     `ontology-curation-redesign-stage4.1d-build.md`.
-   - **Next action:** build Steps 3 & 4 (backend routes + `PageDraftCard` actions).
+   - **Steps 3 & 4** — **BUILT** (`4b9b21de` backend `draft_body.py` + the 3 OBO routes/models;
+     `a2e45cac`/`4e1832b7` frontend "Draft with AI" / "Draft pages with AI" + bulk progress):
+     on-demand single-Page draft and bulk "Draft this sub-domain with AI", both OBO, both
+     reusing the wheel drafter + gates (MV-D65/D66). (The `…-stage4.1d-step3/step4-driver.md`
+     drivers + `ontology-curation-redesign-stage4.1d-build.md` build spec describe this shipped
+     code.)
+   - **Hardened (this branch, offline-green):** a `/review` (Bugbot) pass on the shipped code
+     found 5 issues, all fixed — (1) `draft_one` read the whole `genie_ont_pages` table instead
+     of the target row (→ 500); (2) `facts_hash` recomputed from the body instead of preserving
+     the batch hash (false staleness next re-materialize); (3) on-demand skipped `_canonical_body`
+     (MV-D70), so a paraphrased-away identifier was rejected not salvaged; (4) the routes could
+     500 instead of degrading; (5) bulk stamped `llm_ondemand` not `llm_bulk`. A **re-review** then
+     caught a **6th** (the load-bearing one): the evidence `UPDATE` emitted Spark's
+     `CAST(map/struct AS STRING)` display form — NOT JSON — into the JSON `evidence` column and
+     set a non-existent `updated_at` column, so the write never actually persisted / would corrupt
+     evidence; now the merge is done in Python and the whole evidence JSON is bound as a parameter
+     (no phantom column). +8 behavioral/SQL-shape tests (`test_ontology_draft_body.py`) reproduce
+     each. `./scripts/test.sh` **3114**.
+   - **Next action:** deploy-verify the live "Draft with AI" / "Draft pages with AI" buttons
+     against `genie_ont_pages` (`evidence.body_source ∈ {llm_ondemand, llm_bulk}`; on-demand /
+     bulk bodies survive a batch refresh — Step-2 preservation).
 
 ### P4 — External enrichment
 6. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 📝 DRAFTED (Stage A build-ready)
@@ -293,6 +309,8 @@ Authority, MV-D93–D97) is fully deploy-verified** (Stages 1–4 + 4b), and **P
 that closes the curator loop. **P5 / 17j** (apply hardening + E2E + undo/rollback, MV-D100) is now
 **BUILT + deploy-verified** (6t92c3, 2026-09-19) — the live apply→undo round-trip reversed a
 membership from the `genie_ont_applied` trail and left the governed tag in place; the reuse-no-op
-Drafts gate (MV-D101) is BUILT offline-green (rides the next deploy). **Next: (P3)** curator
-Draft-with-AI Steps 3–4, then the rest of **P4** (Stage C + §9 alignment). **Track A** can run in
-parallel by anyone off the ontology branch.
+Drafts gate (MV-D101) is BUILT offline-green (rides the next deploy). **P3** (curator Draft-with-AI
+Steps 3–4) is **BUILT + hardened** offline-green (6 `/review` findings fixed, incl. the evidence-
+write JSON/column bug that meant the draft never persisted). **Next: deploy-verify P3**, then the
+rest of **P4** (Stage C + §9 alignment). **Track A** can run in parallel by anyone off the ontology
+branch.
