@@ -237,11 +237,13 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      `models.py`/`types.ts`) + `GRANT EXECUTE`/OAuth wiring (`grant_permissions.context_source_grant_statements`
      + `CONTEXT_MCP_OAUTH_SCOPES`). Additive, read-only, DEFAULT OFF ⇒ byte-identical; backend
      `test_ontology_stage_c.py` 7/7 + frontend Settings/Permission/draftCards tests green.
-     **Deploy-verify eyeball deferred:** the panel + toggle render live, but the **Sources chip has
-     nothing to render on this estate** — no surfaced domain has `naming_prior.applied=true` (all 16
-     surfaced domains are curated governed tags, so the pack prior corroborates but never adopts).
-     The chip's live proof needs an **alignment-ON run** (default app runs are OFF), so it rides a
-     future opt-in run — not a code gap.
+     **Chip is empty-by-design on this estate (PROVEN live, 2026-09-20):** the panel + toggle render
+     live, but the **Sources chip has nothing to render** because the chip requires a surfaced
+     pure-engine `create` cluster whose name the pack/alignment actually ADOPTS (`naming_prior.applied=true`),
+     and every one of the 22 surfaced domains is a curated `reuse`/`reassign` tag (T0 wins). The
+     alignment-ON verify run (`922302079051503`) confirmed this: `name_applied=0`. So this is **not** a
+     code gap and it is **not** unblocked by alignment — the chip would only light on an estate with
+     adopted engine-`create` names. (`test_unapplied_prior_surfaces_no_source` encodes this contract.)
    - **§9 industry alignment (MV-D58) — ✅ BUILT + deploy-verified (`de65f480`, 2026-09-15):**
      `alignment.py` (663 lines) + `reference_models.py` (bundled T2 models from the
      `lakehouse-industry-data-models` repo) + `similarity.py` run the 4 ordered passes (string →
@@ -254,11 +256,18 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      correspondence (`narrower`×12 / `broader`×4) with `reference_name` + a T2 Provenanced leaf;
      `applied_renames=0` (no curated fact outranked). On this curated-heavy estate alignment lands as
      **corroborating evidence**, not renames — so it raises confidence + supplies the labeled/dated
-     source, and only THEN does Stage C's chip have something to adopt.
-   - **Next action:** **P4 is done.** Optional runtime follow-up (not a build): schedule an
-     alignment-ON materialize run on 6t92c3 (set `industry_alignment.enabled` + `reference_model=airline`
-     in Settings) to (a) light up the Stage C Sources chip and (b) populate the §10 harness
-     `precision/recall/f1` (today `None` because default runs are alignment-OFF).
+     source (but does NOT flip `naming_prior.applied`, so it does not by itself light the Stage C chip).
+     - **Runtime re-verify (alignment ON) — ✅ DONE (6t92c3, 2026-09-20, run `922302079051503`
+       TERMINATED SUCCESS, ~17 min):** flipped `industry_alignment_enabled=true` +
+       `reference_model=airline` on the app's own `run_now` recipe. **§10 harness populated** — was
+       `None`/`None`/`None`, now **precision 1.0 / recall 0.913 / f1 0.955** (`genie_ont_eval` run
+       `27c9383…`; structural: singleton 0.045, orphan 0.182, depth 2). **Typed correspondences live** —
+       **21/22** surfaced domains carry `evidence.rank.alignment` (`exact`×6 / `narrower`×10 /
+       `broader`×5), **all `applied=false`** (corroboration, curated T0 wins). **`name_applied=0`** —
+       Stage C chip empty-by-design confirmed. No structural drift; estate byte-safe.
+   - **Next action:** **P4 is done + the alignment loop is closed.** Runtime note: the app default stays
+     alignment-OFF (MV-D44), so day-to-day `genie_ont_eval` P/R/F return to `None` unless a run opts in;
+     turn `industry_alignment` on in Settings when a scored run is wanted.
 
 ### P5 — Track hardening · ✅ BUILT + deploy-verified
 8. **17j — Ontology hardening + undo + E2E (MV-D100)** · ✅ BUILT + deploy-verified (6t92c3, 2026-09-19)
@@ -393,10 +402,13 @@ Related assets (the highest-value Page field we left empty) went `related_fqns` 
 on a live re-bake (run `611356940571419`), 161 join-key + 159 dashboard + 331 agent + 641 sibling
 whys, harness P/R/F flat; best-effort external Links stay default-off (`links=0`). All
 additive/default-safe (`signal_graph=None` ⇒ agents-only byte-identical; suites 3133 + 660 vitest).
-**P4** external enrichment is **COMPLETE**: Stages A/B/C + **§9 industry alignment (MV-D58, `de65f480`,
-deploy-verified 2026-09-15)** + the §10 harness (P1) are all built and deploy-verified — all
-off-by-default at runtime (MV-D44). The only outstanding items are *runtime*, not code: an opt-in
-alignment-ON run lights the Stage C Sources chip and populates the harness P/R/F (both `None`/empty
-while runs stay alignment-OFF). **Next:** confirm with the human what to pick up next (Track A, or an
-opt-in alignment-ON verify run) — the ontology curation arc (P1–P6 + Phase 4/5) is otherwise landed.
+**P4** external enrichment is **COMPLETE** and the alignment loop is **CLOSED**: Stages A/B/C + **§9
+industry alignment (MV-D58, `de65f480`)** + the §10 harness (P1) are all built and deploy-verified. The
+opt-in **alignment-ON re-verify** (6t92c3, 2026-09-20, run `922302079051503`) populated the §10 harness
+(**precision 1.0 / recall 0.913 / f1 0.955**, was `None`) and landed **21/22** live typed correspondences
+(`exact`×6 / `narrower`×10 / `broader`×5, all corroborating). The Stage C Sources chip is empty
+**by design** on this fully-curated estate (`name_applied=0`, proven live) — not a gap. All off-by-default
+at runtime (MV-D44), so day-to-day harness P/R/F return to `None` unless a run opts in. **Next:** the
+ontology arc (P1–P6 + Phase 4/5) is landed; the only open work is the parallel **Track A** (MV-Advisor:
+Semantic Blueprint v4 backend + `onSeed`; MV-Advisor HEAD deployed-review).
 **Track A** can run in parallel by anyone off the ontology branch.
