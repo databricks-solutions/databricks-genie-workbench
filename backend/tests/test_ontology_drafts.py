@@ -193,3 +193,43 @@ def test_get_drafts_degrades_to_cold_on_mirror_failure(client, monkeypatch):
     resp = client.get("/api/ontology/drafts")
     assert resp.status_code == 200  # never a 500
     assert resp.json()["source"] == "cold"
+
+
+# ── Stage 4.1j: external Links extraction (MV-D103) ──────────────────────────
+
+
+def test_page_links_extracts_valid_links_and_drops_urlless():
+    ev = {
+        "links": [
+            {"url": "https://x/rev", "title": "Rev guide", "as_of": "2026-09-19",
+             "note": "informational, as of 2026-09-19 — not certified"},
+            {"title": "no url — dropped"},  # urlless ⇒ dropped
+            "not a dict",                    # malformed ⇒ skipped
+        ]
+    }
+    links = mirror._page_links(ev)
+    assert len(links) == 1
+    assert links[0] == {
+        "url": "https://x/rev", "title": "Rev guide", "as_of": "2026-09-19",
+        "note": "informational, as of 2026-09-19 — not certified",
+    }
+
+
+def test_page_links_missing_or_malformed_degrades_to_empty():
+    assert mirror._page_links({}) == []
+    assert mirror._page_links({"links": "nope"}) == []
+
+
+def test_assemble_page_draft_carries_links_and_asset_why():
+    row = {
+        "page_id": "pg_1", "archetype": "Routing", "title": "[Routing] revenue",
+        "certify": True, "related_fqns": ["a.b.c"], "source_fqns": ["a.b.mv"],
+        "evidence": {
+            "asset_why": {"a.b.c": "Shares join key `id`"},
+            "links": [{"url": "https://x/r", "title": "R", "as_of": "", "note": "informational — not certified"}],
+        },
+    }
+    draft = mirror._assemble_page_draft(row, tier="high")
+    assert draft["asset_why"]["a.b.c"] == "Shares join key `id`"
+    assert draft["links"][0]["url"] == "https://x/r"
+    assert "not certified" in draft["links"][0]["note"]

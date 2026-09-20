@@ -903,3 +903,125 @@ def test_default_page_drafter_prompt_carries_worked_example(monkeypatch):
     drafter({"archetype": "Routing", "concept": "c", "description": "d", "definition": "def",
              "rules": ["r"], "sources": ["s.t.u"], "related": []})
     assert "computed from `" in captured["prompt"]
+
+
+# ── Stage 4.1j: Related assets & external Links (MV-D102/D103) ────────────────
+
+from genie_space_optimizer.ontology import graph as _graph  # noqa: E402
+from genie_space_optimizer.ontology.web_search import WebResult  # noqa: E402
+
+
+def test_related_assets_default_off_is_agents_only():
+    """signal_graph=None ⇒ related_fqns stays the serving-Agent tuple, byte-identical."""
+    routing = _by_archetype(_mine())["Routing"][0]
+    assert routing.related_fqns == (_SALES_AGENT,)
+
+
+def test_related_assets_augments_from_graph_with_why():
+    """A join_key edge from a Page Source pulls the neighbor into related_fqns (Agents
+    first, then the ranked neighbor) with its per-asset why folded into evidence.asset_why."""
+    sig = _graph.build_signal_graph(
+        {"tags": []},
+        join_key_edges=[("finance.sales.orders", "finance.sales.customers", 1.0,
+                         "foreign_key", ["customer_id"])],
+    )
+    routing = _by_archetype(_mine(signal_graph=sig, centrality={}))["Routing"][0]
+    assert routing.related_fqns[0] == _SALES_AGENT           # existing relation stays first
+    assert "finance.sales.customers" in routing.related_fqns  # graph neighbor appended
+    assert routing.evidence["asset_why"]["finance.sales.customers"] == "Shares join key `customer_id`"
+    # The Source's own why is untouched; the neighbor is not a Source.
+    assert "finance.sales.customers" not in routing.source_fqns
+
+
+def test_page_to_page_siblings_link_by_title():
+    """With a graph threaded in, same-sub-domain sibling Pages link each other by title
+    (via domain_id), even on an edgeless graph (asset relations empty, page↔page runs)."""
+    cands = _mine(signal_graph={"nodes": [], "edges": []})
+    routing = _by_archetype(cands)["Routing"][0]
+    guardrail = _by_archetype(cands)["Guardrail"][0]
+    # Routing + Guardrail share domain sug_sales ⇒ each lists the other's title.
+    assert guardrail.title in routing.related_fqns
+    assert routing.evidence["asset_why"][guardrail.title] == "Related page in the same area."
+
+
+def test_links_default_off_writes_no_links():
+    routing = _by_archetype(_mine())["Routing"][0]
+    assert "links" not in routing.evidence
+
+
+def test_links_degrade_when_web_down_no_raise():
+    def _boom_searcher(query):
+        raise RuntimeError("gateway unreachable")
+
+    cands = _mine(page_link_searcher=_boom_searcher, page_autodraft_min_corroboration=1,
+                  as_of="2026-09-19")
+    # The run succeeds and no page carries links.
+    assert all("links" not in c.evidence for c in cands)
+
+
+def test_links_happy_path_labeled_not_certified():
+    def _searcher(query):
+        return [WebResult(title="Revenue guide", url="https://x/rev", snippet="ok")]
+
+    cands = _mine(page_link_searcher=_searcher, page_autodraft_min_corroboration=1,
+                  as_of="2026-09-19")
+    linked = [c for c in cands if c.evidence.get("links")]
+    assert linked, "at least one certify page should carry links"
+    link = linked[0].evidence["links"][0]
+    assert link["url"] == "https://x/rev"
+    assert link["title"] == "Revenue guide"
+    assert link["as_of"] == "2026-09-19"
+    assert "not certified" in link["note"]
+
+
+def test_links_leakage_scanned_and_dropped():
+    class _Oracle:
+        def contains_page_leak(self, text, **kw):
+            return ("Revenue guide" in text, "leak")
+
+    def _searcher(query):
+        return [WebResult(title="Revenue guide", url="https://x/rev", snippet="ok")]
+
+    cands = _mine(page_link_searcher=_searcher, oracle=_Oracle(),
+                  page_autodraft_min_corroboration=1, as_of="2026-09-19")
+    assert all(not c.evidence.get("links") for c in cands)  # every hit leaked ⇒ dropped
+
+
+def test_related_augmentation_is_membership_neutral_eval_flat_or_up():
+    """The eval harness (genie_ont_eval) reads domain/page MEMBERSHIP; Related assets must
+    not perturb it. Adding a signal graph changes ONLY related_fqns + evidence.asset_why —
+    every page_id, domain_id, source set, certify, confidence and body is identical."""
+    sig = _graph.build_signal_graph(
+        {"tags": []},
+        join_key_edges=[("finance.sales.orders", "finance.sales.customers", 1.0,
+                         "foreign_key", ["customer_id"])],
+    )
+    base = {c.page_id: c for c in _mine()}
+    aug = {c.page_id: c for c in _mine(signal_graph=sig, centrality={})}
+    assert set(base) == set(aug)  # same page set — nothing added/dropped
+    for pid, b in base.items():
+        a = aug[pid]
+        assert (a.domain_id, a.source_fqns, a.certify, a.confidence, a.body) == (
+            b.domain_id, b.source_fqns, b.certify, b.confidence, b.body
+        )
+
+
+def test_related_precision_only_real_graph_nodes_no_invented_fqn():
+    """Related-precision fixture: every augmented related FQN is either the serving Agent
+    (an existing relation) or a REAL node in the fused graph — never an invented identifier."""
+    sig = _rel_augment_graph()
+    routing = _by_archetype(_mine(signal_graph=sig, centrality={}))["Routing"][0]
+    node_bare = {n["id"].split(":", 1)[1] for n in sig["nodes"] if ":" in n["id"]}
+    titles = {c.title for c in _mine(signal_graph=sig, centrality={})}
+    for fqn in routing.related_fqns:
+        # Each related entry is a graph node, the serving Agent, or a sibling Page title.
+        assert fqn in node_bare or fqn == _SALES_AGENT or fqn in titles
+
+
+def _rel_augment_graph():
+    return _graph.build_signal_graph(
+        {"tags": []},
+        join_key_edges=[("finance.sales.orders", "finance.sales.customers", 1.0,
+                         "foreign_key", ["customer_id"])],
+        co_query_edges=[("finance.sales.order_items", "finance.sales.events", 2.0)],
+    )

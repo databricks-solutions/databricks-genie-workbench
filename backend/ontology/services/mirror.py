@@ -530,6 +530,29 @@ def _page_asset_why(evidence: dict[str, Any]) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items() if v}
 
 
+def _page_links(evidence: dict[str, Any]) -> list[dict[str, str]]:
+    """Best-effort external Links from the wheel's ``evidence.links`` (MV-D103), each
+    coerced to ``{url, title, as_of, note}``. A link with no ``url`` is dropped (nothing to
+    cite). Defensive: a missing / malformed value degrades to an empty list."""
+    raw = evidence.get("links")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        out.append({
+            "url": url,
+            "title": str(item.get("title") or ""),
+            "as_of": str(item.get("as_of") or ""),
+            "note": str(item.get("note") or ""),
+        })
+    return out
+
+
 def _assemble_page_draft(row: dict[str, Any], tier: str) -> dict[str, Any]:
     evidence = _evidence_of(row)
     archetype = str(row.get("archetype") or "Routing")
@@ -548,6 +571,8 @@ def _assemble_page_draft(row: dict[str, Any], tier: str) -> dict[str, Any]:
         # Stage 4 (MV-D55): per-asset "why", from the wheel's evidence.asset_why. A dict
         # of {fqn: reason}; absent → empty (older rows / degraded run).
         "asset_why": _page_asset_why(evidence),
+        # Stage 4.1j (MV-D103): best-effort external Links from evidence.links; [] when off.
+        "links": _page_links(evidence),
         "certify": certify,
         "evidence": _page_chips(evidence, certify),
         "tier": tier,

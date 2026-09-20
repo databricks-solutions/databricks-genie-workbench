@@ -1023,6 +1023,10 @@ except Exception as _e:  # noqa: BLE001 — degrade to string-only ER
 # None so run_materialize stays byte-identical estate-only (the resolver is never invoked).
 # The pack is a READ-ONLY naming/overlay prior; it never touches structure or writes a tag.
 _context_pack = None
+# Stage 4.1j (MV-D103): best-effort external Page Links reuse the SAME sanctioned AI-Gateway
+# web path + enabled providers as the Context Pack, and are gated on the SAME external-context
+# flag. None ⇒ mine_pages writes no links ⇒ byte-identical estate-only (MV-D43).
+_page_link_searcher = None
 if external_context_enabled and not external_context_hipaa_baa:
     from genie_space_optimizer.ontology import context_pack as _cp
     from genie_space_optimizer.ontology.context_registry import CONTEXT_SOURCES
@@ -1034,6 +1038,13 @@ if external_context_enabled and not external_context_hipaa_baa:
         if s.id in ("web_search", "youcom")
         and external_context_sources.get(s.id, s.default_enabled)
     ]
+    if _enabled_providers:
+        # A ``(query) -> Sequence[WebResult]`` over the enabled providers (degrades to [] on
+        # any failure — never blocks the batch). Company-independent, so it is wired even when
+        # the Context Pack is not (no company_name).
+        _page_link_searcher = _cp._default_search_fn(
+            _ont_llm_w, _enabled_providers, external_context_hipaa_baa,
+        )
     if _enabled_providers and company_name:
         def _pack_llm(prompt: str) -> str:
             from genie_space_optimizer.common.llm import call_llm_core
@@ -1093,6 +1104,8 @@ run = materialize.run_materialize(
     # confirmation degrades to unvalidated (no concept→Agent map wired here).
     page_drafter=pages.default_page_drafter(w=_ont_llm_w),
     routing_validator=None,
+    # Stage 4.1j (MV-D103): best-effort external Page Links (None ⇒ off ⇒ byte-identical).
+    page_link_searcher=_page_link_searcher,
     # Stage 3 curation policy (MV-D57) — from job_parameters, in-code defaults above.
     facet_denylist=facet_denylist,
     domain_min_tables=domain_min_tables,

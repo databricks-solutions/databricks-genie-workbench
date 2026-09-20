@@ -46,7 +46,7 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
-from genie_space_optimizer.ontology import er, similarity, transforms
+from genie_space_optimizer.ontology import er, graph, similarity, transforms
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -961,15 +961,19 @@ _SOURCE_WHY: dict[str, str] = {
 _RELATED_WHY = "Serving Genie Agent that answers questions about this concept."
 
 
-def _asset_why(spec: _DraftSpec) -> dict[str, str]:
+def _asset_why(spec: _DraftSpec, related_why: Mapping[str, str] | None = None) -> dict[str, str]:
     """A deterministic one-line "why this asset" for every Source and Related FQN
     (MV-D55). Rides in ``evidence`` — it never restructures the ``source_fqns`` /
-    ``related_fqns`` tuples. Sources read from the archetype; Related are the serving
-    Agents."""
+    ``related_fqns`` tuples. Sources read from the archetype; the serving Agents keep the
+    Agent reason. ``related_why`` (Stage 4.1j, MV-D102) folds in the per-asset "why" of the
+    graph-derived Related assets — added with ``setdefault`` so a Source or an Agent already
+    in the map keeps its archetype/Agent reason (never overwritten by a traversal reason)."""
     src_reason = _SOURCE_WHY.get(spec.archetype, "Backs this page.")
     why: dict[str, str] = {f: src_reason for f in spec.source_fqns}
     for f in spec.related_fqns:
         why[f] = _RELATED_WHY
+    for f, reason in (related_why or {}).items():
+        why.setdefault(f, reason)
     return why
 
 
@@ -1230,6 +1234,138 @@ def _autodraft(
     return replace(cand, body=reassembled)
 
 
+# ── Related-asset & page↔page augmentation (Stage 4.1j, MV-D102) ────────────
+
+_SIBLING_PAGE_WHY = "Related page in the same area."
+_LINKED_PAGE_WHY = "Related page for a linked area."
+
+
+def _augment_related(
+    candidates: Sequence[PageCandidate],
+    specs_by_page_id: Mapping[str, "_DraftSpec"],
+    signal_graph: Mapping[str, Any],
+    centrality: Mapping[str, float] | None,
+    asset_domain: Mapping[str, str],
+    *,
+    max_related: int = 6,
+) -> list[PageCandidate]:
+    """Fold graph-derived Related assets + page↔page relations into each candidate's
+    ``related_fqns`` + ``evidence.asset_why`` (Stage 4.1j, MV-D102). DETERMINISTIC and
+    additive: the serving Agents (the existing relation) stay FIRST and unranked, then the
+    ranked graph neighbors, then the related Pages — deduped, order-preserving. PageCandidate
+    is frozen, so each augmented candidate is a :func:`dataclasses.replace`. The caller gates
+    this on a threaded-in ``signal_graph`` (``None`` ⇒ this never runs ⇒ agents-only +
+    byte-identical, MV-D43)."""
+    # ── Pass 1: per-candidate graph neighbors (asset relations). Only real graph nodes,
+    # anchored on the Page's Sources and excluding them (a Page never lists its own Source).
+    augmented: dict[str, PageCandidate] = {}
+    for cand in candidates:
+        spec = specs_by_page_id.get(cand.page_id)
+        if spec is None:  # a curator-preserved row with no spec this run — leave it be.
+            augmented[cand.page_id] = cand
+            continue
+        rel = graph.related_assets(
+            signal_graph, spec.source_fqns, centrality,
+            max_out=max_related, exclude=set(spec.source_fqns),
+        )
+        related = list(cand.related_fqns)
+        seen = set(related)
+        for r in rel:
+            if r["fqn"] not in seen:
+                related.append(r["fqn"])
+                seen.add(r["fqn"])
+        why = _asset_why(spec, {r["fqn"]: r["why"] for r in rel})
+        augmented[cand.page_id] = replace(
+            cand, related_fqns=tuple(related), evidence={**cand.evidence, "asset_why": why},
+        )
+
+    # ── Pass 2: page↔page relations. A candidate's related Pages are the same-sub-domain
+    # SIBLINGS (share its ``domain_id``) + the pages of any OTHER domain its Source assets
+    # belong to per ``asset_domain`` (the parent / linked-domain page). Referenced by TITLE
+    # (human-usable in Discover; the page_id is an opaque hash), deduped, appended AFTER the
+    # asset relations, and capped at ``max_related``.
+    by_domain: dict[str, list[PageCandidate]] = {}
+    for c in augmented.values():
+        by_domain.setdefault(c.domain_id, []).append(c)
+
+    result: dict[str, PageCandidate] = {}
+    for cand in augmented.values():
+        spec = specs_by_page_id.get(cand.page_id)
+        page_why: dict[str, str] = {}
+        related = list(cand.related_fqns)
+        seen = set(related) | {cand.title}
+        # Sibling pages (same sub-domain), then linked-domain pages — each deterministic.
+        siblings = sorted(
+            (d for d in by_domain.get(cand.domain_id, []) if d.page_id != cand.page_id),
+            key=lambda d: d.title,
+        )
+        linked_domains = {asset_domain[s] for s in (spec.source_fqns if spec else ()) if s in asset_domain}
+        linked_domains.discard(cand.domain_id)
+        linked = sorted(
+            (d for did in sorted(linked_domains) for d in by_domain.get(did, [])),
+            key=lambda d: (d.domain_id, d.title),
+        )
+        added = 0
+        for d, reason in [(s, _SIBLING_PAGE_WHY) for s in siblings] + [(l, _LINKED_PAGE_WHY) for l in linked]:
+            if added >= max_related:
+                break
+            if d.title in seen:
+                continue
+            related.append(d.title)
+            seen.add(d.title)
+            page_why.setdefault(d.title, reason)
+            added += 1
+        if page_why:
+            why = {**cand.evidence.get("asset_why", {}), **{k: v for k, v in page_why.items()}}
+            result[cand.page_id] = replace(
+                cand, related_fqns=tuple(related), evidence={**cand.evidence, "asset_why": why},
+            )
+        else:
+            result[cand.page_id] = cand
+
+    return sorted(result.values(), key=lambda c: (c.archetype, c.page_id))
+
+
+def _page_links(
+    query: str,
+    *,
+    searcher: Callable[[str], Sequence[Any]],
+    oracle: Any | None,
+    as_of: str,
+    max_links: int = 3,
+) -> list[dict[str, Any]]:
+    """Best-effort external Links for a Page (Stage 4.1j, MV-D103). Runs ONE bounded web
+    query via the sanctioned injected ``searcher`` (the AI-Gateway path), coerces each hit
+    to ``{url, title, as_of, note}`` LABELED "informational … — not certified", and
+    LeakageOracle-scans the surfaced text (a match, or any scan error, DROPS the link —
+    fail-closed). ANY failure ⇒ ``[]`` — never raises, never blocks the run (MV-D43). Links
+    live ONLY in ``evidence``; they are never a Source and never a certified fact."""
+    if not query or not str(query).strip():
+        return []
+    try:
+        results = list(searcher(str(query)) or [])
+    except Exception as exc:  # noqa: BLE001 — degrade-not-hang: no links on any failure
+        logger.info("ontology page links search degraded (%s)", exc)
+        return []
+    note = f"informational, as of {as_of} — not certified" if as_of else "informational — not certified"
+    links: list[dict[str, Any]] = []
+    for r in results:
+        url = str(getattr(r, "url", "") or "").strip()
+        if not url:
+            continue
+        title = str(getattr(r, "title", "") or "").strip()
+        if oracle is not None and getattr(oracle, "contains_page_leak", None) is not None:
+            try:
+                if oracle.contains_page_leak(f"{title} {getattr(r, 'snippet', '') or ''}")[0]:
+                    continue
+            except Exception:  # noqa: BLE001 — a scan error fails closed (drop the link)
+                continue
+        links.append({"url": url, "title": title, "as_of": as_of, "note": note})
+        if len(links) >= max_links:
+            break
+    return links
+
+
 def mine_pages(
     *,
     measures: Sequence[MeasureSignal] = (),
@@ -1244,6 +1380,10 @@ def mine_pages(
     drafter: Callable[[dict], str] | None = None,
     routing_validator: Callable[[str, str], bool] | None = None,
     oracle: Any | None = None,
+    signal_graph: Mapping[str, Any] | None = None,
+    centrality: Mapping[str, float] | None = None,
+    page_link_searcher: Callable[[str], Sequence[Any]] | None = None,
+    as_of: str = "",
     page_autodraft_min_corroboration: int = PAGE_AUTODRAFT_MIN_CORROBORATION,
     page_autodraft_max_pages: int = PAGE_AUTODRAFT_MAX_PAGES,
     page_autodraft_max_workers: int = PAGE_AUTODRAFT_MAX_WORKERS,
@@ -1268,6 +1408,15 @@ def mine_pages(
     ``page_id``, capped at ``page_autodraft_max_pages``. **Pass C** drafts only those (see
     :func:`_autodraft`). ``drafter=None`` or ``page_autodraft_max_pages=0`` ⇒ a fully
     deterministic all-stub run; ``certify`` still lights up, so offline tests need no LLM.
+
+    Stage 4.1j (MV-D102/D103) — both OPT-IN, both default-off byte-identical: when a
+    ``signal_graph`` (+ its ``centrality``) is threaded in, each Page's ``related_fqns`` is
+    augmented with DETERMINISTIC graph-derived Related assets + page↔page relations (agents
+    stay first; :func:`_augment_related`), each with a "why" in ``evidence.asset_why``.
+    When a ``page_link_searcher`` is threaded in (gated on the external-context flag), the
+    "super sure" set gains best-effort external ``evidence.links`` (:func:`_page_links`) —
+    labeled + leakage-scanned; any failure ⇒ no links. ``signal_graph=None`` ⇒ agents-only,
+    ``page_link_searcher=None`` ⇒ no links — both byte-identical to the pre-4.1j run.
 
     ``history`` is the DORMANT :class:`HistorySignal` seam — accepted so the trigger
     surface is named, consumed by no detector (mines nothing). Per-concept and
@@ -1326,6 +1475,40 @@ def mine_pages(
         for cand, upgraded in zip(selected, upgrades):
             if upgraded is not None:
                 out[cand.page_id] = upgraded
+        candidates = sorted(out.values(), key=lambda c: (c.archetype, c.page_id))
+
+    # ── Related-asset & page↔page augmentation (Stage 4.1j, MV-D102). Opt-in: runs ONLY
+    # when a fused signal graph is threaded in — ``signal_graph=None`` ⇒ this is skipped ⇒
+    # ``related_fqns`` stays the serving-Agent tuple, byte-identical to the pre-4.1j run
+    # (MV-D43). Deterministic graph traversal (igraph-free, stable order); no invented FQN.
+    if signal_graph is not None:
+        candidates = _augment_related(
+            candidates, specs_by_page_id, signal_graph, centrality, asset_domain,
+        )
+        out = {c.page_id: c for c in candidates}
+
+    # ── External Links (Stage 4.1j, MV-D103). Best-effort + BOUNDED like autodraft: a
+    # searcher is passed ONLY when the external-context flag is on (gated in the job), so the
+    # default (searcher=None) writes NO links ⇒ byte-identical. Any failure ⇒ [] per page,
+    # never blocks the run; links live ONLY in ``evidence`` (never a Source / certified fact).
+    if page_link_searcher is not None and page_autodraft_max_pages > 0:
+        link_eligible = [
+            c for c in candidates
+            if c.certify and int(c.evidence.get("corroboration", 0)) >= page_autodraft_min_corroboration
+        ]
+        link_eligible.sort(key=lambda c: (-c.confidence, c.page_id))
+        link_selected = link_eligible[:page_autodraft_max_pages]
+        link_results = transforms.run_bounded(
+            link_selected,
+            lambda c: _page_links(
+                (specs_by_page_id[c.page_id].concept_name if c.page_id in specs_by_page_id else c.title),
+                searcher=page_link_searcher, oracle=oracle, as_of=as_of,
+            ),
+            max_workers=page_autodraft_max_workers,
+        )
+        for cand, links in zip(link_selected, link_results):
+            if links:
+                out[cand.page_id] = replace(cand, evidence={**cand.evidence, "links": links})
         candidates = sorted(out.values(), key=lambda c: (c.archetype, c.page_id))
 
     flag_duplicates(candidates)

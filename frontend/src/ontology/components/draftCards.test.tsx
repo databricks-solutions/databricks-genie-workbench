@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { DomainDraft, PageDraft } from "@/ontology/types"
 import { DomainDraftCard } from "./DomainDraftCard"
 import { PageDraftCard } from "./PageDraftCard"
+import { copyText } from "./pageDraftCopy"
 
 // The zero-burden contract (Phase 3d §10): the rendered card must never leak the
 // machinery. If any of these tokens appears in the markup, the copy has regressed.
@@ -61,6 +62,7 @@ function page(overrides: Partial<PageDraft> = {}): PageDraft {
     related_fqns: ["Sales · 01ef"],
     source_fqns: ["finance.core.rev_mv"],
     asset_why: {},
+    links: [],
     certify: true,
     evidence: [{ label: "Backed by 2 sources", kind: "corroboration" }],
     tier: "medium",
@@ -243,5 +245,57 @@ describe("PageDraftCard — zero-burden render (17.0e)", () => {
     expect(html).toContain("Description: total revenue is the net booked sales.")
     expect(html).toContain("Description")
     expect(html).toContain("Draft with AI")
+  })
+
+  it("renders a Links section only when links are present, labeled not-certified (MV-D103)", () => {
+    const withLinks = renderToStaticMarkup(
+      <PageDraftCard
+        draft={page({
+          links: [
+            {
+              url: "https://example.com/revenue",
+              title: "Revenue recognition guide",
+              as_of: "2026-09-01",
+              note: "informational, as of 2026-09-01 — not certified",
+            },
+          ],
+        })}
+        onDecide={noop}
+      />,
+    )
+    expect(withLinks).toContain("Links")
+    expect(withLinks).toContain("Revenue recognition guide")
+    expect(withLinks).toContain("https://example.com/revenue")
+    expect(withLinks).toContain("not certified")
+    assertZeroBurden(withLinks)
+
+    // No links (the default) ⇒ no Links section.
+    const without = renderToStaticMarkup(<PageDraftCard draft={page()} onDecide={noop} />)
+    expect(without).not.toContain(">Links<")
+  })
+
+  it("copyText carries Related assets (with why) and Links blocks (MV-D102/D103)", () => {
+    const text = copyText(
+      page({
+        related_fqns: ["Sales · 01ef", "finance.core.orders"],
+        asset_why: {
+          "Sales · 01ef": "Serving Genie Agent that answers questions about this concept.",
+          "finance.core.orders": "Shares join key `order_id`",
+        },
+        links: [
+          {
+            url: "https://example.com/revenue",
+            title: "Revenue recognition guide",
+            as_of: "2026-09-01",
+            note: "informational, as of 2026-09-01 — not certified",
+          },
+        ],
+      }),
+    )
+    expect(text).toContain("Related assets:")
+    expect(text).toContain("finance.core.orders — Shares join key `order_id`")
+    expect(text).toContain("Links:")
+    expect(text).toContain("Revenue recognition guide (https://example.com/revenue)")
+    expect(text).toContain("not certified")
   })
 })

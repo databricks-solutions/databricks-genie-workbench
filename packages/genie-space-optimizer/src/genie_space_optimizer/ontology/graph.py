@@ -385,3 +385,130 @@ def certified_home(
         for v in vertices
         if v.startswith("asset:") and idx[v] in best_domain
     }
+
+
+# ── Related-asset traversal (Stage 4.1j §Related assets, MV-D102) ────────────
+
+# The edge kinds a Page's Related section is drawn from — the RELATEDNESS edges (the
+# governance ``tag_assignment`` / ``schema_affinity`` hub kinds are excluded: a shared tag
+# or schema is a grouping signal, not a per-asset "related" relationship). Each carries a
+# ``KIND_PRIOR`` weight so a hard structural tie (an FK join key) outranks a fuzzy one (an
+# embedding similarity) when the endpoints' centralities are otherwise comparable.
+_RELATED_KINDS: frozenset[str] = frozenset(
+    {"join_key", "lineage_adjacency", "co_query", "mv_membership",
+     "semantic_sim", "dashboard_scope", "agent_scope"}
+)
+_KIND_PRIOR: dict[str, float] = {
+    "join_key": 1.0,          # FK / proven shared join column — the strongest structural tie
+    "mv_membership": 0.9,     # feeds / is fed by the same governed metric view
+    "lineage_adjacency": 0.8, # a proven upstream/downstream lineage neighbor
+    "co_query": 0.7,          # frequently queried together (query.history co-occurrence)
+    "dashboard_scope": 0.6,   # read by the same governed dashboard
+    "agent_scope": 0.5,       # scoped by the same serving Genie Agent
+    "semantic_sim": 0.4,      # embedding similarity — the softest signal
+}
+# A centrality FLOOR so a neighbor missing from the (asset-only) centrality map — a hub
+# node (mv / dashboard / agent), or any asset on an edgeless-for-PageRank graph — still
+# scores by weight × prior rather than collapsing to 0. Small enough that a high-centrality
+# spine asset still outranks a leaf, large enough that hubs stay eligible for the top slots.
+_CENTRALITY_FLOOR = 0.1
+# Mirrors ``pages._RELATED_WHY`` (kept inline to preserve the graph→pages layering — this
+# low-level module never imports the page miner). The agent's "why" is reconciled back to
+# the page constant in ``pages._asset_why`` (setdefault), so a drift here is harmless.
+_RELATED_KIND_WHY: dict[str, str] = {
+    "lineage_adjacency": "Connected in table lineage",
+    "co_query": "Frequently queried together",
+    "mv_membership": "Measure on the same metric view",
+    "semantic_sim": "Semantically similar",
+    "dashboard_scope": "Used by a governed dashboard",
+    "agent_scope": "Serving Genie Agent that answers questions about this concept.",
+}
+
+
+def _bare(node_id: str) -> str:
+    """The bare identifier of a graph node id (the ``asset:`` / ``mv:`` / ``agent:`` /
+    ``dashboard:`` prefix stripped). A prefixless id is returned unchanged."""
+    return node_id.split(":", 1)[1] if ":" in node_id else node_id
+
+
+def _join_key_why(columns: Any) -> str:
+    """"Shares join key ``<col>``" naming the FK column(s) (MV-D88); a column-less join
+    edge (the shared-join-column proxy may omit them) degrades to a generic phrase."""
+    named = [str(c) for c in (columns or []) if c is not None and str(c) != ""]
+    if not named:
+        return "Shares a join key"
+    return "Shares join key " + ", ".join(f"`{c}`" for c in named)
+
+
+def related_assets(
+    signal_graph: dict[str, Any],
+    anchor_fqns: Iterable[str],
+    centrality: Mapping[str, float] | None = None,
+    *,
+    max_out: int = 6,
+    exclude: frozenset[str] | set[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Deterministic graph-derived Related assets for a Page (Stage 4.1j, MV-D102).
+
+    From each ``asset:<anchor>`` node, take the 1-hop neighbors over the relatedness edge
+    kinds (:data:`_RELATED_KINDS`) — the OTHER endpoint of every such edge, in either
+    direction. Each neighbor is scored::
+
+        score = (edge weight or 1.0) × _KIND_PRIOR[kind] × (centrality["asset:"+t] + floor)
+
+    where ``t`` is the neighbor's bare id and ``centrality`` is the per-asset PageRank map
+    (:func:`pagerank_centrality`, keyed by bare FQN). A neighbor absent from ``centrality``
+    — a hub node (mv / dashboard / agent) or an asset on an edgeless-for-PageRank graph —
+    still scores via ``_CENTRALITY_FLOOR`` rather than collapsing to 0. A neighbor reached
+    over several edges/kinds is DEDUPED keep-max (the highest-scoring edge wins, ties broken
+    deterministically by the sorted edge walk). Anchors, the ``exclude`` set, and self-loops
+    are dropped, so a Page never lists its own Sources.
+
+    Returns ``[{"fqn", "kind", "source", "columns", "why", "score"}]`` sorted by ``score``
+    desc then ``fqn`` asc, capped at ``max_out``. ``columns`` is present only for a
+    ``join_key`` neighbor that named its FK column(s) (MV-D88). Only REAL graph nodes are
+    ever returned — no FQN is invented. Pure + offline + ``igraph``-free; an edgeless graph
+    (or an anchor set with no relatedness edges) yields ``[]``."""
+    cent = centrality or {}
+    anchors = {str(a) for a in anchor_fqns}
+    anchor_nodes = {f"asset:{a}" for a in anchors}
+    drop = anchors | {str(x) for x in exclude}
+
+    # keep-max per neighbor fqn; ``_walk`` is deterministic (edges are visited in list
+    # order and a neighbor is replaced only on a STRICTLY-greater score).
+    best: dict[str, dict[str, Any]] = {}
+    for e in signal_graph.get("edges", []):
+        kind = e.get("kind")
+        if kind not in _RELATED_KINDS:
+            continue
+        src, dst = e.get("src"), e.get("dst")
+        if not (isinstance(src, str) and isinstance(dst, str)):
+            continue
+        # The edge must touch exactly one anchor asset node; the OTHER endpoint is the
+        # neighbor. (An edge between two anchors yields a neighbor that is itself an anchor
+        # and is dropped below; an edge touching no anchor is irrelevant.)
+        if src in anchor_nodes:
+            neighbor = dst
+        elif dst in anchor_nodes:
+            neighbor = src
+        else:
+            continue
+        t = _bare(neighbor)
+        if not t or t in drop or neighbor in anchor_nodes:
+            continue
+        weight = e.get("weight")
+        w = float(weight) if isinstance(weight, (int, float)) else 1.0
+        prior = _KIND_PRIOR.get(kind, 0.5)
+        score = round(w * prior * (float(cent.get(f"asset:{t}", 0.0)) + _CENTRALITY_FLOOR), 6)
+        columns = e.get("columns") if kind == "join_key" else None
+        why = _join_key_why(columns) if kind == "join_key" else _RELATED_KIND_WHY.get(kind, "Related asset")
+        entry = {
+            "fqn": t, "kind": kind, "source": str(e.get("source") or kind),
+            "columns": [str(c) for c in columns] if columns else [], "why": why, "score": score,
+        }
+        prev = best.get(t)
+        if prev is None or score > prev["score"]:
+            best[t] = entry
+
+    ranked = sorted(best.values(), key=lambda r: (-r["score"], r["fqn"]))
+    return ranked[: max(0, int(max_out))]

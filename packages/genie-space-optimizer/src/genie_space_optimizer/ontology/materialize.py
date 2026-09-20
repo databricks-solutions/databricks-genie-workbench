@@ -590,6 +590,7 @@ def run_materialize(
     page_drafter: Any | None = None,
     routing_validator: Any | None = None,
     page_oracle: Any | None = None,
+    page_link_searcher: Any | None = None,
     facet_denylist: list[str] | frozenset[str] | None = None,
     domain_min_tables: int = transforms.DOMAIN_MIN_TABLES,
     domain_min_schemas: int = transforms.DOMAIN_MIN_SCHEMAS,
@@ -713,6 +714,17 @@ def run_materialize(
             schema_affinity=structural["schema_affinity"],
         )
 
+        # Stage 4b (MV-D97 §6) / Stage 4.1j (MV-D102): compute PageRank centrality ONCE,
+        # right after the fused graph is built. It depends ONLY on ``signal_graph`` and is
+        # read-only, so hoisting it above ``mine_pages`` (Page Related-asset scoring reads
+        # it) and clustering is byte-identical to computing it just before RankSignals. It
+        # feeds THREE consumers now: Page Related-asset ranking (mine_pages, below), the L6
+        # ranker's ``centrality`` factor, and the layout's node-sizing (the ``node_scores``
+        # map at build_graph_snapshot). Empty (igraph unavailable OR an edgeless graph ⇒
+        # ``pagerank_centrality`` returns {}) ⇒ every downstream reader degrades cleanly
+        # (no Related asset boost / node_scores={} / size=1.0 — MV-D43/D45/D82).
+        centrality = graph.pagerank_centrality(signal_graph)
+
         # L3 ER / dedupe over the (tag) candidate inventory. Similarity is behind
         # the one interface (in-process cosine default); embeddings + LLM are
         # optional and degrade to string-only / skip-escalation (MV-D43).
@@ -793,6 +805,12 @@ def run_materialize(
             members=sorted(member_fqns | set(agents)), instructions=page_in["instructions"],
             asset_domain=asset_domain, workspace_id=workspace_id,
             drafter=page_drafter, routing_validator=routing_validator, oracle=page_oracle,
+            # Stage 4.1j (MV-D102): the fused graph + its once-computed PageRank centrality
+            # (hoisted above, BUILD A) drive DETERMINISTIC graph-derived Related assets. The
+            # external Links searcher (MV-D103) is passed ONLY when the external-context flag
+            # is on (the job wires it); None ⇒ no links ⇒ byte-identical.
+            signal_graph=signal_graph, centrality=centrality,
+            page_link_searcher=page_link_searcher, as_of=as_of,
             page_autodraft_min_corroboration=page_autodraft_min_corroboration,
             page_autodraft_max_pages=page_autodraft_max_pages,
             page_autodraft_max_workers=page_autodraft_max_workers,
@@ -832,12 +850,6 @@ def run_materialize(
             for did, members in members_by_domain.items()
             if (seeds := [m for m in members if certification.get(m) == "certified"])
         }
-        # Stage 4b (MV-D97 §6): compute PageRank centrality ONCE — it feeds BOTH the L6
-        # ranker's ``centrality`` factor (below) and the layout's node-sizing (the
-        # ``node_scores`` map at the build_graph_snapshot call). Empty (igraph unavailable
-        # OR an edgeless graph ⇒ ``pagerank_centrality`` returns {}) ⇒ node_scores={} ⇒
-        # every size=1.0 ⇒ snapshot byte-identical to today (MV-D43/D45/D82).
-        centrality = graph.pagerank_centrality(signal_graph)
         signals = rank.RankSignals(
             usage=usage,
             centrality=centrality,

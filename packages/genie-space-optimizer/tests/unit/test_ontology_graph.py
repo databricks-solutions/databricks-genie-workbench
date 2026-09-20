@@ -1375,3 +1375,94 @@ def test_certified_home_empty_without_seeds_or_igraph_or_edges(monkeypatch):
     # igraph unavailable → {} (never raise).
     monkeypatch.setitem(sys.modules, "igraph", None)
     assert graph.certified_home(sig, {"A": ["c.a.anchor"]}) == {}
+
+
+# ── Related-asset traversal (Stage 4.1j, MV-D102) ────────────────────────────
+
+
+def _rel_graph():
+    """A small fused graph anchored on ``a.b.orders`` with one neighbor per relatedness
+    kind, plus a governance (schema_affinity) edge that must be ignored."""
+    return graph.build_signal_graph(
+        {"tags": [{"tag_key": "Sales", "members": [{"fqn": "a.b.orders"}]}]},
+        lineage_edges=[("a.b.orders", "a.b.raw_orders")],
+        co_query_edges=[("a.b.orders", "a.b.events", 3.0)],
+        join_key_edges=[("a.b.orders", "a.b.customers", 1.0, "foreign_key", ["customer_id"])],
+        mv_membership={"a.b.rev_mv": ["a.b.orders"]},
+        dashboard_scopes={"dash1": ["a.b.orders"]},
+        agent_scopes={"agent1": ["a.b.orders"]},
+        semantic_sim_edges=[("asset:a.b.orders", "asset:a.b.similar", 0.8)],
+        schema_affinity={"a.b": ["a.b.orders", "a.b.mate"]},
+    )
+
+
+def test_related_assets_returns_one_per_kind_with_correct_why_and_ignores_governance():
+    rel = graph.related_assets(_rel_graph(), ["a.b.orders"], {}, max_out=20)
+    by_fqn = {r["fqn"]: r for r in rel}
+    # One entry per relatedness kind; the schema_affinity mate is NOT related.
+    assert "a.b.mate" not in by_fqn
+    assert by_fqn["a.b.customers"]["kind"] == "join_key"
+    assert by_fqn["a.b.customers"]["why"] == "Shares join key `customer_id`"
+    assert by_fqn["a.b.customers"]["columns"] == ["customer_id"]
+    assert by_fqn["a.b.raw_orders"]["why"] == "Connected in table lineage"
+    assert by_fqn["a.b.events"]["why"] == "Frequently queried together"
+    assert by_fqn["a.b.rev_mv"]["why"] == "Measure on the same metric view"
+    assert by_fqn["a.b.similar"]["why"] == "Semantically similar"
+    assert by_fqn["dash1"]["why"] == "Used by a governed dashboard"
+    assert "Genie Agent" in by_fqn["agent1"]["why"]
+
+
+def test_related_assets_ranks_by_weight_then_centrality():
+    # Empty centrality: co_query weight 3 (×0.7×floor) outranks the FK (×1.0×floor).
+    rel = graph.related_assets(_rel_graph(), ["a.b.orders"], {}, max_out=2)
+    assert [r["fqn"] for r in rel][0] == "a.b.events"
+    # Boost the FK neighbor's centrality: it now leads.
+    rel2 = graph.related_assets(
+        _rel_graph(), ["a.b.orders"], {"asset:a.b.customers": 0.95}, max_out=2,
+    )
+    assert rel2[0]["fqn"] == "a.b.customers"
+
+
+def test_related_assets_dedupes_keep_max():
+    """Two edges to the same neighbor (a strong FK + a weak co_query) collapse to one
+    entry carrying the higher-scoring kind."""
+    g = graph.build_signal_graph(
+        {"tags": []},
+        co_query_edges=[("a.b.orders", "a.b.customers", 1.0)],
+        join_key_edges=[("a.b.orders", "a.b.customers", 1.0, "foreign_key", ["customer_id"])],
+    )
+    rel = graph.related_assets(g, ["a.b.orders"], {})
+    assert len(rel) == 1
+    assert rel[0]["kind"] == "join_key"  # keep-max: FK prior (1.0) beats co_query (0.7)
+
+
+def test_related_assets_drops_anchors_self_and_exclude():
+    g = graph.build_signal_graph(
+        {"tags": []},
+        join_key_edges=[
+            ("a.b.orders", "a.b.customers", 1.0, "foreign_key", ["cid"]),
+            ("a.b.orders", "a.b.line_items", 1.0, "foreign_key", ["oid"]),
+        ],
+    )
+    # customers is an anchor (drops as a self/anchor), line_items is excluded.
+    rel = graph.related_assets(
+        g, ["a.b.orders", "a.b.customers"], {}, exclude={"a.b.line_items"},
+    )
+    assert rel == []
+
+
+def test_related_assets_edgeless_and_no_relatedness_edges_yield_empty():
+    assert graph.related_assets({"nodes": [], "edges": []}, ["a.b.orders"], {}) == []
+    # Only governance edges (tag_assignment / schema_affinity) ⇒ nothing related.
+    g = graph.build_signal_graph(
+        {"tags": [{"tag_key": "Sales", "members": [{"fqn": "a.b.orders"}]}]},
+        schema_affinity={"a.b": ["a.b.orders", "a.b.mate"]},
+    )
+    assert graph.related_assets(g, ["a.b.orders"], {}) == []
+
+
+def test_related_assets_respects_max_out_and_is_deterministic():
+    g = _rel_graph()
+    a = graph.related_assets(g, ["a.b.orders"], {}, max_out=3)
+    b = graph.related_assets(g, ["a.b.orders"], {}, max_out=3)
+    assert a == b and len(a) == 3

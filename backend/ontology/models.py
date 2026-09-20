@@ -365,6 +365,16 @@ class DomainDraft(BaseModel):
     sources: list[DomainDraftSource] = Field(default_factory=list)
 
 
+class PageLink(BaseModel):
+    """One best-effort external reference behind a Page (Stage 4.1j, MV-D103). Informational
+    ONLY — never a certified fact or a Source: the ``note`` labels it exactly that. Assembled
+    server-side from the wheel's ``evidence.links``; absent → [] (older rows / links off)."""
+    url: str  # the citable URL the card links to
+    title: str = ""  # the reference's title (may be empty)
+    as_of: str = ""  # the reference's as-of date, plain string
+    note: str = ""  # the "informational … — not certified" label
+
+
 class PageDraft(BaseModel):
     proposal_id: str  # = page_id (canonical-concept-derived, 17f)
     archetype: Literal["Routing", "Disambiguation", "Guardrail", "Taxonomy"]
@@ -378,6 +388,10 @@ class PageDraft(BaseModel):
     # server-side from the wheel's ``evidence.asset_why``. Additive; the card renders it
     # under Sources/Related. Absent → an empty map (older rows, or a degraded run).
     asset_why: dict[str, str] = Field(default_factory=dict)
+    # Stage 4.1j (MV-D103): best-effort external Links from the wheel's ``evidence.links``.
+    # Additive + defaulted []; the card renders a "Links" section and Copy-for-Discover
+    # carries them. Empty when links are off (the default) or a degraded run.
+    links: list[PageLink] = Field(default_factory=list)
     certify: bool
     evidence: list[EvidenceChip] = Field(default_factory=list)
     tier: DraftTier

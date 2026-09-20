@@ -221,6 +221,15 @@ export interface DomainDraft {
   sources?: DomainDraftSource[]
 }
 
+// Stage 4.1j (MV-D103): one best-effort external reference behind a Page. Informational
+// only (the `note` says so) — never a certified fact or a Source.
+export interface PageLink {
+  url: string
+  title: string
+  as_of: string
+  note: string
+}
+
 export interface PageDraft {
   proposal_id: string
   archetype: "Routing" | "Disambiguation" | "Guardrail" | "Taxonomy"
@@ -232,6 +241,9 @@ export interface PageDraft {
   source_fqns: string[]
   // Stage 4 (MV-D55): one-line "why this asset" keyed by Source/Related FQN. Additive.
   asset_why: Record<string, string>
+  // Stage 4.1j (MV-D103): best-effort external Links. Additive + defaulted []; the card
+  // renders a Links section and Copy-for-Discover carries them.
+  links: PageLink[]
   certify: boolean
   evidence: EvidenceChip[]
   tier: DraftTier

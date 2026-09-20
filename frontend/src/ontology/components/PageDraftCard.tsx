@@ -12,13 +12,7 @@ import { Button } from "@/components/ui/button"
 import { draftPageBody } from "@/ontology/api"
 import type { DecisionAction, PageDraft } from "@/ontology/types"
 import { EvidenceChips, TierBadge } from "@/ontology/components/DomainDraftCard"
-
-function copyText(draft: PageDraft): string {
-  const lines = [draft.title, "", draft.reason, "", draft.body]
-  if (draft.synonyms.length) lines.push("", `Also called: ${draft.synonyms.join(", ")}`)
-  if (draft.source_fqns.length) lines.push("", `Sources: ${draft.source_fqns.join(", ")}`)
-  return lines.join("\n")
-}
+import { copyText } from "@/ontology/components/pageDraftCopy"
 
 /**
  * A labelled list of Source/Related assets, each with its one-line "why this asset"
@@ -153,6 +147,28 @@ export function PageDraftCard({
 
       <AssetRows label="Related" fqns={draft.related_fqns} why={draft.asset_why ?? {}} />
       <AssetRows label="Sources" fqns={draft.source_fqns} why={draft.asset_why ?? {}} />
+
+      {/* Stage 4.1j (MV-D103): best-effort external Links — informational, not certified. */}
+      {draft.links?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Links</p>
+          <ul className="mt-1 space-y-1.5">
+            {draft.links.map((l) => (
+              <li key={l.url}>
+                <a
+                  href={l.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-accent underline break-all"
+                >
+                  {l.title || l.url}
+                </a>
+                {l.note && <p className="mt-0.5 text-xs text-muted">{l.note}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <details className="rounded-lg border border-default bg-elevated/50 px-3 py-2">
         <summary className="cursor-pointer text-xs font-semibold text-secondary">

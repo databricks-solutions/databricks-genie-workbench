@@ -153,12 +153,49 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      persisted stub body (emitted by `_stub_body`, gate-passed at materialize) — honest, nothing
      outside the gate-proven set is admitted. +9 behavioral/SQL-shape tests
      (`test_ontology_draft_body.py`) reproduce each. `./scripts/test.sh` **3115**.
-   - **Next action:** deploy-verify the live "Draft with AI" / "Draft pages with AI" buttons
-     against `genie_ont_pages` (`evidence.body_source ∈ {llm_ondemand, llm_bulk}`; on-demand /
-     bulk bodies survive a batch refresh — Step-2 preservation).
+   - **Deploy-verified** (6t92c3, 2026-09-19): single-page "Draft with AI" flips
+     `genie_ont_pages.body_source` `stub → llm_ondemand` with valid-JSON `evidence`,
+     `body_stale=false`, and the batch `facts_hash` preserved (the 7th-finding fix landed live).
+     Optional remaining check: the bulk "Draft pages with AI" path (`llm_bulk`).
+
+6. **Stage 4.1j — Related-assets & links (graph traversal)** · 🟢 BUILT offline-green (deploy-verify pending)
+   - **Gap:** page `related_fqns` is hardcoded to the serving Genie Agent (pages.py:748-749 et al.),
+     so measure Pages render an empty Related section — even though a full weighted, typed,
+     provenanced relatedness heterograph (`graph.build_signal_graph`, graph.py:33) and PageRank
+     over it (`graph.pagerank_centrality`, graph.py:261) are already computed EVERY run and the
+     miner (`mine_pages`, pages.py:1233) never receives either. Per the
+     [Databricks Pages model](https://docs.databricks.com/aws/en/uc-semantics/pages), Related
+     assets (parent/child Pages, dependent metrics, associated tables) + Sources (incl. external
+     links) are first-class fields we leave empty. "Draft with AI" only paraphrases the same facts,
+     so it adds no new information — this does.
+   - **Approach (deterministic-first):** traverse the graph from each page's `source_fqns` anchor
+     over the relatedness edge kinds (join_key / lineage_adjacency / co_query / mv_membership /
+     semantic_sim / dashboard_scope / agent_scope), rank by `weight × kind-prior × centrality`,
+     surface top-N each with a per-edge "why" (join_key even names the shared column, MV-D88).
+     Precedent: `_domain_adjacency` (materialize.py:531) already traverses the same graph. Related
+     assets need NO LLM (higher trust than the prose); external links stay best-effort / labeled /
+     leakage-scanned (17.x web-enrichment).
+   - **Driver:** `docs/design/ontology-related-assets-links-driver.md` (Builds A–E; proposed
+     **MV-D102** graph Related assets, **MV-D103** external Links + Copy-for-Discover surfacing).
+     `signal_graph=None` ⇒ byte-identical agents-only (MV-D43); harness flat-or-up (related_fqns
+     changes NO domain/page set).
+   - **BUILT (offline-green, 2026-09-19):** BUILD A hoists `pagerank_centrality` above `mine_pages`
+     (byte-identical; feeds Related scoring + rank + node-sizing); BUILD B adds the pure igraph-free
+     `graph.related_assets` traversal (weight × kind-prior × centrality-floor, dedupe keep-max,
+     per-kind why incl. the join-key column); BUILD C threads `signal_graph`/`centrality` into
+     `mine_pages` + a page↔page post-pass (same-sub-domain siblings + linked-domain pages, by title);
+     BUILD D adds best-effort `evidence.links` (bounded, labeled "not certified", leakage-scanned,
+     degrade-to-[]), gated on the external-context flag (job wires the searcher); BUILD E surfaces
+     both via `PageLink`/`links` (models.py + types.ts + mirror `_page_links`) and a Links section +
+     Related/Links blocks in Copy-for-Discover. `signal_graph=None` ⇒ agents-only byte-identical;
+     `page_link_searcher=None` ⇒ no links. Suites: 3133 (1094 backend + 2039 GSO) + 660 vitest,
+     tsc/eslint clean, uv.lock clean.
+   - **Next action:** deploy-verify per the driver's STOP gate (Related section + Copy-for-Discover
+     + `genie_ont_pages.related_fqns`/`evidence` on 6t92c3; harness precision/recall/F1 flat-or-up),
+     then mark BUILT + register MV-D102/D103.
 
 ### P4 — External enrichment
-6. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 📝 DRAFTED (Stage A build-ready)
+7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 📝 DRAFTED (Stage A build-ready)
    - Build spec `ontology-phase4-external-build.md` (§1→§12), staged **A→B→C** with a human
      STOP between each, all DEFAULT OFF (MV-D44), estate-only byte-identical when off.
    - **Stage A (safe backbone) — 🟡 BUILT-OFFLINE:** `context_sources.py` registry +
@@ -193,7 +230,7 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      alignment** onto the live pack seam.
 
 ### P5 — Track hardening · ✅ BUILT + deploy-verified
-7. **17j — Ontology hardening + undo + E2E (MV-D100)** · ✅ BUILT + deploy-verified (6t92c3, 2026-09-19)
+8. **17j — Ontology hardening + undo + E2E (MV-D100)** · ✅ BUILT + deploy-verified (6t92c3, 2026-09-19)
    - **Built (additive, `ontology`):** an applied governed-tag membership is now **reversible**
      under OBO from the `genie_ont_applied.prev_value` trail, and undo **never drops the governed
      tag** (MV-D100). BUILD A unset pre-value capture (`_reassign_items` probes
@@ -238,7 +275,7 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      appears in Drafts on 6t92c3).
 
 ### P6 — Signal authority (OntoRank-style) · ✅ BUILT + deploy-verified (Stages 1–4)
-8. **Ontology Signal Authority (MV-D93–D97)** · ✅ BUILT + deploy-verified on tbzqg7
+9. **Ontology Signal Authority (MV-D93–D97)** · ✅ BUILT + deploy-verified on tbzqg7
    - `ontology-signal-authority-build.md`: wired `system.query.history`+`table_lineage`
      popularity into the reserved `usage×centrality×governance` blend; fed certification into
      the authority rung (+ `deprecated` firewall); upgraded degree→`igraph` PageRank +
@@ -269,13 +306,13 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
 
 ## Track A — MV-Advisor / Semantic Graph (parallel, independent of ontology)
 
-9. **Semantic Blueprint v4 — Join-Advisor candidate source** · 📝 DRAFTED (feature BUILT behind flag)
+10. **Semantic Blueprint v4 — Join-Advisor candidate source** · 📝 DRAFTED (feature BUILT behind flag)
    - Built: `SemanticBlueprint.tsx` + `blueprint/` modules + Phase-2 backend, behind the
      `blueprint` canvas toggle. **Deploy-gated remainder:** server-side FK / name-type
      discovery + containment probe + wiring `onSeed` to a real Auto-Optimize run. Specs
      `semantic-graph-v4-build-prompt.md` / `…-blueprint-note.md`.
    - **Next action:** build the candidate-source backend + `onSeed` → deploy-verify.
-10. **MV-Advisor main track — HEAD deployment review** · ✅ BUILT (verification gap)
+11. **MV-Advisor main track — HEAD deployment review** · ✅ BUILT (verification gap)
     - `reference/mv-advisor-gap-report.md`: code-complete through create-and-attach / Genie-v2
       round-trip + Blueprint, but **no deployment review of current HEAD**.
     - **Next action:** a deployed human-review round on current HEAD (not a build).
@@ -316,7 +353,11 @@ that closes the curator loop. **P5 / 17j** (apply hardening + E2E + undo/rollbac
 **BUILT + deploy-verified** (6t92c3, 2026-09-19) — the live apply→undo round-trip reversed a
 membership from the `genie_ont_applied` trail and left the governed tag in place; the reuse-no-op
 Drafts gate (MV-D101) is BUILT offline-green (rides the next deploy). **P3** (curator Draft-with-AI
-Steps 3–4) is **BUILT + hardened** offline-green (6 `/review` findings fixed, incl. the evidence-
-write JSON/column bug that meant the draft never persisted). **Next: deploy-verify P3**, then the
-rest of **P4** (Stage C + §9 alignment). **Track A** can run in parallel by anyone off the ontology
-branch.
+Steps 3–4) is **BUILT + hardened + deploy-verified** (6t92c3, 2026-09-19 — 7 `/review`+live findings
+fixed, incl. the evidence-write JSON/column bug that meant the draft never persisted and the
+on-demand identifier-universe fix). **Stage 4.1j** (Related-assets & links via graph traversal,
+MV-D102/D103) is now **🟢 BUILT offline-green** (deploy-verify pending) — deterministic graph-derived
+Related assets (the highest-value Page field we left empty) + best-effort external Links, all
+additive/default-safe (`signal_graph=None` ⇒ agents-only byte-identical; suites 3133 + 660 vitest).
+**Next: deploy-verify Stage 4.1j** on 6t92c3, then the rest of **P4** (Stage C + §9 alignment).
+**Track A** can run in parallel by anyone off the ontology branch.
