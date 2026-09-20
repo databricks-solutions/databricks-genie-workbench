@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-20**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
+branch `ontology` (**2026-09-20**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + Stage 4.1k page↔page relevance rank/cap (MV-D104) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -198,11 +198,30 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      **MV-D102/D103 registered.** NOTE: the app-facing rows are keyed on `workspace_id` +
      `metastore_id` (MV-D49) — the verify re-triggered with the app's `run_now` recipe after a
      first CLI run with the job's empty default `workspace_id` was a no-op on the app dataset.
-   - **Follow-ups (quality, non-blocking):** (a) for the bulk `Routing` archetype, Related is
-     dominated by the *same* repeated same-domain sibling pages (their sources aren't asset-graph
-     nodes) — rank/cap page↔page or gate on relevance; (b) `lineage_adjacency`/`co_query`/
-     `mv_membership`/`semantic_sim` yielded 0 related whys on this estate — confirm those edge
-     kinds are built for page anchors (upstream signal-graph coverage, not a 4.1j code gap).
+   - **Stage 4.1k — page↔page Related relevance rank/cap (MV-D104):** ✅ BUILT + deploy-verified
+     (6t92c3, 2026-09-20; commit `92f3b28d`). `_rank_sibling_pages` (pages.py:1242) ranks
+     same-sub-domain siblings by shared-Source count → corroboration → title; a relevance gate keeps
+     only source-sharing siblings EXCEPT an isolated-Page floor (always keep the top-ranked one); a
+     separate `max_sibling_pages=2` (pages.py:1268) caps them; linked-domain pages keep priority and
+     are exempt from that cap (pages.py:1320-1345). Membership-neutral (only `related_fqns`/
+     `asset_why`). Offline 3138 (1094 backend + 2044 GSO, +5) + 660 vitest; `git status -- uv.lock`
+     clean. Driver: `docs/design/ontology-related-siblings-rank-driver.md`.
+     **Deploy-verified:** materialize run `876390131182810` TERMINATED SUCCESS re-baked
+     `genie_ont_pages` (644 pages / 167 domains) via the app `run_now` recipe (MV-D49). The per-page
+     sibling cap holds UNIVERSALLY: `sib_max=2` for every archetype incl. **Routing (436 pages)**,
+     histogram `{0:8, 1:22, 2:614}` (no page >2), 0 invented/empty related entries — the Routing
+     domination (up to 6 arbitrary siblings) is GONE and the kept siblings are relevance-ranked.
+     Harness P/R/F None→None (alignment off — see runtime note), structure flat. CAVEAT: the estate
+     drifted since the 4.1j run (join-key whys **161→738**, dashboard **159→237** — signals 4.1k does
+     NOT touch), so the global sibling total (641→1250, ≈2/page under the floor) is not a like-for-like
+     proxy; the per-archetype **`sib_max=2`** is the authoritative acceptance.
+   - **Follow-ups (quality, non-blocking):** (a) ✅ RESOLVED by Stage 4.1k (MV-D104) — the bulk
+     `Routing` sibling domination is now ranked/gated/capped (per-page `sib_max=2`, verified live);
+     (b) OPEN — `lineage_adjacency`/`co_query`/`mv_membership`/`semantic_sim` yielded 0 related whys
+     on this estate. Read-only triage (2026-09-20): `co_query`/`semantic_sim` are **wiring gaps** —
+     `materialize.build_signal_graph` (materialize.py:706-715) passes neither, and the reader has no
+     `co_query` producer; `lineage_adjacency`/`mv_membership` ARE wired but returned empty →
+     **estate/data gaps** (no lineage history / no MVs surfaced). Not a 4.1j/4.1k code gap.
 
 ### P4 — External enrichment
 7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · ✅ COMPLETE — Stages A/B/C + §9 alignment all BUILT + deploy-verified (B `2026-09-15`, C shipped live in the 4.1j deploy, §9 `de65f480` `2026-09-15`); §10 harness tracked under P1. Off-by-default at runtime (MV-D44).
