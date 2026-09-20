@@ -4353,11 +4353,16 @@ STOP for the proposal-quality review checkpoint.
 > the two plug-points) is **✅ BUILT + deploy-verified 2026-09-15** (`69bf9ec6` — incl. the live
 > markdown-answer parser fix that turned the positive path on; pack `industry_code=481111`, 26 sourced
 > leaves, firewall held, estate byte-stable). **Stage C** (tier-5 Context Sources panel + opt-in toggle
-> + labeled Sources chip + `GRANT EXECUTE`/OAuth scopes) is now **build-ready** — Goal-Mode launcher
-> `docs/design/ontology-phase4-external-stageC-driver.md` (render-only over Stage B's persisted pack;
-> DEFAULT OFF ⇒ byte-identical). **§9 industry alignment** (MV-D58) is **already drafted** —
-> `docs/design/ontology-industry-alignment-driver.md` — and *consumes* the Stage B pack seam; schedule
-> it after Stage C. The block below is the register summary; the build spec is the source of truth.
+> + labeled Sources chip + `GRANT EXECUTE`/OAuth scopes) is **✅ BUILT + shipped live** (commit
+> `c718d785`; shipped to 6t92c3 in the 4.1j full deploy, frontend build ON; render-only over Stage B's
+> persisted pack, DEFAULT OFF ⇒ byte-identical; `test_ontology_stage_c.py` 7/7 + frontend
+> Settings/Permission/draftCards tests green). The panel + toggle render live; the labeled Sources chip
+> has nothing to render on this estate (no surfaced domain has `naming_prior.applied=true` — the 16
+> surfaced domains are curated governed tags), so its live proof rides the §9 deploy-verify. **§9 industry
+> alignment** (MV-D58) is now **THE only remaining P4 piece** — drafted in
+> `docs/design/ontology-industry-alignment-driver.md`, *consumes* the Stage B pack seam, and re-targets
+> the naming prior (unblocking the Stage C chip) while emitting the aligned reference the §10 harness
+> needs. The block below is the register summary; the build spec is the source of truth.
 
 ```
 Architecture §6 (external context + Context Sources). Opt-in, DEFAULT OFF (MV-D44).
