@@ -4358,11 +4358,14 @@ STOP for the proposal-quality review checkpoint.
 > persisted pack, DEFAULT OFF ⇒ byte-identical; `test_ontology_stage_c.py` 7/7 + frontend
 > Settings/Permission/draftCards tests green). The panel + toggle render live; the labeled Sources chip
 > has nothing to render on this estate (no surfaced domain has `naming_prior.applied=true` — the 16
-> surfaced domains are curated governed tags), so its live proof rides the §9 deploy-verify. **§9 industry
-> alignment** (MV-D58) is now **THE only remaining P4 piece** — drafted in
-> `docs/design/ontology-industry-alignment-driver.md`, *consumes* the Stage B pack seam, and re-targets
-> the naming prior (unblocking the Stage C chip) while emitting the aligned reference the §10 harness
-> needs. The block below is the register summary; the build spec is the source of truth.
+> surfaced domains are curated governed tags), so its live proof needs an alignment-ON run (default app
+> runs are OFF). **§9 industry alignment** (MV-D58) is **✅ BUILT + deploy-verified** (`de65f480`,
+> 2026-09-15; `alignment.py`+`reference_models.py`+`similarity.py`, `test_ontology_alignment.py` 28/28;
+> live verify `reference_model=airline` → 16/16 surfaced domains typed `narrower`×12/`broader`×4,
+> `applied_renames=0`), wired end-to-end (`ont_settings`→`refresh.py`→job) and off-by-default. **P4 is
+> therefore COMPLETE** (Stages A/B/C + §9 + the §10 harness all landed); the only outstanding items are
+> runtime opt-in (an alignment-ON run lights the Stage C chip + populates the harness P/R/F). The block
+> below is the register summary; the build spec is the source of truth.
 
 ```
 Architecture §6 (external context + Context Sources). Opt-in, DEFAULT OFF (MV-D44).

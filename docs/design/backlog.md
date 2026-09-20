@@ -205,7 +205,7 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      kinds are built for page anchors (upstream signal-graph coverage, not a 4.1j code gap).
 
 ### P4 — External enrichment
-7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 🟢 Stages A/B/C BUILT (B deploy-verified, C shipped live); §9 alignment is the only piece left
+7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · ✅ COMPLETE — Stages A/B/C + §9 alignment all BUILT + deploy-verified (B `2026-09-15`, C shipped live in the 4.1j deploy, §9 `de65f480` `2026-09-15`); §10 harness tracked under P1. Off-by-default at runtime (MV-D44).
    - Build spec `ontology-phase4-external-build.md` (§1→§12), staged **A→B→C** with a human
      STOP between each, all DEFAULT OFF (MV-D44), estate-only byte-identical when off.
    - **Stage A (safe backbone) — 🟡 BUILT-OFFLINE:** `context_sources.py` registry +
@@ -239,17 +239,25 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      **Deploy-verify eyeball deferred:** the panel + toggle render live, but the **Sources chip has
      nothing to render on this estate** — no surfaced domain has `naming_prior.applied=true` (all 16
      surfaced domains are curated governed tags, so the pack prior corroborates but never adopts).
-     **§9 fixes that targeting**, so the chip's live proof rides the §9 deploy-verify.
-   - **§9 industry alignment (MV-D58) — 📝 DRAFTED (build-ready, THE remaining P4 piece):**
-     `ontology-industry-alignment-driver.md` — *consumes* the deploy-verified Stage B pack seam;
-     typed correspondences (`exact`/`narrower`/`broader`/`derived`/`not-equivalent`) + gap hypotheses,
-     provenance-gated (T2/T3 never outrank T0/curated), off by default. Also emits the aligned
-     reference the §10 harness needs (today `precision/recall/f1` are `None` — "aligned reference not
-     available") and re-targets the naming prior so Stage C's Sources chip finally renders.
-   - **Next action:** build **§9 industry alignment** (Goal Mode) → STOP → deploy-verify (which also
-     closes the Stage C chip eyeball). Open dependency to pin first: the source/format/location of the
-     per-industry **reference model** (the driver's `reference_model`), and the embedding path for the
-     seed-anchor pass (no new dep, MV-D45).
+     The chip's live proof needs an **alignment-ON run** (default app runs are OFF), so it rides a
+     future opt-in run — not a code gap.
+   - **§9 industry alignment (MV-D58) — ✅ BUILT + deploy-verified (`de65f480`, 2026-09-15):**
+     `alignment.py` (663 lines) + `reference_models.py` (bundled T2 models from the
+     `lakehouse-industry-data-models` repo) + `similarity.py` run the 4 ordered passes (string →
+     embedding seed-anchor → structural propagation → semantic-sanity) and emit typed correspondences
+     (`exact`/`narrower`/`broader`/`derived`/`not-equivalent`) + gap hypotheses via `rank.apply_alignment`,
+     provenance-gated (T2/T3 never outrank T0/curated). Wired end-to-end: `ont_settings.IndustryAlignment`
+     → `refresh.py` `run_now` params → job widgets + `alignment.load_reference_model` (run_ontology_
+     materialize.py:1075). Additive, off-by-default (MV-D44) ⇒ byte-identical; `test_ontology_alignment.py`
+     28/28 green. **Live verify (`reference_model=airline`):** 16/16 surfaced domains carry a typed
+     correspondence (`narrower`×12 / `broader`×4) with `reference_name` + a T2 Provenanced leaf;
+     `applied_renames=0` (no curated fact outranked). On this curated-heavy estate alignment lands as
+     **corroborating evidence**, not renames — so it raises confidence + supplies the labeled/dated
+     source, and only THEN does Stage C's chip have something to adopt.
+   - **Next action:** **P4 is done.** Optional runtime follow-up (not a build): schedule an
+     alignment-ON materialize run on 6t92c3 (set `industry_alignment.enabled` + `reference_model=airline`
+     in Settings) to (a) light up the Stage C Sources chip and (b) populate the §10 harness
+     `precision/recall/f1` (today `None` because default runs are alignment-OFF).
 
 ### P5 — Track hardening · ✅ BUILT + deploy-verified
 8. **17j — Ontology hardening + undo + E2E (MV-D100)** · ✅ BUILT + deploy-verified (6t92c3, 2026-09-19)
@@ -383,8 +391,10 @@ Related assets (the highest-value Page field we left empty) went `related_fqns` 
 on a live re-bake (run `611356940571419`), 161 join-key + 159 dashboard + 331 agent + 641 sibling
 whys, harness P/R/F flat; best-effort external Links stay default-off (`links=0`). All
 additive/default-safe (`signal_graph=None` ⇒ agents-only byte-identical; suites 3133 + 660 vitest).
-**P4** external enrichment: Stages A/B/C are done (**B deploy-verified, C shipped live in the 4.1j
-deploy**), so **§9 industry alignment (MV-D58)** is the only remaining piece — it also re-targets the
-naming prior (unblocking Stage C's Sources chip) and emits the aligned reference the §10 harness needs.
-**Next:** build **§9 industry alignment** (pin the reference-model source + embedding path first).
+**P4** external enrichment is **COMPLETE**: Stages A/B/C + **§9 industry alignment (MV-D58, `de65f480`,
+deploy-verified 2026-09-15)** + the §10 harness (P1) are all built and deploy-verified — all
+off-by-default at runtime (MV-D44). The only outstanding items are *runtime*, not code: an opt-in
+alignment-ON run lights the Stage C Sources chip and populates the harness P/R/F (both `None`/empty
+while runs stay alignment-OFF). **Next:** confirm with the human what to pick up next (Track A, or an
+opt-in alignment-ON verify run) — the ontology curation arc (P1–P6 + Phase 4/5) is otherwise landed.
 **Track A** can run in parallel by anyone off the ontology branch.
