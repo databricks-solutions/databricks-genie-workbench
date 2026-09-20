@@ -347,16 +347,32 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
 
 ## Track A — MV-Advisor / Semantic Graph (parallel, independent of ontology)
 
-10. **Semantic Blueprint v4 — Join-Advisor candidate source** · 📝 DRAFTED (feature BUILT behind flag)
-   - Built: `SemanticBlueprint.tsx` + `blueprint/` modules + Phase-2 backend, behind the
-     `blueprint` canvas toggle. **Deploy-gated remainder:** server-side FK / name-type
-     discovery + containment probe + wiring `onSeed` to a real Auto-Optimize run. Specs
-     `semantic-graph-v4-build-prompt.md` / `…-blueprint-note.md`.
-   - **Next action:** build the candidate-source backend + `onSeed` → deploy-verify.
-11. **MV-Advisor main track — HEAD deployment review** · ✅ BUILT (verification gap)
-    - `reference/mv-advisor-gap-report.md`: code-complete through create-and-attach / Genie-v2
-      round-trip + Blueprint, but **no deployment review of current HEAD**.
-    - **Next action:** a deployed human-review round on current HEAD (not a build).
+10. **Semantic Blueprint v4 — Join-Advisor candidate source** · ✅ BUILT (code-complete; deployed-review open)
+   - The former "deploy-gated remainder" (candidate-source backend + `onSeed` wiring) is **BUILT**
+     end-to-end in `2051f539` (2026-08-27, on-branch), NOT flag-gated: `SemanticBlueprint` renders
+     directly in the Model tab whenever the graph is non-empty.
+     - **Candidate source (server-side FK + name-type discovery + containment probe):**
+       `GET /api/auto-optimize/spaces/{id}/join-candidates` (`backend/routers/auto_optimize.py:3480`)
+       discovers both FK and name-type candidates and scores each with a warehouse containment probe.
+     - **`onSeed` → real run, end-to-end:** `GET/POST /join-advice` persists the seed set to Lakebase
+       (`lakebase.save_join_advice`/`get_join_advice`) → `integration/trigger.py` carries
+       `proposed_join_seeds` into the run as the `operator_proposed_joins` artifact (`wh_write_join_advice`)
+       → `optimization/unified_loop._load_operator_proposed_joins` reads it (`wh_read_join_advice`) and
+       the loop re-validates + applies via `add_join_spec`.
+     - **Tests:** `backend/tests/test_join_advisor.py` (discovery/persistence/endpoints) +
+       `packages/.../tests/unit/test_wh_join_advice.py` (artifact round-trip). **Docs:**
+       `docs/docs/features/join-advisor.md` + `docs/docs/reference/api.md`. Specs
+       `semantic-graph-v4-build-prompt.md` / `…-blueprint-note.md`.
+   - **Next action:** no build remaining — the only open item is the deployed-review round (#11),
+     which now also covers the Blueprint + Join Advisor.
+11. **MV-Advisor main track — HEAD deployed-review round** · ⏳ VERIFICATION-ONLY (code-complete, deploy-review open)
+    - `reference/mv-advisor-gap-report.md`: implementation is code-complete through create-and-attach /
+      Genie-v2 round-trip **and** the current Semantic Blueprint + Join Advisor, but the gap report is
+      explicit (§ "Current reconciliation", and the Semantic Blueprint note) that the later revisions have
+      **code + local-test evidence only — no recorded deployment confirmation of current HEAD**.
+    - **This is the single remaining open item for Track A** (and it collapses #10's leftover into it):
+      not a build — a deployed human-review / live E2E round on current HEAD, recorded back into the gap
+      report. Everything upstream is landed and unit-tested.
 
 🧊 `semantic-graph-v2-note.md`, `semantic-graph-v3-note.md` — superseded by v4.
 🧊 `ontology-frontend-batch-driver.md`, `ontology-wave2-launcher.md`,
@@ -409,6 +425,8 @@ opt-in **alignment-ON re-verify** (6t92c3, 2026-09-20, run `922302079051503`) po
 (`exact`×6 / `narrower`×10 / `broader`×5, all corroborating). The Stage C Sources chip is empty
 **by design** on this fully-curated estate (`name_applied=0`, proven live) — not a gap. All off-by-default
 at runtime (MV-D44), so day-to-day harness P/R/F return to `None` unless a run opts in. **Next:** the
-ontology arc (P1–P6 + Phase 4/5) is landed; the only open work is the parallel **Track A** (MV-Advisor:
-Semantic Blueprint v4 backend + `onSeed`; MV-Advisor HEAD deployed-review).
+ontology arc (P1–P6 + Phase 4/5) is landed. Track A (MV-Advisor) is also **code-complete** — the
+Semantic Blueprint v4 + Join-Advisor candidate source + `onSeed`→run path are all BUILT (`2051f539`,
+on-branch, unit-tested, not flag-gated); the ONLY open item across both tracks is a **deployed-review /
+live E2E round of the current MV-Advisor HEAD** (verification, not a build), recorded into the gap report.
 **Track A** can run in parallel by anyone off the ontology branch.
