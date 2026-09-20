@@ -158,7 +158,7 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      `body_stale=false`, and the batch `facts_hash` preserved (the 7th-finding fix landed live).
      Optional remaining check: the bulk "Draft pages with AI" path (`llm_bulk`).
 
-6. **Stage 4.1j — Related-assets & links (graph traversal)** · 🟢 BUILT offline-green (deploy-verify pending)
+6. **Stage 4.1j — Related-assets & links (graph traversal)** · ✅ BUILT + deploy-verified (6t92c3, 2026-09-20; MV-D102/D103 registered)
    - **Gap:** page `related_fqns` is hardcoded to the serving Genie Agent (pages.py:748-749 et al.),
      so measure Pages render an empty Related section — even though a full weighted, typed,
      provenanced relatedness heterograph (`graph.build_signal_graph`, graph.py:33) and PageRank
@@ -190,9 +190,19 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      Related/Links blocks in Copy-for-Discover. `signal_graph=None` ⇒ agents-only byte-identical;
      `page_link_searcher=None` ⇒ no links. Suites: 3133 (1094 backend + 2039 GSO) + 660 vitest,
      tsc/eslint clean, uv.lock clean.
-   - **Next action:** deploy-verify per the driver's STOP gate (Related section + Copy-for-Discover
-     + `genie_ont_pages.related_fqns`/`evidence` on 6t92c3; harness precision/recall/F1 flat-or-up),
-     then mark BUILT + register MV-D102/D103.
+   - **Deploy-verified (6t92c3, 2026-09-20):** materialize run `611356940571419` TERMINATED
+     SUCCESS re-baked `genie_ont_pages` — `related_fqns` **0/642 → 644/644** (max 12),
+     `evidence.asset_why` populated; traversal proven live (**161** "Shares join key" + **159**
+     "governed dashboard" + 331 serving-agent + 641 sibling whys); harness precision/recall/F1
+     flat (None→None, no aligned reference). `links=0` (external-context flag off — default-safe).
+     **MV-D102/D103 registered.** NOTE: the app-facing rows are keyed on `workspace_id` +
+     `metastore_id` (MV-D49) — the verify re-triggered with the app's `run_now` recipe after a
+     first CLI run with the job's empty default `workspace_id` was a no-op on the app dataset.
+   - **Follow-ups (quality, non-blocking):** (a) for the bulk `Routing` archetype, Related is
+     dominated by the *same* repeated same-domain sibling pages (their sources aren't asset-graph
+     nodes) — rank/cap page↔page or gate on relevance; (b) `lineage_adjacency`/`co_query`/
+     `mv_membership`/`semantic_sim` yielded 0 related whys on this estate — confirm those edge
+     kinds are built for page anchors (upstream signal-graph coverage, not a 4.1j code gap).
 
 ### P4 — External enrichment
 7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · 📝 DRAFTED (Stage A build-ready)
@@ -356,8 +366,10 @@ Drafts gate (MV-D101) is BUILT offline-green (rides the next deploy). **P3** (cu
 Steps 3–4) is **BUILT + hardened + deploy-verified** (6t92c3, 2026-09-19 — 7 `/review`+live findings
 fixed, incl. the evidence-write JSON/column bug that meant the draft never persisted and the
 on-demand identifier-universe fix). **Stage 4.1j** (Related-assets & links via graph traversal,
-MV-D102/D103) is now **🟢 BUILT offline-green** (deploy-verify pending) — deterministic graph-derived
-Related assets (the highest-value Page field we left empty) + best-effort external Links, all
+MV-D102/D103) is now **✅ BUILT + deploy-verified** (6t92c3, 2026-09-20) — deterministic graph-derived
+Related assets (the highest-value Page field we left empty) went `related_fqns` **0/642 → 644/644**
+on a live re-bake (run `611356940571419`), 161 join-key + 159 dashboard + 331 agent + 641 sibling
+whys, harness P/R/F flat; best-effort external Links stay default-off (`links=0`). All
 additive/default-safe (`signal_graph=None` ⇒ agents-only byte-identical; suites 3133 + 660 vitest).
-**Next: deploy-verify Stage 4.1j** on 6t92c3, then the rest of **P4** (Stage C + §9 alignment).
+**Next:** the rest of **P4** (Stage C + §9 alignment).
 **Track A** can run in parallel by anyone off the ontology branch.
