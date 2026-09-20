@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-19**, post P1 harness + P6 Signal Authority Stages 1–4 + P2 Phase 5 apply Stage 2 deploy-verify + P5/17j apply hardening+undo deploy-verified + MV-D101 reuse no-op Drafts gate). This is the sequencing
+branch `ontology` (**2026-09-20**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -127,7 +127,7 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      audit rows). The write path is live and SQL-verified; E2E + undo are the 17j deliverables.
 
 ### P3 — Curator enrichment loop (finish the review UX)
-5. **Stage 4.1d Steps 2–4 — curator Draft-with-AI** · ✅ BUILT + hardened (offline-green)
+5. **Stage 4.1d Steps 2–4 — curator Draft-with-AI** · ✅ BUILT + hardened + deploy-verified (6t92c3, 2026-09-19)
    - **Step 2** (`body_source` preservation across re-materialize) — **BUILT** (`7bc610c9`).
    - **Steps 3 & 4** — **BUILT** (`4b9b21de` backend `draft_body.py` + the 3 OBO routes/models;
      `a2e45cac`/`4e1832b7` frontend "Draft with AI" / "Draft pages with AI" + bulk progress):
@@ -208,7 +208,8 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
 7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · ✅ COMPLETE — Stages A/B/C + §9 alignment all BUILT + deploy-verified (B `2026-09-15`, C shipped live in the 4.1j deploy, §9 `de65f480` `2026-09-15`); §10 harness tracked under P1. Off-by-default at runtime (MV-D44).
    - Build spec `ontology-phase4-external-build.md` (§1→§12), staged **A→B→C** with a human
      STOP between each, all DEFAULT OFF (MV-D44), estate-only byte-identical when off.
-   - **Stage A (safe backbone) — 🟡 BUILT-OFFLINE:** `context_sources.py` registry +
+   - **Stage A (safe backbone) — ✅ BUILT + deploy-verified (via the Stage B live run, which
+     single-sources this backbone into the wheel and exercises it):** `context_sources.py` registry +
      firewall-by-class + capability probe + `external_context` config + real tier-5 banner
      (**NO egress**, DEFAULT OFF, byte-identical when off; 2907 backend tests green). MV-D47
      `web_search` is named as a registry **securable only** (narrow `_WEB_SEARCH_NAMING_ALLOWED`
@@ -219,7 +220,7 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      self-validation + the two read-only plug-points (naming/gap hypotheses + Page Recent-context)
      + additive DDL (`genie_ont_context_pack`/`_context_sources`), DEFAULT OFF. Single-sources the
      registry + firewall into the **wheel** (the resolver can't import `backend.*`), then builds on them.
-     - **Deploy-verify (`fevm-serverless`, Alaska Airlines, tier ON):** run `826181768666957` /
+     - **Deploy-verify (`fevm-serverless`, an airline estate, tier ON):** run `826181768666957` /
        ontology run `a5225591…` SUCCESS in 30.3 min. Pack written: `industry_code=481111`
        (Scheduled Passenger Air Transportation), industry label T2-sourced; **26 sourced leaves /
        3 URLs** in the egress log; `canonical_domains[0].is_template=true` (firewall held); estate
@@ -286,7 +287,7 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      audit — the MV-D100 invariant held); consent re-flipped `applied→approved`. 11-row audit
      trail complete, OBO-write / SP-bookkeeping split held. (Re-apply idempotency not exercised —
      optional; the core gate is proven.)
-   - **Follow-up (surfacing quality, 17j-adjacent, MV-D101) — ✅ BUILT (offline-green):** an
+   - **Follow-up (surfacing quality, 17j-adjacent, MV-D101) — ✅ BUILT + shipped live (6t92c3, 4.1j deploy):** an
      already-governed `reuse` proposal no longer surfaces as **actionable** when its effect is
      already fully realized. Observed live (6t92c3, run `a6af31be…`): a governed-tag `reuse` card
      surfaced HIGH though **all of its proposed members already carried** the reused tag —
@@ -300,9 +301,10 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      (scoped to the untagged remainder); create/reassign byte-identical. Harness **flat** (an
      additive evidence key — score/tier/`surfaced` unchanged). Tests: `test_ontology_cluster`
      (coverage stamp) + `test_ontology_apply` (predicate + Drafts-gate). Offline `./scripts/test.sh`
-     **3106** (+3). **Not a 17j regression** — pre-existing in the surfacing path.
-     **Next action:** rides the next deploy-verify (confirm the Alaska no-op card no longer
-     appears in Drafts on 6t92c3).
+     **3106** (+3).      **Not a 17j regression** — pre-existing in the surfacing path.
+     **Shipped live** on 6t92c3 in the 4.1j full deploy (`243c6d0d`, an ancestor of the deployed
+     HEAD). Only optional bit left: an in-UI eyeball confirming a fully-governed reuse no-op card no
+     longer appears in the Drafts actionable list.
 
 ### P6 — Signal authority (OntoRank-style) · ✅ BUILT + deploy-verified (Stages 1–4)
 9. **Ontology Signal Authority (MV-D93–D97)** · ✅ BUILT + deploy-verified on tbzqg7
@@ -382,7 +384,7 @@ Authority, MV-D93–D97) is fully deploy-verified** (Stages 1–4 + 4b), and **P
 that closes the curator loop. **P5 / 17j** (apply hardening + E2E + undo/rollback, MV-D100) is now
 **BUILT + deploy-verified** (6t92c3, 2026-09-19) — the live apply→undo round-trip reversed a
 membership from the `genie_ont_applied` trail and left the governed tag in place; the reuse-no-op
-Drafts gate (MV-D101) is BUILT offline-green (rides the next deploy). **P3** (curator Draft-with-AI
+Drafts gate (MV-D101) is BUILT + shipped live (6t92c3, in the 4.1j deploy). **P3** (curator Draft-with-AI
 Steps 3–4) is **BUILT + hardened + deploy-verified** (6t92c3, 2026-09-19 — 7 `/review`+live findings
 fixed, incl. the evidence-write JSON/column bug that meant the draft never persisted and the
 on-demand identifier-universe fix). **Stage 4.1j** (Related-assets & links via graph traversal,
