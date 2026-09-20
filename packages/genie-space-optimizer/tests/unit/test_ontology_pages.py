@@ -1025,3 +1025,96 @@ def _rel_augment_graph():
                          "foreign_key", ["customer_id"])],
         co_query_edges=[("finance.sales.order_items", "finance.sales.events", 2.0)],
     )
+
+
+# ── Stage 4.1k: page↔page Related ranking, gate & sibling cap (MV-D104) ───────
+
+import types as _types  # noqa: E402
+
+_EDGELESS = {"nodes": [], "edges": []}
+
+
+def _pc(page_id, domain_id, *, title=None, sources=(), corroboration=1, archetype="Routing"):
+    """A minimal :class:`pages.PageCandidate` for exercising the deterministic page↔page
+    ranker/gate directly (no mining round-trip)."""
+    return pages.PageCandidate(
+        page_id=page_id, canonical_id=page_id, domain_id=domain_id, archetype=archetype,
+        title=title or f"[{archetype}] {page_id}", body="b", synonyms=(), related_fqns=(),
+        source_fqns=tuple(sources), corroboration=corroboration, certify=True, evidence={},
+        confidence=1.0,
+    )
+
+
+def test_rank_sibling_pages_orders_by_shared_source_then_corroboration_then_title():
+    """_rank_sibling_pages sorts (-shared_sources, -corroboration, title): overlap first,
+    then better corroboration, then alphabetical title as the only tie-break."""
+    anchor = _pc("anchor", "d", sources=("t.a", "t.b"))
+    shares_two = _pc("s2", "d", title="[Routing] bbb", sources=("t.a", "t.b"), corroboration=1)
+    shares_one = _pc("s1", "d", title="[Routing] aaa", sources=("t.a",), corroboration=9)
+    none_hi = _pc("n_hi", "d", title="[Routing] zzz", sources=(), corroboration=5)
+    none_lo_a = _pc("n_lo_a", "d", title="[Routing] mmm", sources=(), corroboration=2)
+    none_lo_b = _pc("n_lo_b", "d", title="[Routing] nnn", sources=(), corroboration=2)
+    ranked = pages._rank_sibling_pages(
+        anchor, [none_lo_b, none_lo_a, none_hi, shares_one, shares_two],
+    )
+    # shared: s2=2, s1=1, rest=0; among the 0s by -corroboration then title (mmm < nnn).
+    assert [c.page_id for c in ranked] == ["s2", "s1", "n_hi", "n_lo_a", "n_lo_b"]
+
+
+def test_bulk_domain_no_shared_sources_capped_and_does_not_flood():
+    """A bulk sub-domain (many co-member Pages, none sharing the anchor's Sources) must NOT
+    flood Related: the gate keeps only the single top-ranked sibling (the isolated-Page floor),
+    well under ``max_sibling_pages``."""
+    anchor = _pc("anchor", "d", sources=("t.a",), title="[Routing] anchor")
+    bulk = [_pc(f"p{i}", "d", sources=(f"t.other{i}",), title=f"[Routing] p{i}") for i in range(6)]
+    out = {c.page_id: c for c in pages._augment_related([anchor, *bulk], {}, _EDGELESS, {}, {})}
+    sib_titles = [t for t in out["anchor"].related_fqns if t.startswith("[Routing] p")]
+    assert sib_titles == ["[Routing] p0"]  # only the top-ranked (alpha) sibling survives
+
+
+def test_sibling_sharing_sources_outranks_and_gate_drops_zero_overlap():
+    """A sibling sharing a Source beats a zero-overlap one even when the zero-overlap sibling
+    sorts earlier alphabetically, and the gate drops the zero-overlap sibling."""
+    anchor = _pc("anchor", "d", sources=("t.a",), title="[Routing] anchor")
+    sib_shared = _pc("shared", "d", sources=("t.a",), title="[Routing] zzz_shared")
+    sib_bare = _pc("bare", "d", sources=("t.x",), title="[Routing] aaa_bare")
+    out = {c.page_id: c for c in pages._augment_related(
+        [anchor, sib_shared, sib_bare], {}, _EDGELESS, {}, {},
+    )}
+    rel = out["anchor"].related_fqns
+    assert sib_shared.title in rel      # shares a Source ⇒ ranked first, kept
+    assert sib_bare.title not in rel    # zero overlap AND not top-ranked ⇒ gate drops it
+
+
+def test_isolated_page_still_links_top_sibling():
+    """A genuinely isolated Page (shares no Source with any sibling) still links the single
+    top-ranked sibling — the floor that preserves page↔page linking."""
+    anchor = _pc("anchor", "d", sources=("t.a",), title="[Routing] anchor")
+    sib1 = _pc("s1", "d", sources=("t.x",), title="[Routing] aaa")
+    sib2 = _pc("s2", "d", sources=("t.y",), title="[Routing] bbb")
+    out = {c.page_id: c for c in pages._augment_related([anchor, sib1, sib2], {}, _EDGELESS, {}, {})}
+    rel = out["anchor"].related_fqns
+    assert sib1.title in rel      # top by title tie-break, kept by the floor
+    assert sib2.title not in rel  # zero overlap, not top ⇒ dropped
+
+
+def test_linked_domain_pages_surface_ahead_of_and_beyond_sibling_cap():
+    """Linked-domain pages keep PRIORITY over bare siblings (added first) and are NOT counted
+    against ``max_sibling_pages`` — only ``max_related`` bounds the combined additions."""
+    anchor = _pc("anchor", "d1", sources=("t.a", "t.b"), title="[Routing] anchor")
+    sibs = [_pc(f"sib{i}", "d1", sources=("t.a",), title=f"[Routing] sib{i}") for i in range(4)]
+    links = [
+        _pc(f"lnk{i}", "d2", sources=(f"t.z{i}",), title=f"[Guardrail] lnk{i}", archetype="Guardrail")
+        for i in range(3)
+    ]
+    specs = {"anchor": _types.SimpleNamespace(source_fqns=("t.a",), related_fqns=(), archetype="Routing")}
+    out = {c.page_id: c for c in pages._augment_related(
+        [anchor, *sibs, *links], specs, _EDGELESS, {}, {"t.a": "d2"},
+    )}
+    rel = list(out["anchor"].related_fqns)
+    linked_titles = [l.title for l in links]
+    sib_titles = [s.title for s in sibs]
+    assert all(t in rel for t in linked_titles)                # all 3 linked pages surface
+    first_sib = min((rel.index(t) for t in sib_titles if t in rel), default=len(rel))
+    assert max(rel.index(t) for t in linked_titles) < first_sib  # linked ahead of bare siblings
+    assert len([t for t in sib_titles if t in rel]) == 2         # bare siblings still capped at 2

@@ -1240,6 +1240,24 @@ _SIBLING_PAGE_WHY = "Related page in the same area."
 _LINKED_PAGE_WHY = "Related page for a linked area."
 
 
+def _rank_sibling_pages(
+    anchor: PageCandidate, siblings: Sequence[PageCandidate],
+) -> list[PageCandidate]:
+    """Rank an anchor Page's same-sub-domain SIBLINGS by RELEVANCE for page↔page Related
+    (Stage 4.1k, MV-D104). RELEVANCE is the count of Source assets a sibling SHARES with the
+    anchor (``len(set(anchor.source_fqns) & set(sib.source_fqns))``): a sibling wired to the
+    same tables is more relevant than a bare co-member of the sub-domain. Returns the siblings
+    sorted ``(-shared_sources, -corroboration, title)`` — strongest overlap first, then the
+    better-corroborated Page, then the title as the final ALPHABETICAL tie-break, so the order
+    is fully deterministic. Pure: reads only fields already on :class:`PageCandidate` (no graph
+    read), so it is cheap and side-effect-free."""
+    anchor_sources = set(anchor.source_fqns)
+    return sorted(
+        siblings,
+        key=lambda s: (-len(anchor_sources & set(s.source_fqns)), -s.corroboration, s.title),
+    )
+
+
 def _augment_related(
     candidates: Sequence[PageCandidate],
     specs_by_page_id: Mapping[str, "_DraftSpec"],
@@ -1248,6 +1266,7 @@ def _augment_related(
     asset_domain: Mapping[str, str],
     *,
     max_related: int = 6,
+    max_sibling_pages: int = 2,
 ) -> list[PageCandidate]:
     """Fold graph-derived Related assets + page↔page relations into each candidate's
     ``related_fqns`` + ``evidence.asset_why`` (Stage 4.1j, MV-D102). DETERMINISTIC and
@@ -1294,11 +1313,21 @@ def _augment_related(
         page_why: dict[str, str] = {}
         related = list(cand.related_fqns)
         seen = set(related) | {cand.title}
-        # Sibling pages (same sub-domain), then linked-domain pages — each deterministic.
-        siblings = sorted(
-            (d for d in by_domain.get(cand.domain_id, []) if d.page_id != cand.page_id),
-            key=lambda d: d.title,
+        # Bare same-sub-domain siblings, RANKED by shared-Source relevance (MV-D104) instead
+        # of alphabetically. RELEVANCE GATE: keep a sibling only if it shares ≥1 Source with
+        # the anchor, EXCEPT always keep the single top-ranked sibling so a genuinely isolated
+        # Page still links one; then cap the kept siblings at ``max_sibling_pages``.
+        ranked = _rank_sibling_pages(
+            cand, [d for d in by_domain.get(cand.domain_id, []) if d.page_id != cand.page_id],
         )
+        anchor_sources = set(cand.source_fqns)
+        siblings = [
+            sib for i, sib in enumerate(ranked)
+            if i == 0 or (anchor_sources & set(sib.source_fqns))
+        ][:max_sibling_pages]
+        # Linked-domain pages (cross-domain, higher-signal): they keep PRIORITY over bare
+        # siblings (added first) and are NOT counted against ``max_sibling_pages`` — only the
+        # overall ``max_related`` bounds the combined page↔page additions.
         linked_domains = {asset_domain[s] for s in (spec.source_fqns if spec else ()) if s in asset_domain}
         linked_domains.discard(cand.domain_id)
         linked = sorted(
@@ -1306,7 +1335,7 @@ def _augment_related(
             key=lambda d: (d.domain_id, d.title),
         )
         added = 0
-        for d, reason in [(s, _SIBLING_PAGE_WHY) for s in siblings] + [(l, _LINKED_PAGE_WHY) for l in linked]:
+        for d, reason in [(l, _LINKED_PAGE_WHY) for l in linked] + [(s, _SIBLING_PAGE_WHY) for s in siblings]:
             if added >= max_related:
                 break
             if d.title in seen:
