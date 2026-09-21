@@ -224,6 +224,52 @@ def test_mv_membership_map_from_yaml_source():
     }
 
 
+# ── MV membership coverage confirm (MV-D105 Phase 0) ─────────────────────────
+# The signal-graph edge-coverage follow-up (b) asked whether the ``mv_membership``
+# limb ever contributes. The reader-level wiring — ``metric_view_fqns`` (an
+# ``information_schema.tables`` read) feeding ``estate_metric_view_yamls`` feeding
+# this map — is live I/O in ``SparkSystemTableReader``, which is not importable
+# offline (module-level ``dbutils.widgets``), so that composition is a deploy-verify
+# item (§7), consistent with the coded-column reader note in test_ontology_materialize.
+# What we CAN pin offline is the coverage invariant the reader delegates to, framed to
+# separate the two runtime outcomes: an estate with metric views whose sources resolve
+# MUST yield non-empty membership, whereas an empty map is only acceptable when there
+# are genuinely no resolvable metric-view sources (the "data gap" reading) — never when
+# metric views exist but their YAML sources went unread.
+
+
+def test_mv_membership_nonempty_when_metric_views_have_resolvable_sources():
+    # Coverage guarantee: given the estate DOES surface metric views (non-empty YAML map)
+    # and their sources resolve to single tables, membership is non-empty. This is the
+    # positive limb of Phase 0 — MVs present ⇒ the signal contributes.
+    yamls = {
+        "c.metrics.revenue_mv": {"source": "c.revenue.fact_revenue"},
+        "c.metrics.orders_mv": {"source": "`c`.`sales`.`orders`"},
+    }
+    got = ss.mv_membership_map(yamls)
+    assert got == {
+        "c.metrics.revenue_mv": ["c.revenue.fact_revenue"],
+        "c.metrics.orders_mv": ["c.sales.orders"],
+    }
+    assert got, "metric views with resolvable sources must produce non-empty membership"
+
+
+def test_mv_membership_empty_estate_degrades_to_empty():
+    # Negative limb, two shapes that BOTH degrade to {} (MV-D43):
+    #  1) No metric views at all (empty YAML map) — the "data gap — no MVs on estate"
+    #     reading, which closes the follow-up limb with no code change needed.
+    assert ss.mv_membership_map({}) == {}
+    assert ss.mv_membership_map(None) == {}
+    #  2) Metric views EXIST but none carries a resolvable single-table source (a subquery
+    #     source or a missing source). This still returns {} — so at deploy-verify an empty
+    #     membership WITH metric views present points at unresolvable sources, not absence.
+    only_unresolvable = {
+        "c.metrics.subquery_mv": {"source": "SELECT * FROM c.revenue.x"},
+        "c.metrics.sourceless_mv": {"measures": []},
+    }
+    assert ss.mv_membership_map(only_unresolvable) == {}
+
+
 # ── Schema affinity ─────────────────────────────────────────────────────────
 
 
