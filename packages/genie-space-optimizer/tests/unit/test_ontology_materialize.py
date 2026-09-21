@@ -1791,3 +1791,42 @@ def test_lineage_adjacency_is_flat_or_up_on_the_eval_harness():
     assert delta.regression_warnings == []
     assert delta.structural_health_deltas["orphan_count"] <= 0
     assert delta.structural_health_deltas["singleton_count"] <= 0
+
+
+def test_co_query_is_flat_or_up_on_the_eval_harness():
+    from genie_space_optimizer.ontology import cluster, eval_harness, schema_signals
+
+    tags = {"tags": [{"tag_key": "Domain", "tag_value": "Sales", "members": [
+        {"fqn": "c.sales.orders"}, {"fqn": "c.sales.raw_orders"}, {"fqn": "c.sales.revenue"},
+    ]}]}
+    jk = [
+        ("c.sales.orders", "c.sales.raw_orders", None, "foreign_key", ["order_id"]),
+        ("c.sales.orders", "c.sales.revenue", None, "foreign_key", ["order_id"]),
+    ]
+    co_query = schema_signals.co_query_edges(
+        [{"statement_id": "s1", "fqn": "c.sales.orders"}, {"statement_id": "s1", "fqn": "c.sales.raw_orders"},
+         {"statement_id": "s2", "fqn": "c.sales.orders"}, {"statement_id": "s2", "fqn": "c.sales.revenue"}],
+        allowlist=["c"],
+    )
+
+    def _report(sig, rid):
+        props = cluster.cluster(sig, namer=lambda i, a, c: None)
+        exp = materialize.build_domain_rows(
+            props, metastore_id="m", workspace_id="w", run_id=rid, as_of=_AS_OF,
+        )
+        return eval_harness.assemble_eval_report(
+            run_id=rid, metastore_id="m", timestamp=_AS_OF,
+            domain_rows=exp["domain_rows"], member_rows=exp["member_rows"],
+        )
+
+    sig_before = graph.build_signal_graph(tags, join_key_edges=jk)
+    sig_after = graph.build_signal_graph(tags, join_key_edges=jk, co_query_edges=co_query)
+
+    # Wiring proof: the producer's edges reach the fused graph as co_query.
+    assert sum(1 for e in sig_after["edges"] if e["kind"] == "co_query") == 2
+
+    delta = eval_harness.compare_reports(_report(sig_before, "before"), _report(sig_after, "after"))
+    # Flat-or-up (MV-D59): no regression warnings, and structural health is not worse.
+    assert delta.regression_warnings == []
+    assert delta.structural_health_deltas["orphan_count"] <= 0
+    assert delta.structural_health_deltas["singleton_count"] <= 0

@@ -1486,3 +1486,23 @@ def test_lineage_producer_output_surfaces_related_with_lineage_why():
     by_fqn = {r["fqn"]: r for r in rel}
     assert by_fqn["a.b.raw_orders"]["kind"] == "lineage_adjacency"
     assert by_fqn["a.b.raw_orders"]["why"] == "Connected in table lineage"
+
+
+def test_co_query_producer_output_surfaces_related_with_co_query_why():
+    """MV-D105 Phase 2 end-to-end: the PURE co-query producer's ``(a, b, weight)`` tuples
+    feed ``build_signal_graph``'s ``co_query_edges`` and surface as a related asset with
+    the ``co_query`` why — proving the producer output is graph-compatible."""
+    from genie_space_optimizer.ontology import schema_signals
+
+    co_query = schema_signals.co_query_edges(
+        [{"statement_id": "s1", "fqn": "a.b.orders"}, {"statement_id": "s1", "fqn": "a.b.events"}],
+        allowlist=["a"],
+    )
+    sig = graph.build_signal_graph(
+        {"tags": [{"tag_key": "Sales", "members": [{"fqn": "a.b.orders"}]}]},
+        co_query_edges=co_query,
+    )
+    rel = graph.related_assets(sig, ["a.b.orders"], {}, max_out=20)
+    by_fqn = {r["fqn"]: r for r in rel}
+    assert by_fqn["a.b.events"]["kind"] == "co_query"
+    assert by_fqn["a.b.events"]["why"] == "Frequently queried together"

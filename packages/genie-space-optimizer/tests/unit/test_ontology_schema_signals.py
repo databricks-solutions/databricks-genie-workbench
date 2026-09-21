@@ -276,6 +276,60 @@ def test_lineage_adjacency_empty_rows_or_allowlist_degrade_to_empty():
     ) == []
 
 
+# ── Co-query producer (MV-D105 Phase 2) ──────────────────────────────────────
+# One row per (statement_id, table read). Two tables in the SAME statement co-occur; the
+# count across statements is COUNT-weighted to a bounded saturating weight
+# ``count / (count + halflife)``. The reader (live SQL + _rows_safe) stays deploy-verify;
+# the pure extraction is pinned here.
+
+
+def test_co_query_edges_count_weighted_and_bounded():
+    rows = [
+        {"statement_id": "s1", "fqn": "c.sales.orders"}, {"statement_id": "s1", "fqn": "c.sales.customers"},
+        {"statement_id": "s2", "fqn": "c.sales.orders"}, {"statement_id": "s2", "fqn": "c.sales.customers"},
+        {"statement_id": "s3", "fqn": "c.sales.orders"}, {"statement_id": "s3", "fqn": "c.sales.revenue"},
+    ]
+    edges = ss.co_query_edges(rows, allowlist=["c"])
+    # customers↔orders co-occur twice (weight 2/(2+5)), orders↔revenue once (1/(1+5)).
+    assert edges == [
+        ("c.sales.customers", "c.sales.orders", round(2 / 7, 6)),
+        ("c.sales.orders", "c.sales.revenue", round(1 / 6, 6)),
+    ]
+    # A trafficked pair pulls harder, but the weight stays bounded in (0, 1).
+    assert edges[0][2] > edges[1][2] and 0 < edges[0][2] < 1
+
+
+def test_co_query_edges_caps_fan_out_to_mutual_top_k():
+    # A hub co-queried with five otherwise-isolated leaves: with max_partners=2 the hub's
+    # co-query degree is bounded to 2 (mutual top-K), so a hub cannot explode the graph.
+    rows = []
+    for i in range(5):
+        rows.append({"statement_id": f"s{i}", "fqn": "c.s.hub"})
+        rows.append({"statement_id": f"s{i}", "fqn": f"c.s.p{i}"})
+    edges = ss.co_query_edges(rows, allowlist=["c"], max_partners=2)
+    assert [(a, b) for a, b, _ in edges] == [("c.s.hub", "c.s.p0"), ("c.s.hub", "c.s.p1")]
+
+
+def test_co_query_edges_scope_denylist_and_single_table_statements_drop():
+    rows = [
+        {"statement_id": "x", "fqn": "c.sales.orders"}, {"statement_id": "x", "fqn": "other.s.t"},   # partner out of scope
+        {"statement_id": "y", "fqn": "c.information_schema.t"}, {"statement_id": "y", "fqn": "c.sales.orders"},  # denylisted
+        {"statement_id": "z", "fqn": "c.sales.orders"},   # single-table statement → no pair
+        {"statement_id": None, "fqn": "c.sales.orders"},  # null statement_id → dropped
+    ]
+    # Each surviving statement has at most one in-scope table ⇒ no co-occurrence pair.
+    assert ss.co_query_edges(rows, allowlist=["c"], denylist=["information_schema"]) == []
+
+
+def test_co_query_edges_empty_rows_or_allowlist_degrade_to_empty():
+    assert ss.co_query_edges([], allowlist=["c"]) == []
+    assert ss.co_query_edges(None, allowlist=["c"]) == []
+    assert ss.co_query_edges(
+        [{"statement_id": "s", "fqn": "c.sales.orders"}, {"statement_id": "s", "fqn": "c.sales.customers"}],
+        allowlist=[],
+    ) == []
+
+
 # ── MV membership ───────────────────────────────────────────────────────────
 
 

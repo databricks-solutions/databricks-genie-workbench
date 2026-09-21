@@ -277,6 +277,34 @@ def join_key_edges(
     return out
 
 
+# MV-D105 co-query fan-out / weight knobs (module constants — NOT job parameters, so the
+# job's public surface stays fixed). ``MAX`` caps each table's co-query partners (a hub
+# table never explodes the graph); the ``HALFLIFE`` is the co-occurrence count at which
+# the bounded weight reaches 0.5 (a saturating ``count / (count + HALFLIFE)`` in (0, 1)).
+CO_QUERY_MAX_PARTNERS = 20
+CO_QUERY_WEIGHT_HALFLIFE = 5.0
+
+
+def _scoped_fqn(fqn: Any, cats: set[str], entries: tuple[str, ...]) -> str | None:
+    """Lower-cased FQN if it resolves to ``catalog.schema.table``, sits in an allowlisted
+    catalog (``cats``, lower-cased), and clears the ``schema_denylist`` (``entries``); else
+    ``None`` (dropped). Shared by the system-table adjacency producers (MV-D105) so lineage
+    and co-query apply identical scope + denylist discipline (mirroring
+    :func:`filter_denylisted_schemas`)."""
+    if not fqn:
+        return None
+    low = str(fqn).strip().lower()
+    parts = low.split(".")
+    if len(parts) < 3 or not all(parts[:3]):
+        return None
+    cat, sch = parts[0], parts[1]
+    if cat not in cats:
+        return None
+    if entries and _schema_denylisted(f"{cat}.{sch}", entries):
+        return None
+    return low
+
+
 def lineage_adjacency_edges(
     rows: Iterable[dict[str, Any]],
     *,
@@ -304,29 +332,82 @@ def lineage_adjacency_edges(
         return []
     entries = tuple(e.strip() for e in (denylist or []) if str(e).strip())
 
-    def _in_scope(fqn: Any) -> str | None:
-        """Lower-cased FQN if it resolves to ``catalog.schema.table``, sits in an
-        allowlisted catalog, and is not schema-denylisted; else ``None`` (dropped)."""
-        if not fqn:
-            return None
-        low = str(fqn).strip().lower()
-        parts = low.split(".")
-        if len(parts) < 3 or not all(parts[:3]):
-            return None
-        cat, sch = parts[0], parts[1]
-        if cat not in cats:
-            return None
-        if entries and _schema_denylisted(f"{cat}.{sch}", entries):
-            return None
-        return low
-
     seen: set[tuple[str, str]] = set()
     for r in rows or []:
-        src, dst = _in_scope(r.get("source")), _in_scope(r.get("target"))
+        src, dst = _scoped_fqn(r.get("source"), cats, entries), _scoped_fqn(r.get("target"), cats, entries)
         if src is None or dst is None or src == dst:
             continue
         seen.add((src, dst))
     return sorted(seen)
+
+
+def co_query_edges(
+    rows: Iterable[dict[str, Any]],
+    *,
+    allowlist: Iterable[str],
+    denylist: Iterable[str] | None = None,
+    max_partners: int = CO_QUERY_MAX_PARTNERS,
+    weight_halflife: float = CO_QUERY_WEIGHT_HALFLIFE,
+) -> list[tuple[str, str, float]]:
+    """Turn per-statement table-access rows into COUNT-weighted ``(a, b, weight)``
+    co-query co-occurrence edges — the ``co_query`` "reinforce" layer
+    :func:`graph.build_signal_graph` accepts (cluster weight 2.0, related why "Frequently
+    queried together", MV-D105 Phase 2).
+
+    Each row is one ``{statement_id, fqn}`` table access (``system.access.table_lineage``
+    grouped by ``statement_id`` + ``source_table_full_name``). Two distinct tables read by
+    the SAME statement co-occur once; the co-occurrence COUNT across statements is the raw
+    strength. Endpoints are scope + denylist filtered exactly like
+    :func:`lineage_adjacency_edges` (via :func:`_scoped_fqn`). The count is normalized to a
+    BOUNDED, saturating weight ``count / (count + weight_halflife)`` in ``(0, 1)`` (a
+    trafficked pair pulls harder, but no single pair dominates). Fan-out is CAPPED: each
+    table keeps only its ``max_partners`` strongest partners (by count desc, then fqn), so
+    a hub table cannot explode the graph — an edge survives only when it is in BOTH
+    endpoints' top-K (mutual), so every node's co-query degree is bounded by ``max_partners``
+    (a weak edge to a hub is dropped; the table keeps its lineage / join_key backbone). The
+    result is deduped + sorted (deterministic).
+
+    Pure; empty rows OR an empty allowlist OR no in-scope co-occurrence ⇒ ``[]`` (MV-D43),
+    so a missing grant / an absent ``statement_id`` degrades to a byte-identical graph."""
+    cats = {str(c).strip().lower() for c in (allowlist or []) if str(c).strip()}
+    if not cats:
+        return []
+    entries = tuple(e.strip() for e in (denylist or []) if str(e).strip())
+
+    # Group the in-scope tables read by each statement.
+    by_stmt: dict[str, set[str]] = {}
+    for r in rows or []:
+        stmt = r.get("statement_id")
+        fqn = _scoped_fqn(r.get("fqn"), cats, entries)
+        if stmt is None or str(stmt) == "" or fqn is None:
+            continue
+        by_stmt.setdefault(str(stmt), set()).add(fqn)
+
+    # Count co-occurrence over unordered (a < b) pairs within each statement.
+    counts: dict[tuple[str, str], int] = {}
+    for fqns in by_stmt.values():
+        members = sorted(fqns)
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                counts[(members[i], members[j])] = counts.get((members[i], members[j]), 0) + 1
+    if not counts:
+        return []
+
+    # Capped fan-out: each node keeps its top-``max_partners`` partners (count desc, fqn asc).
+    partners: dict[str, list[tuple[int, str]]] = {}
+    for (a, b), c in counts.items():
+        partners.setdefault(a, []).append((c, b))
+        partners.setdefault(b, []).append((c, a))
+    keep_for: dict[str, set[str]] = {}
+    for node, plist in partners.items():
+        plist.sort(key=lambda t: (-t[0], t[1]))
+        keep_for[node] = {p for _, p in plist[:max_partners]}
+
+    out: list[tuple[str, str, float]] = []
+    for (a, b), c in counts.items():
+        if b in keep_for.get(a, ()) and a in keep_for.get(b, ()):
+            out.append((a, b, round(c / (c + weight_halflife), 6)))
+    return sorted(out)
 
 
 def _clean_source_fqn(raw: Any) -> str | None:

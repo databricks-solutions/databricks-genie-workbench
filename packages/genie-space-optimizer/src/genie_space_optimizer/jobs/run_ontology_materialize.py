@@ -291,10 +291,11 @@ def _in_list(allowlist: list[str]) -> str:
     return ", ".join("'" + c.replace("'", "''") + "'" for c in allowlist)
 
 
-# MV-D105 Phase 1: trailing window for the ``lineage_adjacency`` read, mirroring the
-# ``usage_signals`` 30-day attribution window. A module constant (NOT a job parameter),
-# so it is tunable in-code without widening the job's public surface.
+# MV-D105 Phase 1/2: trailing windows for the ``lineage_adjacency`` and ``co_query`` reads,
+# mirroring the ``usage_signals`` 30-day attribution window. Module constants (NOT job
+# parameters), so they are tunable in-code without widening the job's public surface.
 _LINEAGE_WINDOW_DAYS = 30
+_CO_QUERY_WINDOW_DAYS = 30
 
 
 class SparkSystemTableReader:
@@ -646,6 +647,35 @@ class SparkSystemTableReader:
             "lineage_edges",
         )
         return schema_signals.lineage_adjacency_edges(
+            rows, allowlist=allowlist, denylist=self._schema_denylist,
+        )
+
+    def co_query_edges(self, allowlist: list[str]) -> list[tuple]:
+        """MV-D105 Phase 2: the ``co_query`` "reinforce" layer (cluster weight 2.0) from
+        per-statement table co-occurrence. Reads ``system.access.table_lineage`` — the
+        same SP surface + grant Phase 1 uses — grouped by ``statement_id`` +
+        ``source_table_full_name`` over a trailing ``_CO_QUERY_WINDOW_DAYS`` window, so
+        tables read by the SAME statement co-occur, and hands the rows to the PURE
+        ``schema_signals.co_query_edges`` (COUNT-weighted, bounded saturating weight,
+        capped fan-out, allowlist-scoped + schema-denylist filtered like
+        ``join_key_edges``).
+
+        Read as the job's run_as identity; empty allowlist ⇒ [] and any missing grant /
+        read failure / absent ``statement_id`` ⇒ [] via ``_rows_safe`` (MV-D43), so the
+        map degrades to a co_query-free graph rather than hanging."""
+        if not allowlist:
+            return []
+        from genie_space_optimizer.ontology import schema_signals
+        rows = self._rows_safe(
+            "SELECT statement_id, lower(source_table_full_name) AS fqn "
+            "FROM system.access.table_lineage "
+            "WHERE source_table_full_name IS NOT NULL "
+            "AND statement_id IS NOT NULL "
+            f"AND event_time >= current_timestamp() - INTERVAL {_CO_QUERY_WINDOW_DAYS} DAYS "
+            "GROUP BY statement_id, lower(source_table_full_name)",
+            "co_query_edges",
+        )
+        return schema_signals.co_query_edges(
             rows, allowlist=allowlist, denylist=self._schema_denylist,
         )
 
