@@ -247,9 +247,22 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
        1–2 whys landed as above (0→723 lineage, 0→304 co_query); Phase 3 stays OFF. Offline floor **3159**
        (parity-mirrored); `git status -- uv.lock` clean; no new dep/router/job parameter. Driver:
        `docs/design/ontology-signal-edge-coverage-driver.md`.
-     - **Open micro-fix (carried from Phase 0):** surface the 32 existing `mv_membership` edges by
-       anchoring measure Pages (`asset:<mv_fqn>`, graph.py:473) onto the `mv:<mv_fqn>` hub
-       (graph.py:197-202) — a small `related_assets` anchor change, not missing data.
+     - **`mv_membership` page-why limb — ✅ CLOSED as "correct-empty on this estate" (Step-0 diagnostic,
+       2026-09-21, live snapshot run `56389415521594`).** Root cause is graph-shape vs traversal-depth,
+       not a namespace typo: `build_signal_graph` models membership hub-and-spoke (`mv:<fqn>` hub →
+       `asset:<source>`, graph.py:193-202), but a measure Page's Sources already include its own
+       `mv_fqn` (`mv_sources = {mv_fqn} ∪ source tables`, pages.py:726), so the only node a **1-hop**
+       `related_assets` walk reaches over `mv_membership` is the Page's OWN MV hub — correctly dropped as
+       self (graph.py:496). The one surfaceable case (a source table feeding a DIFFERENT MV) needs 2 hops.
+       Diagnostic verdict: only **3 source tables feed >1 MV** across the whole estate (3 MV pairs,
+       ≤6 directed links) — `passenger_accessibility`↔`passenger_profile` (`profile`),
+       `fact_booking_daily_metrics`↔`revenue_analytics_metrics` (`fact_booking_daily`),
+       `dim_property_metrics`↔`property_analytics_metrics` (`dim_property`) — and the 3 connector tables
+       are **not** page anchors (mv nodes match page Sources 32/32; mv source tables 0/29). So a 2-hop
+       co-membership expansion would add ~3 relationships for a hot-path traversal change + fan-out
+       guards + tests + deploy-verify. **Not worth it here.** DEFERRED option (not a defect): a bounded,
+       deterministic 2-hop hub expansion in `related_assets` (or asset↔asset co-member projection at
+       build time) — revisit only on an estate with real conformed-dimension sharing across MVs.
 
 ### P4 — External enrichment
 7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · ✅ COMPLETE — Stages A/B/C + §9 alignment all BUILT + deploy-verified (B `2026-09-15`, C shipped live in the 4.1j deploy, §9 `de65f480` `2026-09-15`); §10 harness tracked under P1. Off-by-default at runtime (MV-D44).
