@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-20**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + Stage 4.1k page↔page relevance rank/cap (MV-D104) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
+branch `ontology` (**2026-09-21**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + Stage 4.1k page↔page relevance rank/cap (MV-D104) + MV-D105 signal-graph edge coverage Phases 0–3 (lineage/co_query producers live, semantic_sim default-off) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -226,14 +226,30 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
        `mv:<mv_fqn>` (hub) → `asset:<source_table>` (graph.py:197-202) while `related_assets` anchors a
        measure Page on `asset:<mv_fqn>` (graph.py:473). → a SMALL `related_assets` anchor fix to surface
        the existing edges, NOT missing data.
-     - **`lineage_adjacency` — CODE gap (Phase 1).** `reader.lineage_edges()` is a hardcoded `return []`
-       STUB (run_ontology_materialize.py:616-618); 0 edges live. The same class already reads
-       `system.access.table_lineage` (`:568-589`, `:951-964`) — wire a real source→target producer.
-       (Supersedes the earlier note that called this an estate/data gap.)
-     - **`co_query` — CODE gap (Phase 2).** No producer; `build_signal_graph` never passes
-       `co_query_edges` (materialize.py:706-715); 0 edges live.
-     - **`semantic_sim` — needs a NEW asset producer (Phase 3, optional).** ER is TAG-scoped
-       (er.py:209,256), so asset Related needs asset embeddings; 0 edges live. Softest signal (prior 0.4).
+     - **`lineage_adjacency` — ✅ BUILT + deploy-verified (Phase 1, commit `f84f3def`).** Replaced the
+       hardcoded `return []` stub (run_ontology_materialize.py:616-618) with a real 30-day
+       `system.access.table_lineage` producer delegating to pure `schema_signals.lineage_adjacency_edges`.
+       **Live: 723 "Connected in table lineage" whys on 285/644 pages** (was 0).
+     - **`co_query` — ✅ BUILT + deploy-verified (Phase 2, commit `fda722c6`).** New per-statement
+       co-occurrence producer (COUNT-weighted saturating weight, mutual top-K fan-out cap) threaded via
+       `_gather_structural_signals` → `build_signal_graph`. **Live: 304 "Frequently queried together"
+       whys on 100 pages** (was 0) — which also proves `table_lineage.statement_id` is populated (co_query
+       groups by it; empty ⇒ would degrade to `[]`).
+     - **`semantic_sim` — ✅ BUILT (Phase 3, optional, commit `9458ec34`) · DEFAULT OFF.** Asset
+       name+comment similarity via in-process `keyword_score` (no embedding endpoint), threshold-gated +
+       mutual top-K bounded, behind `_SEMANTIC_SIM_ENABLED`. Softest signal (prior 0.4). **Deploy-verify
+       decision: leave OFF** — Related is NOT thin (sibling 630 / lineage 285 / join_key 161 / dashboard
+       115 / agent 285 pages), so the Phase-3 gate says the flip is unnecessary; 0 semantic whys confirms
+       the byte-identical default held.
+     - **MV-D105 deploy-verify (`fevm-serverless`/6t92c3, alignment-ON, 2026-09-21):** backend-only
+       deploy (wheel carrying `f84f3def`+`fda722c6`+`9458ec34`) → materialize run `56389415521594`
+       TERMINATED SUCCESS re-baked `genie_ont_pages` (644 pages / 27 domains, all with Related). Phases
+       1–2 whys landed as above (0→723 lineage, 0→304 co_query); Phase 3 stays OFF. Offline floor **3159**
+       (parity-mirrored); `git status -- uv.lock` clean; no new dep/router/job parameter. Driver:
+       `docs/design/ontology-signal-edge-coverage-driver.md`.
+     - **Open micro-fix (carried from Phase 0):** surface the 32 existing `mv_membership` edges by
+       anchoring measure Pages (`asset:<mv_fqn>`, graph.py:473) onto the `mv:<mv_fqn>` hub
+       (graph.py:197-202) — a small `related_assets` anchor change, not missing data.
 
 ### P4 — External enrichment
 7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · ✅ COMPLETE — Stages A/B/C + §9 alignment all BUILT + deploy-verified (B `2026-09-15`, C shipped live in the 4.1j deploy, §9 `de65f480` `2026-09-15`); §10 harness tracked under P1. Off-by-default at runtime (MV-D44).
