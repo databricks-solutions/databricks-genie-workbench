@@ -296,6 +296,12 @@ def _in_list(allowlist: list[str]) -> str:
 # parameters), so they are tunable in-code without widening the job's public surface.
 _LINEAGE_WINDOW_DAYS = 30
 _CO_QUERY_WINDOW_DAYS = 30
+# MV-D105 Phase 3 (OPTIONAL, softest): asset semantic-similarity is DEFAULT OFF — the
+# structural backbone (lineage/join_key/co_query) carries clustering, and semantic_sim is
+# the weakest glue (prior 0.4). Off ⇒ the reader returns [] ⇒ byte-identical graph. Flip
+# to True ONLY when deploy-verify shows Phases 1-2 leave Related thin (per the MV-D105
+# driver's Phase-3 gate). A module constant, NOT a job parameter.
+_SEMANTIC_SIM_ENABLED = False
 
 
 class SparkSystemTableReader:
@@ -677,6 +683,35 @@ class SparkSystemTableReader:
         )
         return schema_signals.co_query_edges(
             rows, allowlist=allowlist, denylist=self._schema_denylist,
+        )
+
+    def semantic_sim_edges(self, allowlist: list[str]) -> list[tuple]:
+        """MV-D105 Phase 3 (OPTIONAL, DEFAULT OFF via ``_SEMANTIC_SIM_ENABLED``): bounded
+        asset↔asset semantic glue from name+comment text similarity. When enabled, reads
+        per-catalog ``information_schema.tables`` (name + comment) and delegates to the PURE
+        ``schema_signals.semantic_sim_edges`` (in-process keyword similarity — no embedding
+        endpoint, MV-D45). It ranks BELOW every structural kind (prior 0.4), so it only
+        glues assets the backbone never connected.
+
+        Read as the job's run_as identity. OFF (default) OR empty allowlist ⇒ [] and any
+        missing grant / read failure ⇒ [] via ``_rows_safe`` (MV-D43), so the map is
+        byte-identical to the structure-only graph unless deploy-verify turns it on."""
+        if not _SEMANTIC_SIM_ENABLED or not allowlist:
+            return []
+        from genie_space_optimizer.ontology import schema_signals
+        rows = self._per_catalog(
+            allowlist, "tables", "table_catalog, table_schema, table_name, comment", "tables",
+        )
+        assets = [
+            {
+                "fqn": f"{r.get('table_catalog')}.{r.get('table_schema')}.{r.get('table_name')}",
+                "text": " ".join(str(x) for x in (r.get("table_name"), r.get("comment")) if x),
+            }
+            for r in rows
+            if r.get("table_catalog") and r.get("table_schema") and r.get("table_name")
+        ]
+        return schema_signals.semantic_sim_edges(
+            assets, allowlist=allowlist, denylist=self._schema_denylist,
         )
 
     # ── Stage 1 (MV-D52) structural grouping signals — read as run_as, allowlist-

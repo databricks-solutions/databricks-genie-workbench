@@ -410,6 +410,82 @@ def co_query_edges(
     return sorted(out)
 
 
+# MV-D105 Phase 3 (OPTIONAL, softest) asset semantic-similarity knobs (module constants).
+# ``THRESHOLD`` gates a pair (min name+comment similarity to emit an edge); ``MAX`` bounds
+# each asset's semantic partners (top-K). Prior 0.4 / layer weight 1.0 — it ranks BELOW
+# every structural kind by design, so it only glues where structure is silent.
+SEMANTIC_SIM_THRESHOLD = 0.6
+SEMANTIC_SIM_MAX_PARTNERS = 5
+
+
+def semantic_sim_edges(
+    assets: Iterable[dict[str, Any]],
+    *,
+    allowlist: Iterable[str],
+    denylist: Iterable[str] | None = None,
+    threshold: float = SEMANTIC_SIM_THRESHOLD,
+    max_partners: int = SEMANTIC_SIM_MAX_PARTNERS,
+) -> list[tuple[str, str, float]]:
+    """Bounded pairwise asset↔asset ``semantic_sim`` edges from name+comment text
+    similarity (MV-D105 Phase 3, OPTIONAL). Each ``{fqn, text}`` asset is scored against
+    every other via the sanctioned similarity backend's deterministic in-process
+    ``keyword_score`` (the MV-D45 degrade path — no embedding endpoint needed offline);
+    a pair is kept when its similarity is ``>= threshold`` and it is within BOTH
+    endpoints' top-``max_partners`` (mutual, so every asset's semantic degree is bounded).
+    Endpoints are allowlist-scoped +
+    schema-denylist filtered via :func:`_scoped_fqn`. Edges carry the ``asset:``-prefixed
+    node ids :func:`graph.build_signal_graph` expects on ``semantic_sim_edges`` (the same
+    shape L3/``er.py`` contributes). Deduped + sorted (deterministic).
+
+    Ranks BELOW every structural kind (relatedness prior 0.4, cluster layer weight 1.0),
+    so it only glues assets structure never connected. Pure; empty assets / empty allowlist
+    / nothing over threshold ⇒ ``[]`` (byte-identical, MV-D43)."""
+    from genie_space_optimizer.ontology.similarity import keyword_score
+
+    cats = {str(c).strip().lower() for c in (allowlist or []) if str(c).strip()}
+    if not cats:
+        return []
+    entries = tuple(e.strip() for e in (denylist or []) if str(e).strip())
+
+    # Resolve in-scope assets to (fqn, text); dedupe by fqn (first wins), sorted.
+    seen_fqn: dict[str, str] = {}
+    for a in assets or []:
+        fqn = _scoped_fqn(a.get("fqn"), cats, entries)
+        if fqn is None or fqn in seen_fqn:
+            continue
+        seen_fqn[fqn] = str(a.get("text") or "").strip()
+    items = sorted(seen_fqn.items())
+    if len(items) < 2:
+        return []
+
+    # Per-asset top-K partners above threshold (symmetric score → compute once per pair).
+    scores: dict[tuple[str, str], float] = {}
+    for i in range(len(items)):
+        fi, ti = items[i]
+        for j in range(i + 1, len(items)):
+            fj, tj = items[j]
+            s = keyword_score(ti, tj)
+            if s >= threshold:
+                scores[(fi, fj)] = round(float(s), 6)
+    if not scores:
+        return []
+
+    partners: dict[str, list[tuple[float, str]]] = {}
+    for (a, b), s in scores.items():
+        partners.setdefault(a, []).append((s, b))
+        partners.setdefault(b, []).append((s, a))
+    keep_for: dict[str, set[str]] = {}
+    for node, plist in partners.items():
+        plist.sort(key=lambda t: (-t[0], t[1]))
+        keep_for[node] = {p for _, p in plist[:max_partners]}
+
+    out: list[tuple[str, str, float]] = []
+    for (a, b), s in scores.items():
+        if b in keep_for.get(a, ()) and a in keep_for.get(b, ()):
+            out.append((f"asset:{a}", f"asset:{b}", s))
+    return sorted(out)
+
+
 def _clean_source_fqn(raw: Any) -> str | None:
     """A metric-view ``source`` is usually a table FQN (possibly back-ticked); a
     subquery source has no single table. Return the dotted FQN when the source is a

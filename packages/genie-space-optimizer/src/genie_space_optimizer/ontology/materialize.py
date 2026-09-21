@@ -345,9 +345,10 @@ def _gather_structural_signals(reader: Any, allowlist: list[str]) -> dict[str, A
     """Collect the Stage-1 structural grouping signals (MV-D52) from the reader if it
     surfaces them, else empty (MV-D43 degrade). ``join_key_edges`` (FK + shared-join
     proxy), ``mv_membership`` (MV → source tables), ``schema_affinity`` (shared schema),
-    and ``co_query_edges`` (per-statement co-occurrence, MV-D105 Phase 2) are opt-in
-    ``build_signal_graph`` kwargs; a reader without them (or a failed system-table read)
-    still yields a valid run over the lineage backbone alone."""
+    ``co_query_edges`` (per-statement co-occurrence, MV-D105 Phase 2), and
+    ``semantic_sim_edges`` (name+comment similarity, MV-D105 Phase 3 — OPTIONAL, default
+    off in the reader) are opt-in ``build_signal_graph`` kwargs; a reader without them (or
+    a failed system-table read) still yields a valid run over the lineage backbone alone."""
     def _call(name: str, default: Any):
         fn = getattr(reader, name, None)
         if fn is None:
@@ -363,6 +364,7 @@ def _gather_structural_signals(reader: Any, allowlist: list[str]) -> dict[str, A
         "mv_membership": dict(_call("mv_membership", {})),
         "schema_affinity": dict(_call("schema_affinity", {})),
         "co_query_edges": list(_call("co_query_edges", [])),
+        "semantic_sim_edges": list(_call("semantic_sim_edges", [])),
     }
 
 
@@ -715,6 +717,7 @@ def run_materialize(
             mv_membership=structural["mv_membership"],
             schema_affinity=structural["schema_affinity"],
             co_query_edges=structural["co_query_edges"],
+            semantic_sim_edges=structural["semantic_sim_edges"],
         )
 
         # Stage 4b (MV-D97 §6) / Stage 4.1j (MV-D102): compute PageRank centrality ONCE,

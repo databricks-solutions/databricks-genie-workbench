@@ -1506,3 +1506,24 @@ def test_co_query_producer_output_surfaces_related_with_co_query_why():
     by_fqn = {r["fqn"]: r for r in rel}
     assert by_fqn["a.b.events"]["kind"] == "co_query"
     assert by_fqn["a.b.events"]["why"] == "Frequently queried together"
+
+
+def test_semantic_sim_producer_output_surfaces_related_with_semantic_why():
+    """MV-D105 Phase 3 end-to-end: the PURE semantic-sim producer emits asset:-prefixed
+    ``(a, b, weight)`` tuples that feed ``build_signal_graph``'s ``semantic_sim_edges`` and
+    surface as a related asset with the ``semantic_sim`` why."""
+    from genie_space_optimizer.ontology import schema_signals
+
+    sem = schema_signals.semantic_sim_edges(
+        [{"fqn": "a.b.orders", "text": "orders order line"},
+         {"fqn": "a.b.order_lines", "text": "orders order line"}],
+        allowlist=["a"], threshold=0.3,
+    )
+    sig = graph.build_signal_graph(
+        {"tags": [{"tag_key": "Sales", "members": [{"fqn": "a.b.orders"}]}]},
+        semantic_sim_edges=sem,
+    )
+    rel = graph.related_assets(sig, ["a.b.orders"], {}, max_out=20)
+    by_fqn = {r["fqn"]: r for r in rel}
+    assert by_fqn["a.b.order_lines"]["kind"] == "semantic_sim"
+    assert by_fqn["a.b.order_lines"]["why"] == "Semantically similar"

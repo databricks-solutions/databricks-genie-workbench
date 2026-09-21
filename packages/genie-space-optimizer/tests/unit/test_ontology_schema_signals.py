@@ -330,6 +330,61 @@ def test_co_query_edges_empty_rows_or_allowlist_degrade_to_empty():
     ) == []
 
 
+# ── Asset semantic-similarity producer (MV-D105 Phase 3, OPTIONAL) ────────────
+# Bounded pairwise name+comment similarity via the in-process keyword backend. The reader
+# gates this OFF by default (deploy-verify flag) and its live I/O stays deploy-verify; the
+# pure extraction + threshold + bound + determinism are pinned here.
+
+
+def test_semantic_sim_edges_threshold_gate_and_asset_prefixed():
+    assets = [
+        {"fqn": "c.sales.orders", "text": "orders order line items"},
+        {"fqn": "c.sales.order_items", "text": "order line items for orders"},
+        {"fqn": "c.hr.headcount", "text": "employee headcount by department"},
+    ]
+    edges = ss.semantic_sim_edges(assets, allowlist=["c"], threshold=0.3)
+    # The two order tables clear the gate (asset:-prefixed node ids); headcount does not.
+    assert [(a, b) for a, b, _ in edges] == [("asset:c.sales.order_items", "asset:c.sales.orders")]
+    assert 0 < edges[0][2] <= 1
+    # A high threshold gates everything out.
+    assert ss.semantic_sim_edges(assets, allowlist=["c"], threshold=0.99) == []
+
+
+def test_semantic_sim_edges_bounded_top_k_per_asset():
+    # A hub whose text matches many others is bounded to max_partners semantic edges.
+    assets = [{"fqn": "c.s.hub", "text": "revenue report daily"}] + [
+        {"fqn": f"c.s.r{i}", "text": "revenue report daily"} for i in range(5)
+    ]
+    edges = ss.semantic_sim_edges(assets, allowlist=["c"], threshold=0.3, max_partners=2)
+    # The hub keeps at most its top-2 partners (both endpoints' top-K bound the degree).
+    hub_deg = sum(1 for a, b, _ in edges if "c.s.hub" in (a, b) or "asset:c.s.hub" in (a, b))
+    assert all(e[2] >= 0.3 for e in edges)
+    assert hub_deg <= 2
+
+
+def test_semantic_sim_edges_scope_denylist_and_degrade():
+    # Out-of-scope / denylisted / fewer-than-two in-scope assets ⇒ [].
+    assert ss.semantic_sim_edges(
+        [{"fqn": "c.sales.orders", "text": "orders"}, {"fqn": "other.s.t", "text": "orders"}],
+        allowlist=["c"], threshold=0.1,
+    ) == []
+    assert ss.semantic_sim_edges(
+        [{"fqn": "c.information_schema.x", "text": "orders"}, {"fqn": "c.sales.orders", "text": "orders"}],
+        allowlist=["c"], denylist=["information_schema"], threshold=0.1,
+    ) == []
+    assert ss.semantic_sim_edges([], allowlist=["c"]) == []
+    assert ss.semantic_sim_edges([{"fqn": "c.s.a", "text": "x"}], allowlist=[]) == []
+
+
+def test_semantic_sim_edges_is_deterministic_and_order_independent():
+    assets = [
+        {"fqn": "c.sales.orders", "text": "orders order line items"},
+        {"fqn": "c.sales.order_items", "text": "order line items for orders"},
+    ]
+    assert ss.semantic_sim_edges(assets, allowlist=["c"], threshold=0.3) == \
+        ss.semantic_sim_edges(list(reversed(assets)), allowlist=["c"], threshold=0.3)
+
+
 # ── MV membership ───────────────────────────────────────────────────────────
 
 
