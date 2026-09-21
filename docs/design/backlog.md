@@ -215,13 +215,25 @@ Re-grain to metastore (MV-D49) · OBO-first foundations (MV-D50).
      drifted since the 4.1j run (join-key whys **161→738**, dashboard **159→237** — signals 4.1k does
      NOT touch), so the global sibling total (641→1250, ≈2/page under the floor) is not a like-for-like
      proxy; the per-archetype **`sib_max=2`** is the authoritative acceptance.
-   - **Follow-ups (quality, non-blocking):** (a) ✅ RESOLVED by Stage 4.1k (MV-D104) — the bulk
-     `Routing` sibling domination is now ranked/gated/capped (per-page `sib_max=2`, verified live);
-     (b) OPEN — `lineage_adjacency`/`co_query`/`mv_membership`/`semantic_sim` yielded 0 related whys
-     on this estate. Read-only triage (2026-09-20): `co_query`/`semantic_sim` are **wiring gaps** —
-     `materialize.build_signal_graph` (materialize.py:706-715) passes neither, and the reader has no
-     `co_query` producer; `lineage_adjacency`/`mv_membership` ARE wired but returned empty →
-     **estate/data gaps** (no lineage history / no MVs surfaced). Not a 4.1j/4.1k code gap.
+   - **Follow-up (a):** ✅ RESOLVED by Stage 4.1k (MV-D104) — the bulk `Routing` sibling domination is
+     now ranked/gated/capped (per-page `sib_max=2`, verified live).
+   - **Follow-up (b) — signal-graph edge coverage → driver `docs/design/ontology-signal-edge-coverage-driver.md`
+     (proposed MV-D105, cheap-first phased, harness-gated).** CORRECTED triage (2026-09-20, from the
+     live graph snapshot of run `876390131182810`) — the four "0 related whys" kinds are NOT one problem:
+     - **`mv_membership` — ✅ CLOSED (Phase 0 verified, commit `bf129c17`).** The estate has **55 metric
+       views** and the fused graph carries **32 `mv_membership` edges** — the map is WIRED + non-empty,
+       NOT a data gap. It still yields 0 *page* whys because of an anchor/namespace mismatch: edges are
+       `mv:<mv_fqn>` (hub) → `asset:<source_table>` (graph.py:197-202) while `related_assets` anchors a
+       measure Page on `asset:<mv_fqn>` (graph.py:473). → a SMALL `related_assets` anchor fix to surface
+       the existing edges, NOT missing data.
+     - **`lineage_adjacency` — CODE gap (Phase 1).** `reader.lineage_edges()` is a hardcoded `return []`
+       STUB (run_ontology_materialize.py:616-618); 0 edges live. The same class already reads
+       `system.access.table_lineage` (`:568-589`, `:951-964`) — wire a real source→target producer.
+       (Supersedes the earlier note that called this an estate/data gap.)
+     - **`co_query` — CODE gap (Phase 2).** No producer; `build_signal_graph` never passes
+       `co_query_edges` (materialize.py:706-715); 0 edges live.
+     - **`semantic_sim` — needs a NEW asset producer (Phase 3, optional).** ER is TAG-scoped
+       (er.py:209,256), so asset Related needs asset embeddings; 0 edges live. Softest signal (prior 0.4).
 
 ### P4 — External enrichment
 7. **Phase 4 / 17h — external Context Pack + §9 industry alignment** · ✅ COMPLETE — Stages A/B/C + §9 alignment all BUILT + deploy-verified (B `2026-09-15`, C shipped live in the 4.1j deploy, §9 `de65f480` `2026-09-15`); §10 harness tracked under P1. Off-by-default at runtime (MV-D44).
