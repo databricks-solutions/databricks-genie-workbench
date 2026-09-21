@@ -1743,3 +1743,51 @@ def test_stage3_gather_helpers_degrade_on_missing_or_raising_reader():
     r = _Raises()
     assert materialize._gather_dashboard_scopes(r, ["finance"]) == {}
     assert materialize._gather_dashboard_names(r) == {}
+
+
+# ── MV-D105 Phase 1: lineage_adjacency clears the §10 harness flat-or-up ──────
+# A non-empty lineage result SHIFTS clustering, so it must clear the eval harness
+# FLAT-OR-UP (MV-D59): no precision/recall/f1 regression and no orphan-count increase.
+# We build the eval report on the SAME tag+FK backbone WITHOUT and WITH the PURE
+# producer's lineage edges and assert compare_reports flags no regression, while proving
+# the edges are actually wired into the fused graph (a no-op fixture would pass vacuously).
+
+
+def test_lineage_adjacency_is_flat_or_up_on_the_eval_harness():
+    from genie_space_optimizer.ontology import cluster, eval_harness, schema_signals
+
+    tags = {"tags": [{"tag_key": "Domain", "tag_value": "Sales", "members": [
+        {"fqn": "c.sales.orders"}, {"fqn": "c.sales.raw_orders"}, {"fqn": "c.sales.revenue"},
+    ]}]}
+    # FK backbone that already surfaces one coherent Sales domain (1 orphan, 0 singletons).
+    jk = [
+        ("c.sales.orders", "c.sales.raw_orders", None, "foreign_key", ["order_id"]),
+        ("c.sales.orders", "c.sales.revenue", None, "foreign_key", ["order_id"]),
+    ]
+    lineage = schema_signals.lineage_adjacency_edges(
+        [{"source": "c.sales.raw_orders", "target": "c.sales.orders"},
+         {"source": "c.sales.orders", "target": "c.sales.revenue"}],
+        allowlist=["c"],
+    )
+
+    def _report(sig, rid):
+        props = cluster.cluster(sig, namer=lambda i, a, c: None)
+        exp = materialize.build_domain_rows(
+            props, metastore_id="m", workspace_id="w", run_id=rid, as_of=_AS_OF,
+        )
+        return eval_harness.assemble_eval_report(
+            run_id=rid, metastore_id="m", timestamp=_AS_OF,
+            domain_rows=exp["domain_rows"], member_rows=exp["member_rows"],
+        )
+
+    sig_before = graph.build_signal_graph(tags, join_key_edges=jk)
+    sig_after = graph.build_signal_graph(tags, join_key_edges=jk, lineage_edges=lineage)
+
+    # Wiring proof: the producer's edges reach the fused graph as lineage_adjacency.
+    assert sum(1 for e in sig_after["edges"] if e["kind"] == "lineage_adjacency") == 2
+
+    delta = eval_harness.compare_reports(_report(sig_before, "before"), _report(sig_after, "after"))
+    # Flat-or-up (MV-D59): no regression warnings, and structural health is not worse.
+    assert delta.regression_warnings == []
+    assert delta.structural_health_deltas["orphan_count"] <= 0
+    assert delta.structural_health_deltas["singleton_count"] <= 0

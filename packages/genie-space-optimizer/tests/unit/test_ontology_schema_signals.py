@@ -207,6 +207,75 @@ def test_filter_denylisted_schemas_matches_exact_and_glob():
     assert ss.schema_affinity_map(kept) == {"c.airline_demo": ["c.airline_demo.flights"]}
 
 
+# ── Lineage adjacency producer (MV-D105 Phase 1) ─────────────────────────────
+# The reader's ``lineage_edges`` issues the ``system.access.table_lineage`` read and
+# delegates the parsing/scoping/denylist to this PURE function. The reader composition
+# itself (live SQL + ``_rows_safe`` degrade) stays a deploy-verify item (§7) because
+# ``SparkSystemTableReader`` is not importable offline (module-level ``dbutils.widgets``),
+# consistent with the mv_membership Phase-0 note above. What we pin offline is the pure
+# extraction the reader hands its rows to.
+
+
+def test_lineage_adjacency_emits_source_to_target_pairs_deduped_and_sorted():
+    rows = [
+        {"source": "c.sales.raw_orders", "target": "c.sales.orders"},
+        {"source": "c.sales.raw_orders", "target": "c.sales.orders"},  # dup → collapsed
+        {"source": "c.sales.orders", "target": "c.mart.revenue"},
+    ]
+    edges = ss.lineage_adjacency_edges(rows, allowlist=["c"])
+    assert edges == [
+        ("c.sales.orders", "c.mart.revenue"),
+        ("c.sales.raw_orders", "c.sales.orders"),
+    ]
+
+
+def test_lineage_adjacency_lowercases_and_drops_self_loops():
+    rows = [
+        {"source": "C.Sales.Orders", "target": "C.MART.Revenue"},  # mixed case → lowered
+        {"source": "c.sales.orders", "target": "c.sales.orders"},  # self-loop → dropped
+    ]
+    assert ss.lineage_adjacency_edges(rows, allowlist=["c"]) == [
+        ("c.sales.orders", "c.mart.revenue"),
+    ]
+
+
+def test_lineage_adjacency_drops_null_out_of_scope_and_unresolvable():
+    rows = [
+        {"source": None, "target": "c.sales.orders"},              # null endpoint
+        {"source": "c.sales.orders", "target": ""},                # empty endpoint
+        {"source": "c.sales.orders", "target": "other.s.t"},       # target out of allowlist
+        {"source": "elsewhere.s.t", "target": "c.sales.orders"},   # source out of allowlist
+        {"source": "c.orders", "target": "c.sales.orders"},        # unresolvable (2-part)
+        {"source": "c.sales.orders", "target": "c.mart.revenue"},  # kept
+    ]
+    assert ss.lineage_adjacency_edges(rows, allowlist=["c"]) == [
+        ("c.sales.orders", "c.mart.revenue"),
+    ]
+
+
+def test_lineage_adjacency_applies_schema_denylist_on_either_endpoint():
+    rows = [
+        {"source": "c.information_schema.columns", "target": "c.sales.orders"},  # denylisted src
+        {"source": "c.sales.orders", "target": "c.staging_dev.tmp"},             # denylisted dst (glob)
+        {"source": "c.sales.orders", "target": "c.mart.revenue"},               # kept
+    ]
+    edges = ss.lineage_adjacency_edges(
+        rows, allowlist=["c"], denylist=["information_schema", "*_dev"],
+    )
+    assert edges == [("c.sales.orders", "c.mart.revenue")]
+
+
+def test_lineage_adjacency_empty_rows_or_allowlist_degrade_to_empty():
+    # Empty rows (what ``_rows_safe`` returns on a missing grant / read error) ⇒ []
+    # (byte-identical to the pre-Phase-1 stub, MV-D43).
+    assert ss.lineage_adjacency_edges([], allowlist=["c"]) == []
+    assert ss.lineage_adjacency_edges(None, allowlist=["c"]) == []
+    # An empty allowlist ⇒ [] regardless of rows (nothing is in scope).
+    assert ss.lineage_adjacency_edges(
+        [{"source": "c.sales.orders", "target": "c.mart.revenue"}], allowlist=[],
+    ) == []
+
+
 # ── MV membership ───────────────────────────────────────────────────────────
 
 

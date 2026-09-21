@@ -1466,3 +1466,23 @@ def test_related_assets_respects_max_out_and_is_deterministic():
     a = graph.related_assets(g, ["a.b.orders"], {}, max_out=3)
     b = graph.related_assets(g, ["a.b.orders"], {}, max_out=3)
     assert a == b and len(a) == 3
+
+
+def test_lineage_producer_output_surfaces_related_with_lineage_why():
+    """MV-D105 Phase 1 end-to-end: the PURE producer's ``(source, target)`` pairs feed
+    ``build_signal_graph``'s positional ``lineage_edges`` and surface as a related asset
+    with the ``lineage_adjacency`` why — proving the producer output is graph-compatible,
+    not just the hand-wired pairs the fixture above uses."""
+    from genie_space_optimizer.ontology import schema_signals
+
+    lineage = schema_signals.lineage_adjacency_edges(
+        [{"source": "a.b.orders", "target": "a.b.raw_orders"}], allowlist=["a"],
+    )
+    sig = graph.build_signal_graph(
+        {"tags": [{"tag_key": "Sales", "members": [{"fqn": "a.b.orders"}]}]},
+        lineage_edges=lineage,
+    )
+    rel = graph.related_assets(sig, ["a.b.orders"], {}, max_out=20)
+    by_fqn = {r["fqn"]: r for r in rel}
+    assert by_fqn["a.b.raw_orders"]["kind"] == "lineage_adjacency"
+    assert by_fqn["a.b.raw_orders"]["why"] == "Connected in table lineage"

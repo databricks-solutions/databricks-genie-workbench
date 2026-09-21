@@ -291,6 +291,12 @@ def _in_list(allowlist: list[str]) -> str:
     return ", ".join("'" + c.replace("'", "''") + "'" for c in allowlist)
 
 
+# MV-D105 Phase 1: trailing window for the ``lineage_adjacency`` read, mirroring the
+# ``usage_signals`` 30-day attribution window. A module constant (NOT a job parameter),
+# so it is tunable in-code without widening the job's public surface.
+_LINEAGE_WINDOW_DAYS = 30
+
+
 class SparkSystemTableReader:
     """SP/Spark reads of the same system tables Phase 1 reads live (allowlist-scoped).
 
@@ -614,8 +620,34 @@ class SparkSystemTableReader:
             return {}
 
     def lineage_edges(self, allowlist: list[str]) -> list[tuple[str, str]]:
-        # Structural adjacency only (used by the L2 scaffold; never invents a domain).
-        return []
+        """MV-D105 Phase 1: the real ``lineage_adjacency`` backbone read from
+        ``system.access.table_lineage`` — the same SP read-attribution surface
+        ``usage_signals`` uses. Emits ``(source, target)`` asset↔asset pairs over a
+        trailing ``_LINEAGE_WINDOW_DAYS`` window (both full names non-null, lower-cased,
+        deduped in-SQL) and hands the rows to the PURE
+        ``schema_signals.lineage_adjacency_edges``, which scopes both endpoints to an
+        allowlisted catalog and applies the ``schema_denylist`` (MV-D61) exactly as
+        ``join_key_edges`` does. Structural adjacency only — never invents a domain.
+
+        Read as the job's run_as identity; an empty allowlist ⇒ [] and any missing grant
+        / read failure ⇒ [] via ``_rows_safe`` (MV-D43), so the map degrades to the
+        pre-Phase-1 lineage-empty graph rather than hanging."""
+        if not allowlist:
+            return []
+        from genie_space_optimizer.ontology import schema_signals
+        rows = self._rows_safe(
+            "SELECT lower(source_table_full_name) AS source, "
+            "lower(target_table_full_name) AS target "
+            "FROM system.access.table_lineage "
+            "WHERE source_table_full_name IS NOT NULL "
+            "AND target_table_full_name IS NOT NULL "
+            f"AND event_time >= current_timestamp() - INTERVAL {_LINEAGE_WINDOW_DAYS} DAYS "
+            "GROUP BY lower(source_table_full_name), lower(target_table_full_name)",
+            "lineage_edges",
+        )
+        return schema_signals.lineage_adjacency_edges(
+            rows, allowlist=allowlist, denylist=self._schema_denylist,
+        )
 
     # ── Stage 1 (MV-D52) structural grouping signals — read as run_as, allowlist-
     # scoped, degrade to empty on any missing grant (MV-D43). All parsing is the PURE

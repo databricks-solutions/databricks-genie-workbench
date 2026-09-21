@@ -277,6 +277,58 @@ def join_key_edges(
     return out
 
 
+def lineage_adjacency_edges(
+    rows: Iterable[dict[str, Any]],
+    *,
+    allowlist: Iterable[str],
+    denylist: Iterable[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Turn ``system.access.table_lineage`` rows into deduped ``(source, target)``
+    asset↔asset adjacency pairs — the ``lineage_adjacency`` backbone that
+    :func:`graph.build_signal_graph` accepts as its positional ``lineage_edges`` (cluster
+    weight 5.0, MV-D105 Phase 1).
+
+    Each row carries ``source`` / ``target`` table full names (``catalog.schema.table``).
+    A pair is kept only when BOTH endpoints are non-null, resolve to
+    ``catalog.schema.table``, sit in an allowlisted catalog, and clear the non-business
+    ``schema_denylist`` (MV-D61) — mirroring :func:`join_key_edges`' scope + denylist
+    discipline so lineage never fuses an out-of-scope or infra schema into the map. FQNs
+    are lower-cased; self-loops are dropped; the result is deduped + sorted
+    (deterministic).
+
+    Pure; empty rows OR an empty allowlist ⇒ ``[]`` — byte-identical to the pre-Phase-1
+    lineage-empty stub (MV-D43), so a missing ``system.access`` grant (which the reader's
+    ``_rows_safe`` degrades to ``[]``) leaves the graph unchanged rather than faked."""
+    cats = {str(c).strip().lower() for c in (allowlist or []) if str(c).strip()}
+    if not cats:
+        return []
+    entries = tuple(e.strip() for e in (denylist or []) if str(e).strip())
+
+    def _in_scope(fqn: Any) -> str | None:
+        """Lower-cased FQN if it resolves to ``catalog.schema.table``, sits in an
+        allowlisted catalog, and is not schema-denylisted; else ``None`` (dropped)."""
+        if not fqn:
+            return None
+        low = str(fqn).strip().lower()
+        parts = low.split(".")
+        if len(parts) < 3 or not all(parts[:3]):
+            return None
+        cat, sch = parts[0], parts[1]
+        if cat not in cats:
+            return None
+        if entries and _schema_denylisted(f"{cat}.{sch}", entries):
+            return None
+        return low
+
+    seen: set[tuple[str, str]] = set()
+    for r in rows or []:
+        src, dst = _in_scope(r.get("source")), _in_scope(r.get("target"))
+        if src is None or dst is None or src == dst:
+            continue
+        seen.add((src, dst))
+    return sorted(seen)
+
+
 def _clean_source_fqn(raw: Any) -> str | None:
     """A metric-view ``source`` is usually a table FQN (possibly back-ticked); a
     subquery source has no single table. Return the dotted FQN when the source is a
