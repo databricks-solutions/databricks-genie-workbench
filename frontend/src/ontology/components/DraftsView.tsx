@@ -5,19 +5,32 @@
  * rendering; this view holds the list state and the API wiring.
  */
 import { useEffect, useRef, useState } from "react"
-import { CheckCircle2, FolderTree, FileText, Wand2 } from "lucide-react"
+import { CheckCircle2, FolderTree, FileText, Lightbulb, Wand2 } from "lucide-react"
 import { getDrafts, pollBulkDraft, postDecision, startBulkDraft } from "@/ontology/api"
 import type { DecisionAction, DomainDraft, OntologyDrafts, PageDraft } from "@/ontology/types"
 import { Button } from "@/components/ui/button"
 import { ApplyPreview } from "@/ontology/components/ApplyPreview"
 import { DomainDraftCard, type BulkDraftState } from "@/ontology/components/DomainDraftCard"
 import { PageDraftCard } from "@/ontology/components/PageDraftCard"
+import { OnboardingState } from "@/ontology/components/OnboardingState"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const BULK_POLL_MS = 1500
 const DEFAULT_BULK: BulkDraftState = { running: false, done: 0, total: 0, error: null, summary: null }
 
-export function DraftsView({ drafts }: { drafts: OntologyDrafts }) {
+export function DraftsView({
+  drafts,
+  onScan,
+  scanning = false,
+  onBrowseEstate,
+}: {
+  drafts: OntologyDrafts
+  /** Cold state only: launch a scan (reuses OntologyPage's triggerRefresh + poll). */
+  onScan?: () => void
+  scanning?: boolean
+  /** Escape hatch out of the cold state — browse what already exists. */
+  onBrowseEstate?: () => void
+}) {
   const [domains, setDomains] = useState<DomainDraft[]>(drafts.domains)
   const [pages, setPages] = useState<PageDraft[]>(drafts.pages)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -111,17 +124,30 @@ export function DraftsView({ drafts }: { drafts: OntologyDrafts }) {
 
   const total = domains.length + pages.length
   if (total === 0) {
+    // Cold (never scanned) → onboarding with the scan action in-place. Caught-up (scanned,
+    // all reviewed) → a quiet positive state. First-use vs returning, distinguished by source.
+    if (drafts.source === "cold") {
+      return (
+        <OnboardingState
+          icon={<Lightbulb className="h-6 w-6" />}
+          heading="Scan your estate for suggestions"
+          body="Genie looks across your governed tags, metric views, and lineage for domain and page suggestions you can review — then approve to group the estate. Read-only until you apply."
+          primary={{
+            label: scanning ? "Scanning…" : "Scan the estate",
+            onClick: () => onScan?.(),
+            disabled: scanning || !onScan,
+          }}
+          escape={onBrowseEstate ? { label: "Browse the estate", onClick: onBrowseEstate } : undefined}
+        />
+      )
+    }
     return (
       <div className="flex items-start gap-2.5 rounded-xl border border-info/30 bg-info/5 px-4 py-3.5">
-        <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-info-foreground" />
+        <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-info-foreground" aria-hidden="true" />
         <div>
-          <p className="text-sm font-semibold text-primary">
-            {drafts.source === "cold" ? "No drafts yet" : "You're all caught up"}
-          </p>
+          <p className="text-sm font-semibold text-primary">You&rsquo;re all caught up</p>
           <p className="mt-1 max-w-prose text-xs text-secondary">
-            {drafts.source === "cold"
-              ? "Run a refresh to look across the estate for domain and page suggestions."
-              : "Every suggestion has been reviewed. New ones will appear here after the next refresh."}
+            Every suggestion has been reviewed. New ones will appear here after the next scan.
           </p>
         </div>
       </div>

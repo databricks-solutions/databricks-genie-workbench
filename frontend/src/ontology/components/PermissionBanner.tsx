@@ -119,8 +119,11 @@ function SourcePanel({ sources }: { sources: SourceStatus[] }) {
 
 export function PermissionBanner({ preflight }: { preflight: OntologyPreflight }) {
   const tiers = preflight.tiers
-  const readyCount = tiers.filter((t) => t.status === "ok").length
+  // Count readiness over the SAME set we size the denominator by, so the header can
+  // never read "4 of 3": the optional write + external-enrichment tiers are excluded
+  // from both the numerator and the denominator (MV-D107 counter fix).
   const readTiers = tiers.filter((t) => t.id !== "membership_write" && t.id !== "external_enrichment")
+  const readyCount = readTiers.filter((t) => t.status === "ok").length
 
   return (
     <div className="space-y-4">

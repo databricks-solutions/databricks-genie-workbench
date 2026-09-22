@@ -5,17 +5,19 @@
  * to live data under /api/ontology/*. Read-only: the only write is saving
  * Settings (our own config). Fresh components — does not import the mockup scaffold.
  */
-import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, Building2, FolderTree, Lightbulb, Loader2, Lock, Network, Settings as SettingsIcon, Tags } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Building2, Database, FolderTree, LayoutDashboard, Lightbulb, Loader2, Lock, Network, Settings as SettingsIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
   getDrafts,
   getGraph,
   getInventory,
   getPreflight,
+  getRefreshStatus,
   getSettings,
   getTags,
   getTaxonomy,
+  triggerRefresh,
 } from "@/ontology/api"
 import type {
   OntologyDrafts,
@@ -26,52 +28,71 @@ import type {
   OntologyTaxonomy,
   TagLens,
 } from "@/ontology/types"
-import { PermissionBanner } from "@/ontology/components/PermissionBanner"
-import { TaxonomyView } from "@/ontology/components/TaxonomyView"
-import { TagsLensView } from "@/ontology/components/TagsLens"
+import { AccessSharingPanel } from "@/ontology/components/AccessSharingPanel"
+import { OverviewPanel } from "@/ontology/components/OverviewPanel"
+import { OnboardingState } from "@/ontology/components/OnboardingState"
+import type { NextAction } from "@/ontology/overviewModel"
+import { ONTOLOGY_TABS, type OntologyTab } from "@/ontology/tabs"
+import { pollSettleAction } from "@/ontology/refreshPolling"
+import { EstateView } from "@/ontology/components/EstateView"
 import { SettingsForm } from "@/ontology/components/SettingsForm"
 import { FreshnessControls } from "@/ontology/components/FreshnessControls"
 import { DraftsView } from "@/ontology/components/DraftsView"
 import { EstateGraph } from "@/ontology/components/EstateGraph"
 
-type OntologyTab = "taxonomy" | "tags" | "drafts" | "graph" | "settings"
+const TAB_ICON: Record<OntologyTab, React.ReactNode> = {
+  overview: <LayoutDashboard className="h-4 w-4" aria-hidden="true" />,
+  review: <Lightbulb className="h-4 w-4" aria-hidden="true" />,
+  map: <Network className="h-4 w-4" aria-hidden="true" />,
+  estate: <FolderTree className="h-4 w-4" aria-hidden="true" />,
+  settings: <SettingsIcon className="h-4 w-4" aria-hidden="true" />,
+}
 
 function LoadingRow({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 py-10 text-sm text-muted">
-      <Loader2 className="h-4 w-4 animate-spin" />
+      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
       {label}
     </div>
   )
 }
 
-function GrantGateNotice() {
+// Governed-tag reads are blocked — send the admin to the grant matrix (which auto-expands when
+// a read tier is blocked), with a ghost preview of the surface it will unlock.
+function GrantGateNotice({ onOpenAccess, onBack }: { onOpenAccess: () => void; onBack: () => void }) {
   return (
-    <div className="flex items-start gap-2.5 rounded-xl border border-warning/40 bg-warning/5 px-4 py-3.5">
-      <Lock className="mt-0.5 h-5 w-5 shrink-0 text-warning-foreground" />
-      <div>
-        <p className="text-sm font-semibold text-primary">Governed-tag access needed</p>
-        <p className="mt-1 max-w-prose text-xs text-secondary">
-          Grant the service principal <span className="font-mono">SELECT on system.tags.governed_tags</span>{" "}
-          to render the taxonomy and tags lens. The copy-ready grant SQL is in the access banner above.
-        </p>
-      </div>
-    </div>
+    <OnboardingState
+      icon={<Lock className="h-6 w-6" />}
+      heading="Unlock the governed-tag reads"
+      body={
+        <>
+          Grant the service principal{" "}
+          <span className="font-mono">SELECT on system.tags.governed_tags</span> to render the
+          taxonomy and tags. The copy-ready grant SQL is in Access &amp; sharing.
+        </>
+      }
+      primary={{ label: "Open Access & sharing", onClick: onOpenAccess }}
+      escape={{ label: "Back to overview", onClick: onBack }}
+    />
   )
 }
 
-function EmptyScopeNotice() {
+// No catalogs scoped yet — the whole surface is empty until the admin picks catalogs to scan.
+function EmptyScopeNotice({
+  onChooseCatalogs,
+  onBack,
+}: {
+  onChooseCatalogs: () => void
+  onBack: () => void
+}) {
   return (
-    <div className="flex items-start gap-2.5 rounded-xl border border-info/30 bg-info/5 px-4 py-3.5">
-      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-info-foreground" />
-      <div>
-        <p className="text-sm font-semibold text-primary">Choose catalogs to scope the ontology</p>
-        <p className="mt-1 max-w-prose text-xs text-secondary">
-          No catalogs are selected yet, so nothing is scanned. Add catalogs in Settings below and the
-          inventory, taxonomy, and tags lens will populate.
-        </p>
-      </div>
-    </div>
+    <OnboardingState
+      icon={<Database className="h-6 w-6" />}
+      heading="Choose catalogs to see your ontology"
+      body="No catalogs are scoped yet, so nothing is scanned. Pick the catalogs to read and the inventory, taxonomy, and suggestions all populate. Read-only — nothing is written."
+      primary={{ label: "Choose catalogs", onClick: onChooseCatalogs }}
+      escape={{ label: "Back to overview", onClick: onBack }}
+    />
   )
 }
 
@@ -87,10 +108,19 @@ export default function OntologyPage() {
   const [loadingHead, setLoadingHead] = useState(true)
   const [loadingBody, setLoadingBody] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<OntologyTab>("taxonomy")
+  const [tab, setTab] = useState<OntologyTab>("overview")
+  const [scanning, setScanning] = useState(false)
   // Bump to re-run the heavy taxonomy/tags/drafts/graph fetch (e.g. after a refresh completes).
   const [reloadKey, setReloadKey] = useState(0)
   const reload = useCallback(() => setReloadKey((k) => k + 1), [])
+  // Poll handle for a scan launched from the Overview CTA; cleared on settle/unmount.
+  const scanTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(
+    () => () => {
+      if (scanTimer.current) clearInterval(scanTimer.current)
+    },
+    [],
+  )
 
   const canRender = preflight?.can_render_taxonomy ?? false
   const emptyScope = (preflight?.catalog_allowlist.length ?? 0) === 0
@@ -140,13 +170,58 @@ export default function OntologyPage() {
     }
   }, [canRender, emptyScope, reloadKey])
 
-  const TABS: { id: OntologyTab; label: string; icon: React.ReactNode }[] = [
-    { id: "taxonomy", label: "Taxonomy", icon: <FolderTree className="h-4 w-4" /> },
-    { id: "tags", label: "Tags", icon: <Tags className="h-4 w-4" /> },
-    { id: "drafts", label: "Drafts", icon: <Lightbulb className="h-4 w-4" /> },
-    { id: "graph", label: "Graph", icon: <Network className="h-4 w-4" /> },
-    { id: "settings", label: "Settings", icon: <SettingsIcon className="h-4 w-4" /> },
-  ]
+  // Scan launched from the Overview CTA: reuse the same triggerRefresh + poll the
+  // FreshnessControls button uses, then reload the body reads and land on Drafts.
+  const runScan = useCallback(async () => {
+    if (scanning) return
+    setScanning(true)
+    setError(null)
+    try {
+      await triggerRefresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't start a scan — please try again.")
+      setScanning(false)
+      return
+    }
+    scanTimer.current = setInterval(async () => {
+      try {
+        const s = await getRefreshStatus()
+        const { settled } = pollSettleAction(s.state, false)
+        if (settled) {
+          if (scanTimer.current) {
+            clearInterval(scanTimer.current)
+            scanTimer.current = null
+          }
+          setScanning(false)
+          reload()
+          setTab("review")
+        }
+      } catch {
+        // Transient poll error — keep polling; the interval retries.
+      }
+    }, 2500)
+  }, [scanning, reload])
+
+  // Map the Overview's one adaptive CTA to a tab switch or the scan routine.
+  const handlePrimary = useCallback(
+    (action: NextAction) => {
+      switch (action.target) {
+        case "settings":
+          setTab("settings")
+          break
+        case "scan":
+          void runScan()
+          break
+        case "review":
+          setTab("review")
+          break
+        case "map":
+          setTab("map")
+          break
+      }
+    },
+    [runScan],
+  )
 
   return (
     <div className="rounded-xl border border-default bg-surface">
@@ -183,11 +258,9 @@ export default function OntologyPage() {
           <LoadingRow label="Resolving access & reading the estate…" />
         ) : preflight ? (
           <>
-            <PermissionBanner preflight={preflight} />
-
-            {/* Sub-tab strip */}
+            {/* Sub-tab strip — Overview · Review · Map · Estate · Settings (MV-D107 IA) */}
             <div className="flex items-center gap-1 border-b border-default">
-              {TABS.map((t) => (
+              {ONTOLOGY_TABS.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => setTab(t.id)}
@@ -197,31 +270,46 @@ export default function OntologyPage() {
                       : "border-transparent text-muted hover:text-secondary"
                   }`}
                 >
-                  {t.icon}
+                  {TAB_ICON[t.id]}
                   {t.label}
                 </button>
               ))}
             </div>
 
-            {tab === "settings" && settings && (
-              <SettingsForm
-                settings={settings}
-                // Stage C: the context sources the preflight reports (empty when off) drive
-                // the per-source checkboxes.
-                sources={
-                  preflight?.tiers.find((t) => t.id === "external_enrichment")?.sources ?? []
-                }
-                onSaved={(next) => {
-                  setSettings(next)
-                  // Re-resolve scope + re-read once catalogs change.
-                  void loadHead()
-                }}
+            {tab === "overview" && (
+              <OverviewPanel
+                preflight={preflight}
+                inventory={inventory}
+                taxonomy={taxonomy}
+                drafts={drafts}
+                onPrimary={handlePrimary}
+                busy={scanning}
               />
             )}
 
-            {/* Freshness chip + Refresh button (Phase 2). The page is admin-gated,
-                so the refresh action is available; the chip is always informative. */}
-            {(tab === "taxonomy" || tab === "tags" || tab === "drafts" || tab === "graph") && canRender && !emptyScope && (
+            {tab === "settings" && settings && (
+              <>
+                <SettingsForm
+                  settings={settings}
+                  // Stage C: the context sources the preflight reports (empty when off) drive
+                  // the per-source checkboxes.
+                  sources={
+                    preflight?.tiers.find((t) => t.id === "external_enrichment")?.sources ?? []
+                  }
+                  onSaved={(next) => {
+                    setSettings(next)
+                    // Re-resolve scope + re-read once catalogs change.
+                    void loadHead()
+                  }}
+                />
+                {/* Demoted permission matrix — collapsed unless a read tier is blocked. */}
+                <AccessSharingPanel preflight={preflight} />
+              </>
+            )}
+
+            {/* Freshness chip + Refresh button. The page is admin-gated, so the refresh
+                action is available; the chip is always informative. */}
+            {(tab === "review" || tab === "map" || tab === "estate") && canRender && !emptyScope && (
               <div className="flex justify-end">
                 <FreshnessControls
                   isAdmin={true}
@@ -231,51 +319,68 @@ export default function OntologyPage() {
               </div>
             )}
 
-            {tab === "taxonomy" && (
+            {tab === "review" && (
               emptyScope ? (
-                <EmptyScopeNotice />
+                <EmptyScopeNotice
+                  onChooseCatalogs={() => setTab("settings")}
+                  onBack={() => setTab("overview")}
+                />
               ) : !canRender ? (
-                <GrantGateNotice />
-              ) : loadingBody || !taxonomy ? (
-                <LoadingRow label="Reading governed tags & building the taxonomy…" />
-              ) : (
-                <TaxonomyView taxonomy={taxonomy} inventory={inventory} />
-              )
-            )}
-
-            {tab === "tags" && (
-              emptyScope ? (
-                <EmptyScopeNotice />
-              ) : !canRender ? (
-                <GrantGateNotice />
-              ) : loadingBody || !tags ? (
-                <LoadingRow label="Reading governed tags & finding collisions…" />
-              ) : (
-                <TagsLensView lens={tags} />
-              )
-            )}
-
-            {tab === "drafts" && (
-              emptyScope ? (
-                <EmptyScopeNotice />
-              ) : !canRender ? (
-                <GrantGateNotice />
+                <GrantGateNotice
+                  onOpenAccess={() => setTab("settings")}
+                  onBack={() => setTab("overview")}
+                />
               ) : loadingBody || !drafts ? (
                 <LoadingRow label="Ranking domain & page suggestions…" />
               ) : (
-                <DraftsView drafts={drafts} />
+                <DraftsView
+                  drafts={drafts}
+                  onScan={runScan}
+                  scanning={scanning}
+                  onBrowseEstate={() => setTab("estate")}
+                />
               )
             )}
 
-            {tab === "graph" && (
+            {tab === "map" && (
               emptyScope ? (
-                <EmptyScopeNotice />
+                <EmptyScopeNotice
+                  onChooseCatalogs={() => setTab("settings")}
+                  onBack={() => setTab("overview")}
+                />
               ) : !canRender ? (
-                <GrantGateNotice />
+                <GrantGateNotice
+                  onOpenAccess={() => setTab("settings")}
+                  onBack={() => setTab("overview")}
+                />
               ) : loadingBody || !graph ? (
                 <LoadingRow label="Building the estate graph…" />
               ) : (
                 <EstateGraph graph={graph} />
+              )
+            )}
+
+            {tab === "estate" && (
+              emptyScope ? (
+                <EmptyScopeNotice
+                  onChooseCatalogs={() => setTab("settings")}
+                  onBack={() => setTab("overview")}
+                />
+              ) : !canRender ? (
+                <GrantGateNotice
+                  onOpenAccess={() => setTab("settings")}
+                  onBack={() => setTab("overview")}
+                />
+              ) : loadingBody || !taxonomy ? (
+                <LoadingRow label="Reading governed tags & building the taxonomy…" />
+              ) : (
+                <EstateView
+                  taxonomy={taxonomy}
+                  tags={tags}
+                  inventory={inventory}
+                  drafts={drafts?.domains ?? []}
+                  onReview={() => setTab("review")}
+                />
               )
             )}
           </>

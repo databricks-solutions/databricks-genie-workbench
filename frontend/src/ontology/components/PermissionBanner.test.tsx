@@ -94,6 +94,41 @@ describe("PermissionBanner render (MV-D50)", () => {
   })
 })
 
+describe("PermissionBanner ready counter (MV-D107 regression)", () => {
+  // The header reads "N of M read tiers ready". N must be counted over the SAME
+  // read-tier set as M, so it can never exceed the denominator (the old "4 of 3").
+  it("never counts more ready tiers than there are read tiers", () => {
+    const html = renderToStaticMarkup(
+      <PermissionBanner
+        preflight={preflight([
+          tier({ id: "inventory", status: "ok" }),
+          tier({ id: "signals", status: "ok" }),
+          tier({ id: "tag_graph", status: "ok" }),
+          // Optional tiers are also ok — they must NOT inflate the numerator.
+          tier({ id: "membership_write", status: "ok" }),
+          tier({ id: "external_enrichment", status: "ok" }),
+        ])}
+      />,
+    )
+    expect(html).toContain("3 of 3 read tiers ready")
+    expect(html).not.toContain("5 of 3")
+    expect(html).not.toContain("4 of 3")
+  })
+
+  it("counts only the ready read tiers", () => {
+    const html = renderToStaticMarkup(
+      <PermissionBanner
+        preflight={preflight([
+          tier({ id: "inventory", status: "ok" }),
+          tier({ id: "signals", status: "degraded" }),
+          tier({ id: "tag_graph", status: "blocked" }),
+        ])}
+      />,
+    )
+    expect(html).toContain("1 of 3 read tiers ready")
+  })
+})
+
 // ── Phase 4 Stage C: the per-source Context Sources sub-panel ──────────────────
 function source(overrides: Partial<SourceStatus> = {}): SourceStatus {
   return {
