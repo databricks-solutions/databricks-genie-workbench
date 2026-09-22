@@ -479,3 +479,45 @@ describe("crossStrokeWidth — join strength → arc thickness (MV-D97 §6)", ()
     expect(crossStrokeWidth(1, 1e6)).toBeLessThanOrEqual(CROSS_WEIGHT_MAX + 1e-9)
   })
 })
+
+// ── Proposed-map clickability (MV-D108) ──────────────────────────────────────
+function proposedFixture(): OntologyGraph {
+  const domains: OntologyGraphNode[] = [
+    node({ id: "d_fin", label: "Acme Finance", kind: "domain", member_count: 1, origin: "applied" }),
+    node({ id: "sug", label: "Payments", kind: "domain", origin: "proposed" }),
+  ]
+  const assets: OntologyGraphNode[] = [
+    node({ id: "t:pay", label: "fact_payments", kind: "table", domain_id: "sug" }),
+    node({ id: "t:ref", label: "ref_txn", kind: "table", domain_id: "sug" }),
+  ]
+  return {
+    root: node({ id: "org", label: "Acme", kind: "org" }),
+    domains: { nodes: domains, edges: [], truncated: false },
+    assets: { nodes: assets, edges: [], truncated: false },
+    layout: "tree",
+    node_count: 4,
+    edge_count: 0,
+    state: "fresh",
+  }
+}
+
+describe("Proposed-map clickability (MV-D108)", () => {
+  it("renders the suggestion card body as a hit target (pointer-events=all)", () => {
+    // A `fill=\"none\"` hull only takes clicks on its thin dashed stroke; `pointer-events=\"all\"`
+    // turns the whole card body into a click target so selecting a suggestion is easy.
+    const html = renderToStaticMarkup(<EstateGraph graph={proposedFixture()} initialOrigin="proposed" />)
+    expect(html).toContain('pointer-events="all"')
+  })
+
+  it("makes an ungrouped tray asset inspectable and names its suggested area", () => {
+    // Clicking a disc inside a card used to resolve to nothing (tray assets aren't tree nodes),
+    // showing \"Nothing selected\". The inspector now resolves tray assets and names the area.
+    const html = renderToStaticMarkup(
+      <EstateGraph graph={proposedFixture()} initialOrigin="proposed" initialSelectedId="t:pay" />,
+    )
+    expect(html).toContain("fact_payments")
+    expect(html).toContain("would move into")
+    expect(html).toContain("Payments")
+    expect(html).not.toContain("Nothing selected")
+  })
+})

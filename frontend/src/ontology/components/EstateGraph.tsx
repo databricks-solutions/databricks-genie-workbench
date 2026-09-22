@@ -929,6 +929,32 @@ export function EstateGraph({
         band: proposal.band,
       }
     }
+    // MV-D108: an ungrouped/tray asset lives only in `trayItems` (never in the tree), so a click
+    // on a disc inside a suggestion card wasn't resolvable below and showed "Nothing selected".
+    // Resolve it here and name which suggested area(s) would take it in.
+    const trayItem = vizModel.trayItems.find((t) => t.id === selectedId)
+    if (trayItem) {
+      const inAreas = vizModel.proposals.filter((p) => p.memberIds.includes(selectedId)).map((p) => p.name)
+      const noun = TYPE_LABEL[trayItem.type].toLowerCase()
+      const description =
+        inAreas.length === 1
+          ? `An ungrouped ${noun} the engine would move into "Suggested: ${inAreas[0]}". Nothing is applied yet.`
+          : inAreas.length > 1
+            ? `An ungrouped ${noun} that appears in ${inAreas.length} suggested areas. Nothing is applied yet.`
+            : `An ungrouped ${noun} with no suggested area yet.`
+      const technical =
+        trayItem.type === "table" || trayItem.type === "metric_view"
+          ? [`Path: ${selectedId.replace(/^asset:|^mv:|^table:/, "")}`]
+          : []
+      return {
+        title: trayItem.label,
+        typeLabel: TYPE_LABEL[trayItem.type],
+        description,
+        facts: [],
+        technical,
+        relationships: [],
+      }
+    }
     const n = nodeById.get(selectedId)
     const mn = vizModel.nodes.find((x) => x.id === selectedId)
     if (!n || !mn) return null
@@ -1552,6 +1578,11 @@ export function EstateGraph({
                             height={h.height}
                             rx={12}
                             fill="none"
+                            // MV-D108: make the whole card body a hit target — a `fill="none"`
+                            // rect only takes clicks on its thin dashed stroke, so selecting a
+                            // suggestion meant aiming at the 1.4px border. `pointerEvents="all"`
+                            // lets a click anywhere inside the card select the proposal.
+                            pointerEvents="all"
                             stroke={selectedId === h.id ? tokens.selectedRing : tokens.proposalStroke}
                             strokeWidth={1.4}
                             strokeDasharray="6 4"
@@ -1571,7 +1602,15 @@ export function EstateGraph({
                       ))}
                     {layout.trayItems.map((t) => (
                       <g key={t.id} onClick={() => setSelectedId(t.id)} style={{ cursor: "pointer" }}>
-                        <circle cx={t.x} cy={t.y} r={t.radius} fill={tokens.trayNodeFill} stroke={tokens.trayNodeStroke} strokeWidth={1} strokeDasharray="2 2" />
+                        <circle
+                          cx={t.x}
+                          cy={t.y}
+                          r={t.radius}
+                          fill={tokens.trayNodeFill}
+                          stroke={selectedId === t.id ? tokens.selectedRing : tokens.trayNodeStroke}
+                          strokeWidth={selectedId === t.id ? 2.5 : 1}
+                          strokeDasharray={selectedId === t.id ? undefined : "2 2"}
+                        />
                       </g>
                     ))}
                     {layout.trayOverflow > 0 && (

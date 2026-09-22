@@ -530,7 +530,11 @@ Taxonomy-first landing. Driver `ontology-cuj-landing-coherence-driver.md`.
   tray GROUPED BY PROPOSAL: each suggestion is a tidy, non-overlapping card in a balanced
   3-column grid (`groupTrayByProposal` in `ontologyTreeLayout`, ranked by tray-member count, each
   asset claimed by exactly one card), capped at `proposalCap`=24 with a "+N more suggested areas"
-  summary; Applied keeps the flat grid (byte-identical, tray not rendered there). `vitest` **744**.
+  summary; Applied keeps the flat grid (byte-identical, tray not rendered there). Follow-up
+  clickability fix (the tidy cards invited clicks the old hit-targets didn't take): the hull
+  body is now a `pointerEvents="all"` target (a `fill:none` rect only took clicks on its 1.4px
+  dashed stroke), and tray assets are inspectable — the inspector resolves `trayItems` and names
+  the suggested area(s) they'd move into, with a selection ring on the disc. `vitest` **746**.
 
 ---
 
