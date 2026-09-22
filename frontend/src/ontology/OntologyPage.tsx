@@ -31,8 +31,10 @@ import type {
 import { AccessSharingPanel } from "@/ontology/components/AccessSharingPanel"
 import { OverviewPanel } from "@/ontology/components/OverviewPanel"
 import { OnboardingState } from "@/ontology/components/OnboardingState"
+import { OntologyErrorBoundary } from "@/ontology/components/OntologyErrorBoundary"
 import type { NextAction } from "@/ontology/overviewModel"
 import { ONTOLOGY_TABS, type OntologyTab } from "@/ontology/tabs"
+import { emitOntologyEvent } from "@/ontology/ontologyTelemetry"
 import { pollSettleAction } from "@/ontology/refreshPolling"
 import { EstateView } from "@/ontology/components/EstateView"
 import { SettingsForm } from "@/ontology/components/SettingsForm"
@@ -146,6 +148,11 @@ export default function OntologyPage() {
     void loadHead()
   }, [loadHead])
 
+  // Funnel: landing viewed (fires whenever Overview becomes the active tab). No-op sink today.
+  useEffect(() => {
+    if (tab === "overview") emitOntologyEvent({ name: "overview_view" })
+  }, [tab])
+
   // Heavier SP reads once the tag_graph tier is unlocked and catalogs are chosen.
   useEffect(() => {
     if (!canRender || emptyScope) return
@@ -176,6 +183,7 @@ export default function OntologyPage() {
     if (scanning) return
     setScanning(true)
     setError(null)
+    emitOntologyEvent({ name: "scan_start" })
     try {
       await triggerRefresh()
     } catch (e) {
@@ -205,6 +213,7 @@ export default function OntologyPage() {
   // Map the Overview's one adaptive CTA to a tab switch or the scan routine.
   const handlePrimary = useCallback(
     (action: NextAction) => {
+      emitOntologyEvent({ name: "overview_cta", action: action.kind })
       switch (action.target) {
         case "settings":
           setTab("settings")
@@ -228,7 +237,7 @@ export default function OntologyPage() {
       {/* Standalone page chrome (not a SpaceDetail tab strip — MV-D36) */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-default px-5 py-4">
         <div className="flex items-center gap-2.5">
-          <FolderTree className="h-5 w-5 text-accent" />
+          <FolderTree className="h-5 w-5 text-accent" aria-hidden="true" />
           <div>
             <h2 className="text-base font-semibold text-primary">Ontology</h2>
             <p className="text-xs text-muted">
@@ -239,7 +248,7 @@ export default function OntologyPage() {
         <div className="flex items-center gap-2">
           {preflight?.company_name && (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-default bg-elevated px-2.5 py-1 text-xs text-secondary">
-              <Building2 className="h-3.5 w-3.5 text-accent" />
+              <Building2 className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
               {preflight.company_name}
             </span>
           )}
@@ -259,10 +268,12 @@ export default function OntologyPage() {
         ) : preflight ? (
           <>
             {/* Sub-tab strip — Overview · Review · Map · Estate · Settings (MV-D107 IA) */}
-            <div className="flex items-center gap-1 border-b border-default">
+            <div role="tablist" aria-label="Ontology sections" className="flex items-center gap-1 border-b border-default">
               {ONTOLOGY_TABS.map((t) => (
                 <button
                   key={t.id}
+                  role="tab"
+                  aria-selected={tab === t.id}
                   onClick={() => setTab(t.id)}
                   className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
                     tab === t.id
@@ -275,6 +286,10 @@ export default function OntologyPage() {
                 </button>
               ))}
             </div>
+
+            {/* Active tab panel — a render throw in any panel is contained here, not the page. */}
+            <OntologyErrorBoundary>
+            <div role="tabpanel" aria-label={ONTOLOGY_TABS.find((t) => t.id === tab)?.label ?? "Ontology"} className="space-y-4">
 
             {tab === "overview" && (
               <OverviewPanel
@@ -383,6 +398,8 @@ export default function OntologyPage() {
                 />
               )
             )}
+            </div>
+            </OntologyErrorBoundary>
           </>
         ) : null}
       </div>

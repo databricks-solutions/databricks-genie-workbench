@@ -13,6 +13,7 @@ import { ApplyPreview } from "@/ontology/components/ApplyPreview"
 import { DomainDraftCard, type BulkDraftState } from "@/ontology/components/DomainDraftCard"
 import { PageDraftCard } from "@/ontology/components/PageDraftCard"
 import { OnboardingState } from "@/ontology/components/OnboardingState"
+import { emitOntologyEvent } from "@/ontology/ontologyTelemetry"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const BULK_POLL_MS = 1500
@@ -114,6 +115,7 @@ export function DraftsView({
     setError(null)
     try {
       await postDecision({ kind, proposal_id: proposalId, action })
+      emitOntologyEvent({ name: "review_decision", kind, action })
       remove() // optimistic: a decided proposal never resurfaces (MV-D26)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't record that decision — please try again.")

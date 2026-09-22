@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-22**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + Stage 4.1k page↔page relevance rank/cap (MV-D104) + MV-D105 signal-graph edge coverage Phases 0–3 (lineage/co_query producers live, semantic_sim default-off) + MV-D106 Ontology Map render virtualization (viewport culling, Phase 1) + MV-D107 Ontology CUJ / landing coherence P1+P2 (Overview-first landing + navigable/provenant Estate) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
+branch `ontology` (**2026-09-22**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + Stage 4.1k page↔page relevance rank/cap (MV-D104) + MV-D105 signal-graph edge coverage Phases 0–3 (lineage/co_query producers live, semantic_sim default-off) + MV-D106 Ontology Map render virtualization (viewport culling, Phase 1) + MV-D107 Ontology CUJ / landing coherence P1–P3 (Overview-first landing + navigable/provenant Estate + a11y/telemetry polish) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -489,7 +489,15 @@ Taxonomy-first landing. Driver `ontology-cuj-landing-coherence-driver.md`.
   explainer ("K other governed tags aren't domains → see Tags"), and a search box + sharpened
   purpose copy on the Tags lens. Suites: `vitest` **722** (frontend-only; no backend/wheel/dep/router
   change).
-- **P3 — polish · a11y · instrument** · 📝 DRAFTED (in driver, unbuilt).
+- **P3 — polish · a11y · instrument** · ✅ **BUILT + deploy-verified (6t92c3, 2026-09-22).**
+  Dependency-free funnel telemetry via a pure `ontologyTelemetry.ts` seam (`emitOntologyEvent`
+  routes through an injectable no-op sink that never throws; `setOntologyTelemetrySink` wires a real
+  transport later) at four milestones (`overview_view` · `overview_cta` · `scan_start` ·
+  `review_decision`). a11y: main tab strip → `role="tablist"`/`tab`/`aria-selected`; each panel
+  wrapped in `OntologyErrorBoundary` as `role="tabpanel"` (a render throw is contained, not the whole
+  page); decorative page-header icons `aria-hidden`; heading hierarchy fixed (single `h2` "Ontology",
+  hero + sections at `h3`). First-use vs returning Estate variants test-pinned. Frontend-only;
+  `tsc`/lint clean, `vitest` **730** (+8). Telemetry stays a no-op in production until a sink is wired.
 - **P4 — Access & sharing redesign** · 📝 DRAFTED (in driver, unbuilt): neutral-by-default tiers
   grouped by purpose (Reading your estate / Optional upgrades / Not used this release / External
   sources), warning only on blocked|degraded, GRANT SQL behind disclosure, company-name card moved
@@ -528,6 +536,6 @@ Semantic Blueprint v4 + Join-Advisor candidate source + `onSeed`→run path are 
 on-branch, unit-tested, not flag-gated); the ONLY open item across both tracks is a **deployed-review /
 live E2E round of the current MV-Advisor HEAD** (verification, not a build), recorded into the gap report.
 **Track A** can run in parallel by anyone off the ontology branch. **MV-D107** (Ontology CUJ /
-landing coherence) **P1+P2 are BUILT + deploy-verified** (6t92c3, 2026-09-22 — Overview-first
-landing, tab reorg, navigable/provenant Estate + the P2 hotfix); **P3** (polish/a11y/instrument) +
-**P4** (Access & sharing redesign) remain drafted in `ontology-cuj-landing-coherence-driver.md`.
+landing coherence) **P1–P3 are BUILT + deploy-verified** (6t92c3, 2026-09-22 — Overview-first
+landing, tab reorg, navigable/provenant Estate + the P2 hotfix, and P3 a11y/telemetry polish); only
+**P4** (Access & sharing redesign) remains drafted in `ontology-cuj-landing-coherence-driver.md`.

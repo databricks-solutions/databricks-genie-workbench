@@ -45,13 +45,13 @@ export function OverviewPanel({
 
   return (
     <section aria-labelledby="ontology-overview-heading" className="space-y-5">
-      {/* Hero + neutral status + primary CTA */}
+      {/* Hero + neutral status + primary CTA. h3 sits under the page-level "Ontology" h2. */}
       <div className="rounded-xl border border-default bg-elevated px-5 py-5">
-        <h2 id="ontology-overview-heading" className="text-lg font-semibold text-primary">
+        <h3 id="ontology-overview-heading" className="text-lg font-semibold text-primary">
           {concepts > 0
             ? `Genie knows ${concepts} concept${concepts === 1 ? "" : "s"} across ${domains} domain${domains === 1 ? "" : "s"} in ${company}`
             : `Map what Genie knows across ${company}`}
-        </h2>
+        </h3>
         <p className="mt-1.5 text-xs text-muted">
           Reading as you (admin)
           {inventory ? (
