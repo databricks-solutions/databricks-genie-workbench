@@ -71,16 +71,31 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
   })
 
   it("engages the per-provenance fetch seam when an api is injected (MV-D74 — guards the empty-Proposed regression)", () => {
-    // With the api seam, EstateGraph OWNS the origin fetch (fetchState initialises to
-    // "loading" iff api is present, EstateGraph.tsx:264) so the Applied/Proposed toggle can
-    // refetch origin=proposed. Without it the toggle is inert and Proposed renders empty even
-    // when proposed rollups exist — the OntologyPage wiring bug this fix closes.
+    // With the api seam + an EMPTY graph, EstateGraph OWNS the origin fetch and shows the full
+    // building shell (fetchState initialises to "loading" iff api is present, EstateGraph.tsx:264)
+    // so the Applied/Proposed toggle can refetch origin=proposed. Without it the toggle is inert
+    // and Proposed renders empty even when proposed rollups exist — the wiring bug this closes.
     const withApi = renderToStaticMarkup(
-      <EstateGraph graph={northstar()} api={{ getGraph: vi.fn().mockResolvedValue(emptyGraph), expandNode: vi.fn() }} />,
+      <EstateGraph graph={emptyGraph} api={{ getGraph: vi.fn().mockResolvedValue(emptyGraph), expandNode: vi.fn() }} />,
     )
     expect(withApi).toContain("Building the estate graph…")
-    const noApi = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    const noApi = renderToStaticMarkup(<EstateGraph graph={emptyGraph} />)
     expect(noApi).not.toContain("Building the estate graph…")
+  })
+
+  it("keeps the estate SVG mounted during a background refetch so drag survives (MV-D74 regression)", () => {
+    // The drag regression: a background origin refetch flipped fetchState to "loading", which
+    // REPLACED the SVG (and its draggable [data-node-id] nodes), tearing down d3.drag. Now a
+    // non-empty graph keeps the SVG mounted while loading — only a lightweight overlay shows.
+    const dataLoading = renderToStaticMarkup(
+      <EstateGraph graph={northstar()} api={{ getGraph: vi.fn().mockResolvedValue(emptyGraph), expandNode: vi.fn() }} />,
+    )
+    // The full building shell must NOT replace the map…
+    expect(dataLoading).not.toContain("Building the estate graph…")
+    // …the draggable node group is still in the DOM…
+    expect(dataLoading).toContain("data-node-id")
+    // …and the lightweight loading overlay is shown instead.
+    expect(dataLoading).toContain("Loading…")
   })
 
   it("renders the colour-by-type legend (§9-B), not an LOD toggle", () => {

@@ -1339,12 +1339,21 @@ export function EstateGraph({
               </button>
             </div>
           )}
-          {fetchState === "loading" ? (
+          {/* MV-D74: a background refetch (origin toggle / re-fetch) keeps the estate SVG mounted
+              so the d3.drag bindings on [data-node-id] survive — only a lightweight overlay shows.
+              The full building shell appears only when there's genuinely nothing to render yet. */}
+          {fetchState === "loading" && !isEmpty && (
+            <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-md border border-default bg-elevated/95 px-2 py-1 text-[11px] text-secondary shadow-sm">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <span>Loading…</span>
+            </div>
+          )}
+          {fetchState === "loading" && isEmpty ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
               <Loader2 className="h-6 w-6 animate-spin" />
               <p className="text-xs">Building the estate graph…</p>
             </div>
-          ) : fetchState === "error" ? (
+          ) : fetchState === "error" && isEmpty ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted">
               <AlertTriangle className="h-6 w-6 text-warning-foreground" />
               <p className="text-sm font-medium text-secondary">The estate snapshot could not be read</p>

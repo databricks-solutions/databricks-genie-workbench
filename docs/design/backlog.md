@@ -513,11 +513,20 @@ Taxonomy-first landing. Driver `ontology-cuj-landing-coherence-driver.md`.
   proposed rollups** (140 domains + 176 sub-domains + Ungrouped; run 2026-09-21). Fix wires
   `api={{ getGraph, expandNode }}` so the toggle refetches per origin; SSR guard added. Frontend-only;
   `vitest` **740** (+1).
-- **Scan "How it works" explainer (MV-D108)** · 📝 DRAFTED (`ontology-scan-explainer-driver.md`): an
-  8-stage infographic of the ONE materialize job incl. an **Align & enrich** stage that shows how scanning
-  uses industry data models (MV-D58) + external/web-search context (MV-D57/Stage C) — both optional /
-  default-off, web content labeled "informational — not certified" — plus a P1 thin backend `scan-stats`
-  read for last-run numbers.
+- **Scan "How it works" explainer (MV-D108)** · **P1 ✅ BUILT + deploy-verified (6t92c3, 2026-09-22)**,
+  P2 📝 DRAFTED (`ontology-scan-explainer-driver.md`). **P1** — append-only `OntologyScanStats` model +
+  `GET /api/ontology/scan-stats` + pure `compute_scan_stats` (prefers the succeeded run; every count
+  `int|None`, never a false 0); live values domain 338 · tag 2923 · ungrouped 72 · dur 1967s;
+  `./scripts/test.sh` **3164** (+5). **P2** (remaining) — an 8-stage infographic of the ONE materialize
+  job incl. an **Align & enrich** stage showing how scanning uses industry data models (MV-D58) +
+  external/web-search context (MV-D57/Stage C), both optional / default-off, web content labeled
+  "informational — not certified".
+- **Map drag regression (MV-D74 follow-up)** · ✅ **FIXED (offline-green).** The proposed-graph seam fix
+  flipped `EstateGraph` into the api fetch path; the `"loading"` state REPLACED the SVG (unmounting the
+  draggable `[data-node-id]` nodes) and the inline `api` object churned the fetch effect. Fix: memoize the
+  seam in `OntologyPage` + keep the SVG mounted during background loading (full shell only when nothing to
+  render). Frontend-only; `vitest` **741**. Proposed-view density (317 clusters + a 624-node Ungrouped tray
+  render flat/overlapping) folded into MV-D108 P2 as a collapse-by-default + hide-near-empty + tray-cap pass.
 
 ---
 

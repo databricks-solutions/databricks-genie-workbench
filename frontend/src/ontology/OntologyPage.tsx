@@ -5,7 +5,7 @@
  * to live data under /api/ontology/*. Read-only: the only write is saving
  * Settings (our own config). Fresh components — does not import the mockup scaffold.
  */
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Building2, Database, FolderTree, LayoutDashboard, Lightbulb, Loader2, Lock, Network, Settings as SettingsIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -127,6 +127,11 @@ export default function OntologyPage() {
 
   const canRender = preflight?.can_render_taxonomy ?? false
   const emptyScope = (preflight?.catalog_allowlist.length ?? 0) === 0
+
+  // Stable identity for the EstateGraph api seam (MV-D74). An inline object literal would be a
+  // NEW reference on every render, re-firing EstateGraph's per-origin fetch effect and
+  // re-entering the loading state — the drag regression this closes. Memoize once.
+  const graphApi = useMemo(() => ({ getGraph, expandNode }), [])
 
   // First render: cheap preflight + OBO inventory fast-path (+ settings).
   const loadHead = useCallback(async () => {
@@ -372,10 +377,10 @@ export default function OntologyPage() {
               ) : loadingBody || !graph ? (
                 <LoadingRow label="Building the estate graph…" />
               ) : (
-                // MV-D74: inject the api seam so the Applied/Proposed toggle refetches per
-                // origin (without it, EstateGraph's per-provenance fetch is gated off and
+                // MV-D74: inject the (memoized) api seam so the Applied/Proposed toggle refetches
+                // per origin (without it, EstateGraph's per-provenance fetch is gated off and
                 // Proposed renders empty even when proposed rollups exist in the snapshot).
-                <EstateGraph graph={graph} api={{ getGraph, expandNode }} />
+                <EstateGraph graph={graph} api={graphApi} />
               )
             )}
 
