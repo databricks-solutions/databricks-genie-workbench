@@ -70,6 +70,19 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
     expect(applied).toContain("bg-accent")
   })
 
+  it("engages the per-provenance fetch seam when an api is injected (MV-D74 — guards the empty-Proposed regression)", () => {
+    // With the api seam, EstateGraph OWNS the origin fetch (fetchState initialises to
+    // "loading" iff api is present, EstateGraph.tsx:264) so the Applied/Proposed toggle can
+    // refetch origin=proposed. Without it the toggle is inert and Proposed renders empty even
+    // when proposed rollups exist — the OntologyPage wiring bug this fix closes.
+    const withApi = renderToStaticMarkup(
+      <EstateGraph graph={northstar()} api={{ getGraph: vi.fn().mockResolvedValue(emptyGraph), expandNode: vi.fn() }} />,
+    )
+    expect(withApi).toContain("Building the estate graph…")
+    const noApi = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
+    expect(noApi).not.toContain("Building the estate graph…")
+  })
+
   it("renders the colour-by-type legend (§9-B), not an LOD toggle", () => {
     const html = renderToStaticMarkup(<EstateGraph graph={northstar()} />)
     expect(html).toContain("Genie Agent")

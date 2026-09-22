@@ -506,6 +506,18 @@ Taxonomy-first landing. Driver `ontology-cuj-landing-coherence-driver.md`.
   required read tier is blocked|degraded; SP-upgrade GRANT SQL behind a Show-SQL disclosure
   (MV-D23); the redundant company-name card removed (it already lives in `SettingsForm`).
   Frontend-only; `tsc`/lint clean, `vitest` **739** (+9). **MV-D107 is now COMPLETE (P1–P4).**
+- **Map Applied↔Proposed toggle fix (MV-D74 regression)** · ✅ **BUILT (offline-green).** `OntologyPage`
+  loaded the graph once at `origin=applied` (`OntologyPage.tsx:161`, `api.ts:123` default) and passed it to
+  `EstateGraph` WITHOUT the `api` seam, so the per-provenance refetch (`EstateGraph.tsx:266` `if (!api)
+  return`) never fired — the **Proposed** tab rendered empty even though the live snapshot held **317
+  proposed rollups** (140 domains + 176 sub-domains + Ungrouped; run 2026-09-21). Fix wires
+  `api={{ getGraph, expandNode }}` so the toggle refetches per origin; SSR guard added. Frontend-only;
+  `vitest` **740** (+1).
+- **Scan "How it works" explainer (MV-D108)** · 📝 DRAFTED (`ontology-scan-explainer-driver.md`): an
+  8-stage infographic of the ONE materialize job incl. an **Align & enrich** stage that shows how scanning
+  uses industry data models (MV-D58) + external/web-search context (MV-D57/Stage C) — both optional /
+  default-off, web content labeled "informational — not certified" — plus a P1 thin backend `scan-stats`
+  read for last-run numbers.
 
 ---
 

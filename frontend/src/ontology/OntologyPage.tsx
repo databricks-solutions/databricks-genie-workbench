@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { Building2, Database, FolderTree, LayoutDashboard, Lightbulb, Loader2, Lock, Network, Settings as SettingsIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
+  expandNode,
   getDrafts,
   getGraph,
   getInventory,
@@ -371,7 +372,10 @@ export default function OntologyPage() {
               ) : loadingBody || !graph ? (
                 <LoadingRow label="Building the estate graph…" />
               ) : (
-                <EstateGraph graph={graph} />
+                // MV-D74: inject the api seam so the Applied/Proposed toggle refetches per
+                // origin (without it, EstateGraph's per-provenance fetch is gated off and
+                // Proposed renders empty even when proposed rollups exist in the snapshot).
+                <EstateGraph graph={graph} api={{ getGraph, expandNode }} />
               )
             )}
 
