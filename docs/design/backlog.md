@@ -1,7 +1,7 @@
 # Ontology + MV-Advisor — single ordered backlog
 
 One drivable list across **both** tracks in `docs/design/`. Reconciled against code on
-branch `ontology` (**2026-09-21**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + Stage 4.1k page↔page relevance rank/cap (MV-D104) + MV-D105 signal-graph edge coverage Phases 0–3 (lineage/co_query producers live, semantic_sim default-off) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
+branch `ontology` (**2026-09-21**, post P1 harness + P6 Signal Authority Stages 1–4b + P2 Phase 5 apply Stage 2 + P5/17j apply hardening+undo + MV-D101 reuse no-op Drafts gate + P3 4.1d Draft-with-AI + Stage 4.1j Related-assets/Links (MV-D102/D103) + Stage 4.1k page↔page relevance rank/cap (MV-D104) + MV-D105 signal-graph edge coverage Phases 0–3 (lineage/co_query producers live, semantic_sim default-off) + MV-D106 Ontology Map render virtualization (viewport culling, Phase 1) + P4 external enrichment COMPLETE incl §9 alignment (MV-D58) — all deploy-verified; SHAs re-verified on-branch this date). This is the sequencing
 source of truth; the per-phase build specs / drivers remain the *content* source of truth,
 and `mv-advisor-playbook.md` remains the MV-D register.
 
@@ -447,15 +447,20 @@ graph shipped via the map lanes (d3/SVG, MV-D84); kept as the original spec of r
 The architecture bounds the problem by design — reads are **catalog-allowlist scoped**, the
 served graph is **capped at `TOP_N_BY_CENTRALITY = 2000`** display nodes, the tree is
 **progressively disclosed** (default `Estate→Domain→Sub-domain`, per-parent `+N more`,
-relationships-on-focus), and reads are **Lakebase-mirrored + TTL-cached**. Two levers remain
-for true-enterprise estates, neither yet scheduled:
+relationships-on-focus), and reads are **Lakebase-mirrored + TTL-cached**. Of the two enterprise
+levers, the render one is now built; the batch one remains unscheduled:
 
-1. **Batch runtime + LLM cost → catalog sharding.** The batch materialize is the time/cost
-   cliff (~21 min, 641 Pages on the airline estate). For 10×+ estates, materialize
+1. **Batch runtime + LLM cost → catalog sharding.** ✏️ UNSCHEDULED. The batch materialize is the
+   time/cost cliff (~21 min, 641 Pages on the airline estate). For 10×+ estates, materialize
    **per-catalog and union** (and/or raise the job timeout deliberately).
-2. **Render → virtualization.** The buttery-interactions work fixed per-frame drag/zoom cost;
-   if routine thousand-node expansion near the 2000 cap is needed, add **viewport
-   virtualization / LOD** (WebGL renderer only if that isn't enough).
+2. **Render → virtualization (MV-D106).** ✅ **BUILT + deploy-verified (Phase 1, 6t92c3, 2026-09-21).**
+   Viewport culling: a pure `cullToViewport` (`ontologyTreeLayout.ts`, `CULL_THRESHOLD=600`/
+   `CULL_PAD=1.0`) mounts only nodes/edges intersecting the padded viewport once a laid-out estate
+   exceeds the threshold; below it (or before a viewport exists) it is a referential passthrough ⇒
+   byte-identical DOM. A `keepSet` (selected ∪ ancestors ∪ searchHits ∪ hovered ∪ dragged) keeps
+   interactions correct; the minimap stays full-scene. Frontend-only, `vitest` 672 (+12); live eyeball
+   confirmed mounted `[data-node-id]` drops on deep zoom. **Phase 2 (WebGL/LOD) DEFERRED** — only if
+   culling stutters near the 2000 cap. Driver `ontology-map-virtualization-driver.md`.
 
 ---
 

@@ -50,6 +50,7 @@ import {
   contentBounds,
   crossPath,
   crossStrokeWidth,
+  cullToViewport,
   initialExpanded,
   layoutHash,
   layoutTree,
@@ -199,6 +200,7 @@ export function EstateGraph({
   initialDomainPanelOpen = false,
   initialExpandAll = false,
   initialSelectedId = null,
+  initialViewportRect = null,
   onReady,
 }: {
   graph: OntologyGraph
@@ -221,6 +223,13 @@ export function EstateGraph({
    * with no selection (a clean tree; arcs appear on click).
    */
   initialSelectedId?: string | null
+  /**
+   * Dev-harness / static-test only: seed the live viewport rect (content coords) so a
+   * non-interactive SSR render exercises viewport culling (MV-D106) — otherwise the rect is only
+   * measured client-side after mount, so a `renderToStaticMarkup` render always passes through.
+   * Real UI mounts leave this null and let the camera effect populate it.
+   */
+  initialViewportRect?: MiniViewport | null
   onReady?: (handle: EstateGraphHandle) => void
 }) {
   const { resolvedTheme } = useTheme()
@@ -245,8 +254,8 @@ export function EstateGraph({
   const [showDomainPanel, setShowDomainPanel] = useState(initialDomainPanelOpen)
   // Domain show/hide (R27) — top-domain / sub-domain container ids the curator has hidden.
   const [hiddenDomains, setHiddenDomains] = useState<Set<string>>(new Set())
-  // Live viewport rect (content coords) for the minimap you-are-here box (R26).
-  const [viewportRect, setViewportRect] = useState<MiniViewport | null>(null)
+  // Live viewport rect (content coords) for the minimap you-are-here box (R26) + MV-D106 culling.
+  const [viewportRect, setViewportRect] = useState<MiniViewport | null>(initialViewportRect)
 
   // Data seam (MV-D43 honest states): the app passes a `graph` prop and owns its own
   // loading/error shell (OntologyPage), so with no `api` we render the prop directly. When
@@ -384,6 +393,38 @@ export function EstateGraph({
   // no relayout.
   const nodeByIdRef = useRef(nodeById)
   nodeByIdRef.current = nodeById
+
+  // ── Viewport culling (MV-D106) ────────────────────────────────────────────────
+  // Nodes that must ALWAYS stay mounted regardless of the viewport: the selected node + its
+  // breadcrumb ancestors, every search hit, the hovered node, and any node the curator has
+  // manually dragged (its offset lives in `offsetsRef`, so it should never vanish on a re-cull).
+  // Keyed on `dragTick` so a fresh drag-commit re-reads the offset map.
+  const keepSet = useMemo(() => {
+    const s = new Set<string>()
+    if (selectedId) {
+      s.add(selectedId)
+      for (const a of ancestorPath(vizModel, selectedId)) s.add(a.id)
+    }
+    for (const id of searchHits) s.add(id)
+    if (hoveredId) s.add(hoveredId)
+    for (const id of offsetsRef.current.keys()) s.add(id)
+    return s
+    // offsetsRef is mutated in place; dragTick bumps on each drag-commit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, searchHits, hoveredId, vizModel, dragTick])
+
+  // Narrow the laid-out scene to what the camera frames (+ the keep-set). DEFAULT-SAFE: below the
+  // module threshold or with no measured viewport this is a referential passthrough of
+  // `layout.{nodes,spineLinks,crossLinks}` (byte-identical DOM), so small estates and the
+  // pre-measure first paint are unaffected. The minimap + fit math keep using the FULL `layout`.
+  const {
+    nodes: visibleNodes,
+    spineLinks: visibleSpine,
+    crossLinks: visibleCross,
+  } = useMemo(
+    () => cullToViewport(layout.nodes, layout.spineLinks, layout.crossLinks, viewportRect, { keep: keepSet }),
+    [layout, viewportRect, keepSet],
+  )
 
   const showTree = provenance !== "proposed"
   const showProposals = provenance !== "applied"
@@ -665,7 +706,10 @@ export function EstateGraph({
     return () => {
       sel.on(".drag", null)
     }
-  }, [layout.nodes, applyLiveDrag])
+    // `visibleNodes` (not `layout.nodes`) so a node panned into view under MV-D106 culling gets
+    // its drag handler bound. In the passthrough path `visibleNodes` IS `layout.nodes` (same ref),
+    // so binding cadence is byte-identical to before culling.
+  }, [visibleNodes, applyLiveDrag])
 
   // Background click-to-deselect (#1): a genuine click on empty canvas clears the selection
   // (so its relationship arcs disappear). We record the pointer-down position and only treat it
@@ -1381,7 +1425,7 @@ export function EstateGraph({
                     containment reads as structure and never sweeps a coloured arc off-canvas.
                     Drawn only when BOTH endpoints are laid out (clip-to-visible). */}
                 {showTree &&
-                  layout.spineLinks.map((l) => {
+                  visibleSpine.map((l) => {
                     if (!nodeById.has(l.sourceId) || !nodeById.has(l.targetId)) return null
                     const child = nodeById.get(l.targetId)
                     const fade = child ? dimmed(child.type) : false
@@ -1404,7 +1448,7 @@ export function EstateGraph({
                     hoverable (a fat transparent hit path), carries a direction arrowhead, and
                     dims when a different rel-type is highlighted from the legend. */}
                 {showTree &&
-                  layout.crossLinks.map((c) => {
+                  visibleCross.map((c) => {
                     const s = nodeById.get(c.sourceId)
                     const d = nodeById.get(c.targetId)
                     // Clip-to-visible (§5/R4): never draw an arc to an off-tree endpoint.
@@ -1528,7 +1572,7 @@ export function EstateGraph({
 
                 {/* Nodes */}
                 {showTree &&
-                  layout.nodes.map((n) => {
+                  visibleNodes.map((n) => {
                     // Synthetic "+N more" truncation chip (§6/R3): a labelled pill, not a
                     // nameless disc; clicking it lifts its parent's child cap in place.
                     if (n.isMore) {

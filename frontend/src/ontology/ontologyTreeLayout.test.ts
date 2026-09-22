@@ -7,6 +7,8 @@ import {
   collapsedToDomainTier,
   contentBounds,
   crossPath,
+  CULL_THRESHOLD,
+  cullToViewport,
   initialExpanded,
   layoutHash,
   layoutTree,
@@ -15,7 +17,11 @@ import {
   scaleRadius,
   spinePath,
   viewportContentRect,
+  type CrossLink,
+  type LaidNode,
   type Point,
+  type SpineLink,
+  type ViewportRect,
 } from "@/ontology/ontologyTreeLayout"
 import type { OntologyGraph, OntologyGraphEdge, OntologyGraphNode } from "@/ontology/types"
 
@@ -594,5 +600,147 @@ describe("layoutTree — reads node size + threads edge weight (MV-D97 §6)", ()
     const l = layoutTree(model, new Set(["org", "d"]), noOffsets)
     expect(l.nodes.find((n) => n.id === "big")!.meta).toEqual({ certified: "true" })
     expect(l.nodes.find((n) => n.id === "small")!.meta).toBeNull()
+  })
+})
+
+// ── MV-D106 Phase 1 — viewport culling ─────────────────────────────────────────
+describe("cullToViewport", () => {
+  function laid(id: string, x: number, y: number, radius = 10): LaidNode {
+    return {
+      id,
+      x,
+      y,
+      depth: 1,
+      type: "table",
+      label: id,
+      displayName: id,
+      origin: "applied",
+      domainId: null,
+      parentId: null,
+      kind: "table",
+      radius,
+      meta: null,
+      collapsed: false,
+      badge: 0,
+      memberCount: null,
+      cost: null,
+      isMore: false,
+      moreCount: 0,
+    }
+  }
+  function spine(sourceId: string, targetId: string): SpineLink {
+    return {
+      id: `s_${sourceId}__${targetId}`,
+      sourceId,
+      targetId,
+      source: { x: 0, y: 0 },
+      target: { x: 0, y: 0 },
+      path: "",
+      domainId: null,
+    }
+  }
+  function cross(id: string, sourceId: string, targetId: string): CrossLink {
+    return {
+      id,
+      sourceId,
+      targetId,
+      verb: "joins",
+      relClass: "shared",
+      path: "",
+      labelAt: { x: 0, y: 0 },
+      showLabel: false,
+    }
+  }
+  // A viewport at the origin, 200×200 content units.
+  const rect: ViewportRect = { x1: 0, y1: 0, x2: 200, y2: 200 }
+
+  it("passes the inputs through UNCHANGED when viewportRect is null (referential)", () => {
+    const nodes = [laid("a", 0, 0), laid("b", 5000, 5000)]
+    const spines = [spine("a", "b")]
+    const crosses = [cross("e", "a", "b")]
+    // A tiny threshold so the count gate can't be what triggers the passthrough.
+    const out = cullToViewport(nodes, spines, crosses, null, { threshold: 1 })
+    expect(out.nodes).toBe(nodes)
+    expect(out.spineLinks).toBe(spines)
+    expect(out.crossLinks).toBe(crosses)
+  })
+
+  it("passes through UNCHANGED when node count is at/under the threshold (referential)", () => {
+    const nodes = [laid("a", 0, 0), laid("b", 5000, 5000), laid("c", 6000, 6000)]
+    const spines = [spine("a", "b")]
+    const crosses = [cross("e", "a", "b")]
+    const out = cullToViewport(nodes, spines, crosses, rect, { threshold: 3 })
+    expect(out.nodes).toBe(nodes)
+    expect(out.spineLinks).toBe(spines)
+    expect(out.crossLinks).toBe(crosses)
+  })
+
+  it("defaults to a 600-node threshold (a smaller scene passes through even with a viewport)", () => {
+    expect(CULL_THRESHOLD).toBe(600)
+    const nodes = [laid("a", 0, 0), laid("b", 9999, 9999)]
+    const out = cullToViewport(nodes, [], [], rect) // 2 nodes ≪ 600 ⇒ passthrough
+    expect(out.nodes).toBe(nodes)
+  })
+
+  it("keeps in-viewport nodes and drops far ones once over the threshold", () => {
+    const inside = laid("in", 100, 100)
+    const far = laid("far", 100000, 100000)
+    const out = cullToViewport([inside, far], [], [], rect, { threshold: 1, pad: 0 })
+    const ids = out.nodes.map((n) => n.id)
+    expect(ids).toContain("in")
+    expect(ids).not.toContain("far")
+  })
+
+  it("keeps a node just outside the raw rect but within the padded margin", () => {
+    // rect is 0..200; with pad=1 the padded box is -200..400. A node at 350 is culled with pad=0
+    // but kept with pad=1.
+    const near = laid("near", 350, 100)
+    const dropped = cullToViewport([near, laid("x", 1e6, 1e6)], [], [], rect, { threshold: 1, pad: 0 })
+    expect(dropped.nodes.map((n) => n.id)).not.toContain("near")
+    const kept = cullToViewport([near, laid("x", 1e6, 1e6)], [], [], rect, { threshold: 1, pad: 1 })
+    expect(kept.nodes.map((n) => n.id)).toContain("near")
+  })
+
+  it("keeps a node whose disc (radius) overlaps the rect even if its centre is outside", () => {
+    // Centre at x=210 (just past the rect's 200 edge) but radius 20 ⇒ disc reaches 190 < 200.
+    const grazing = laid("graze", 210, 100, 20)
+    const out = cullToViewport([grazing, laid("x", 1e6, 1e6)], [], [], rect, { threshold: 1, pad: 0 })
+    expect(out.nodes.map((n) => n.id)).toContain("graze")
+  })
+
+  it("ALWAYS keeps ids in the keep-set, even far off-screen", () => {
+    const far = laid("sel", 99999, 99999)
+    const out = cullToViewport([far, laid("other", 5e5, 5e5)], [], [], rect, {
+      threshold: 1,
+      pad: 0,
+      keep: new Set(["sel"]),
+    })
+    const ids = out.nodes.map((n) => n.id)
+    expect(ids).toContain("sel")
+    expect(ids).not.toContain("other")
+  })
+
+  it("keeps an edge iff BOTH endpoints survive", () => {
+    const a = laid("a", 50, 50) // in view
+    const b = laid("b", 60, 60) // in view
+    const c = laid("c", 99999, 99999) // far, culled
+    const spines = [spine("a", "b"), spine("a", "c")]
+    const crosses = [cross("ab", "a", "b"), cross("bc", "b", "c")]
+    const out = cullToViewport([a, b, c], spines, crosses, rect, { threshold: 1, pad: 0 })
+    expect(out.spineLinks.map((l) => l.id)).toEqual(["s_a__b"])
+    expect(out.crossLinks.map((l) => l.id)).toEqual(["ab"])
+  })
+
+  it("preserves input order among the kept nodes (stable React keys)", () => {
+    const nodes = [laid("z", 10, 10), laid("far", 1e6, 1e6), laid("a", 20, 20), laid("m", 30, 30)]
+    const out = cullToViewport(nodes, [], [], rect, { threshold: 1, pad: 0 })
+    expect(out.nodes.map((n) => n.id)).toEqual(["z", "a", "m"])
+  })
+
+  it("never invents nodes — the kept set is a subset of the input", () => {
+    const nodes = [laid("a", 10, 10), laid("b", 20, 20)]
+    const out = cullToViewport(nodes, [], [], rect, { threshold: 1, pad: 0, keep: new Set(["ghost"]) })
+    expect(out.nodes.every((n) => nodes.includes(n))).toBe(true)
+    expect(out.nodes.map((n) => n.id)).not.toContain("ghost")
   })
 })

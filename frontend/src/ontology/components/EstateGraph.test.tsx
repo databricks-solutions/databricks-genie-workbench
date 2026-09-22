@@ -292,6 +292,69 @@ describe("EstateGraph — Ontology Map north-star renderer (MV-D81/D84)", () => 
   })
 })
 
+// ── MV-D106 Phase 1 — viewport culling wiring ────────────────────────────────
+// A balanced estate that lays out > 600 nodes when fully expanded (10 domains × 10 sub-areas ×
+// 8 tables + 110 containers + org = 911), so the module culling threshold engages. No single
+// parent exceeds the child cap (10), so nothing truncates into a "+N more" chip.
+function bigEstate(): OntologyGraph {
+  const domains: OntologyGraphNode[] = []
+  const assets: OntologyGraphNode[] = []
+  for (let d = 0; d < 10; d++) {
+    const dId = `d${d}`
+    domains.push(node({ id: dId, label: `Domain ${d}`, kind: "domain", origin: "applied" }))
+    for (let s = 0; s < 10; s++) {
+      const sId = `${dId}_s${s}`
+      domains.push(node({ id: sId, label: `Sub ${d}.${s}`, kind: "subdomain", parent_id: dId, origin: "applied" }))
+      for (let t = 0; t < 8; t++) {
+        assets.push(
+          node({ id: `${sId}_t${t}`, label: `tbl_${d}_${s}_${t}`, kind: "table", domain_id: sId, attach_level: "subdomain", origin: "applied" }),
+        )
+      }
+    }
+  }
+  return {
+    root: node({ id: "org", label: "Acme", kind: "org" }),
+    domains: { nodes: domains, edges: [], truncated: false },
+    assets: { nodes: assets, edges: [], truncated: false },
+    layout: "tree",
+    node_count: 1 + domains.length + assets.length,
+    edge_count: 0,
+    state: "fresh",
+  }
+}
+
+const countNodeMarkers = (html: string) => (html.match(/data-node-id="/g) ?? []).length
+
+describe("EstateGraph — viewport culling (MV-D106 Phase 1)", () => {
+  it("culls off-screen nodes above the threshold, yet always mounts a selected node outside the viewport", () => {
+    const g = bigEstate()
+    // A tiny viewport parked far from the tree (which lays out around the origin), so essentially
+    // nothing is in view — only the keep-set (the selected node + its ancestors) survives.
+    const farRect = { x1: -100000, y1: -100000, x2: -99800, y2: -99800 }
+    const full = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll initialSelectedId="d0_s0_t0" />)
+    const culled = renderToStaticMarkup(
+      <EstateGraph graph={g} initialExpandAll initialSelectedId="d0_s0_t0" initialViewportRect={farRect} />,
+    )
+    const fullCount = countNodeMarkers(full)
+    const culledCount = countNodeMarkers(culled)
+    // Without a viewport the whole estate mounts (over the 600 threshold).
+    expect(fullCount).toBeGreaterThan(600)
+    // Culling drops the off-screen majority — only the keep-set (selected + ancestors) remains.
+    expect(culledCount).toBeLessThan(fullCount)
+    expect(culledCount).toBeLessThan(50)
+    // The selected node is far outside the parked viewport but the keep-set mounts it regardless.
+    expect(culled).toContain('data-node-id="d0_s0_t0"')
+  })
+
+  it("renders the SAME node count for a small (< threshold) graph with or without a viewport (default-safe)", () => {
+    const g = northstar() // ≪ 600 nodes ⇒ referential passthrough regardless of the viewport
+    const rect = { x1: 0, y1: 0, x2: 100, y2: 100 }
+    const without = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll />)
+    const withRect = renderToStaticMarkup(<EstateGraph graph={g} initialExpandAll initialViewportRect={rect} />)
+    expect(countNodeMarkers(withRect)).toBe(countNodeMarkers(without))
+  })
+})
+
 // ── Live theme reactivity (useTheme fix) ─────────────────────────────────────
 // The Map picks its palette from `graphTokens(resolvedTheme)`, and `resolvedTheme` now tracks
 // the applied `<html>.dark` class. So the SAME graph renders DARK token hexes when the document

@@ -722,6 +722,106 @@ export function viewportContentRect(
 }
 
 /**
+ * A viewport rectangle in CONTENT (pre-transform) coordinates — exactly the shape
+ * {@link viewportContentRect} produces and the minimap consumes. Kept structural (no import
+ * from the minimap) so the culler stays a leaf of this pure module.
+ */
+export interface ViewportRect {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+/** Options for {@link cullToViewport} (all optional; the defaults keep the whole scene). */
+export interface CullOptions {
+  /**
+   * Node ids that must ALWAYS survive regardless of viewport — the selected / searched /
+   * hovered / dragged node and its breadcrumb ancestors — so navigation never culls the very
+   * node the curator is acting on, even when it is off-screen.
+   */
+  keep?: ReadonlySet<string>
+  /**
+   * Padding around the viewport, as a fraction of its own width/height applied on EACH side
+   * (default 1.0 → a full viewport-span of headroom in every direction). The margin means a
+   * pan reveals already-mounted nodes before the next zoom-end re-render, so scrolling never
+   * flashes empty.
+   */
+  pad?: number
+  /**
+   * Node-count floor (default 600): at or below it, culling is skipped entirely and the inputs
+   * are returned unchanged (referential passthrough). Small estates stay byte-identical.
+   */
+  threshold?: number
+}
+
+export const CULL_THRESHOLD = 600
+export const CULL_PAD = 1.0
+
+export interface CullResult {
+  nodes: LaidNode[]
+  spineLinks: SpineLink[]
+  crossLinks: CrossLink[]
+}
+
+/**
+ * Viewport culling (MV-D106, Phase 1) — the DETERMINISTIC, PURE narrowing of a laid-out scene to
+ * just what the camera can see (plus a keep-set), so a huge estate mounts a bounded number of SVG
+ * nodes instead of the whole tree at once.
+ *
+ * DEFAULT-SAFE passthrough (the byte-identical path): with no viewport (`viewportRect == null`, e.g.
+ * the pre-measure first paint) OR a scene at/under `threshold` nodes, the inputs are returned
+ * UNCHANGED — the SAME array references — so small estates and SSR render exactly as before and no
+ * downstream memo/effect sees a new identity.
+ *
+ * Above the threshold with a viewport: a node survives iff its disc — its (x,y) ± its radius —
+ * intersects the viewport PADDED by `pad`× its width/height on each side, OR its id is in `keep`
+ * (so the selected / searched / hovered / dragged node and breadcrumb ancestors are ALWAYS mounted,
+ * even off-screen). An edge survives iff BOTH endpoints survived. Input order is preserved (stable
+ * React keys) and no node is ever invented. Pure + unit-testable — the camera never enters here.
+ */
+export function cullToViewport(
+  nodes: LaidNode[],
+  spineLinks: SpineLink[],
+  crossLinks: CrossLink[],
+  viewportRect: ViewportRect | null,
+  opts: CullOptions = {},
+): CullResult {
+  const threshold = opts.threshold ?? CULL_THRESHOLD
+  // Default-safe: no viewport, or a small-enough scene ⇒ hand back the inputs unchanged.
+  if (viewportRect == null || nodes.length <= threshold) {
+    return { nodes, spineLinks, crossLinks }
+  }
+  const keep = opts.keep ?? EMPTY_SET
+  const pad = opts.pad ?? CULL_PAD
+  // Normalize (robust to an inverted rect) then pad by a fraction of the viewport's own span.
+  const vMinX = Math.min(viewportRect.x1, viewportRect.x2)
+  const vMaxX = Math.max(viewportRect.x1, viewportRect.x2)
+  const vMinY = Math.min(viewportRect.y1, viewportRect.y2)
+  const vMaxY = Math.max(viewportRect.y1, viewportRect.y2)
+  const padX = (vMaxX - vMinX) * pad
+  const padY = (vMaxY - vMinY) * pad
+  const minX = vMinX - padX
+  const maxX = vMaxX + padX
+  const minY = vMinY - padY
+  const maxY = vMaxY + padY
+
+  const keptIds = new Set<string>()
+  const keptNodes: LaidNode[] = []
+  for (const n of nodes) {
+    const r = n.radius
+    const inView = n.x + r >= minX && n.x - r <= maxX && n.y + r >= minY && n.y - r <= maxY
+    if (inView || keep.has(n.id)) {
+      keptIds.add(n.id)
+      keptNodes.push(n)
+    }
+  }
+  const keptSpine = spineLinks.filter((l) => keptIds.has(l.sourceId) && keptIds.has(l.targetId))
+  const keptCross = crossLinks.filter((c) => keptIds.has(c.sourceId) && keptIds.has(c.targetId))
+  return { nodes: keptNodes, spineLinks: keptSpine, crossLinks: keptCross }
+}
+
+/**
  * The `d3.zoom` transform that recenters the camera on a CONTENT-space point at the current
  * scale (MV-D87 P1-a — minimap click/drag pan). Keeps the zoom level; only translates so the
  * point lands at the viewport centre. Pure + unit-testable so the nav math is covered without
