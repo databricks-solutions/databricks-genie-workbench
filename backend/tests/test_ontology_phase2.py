@@ -432,3 +432,104 @@ def test_metastore_id_resolver_returns_current_metastore(monkeypatch):
     monkeypatch.setattr(ont_settings, "_METASTORE_ID_RESOLVED", False, raising=False)
 
     assert ont_settings._metastore_id() == "ms-live"
+
+
+# ── MV-D108: last-run scan stats (pure projection for the explainer) ────────
+
+
+def _stats_row(state, *, as_of, started=None, finished=None, trigger="on_demand",
+               domain_count=None, tag_count=None, ungrouped_count=None,
+               scope_allowlist=None, run_id="r1"):
+    return {
+        "run_id": run_id, "state": state, "trigger": trigger,
+        "as_of": as_of.isoformat(),
+        "started_at": started.isoformat() if started else None,
+        "finished_at": finished.isoformat() if finished else None,
+        "domain_count": domain_count, "tag_count": tag_count,
+        "ungrouped_count": ungrouped_count,
+        "scope_allowlist": list(scope_allowlist) if scope_allowlist is not None else [],
+    }
+
+
+def test_scan_stats_all_none_when_ledger_empty():
+    s = refresh.compute_scan_stats(None, None)
+    assert s.last_run_state == "none"
+    assert s.domain_count is None and s.tag_count is None and s.ungrouped_count is None
+    assert s.trigger is None and s.started_at is None and s.finished_at is None
+    assert s.duration_seconds is None and s.as_of is None
+    assert s.scope_allowlist == []
+
+
+def test_scan_stats_prefers_succeeded_for_counts_and_derives_duration():
+    started = _NOW - timedelta(minutes=5)
+    finished = _NOW - timedelta(minutes=2)
+    succ = _stats_row(
+        "succeeded", as_of=started, started=started, finished=finished,
+        trigger="nightly", domain_count=7, tag_count=12, ungrouped_count=3,
+        scope_allowlist=["finance", "sales"], run_id="r1",
+    )
+    # A newer run is in flight (head) with no counts yet — counts must come from succeeded.
+    head = _stats_row("running", as_of=_NOW, started=_NOW, run_id="r2")
+    s = refresh.compute_scan_stats(head, succ)
+    # last_run_state mirrors the most recent header…
+    assert s.last_run_state == "running"
+    # …while the numbers describe the scan that actually produced the snapshot.
+    assert s.domain_count == 7 and s.tag_count == 12 and s.ungrouped_count == 3
+    assert s.trigger == "nightly"
+    assert s.scope_allowlist == ["finance", "sales"]
+    assert s.duration_seconds == 180.0  # 3 minutes
+
+
+def test_scan_stats_partial_row_keeps_counts_none_and_no_duration():
+    # A running run carries a start but no finish and null counts (materializer stub).
+    head = _stats_row("running", as_of=_NOW, started=_NOW, run_id="r2")
+    s = refresh.compute_scan_stats(head, None)
+    assert s.last_run_state == "running"
+    assert s.domain_count is None and s.tag_count is None and s.ungrouped_count is None
+    assert s.duration_seconds is None  # finished_at missing ⇒ no duration
+    assert s.finished_at is None and s.started_at == _NOW.isoformat()
+
+
+def test_scan_stats_never_fabricates_zero_for_missing_count():
+    # A real 0 is preserved; a MISSING count reads None (MV-D43) — the two differ.
+    started = _NOW - timedelta(minutes=1)
+    row = _stats_row(
+        "succeeded", as_of=started, started=started, finished=_NOW,
+        domain_count=0,  # a genuine zero — kept
+        # tag_count / ungrouped_count omitted from the row entirely
+        run_id="r1",
+    )
+    del row["tag_count"]
+    del row["ungrouped_count"]
+    s = refresh.compute_scan_stats(row, row)
+    assert s.domain_count == 0  # genuine zero preserved
+    assert s.tag_count is None and s.ungrouped_count is None  # missing ⇒ None, not 0
+
+
+def test_scan_stats_route_returns_shape(monkeypatch):
+    started = _NOW - timedelta(minutes=4)
+    succ = _stats_row(
+        "succeeded", as_of=started, started=started, finished=_NOW,
+        domain_count=5, tag_count=9, ungrouped_count=1, scope_allowlist=["finance"],
+    )
+
+    async def _latest_run(ms):
+        return succ
+
+    async def _latest_succeeded(ms):
+        return succ
+
+    monkeypatch.setattr(ont_settings, "_metastore_id", lambda: "ms1")
+    monkeypatch.setattr(mirror, "latest_run", _latest_run)
+    monkeypatch.setattr(mirror, "latest_succeeded_run", _latest_succeeded)
+
+    resp = _client_refresh().get("/api/ontology/scan-stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {
+        "last_run_state", "trigger", "domain_count", "tag_count",
+        "ungrouped_count", "started_at", "finished_at", "duration_seconds",
+        "as_of", "scope_allowlist",
+    }
+    assert body["domain_count"] == 5 and body["scope_allowlist"] == ["finance"]
+    assert body["duration_seconds"] == 240.0

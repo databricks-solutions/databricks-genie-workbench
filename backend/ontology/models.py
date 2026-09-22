@@ -309,6 +309,24 @@ class OntologyRefreshStatus(BaseModel):
     message: str | None = None  # plain-language, zero-burden (e.g. "Updated 3 hours ago")
 
 
+# ── MV-D108: "How scanning works" explainer — last-run stats (APPEND-ONLY) ──
+# A read-only projection of the ``genie_ont_runs`` header for the explainer's
+# honest one-liner ("read N catalogs → D domains · P Pages"). OntologyRefreshStatus
+# above is UNCHANGED. Every count is int|None — a missing count reads None (never 0),
+# so a cold/partial ledger degrades (MV-D43) instead of asserting a false "0 domains".
+class OntologyScanStats(BaseModel):
+    last_run_state: Literal["succeeded", "failed", "running", "none", "skipped"] = "none"
+    trigger: str | None = None  # nightly | on_demand (of the run the counts describe)
+    domain_count: int | None = None
+    tag_count: int | None = None
+    ungrouped_count: int | None = None
+    started_at: str | None = None  # ISO-8601
+    finished_at: str | None = None  # ISO-8601
+    duration_seconds: float | None = None  # finished−started; None if either missing
+    as_of: str | None = None  # logical snapshot time of the counts (ISO-8601)
+    scope_allowlist: list[str] = Field(default_factory=list)  # catalogs the run scanned
+
+
 # ── Phase 3d: serve the ranked drafts + record decisions (§4) ──────────────
 # APPEND-ONLY. The Phase-1/2/3a-c models above are FROZEN (byte-identical). These
 # new models mirror 1:1 into frontend/src/ontology/types.ts. The card is prop-driven

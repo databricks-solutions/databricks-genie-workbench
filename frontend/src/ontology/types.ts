@@ -169,6 +169,22 @@ export interface OntologyRefreshStatus {
   message?: string | null
 }
 
+// ── MV-D108: "How scanning works" explainer — last-run stats ───────────────
+// 1:1 mirror of the append-only OntologyScanStats. Every count is number|null —
+// a missing count reads null (never 0), so the explainer degrades honestly.
+export interface OntologyScanStats {
+  last_run_state: "succeeded" | "failed" | "running" | "none" | "skipped"
+  trigger?: string | null
+  domain_count?: number | null
+  tag_count?: number | null
+  ungrouped_count?: number | null
+  started_at?: string | null
+  finished_at?: string | null
+  duration_seconds?: number | null
+  as_of?: string | null
+  scope_allowlist: string[]
+}
+
 // ── Phase 3d: ranked drafts + decisions (§4) ───────────────────────────────
 // 1:1 mirror of the append-only backend models. Sub-threshold is never served.
 export type DraftTier = "high" | "medium" | "low"

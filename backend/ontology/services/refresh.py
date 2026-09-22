@@ -18,7 +18,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from backend.ontology.models import OntologyRefreshStatus
+from backend.ontology.models import OntologyRefreshStatus, OntologyScanStats
 from backend.ontology.services import mirror, ont_settings
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,69 @@ async def get_status() -> OntologyRefreshStatus:
     head = await mirror.latest_run(ms)
     succeeded = await mirror.latest_succeeded_run(ms)
     return compute_status(head, succeeded)
+
+
+def _int_or_none(value) -> int | None:
+    """Coerce a count to int, or None when absent — never fabricate a 0 (MV-D43)."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _duration_seconds(started, finished) -> float | None:
+    """Elapsed wall-clock, or None if either bound is missing/unparseable."""
+    s = _parse_iso(started)
+    f = _parse_iso(finished)
+    if s is None or f is None:
+        return None
+    return (f - s).total_seconds()
+
+
+def _as_str_list(value) -> list[str]:
+    """The header's ``scope_allowlist`` (ARRAY<STRING>) as plain strings, or []."""
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def compute_scan_stats(head: dict | None, succeeded: dict | None) -> OntologyScanStats:
+    """Pure last-run stats projection for the explainer (unit-testable).
+
+    Prefers the succeeded run for the counts/duration (the numbers a user reads
+    should describe the scan that actually produced the snapshot), while
+    ``last_run_state`` mirrors :func:`compute_status` off the most recent header.
+    Every count degrades to None when absent — never a false 0 (MV-D43).
+    """
+    last_run_state = _map_last_run_state(head.get("state") if head else None)
+    counts_row = succeeded or head
+    if counts_row is None:
+        return OntologyScanStats(last_run_state=last_run_state)
+
+    trigger = counts_row.get("trigger")
+    started = counts_row.get("started_at")
+    finished = counts_row.get("finished_at")
+    as_of = counts_row.get("as_of")
+    return OntologyScanStats(
+        last_run_state=last_run_state,
+        trigger=str(trigger) if trigger is not None else None,
+        domain_count=_int_or_none(counts_row.get("domain_count")),
+        tag_count=_int_or_none(counts_row.get("tag_count")),
+        ungrouped_count=_int_or_none(counts_row.get("ungrouped_count")),
+        started_at=str(started) if started is not None else None,
+        finished_at=str(finished) if finished is not None else None,
+        duration_seconds=_duration_seconds(started, finished),
+        as_of=str(as_of) if as_of is not None else None,
+        scope_allowlist=_as_str_list(counts_row.get("scope_allowlist")),
+    )
+
+
+async def get_scan_stats() -> OntologyScanStats:
+    """Last-run stats for the current metastore (reuses the mirror header reads)."""
+    ms = ont_settings._metastore_id()
+    head = await mirror.latest_run(ms)
+    succeeded = await mirror.latest_succeeded_run(ms)
+    return compute_scan_stats(head, succeeded)
 
 
 async def mirror_is_fresh(metastore_id: str) -> bool:

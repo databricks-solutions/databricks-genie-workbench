@@ -75,6 +75,9 @@ _PHASE4_STAGEC_MODELS = {"DomainDraftSource"}
 # Stage 4.1j (MV-D103): best-effort external Links on a PageDraft (additive; the
 # ``links`` field on PageDraft is a field, not a new model).
 _STAGE41J_MODELS = {"PageLink"}
+# MV-D108: last-run stats for the "How scanning works" explainer (append-only,
+# read-only projection of the run header; OntologyRefreshStatus is unchanged).
+_MVD108_MODELS = {"OntologyScanStats"}
 
 
 def test_no_new_api_model_added_in_phase3a():
@@ -91,7 +94,7 @@ def test_no_new_api_model_added_in_phase3a():
     allowed = (
         _EXPECTED_MODELS | _PHASE3D_MODELS | _STAGE3_MODELS | _PHASE3E_MODELS
         | _PHASE5_MODELS | _STAGE41D_MODELS | _MAPV2_MODELS | _PHASE4_STAGEA_MODELS
-        | _PHASE4_STAGEC_MODELS | _STAGE41J_MODELS
+        | _PHASE4_STAGEC_MODELS | _STAGE41J_MODELS | _MVD108_MODELS
     )
     assert defined == allowed, (
         f"unexpected model surface change: {defined ^ allowed}"

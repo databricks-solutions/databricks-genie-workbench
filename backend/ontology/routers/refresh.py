@@ -26,3 +26,9 @@ async def get_refresh_status() -> dict:
 @router.post("/refresh")
 async def trigger_refresh() -> dict:
     return (await refresh.trigger()).model_dump(mode="json")
+
+
+@router.get("/scan-stats")
+async def get_scan_stats() -> dict:
+    # Read-only last-run stats for the "How it works" explainer (MV-D108). No write path.
+    return (await refresh.get_scan_stats()).model_dump(mode="json")

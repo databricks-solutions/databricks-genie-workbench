@@ -1,6 +1,7 @@
 # Ontology "How scanning works" explainer tab + last-run stats · Goal-Mode driver
 
-> **On the `ontology` branch.** PHASED (P1→P2), each phase its own commit + STOP at a deploy-verify
+> **On the `ontology` branch.** PHASED (P1→P2). **P1 BUILT + deploy-verified (6t92c3, 2026-09-22);
+> P2 remaining.** Each phase its own commit + STOP at a deploy-verify
 > gate. P1 is a THIN backend read (one new append-only model + one route over data the materialize job
 > already writes); P2 is a frontend-only explainer tab that recomposes surfaces + counts already
 > fetched. NO wheel/job/DDL change, NO new dep. Proposed register line: **MV-D108** (the Ontology tab
@@ -12,7 +13,7 @@
 ## Status at a glance
 | Phase | Scope | Status |
 |---|---|---|
-| **P1** | `genie_ont_runs` last-run stats read — new append-only `OntologyScanStats` model + `GET /api/ontology/scan-stats` + pure resolver + tests | ⬜ **REMAINING** — run first |
+| **P1** | `genie_ont_runs` last-run stats read — new append-only `OntologyScanStats` model + `GET /api/ontology/scan-stats` + pure resolver + tests | ✅ **BUILT + deploy-verified (6t92c3, 2026-09-22)** — `scan-stats` live (domain_count 338 · tag_count 2923 · ungrouped 72 · dur 1967s), 10-field shape, counts `int\|None`; `./scripts/test.sh` 3164 |
 | **P2** | "How it works" tab — `ScanExplainerPanel` + pure `scanNarrative.ts`, 8-stage infographic (incl. **Align & enrich** — industry data models + web/external context) hydrated from `inventory`+`scan-stats`, signal legend, CTA reusing `runScan` | ⬜ REMAINING |
 
 ## Why now

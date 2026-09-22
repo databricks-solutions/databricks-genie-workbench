@@ -19,6 +19,7 @@ import type {
   OntologyInventory,
   OntologyPreflight,
   OntologyRefreshStatus,
+  OntologyScanStats,
   OntologySettings,
   OntologyTaxonomy,
   TagLens,
@@ -93,6 +94,9 @@ export const getRefreshStatus = () => fetchJson<OntologyRefreshStatus>("/refresh
 
 export const triggerRefresh = () =>
   fetchJson<OntologyRefreshStatus>("/refresh", { method: "POST" })
+
+// Last-run stats for the "How it works" explainer (MV-D108) — read-only.
+export const getScanStats = () => fetchJson<OntologyScanStats>("/scan-stats")
 
 // ── Drafts + decisions (Phase 3d) ──────────────────────────────────────────
 export const getDrafts = () => fetchJson<OntologyDrafts>("/drafts")
