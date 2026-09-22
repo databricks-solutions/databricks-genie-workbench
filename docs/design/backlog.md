@@ -526,7 +526,11 @@ Taxonomy-first landing. Driver `ontology-cuj-landing-coherence-driver.md`.
   draggable `[data-node-id]` nodes) and the inline `api` object churned the fetch effect. Fix: memoize the
   seam in `OntologyPage` + keep the SVG mounted during background loading (full shell only when nothing to
   render). Frontend-only; `vitest` **741**. Proposed-view density (317 clusters + a 624-node Ungrouped tray
-  render flat/overlapping) folded into MV-D108 P2 as a collapse-by-default + hide-near-empty + tray-cap pass.
+  rendered as a flat wall of overlapping hulls) is now **FIXED (MV-D108)** by laying the Proposed
+  tray GROUPED BY PROPOSAL: each suggestion is a tidy, non-overlapping card in a balanced
+  3-column grid (`groupTrayByProposal` in `ontologyTreeLayout`, ranked by tray-member count, each
+  asset claimed by exactly one card), capped at `proposalCap`=24 with a "+N more suggested areas"
+  summary; Applied keeps the flat grid (byte-identical, tray not rendered there). `vitest` **744**.
 
 ---
 

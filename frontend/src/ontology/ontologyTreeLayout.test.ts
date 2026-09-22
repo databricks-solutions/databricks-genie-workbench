@@ -201,6 +201,68 @@ describe("layoutTree", () => {
   })
 })
 
+// ── Proposed tray grouping (MV-D108 — "Proposed is cluttered" fix) ───────────
+function proposedGraph(nProps: number, membersPer: number): OntologyGraph {
+  const g = graph()
+  for (let p = 0; p < nProps; p++) {
+    g.domains.nodes.push(node({ id: `sug${p}`, label: `Suggested Area ${p}`, kind: "domain", origin: "proposed" }))
+    for (let m = 0; m < membersPer; m++) {
+      g.assets.nodes.push(node({ id: `sa${p}_${m}`, label: `asset_${p}_${m}`, kind: "table", domain_id: `sug${p}` }))
+    }
+  }
+  return g
+}
+
+function rectsOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+describe("Proposed tray grouping (MV-D108)", () => {
+  it("lays each suggestion as a NON-OVERLAPPING card when groupTrayByProposal is on", () => {
+    const model = buildEstateModel(proposedGraph(6, 3))
+    const l = layoutTree(model, initialExpanded(model), noOffsets, DEFAULT_LAYOUT, {
+      groupTrayByProposal: true,
+    })
+    expect(l.proposalHulls.length).toBe(6)
+    // the wall-of-hulls bug: with a flat grid the cards overlapped. Grouped, none do.
+    for (let i = 0; i < l.proposalHulls.length; i++) {
+      for (let j = i + 1; j < l.proposalHulls.length; j++) {
+        expect(rectsOverlap(l.proposalHulls[i], l.proposalHulls[j])).toBe(false)
+      }
+    }
+    // every tray asset is placed once at a unique position (one asset ⇒ one card cell)
+    const ids = new Set(l.trayItems.map((t) => t.id))
+    expect(ids.size).toBe(l.trayItems.length)
+    const positions = new Set(l.trayItems.map((t) => `${t.x},${t.y}`))
+    expect(positions.size).toBe(l.trayItems.length)
+  })
+
+  it("caps the number of suggestion cards and summarises the tail as proposalOverflow", () => {
+    const model = buildEstateModel(proposedGraph(10, 2))
+    const l = layoutTree(model, initialExpanded(model), noOffsets, { ...DEFAULT_LAYOUT, proposalCap: 4 }, {
+      groupTrayByProposal: true,
+    })
+    expect(l.proposalHulls.length).toBe(4)
+    expect(l.proposalOverflow).toBe(6)
+  })
+
+  it("keeps the flat tray (Applied) byte-identical when grouping is off", () => {
+    const model = buildEstateModel(proposedGraph(6, 3))
+    const flat = layoutTree(model, initialExpanded(model), noOffsets, DEFAULT_LAYOUT)
+    expect(flat.proposalOverflow).toBe(0)
+    const grouped = layoutTree(model, initialExpanded(model), noOffsets, DEFAULT_LAYOUT, {
+      groupTrayByProposal: true,
+    })
+    // grouping re-lays the tray into tidy cards ⇒ geometry differs from the flat grid
+    expect(grouped.trayItems.map((t) => `${t.x},${t.y}`)).not.toEqual(
+      flat.trayItems.map((t) => `${t.x},${t.y}`),
+    )
+  })
+})
+
 // ── Per-parent child cap + "+N more" sentinel (§6 / R3) ──────────────────────
 /** A graph whose `d_ops` domain has `n` direct table children (a wide fan). */
 function wideGraph(n: number): OntologyGraph {

@@ -46,6 +46,14 @@ export interface LayoutConfig {
   /** Cap of tray items rendered before a "+N more" chip. */
   trayCap: number
   /**
+   * Cap of Proposed-tray suggestion CARDS rendered before a "+N more suggested areas" note
+   * (MV-D108). The long tail past this is summarised, not painted, so Proposed never renders
+   * a wall of overlapping hulls. Only used when `groupTrayByProposal` is on.
+   */
+  proposalCap: number
+  /** Column count for the balanced grid of Proposed suggestion cards (MV-D108). */
+  proposalBlockCols: number
+  /**
    * Per-parent visible-child cap (§6). A parent with more expanded children than this
    * renders the first `childCap` (stable sort) plus a synthetic `+N more` sentinel that
    * expands on click — so no parent ever dumps a nameless band of children (R3).
@@ -81,6 +89,8 @@ export const DEFAULT_LAYOUT: LayoutConfig = {
   trayCellW: 128,
   trayCellH: 38,
   trayCap: 48,
+  proposalCap: 24,
+  proposalBlockCols: 3,
   childCap: 10,
   crossLinkCap: 8,
   bow: 0.16,
@@ -234,6 +244,8 @@ export interface Layout {
   trayOverflow: number
   trayBounds: Bounds | null
   proposalHulls: ProposalHull[]
+  /** Suggestion cards summarised past `proposalCap` in the grouped Proposed tray (MV-D108). */
+  proposalOverflow: number
   bounds: Bounds
 }
 
@@ -260,6 +272,13 @@ export interface LayoutOpts {
    * both are set (a selection is the more specific navigation).
    */
   verbFocus?: string | null
+  /**
+   * Group the Ungrouped tray BY PROPOSAL (MV-D108): each suggestion becomes a tidy,
+   * non-overlapping card in a balanced column grid, capped at `proposalCap`. ON under
+   * Proposed/Both (where the tray + hulls render); OFF (default) keeps the flat grid, so
+   * Applied and every existing caller/test are byte-identical.
+   */
+  groupTrayByProposal?: boolean
 }
 
 /** Internal d3 hierarchy datum. */
@@ -429,6 +448,120 @@ export function crossPath(
 /**
  * Lay out the estate model deterministically.
  */
+/** Result of {@link groupedTrayLayout} — the Proposed tray laid out as suggestion cards. */
+interface GroupedTray {
+  trayItems: TrayLaidItem[]
+  trayOverflow: number
+  trayBounds: Bounds | null
+  proposalHulls: ProposalHull[]
+  proposalOverflow: number
+}
+
+/**
+ * MV-D108 — lay the Ungrouped tray GROUPED BY PROPOSAL so each suggestion reads as a tidy,
+ * non-overlapping card instead of a wall of dashed hulls scattered over a flat grid (the
+ * "Proposed is cluttered" report). Deterministic + pure:
+ *  1. rank proposals by tray-member count (desc, then name, then id);
+ *  2. greedily claim each tray asset for the highest-ranked proposal that wants it (an asset
+ *     belongs to exactly one card, so cards never overlap by sharing a cell);
+ *  3. keep the top `proposalCap` cards, summarising the tail as `proposalOverflow`;
+ *  4. pack cards into `proposalBlockCols` balanced columns (shortest-column-first — blocks are
+ *     size-desc so the packing stays even), each card a `trayCols`-wide mini-grid with a clean
+ *     hull; column pitch clears the hull padding so adjacent cards never touch;
+ *  5. lay the loose (unclaimed) assets in the existing flat grid below the cards, capped by
+ *     `trayCap` with the usual `trayOverflow`.
+ */
+function groupedTrayLayout(model: EstateModel, cfg: LayoutConfig, treeBounds: Bounds): GroupedTray {
+  // Dedupe tray items by id, preserving first-seen order (loose fallback order).
+  const itemById = new Map<string, TrayItem>()
+  for (const it of model.trayItems) if (!itemById.has(it.id)) itemById.set(it.id, it)
+
+  const ranked = model.proposals
+    .map((p) => ({ p, n: p.memberIds.reduce((c, id) => (itemById.has(id) ? c + 1 : c), 0) }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n || (a.p.name < b.p.name ? -1 : a.p.name > b.p.name ? 1 : a.p.id < b.p.id ? -1 : 1))
+
+  const claimed = new Set<string>()
+  const allBlocks: { p: EstateProposal; members: string[] }[] = []
+  for (const { p } of ranked) {
+    const members = p.memberIds.filter((id) => itemById.has(id) && !claimed.has(id))
+    if (!members.length) continue
+    for (const id of members) claimed.add(id)
+    allBlocks.push({ p, members })
+  }
+
+  const kept = allBlocks.slice(0, Math.max(0, cfg.proposalCap))
+  const proposalOverflow = allBlocks.length - kept.length
+  const keptIds = new Set<string>(kept.flatMap((b) => b.members))
+
+  const trayX0 = treeBounds.maxX + cfg.trayGap
+  const trayY0 = treeBounds.minY + 40
+  const headerH = cfg.trayCellH
+  const blockGap = Math.round(cfg.trayCellH * 0.7)
+  const blockColW = cfg.trayCols * cfg.trayCellW + cfg.trayCellW // clears the hull padding gap
+  const cols = Math.max(1, cfg.proposalBlockCols)
+  const colBottom = new Array<number>(cols).fill(trayY0)
+  // Asymmetric hull padding: WIDE in x (clear the disc's ellipsized label) but TIGHT in y, so
+  // single-row cards stacked in a column stay separated by `blockGap` instead of overlapping.
+  const padX = cfg.trayCellW / 2 + 6
+  const padY = Math.round(cfg.trayCellH / 2) + 8
+
+  const laid: TrayLaidItem[] = []
+  const proposalHulls: ProposalHull[] = []
+  for (const b of kept) {
+    let c = 0
+    for (let i = 1; i < cols; i++) if (colBottom[i] < colBottom[c]) c = i
+    const colX0 = trayX0 + c * blockColW
+    const cellTop = colBottom[c] + headerH
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    b.members.forEach((id, i) => {
+      const x = colX0 + (i % cfg.trayCols) * cfg.trayCellW
+      const y = cellTop + Math.floor(i / cfg.trayCols) * cfg.trayCellH
+      const it = itemById.get(id)!
+      laid.push({ ...it, x, y, radius: cfg.radius[it.type] ?? 9 })
+      if (x < minX) minX = x
+      if (y < minY) minY = y
+      if (x > maxX) maxX = x
+      if (y > maxY) maxY = y
+    })
+    proposalHulls.push({
+      id: b.p.id,
+      name: b.p.name,
+      band: b.p.band,
+      kind: b.p.kind,
+      x: minX - padX,
+      y: minY - padY,
+      width: maxX - minX + 2 * padX,
+      height: maxY - minY + 2 * padY,
+      memberIds: b.members,
+    })
+    const rows = Math.ceil(b.members.length / cfg.trayCols)
+    colBottom[c] = cellTop + rows * cfg.trayCellH + blockGap
+  }
+
+  // Loose (unclaimed / past-cap) assets → flat grid below the tallest card column.
+  const loose = [...itemById.keys()].filter((id) => !keptIds.has(id))
+  const looseCap = Math.max(0, cfg.trayCap - laid.length)
+  const looseShown = loose.slice(0, looseCap)
+  const trayOverflow = loose.length - looseShown.length
+  const looseTop = Math.max(trayY0, ...colBottom) + (kept.length ? headerH : 0)
+  looseShown.forEach((id, i) => {
+    const it = itemById.get(id)!
+    laid.push({
+      ...it,
+      x: trayX0 + (i % cfg.trayCols) * cfg.trayCellW,
+      y: looseTop + Math.floor(i / cfg.trayCols) * cfg.trayCellH,
+      radius: cfg.radius[it.type] ?? 9,
+    })
+  })
+
+  const trayBounds = laid.length ? boundsOf(laid.map((t) => ({ x: t.x, y: t.y })), cfg.trayCellW / 2) : null
+  return { trayItems: laid, trayOverflow, trayBounds, proposalHulls, proposalOverflow }
+}
+
 export function layoutTree(
   model: EstateModel,
   expandedSet: Set<string>,
@@ -453,6 +586,7 @@ export function layoutTree(
       trayOverflow: 0,
       trayBounds: null,
       proposalHulls: [],
+      proposalOverflow: 0,
       bounds: emptyBounds(),
     }
   }
@@ -563,48 +697,65 @@ export function layoutTree(
   const treeBounds = boundsOf([...posById.values()], 60)
 
   // ── Off-tree Ungrouped tray — a fixed column right of the tree (§3.5/§4.7) ──
-  const shown = model.trayItems.slice(0, cfg.trayCap)
-  const trayOverflow = Math.max(0, model.trayItems.length - shown.length)
-  const trayX0 = treeBounds.maxX + cfg.trayGap
-  const trayY0 = treeBounds.minY + 40
-  const trayItems: TrayLaidItem[] = shown.map((item, i) => {
-    const col = i % cfg.trayCols
-    const row = Math.floor(i / cfg.trayCols)
-    return {
-      ...item,
-      x: trayX0 + col * cfg.trayCellW,
-      y: trayY0 + row * cfg.trayCellH,
-      radius: cfg.radius[item.type] ?? 9,
-    }
-  })
-  const trayBounds = trayItems.length
-    ? boundsOf(
-        trayItems.map((t) => ({ x: t.x, y: t.y })),
-        cfg.trayCellW / 2,
-      )
-    : null
-
-  // Proposal hulls over the tray members they would group.
-  const trayPos = new Map(trayItems.map((t) => [t.id, t]))
-  const proposalHulls: ProposalHull[] = []
-  for (const p of model.proposals) {
-    const pts = p.memberIds.map((id) => trayPos.get(id)).filter((t): t is TrayLaidItem => !!t)
-    if (!pts.length) continue
-    const b = boundsOf(
-      pts.map((t) => ({ x: t.x, y: t.y })),
-      cfg.trayCellW / 2 + 6,
-    )
-    proposalHulls.push({
-      id: p.id,
-      name: p.name,
-      band: p.band,
-      kind: p.kind,
-      x: b.minX,
-      y: b.minY,
-      width: b.width,
-      height: b.height,
-      memberIds: pts.map((t) => t.id),
+  // Under Proposed/Both (`groupTrayByProposal`) the tray is laid out grouped by proposal so
+  // each suggestion is a tidy, non-overlapping card (MV-D108); Applied keeps the flat grid
+  // (the tray isn't rendered there anyway), so it stays byte-identical.
+  let trayItems: TrayLaidItem[]
+  let trayOverflow: number
+  let trayBounds: Bounds | null
+  let proposalHulls: ProposalHull[]
+  let proposalOverflow = 0
+  if (opts.groupTrayByProposal && model.proposals.length > 0) {
+    const g = groupedTrayLayout(model, cfg, treeBounds)
+    trayItems = g.trayItems
+    trayOverflow = g.trayOverflow
+    trayBounds = g.trayBounds
+    proposalHulls = g.proposalHulls
+    proposalOverflow = g.proposalOverflow
+  } else {
+    const shown = model.trayItems.slice(0, cfg.trayCap)
+    trayOverflow = Math.max(0, model.trayItems.length - shown.length)
+    const trayX0 = treeBounds.maxX + cfg.trayGap
+    const trayY0 = treeBounds.minY + 40
+    trayItems = shown.map((item, i) => {
+      const col = i % cfg.trayCols
+      const row = Math.floor(i / cfg.trayCols)
+      return {
+        ...item,
+        x: trayX0 + col * cfg.trayCellW,
+        y: trayY0 + row * cfg.trayCellH,
+        radius: cfg.radius[item.type] ?? 9,
+      }
     })
+    trayBounds = trayItems.length
+      ? boundsOf(
+          trayItems.map((t) => ({ x: t.x, y: t.y })),
+          cfg.trayCellW / 2,
+        )
+      : null
+
+    // Proposal hulls over the tray members they would group.
+    const trayPos = new Map(trayItems.map((t) => [t.id, t]))
+    proposalHulls = []
+    for (const p of model.proposals) {
+      const pts = p.memberIds.map((id) => trayPos.get(id)).filter((t): t is TrayLaidItem => !!t)
+      if (!pts.length) continue
+      const b = boundsOf(
+        pts.map((t) => ({ x: t.x, y: t.y })),
+        cfg.trayCellW / 2 + 6,
+      )
+      proposalHulls.push({
+        id: p.id,
+        name: p.name,
+        band: p.band,
+        kind: p.kind,
+        x: b.minX,
+        y: b.minY,
+        width: b.width,
+        height: b.height,
+        memberIds: pts.map((t) => t.id),
+      })
+    }
   }
 
   // Overall bounds cover the tree + tray.
@@ -626,6 +777,7 @@ export function layoutTree(
     trayOverflow,
     trayBounds,
     proposalHulls,
+    proposalOverflow,
     bounds,
   }
 }

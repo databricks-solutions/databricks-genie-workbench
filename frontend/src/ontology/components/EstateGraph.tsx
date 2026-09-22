@@ -379,10 +379,13 @@ export function EstateGraph({
         verbFocus: relVerbFocus,
         uncapped,
         assetsExpanded, // presence turns tier-aware gating ON (domain assets need a drill)
+        // MV-D108: group the tray into tidy suggestion cards under Proposed/Both (where it
+        // renders); Applied keeps the flat grid (unrendered there) so it stays byte-identical.
+        groupTrayByProposal: provenance !== "applied",
       }),
     // dragTick is a deliberate relayout trigger; offsetsRef is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [vizModel, expanded, dragTick, selectedId, relVerbFocus, uncapped, assetsExpanded],
+    [vizModel, expanded, dragTick, selectedId, relVerbFocus, uncapped, assetsExpanded, provenance],
   )
 
   const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout])
@@ -1574,6 +1577,13 @@ export function EstateGraph({
                     {layout.trayOverflow > 0 && (
                       <text x={layout.trayBounds.minX} y={layout.trayBounds.maxY + 16} fontSize={10} fill={tokens.trayText}>
                         +{fmtCount(layout.trayOverflow)} more
+                      </text>
+                    )}
+                    {/* MV-D108: the long tail of suggestion cards past the cap is summarised,
+                        not painted, so Proposed never becomes a wall of overlapping hulls. */}
+                    {layout.proposalOverflow > 0 && (
+                      <text x={layout.trayBounds.minX} y={layout.trayBounds.maxY + 32} fontSize={10} fontWeight={600} fill={tokens.proposalText}>
+                        +{fmtCount(layout.proposalOverflow)} more suggested areas — narrow the scope or search to see fewer
                       </text>
                     )}
                   </g>
