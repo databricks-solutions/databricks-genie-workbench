@@ -1,12 +1,24 @@
 # Ontology CUJ / landing coherence — Overview-first, one-job-per-screen · Goal-Mode driver
 
-> **Frontend-only, on the `ontology` branch.** PHASED (P1→P4; P1 SHIPPED), each phase its own commit + STOP at
+> **Frontend-only, on the `ontology` branch.** PHASED (P1→P4). **P1–P3 BUILT + deploy-verified
+> (6t92c3, 2026-09-22); only P4 REMAINS.** Each phase its own commit + STOP at
 > a deploy-verify gate. Additive over surfaces that already exist and are deploy-verified — this is
 > re-composition, not new engine work. NO backend/router/wheel/API change (every datum is already
 > fetched by `OntologyPage`), NO new dep. Proposed register line: **MV-D107** (the Ontology page
 > tells a coherent story — land on an Overview that names the value + the one next action, promote the
 > actionable Review surface, demote the permission plumbing, and rewrite empty states as onboarding).
 > Determinism/dual-theme preserved; MV-D80 mockup-fidelity + a11y gates apply.
+
+## Status at a glance (2026-09-22)
+| Phase | Scope | Status | Landed |
+|---|---|---|---|
+| **P1** | Overview-first landing; demote permission plumbing to Settings; fix "4 of 3" counter | ✅ BUILT + deploy-verified | `2abf2111` |
+| **P2** | Tab reorg (Overview·Review·Map·Estate·Settings); navigable/provenant Estate; onboarding empty states; **+ hotfix** (smart hide-empty, sort tiebreak, domain-vs-tag explainer, Tags search) | ✅ BUILT + deploy-verified | `2abf2111` |
+| **P3** | Polish · a11y (tablist/tabpanel, error boundaries, heading outline, `aria-hidden`) · dependency-free funnel telemetry seam | ✅ BUILT + deploy-verified | `71036fe6` |
+| **P4** | Access & sharing redesign (neutral-by-default, purpose-first tier grouping, GRANT SQL behind Show-SQL disclosure, company-name card → Ontology settings) | ⬜ **REMAINING** — run next | — |
+
+All three landed phases are deploy-verified on 6t92c3 (full frontend-build `deploy.sh --update`, app
+RUNNING); `vitest` **730**, `tsc`/lint clean, no backend/wheel/router/API/dep change. **Run P4 next.**
 
 ## Why now
 The backend/engine is landed and deploy-verified (P1–P6, Phase 4/5, MV-D105/D106). The remaining
@@ -67,12 +79,12 @@ untouched). Proposed **MV-D107**. Recompose existing deploy-verified surfaces in
 Each phase: `tsc -b` clean, `npm run lint` clean, `npm run test` green (report count), then STOP for
 deploy-verify.
 
-P1 — ✅ SHIPPED (deployed, awaiting live eyeball): Overview-first landing (`OverviewPanel` + pure
-`overviewModel.nextAction`/`buildKpis`/checklist), `overview` as DEFAULT tab, `PermissionBanner` demoted
-into a collapsed Settings `AccessSharingPanel`, and the "4 of 3" counter fix. Full spec: Grounded facts +
-Deploy-verify P1.
+P1 — ✅ BUILT + deploy-verified (6t92c3, 2026-09-22, `2abf2111`): Overview-first landing
+(`OverviewPanel` + pure `overviewModel.nextAction`/`buildKpis`/checklist), `overview` as DEFAULT tab,
+`PermissionBanner` demoted into a collapsed Settings `AccessSharingPanel`, and the "4 of 3" counter fix.
 
-P2 — Tab reorg + navigable/provenant Estate + empty states as onboarding.
+P2 — ✅ BUILT + deploy-verified (6t92c3, 2026-09-22, `2abf2111`; incl. hotfix). Tab reorg +
+navigable/provenant Estate + empty states as onboarding.
 1. Reorder/rename `TABS` (`OntologyPage.tsx:143-149`) → `Overview · Review · Map · Estate · Settings`
    (Review=`drafts`, Map=`graph`, Estate=`taxonomy`+`tags` merged). Reuse the components; labels only.
 2. Make **Estate** navigable + provenant, client-side over loaded `taxonomy`+`drafts` (`TaxonomyView.tsx`):
@@ -85,11 +97,12 @@ P2 — Tab reorg + navigable/provenant Estate + empty states as onboarding.
    `EmptyScopeNotice`/`GrantGateNotice` (`OntologyPage.tsx:48-75`) and cold `DraftsView`
    (`DraftsView.tsx:112-128`), with the "Scan the estate" button IN the cold Review state.
 
-P3 — Polish, a11y, instrument. First-use vs returning variants (extend cold/caught-up to Review/Estate);
-a11y (semantic headings, `aria-hidden` on icons, focus order, error boundaries); instrument the funnel
-(view/CTA/first-scan/first-review) via the existing telemetry seam or TODO markers — no dep.
+P3 — ✅ BUILT + deploy-verified (6t92c3, 2026-09-22, `71036fe6`). Polish, a11y, instrument. First-use vs
+returning variants (extend cold/caught-up to Review/Estate); a11y (semantic headings, `aria-hidden` on
+icons, focus order, error boundaries); instrument the funnel (view/CTA/first-scan/first-review) via the
+existing telemetry seam or TODO markers — no dep.
 
-P4 — Access & sharing redesign (`AccessSharingPanel`/`PermissionBanner` over `preflight.tiers`, no API).
+P4 — ⬜ REMAINING (RUN THIS PHASE NEXT). Access & sharing redesign (`AccessSharingPanel`/`PermissionBanner` over `preflight.tiers`, no API).
 Neutral by default (drop the always-amber header; only a `blocked`/`degraded` tier warns); purpose-first
 header, not "N of M ready". Group tiers by purpose — Reading your estate (OBO, "you're set" when ok);
 Optional upgrades (SP grant, benefit-led, `GRANT` SQL behind a Show-SQL disclosure); Not used this release

@@ -1,18 +1,19 @@
-// Frame 17.0a — the tiered permission banner (capability → permission matrix).
-// Driven by GET /api/ontology/preflight. Read tiers degrade gracefully; the
-// optional write tier is never required to view. Fresh component (does not
-// import the mockup scaffold), matching the 17.0a visual contract.
+// Access & sharing (MV-D107 Phase 4) — the preflight tiers grouped BY PURPOSE, neutral by
+// default (only a blocked/degraded read tier warns; no always-amber header, no "N of M ready").
+// Reading your estate (OBO) · Optional upgrades (SP grant, GRANT SQL behind Show-SQL) · Not used
+// this release (locked write tier) · External sources (Stage C SourcePanel, unchanged). Pure
+// bucketing lives in ../accessModel; driven by GET /api/ontology/preflight (no new API).
 import { useState } from "react"
-import { Building2, Check, Copy, Info, Lock, Minus, ShieldAlert, X } from "lucide-react"
+import { Check, Copy, Lock, Minus, ShieldAlert, ShieldCheck, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { OntologyPreflight, PermissionTier, SourceStatus, TierStatus } from "@/ontology/types"
+import { bucketTiers, readingBlocked } from "@/ontology/accessModel"
 import {
   copyButtonLabel,
   executeStatusToTier,
   grantCopyText,
   identityLabel,
-  showGrantCopy,
 } from "./permissionTiers"
 
 function StatusPill({ status }: { status: TierStatus }) {
@@ -117,93 +118,156 @@ function SourcePanel({ sources }: { sources: SourceStatus[] }) {
   )
 }
 
+// GRANT SQL is an implementation detail, not the primary read (MV-D23) — it stays behind a
+// Show-SQL disclosure so the benefit leads and the SQL is one click away when wanted.
+function ShowSqlDisclosure({ tier }: { tier: PermissionTier }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="text-xs font-medium text-accent underline underline-offset-2 hover:opacity-80"
+      >
+        {open ? "Hide SQL" : "Show SQL"}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1">
+          {tier.grants.map((g) => (
+            <p key={g} className="break-all font-mono text-xs text-secondary">
+              {g}
+            </p>
+          ))}
+          <CopyGrantButton tier={tier} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// A purpose group card. Neutral by default; `warn` (a blocked/degraded read) turns it amber.
+function PurposeSection({
+  title,
+  subtitle,
+  warn = false,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  warn?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <section
+      className={`rounded-xl border px-4 py-3.5 ${
+        warn ? "border-warning/40 bg-warning/5" : "border-default bg-surface"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        {warn ? (
+          <ShieldAlert className="h-4 w-4 shrink-0 text-warning-foreground" aria-hidden="true" />
+        ) : (
+          <ShieldCheck className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+        )}
+        <h4 className="text-sm font-semibold text-primary">{title}</h4>
+      </div>
+      {subtitle && <p className="mt-1 max-w-prose text-xs text-secondary">{subtitle}</p>}
+      <div className="mt-2.5 space-y-2.5">{children}</div>
+    </section>
+  )
+}
+
+// A plain status row (Reading / Not-used groups): pill · label (+lock) · reason · identity.
+function TierRow({ tier }: { tier: PermissionTier }) {
+  const locked = tier.id === "membership_write"
+  return (
+    <div className="flex items-start gap-2.5">
+      <StatusPill status={tier.status} />
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-1.5 text-sm font-medium text-primary">
+          {tier.label}
+          {locked && <Lock className="h-3 w-3 text-muted" aria-hidden="true" />}
+        </p>
+        {tier.reason && <p className="text-xs text-muted">{tier.reason}</p>}
+      </div>
+      <Badge variant={tier.identity === "sp" ? "secondary" : "default"}>{identityLabel(tier)}</Badge>
+    </div>
+  )
+}
+
+// An optional-upgrade row: benefit-led copy with the GRANT SQL behind a Show-SQL disclosure.
+function UpgradeRow({ tier }: { tier: PermissionTier }) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <StatusPill status={tier.status} />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-primary">{tier.label}</p>
+        <p className="text-xs text-muted">
+          Optional — grant the app service principal for a shared, cross-user cache and
+          consumer-safe serving. Not required to view.
+        </p>
+        <ShowSqlDisclosure tier={tier} />
+      </div>
+    </div>
+  )
+}
+
 export function PermissionBanner({ preflight }: { preflight: OntologyPreflight }) {
-  const tiers = preflight.tiers
-  // Count readiness over the SAME set we size the denominator by, so the header can
-  // never read "4 of 3": the optional write + external-enrichment tiers are excluded
-  // from both the numerator and the denominator (MV-D107 counter fix).
-  const readTiers = tiers.filter((t) => t.id !== "membership_write" && t.id !== "external_enrichment")
-  const readyCount = readTiers.filter((t) => t.status === "ok").length
+  const { reading, upgrades, notUsed, external } = bucketTiers(preflight.tiers)
+  const blocked = readingBlocked(preflight.tiers)
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-2.5 rounded-xl border border-warning/40 bg-warning/5 px-4 py-3.5">
-        <ShieldAlert className="mt-0.5 h-6 w-6 shrink-0 text-warning-foreground" />
-        <div>
-          <p className="text-base font-semibold text-primary">
-            Ontology access — {readyCount} of {readTiers.length} read tiers ready
-          </p>
-          <p className="mt-1 max-w-prose text-xs text-secondary">
-            The taxonomy renders as the signed-in admin (OBO) — no service-principal grant is
-            required to view. The SP grant lines below are an optional upgrade (a shared cross-user
-            cache / consumer-safe serving). Read tiers degrade gracefully; the optional write tier is
-            never required — Ontology is read-only in this release and writes nothing to Unity Catalog.
-          </p>
-        </div>
-      </div>
+      {/* Purpose-first, neutral intro — no "N of M ready", no always-amber header. */}
+      <p className="max-w-prose text-xs text-secondary">
+        Ontology reads your estate as the signed-in admin (OBO) — no service-principal grant is
+        required to view. Everything below is either current status or an optional upgrade.
+      </p>
 
-      <div className="overflow-hidden rounded-xl border border-default">
-        <div className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 border-b border-default bg-sunken px-4 py-2 text-xs font-semibold uppercase tracking-wide text-secondary">
-          <span>Status</span>
-          <span>Capability &amp; permission</span>
-          <span>Identity</span>
-        </div>
-        {tiers.map((t) => {
-          const locked = t.id === "membership_write"
-          return (
-            <div
-              key={t.id}
-              className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 border-b border-default bg-surface px-4 py-3 last:border-b-0"
-            >
-              <StatusPill status={t.status} />
-              <div className="min-w-0">
-                <p className="flex items-center gap-1.5 text-sm font-medium text-primary">
-                  {t.label}
-                  {locked && <Lock className="h-3 w-3 text-muted" />}
-                </p>
-                {t.reason && <p className="text-xs text-muted">{t.reason}</p>}
-                {t.grants.length > 0 && (
-                  <div className="mt-1 space-y-0.5">
-                    {t.grants.map((g) => (
-                      <p key={g} className="break-all font-mono text-xs text-secondary">
-                        {g}
-                      </p>
-                    ))}
-                  </div>
-                )}
-                {showGrantCopy(t) && (
-                  <div className="mt-1.5">
-                    <CopyGrantButton tier={t} />
-                  </div>
-                )}
-                {/* Stage C: per-source panel — external-enrichment tier only, when the
-                    preflight reports sources (i.e. external context is on). Off ⇒ no
-                    sources ⇒ the tier keeps today's plain reason above. */}
-                {t.id === "external_enrichment" && t.sources && t.sources.length > 0 && (
-                  <SourcePanel sources={t.sources} />
-                )}
-              </div>
-              <Badge variant={t.identity === "sp" ? "secondary" : "default"}>
-                {identityLabel(t)}
-              </Badge>
-            </div>
-          )
-        })}
-      </div>
-
-      {preflight.company_name && (
-        <div className="flex items-start gap-2 rounded-lg border border-info/30 bg-info/5 px-3 py-2.5">
-          <Info className="mt-0.5 h-4 w-4 text-info-foreground" />
-          <p className="text-xs text-secondary">
-            Company name set to{" "}
-            <span className="inline-flex items-center gap-1 font-medium text-primary">
-              <Building2 className="h-3.5 w-3.5 text-accent" />
-              {preflight.company_name}
-            </span>{" "}
-            (Settings → Ontology) — the estate is read in your business&rsquo;s terms.
-          </p>
-        </div>
+      {reading.length > 0 && (
+        <PurposeSection
+          title="Reading your estate"
+          warn={blocked}
+          subtitle={
+            blocked
+              ? "A read is degraded — grant the service principal under Optional upgrades to restore the shared path (you can still view as admin)."
+              : "You’re set — reading as the signed-in admin (OBO)."
+          }
+        >
+          {reading.map((t) => (
+            <TierRow key={t.id} tier={t} />
+          ))}
+        </PurposeSection>
       )}
+
+      {upgrades.length > 0 && (
+        <PurposeSection
+          title="Optional upgrades"
+          subtitle="Speed and sharing improvements via a service-principal grant. None are required to view the ontology."
+        >
+          {upgrades.map((t) => (
+            <UpgradeRow key={t.id} tier={t} />
+          ))}
+        </PurposeSection>
+      )}
+
+      {notUsed.length > 0 && (
+        <PurposeSection
+          title="Not used this release"
+          subtitle="Ontology is read-only and writes nothing to Unity Catalog — this capability stays locked."
+        >
+          {notUsed.map((t) => (
+            <TierRow key={t.id} tier={t} />
+          ))}
+        </PurposeSection>
+      )}
+
+      {external.map((t) => (
+        <PurposeSection key={t.id} title="External sources">
+          {t.sources && t.sources.length > 0 ? <SourcePanel sources={t.sources} /> : <TierRow tier={t} />}
+        </PurposeSection>
+      ))}
     </div>
   )
 }

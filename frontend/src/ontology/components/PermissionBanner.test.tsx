@@ -63,8 +63,8 @@ describe("PermissionBanner copy button (MV-D50)", () => {
   })
 })
 
-describe("PermissionBanner render (MV-D50)", () => {
-  it("renders 'OBO (admin) or SP' and a copy button on a green tag_graph tier", () => {
+describe("PermissionBanner render (MV-D50 / MV-D107 P4)", () => {
+  it("shows the read tier's identity, and keeps its GRANT SQL behind Show-SQL", () => {
     const html = renderToStaticMarkup(
       <PermissionBanner
         preflight={preflight([
@@ -80,13 +80,17 @@ describe("PermissionBanner render (MV-D50)", () => {
       />,
     )
     expect(html).toContain("OBO (admin) or SP")
-    // Copy button present even though status === "ok".
-    expect(html).toContain("Copy GRANT SQL")
+    // The SQL is disclosed, not shown by default (MV-D23): toggle present, grant text hidden.
+    expect(html).toContain("Show SQL")
+    expect(html).not.toContain("GRANT SELECT ON TABLE system.tags.governed_tags")
+    expect(html).not.toContain("Copy GRANT SQL")
   })
 
-  it("frames the SP grants as optional, not required, in the header", () => {
+  it("frames the SP grants as an optional upgrade, not required to view", () => {
     const html = renderToStaticMarkup(
-      <PermissionBanner preflight={preflight([tier({ id: "tag_graph", status: "ok" })])} />,
+      <PermissionBanner
+        preflight={preflight([tier({ id: "tag_graph", status: "ok", grants: ["GRANT ..."] })])}
+      />,
     )
     const text = html.replace(/\s+/g, " ").toLowerCase()
     expect(text).toContain("optional upgrade")
@@ -94,38 +98,57 @@ describe("PermissionBanner render (MV-D50)", () => {
   })
 })
 
-describe("PermissionBanner ready counter (MV-D107 regression)", () => {
-  // The header reads "N of M read tiers ready". N must be counted over the SAME
-  // read-tier set as M, so it can never exceed the denominator (the old "4 of 3").
-  it("never counts more ready tiers than there are read tiers", () => {
+describe("PermissionBanner neutral-by-default (MV-D107 P4)", () => {
+  // Neutral when every read tier is ok — no amber, no "N of M ready", a "you're set" reassurance.
+  it("is neutral (no warning border, no counter) when all read tiers are ok", () => {
     const html = renderToStaticMarkup(
       <PermissionBanner
         preflight={preflight([
           tier({ id: "inventory", status: "ok" }),
           tier({ id: "signals", status: "ok" }),
           tier({ id: "tag_graph", status: "ok" }),
-          // Optional tiers are also ok — they must NOT inflate the numerator.
-          tier({ id: "membership_write", status: "ok" }),
-          tier({ id: "external_enrichment", status: "ok" }),
         ])}
       />,
     )
-    expect(html).toContain("3 of 3 read tiers ready")
-    expect(html).not.toContain("5 of 3")
-    expect(html).not.toContain("4 of 3")
+    expect(html).toContain("You’re set")
+    expect(html).not.toContain("border-warning/40")
+    expect(html).not.toMatch(/\d of \d/) // the old "N of M ready" counter is gone
   })
 
-  it("counts only the ready read tiers", () => {
+  it("warns only when a required read tier is blocked or degraded", () => {
     const html = renderToStaticMarkup(
       <PermissionBanner
         preflight={preflight([
           tier({ id: "inventory", status: "ok" }),
-          tier({ id: "signals", status: "degraded" }),
-          tier({ id: "tag_graph", status: "blocked" }),
+          tier({ id: "tag_graph", status: "degraded" }),
         ])}
       />,
     )
-    expect(html).toContain("1 of 3 read tiers ready")
+    expect(html).toContain("border-warning/40") // the Reading section turns amber
+  })
+
+  it("groups tiers by purpose — Reading / Optional upgrades / Not used / External", () => {
+    const html = renderToStaticMarkup(
+      <PermissionBanner
+        preflight={preflight([
+          tier({ id: "inventory", status: "ok" }),
+          tier({ id: "tag_graph", status: "ok", grants: ["GRANT ..."] }),
+          tier({ id: "membership_write", identity: "obo", status: "not_exercised" }),
+          tier({ id: "external_enrichment", identity: "batch", status: "not_exercised", sources: [] }),
+        ])}
+      />,
+    )
+    expect(html).toContain("Reading your estate")
+    expect(html).toContain("Optional upgrades")
+    expect(html).toContain("Not used this release")
+    expect(html).toContain("External sources")
+  })
+
+  it("drops the company-name card (moved to Ontology settings)", () => {
+    const pf = preflight([tier({ id: "tag_graph", status: "ok" })])
+    pf.company_name = "Acme"
+    const html = renderToStaticMarkup(<PermissionBanner preflight={pf} />)
+    expect(html).not.toContain("Company name set to")
   })
 })
 
