@@ -12,6 +12,7 @@ from backend.services.create_agent_tools import (
     _base_col_type,
     _enum_value_upper,
     _generate_config,
+    _present_plan,
     _reconcile_metric_view_sources,
     _validate_config,
     _TYPE_HINT_MAP,
@@ -382,3 +383,101 @@ class TestUpdateConfigAddFilter:
         )
         filters = result["config"]["instructions"]["sql_snippets"]["filters"]
         assert filters[0]["sql"] == ["status = 'active'"]
+
+
+class TestUpdateSpaceDescription:
+    """_update_space PATCHes the top-level description field when provided."""
+
+    def _mock_client(self, monkeypatch, bodies):
+        class FakeAPI:
+            def do(self, method, path, body=None, **kwargs):
+                bodies.append({"method": method, "path": path, "body": body})
+                return {}
+
+        class FakeClient:
+            api_client = FakeAPI()
+
+        monkeypatch.setattr("backend.services.auth.get_workspace_client", lambda: FakeClient())
+        monkeypatch.setattr("backend.services.auth.get_databricks_host", lambda: "https://example.com")
+        monkeypatch.setattr("backend.services.create_agent_tools.get_sql_warehouse_id", lambda: None)
+
+    def test_description_included_when_provided(self, monkeypatch):
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+
+        result = _update_space("space1", description="Answers revenue questions.")
+
+        assert result["success"] is True
+        assert bodies[0]["method"] == "PATCH"
+        assert bodies[0]["body"]["description"] == "Answers revenue questions."
+        assert "serialized_space" not in bodies[0]["body"]
+
+    def test_description_omitted_when_not_provided(self, monkeypatch):
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+
+        result = _update_space("space1", display_name="New Name")
+
+        assert result["success"] is True
+        assert "description" not in bodies[0]["body"]
+
+    def test_rename_uses_title_field(self, monkeypatch):
+        """The updateSpace API field for the display name is 'title', not 'display_name' —
+        sending 'display_name' makes the rename a silent no-op."""
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+
+        result = _update_space("space1", display_name="New Name")
+
+        assert result["success"] is True
+        assert bodies[0]["body"]["title"] == "New Name"
+        assert "display_name" not in bodies[0]["body"]
+
+    def test_warehouse_id_omitted_on_metadata_only_update(self, monkeypatch):
+        """A title/description-only PATCH must not carry warehouse_id — that would reset the
+        space's configured warehouse. warehouse_id belongs only with a serialized_space update."""
+        from backend.services.create_agent_tools import _update_space
+
+        bodies = []
+        self._mock_client(monkeypatch, bodies)
+        # Warehouse IS configured — it must still be omitted for a metadata-only update.
+        monkeypatch.setattr("backend.services.create_agent_tools.get_sql_warehouse_id", lambda: "wh123")
+
+        result = _update_space("space1", display_name="New Name", description="Answers revenue questions.")
+
+        assert result["success"] is True
+        assert "warehouse_id" not in bodies[0]["body"]
+        assert "serialized_space" not in bodies[0]["body"]
+
+    def test_error_when_nothing_to_update(self):
+        from backend.services.create_agent_tools import _update_space
+
+        result = _update_space("space1")
+        assert result["success"] is False
+
+
+class TestPresentPlanSuggestedDescription:
+    """_present_plan surfaces suggested_description so the dense-plan path (routed
+    directly through present_plan, not parallel generate_plan) can honor the LLM's
+    intended space description on CREATE."""
+
+    def test_suggested_description_included_when_passed(self):
+        result = _present_plan(
+            tables=[{"identifier": "c.s.t"}],
+            suggested_description="Answers revenue questions for US retail.",
+        )
+        assert result["suggested_description"] == "Answers revenue questions for US retail."
+
+    def test_suggested_description_omitted_when_absent(self):
+        result = _present_plan(tables=[{"identifier": "c.s.t"}])
+        assert "suggested_description" not in result
+
+    def test_suggested_description_omitted_when_empty(self):
+        result = _present_plan(tables=[{"identifier": "c.s.t"}], suggested_description="")
+        assert "suggested_description" not in result

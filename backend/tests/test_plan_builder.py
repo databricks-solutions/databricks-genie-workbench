@@ -101,6 +101,45 @@ def test_assemble_fallback_keeps_metric_views_separate_from_tables():
     assert [mv["identifier"] for mv in plan["metric_views"]] == ["cat.sch.mv_sales"]
 
 
+def test_assemble_carries_suggested_description():
+    plan = plan_builder._assemble(
+        results={
+            "tables": {},
+            "questions": {
+                "suggested_display_name": "Sales Analytics",
+                "suggested_description": "Answers revenue questions for the sales team.",
+                "sample_questions": [],
+                "text_instructions": [],
+            },
+        },
+        tables_context=[],
+    )
+
+    assert plan["suggested_display_name"] == "Sales Analytics"
+    assert plan["suggested_description"] == "Answers revenue questions for the sales team."
+
+
+def test_assemble_omits_suggested_fields_when_absent():
+    plan = plan_builder._assemble(results={"tables": {}, "questions": {}}, tables_context=[])
+
+    assert "suggested_display_name" not in plan
+    assert "suggested_description" not in plan
+
+
+def test_questions_prompt_requests_suggested_description(monkeypatch):
+    captured = {}
+
+    def fake_call(prompt, *, max_tokens, section_name):
+        captured["prompt"] = prompt
+        return {}
+
+    monkeypatch.setattr(plan_builder, "_call_llm_section", fake_call)
+
+    plan_builder._gen_questions_instructions("some shared context")
+
+    assert "suggested_description" in captured["prompt"]
+
+
 def test_validate_plan_sqls_repairs_metric_view_example_sql(monkeypatch):
     calls = []
 
