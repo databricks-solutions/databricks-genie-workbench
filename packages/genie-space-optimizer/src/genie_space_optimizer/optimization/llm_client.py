@@ -23,8 +23,10 @@ from genie_space_optimizer.common.config import (
 )
 from genie_space_optimizer.optimization.llm_route import (
     LLMRoute,
+    MODEL_UNAVAILABLE_MESSAGE,
     gateway_model_name,
     get_llm_route,
+    is_model_unavailable_404,
     tag_header,
 )
 
@@ -227,4 +229,8 @@ def call_llm(
             if attempt < total_attempts - 1:
                 time.sleep(2**attempt)
 
+    if get_llm_route() is LLMRoute.GATEWAY and is_model_unavailable_404(
+        getattr(last_err, "status_code", 0) or 0, str(last_err)
+    ):
+        raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE) from last_err
     raise last_err  # type: ignore[misc]
