@@ -83,3 +83,43 @@ def test_call_llm_gateway_tags_without_run_id(monkeypatch):
     kwargs = completions.create.call_args.kwargs
     tags = json.loads(kwargs["extra_headers"]["Databricks-Ai-Gateway-Request-Tags"])
     assert tags == {"application": "genie-workbench", "component": "gso-optimize"}
+
+
+class _FakeNotFound(Exception):
+    status_code = 404
+
+
+def _fake_404_client(monkeypatch):
+    """Fake OpenAI client whose chat.completions.create raises a 404 error."""
+    completions = MagicMock()
+    completions.create.side_effect = _FakeNotFound("model not found")
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions), api_key="tok")
+    monkeypatch.setattr(llm_client, "get_openai_client", lambda w: client)
+    return completions
+
+
+def test_call_llm_gateway_404_downgrades(monkeypatch):
+    """Gateway route: a 404 is downgraded to the clean MODEL_UNAVAILABLE_MESSAGE.
+
+    ``max_retries=1`` (not 0): with no ``response_format`` the loop runs
+    ``total_attempts = max_retries + 0`` times, so exactly one attempt executes,
+    raises, sets ``last_err``, and falls through to the final raise.
+    """
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    _fake_404_client(monkeypatch)
+    with pytest.raises(RuntimeError) as ei:
+        llm_client.call_llm(
+            _fake_wc(), messages=[{"role": "user", "content": "hi"}], max_retries=1
+        )
+    assert str(ei.value) == llm_client.MODEL_UNAVAILABLE_MESSAGE
+
+
+def test_call_llm_classic_404_raises_original(monkeypatch):
+    """Classic route: a 404 keeps its original error, not the clean message."""
+    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    _fake_404_client(monkeypatch)
+    with pytest.raises(_FakeNotFound) as ei:
+        llm_client.call_llm(
+            _fake_wc(), messages=[{"role": "user", "content": "hi"}], max_retries=1
+        )
+    assert str(ei.value) != llm_client.MODEL_UNAVAILABLE_MESSAGE
