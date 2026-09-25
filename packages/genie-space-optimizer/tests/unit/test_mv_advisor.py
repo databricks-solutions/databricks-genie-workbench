@@ -381,6 +381,50 @@ def test_advisor_statuses_cannot_be_mutated_by_a_caller() -> None:
     )
 
 
+def test_advisor_statuses_curated_drops_measured_zero_usage() -> None:
+    """MV-D99: for a curated candidate, a measured-zero L/D (``EMPTY``) is folded
+    to ``UNAVAILABLE`` so it leaves the blend divisor.
+
+    ``EMPTY`` is a real read of an untrafficked space or a ``column_lineage``
+    retention gap; counting it against a human-authored measure buries strong
+    curated evidence below the suppress floor, which is the divergence MV-D99
+    closes. Nothing here penalizes the measure for the emptiness.
+    """
+    lineage = SignalResult(LineageOverlap(), config.MV_SIGNAL_EMPTY, "no footprint")
+    demand = SignalResult(
+        DemandSignal(), config.MV_SIGNAL_EMPTY, "no query history in window"
+    )
+    statuses = mv_advisor.advisor_statuses(lineage, demand, curated=True)
+
+    assert statuses["L"] == config.MV_SIGNAL_UNAVAILABLE
+    assert statuses["D"] == config.MV_SIGNAL_UNAVAILABLE
+
+
+def test_advisor_statuses_curated_leaves_measured_and_inaccessible_signals_untouched() -> None:
+    """MV-D99 folds only ``EMPTY``. A ``COMPUTED`` read (real usage measured) still
+    counts, and an ``UNAVAILABLE`` read (the read never landed) is already dropped
+    regardless of ``curated`` — so an inaccessible signal is not rewritten into
+    something it is not."""
+    lineage = SignalResult(LineageOverlap(), config.MV_SIGNAL_COMPUTED)
+    demand = SignalResult(DemandSignal(), config.MV_SIGNAL_UNAVAILABLE, "missing_grant")
+    statuses = mv_advisor.advisor_statuses(lineage, demand, curated=True)
+
+    assert statuses["L"] == config.MV_SIGNAL_COMPUTED
+    assert statuses["D"] == config.MV_SIGNAL_UNAVAILABLE
+
+
+def test_advisor_statuses_non_curated_still_counts_measured_zero_usage() -> None:
+    """MV-D99 is curated-only. For a generated candidate an ``EMPTY`` usage read
+    stays ``EMPTY`` and keeps its weight — MV-D15's "nobody uses it is real
+    evidence" brake on purely-generated candidates is unchanged."""
+    lineage = SignalResult(LineageOverlap(), config.MV_SIGNAL_EMPTY, "no footprint")
+    demand = SignalResult(DemandSignal(), config.MV_SIGNAL_EMPTY, "no history")
+    statuses = mv_advisor.advisor_statuses(lineage, demand, curated=False)
+
+    assert statuses["L"] == config.MV_SIGNAL_EMPTY
+    assert statuses["D"] == config.MV_SIGNAL_EMPTY
+
+
 def test_a_reachable_endpoint_raises_coverage_to_one_half(monkeypatch) -> None:
     """With S computed but no signal reader, coverage is Y + S = 0.50.
 
@@ -1126,6 +1170,64 @@ def test_a_bodyless_sql_function_is_skipped_not_harvested(monkeypatch) -> None:
     assert outcome.proposals[0].evidence["ast_curated_provenance_count"] == 0
 
 
+def test_a_curated_measure_is_not_buried_by_empty_usage(monkeypatch) -> None:
+    """MV-D99, end to end: a curated measure whose usage reads come back EMPTY
+    still surfaces.
+
+    The reader answers both system tables with no rows, so the genuine L and D
+    producers report ``EMPTY`` — an untrafficked/new space, not an inaccessible
+    one. For this curated candidate that measured-zero is folded to
+    ``UNAVAILABLE`` and dropped from the divisor, so the human-authored measure
+    scores on the evidence that exists (Y, curated-upweighted) instead of being
+    diluted below the suppress floor. Coverage is Y-only (0.30), which the
+    coverage cap holds at LOW — a best-effort suggestion, not silence.
+    """
+    patch_writes(monkeypatch)
+    empty_reader = dispatching_reader(footprint=[], history=[])
+    outcome = advise(
+        monkeypatch,
+        _with_config(
+            [iteration(recurring(times=1))],
+            {"instructions": {"example_question_sqls": [{"id": "eq_c", "sql": REVENUE_SQL}]}},
+        ),
+        wide_schema_inventory=INVENTORY,
+        signal_reader=empty_reader,
+    )
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert outcome.proposals, "a curated measure must survive empty usage reads"
+    proposal = outcome.proposals[0]
+    assert proposal.evidence["ast_curated_provenance_count"] >= 1
+    # The blend dropped the measured-zero L/D: the components statuses (what the
+    # score used) read UNAVAILABLE, so they leave the divisor.
+    assert proposal.components.status_of("L") == config.MV_SIGNAL_UNAVAILABLE
+    assert proposal.components.status_of("D") == config.MV_SIGNAL_UNAVAILABLE
+    # But the audit trail stays honest: the producers genuinely READ the tables
+    # and measured zero, so the evidence preserves EMPTY (measurement), not the
+    # scoring fold. MV-D99 is a scoring-policy transform, not a re-measurement.
+    assert proposal.evidence["signal_status"]["L"]["status"] == config.MV_SIGNAL_EMPTY
+    assert proposal.evidence["signal_status"]["D"]["status"] == config.MV_SIGNAL_EMPTY
+    # Only Y remains in the divisor once the empty usage signals leave it.
+    assert proposal.components.evidence_coverage == pytest.approx(config.MV_SCORE_WEIGHT_Y)
+
+
+def test_a_generated_measure_still_feels_empty_usage(monkeypatch) -> None:
+    """MV-D99 is curated-only: the same lone occurrence with no curated provenance
+    is NOT rescued. Its Y is not up-weighted and its EMPTY usage still counts, so
+    it scores under the floor and never persists — the negative-evidence brake on
+    purely-generated candidates stands."""
+    patch_writes(monkeypatch)
+    empty_reader = dispatching_reader(footprint=[], history=[])
+    outcome = advise(
+        monkeypatch,
+        [iteration(recurring(times=1))],
+        wide_schema_inventory=INVENTORY,
+        signal_reader=empty_reader,
+    )
+
+    assert not outcome.proposals
+
+
 def test_a_governed_measure_is_excluded_from_the_seed_set(monkeypatch) -> None:
     """MV-D17 / blocker 4: governed metric-view measures are evidence, not seeds.
 
@@ -1306,6 +1408,10 @@ AVG_QTY_SQL = (
     "SELECT AVG(l_quantity) AS avg_quantity, l_returnflag "
     f"FROM {LINEITEM} GROUP BY l_returnflag"
 )
+SUM_TAX_SQL = (
+    "SELECT SUM(l_tax) AS total_tax, l_returnflag "
+    f"FROM {LINEITEM} GROUP BY l_returnflag"
+)
 
 
 def _rows(*specs):
@@ -1423,6 +1529,96 @@ def test_when_every_member_is_suppressed_no_bundle_surfaces(monkeypatch) -> None
 
     assert outcome.proposals == ()
     assert outcome.candidates_dropped_suppressed == 2
+
+
+# ── MV-D98: supporting-measure carve-out ─────────────────────────────────
+#
+# A measure that recurs once scores 16 (Y-only) and collapses to
+# VERDICT_SUPPRESSED; a measure that recurs eight times earns MEDIUM on score
+# (``uncapped_tier``, the gate) even though the Y-only coverage cap displays it
+# as LOW. So recurrence 8 = anchor, recurrence 1 = sub-floor rider, and both sit
+# on the one lineitem grain (all GROUP BY l_returnflag over the same table).
+
+
+def _role_counts(bundle) -> dict[str, int]:
+    roles = [m.get("role") for m in bundle.evidence["measures"]]
+    return {r: roles.count(r) for r in set(roles)}
+
+
+def test_a_subfloor_measure_rides_an_anchored_grain_as_supporting(monkeypatch) -> None:
+    """MV-D98: a recurring-but-sub-floor measure is folded into a bundle that has
+    a strong anchor, as a role:"supporting" member — the thin one/two-measure card
+    becomes a richer view instead of the anchor shipping alone."""
+    patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8), (AVG_QTY_SQL, "avg", 1))
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 1
+    bundle = outcome.proposals[0]
+    assert bundle.evidence["measure_count"] == 3
+    counts = _role_counts(bundle)
+    assert counts.get("anchor") == 2
+    assert counts.get("supporting") == 1
+    supporting = [m for m in bundle.evidence["measures"] if m.get("role") == "supporting"]
+    assert "quantity" in supporting[0]["expr"].lower()
+
+
+def test_a_subfloor_measure_alone_creates_no_view(monkeypatch) -> None:
+    """No anchor, no view: a sub-floor measure with no strong measure on its grain
+    never stands up a bundle on its own — riders never surface alone."""
+    patch_writes(monkeypatch)
+    outcome = advise(monkeypatch, [iteration(_rows((AVG_QTY_SQL, "avg", 1)))])
+
+    assert outcome.proposals == ()
+
+
+def test_a_low_scoring_anchor_earns_no_riders(monkeypatch) -> None:
+    """The anchor must EARN MEDIUM+ (uncapped_tier). A grain whose strongest
+    measure only earns LOW on score (recurrence 2 → 25) keeps riders out — a
+    marginal view is not thickened."""
+    patch_writes(monkeypatch)
+    rows = _rows((REVENUE_SQL, "rev", 2), (AVG_QTY_SQL, "avg", 1))
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 1
+    bundle = outcome.proposals[0]
+    assert bundle.uncapped_tier == "LOW"
+    assert bundle.evidence["measure_count"] == 1
+    assert _role_counts(bundle).get("supporting", 0) == 0
+
+
+def test_riders_are_capped(monkeypatch) -> None:
+    """No thin grain balloons: at most MV_ADVISOR_MAX_BUNDLE_RIDERS supporting
+    measures ride one bundle, even when more sub-floor measures qualify."""
+    monkeypatch.setattr(mv_advisor, "MV_ADVISOR_MAX_BUNDLE_RIDERS", 1)
+    patch_writes(monkeypatch)
+    rows = _rows(
+        (REVENUE_SQL, "rev", 8),
+        (AVG_QTY_SQL, "avg", 1),
+        (SUM_TAX_SQL, "tax", 1),
+    )
+    outcome = advise(monkeypatch, [iteration(rows)])
+
+    assert len(outcome.proposals) == 1
+    bundle = outcome.proposals[0]
+    assert _role_counts(bundle).get("anchor") == 1
+    assert _role_counts(bundle).get("supporting") == 1  # two offered, cap = one
+
+
+def test_riders_never_change_the_views_confidence_or_tier(monkeypatch) -> None:
+    """A supporting member enriches the measure list but never lifts the view:
+    confidence and both tiers are identical with and without the rider."""
+    patch_writes(monkeypatch)
+    anchors = _rows((REVENUE_SQL, "rev", 8), (COUNT_SQL, "cnt", 8))
+    without = advise(monkeypatch, [iteration(anchors)]).proposals[0]
+    with_rider = advise(
+        monkeypatch, [iteration(anchors + _rows((AVG_QTY_SQL, "avg", 1)))]
+    ).proposals[0]
+
+    assert with_rider.evidence["measure_count"] == without.evidence["measure_count"] + 1
+    assert with_rider.confidence_score == without.confidence_score
+    assert with_rider.tier == without.tier
+    assert with_rider.uncapped_tier == without.uncapped_tier
 
 
 def test_the_in_job_advisor_injects_the_suppression_reader(monkeypatch) -> None:

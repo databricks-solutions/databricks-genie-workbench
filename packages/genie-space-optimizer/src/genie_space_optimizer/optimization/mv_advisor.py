@@ -66,8 +66,10 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from genie_space_optimizer.common.config import (
+    MV_ADVISOR_MAX_BUNDLE_RIDERS,
     MV_ADVISOR_MAX_CANDIDATES,
     MV_ADVISOR_PHASE_NAME,
+    MV_SIGNAL_EMPTY,
     MV_SIGNAL_UNAVAILABLE,
 )
 
@@ -80,6 +82,9 @@ from .mv_fingerprint import (
 )
 from .mv_scoring import (
     FIELD_MEASURE,
+    TIER_HIGH,
+    TIER_MEDIUM,
+    VERDICT_SUPPRESSED,
     DemandSignal,
     LineageOverlap,
     MetricViewCandidate,
@@ -836,7 +841,9 @@ def _bundle_grain(source_tables: Sequence[str]) -> tuple[str | None, str]:
     return f"{catalog}.{schema}.{concept}", concept
 
 
-def advisor_statuses(lineage: SignalResult, demand: SignalResult) -> dict[str, str]:
+def advisor_statuses(
+    lineage: SignalResult, demand: SignalResult, *, curated: bool = False
+) -> dict[str, str]:
     """The L and D statuses this phase measured for one candidate (MV-D15).
 
     Reports each producer's *actual* status — ``COMPUTED`` / ``EMPTY`` /
@@ -845,8 +852,23 @@ def advisor_statuses(lineage: SignalResult, demand: SignalResult) -> dict[str, s
     caller cannot mutate a shared map. **S is absent on purpose** —
     ``score_candidate`` derives it from the embedding attempt, and naming it here
     would overwrite the endpoint's own report.
+
+    ``curated`` relaxes MV-D15 for a **curated** candidate (MV-D99): a
+    measured-zero usage read (``EMPTY`` — an untrafficked space, or a
+    ``column_lineage`` preview/retention gap) is *not* evidence against a measure
+    a human hand-authored, so it is folded to ``UNAVAILABLE`` and dropped from the
+    blend's divisor. ``COMPUTED`` (real usage was measured) and ``UNAVAILABLE``
+    (the read never landed) are untouched, so an inaccessible read is already
+    dropped regardless of ``curated``. Default ``False`` keeps every non-curated
+    caller byte-identical, which is what preserves the pinned POV worked examples
+    and MV-D15's "nobody uses it is real evidence" brake on generated candidates.
     """
-    return {"L": lineage.status, "D": demand.status}
+    if not curated:
+        return {"L": lineage.status, "D": demand.status}
+    return {
+        "L": MV_SIGNAL_UNAVAILABLE if lineage.status == MV_SIGNAL_EMPTY else lineage.status,
+        "D": MV_SIGNAL_UNAVAILABLE if demand.status == MV_SIGNAL_EMPTY else demand.status,
+    }
 
 
 def _candidate_signals(
@@ -1103,6 +1125,7 @@ def _build_bundle(
     space_id: str,
     source_tables: Sequence[str],
     members: Sequence[tuple[ScoredProposal, MetricViewCandidate]],
+    riders: Sequence[tuple[ScoredProposal, MetricViewCandidate]] = (),
     table_columns: Mapping[str, tuple[ColumnFacts, ...]],
     domain: str,
     shapes: Any,
@@ -1118,6 +1141,14 @@ def _build_bundle(
     suppression cross-references survive bundling). Returns ``None`` when the
     grain has no resolvable ``proposed_object`` — a validation failure that is
     DROPPED, never surfaced as a blank card.
+
+    ``riders`` (MV-D98) are sub-floor ``VERDICT_SUPPRESSED`` measures for this same
+    grain. They are folded in as ``role:"supporting"`` members ONLY when the
+    strongest anchor's SCORE earns MEDIUM+ (``uncapped_tier``, so the carve-out
+    keys on evidence strength rather than the workspace's signal coverage) and
+    only up to ``MV_ADVISOR_MAX_BUNDLE_RIDERS``; they never drive confidence/tier
+    (the strongest ANCHOR still does), so a supporting measure can enrich a view
+    but never lift it or make one exist.
     """
     proposed_object, concept = _bundle_grain(source_tables)
     if not proposed_object:
@@ -1162,7 +1193,54 @@ def _build_bundle(
             "provenance_count": rec.provenance_count,
             "curated_provenance_count": rec.curated_provenance_count,
             "benchmark_question_ids": qids,
+            "role": "anchor",
         })
+
+    # MV-D98: fold sub-floor supporting measures into a bundle whose anchor is
+    # genuinely strong. The gate is the anchor's SCORE-earned tier
+    # (``uncapped_tier``), not the coverage-capped display tier: the coverage cap
+    # reflects how many signal producers this workspace has, not the strength of
+    # the measure, so gating on it would starve exactly the partial-signal
+    # workspaces the carve-out is meant to help. Riders never lift score, tier, or
+    # the surfacing gate (the strongest ANCHOR drives all three, above) — they
+    # enrich the view's measure list only. Taken in recurrence order and capped at
+    # MV_ADVISOR_MAX_BUNDLE_RIDERS (0 disables the carve-out). A grain whose anchor
+    # earns only LOW gets no riders; a grain with no PROPOSE anchor never reaches
+    # here at all (Pass 2 only builds bundles that have one).
+    if (
+        MV_ADVISOR_MAX_BUNDLE_RIDERS
+        and riders
+        and strongest_proposal.uncapped_tier in (TIER_MEDIUM, TIER_HIGH)
+    ):
+        ranked_riders = sorted(
+            riders,
+            key=lambda m: (-m[1].recurrence.recurrence, m[0].dedup_fingerprint),
+        )
+        for proposal, candidate in ranked_riders[:MV_ADVISOR_MAX_BUNDLE_RIDERS]:
+            if not candidate.measure_expr:
+                continue
+            base = (candidate.concept or "measure").strip("_") or "measure"
+            name = base
+            suffix = 2
+            while name in used_names:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used_names.add(name)
+            requests.append(MeasureRequest(name=name, expr=candidate.measure_expr))
+            member_fps.append(proposal.dedup_fingerprint)
+            rec = candidate.recurrence
+            qids = list(candidate.benchmark_question_ids)
+            question_ids.update(qids)
+            member_evidence.append({
+                "display_name": name,
+                "expr": candidate.measure_expr,
+                "dedup_fingerprint": proposal.dedup_fingerprint,
+                "recurrence": rec.recurrence,
+                "provenance_count": rec.provenance_count,
+                "curated_provenance_count": rec.curated_provenance_count,
+                "benchmark_question_ids": qids,
+                "role": "supporting",
+            })
 
     primary_refs = _refs_from_tables(source_tables)
     primary_table = (
@@ -1351,6 +1429,11 @@ def advise_from_corpus(
     # persistable-but-not-PROPOSE verdict keeps the per-measure path untouched, so
     # its adjudication grain is unaffected by MV-D30.
     bundles: dict[tuple[str, ...], list[tuple[ScoredProposal, MetricViewCandidate]]] = {}
+    # MV-D98 supporting-measure carve-out: sub-floor (VERDICT_SUPPRESSED) measures
+    # held by grain, folded into a bundle in Pass 2 ONLY when that grain has a
+    # MEDIUM+ anchor. A grain that appears here but never in `bundles` produces no
+    # view — riders never stand alone.
+    bundle_riders: dict[tuple[str, ...], list[tuple[ScoredProposal, MetricViewCandidate]]] = {}
 
     # ── Pass 1: per-measure scoring (identity/leakage/dedup grain unchanged) ──
     emit_stage(STAGE_SCORING)
@@ -1396,10 +1479,27 @@ def advise_from_corpus(
             instructions=trusted_assets,
             intent_texts=intent_texts,
             embedding_client=embedding_client,
-            statuses=advisor_statuses(lineage_result, demand_result),
+            statuses=advisor_statuses(
+                lineage_result,
+                demand_result,
+                curated=measure.curated_provenance_count > 0,
+            ),
             auth_identity="SP",
         )
         proposal = _with_signal_evidence(proposal, lineage_result, demand_result)
+
+        # MV-D98: a would-be PROPOSE that blended under the Low floor collapsed to
+        # VERDICT_SUPPRESSED in score_candidate. It is not a standalone card, but it
+        # recurred and is already leakage-clean and not fingerprint-suppressed here,
+        # so hold it as a candidate SUPPORTING member. Pass 2 folds it into its grain
+        # ONLY if that grain has a MEDIUM+ anchor; a grain with no anchor never sees
+        # its riders. Intercepted before the is_persistable drop, which would discard
+        # a SUPPRESSED verdict (it is not in PERSISTABLE_VERDICTS).
+        if proposal.verdict == VERDICT_SUPPRESSED:
+            key = tuple(sorted(candidate.source_tables))
+            bundle_riders.setdefault(key, []).append((proposal, candidate))
+            continue
+
         if not proposal.is_persistable:
             continue
 
@@ -1431,6 +1531,7 @@ def advise_from_corpus(
             space_id=space_id,
             source_tables=source_key,
             members=members,
+            riders=bundle_riders.get(source_key, ()),
             table_columns=table_columns,
             domain=domain,
             shapes=safe_shapes,

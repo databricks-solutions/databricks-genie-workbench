@@ -13,6 +13,7 @@ import {
   evidenceSummary,
   factsChecks,
   isCappedStrong,
+  isCuratedFactPassing,
   isLowConfidence,
   MV_CAPPED_STRONG_LABEL,
   MV_DEFAULT_VISIBLE,
@@ -161,6 +162,68 @@ describe("coverage-capped-strong surfacing (MV-D32 / Prompt 15.7b)", () => {
     // The badge no longer renders on the card, but isCappedStrong still drives
     // the default-list promotion (MV-D30 split), so the constant survives.
     expect(MV_CAPPED_STRONG_LABEL).toBe("Strong (evidence-limited)")
+  })
+})
+
+describe("curated-fact-passing surfacing (MV-D100)", () => {
+  const PASS = { validated: "PASS", executable: "PASS", no_overlap: "PASS" }
+  // A curated proposal held at served LOW with NO coverage-cap (uncapped LOW):
+  // the cold-space case MV-D99 leaves scored-LOW because there is no demand
+  // signal to lift it. Facts all PASS.
+  const curatedLow = mk({
+    suggestion_id: "curated",
+    tier: "LOW",
+    uncapped_tier: "LOW",
+    tier_capped_by_coverage: false,
+    checks: PASS,
+    evidence: { ast_curated_provenance_count: 1 },
+  })
+  // A generated LOW: no curated provenance, facts pass — must stay disclosed.
+  const generatedLow = mk({
+    suggestion_id: "generated",
+    tier: "LOW",
+    checks: PASS,
+    evidence: { ast_curated_provenance_count: 0 },
+  })
+  // A curated LOW whose body did NOT validate — facts gate, so it is not promoted.
+  const curatedBroken = mk({
+    suggestion_id: "broken",
+    tier: "LOW",
+    checks: { validated: "FAIL", executable: "PASS" },
+    evidence: { ast_curated_provenance_count: 2 },
+  })
+
+  it("isCuratedFactPassing: true only for curated AND validated+executable PASS", () => {
+    expect(isCuratedFactPassing(curatedLow)).toBe(true)
+    expect(isCuratedFactPassing(generatedLow)).toBe(false) // not curated
+    expect(isCuratedFactPassing(curatedBroken)).toBe(false) // fails the facts gate
+    // curated but no checks proven → cannot assert fact-passing.
+    expect(isCuratedFactPassing(mk({ evidence: { ast_curated_provenance_count: 3 }, checks: null }))).toBe(false)
+    // curated + PASS but no_overlap explicitly FAIL → not promoted.
+    expect(
+      isCuratedFactPassing(
+        mk({ evidence: { ast_curated_provenance_count: 1 }, checks: { validated: "PASS", executable: "PASS", no_overlap: "FAIL" } }),
+      ),
+    ).toBe(false)
+    // no_overlap ABSENT (gate did not run) is fine.
+    expect(
+      isCuratedFactPassing(
+        mk({ evidence: { ast_curated_provenance_count: 1 }, checks: { validated: "PASS", executable: "PASS" } }),
+      ),
+    ).toBe(true)
+  })
+
+  it("a curated fact-passing LOW joins the default list; generated and fact-failing LOW stay disclosed", () => {
+    const { primary, low } = splitProposalsByConfidence([curatedLow, generatedLow, curatedBroken])
+    expect(primary.map((p) => p.suggestion_id)).toEqual(["curated"])
+    expect(low.map((p) => p.suggestion_id).sort()).toEqual(["broken", "generated"])
+  })
+
+  it("promotion does not touch the served tier — a curated LOW still ranks below MEDIUM+", () => {
+    const med = mk({ suggestion_id: "med", tier: "MEDIUM", uncapped_tier: "MEDIUM" })
+    const { primary } = splitProposalsByConfidence([curatedLow, med])
+    // Both surface, but effectiveTier(curatedLow) is LOW, so it ranks last.
+    expect(rankProposals(primary).map((p) => p.suggestion_id)).toEqual(["med", "curated"])
   })
 })
 

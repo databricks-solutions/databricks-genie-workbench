@@ -2582,6 +2582,19 @@ suppression floor, so scoring it spends embedding calls to produce a row nobody
 reads. ``corpus_scan`` already ranks by recurrence, so the cut takes the top.
 """
 
+
+MV_ADVISOR_MAX_BUNDLE_RIDERS = _int_env("GSO_MV_ADVISOR_MAX_BUNDLE_RIDERS", 4)
+"""How many sub-floor supporting measures may ride an anchored grain bundle (MV-D98).
+
+A ``VERDICT_SUPPRESSED`` measure — recurred, but blended under the Low floor
+(``suppress < 25``, POV Part 3) — is normally dropped. MV-D98 lets such a
+measure enrich a bundle whose anchor's SCORE earns MEDIUM+ (``uncapped_tier``),
+as a ``supporting`` member only, never as a standalone card and never creating a
+view on its own.
+Capped so a thin grain cannot balloon into a wall of weakly-evidenced measures;
+riders are taken in recurrence/fingerprint order after the anchors. Zero disables
+the carve-out and restores exact pre-MV-D98 bundling."""
+
 MV_SIGNAL_COMPUTED = "COMPUTED"
 """A producer ran and returned a value. The signal scores what it measured."""
 

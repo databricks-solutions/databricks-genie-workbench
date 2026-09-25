@@ -28,7 +28,7 @@ import {
   ByoRefusedFrame,
   ByoVerifiedFrame,
 } from "./MvByoRegistrationMockups"
-import { Iq158CardFrame, RunOutput158Frame } from "./Mv158FidelityFrames"
+import { Iq158CardFrame, IqScanCuratedLowFrame, RunOutput158Frame } from "./Mv158FidelityFrames"
 import { AttachedProposalCardFrame } from "./MvAttachAtApprovalFidelityFrames"
 import { ModelV7ContractFrame } from "./MvSemanticV7ContractFrame"
 import { RealModel3Frame, RealModel10Frame, RealModel30Frame, RealModelOverlayFrame, RealModelV7Frame } from "./Mv12fFidelityFrames"
@@ -88,6 +88,10 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   // one shared [Create this metric view] accept flow, no "%"/"confidence").
   { id: "15.8a-iq-scan-card", title: "15.8a · IQ scan — facts-lead card + accept flow (production)", element: <Iq158CardFrame /> },
   { id: "15.8b-run-output", title: "15.8b · Run output — suggest-only panel, count truth + ranked (production)", element: <RunOutput158Frame /> },
+  // MV-D100 — a curated, fact-passing LOW promoted into the default list wearing
+  // a factual "Curated" chip (not a strength/confidence badge, MV-D35), with the
+  // evidence-limited honesty in the "curated SQL only" caption.
+  { id: "15.11-iq-scan-curated-low", title: "15.11 · IQ scan — curated fact-passing LOW surfaced by default (MV-D100)", element: <IqScanCuratedLowFrame /> },
   // Attach-at-approval (MV-D34) — the REAL card for a proposal already shelved on
   // the Agent config: the "Attached" header badge + the accept flow's attached
   // terminal with the SP grant an optimization run needs to read it.

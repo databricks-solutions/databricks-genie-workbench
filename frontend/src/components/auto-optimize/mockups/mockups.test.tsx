@@ -31,6 +31,7 @@ import {
   ByoVerifiedFrame,
 } from "./MvByoRegistrationMockups"
 import { AttachedProposalCardFrame } from "./MvAttachAtApprovalFidelityFrames"
+import { IqScanCuratedLowFrame } from "./Mv158FidelityFrames"
 import {
   BlueprintScale30Frame,
   BlueprintStarColumnsFrame,
@@ -191,6 +192,21 @@ describe("frame 15.10 — attach-at-approval (MV-D34)", () => {
     // The grant renders through SqlCodeBlock (syntax-highlighted spans), so assert
     // on the plain-text framing that introduces it rather than the tokenized SQL.
     expect(html).toContain("grant the optimizer service principal")
+  })
+})
+
+describe("frame 15.11 — curated fact-passing LOW surfaced by default (MV-D100)", () => {
+  const html = render(<IqScanCuratedLowFrame />)
+  it("wears a factual 'Curated' chip and the evidence-limited caption — no percent, no 'confidence' (MV-D35)", () => {
+    // The promotion marker is a provenance fact, not a revived strength badge.
+    expect(html).toContain("Curated")
+    // The evidence-limited honesty lives in the caption, unchanged.
+    expect(html).toContain("Based on curated SQL only")
+    // MV-D35 stays clean on the promoted card.
+    expect(html).not.toMatch(/\d+%/)
+    expect(html.toLowerCase()).not.toContain("confidence")
+    // Retired strength badge never returns.
+    expect(html).not.toContain("Strong (evidence-limited)")
   })
 })
 
