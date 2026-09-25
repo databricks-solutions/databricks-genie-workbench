@@ -135,3 +135,17 @@ class TestIsReasoningEffort400:
 
     def test_false_on_non_400(self):
         assert lr.is_reasoning_effort_400(200, "reasoning_effort") is False
+
+
+def test_is_model_unavailable_404_true_only_on_404():
+    from backend.services.llm_route import is_model_unavailable_404
+    assert is_model_unavailable_404(404, '{"error_code":"NOT_FOUND","message":"x does not exist"}') is True
+    assert is_model_unavailable_404(404, "") is True            # body-agnostic (R8)
+    assert is_model_unavailable_404(403, "forbidden") is False  # 403 is NOT the trigger (§3)
+    assert is_model_unavailable_404(400, "reasoning_effort") is False
+    assert is_model_unavailable_404(200, "") is False
+
+
+def test_model_unavailable_message_is_the_single_copy():
+    from backend.services.llm_route import MODEL_UNAVAILABLE_MESSAGE
+    assert MODEL_UNAVAILABLE_MESSAGE == "Model unavailable or access not granted."
