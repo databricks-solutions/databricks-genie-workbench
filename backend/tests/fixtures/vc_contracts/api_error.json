@@ -1,0 +1,21 @@
+{
+  "type": "ApiError",
+  "examples": [
+    {
+      "code": "coordination_unavailable",
+      "message": "Poll the operation; do not replay.",
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "retryable": false,
+      "stale": true,
+      "details": {
+        "reason": "unresolved"
+      }
+    },
+    {
+      "code": "forbidden",
+      "message": "Not authorized.",
+      "retryable": false,
+      "stale": false
+    }
+  ]
+}

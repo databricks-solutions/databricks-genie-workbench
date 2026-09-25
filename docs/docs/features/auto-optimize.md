@@ -170,6 +170,35 @@ strict Databricks-generated profiling signatures are also excluded: the
 `approx_top_k(...).item.item AS value` query. Ordinary CTEs and ordinary
 `approx_top_k` analytics remain eligible.
 
+## Metric view advisor
+
+Metric view advice is available from two surfaces:
+
+- An optimization run can persist proposals discovered from generated and curated
+  SQL when **Metric view suggestions** is enabled.
+- The Agent's IQ Score can request space-scoped advice without starting an
+  optimization run. This path seeds candidate fingerprints from the Agent's
+  curated SQL. After a candidate exists, matching query-history traffic contributes
+  demand and recency evidence to its score; query history does not seed recurring
+  measures itself. A genuinely new Agent with no curated SQL therefore correctly
+  returns no recurring measures, even if unrelated query history exists.
+
+Recommendations bundle compatible measures at one grain and show validation facts
+and evidence rather than presenting the ranking score as a probability. A user can
+approve a recommendation from the card, choose the target schema, and complete a
+fresh entitlement check. Workbench then creates the metric view under that user's
+OBO identity and attaches it to the live Genie Agent in the same request. If
+creation succeeds but attachment fails, the result is reported as partial success
+and can be retried safely.
+
+This Genie v2 deployment round-trips attached metric views under
+`data_sources.tables`. Workbench normalizes UC-confirmed metric views on read, so
+the IQ Score and Model tab treat them as governed metric views. Once attached, a
+proposal leaves the active recommendation cards/count and appears in the attached
+summary. The Model tab's Semantic Blueprint shows the live Agent model together
+with governed, curated, and proposed measures, metric-view structure, measure
+lineage, and advice-only join findings.
+
 ## Evaluation and leakage safety
 
 Current runs use Genie's native benchmark Eval-Run API as the sole evaluation
@@ -274,13 +303,44 @@ The main current-run sources of truth are:
 | `genie_opt_patches` | Applied and rolled-back patch records |
 | `genie_opt_benchmark_mutations` | Benchmark QC additions, removals, and changes |
 | `genie_benchmarks_<domain>` | Direct Delta handoff of the deduplicated benchmark corpus to Optimize |
-| `genie_opt_artifacts` | Typed JSON payloads keyed by artifact kind — `run_manifest`, `space_metadata`, `benchmark_qc`, `space_quality_enrichment`, `publish_record`, and the six `wide_schema_*` kinds (`inventory`, `evidence`, `selection_plan`, `audit`, `profile_telemetry`, `prompt_telemetry`) |
+| `genie_opt_artifacts` | Typed JSON payloads keyed by artifact kind — `run_manifest`, `space_metadata`, `benchmark_qc`, `space_quality_enrichment`, `publish_record`, `operator_proposed_joins` (Join Advisor seeds), and the six `wide_schema_*` kinds (`inventory`, `evidence`, `selection_plan`, `audit`, `profile_telemetry`, `prompt_telemetry`) |
 | `genie_opt_scan_snapshots` | Optional paired preflight/postflight IQ snapshots |
+
+Four further tables are created alongside these and hold the metric view advisor's
+durable state. They are populated as spaces are analyzed and users make decisions;
+an individual table can still be empty when no corresponding proposal, consent,
+created object, or rejection has occurred:
+
+| Table | Grain | Contents |
+|-------|-------|----------|
+| `genie_opt_mv_candidates` | `(target_space_id, dedup_fingerprint)` | Metric view proposals and their human approve/reject decisions |
+| `genie_opt_mv_consents` | `probe_id` | Entitlement probes and the scoped consent recorded against them |
+| `genie_opt_mv_created_objects` | `(run_id, suggestion_id)` | Both metric views created by Workbench under OBO (`OBO_CREATED`) and user-created metric views verified and registered with Workbench (`USER_CREATED`), plus their attach/detach lifecycle |
+| `genie_opt_mv_suppressions` | `(target_space_id, measure_fingerprint)` | Per-measure rejection records that prevent a rejected measure from resurfacing when proposal bundle membership changes |
+
+The grains follow each entity's lifecycle: candidates and suppressions are
+space-scoped, consents are probe-scoped and can predate a run, and created-object
+records are keyed by run and suggestion. A registered `USER_CREATED` object is
+hosted by a sentinel advice run, preserving the same `(run_id, suggestion_id)`
+key as an `OBO_CREATED` object.
 
 Workbench stores removed-history tombstones separately in Lakebase table
 `genie.hidden_optimization_runs`; GSO audit tables remain immutable.
 
 The Workbench prefers Lakebase synced reads for UI views and falls back to direct Delta reads where needed. Mutating integration paths use the configured SQL Warehouse and SP-owned state.
+
+## Operator-proposed joins (Join Advisor seeds)
+
+A run can carry **operator-proposed joins** — data-grounded candidate joins a user
+seeded from the Model tab's [Join Advisor](/docs/features/join-advisor). These are
+**advice, not a pre-applied config edit**. On trigger, the pending seeds are passed
+as `proposed_join_seeds` and written best-effort as a run-scoped
+`operator_proposed_joins` artifact in `genie_opt_artifacts`. At loop start the
+optimizer reads that artifact and injects each seed into the LLM prompt as a
+*hypothesis to validate*. Only joins that hold are added via `add_join_spec`; the
+patch allowlist has no `remove_join_spec`, which is exactly why the Workbench seeds
+advice instead of declaring a join a later run could not undo. A missing or
+unreadable artifact simply means no operator advice — the run proceeds as normal.
 
 ## Triggering from the UI
 
@@ -316,4 +376,6 @@ Workbench or Databricks authorization checks.
 - [Debug GSO runs with Genie Code](/docs/reference/gso-run-debugger)
 - [Authentication & Permissions](/docs/platform/authentication)
 - [IQ Scanner](/docs/features/iq-scanner)
+- [Join Advisor](/docs/features/join-advisor) — how operator-proposed join seeds enter a run
+- [Semantic Model (Blueprint)](/docs/features/semantic-model) — visualize the model being optimized
 - [Operations Guide](/docs/platform/operations)

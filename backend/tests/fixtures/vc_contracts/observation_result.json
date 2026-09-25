@@ -1,0 +1,28 @@
+{
+  "type": "ObservationResult",
+  "examples": [
+    {
+      "status": {
+        "binding_id": "00000000-0000-4000-8000-000000000001",
+        "binding_revision": 1,
+        "heads": {
+          "observed": null,
+          "approved": null,
+          "deployed": null
+        },
+        "drift": "unknown",
+        "quarantined": false,
+        "unresolved_operation_id": null,
+        "observed_at": null,
+        "projection_as_of": "2026-09-06T00:00:00Z",
+        "stale": true,
+        "allowed_actions": [],
+        "reasons": [
+          "coordination_unavailable"
+        ]
+      },
+      "captured_version": null,
+      "busy": true
+    }
+  ]
+}

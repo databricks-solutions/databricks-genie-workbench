@@ -14,7 +14,7 @@ def test_agent_chat_request_model_is_saved_on_session(monkeypatch):
     captured: dict[str, object] = {}
 
     class FakeAgent:
-        async def chat(self, session, user_message, selections=None):
+        async def chat(self, session, user_message, selections=None, vc_capture=None):
             captured["session"] = session
             captured["model"] = session.llm_model
             captured["message"] = user_message

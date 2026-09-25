@@ -11,14 +11,110 @@ import os
 import time
 from copy import deepcopy
 from typing import Any
+from urllib.parse import quote, urlsplit
+
+import requests
 
 from dotenv import load_dotenv
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, is_running_on_databricks_apps
+from backend.services.version_control import contracts as vc
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+class GenieTransport:
+    """Explicit-executor VC transport; legacy read helpers remain separate."""
+
+    def __init__(self, *, executor, authenticate, coordination, registry, flags=None,
+                 warehouse_id=None, parent_path=None):
+        self.executor = executor
+        self.authenticate = authenticate
+        self.coordination = coordination
+        self.registry = registry
+        self.flags = flags
+        self.warehouse_id = warehouse_id
+        self.parent_path = parent_path
+        parsed = urlsplit(executor.host)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                or parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.port):
+            raise ValueError("Explicit HTTPS workspace origin required")
+        self.host = executor.host.rstrip("/")
+
+    def get(self, binding, executor):
+        # Value-equality (not object identity): every caller re-derives a freshly
+        # *verified* executor per operation (identity.executor runs a live SCIM Me
+        # check each time), so the same verified principal is a new object each call.
+        # The transport always authenticates as `self.executor` (its own pinned,
+        # verified credential) in `_request`, so requiring the exact instance would
+        # make the promotion observer path impossible while adding no security --
+        # a value match on (workspace/host/principal/execution_ref) is the real pin.
+        if executor != self.executor:
+            raise PermissionError("Transport is pinned to its verified executor")
+        self._binding(binding)
+        response = self._request("GET", self._path(binding), query={"include_serialized_space": "true"})
+        if "serialized_space" not in response:
+            raise ValueError("Full serialized state is required")
+        return response
+
+    def create_once(self, payload, claim):
+        binding = self.registry.resolve(claim.binding_id)
+        if binding.space_id is not None or not self.warehouse_id:
+            raise PermissionError("Create requires provisional identity and explicit warehouse")
+        body = {"title": payload.title, "description": payload.description,
+                "serialized_space": json.dumps(vc.to_wire(payload.serialized_space)),
+                "warehouse_id": self.warehouse_id}
+        if self.parent_path is not None:
+            body["parent_path"] = self.parent_path
+        response = self._write("POST", "/api/2.0/genie/spaces", binding, body, claim)
+        if not isinstance(response.get("space_id"), str) or not response["space_id"]:
+            raise RuntimeError("Possible create orphan: missing physical identity")
+        return vc.CreateResponse(response["space_id"], response)
+
+    def patch_config_once(self, binding, serialized_space, claim):
+        self._write("PATCH", self._path(binding), binding,
+                    {"serialized_space": json.dumps(serialized_space)}, claim)
+
+    def patch_description_once(self, binding, description, claim):
+        self._write("PATCH", self._path(binding), binding, {"description": description}, claim)
+
+    @staticmethod
+    def _path(binding):
+        if not binding.space_id:
+            raise PermissionError("Physical binding required before GET or PATCH")
+        return f"/api/2.0/genie/spaces/{quote(binding.space_id, safe='')}"
+
+    def _binding(self, binding):
+        if (binding.workspace_id != self.executor.workspace_id
+                or self.registry.resolve(binding.binding_id) != binding):
+            raise PermissionError("Binding or explicit target executor mismatch")
+
+    def _write(self, method, path, binding, body, claim):
+        if self.flags is None or self.flags.enabled("vc_writes_enabled") is not True:
+            raise PermissionError("VC transport writes disabled")
+        self._binding(binding)
+        if (not isinstance(claim, vc.AdmissionClaim) or claim.binding_id != binding.binding_id
+                or claim.binding_revision != binding.binding_revision):
+            raise PermissionError("Bound admission claim required")
+        return self._request(method, path, body=body, claim=claim)
+
+    def _request(self, method, path, *, body=None, query=None, claim=None):
+        headers = self.authenticate(self.executor)
+        if not isinstance(headers, dict) or not headers.get("Authorization"):
+            raise PermissionError("Explicit executor authentication unavailable")
+        with requests.Session() as session:
+            session.trust_env = False
+            session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
+            if claim is not None:
+                self.coordination.assert_owner(claim)
+            response = session.request(method, self.host + path, headers=headers, json=body,
+                params=query, timeout=(10, 60), allow_redirects=False)
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("Redirect refused; mutation outcome requires verification")
+            response.raise_for_status()
+            return response.json() if response.content else {}
 
 
 def _enum_value_upper(value: Any) -> str:

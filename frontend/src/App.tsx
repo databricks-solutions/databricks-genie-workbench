@@ -62,6 +62,10 @@ function stringField(value: unknown): string | undefined {
 }
 
 export default function App() {
+  return <WorkbenchApp />
+}
+
+function WorkbenchApp() {
   useTheme()
   const [route, setRoute] = useState<AppRoute>(initialRoute)
   const [detailState, setDetailState] = useState<DetailState | null>(null)

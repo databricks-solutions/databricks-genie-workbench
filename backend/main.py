@@ -110,6 +110,22 @@ class OBOAuthMiddleware(BaseHTTPMiddleware):
             else:
                 logger.info("OBO: no x-forwarded-access-token, using SP for %s", request.url.path)
             request.state.user_token = token
+
+            # Version Control observe surface: derive the per-request VC actor from
+            # the Databricks Apps forwarded-identity headers, only when the observe
+            # runtime is integrated (else the VC routers are not mounted at all). This
+            # MUST run on the /api/ path — every VC route is under /api/version-control.
+            observe = getattr(request.app.state, "vc_observe", None)
+            if observe is not None:
+                from backend.services.version_control.platform.app_observe import (
+                    vc_auth_from_request,
+                )
+
+                vc_auth = vc_auth_from_request(
+                    request.headers, observe.workspace_id,
+                    dev_email=os.environ.get("DEV_USER_EMAIL"))
+                if vc_auth is not None:
+                    request.state.vc_auth = vc_auth
         else:
             request.state.user_token = ""
 
@@ -139,6 +155,21 @@ app = FastAPI(
     version="1.0.0",
 )
 
+from backend.services.version_control.platform import compose
+from backend.services.version_control.platform.app_observe import observe_config_from_env
+from backend.services.version_control.platform.observe_seams import resolve_observe_runtime
+
+app.state.version_control = compose()
+
+# Version Control observe-only surface. Fully fail-closed: unless the trusted-workspace
+# control-plane env vars are set (deploy-only), this resolves to None and no VC routes
+# are mounted, so the app behaves exactly as before. See platform/app_observe.py.
+app.state.vc_observe = resolve_observe_runtime(observe_config_from_env(os.environ))
+if app.state.vc_observe is not None:
+    logger.info("VC observe surface integrated (workspace=%s)", app.state.vc_observe.workspace_id)
+else:
+    logger.info("VC observe surface not configured; VC routes disabled")
+
 if _mlflow_configured:
     try:
         from mlflow.genai.agent_server import setup_mlflow_git_based_version_tracking
@@ -159,35 +190,20 @@ if not is_running_on_databricks_apps():
     )
 
 # Lakebase connection pool lifecycle
-def _ensure_gso_job_run_as() -> None:
-    """Ensure the GSO optimization job's run_as matches this app's SP.
+def _verify_gso_job_run_as() -> None:
+    from backend.services.auth import get_service_principal_client
+    from backend.services.version_control.platform import verify_configured_job_run_as
 
-    Ported from the standalone GSO app's _JobRunAsBootstrap (app.py).
-    The app runs as the SP, so it can update its own job's run_as
-    without needing the "Service Principal User" role on the deployer.
-    """
-    job_id_str = os.environ.get("GSO_JOB_ID", "")
-    if not job_id_str.isdigit():
-        return
-    try:
-        from backend.services.auth import get_service_principal_client
-        from genie_space_optimizer.backend.job_launcher import ensure_job_run_as
-
-        ws = get_service_principal_client()
-        sp_client_id = ws.config.client_id or os.environ.get("DATABRICKS_CLIENT_ID", "")
-        if sp_client_id:
-            ensure_job_run_as(ws, int(job_id_str), sp_client_id)
-    except Exception:
-        logger.warning("Could not verify GSO job run_as", exc_info=True)
+    verify_configured_job_run_as(os.environ, get_service_principal_client)
 
 
 @app.on_event("startup")
 async def startup():
+    _verify_gso_job_run_as()
     from backend.services.lakebase import init_pool
     await init_pool()
     from backend.services.create_agent_session import _ensure_table
     await _ensure_table()
-    _ensure_gso_job_run_as()
     try:
         # Bug #2 schema probe — synchronous Delta SELECT (a few seconds worst
         # case on a cold warehouse). Run in a worker thread so we don't pin
@@ -225,6 +241,12 @@ app.include_router(watch_feedback_router)
 app.include_router(watch_resources_router)
 app.include_router(watch_settings_router)
 app.include_router(watch_admin_router)
+
+# Version Control observe surface routers — only when the runtime is integrated.
+if app.state.vc_observe is not None:
+    from backend.services.version_control.platform.app_observe import mount_observe_routers
+
+    mount_observe_routers(app, app.state.vc_observe)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

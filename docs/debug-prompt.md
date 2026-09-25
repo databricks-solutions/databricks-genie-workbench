@@ -78,6 +78,17 @@ run settings (`max_iterations`, `levers`, `apply_mode`, `llm_model`,
 `best_accuracy`, `convergence_reason`, and `triggered_by`. State whether the
 trigger-time `config_snapshot` is present and its size — never print its body.
 
+Check `run_kind` first (available on newer installs; if the column is missing,
+treat the run as `optimization`). A `run_kind = 'mv_advice'` row with
+`status = 'MV_ADVICE'` is **not** an optimization run: it is a born-terminal
+sentinel for a standalone metric-view advice request (the IQ Scan "suggest"
+surface, MV-D23). It runs no eval, so `max_iterations = 0`, `levers = []`, and
+there are no stages, iterations, patches, or publish record to find. Report it
+as an advice run, read its proposals from `genie_opt_mv_candidates`
+(`run_id = '<RUN_ID>'`) if that table is present, and skip Steps 3–8 rather than
+reporting the absent optimization ladder as a failure. Everything below assumes
+`run_kind = 'optimization'`.
+
 ## Step 3 — Reconstruct the four-task timeline
 
 ```sql
@@ -218,6 +229,10 @@ latest `publish_record` artifact; and `genie_opt_runs.status` plus
 | `LOOP_STATE_INVALID` | `FAILED` | no |
 | `INSUFFICIENT_VALID_BENCHMARKS` | `SKIPPED` | no; Optimize never ran |
 | missing or unknown | `STALLED` | no, fail closed |
+
+A `status = 'MV_ADVICE'` run has no terminal reason and no publish record by
+design (see Step 2) — it is an advice run, not a stalled or failed optimization.
+Do not force it into the mapping above.
 
 If the run stopped during Benchmark QC there may be no iteration or publish
 record. Use the failed stage, `benchmark_qc`, the mutation ledger, and the run

@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "databricks-sdk==0.117.0",
     "pydantic==2.12.5",
+    "pyyaml==6.0.3",
     "python-dotenv==1.2.2",
     "mlflow==3.11.1",
     "fastapi==0.135.2",
@@ -39,3 +40,15 @@ genie-space-optimizer = { workspace = true }
 testpaths = ["backend/tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+addopts = "-m 'not integration'"
+# `e2e`/`slow` mark the opt-in live suite under tests/e2e (NOT in testpaths, so
+# neither the default run nor ./scripts/test.sh collects it — the offline
+# baseline is untouched). `integration` marks the VC live suite under
+# backend/tests/integration (in testpaths, but excluded by default via addopts;
+# run explicitly with `-m integration`). Registered here so explicit runs emit
+# no PytestUnknownMarkWarning.
+markers = [
+    "e2e: live test against a real Databricks workspace (env-gated; opt-in)",
+    "slow: spends real workspace/eval budget; serialized, never parallelized",
+    "integration: requires explicit real nonproduction Databricks platform",
+]

@@ -1,0 +1,21 @@
+{
+  "type": "BindingRef",
+  "examples": [
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "space_key": "sales",
+      "workspace_id": "123",
+      "space_id": null,
+      "environment": "dev"
+    },
+    {
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "binding_revision": 1,
+      "space_key": "sales",
+      "workspace_id": "123",
+      "space_id": "physical-space",
+      "environment": "dev"
+    }
+  ]
+}

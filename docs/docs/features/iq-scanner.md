@@ -161,4 +161,5 @@ Historical scans are available via `GET /api/spaces/{id}/history`.
 ## Related Documentation
 
 - [Auto-Optimize](/docs/features/auto-optimize) — the optimization pipeline that satisfies checks 11–12
+- [Semantic Model (Blueprint)](/docs/features/semantic-model) — the Model tab's **Insights** inset surfaces the top deal-breaker findings visually and links back to this full checklist
 - [Introduction](/docs/getting-started/introduction) — how the scanner fits in the feature workflow

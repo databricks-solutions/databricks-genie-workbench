@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
@@ -157,6 +158,45 @@ def _stub_live(monkeypatch, space: dict | None, *, update_time: str | None = Non
 
 
 # ── Status branches ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("live_instruction", ["Be helpful", "External edit"])
+def test_current_version_has_no_managed_mutation(client, monkeypatch, live_instruction):
+    from backend.services import genie_client
+
+    # Task 17: this adapter only reads managed Genie state; zombie reconciliation
+    # may update optimizer telemetry, not config/description, and needs no gate.
+    space = _space()
+    _stub_delta(monkeypatch, runs=[_run_row("r1", started_at="2026-07-01 10:00:00",
+                                         config_snapshot=_snapshot_wrapper(space))])
+    workspace = Mock()
+    workspace.config.token = "read-only-current-version"
+    workspace.api_client.do.return_value = {
+        "serialized_space": json.dumps(_space(instruction=live_instruction))}
+    for module in (auto_optimize, genie_client):
+        monkeypatch.setattr(module, "get_workspace_client", lambda: workspace)
+        monkeypatch.setattr(module, "get_service_principal_client", lambda: workspace)
+    writes = []
+    for owner, names in (
+        (genie_client.GenieTransport, ("create_once", "patch_config_once", "patch_description_once")),
+        (auto_optimize, ("trigger_optimization", "apply_optimization", "revert_optimization", "discard_optimization")),
+    ):
+        for name in names:
+            write = Mock(side_effect=AssertionError("Current-version must not mutate managed state"))
+            monkeypatch.setattr(owner, name, write)
+            writes.append(write)
+    response = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version?refresh=true")
+    assert response.status_code == 200
+    assert response.json()["status"] == ("matched" if live_instruction == "Be helpful" else "history_incomplete")
+    workspace.api_client.do.assert_called_once_with(
+        method="GET", path=f"/api/2.0/genie/spaces/{SPACE_ID}",
+        query={"include_serialized_space": "true"})
+    workspace.genie.assert_not_called()
+    assert not workspace.genie.mock_calls
+    workspace.jobs.assert_not_called()
+    assert not workspace.jobs.mock_calls
+    for write in writes:
+        write.assert_not_called()
 
 
 def test_unconfigured_returns_no_known_versions(client, monkeypatch) -> None:

@@ -3,15 +3,18 @@
  * Tabs: Score (default) | Optimize | History
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, ChevronDown, ChevronRight, Settings, RefreshCw, Network, GitBranch } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
-import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
+import type { ScanResult, ScoreHistoryPoint, OptimizationEvent, MvProposal } from "@/types"
+import type { MvRerunPrefill } from "@/components/auto-optimize/OptimizationConfig"
 import { IQScoreTab } from "./IQScoreTab"
 import { HistoryTab } from "./HistoryTab"
+import { SpaceVersionControlTab } from "@/components/version-control/SpaceVersionControlTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
+import { SemanticModelTab } from "@/components/model/SemanticModelTab"
 import type { SpaceTab } from "@/lib/navigation"
 import { createScanCoordinator } from "@/lib/scan-coordinator"
 
@@ -37,6 +40,28 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
   const [configExpanded, setConfigExpanded] = useState(false)
+
+  // Prompt 15.6 finding 6 — a proposal carried from the IQ-scan "Review in run
+  // setup" deep-link. Seeds the optimize tab's MV prefill on mount, then is
+  // cleared when the user leaves the optimize tab so a later plain visit does
+  // not reopen create_and_attach.
+  const [mvPrefill, setMvPrefill] = useState<MvRerunPrefill | null>(null)
+
+  useEffect(() => {
+    if (activeTab !== "optimize" && mvPrefill) setMvPrefill(null)
+  }, [activeTab, mvPrefill])
+
+  const handleReviewProposal = useCallback(
+    (proposal: MvProposal | null) => {
+      setMvPrefill(
+        proposal
+          ? { mode: "create_and_attach", suggestionId: proposal.suggestion_id }
+          : { mode: "create_and_attach", suggestionId: null },
+      )
+      onNavigate("optimize")
+    },
+    [onNavigate],
+  )
 
   const { state, actions } = useAnalysis()
   // Pull the stable callback out of `actions` so the load effect can depend on
@@ -152,8 +177,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
 
   const tabs: { id: SpaceTab; label: string; icon: React.ReactNode }[] = [
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
+    { id: "model", label: "Model", icon: <Network className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
+    { id: "versions", label: "Version Control", icon: <GitBranch className="w-4 h-4" /> },
   ]
 
   // Determine contextual action(s) based on scan results
@@ -321,19 +348,28 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
           </>
         )}
 
+        {activeTab === "model" && (
+          <SemanticModelTab spaceId={spaceId} onReviewCreate={handleReviewProposal} />
+        )}
+
         {activeTab === "optimize" && (
           <AutoOptimizeTab
-            key={runId ?? "configure"}
+            key={`${runId ?? "configure"}:${mvPrefill?.suggestionId ?? ""}`}
             spaceId={spaceId}
             requestedRunId={runId}
             onRunChange={(nextRunId) => onNavigate("optimize", nextRunId)}
             onRefreshIqScore={handlePostOptimizationScan}
             onViewIqScore={() => onNavigate("score")}
+            initialMvPrefill={mvPrefill}
           />
         )}
 
         {activeTab === "history" && (
           <HistoryTab history={history} optimizationEvents={optimizationEvents} isLoading={isLoadingHistory} />
+        )}
+
+        {activeTab === "versions" && (
+          <SpaceVersionControlTab spaceId={spaceId} />
         )}
       </div>
 

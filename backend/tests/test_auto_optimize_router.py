@@ -349,6 +349,68 @@ def test_trigger_forwards_workload_warehouse_ids(
     ]
 
 
+def test_trigger_forwards_operator_guidance_trimmed(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    """Free-text guidance (Semantic Blueprint §7) rides through to
+    trigger_optimization trimmed — pass-through advice, not a config edit."""
+    monkeypatch.setattr(
+        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
+    )
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    fake_result = MagicMock(
+        run_id="run-guidance", job_run_id=1, job_url=None, status="QUEUED",
+    )
+    with patch.object(
+        auto_optimize, "trigger_optimization", return_value=fake_result,
+    ) as trigger_mock:
+        response = client.post(
+            "/api/auto-optimize/trigger",
+            json={
+                "space_id": "space-abc",
+                "operator_guidance": "  Prefer orders_v2 for revenue.  ",
+            },
+        )
+
+    assert response.status_code == 200
+    assert (
+        trigger_mock.call_args.kwargs["operator_guidance"]
+        == "Prefer orders_v2 for revenue."
+    )
+
+
+def test_trigger_forwards_none_operator_guidance_when_blank(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    """A blank/whitespace box sends nothing meaningful — trigger sees None."""
+    monkeypatch.setattr(
+        auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
+    )
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    fake_result = MagicMock(
+        run_id="run-guidance-blank", job_run_id=1, job_url=None, status="QUEUED",
+    )
+    with patch.object(
+        auto_optimize, "trigger_optimization", return_value=fake_result,
+    ) as trigger_mock:
+        response = client.post(
+            "/api/auto-optimize/trigger",
+            json={"space_id": "space-abc", "operator_guidance": "   "},
+        )
+
+    assert response.status_code == 200
+    assert trigger_mock.call_args.kwargs["operator_guidance"] is None
+
+
+def test_trigger_rejects_over_length_operator_guidance(client) -> None:
+    """The 4000-char cap is enforced at the model boundary (422)."""
+    response = client.post(
+        "/api/auto-optimize/trigger",
+        json={"space_id": "space-abc", "operator_guidance": "x" * 4001},
+    )
+    assert response.status_code == 422
+
+
 # ── Bug #2 — derived accuracy ───────────────────────────────────────────
 
 

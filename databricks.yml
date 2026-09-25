@@ -3,6 +3,12 @@ bundle:
   databricks_cli_version: ">= 0.297.2"
 
 variables:
+  gso_run_as_principal:
+    description: "Explicit app service principal; deployer must have permission to use it"
+    default: ""
+  control_schema:
+    description: "Unity Catalog schema holding the VC control tables and Volumes"
+    default: "vc_ctl"
   app_name:
     description: "Databricks App name (must be unique in your workspace)"
     default: "genie-workbench"
@@ -18,7 +24,6 @@ sync:
   include:
     - .build
     - .build/**
-    - dashboards/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs
     - packages/genie-space-optimizer/src/genie_space_optimizer/jobs/**
   exclude:
@@ -26,16 +31,13 @@ sync:
     - frontend/**
     - tests/**
     - sql/**
-    - TODO/**
     - packages/genie-space-optimizer/tests/**
     - packages/genie-space-optimizer/src/genie_space_optimizer/backend/**
-    - packages/genie-space-optimizer/node_modules/**
-    - packages/genie-space-optimizer/.build/**
 
 artifacts:
   default:
     build: |
-      rm -f .build/genie_space_optimizer-*.whl && cd packages/genie-space-optimizer && uv run --with build python -m build --wheel -o ../../.build/ && cd ../.. && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl
+      rm -f .build/genie_space_optimizer-*.whl && cd packages/genie-space-optimizer && uv build --wheel --out-dir ../../.build && cd ../.. && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl
 
 # ---------------------------------------------------------------------------
 # Resources
@@ -107,6 +109,21 @@ resources:
           default: "[]"
         - name: llm_model
           default: ${var.llm_model}
+        # Metric view advisor parameters (MV-D5 four-place lockstep). Only the
+        # optimize task consumes them (run_optimize.py). enable_metric_view_suggestions
+        # gates the advisor phase; mv_attach_views / mv_consent_id drive the MV-D16
+        # attach phase; mv_action_mode / mv_min_confidence are declared-but-unconsumed
+        # today (a later prompt wires them — see run_optimize.py and gap report §2.2).
+        - name: enable_metric_view_suggestions
+          default: "false"
+        - name: mv_action_mode
+          default: "suggest_only"
+        - name: mv_attach_views
+          default: ""
+        - name: mv_consent_id
+          default: ""
+        - name: mv_min_confidence
+          default: "75"
       # Every task carries its job-parameter subset as base_parameters so there
       # is NO inter-task task-value plumbing (D9). run_id/catalog/schema
       # bootstrap each notebook; all other handoff state is read from Delta by
@@ -172,6 +189,15 @@ resources:
               benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               llm_model: "{{job.parameters.llm_model}}"
+              # Metric view advisor phase inputs (MV-D5). Passing these as
+              # base_parameters is what makes the run_optimize.py widgets receive
+              # real job values — a declared job parameter omitted here silently
+              # resolves to the widget default (the trap Prompt 8 exists to close).
+              enable_metric_view_suggestions: "{{job.parameters.enable_metric_view_suggestions}}"
+              mv_action_mode: "{{job.parameters.mv_action_mode}}"
+              mv_attach_views: "{{job.parameters.mv_attach_views}}"
+              mv_consent_id: "{{job.parameters.mv_consent_id}}"
+              mv_min_confidence: "{{job.parameters.mv_min_confidence}}"
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0
@@ -208,7 +234,7 @@ resources:
 # - dev:          Personal development (mode: development adds [dev user] prefix)
 # - app:          Deploy via deploy.sh — mode: development for per-deployer
 #                 Terraform state, but name_prefix: "" for clean resource names.
-#                 run_as is NOT set here; the app self-heals it at startup
+#                 run_as is set by the deployer; startup only verifies it
 #                 (avoids needing servicePrincipal.user role on the deployer).
 # - dev-lakebase: Development with Lakebase provisioning
 # ---------------------------------------------------------------------------
@@ -220,6 +246,11 @@ targets:
     mode: development
     presets:
       name_prefix: ""
+    resources:
+      jobs:
+        gso-optimization-runner:
+          run_as:
+            service_principal_name: ${var.gso_run_as_principal}
   dev-lakebase:
     mode: development
     resources:

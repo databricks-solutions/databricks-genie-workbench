@@ -64,6 +64,11 @@ TASKS = [
             "run_id", "space_id", "domain", "catalog", "schema", "apply_mode",
             "levers", "max_attempts", "target_accuracy",
             "benchmark_policy", "warehouse_id", "llm_model",
+            # Metric view advisor phase inputs (MV-D5). Present as base_parameters
+            # so run_optimize.py's widgets receive real job values — a job
+            # parameter omitted here silently resolves to the widget default.
+            "enable_metric_view_suggestions", "mv_action_mode",
+            "mv_attach_views", "mv_consent_id", "mv_min_confidence",
         ],
     ),
     (
@@ -100,6 +105,14 @@ JOB_PARAMETERS = {
     "warehouse_id": "",
     "workload_warehouse_ids": "[]",
     "llm_model": "",
+    # Metric view advisor parameters (MV-D5 four-place lockstep). Defaults mirror
+    # both databricks.yml bundles. mv_action_mode / mv_min_confidence are
+    # declared-but-unconsumed today (see run_optimize.py and gap report §2.2).
+    "enable_metric_view_suggestions": "false",
+    "mv_action_mode": "suggest_only",
+    "mv_attach_views": "",
+    "mv_consent_id": "",
+    "mv_min_confidence": "75",
 }
 
 
@@ -338,6 +351,9 @@ def ensure_gso_job(w, cfg: InstallConfig, app_sp_client_id: str, deployer_user: 
     notebooks_path = upload_job_notebooks(w, cfg, deployer_user)
     wheel_path = upload_gso_wheel(w, cfg)
     settings = build_job_settings(cfg, notebooks_path, wheel_path)
+    if not app_sp_client_id:
+        raise ValueError("Explicit app service principal required for Job run_as")
+    settings["run_as"] = {"service_principal_name": app_sp_client_id}
     job_id = upsert_job(w, settings)
     set_job_permissions(w, job_id, deployer_user, app_sp_client_id)
     grant_directory_permissions(w, notebooks_path, app_sp_client_id)

@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -21,6 +21,8 @@ from genie_space_optimizer.common.warehouse import (
     wh_create_run,
     wh_ensure_optimization_tables,
     wh_reconcile_active_runs,
+    wh_write_join_advice,
+    wh_write_operator_guidance,
 )
 
 from .config import IntegrationConfig
@@ -103,6 +105,12 @@ def trigger_optimization(
     max_attempts: int | None = None,
     workload_warehouse_ids: list[str] | None = None,
     benchmark_policy: str = "repair_allowed",
+    enable_metric_view_suggestions: bool = False,
+    mv_action_mode: str = "suggest_only",
+    mv_min_confidence: int | None = None,
+    mv_attach_hook: Callable[[str], Any] | None = None,
+    proposed_join_seeds: list[dict] | None = None,
+    operator_guidance: str | None = None,
 ) -> TriggerResult:
     """Trigger a GSO optimization run using SQL Warehouse for state management.
 
@@ -127,6 +135,26 @@ def trigger_optimization(
         benchmark_policy: ``review_only`` reviews and filters the existing live
             benchmark set without mutation; ``repair_allowed`` permits bounded
             generation, repair, and live benchmark updates.
+        enable_metric_view_suggestions: gate the job's advisor phase (MV-D5).
+        mv_action_mode: ``suggest_only`` or ``create_and_attach`` requested by the
+            caller; the effective mode never upgrades and downgrades to
+            ``suggest_only`` if the create hook attaches nothing (MV-D1).
+        mv_min_confidence: advisor confidence floor (0–100) for the job phase.
+        mv_attach_hook: backend-provided callback invoked with ``run_id`` after the
+            run row exists and before submit. It performs the OBO metric view
+            creates and returns an object exposing ``attach_views`` (list of
+            identifiers), ``consent_id`` (probe_id, MV-D16), and ``action_mode``.
+            The engine never imports the backend; the hook is the seam (MV-D20).
+        proposed_join_seeds: operator-proposed candidate joins from the Semantic
+            Blueprint's Join Advisor (§7), as JoinCandidate dicts. Persisted as a
+            run-scoped ``operator_proposed_joins`` artifact the optimize loop reads
+            and hands the LLM as candidate joins to VALIDATE and add itself — never
+            a declared join_spec written here. Best-effort; a write failure does
+            not fail the run.
+        operator_guidance: free-text guidance the operator typed in the run-config
+            panel for THIS run (§7). Persisted as a run-scoped ``operator_guidance``
+            artifact the optimize loop injects into the LLM prompt as advice (not
+            ground truth). Best-effort; a write failure does not fail the run.
 
     Returns:
         :class:`TriggerResult` with run_id, job_run_id, job_url, and status.
@@ -275,6 +303,81 @@ def trigger_optimization(
         benchmark_policy=requested_benchmark_policy,
     )
 
+    # Join Advisor advice (§7): persist the operator-proposed candidate joins as a
+    # run-scoped artifact for the optimize loop to validate and add itself. This is
+    # advice, not a config edit — best-effort, so a write failure never fails the
+    # run (the loop just sees no operator advice).
+    if proposed_join_seeds:
+        try:
+            wh_write_join_advice(
+                ws,
+                config.warehouse_id,
+                run_id=run_id,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                seeds=list(proposed_join_seeds),
+            )
+        except Exception:
+            logger.warning(
+                "Could not persist operator-proposed join seeds for run %s",
+                run_id,
+                exc_info=True,
+            )
+
+    # Operator free-text guidance (§7): persist the per-run advice as a run-scoped
+    # ``operator_guidance`` artifact the optimize loop injects into the LLM prompt.
+    # Advice, not a config edit — best-effort, so a write failure never fails the
+    # run (the loop just sees no operator guidance).
+    if operator_guidance and operator_guidance.strip():
+        try:
+            wh_write_operator_guidance(
+                ws,
+                config.warehouse_id,
+                run_id=run_id,
+                catalog=config.catalog,
+                schema=config.schema_name,
+                text=operator_guidance,
+            )
+        except Exception:
+            logger.warning(
+                "Could not persist operator guidance for run %s",
+                run_id,
+                exc_info=True,
+            )
+
+    # Metric view create-and-attach (MV-D1/D20): the object is created under the
+    # user's OBO client by the backend hook, after the run row exists (so the
+    # created-objects ledger FK is valid) and before submit (so the job receives
+    # the identifiers to attach). The hook drops any suggestion that fails and
+    # returns the effective mode; an empty attach set downgrades to suggest_only.
+    mv_attach_views_str = ""
+    mv_consent_id = ""
+    effective_mv_action_mode = (mv_action_mode or "suggest_only").strip().lower()
+    if (
+        enable_metric_view_suggestions
+        and effective_mv_action_mode == "create_and_attach"
+        and mv_attach_hook is not None
+    ):
+        attach_views: list[str] = []
+        try:
+            handoff = mv_attach_hook(run_id)
+            attach_views = list(getattr(handoff, "attach_views", []) or [])
+            mv_consent_id = str(getattr(handoff, "consent_id", "") or "")
+            hook_mode = str(getattr(handoff, "action_mode", "") or "").strip().lower()
+            if hook_mode:
+                effective_mv_action_mode = hook_mode
+        except Exception:
+            logger.warning(
+                "Metric view create-and-attach hook failed for run %s; "
+                "downgrading to suggest_only",
+                run_id, exc_info=True,
+            )
+            attach_views = []
+            effective_mv_action_mode = "suggest_only"
+        if not attach_views:
+            effective_mv_action_mode = "suggest_only"
+        mv_attach_views_str = json.dumps(attach_views)
+
     from genie_space_optimizer.backend.job_launcher import submit_optimization
 
     try:
@@ -295,6 +398,15 @@ def trigger_optimization(
             max_attempts=max_attempts_str,
             workload_warehouse_ids=workload_warehouse_ids_str,
             benchmark_policy=requested_benchmark_policy,
+            enable_metric_view_suggestions=(
+                "true" if enable_metric_view_suggestions else "false"
+            ),
+            mv_action_mode=effective_mv_action_mode,
+            mv_attach_views=mv_attach_views_str,
+            mv_consent_id=mv_consent_id,
+            mv_min_confidence=(
+                str(int(mv_min_confidence)) if mv_min_confidence is not None else "75"
+            ),
         )
     except Exception as exc:
         logger.exception("Job submission failed for run %s", run_id)

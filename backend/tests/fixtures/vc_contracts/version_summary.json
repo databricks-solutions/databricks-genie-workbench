@@ -1,0 +1,107 @@
+{
+  "type": "VersionSummary",
+  "examples": [
+    {
+      "version_id": "00000000-0000-4000-8000-000000000002",
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "observed_at": "2026-09-06T00:00:00Z",
+      "origin": "workbench",
+      "observed_by": "reader@example.invalid",
+      "parent_version_id": null,
+      "restored_from_version_id": null,
+      "fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "optimizer_run_id": null,
+      "champion_id": null
+    },
+    {
+      "version_id": "00000000-0000-4000-8000-000000000002",
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "observed_at": "2026-09-06T00:00:00Z",
+      "origin": "external",
+      "observed_by": "reader@example.invalid",
+      "parent_version_id": null,
+      "restored_from_version_id": null,
+      "fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "optimizer_run_id": null,
+      "champion_id": null
+    },
+    {
+      "version_id": "00000000-0000-4000-8000-000000000002",
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "observed_at": "2026-09-06T00:00:00Z",
+      "origin": "optimizer",
+      "observed_by": "reader@example.invalid",
+      "parent_version_id": null,
+      "restored_from_version_id": null,
+      "fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "optimizer_run_id": null,
+      "champion_id": null
+    },
+    {
+      "version_id": "00000000-0000-4000-8000-000000000002",
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "observed_at": "2026-09-06T00:00:00Z",
+      "origin": "restore",
+      "observed_by": "reader@example.invalid",
+      "parent_version_id": null,
+      "restored_from_version_id": null,
+      "fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "optimizer_run_id": null,
+      "champion_id": null
+    },
+    {
+      "version_id": "00000000-0000-4000-8000-000000000002",
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "observed_at": "2026-09-06T00:00:00Z",
+      "origin": "promotion",
+      "observed_by": "reader@example.invalid",
+      "parent_version_id": null,
+      "restored_from_version_id": null,
+      "fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "optimizer_run_id": null,
+      "champion_id": null
+    },
+    {
+      "version_id": "00000000-0000-4000-8000-000000000002",
+      "binding_id": "00000000-0000-4000-8000-000000000001",
+      "observed_at": "2026-09-06T00:00:00Z",
+      "origin": "unknown",
+      "observed_by": "reader@example.invalid",
+      "parent_version_id": null,
+      "restored_from_version_id": null,
+      "fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "optimizer_run_id": null,
+      "champion_id": null
+    }
+  ]
+}

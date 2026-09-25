@@ -197,6 +197,66 @@ def test_insert_row_can_transport_string_bytes_without_sql_literal_escaping(
     assert "'wide_schema_inventory'" in statements[0]
 
 
+def test_merge_row_builds_a_keyed_upsert_with_insert_only_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        delta_helpers,
+        "execute_delta_write_with_retry",
+        lambda spark, stmt, **kwargs: captured.append({"stmt": stmt, "kwargs": kwargs}),
+    )
+
+    delta_helpers.merge_row(
+        object(), "cat", "sch", "tbl",
+        {"run_id": "r1", "suggestion_id": "s1"},
+        {"status": "ATTACHED", "updated_at": "t2"},
+        insert_only_cols={"created_at": "t1"},
+    )
+
+    assert captured[0]["stmt"] == (
+        "MERGE INTO cat.sch.tbl AS t "
+        "USING (SELECT 'r1' AS run_id, 's1' AS suggestion_id) AS s "
+        "ON t.run_id = s.run_id AND t.suggestion_id = s.suggestion_id "
+        "WHEN MATCHED THEN UPDATE SET t.status = 'ATTACHED', t.updated_at = 't2' "
+        "WHEN NOT MATCHED THEN INSERT "
+        "(run_id, suggestion_id, status, updated_at, created_at) "
+        "VALUES (s.run_id, s.suggestion_id, 'ATTACHED', 't2', 't1')"
+    )
+    assert captured[0]["kwargs"]["operation_name"] == "merge_row"
+    assert captured[0]["kwargs"]["table_name"] == "cat.sch.tbl"
+
+
+def test_merge_row_preserves_json_bytes_with_base64_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[str] = []
+    monkeypatch.setattr(
+        delta_helpers,
+        "execute_delta_write_with_retry",
+        lambda _spark, stmt, **_kwargs: statements.append(stmt),
+    )
+    payload = json.dumps({"note": "O'Brien\\nSnowman: ☃"})
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+    delta_helpers.merge_row(
+        object(), "cat", "sch", "tbl",
+        {"probe_id": "p1"},
+        {"probe_results_json": payload},
+        base64_string_columns={"probe_results_json"},
+    )
+
+    assert f"CAST(unbase64('{encoded}') AS STRING)" in statements[0]
+    assert payload not in statements[0]
+
+
+def test_merge_row_requires_keys_and_values() -> None:
+    with pytest.raises(ValueError, match="key column"):
+        delta_helpers.merge_row(object(), "cat", "sch", "tbl", {}, {"a": 1})
+    with pytest.raises(ValueError, match="value column"):
+        delta_helpers.merge_row(object(), "cat", "sch", "tbl", {"k": "v"}, {})
+
+
 def test_retry_delta_write_raises_final_conflict_after_attempts() -> None:
     calls: list[int] = []
     sleeps: list[float] = []
