@@ -137,6 +137,37 @@ def test_claude_style_200_does_not_add_flag(monkeypatch):
     assert "reasoning_effort" not in session.calls[0].json
 
 
+def test_stream_gateway_404_downgrades(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    agent, _ = _agent_with_session(monkeypatch, [
+        _Resp(status_code=404, text='{"error_code":"NOT_FOUND","message":"raw"}')])
+    with pytest.raises(RuntimeError) as ei:
+        list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                               model="databricks-claude-sonnet-4-6", space_id="sp1"))
+    assert str(ei.value) == create_agent.MODEL_UNAVAILABLE_MESSAGE
+
+
+def test_stream_classic_404_keeps_raw_body(monkeypatch):
+    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)
+    agent, _ = _agent_with_session(monkeypatch, [
+        _Resp(status_code=404, text="raw provider body")])
+    with pytest.raises(RuntimeError) as ei:
+        list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                               model="databricks-claude-sonnet-4-6"))
+    assert "LLM endpoint returned 404" in str(ei.value)
+
+
+def test_stream_gateway_200_never_reads_text(monkeypatch):
+    """Guard the Phase-1 SSE lesson: a 200 stream must not touch resp.text."""
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    agent, session = _agent_with_session(monkeypatch, [_NoTextResp(lines=[_LINE, "data: [DONE]"])])
+    chunks = list(agent._stream_llm([{"role": "user", "content": "x"}], tools=_TOOLS,
+                                    model="databricks-claude-sonnet-4-6"))
+    assert len(chunks) == 1
+    assert chunks[0]["choices"][0]["delta"]["content"] == "hi"
+    assert len(session.calls) == 1
+
+
 @pytest.mark.parametrize("route", [None, "gateway"])
 def test_stream_never_reads_text_on_200(monkeypatch, route):
     """SSE-streaming contract: a 200 streaming response must be consumed without

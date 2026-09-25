@@ -127,6 +127,34 @@ def test_call_serving_endpoint_gateway_tags_and_maps(monkeypatch):
     assert tags == {"application": "genie-workbench", "component": "plan-builder"}
 
 
+def test_call_serving_endpoint_gateway_404_downgrades(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    captured = _capture_post(monkeypatch, status=404)
+    with pytest.raises(RuntimeError) as ei:
+        llm_utils.call_serving_endpoint(
+            [{"role": "user", "content": "hi"}],
+            model="databricks-claude-sonnet-4-6",
+        )
+    assert str(ei.value) == llm_utils.MODEL_UNAVAILABLE_MESSAGE
+    assert captured  # the POST was attempted
+
+
+def test_call_serving_endpoint_classic_404_keeps_raw_body(monkeypatch):
+    monkeypatch.delenv("GENIE_LLM_ROUTE", raising=False)  # classic
+    _capture_post(monkeypatch, status=404)
+    with pytest.raises(RuntimeError) as ei:
+        llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}])
+    assert "Serving endpoint returned 404" in str(ei.value)   # unchanged
+
+
+def test_call_serving_endpoint_gateway_500_keeps_raw_body(monkeypatch):
+    monkeypatch.setenv("GENIE_LLM_ROUTE", "gateway")
+    _capture_post(monkeypatch, status=500)
+    with pytest.raises(RuntimeError) as ei:
+        llm_utils.call_serving_endpoint([{"role": "user", "content": "hi"}])
+    assert "Serving endpoint returned 500" in str(ei.value)   # only 404 downgrades
+
+
 # ---------------------------------------------------------------------------
 # _repair_json
 # ---------------------------------------------------------------------------

@@ -9,7 +9,13 @@ from typing import Any
 import httpx
 
 from backend.services.auth import get_workspace_client
-from backend.services.llm_route import resolve_chat
+from backend.services.llm_route import (
+    LLMRoute,
+    MODEL_UNAVAILABLE_MESSAGE,
+    get_llm_route,
+    is_model_unavailable_404,
+    resolve_chat,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +122,9 @@ def call_serving_endpoint(
         break
 
     if resp.status_code != 200:
+        if get_llm_route() is LLMRoute.GATEWAY and is_model_unavailable_404(resp.status_code, ""):
+            logger.warning("Gateway model unavailable/entitlement 404 for %s", model)
+            raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE)
         raise RuntimeError(
             f"Serving endpoint returned {resp.status_code}: {resp.text[:500]}"
         )
