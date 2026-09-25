@@ -148,6 +148,7 @@ async def create_space_endpoint(body: CreateSpaceRequest, request: Request):
             display_name=body.display_name,
             merged_config=body.serialized_space,
             parent_path=body.parent_path,
+            description=body.description,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

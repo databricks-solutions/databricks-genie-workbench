@@ -777,6 +777,14 @@ TOOL_DEFINITIONS = [
                             "required": ["identifier"],
                         },
                     },
+                    "suggested_description": {
+                        "type": "string",
+                        "description": (
+                            "A concise one-line description of the agent (what it answers "
+                            "questions about), used as the created space's description. "
+                            "Keep it under ~2000 characters."
+                        ),
+                    },
                 },
                 "required": ["sample_questions", "example_sqls", "benchmarks"],
             },
@@ -817,13 +825,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_space",
-            "description": "Update an existing Genie Agent — config, display name, or both. Use this instead of create_space when the agent has already been created. Supports renaming.",
+            "description": "Update an existing Genie Agent — config, display name, description, or any combination. Use this instead of create_space when the agent has already been created. Supports renaming.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "space_id": {"type": "string", "description": "The ID of the existing Genie Agent to update"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
                     "display_name": {"type": "string", "description": "New display name for the agent (optional — only if renaming)"},
+                    "description": {"type": "string", "description": "New description for the agent (optional — only if the user asks to change it)"},
                 },
                 "required": ["space_id"],
             },
@@ -2245,11 +2254,15 @@ def _present_plan(
     join_specs: list[dict] | None = None,
     benchmarks: list[dict] | None = None,
     metric_views: list[dict] | None = None,
+    suggested_description: str | None = None,
 ) -> dict:
     """Pass structured plan data through for frontend rendering.
 
-    Parameters are identical to generate_config so the plan is
-    a 1:1 preview of the config that will be created.
+    Parameters are identical to generate_config (plus the optional
+    ``suggested_description``) so the plan is a 1:1 preview of the config
+    that will be created. ``suggested_description`` is surfaced on the result
+    so the CREATE path (_derive_description) can honor the LLM's intended
+    space description on the dense-plan path, matching the parallel path.
     """
     sections: dict[str, Any] = {}
 
@@ -2287,6 +2300,8 @@ def _present_plan(
     }
     if warnings:
         result["warnings"] = warnings
+    if suggested_description:
+        result["suggested_description"] = suggested_description
     return result
 
 
@@ -3405,10 +3420,10 @@ def _create_space(display_name: str, description: str = "", config: dict | None 
 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
-def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None) -> dict:
-    """Update an existing Genie Agent with a new configuration and/or name."""
-    if not config and not display_name:
-        return {"success": False, "error": "No config or display_name provided"}
+def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None, description: str | None = None) -> dict:
+    """Update an existing Genie Agent with a new configuration, name, and/or description."""
+    if not config and not display_name and not description:
+        return {"success": False, "error": "No config, display_name, or description provided"}
     try:
         from backend.services.auth import get_workspace_client, get_databricks_host
         from backend.genie_creator import _enforce_constraints, _clean_config
@@ -3420,13 +3435,19 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
             constrained = _enforce_constraints(config)
             cleaned = _clean_config(constrained)
             body["serialized_space"] = json.dumps(cleaned)
+            # warehouse_id only belongs with a serialized_space update — sending it on a
+            # metadata-only PATCH would silently reset the space's configured warehouse.
+            warehouse_id = get_sql_warehouse_id()
+            if warehouse_id:
+                body["warehouse_id"] = warehouse_id
 
+        # The updateSpace API field for the display name is "title" (matches create-time
+        # in genie_creator.py); "display_name" is silently ignored and the rename no-ops.
         if display_name:
-            body["display_name"] = display_name
+            body["title"] = display_name
 
-        warehouse_id = get_sql_warehouse_id()
-        if warehouse_id:
-            body["warehouse_id"] = warehouse_id
+        if description:
+            body["description"] = description
 
         client = get_workspace_client()
         client.api_client.do(

@@ -18,6 +18,7 @@ context/
 *.bak
 /.pi
 /.polly
+/.isaac
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

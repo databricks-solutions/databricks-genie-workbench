@@ -412,8 +412,11 @@ def _gen_questions_instructions(shared: str, model: str | None = None) -> dict:
         "Based on the context below, generate:\n"
         "1. **suggested_display_name**: A concise, professional name for the Genie Agent "
         "(e.g., 'NYC Taxi Revenue Performance', 'TPC-H Sales Analytics', 'Customer Support Dashboard')\n"
-        "2. **sample_questions**: EXACTLY 5 natural-language questions a business user would ask\n"
-        "3. **text_instructions**: Domain knowledge for the Genie Agent, organized under the "
+        "2. **suggested_description**: 1-2 sentences describing what this Genie Agent enables users "
+        "to explore — what business questions it answers and which tables/domains it covers. "
+        "This becomes the space description shown in the Genie UI.\n"
+        "3. **sample_questions**: EXACTLY 5 natural-language questions a business user would ask\n"
+        "4. **text_instructions**: Domain knowledge for the Genie Agent, organized under the "
         "canonical GSL section headers (see rules below).\n\n"
         "Text instructions should contain ONLY business logic and terminology — NOT SQL formulas, "
         "filter expressions, or join definitions (those go in other sections).\n\n"
@@ -435,7 +438,8 @@ def _gen_questions_instructions(shared: str, model: str | None = None) -> dict:
         "CRITICAL: Only reference category names, tiers, statuses, and labels that appear in the "
         "Column Profiles section below. Do NOT invent terms — use real data values.\n\n"
         "Return ONLY valid JSON:\n"
-        '{"suggested_display_name": "...", "sample_questions": ["..."], "text_instructions": '
+        '{"suggested_display_name": "...", "suggested_description": "...", '
+        '"sample_questions": ["..."], "text_instructions": '
         '["## PURPOSE\\n- Answer ... for ... users.", '
         '"## DISAMBIGUATION\\n- When the user says X, interpret as Y.", '
         '"## CONSTRAINTS\\n- Never show PII columns."]}\n\n'
@@ -1070,6 +1074,8 @@ def _assemble(results: dict[str, dict], tables_context: list[dict]) -> dict:
     plan["text_instructions"] = qi.get("text_instructions", [])
     if qi.get("suggested_display_name"):
         plan["suggested_display_name"] = qi["suggested_display_name"]
+    if qi.get("suggested_description"):
+        plan["suggested_description"] = qi["suggested_description"]
 
     plan["example_sqls"] = results.get("example_sqls", {}).get("example_sqls", [])
     plan["benchmarks"] = results.get("benchmarks", {}).get("benchmarks", [])
