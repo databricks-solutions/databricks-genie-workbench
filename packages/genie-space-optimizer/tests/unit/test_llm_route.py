@@ -60,3 +60,17 @@ def test_is_reasoning_effort_400():
     assert lr.is_reasoning_effort_400(400, "reasoning_effort not permitted") is True
     assert lr.is_reasoning_effort_400(400, "something else") is False
     assert lr.is_reasoning_effort_400(200, "reasoning_effort") is False
+
+
+def test_is_model_unavailable_404_true_only_on_404():
+    from genie_space_optimizer.optimization.llm_route import is_model_unavailable_404
+    assert is_model_unavailable_404(404, '{"error_code":"NOT_FOUND","message":"x does not exist"}') is True
+    assert is_model_unavailable_404(404, "") is True            # body-agnostic (R8)
+    assert is_model_unavailable_404(403, "forbidden") is False  # 403 is NOT the trigger (§3)
+    assert is_model_unavailable_404(400, "reasoning_effort") is False
+    assert is_model_unavailable_404(200, "") is False
+
+
+def test_model_unavailable_message_is_the_single_copy():
+    from genie_space_optimizer.optimization.llm_route import MODEL_UNAVAILABLE_MESSAGE
+    assert MODEL_UNAVAILABLE_MESSAGE == "Model unavailable or access not granted."

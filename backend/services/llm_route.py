@@ -72,3 +72,13 @@ def resolve_embeddings(host: str, endpoint: str, component: str, *, route: LLMRo
 def is_reasoning_effort_400(status: int, body_text: str) -> bool:
     """Retry trigger for the tool path (§2): Claude 400s on the flag, reasoning models require it."""
     return status == 400 and "reasoning_effort" in body_text
+
+
+MODEL_UNAVAILABLE_MESSAGE = "Model unavailable or access not granted."
+
+
+def is_model_unavailable_404(status: int, body_text: str) -> bool:
+    """Downgrade trigger (§3): the gateway returns 404 for BOTH not-entitled and
+    unknown-model (indistinguishable at the HTTP layer). Body-agnostic; callers
+    MUST gate on the gateway route so a classic 404 keeps its raw-body error."""
+    return status == 404
