@@ -17,7 +17,14 @@ from backend.services.auth import get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
 from backend.services import plan_builder
-from backend.services.llm_route import resolve_chat, is_reasoning_effort_400, get_llm_route, LLMRoute
+from backend.services.llm_route import (
+    resolve_chat,
+    is_reasoning_effort_400,
+    get_llm_route,
+    LLMRoute,
+    MODEL_UNAVAILABLE_MESSAGE,
+    is_model_unavailable_404,
+)
 from backend.prompts_create import assemble_system_prompt, detect_step
 
 logger = logging.getLogger(__name__)
@@ -1061,6 +1068,9 @@ class CreateGenieAgent:
 
         try:
             if not resp.ok:
+                if get_llm_route() is LLMRoute.GATEWAY and is_model_unavailable_404(resp.status_code, ""):
+                    logger.warning("Gateway model unavailable/entitlement 404 for %s", effective_model)
+                    raise RuntimeError(MODEL_UNAVAILABLE_MESSAGE)
                 error_body = resp.text[:1000]
                 logger.error("LLM endpoint returned %s: %s", resp.status_code, error_body)
                 raise RuntimeError(
