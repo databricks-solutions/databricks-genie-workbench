@@ -144,7 +144,8 @@ async def validate_config(body: ValidateRequest):
 @router.post("", response_model=CreateSpaceResponse)
 async def create_space_endpoint(body: CreateSpaceRequest, request: Request):
     try:
-        result = create_genie_space(
+        result = await asyncio.to_thread(
+            create_genie_space,
             display_name=body.display_name,
             merged_config=body.serialized_space,
             parent_path=body.parent_path,
@@ -162,7 +163,7 @@ async def create_space_endpoint(body: CreateSpaceRequest, request: Request):
 
     # genie_creator returns genie_space_id; our response model uses space_id
     space_id = result["genie_space_id"]
-    capture_initial_version(request, space_id)  # best-effort, never raises
+    await asyncio.to_thread(capture_initial_version, request, space_id)  # best-effort, never raises
     return CreateSpaceResponse(
         space_id=space_id,
         display_name=result["display_name"],

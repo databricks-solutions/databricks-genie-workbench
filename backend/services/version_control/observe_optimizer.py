@@ -17,10 +17,11 @@ Everything here is additive and fail-safe: enrollment/capture are writes gated b
 break optimizer behavior. All Delta writes are validated on deploy, not offline.
 """
 
+import asyncio
 import logging
 import time
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from uuid import NAMESPACE_URL, uuid5
 
 from backend.services.version_control import contracts as vc
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 _BINDING_REASON = "vc observe-only auto-enroll (optimizer run)"
 # Terminal Databricks Jobs run life-cycle states (RunLifeCycleState).
 _TERMINAL_STATES = frozenset({"TERMINATED", "SKIPPED", "INTERNAL_ERROR"})
+# Four linear tasks, each capped at `timeout_seconds: 14400` in databricks.yml.
+_OPTIMIZER_RUN_BUDGET_S = 4 * 14400
 
 
 def _deterministic_uuid(*parts: str) -> str:
@@ -120,16 +123,19 @@ def capture_after(runtime, *, space_id: str, run_id: str, environment: str | Non
         return None
 
 
-def capture_after_when_complete(runtime, *, space_id: str, run_id: str, job_run_id: str | int | None,
-                                get_run: Callable[[int], Any], sleep: Callable[[float], None] = time.sleep,
-                                poll_interval_s: float = 30.0, timeout_s: float = 3 * 60 * 60,
-                                environment: str | None = None):
+async def capture_after_when_complete(runtime, *, space_id: str, run_id: str, job_run_id: str | int | None,
+                                      get_run: Callable[[int], Any],
+                                      sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                                      poll_interval_s: float = 30.0,
+                                      timeout_s: float = _OPTIMIZER_RUN_BUDGET_S,
+                                      environment: str | None = None):
     """Poll the optimizer Job run until terminal, then capture the after-state.
 
     ``get_run(run_id)`` returns the SDK run whose ``.state.life_cycle_state`` is checked.
-    Fail-safe: any polling error, a missing ``job_run_id``, or a timeout falls back to a
-    best-effort immediate capture so the after-version is still recorded (the passive
-    ``capture_on_open`` path is the other backstop).
+    Waiting is an ``asyncio.sleep``; only the Jobs API read and the capture occupy a
+    worker thread. Fail-safe: any polling error, a missing ``job_run_id``, or a timeout
+    falls back to a best-effort immediate capture so the after-version is still recorded
+    (the passive ``capture_on_open`` path is the other backstop).
     """
     if runtime is None or runtime.flags.enabled("vc_writes_enabled") is not True:
         return None
@@ -137,13 +143,14 @@ def capture_after_when_complete(runtime, *, space_id: str, run_id: str, job_run_
     if job_run_id is not None:
         try:
             while time.monotonic() < deadline:
-                run = get_run(int(job_run_id))
+                run = await asyncio.to_thread(get_run, int(job_run_id))
                 state = getattr(getattr(run, "state", None), "life_cycle_state", None)
                 state_name = getattr(state, "value", state)
                 if state_name in _TERMINAL_STATES:
                     break
-                sleep(poll_interval_s)
+                await sleep(poll_interval_s)
         except Exception:  # noqa: BLE001 - fall through to a best-effort capture
             logger.warning("VC observe after-run poll failed for space %s (run %s)",
                            space_id, run_id, exc_info=True)
-    return capture_after(runtime, space_id=space_id, run_id=run_id, environment=environment)
+    return await asyncio.to_thread(capture_after, runtime, space_id=space_id, run_id=run_id,
+                                   environment=environment)

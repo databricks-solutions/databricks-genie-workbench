@@ -52,7 +52,7 @@ it('badge_distinguishes_partial_unresolved_quarantined_conflicted_and_stale_clea
   expect(render({ drift: 'clean', heads: { observed: 'p', approved: 'p', deployed: 'q' } })).toContain('Policy mismatch')
 })
 
-import m02Bindings from '../../../../backend/tests/fixtures/vc_contracts/binding_status.json'
+import m02Bindings from '@/contracts/vc/binding_status.json'
 import type { BindingStatus } from '@/types/version-control'
 it('badge_covers_every_m02_drift_projection', async () => {
   const labels: Record<BindingStatus['drift'], string> = { clean: 'Unknown', external_ahead: 'External ahead', desired_ahead: 'Desired ahead', diverged: 'Diverged', unknown: 'Unknown', unreachable: 'Unreachable', applied_unverified: 'Applied, unverified', conflicted: 'Conflicted' }

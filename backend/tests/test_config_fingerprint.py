@@ -380,7 +380,7 @@ def test_canonicalizer_is_idempotent_and_hash_is_domain_separated() -> None:
             assert getattr(original.fingerprints, component) == canonical_json_hash(
                 f"vc-{component}/1", {"value": canonical[component]}
             )
-    shared = json.loads((fixture_root / "vc_contracts/fingerprints.json").read_text())
+    shared = json.loads((Path(__file__).parents[2] / "frontend/src/contracts/vc/fingerprints.json").read_text())
     fingerprints = from_wire(Fingerprints, shared["examples"][0])
     assert fingerprints.state_digest == canonical_json_hash("vc-state/1", to_wire(fingerprints))
     assert canonical_json_hash("vc-state/1", {"config": "ab", "benchmark": "c"}) != (

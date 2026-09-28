@@ -98,7 +98,7 @@ it('production_modules_do_not_import_test_fixtures', () => {
 })
 import { readFileSync, readdirSync } from 'node:fs'
 
-import m02Errors from '../../../../backend/tests/fixtures/vc_contracts/api_error.json'
+import m02Errors from '@/contracts/vc/api_error.json'
 it('open_distinguishes_409_conflict_423_unresolved_and_503_stale_surfaces', async () => {
   const markups: string[] = []
   for (const [httpStatus, kind] of [[409, 'conflict'], [423, 'unresolved'], [503, 'unavailable']] as const) {

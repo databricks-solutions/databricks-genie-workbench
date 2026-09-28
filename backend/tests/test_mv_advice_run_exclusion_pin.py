@@ -28,13 +28,14 @@ def test_the_exclusion_constant_excludes_advice_and_keeps_legacy_rows():
 
 
 def test_every_run_listing_site_routes_through_the_pinned_predicate():
-    from backend.routers.auto_optimize import load_runs_with_fallback
+    from backend.routers.auto_optimize import _runs_select_sql, load_runs_with_fallback
     from backend.services.gso_lakebase import load_gso_runs_for_space
     from backend.services.scanner import scan_space
 
     sites = {
         "gso_lakebase.load_gso_runs_for_space": load_gso_runs_for_space,
         "auto_optimize.load_runs_with_fallback": load_runs_with_fallback,
+        "auto_optimize._runs_select_sql (current-version)": _runs_select_sql,
         "scanner.scan_space (GSO Delta fallback)": scan_space,
     }
     for label, fn in sites.items():

@@ -34,8 +34,9 @@ def test_wrong_run_as_fails_startup_without_self_healing():
     assert "ensure_job_run_as" not in source
     tree = ast.parse(source)
     startup = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "startup")
-    assert isinstance(startup.body[0], ast.Expr)
-    assert startup.body[0].value.func.id == "_verify_gso_job_run_as"
+    first = startup.body[0]
+    assert ast.unparse(first) == (
+        "app.state.gso_run_as = await asyncio.to_thread(_verify_gso_job_run_as)")
 
 
 def test_unconfigured_job_id_placeholder_does_not_block_startup():
@@ -251,3 +252,80 @@ def test_executor_uses_live_scim_workspace_header_not_cached_config():
     del raw["X-Databricks-Org-Id"]
     with pytest.raises(PermissionError, match="workspace"):
         provider.executor(selection)
+
+
+def _job(principal: str):
+    return SimpleNamespace(settings=SimpleNamespace(
+        run_as=SimpleNamespace(service_principal_name=principal, user_name=None)))
+
+
+def _jobs_client(side_effect):
+    client = Mock()
+    client.config.client_id = "app-sp"
+    client.jobs.get.side_effect = side_effect
+    return client
+
+
+def test_run_as_check_retries_transient_errors_then_verifies():
+    from backend.services.version_control.platform.identity import RUN_AS_VERIFIED
+
+    client = _jobs_client([TimeoutError("throttled"), OSError("503"), _job("app-sp")])
+    sleeps: list = []
+    status = platform.check_configured_job_run_as(
+        {"GSO_JOB_ID": "42"}, Mock(return_value=client), sleep=sleeps.append)
+    assert status == RUN_AS_VERIFIED
+    assert sleeps == [2.0, 4.0]
+    assert client.jobs.get.call_count == 3
+
+
+def test_persistently_unreadable_run_as_degrades_instead_of_failing_boot():
+    from backend.services.version_control.platform.identity import RUN_AS_UNAVAILABLE
+
+    client = _jobs_client(TimeoutError("identity unavailable"))
+    sleeps: list = []
+    status = platform.check_configured_job_run_as(
+        {"GSO_JOB_ID": "42"}, Mock(return_value=client), sleep=sleeps.append)
+    assert status == RUN_AS_UNAVAILABLE
+    assert client.jobs.get.call_count == 3
+    assert sleeps == [2.0, 4.0]
+    client.jobs.update.assert_not_called()
+    client.jobs.reset.assert_not_called()
+
+
+def test_readable_wrong_run_as_still_fails_without_retry():
+    client = _jobs_client([_job("wrong-sp")])
+    sleeps: list = []
+    with pytest.raises(PermissionError, match="run_as"):
+        platform.check_configured_job_run_as(
+            {"GSO_JOB_ID": "42"}, Mock(return_value=client), sleep=sleeps.append)
+    assert client.jobs.get.call_count == 1
+    assert sleeps == []
+
+
+def test_unconfigured_job_is_reported_without_reading_it():
+    from backend.services.version_control.platform.identity import RUN_AS_NOT_CONFIGURED
+
+    factory = Mock()
+    assert platform.check_configured_job_run_as({"GSO_JOB_ID": "__GSO_JOB_ID__"}, factory) \
+        == RUN_AS_NOT_CONFIGURED
+    factory.assert_not_called()
+
+
+def test_bounded_read_client_disables_sdk_retry_and_shortens_timeout(monkeypatch):
+    import databricks.sdk.config as sdk_config
+    from databricks.sdk import WorkspaceClient
+
+    # Config() fetches /.well-known/databricks-config on init; keep the test offline.
+    def offline(host):
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(sdk_config, "get_host_metadata", offline)
+    client = WorkspaceClient(config=sdk_config.Config(
+        host="https://example.cloud.databricks.com", token="dapi-test", http_timeout_seconds=300))
+    original_retry = client.config.retry_timeout_seconds
+    bounded = platform.bounded_read_client(client)
+    assert bounded is not client
+    assert bounded.config.retry_timeout_seconds == 1
+    assert bounded.config.http_timeout_seconds == 30
+    assert client.config.http_timeout_seconds == 300
+    assert client.config.retry_timeout_seconds == original_retry

@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers import create
+from backend.tests._event_loop import off_event_loop
 
 
 # CreateSpaceRequest (backend/models.py): display_name (required, min_length=1),
@@ -61,3 +62,23 @@ def test_creation_unaffected_when_hook_is_real_and_unintegrated(monkeypatch):
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["space_id"] == "space-xyz"
+
+
+def test_create_runs_its_blocking_calls_off_the_event_loop(monkeypatch):
+    seen: dict = {}
+
+    def fake_create(**kwargs):
+        seen["create"] = off_event_loop()
+        return _FAKE_RESULT
+
+    def fake_capture(request, space_id):
+        seen["capture"] = off_event_loop()
+
+    monkeypatch.setattr(create, "create_genie_space", fake_create)
+    monkeypatch.setattr(create, "capture_initial_version", fake_capture)
+    app = FastAPI()
+    app.include_router(create.router)
+    with TestClient(app) as client:
+        resp = client.post("/api/create", json=_VALID_BODY)
+    assert resp.status_code == 200, resp.text
+    assert seen == {"create": True, "capture": True}

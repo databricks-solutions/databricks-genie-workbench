@@ -83,7 +83,7 @@ For this fallback to work, the SP must have **CAN_MANAGE** on each Genie Agent.
 
 The Auto-Optimize pipeline runs as a Lakeflow Job — a long-running, multi-task DAG. Lakeflow Jobs execute in a separate environment with a fixed `run_as` identity. There is no mechanism to forward the user's short-lived OAuth token into a background job that may run for minutes.
 
-The job is configured to `run_as` the app's SP. At startup, `_ensure_gso_job_run_as()` in `backend/main.py` verifies and updates the job's `run_as` to match the current app SP.
+The job is configured to `run_as` the app's SP by the deployer. At startup, `_verify_gso_job_run_as()` in `backend/main.py` verifies the job's `run_as` and never updates it: a readable, wrong `run_as` fails app boot, and an unreadable one leaves the app up but makes `POST /api/auto-optimize/trigger` return 503 until a per-trigger re-check succeeds. See [Job `run_as` Verification](/docs/platform/operations#job-run_as-verification).
 
 #### 3. GSO Delta table operations
 
@@ -186,7 +186,7 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | Trigger optimization — permission check | OBO (user) | `integration/trigger.py` `user_can_edit_space()` | Verify user has CAN_EDIT/CAN_MANAGE |
 | Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the agent |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
-| Optimization job execution (4-task DAG) | SP (run_as) | `backend/job_launcher.py` `ensure_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
+| Optimization job execution (4-task DAG) | SP (run_as) | `run_as` set by the deployer; verified (never repaired) by `backend/main.py` `_verify_gso_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
 | GSO Delta table reads/writes | SP | `routers/auto_optimize.py` `_delta_query()` | Optimizer state tables owned by SP |
 | Lakebase persistence | SP | `services/lakebase.py` | App-level storage, not user-scoped |
 | IQ Scan | OBO (user) → SP for GSO data | `services/scanner.py` | Space fetch via OBO; GSO run data via SP |

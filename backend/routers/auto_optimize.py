@@ -326,6 +326,17 @@ async def _offload(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
     return await asyncio.to_thread(fn, *args, **kwargs)
 
 
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    """Schedule ``coro`` and hold it until it finishes; the loop keeps only a weak reference."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 async def _delta_query_async(sql: str, *, strict: bool = False) -> list[dict]:
     """Async wrapper around the blocking ``_delta_query`` (off the event loop)."""
     return await _offload(_delta_query, sql, strict=strict)
@@ -1692,11 +1703,52 @@ async def probe_mv_entitlement(body: MvProbeRequest):
     return result
 
 
+async def _require_verified_optimizer_identity(request: Request) -> None:
+    """Refuse to launch the optimizer Job until its run_as identity verifies.
+
+    Startup records the status on ``app.state.gso_run_as``. An unconfigured Job
+    always refuses; anything else short of verified is re-checked once per
+    trigger, so a Jobs API failure at boot recovers without a restart.
+    """
+    from backend.services.version_control.platform import identity as vc_identity
+
+    status = getattr(request.app.state, "gso_run_as", None)
+    if status not in (vc_identity.RUN_AS_VERIFIED, vc_identity.RUN_AS_NOT_CONFIGURED):
+        try:
+            status = await _offload(
+                vc_identity.check_configured_job_run_as,
+                os.environ,
+                lambda: vc_identity.bounded_read_client(get_service_principal_client()),
+                attempts=1,
+            )
+        except PermissionError:
+            status = vc_identity.RUN_AS_MISMATCH
+        request.app.state.gso_run_as = status
+    if status == vc_identity.RUN_AS_NOT_CONFIGURED:
+        raise HTTPException(
+            status_code=503,
+            detail="The optimizer job is not configured (GSO_JOB_ID must be the Job's numeric id). "
+                   "Redeploy before starting a run.",
+        )
+    if status == vc_identity.RUN_AS_MISMATCH:
+        raise HTTPException(
+            status_code=503,
+            detail="The optimizer job's run_as does not match the app service principal. "
+                   "Redeploy the job before starting a run.",
+        )
+    if status == vc_identity.RUN_AS_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="The optimizer job's identity could not be verified. Try again shortly.",
+        )
+
+
 @router.post("/trigger")
 async def trigger(body: TriggerRequest, request: Request):
     """Trigger an optimization run for a Genie Agent."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured. Set GSO_CATALOG and GSO_JOB_ID.")
+    await _require_verified_optimizer_identity(request)
 
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
@@ -1757,7 +1809,8 @@ async def trigger(body: TriggerRequest, request: Request):
         await asyncio.to_thread(capture_before, observe, space_id=body.space_id)
 
     try:
-        result = trigger_optimization(
+        result = await _offload(
+            trigger_optimization,
             space_id=body.space_id,
             ws=ws,
             sp_ws=sp_ws,
@@ -1790,8 +1843,8 @@ async def trigger(body: TriggerRequest, request: Request):
                 capture_after_when_complete,
             )
 
-            asyncio.create_task(asyncio.to_thread(
-                capture_after_when_complete, observe,
+            _spawn_background(capture_after_when_complete(
+                observe,
                 space_id=body.space_id, run_id=result.run_id, job_run_id=result.job_run_id,
                 get_run=lambda rid: sp_ws.jobs.get_run(run_id=rid)))
 
@@ -4925,11 +4978,26 @@ def _has_active_run(runs_rows: list[dict]) -> bool:
     )
 
 
-def _runs_select_sql(space_id: str) -> str:
+def _runs_select_sql(space_id: str, *, exclude_advice: bool = True) -> str:
+    from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
+
+    advice = f"AND {MV_ADVICE_RUN_EXCLUSION} " if exclude_advice else ""
     return (
         f"SELECT {_RUNS_SELECT_COLS} FROM {_delta_table('genie_opt_runs')} "
-        f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+        f"WHERE space_id = '{space_id}' {advice}ORDER BY started_at DESC"
     )
+
+
+async def _load_current_version_runs(space_id: str) -> list[dict]:
+    try:
+        return await _delta_query_async(_runs_select_sql(space_id), strict=True)
+    except Exception as exc:
+        # Only a table that predates run_kind may drop the filter: it holds no
+        # advice runs. Any other failure must stay "unavailable", never unfiltered.
+        if "run_kind" not in str(exc):
+            raise
+        return await _delta_query_async(
+            _runs_select_sql(space_id, exclude_advice=False), strict=True)
 
 
 def _reconcile_zombie_runs(space_id: str, runs_rows: list[dict]) -> list[dict]:
@@ -5024,7 +5092,7 @@ async def get_current_version(
         f"i.timestamp DESC NULLS LAST, i.iteration DESC) = 1"
     )
     runs_result, champions_result = await asyncio.gather(
-        _delta_query_async(_runs_select_sql(space_id), strict=True),
+        _load_current_version_runs(space_id),
         _delta_query_async(champions_sql, strict=True),
         return_exceptions=True,
     )

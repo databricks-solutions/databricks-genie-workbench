@@ -1690,3 +1690,24 @@ through the standard Genie APIs and VC passively records them to the immutable l
 - Import resolves inside this checkout (`packages/genie-space-optimizer/.../__init__.py`);
   sqlglot 30.0.3 under `--frozen`. `git status -- uv.lock` clean.
 - Grep sweep: no residual references to any deleted governed module across kept source or tests.
+
+## §23 — PR #332 review remediation, M5 (availability) — DONE
+
+### Decisions
+- **VC-D-runas1 (startup identity):** startup classifies the optimizer Job's
+  `run_as` with `check_configured_job_run_as` (three reads, 2 s / 4 s backoff) and
+  stores the result on `app.state.gso_run_as`. A readable, wrong `run_as` still
+  fails boot, unchanged. An unreadable one no longer does: it disables only
+  `POST /api/auto-optimize/trigger`, which answers 503 and re-checks once per
+  attempt. The refusal is kept and narrowed from the whole app to the one route
+  that launches the Job, so history reads survive a Jobs API outage at boot.
+  `verify_configured_job_run_as` keeps its propagate-on-error contract. Each read
+  goes through `bounded_read_client` (1 s SDK retry window, 30 s HTTP timeout), so three
+  attempts bound boot at about 100 s instead of the SDK's 300 s-per-attempt default.
+  `/trigger` also refuses (503) when `GSO_JOB_ID` is set but not a positive integer,
+  because the launcher would otherwise resolve a Job by name whose `run_as` nobody
+  checked.
+- **VC-D-poll1 (post-run capture):** `capture_after_when_complete` is a coroutine.
+  It waits with `asyncio.sleep`, runs only the Jobs API read and the capture in a
+  worker thread, and has a budget of four tasks × 14400 s. `/trigger` holds the
+  task in `_background_tasks` until it finishes.

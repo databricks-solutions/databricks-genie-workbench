@@ -1,5 +1,8 @@
 """Observe-around-optimizer: auto-enroll + before/after capture, best-effort & gated."""
 
+import inspect
+import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import UUID
@@ -11,6 +14,7 @@ from backend.services.version_control.observe_optimizer import (
     capture_before,
     resolve_or_enroll_bound,
 )
+from backend.tests._event_loop import off_event_loop
 
 SPACE_ID = "space-1"
 _BOUND = vc.BindingRef(str(UUID(int=5)), 1, SPACE_ID, "target", SPACE_ID, "prod")
@@ -105,39 +109,73 @@ def _run(state):
     return SimpleNamespace(state=SimpleNamespace(life_cycle_state=SimpleNamespace(value=state)))
 
 
-def test_after_poll_waits_for_terminal_then_captures():
+async def _no_sleep(_seconds):
+    return None
+
+
+async def test_after_poll_waits_for_terminal_then_captures():
     rt = _runtime(existing=_BOUND)
     runs = iter([_run("RUNNING"), _run("RUNNING"), _run("TERMINATED")])
     sleeps: list = []
-    result = capture_after_when_complete(
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    result = await capture_after_when_complete(
         rt, space_id=SPACE_ID, run_id="run-1", job_run_id=42,
-        get_run=lambda rid: next(runs), sleep=sleeps.append, poll_interval_s=1)
+        get_run=lambda rid: next(runs), sleep=record_sleep, poll_interval_s=1)
     assert result == "obs-result"
-    assert len(sleeps) == 2  # slept through the two RUNNING polls
+    assert sleeps == [1, 1]
     rt.observer.capture.assert_called_once_with(_BOUND, "optimizer_after", "executor",
                                                 origin=vc.Origin.OPTIMIZER, optimizer_run_id="run-1")
 
 
-def test_after_poll_disabled_is_noop():
+async def test_after_poll_disabled_is_noop():
     rt = _runtime(writes=False)
-    assert capture_after_when_complete(rt, space_id=SPACE_ID, run_id="r", job_run_id=1,
-                                       get_run=lambda rid: _run("TERMINATED")) is None
+    assert await capture_after_when_complete(rt, space_id=SPACE_ID, run_id="r", job_run_id=1,
+                                             get_run=lambda rid: _run("TERMINATED")) is None
     rt.observer.capture.assert_not_called()
 
 
-def test_after_poll_captures_even_when_polling_fails():
+async def test_after_poll_captures_even_when_polling_fails():
     rt = _runtime(existing=_BOUND)
+
     def boom(_rid):
         raise RuntimeError("jobs api down")
-    result = capture_after_when_complete(rt, space_id=SPACE_ID, run_id="run-1", job_run_id=42,
-                                         get_run=boom, sleep=lambda _s: None)
-    assert result == "obs-result"  # fell back to a best-effort capture
+
+    result = await capture_after_when_complete(rt, space_id=SPACE_ID, run_id="run-1", job_run_id=42,
+                                               get_run=boom, sleep=_no_sleep)
+    assert result == "obs-result"
     rt.observer.capture.assert_called_once()
 
 
-def test_after_poll_missing_job_run_id_captures_immediately():
+async def test_after_poll_missing_job_run_id_captures_immediately():
     rt = _runtime(existing=_BOUND)
     called: list = []
-    result = capture_after_when_complete(rt, space_id=SPACE_ID, run_id="run-1", job_run_id=None,
-                                         get_run=lambda rid: called.append(rid) or _run("TERMINATED"))
-    assert result == "obs-result" and called == []  # no poll without a job_run_id
+    result = await capture_after_when_complete(
+        rt, space_id=SPACE_ID, run_id="run-1", job_run_id=None,
+        get_run=lambda rid: called.append(rid) or _run("TERMINATED"))
+    assert result == "obs-result" and called == []
+
+
+async def test_after_poll_runs_every_blocking_call_off_the_event_loop():
+    rt = _runtime(existing=_BOUND)
+    where: list = []
+    rt.observer.capture.side_effect = lambda *a, **k: where.append(("capture", off_event_loop()))
+    runs = iter([_run("RUNNING"), _run("TERMINATED")])
+
+    def get_run(_rid):
+        where.append(("get_run", off_event_loop()))
+        return next(runs)
+
+    await capture_after_when_complete(rt, space_id=SPACE_ID, run_id="run-1", job_run_id=42,
+                                      get_run=get_run, sleep=_no_sleep)
+    assert where == [("get_run", True), ("get_run", True), ("capture", True)]
+
+
+def test_after_poll_budget_covers_every_job_task_timeout():
+    job = (Path(__file__).resolve().parents[2] / "databricks.yml").read_text()
+    task_timeouts = [int(v) for v in re.findall(r"^\s*timeout_seconds:\s*(\d+)\s*$", job, re.M)]
+    assert len(task_timeouts) == 4
+    budget = inspect.signature(capture_after_when_complete).parameters["timeout_s"].default
+    assert budget >= sum(task_timeouts)

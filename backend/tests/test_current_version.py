@@ -637,3 +637,71 @@ def test_invalidate_live_fingerprint_for_run_clears_cache(client, monkeypatch) -
     assert auto_optimize._live_fp_cache["other-space:p1"] == (
         float("inf"), "keep-config-fp", "keep-benchmark-fp", None,
     )
+
+
+from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
+
+
+def test_advice_runs_are_not_matchable_versions(client, monkeypatch) -> None:
+    space = _space()
+    advice = {
+        **_run_row("advice-1", started_at="2026-07-02 10:00:00",
+                   config_snapshot=_snapshot_wrapper(space)),
+        "run_kind": "mv_advice",
+    }
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql:
+            return []
+        if "genie_opt_runs" in sql:
+            rows = [advice]
+            if MV_ADVICE_RUN_EXCLUSION in sql:
+                rows = [row for row in rows if row.get("run_kind") != "mv_advice"]
+            return rows
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    _stub_live(monkeypatch, space)
+    data = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version").json()
+    assert data["status"] == "no_known_versions"
+
+
+def test_runs_table_without_run_kind_still_matches(client, monkeypatch) -> None:
+    space = _space()
+    runs = [_run_row("r1", started_at="2026-07-01 10:00:00",
+                     config_snapshot=_snapshot_wrapper(space))]
+    runs_queries: list[str] = []
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql:
+            return []
+        if "genie_opt_runs" in sql:
+            runs_queries.append(sql)
+            if "run_kind" in sql:
+                raise RuntimeError(
+                    "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `run_kind` cannot be resolved.")
+            return runs
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    _stub_live(monkeypatch, space)
+    data = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version").json()
+    assert data["status"] == "matched"
+    assert len(runs_queries) == 2
+
+
+def test_runs_query_failure_is_unavailable_not_retried_unfiltered(client, monkeypatch) -> None:
+    runs_queries: list[str] = []
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql:
+            return []
+        if "genie_opt_runs" in sql:
+            runs_queries.append(sql)
+            raise RuntimeError("warehouse unavailable")
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    data = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version").json()
+    assert data["status"] == "unavailable"
+    assert len(runs_queries) == 1

@@ -31,7 +31,10 @@ def client(monkeypatch) -> TestClient:
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
 
+    from backend.services.version_control.platform.identity import RUN_AS_VERIFIED
+
     app = FastAPI()
+    app.state.gso_run_as = RUN_AS_VERIFIED
     app.include_router(auto_optimize.router)
     return TestClient(app)
 
@@ -310,6 +313,84 @@ def test_trigger_unconfigured_returns_503(client, monkeypatch) -> None:
         json={"space_id": "space-abc"},
     )
     assert resp.status_code == 503
+
+
+def test_trigger_refuses_while_optimizer_identity_is_unverified(client, monkeypatch) -> None:
+    from backend.services.version_control import observe_optimizer
+    from backend.services.version_control.platform import identity as vc_identity
+
+    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
+    client.app.state.vc_observe = MagicMock()
+    checks: list[int] = []
+
+    def still_unreadable(environment, client_factory, *, attempts):
+        checks.append(attempts)
+        return vc_identity.RUN_AS_UNAVAILABLE
+
+    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", still_unreadable)
+    capture = MagicMock()
+    monkeypatch.setattr(observe_optimizer, "capture_before", capture)
+    with patch.object(auto_optimize, "trigger_optimization") as trigger_mock:
+        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+    assert resp.status_code == 503
+    assert "could not be verified" in resp.json()["detail"]
+    assert checks == [1]
+    trigger_mock.assert_not_called()
+    capture.assert_not_called()
+
+
+def test_trigger_reverifies_and_proceeds_once_identity_reads(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    from backend.services.version_control.platform import identity as vc_identity
+
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
+    monkeypatch.setattr(vc_identity, "check_configured_job_run_as",
+                        lambda environment, client_factory, *, attempts: vc_identity.RUN_AS_VERIFIED)
+    fake_result = MagicMock(run_id="run-xyz", job_run_id=9999, job_url=None, status="QUEUED")
+    with patch.object(auto_optimize, "trigger_optimization", return_value=fake_result) as trigger_mock:
+        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+    assert resp.status_code == 200, resp.text
+    trigger_mock.assert_called_once()
+    assert client.app.state.gso_run_as == vc_identity.RUN_AS_VERIFIED
+
+
+def test_trigger_refuses_a_run_as_mismatch_found_after_boot(client, monkeypatch) -> None:
+    from backend.services.version_control.platform import identity as vc_identity
+
+    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
+
+    def mismatch(environment, client_factory, *, attempts):
+        raise PermissionError("Job run_as does not match expected service principal")
+
+    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", mismatch)
+    with patch.object(auto_optimize, "trigger_optimization") as trigger_mock:
+        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+    assert resp.status_code == 503
+    assert "does not match" in resp.json()["detail"]
+    assert client.app.state.gso_run_as == vc_identity.RUN_AS_MISMATCH
+    trigger_mock.assert_not_called()
+
+
+def test_trigger_refuses_an_unconfigured_optimizer_job(client, monkeypatch) -> None:
+    from backend.services.version_control.platform import identity as vc_identity
+
+    client.app.state.gso_run_as = vc_identity.RUN_AS_NOT_CONFIGURED
+    checks: list[int] = []
+
+    def recheck(environment, client_factory, *, attempts):
+        checks.append(attempts)
+        return vc_identity.RUN_AS_NOT_CONFIGURED
+
+    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", recheck)
+    with patch.object(auto_optimize, "trigger_optimization") as trigger_mock:
+        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+    assert resp.status_code == 503
+    assert "not configured" in resp.json()["detail"]
+    assert checks == []
+    trigger_mock.assert_not_called()
 
 
 def test_trigger_rejects_malformed_space_id(client) -> None:
@@ -2549,3 +2630,58 @@ def test_revert_options_returns_preview(
     assert stub.call_args.args[0] == run_id
     assert stub.call_args.args[1] is mock_user_ws
     assert stub.call_args.args[2] is mock_sp_ws
+
+
+async def test_spawned_background_task_is_held_until_it_finishes() -> None:
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def work():
+        await release.wait()
+
+    task = auto_optimize._spawn_background(work())
+    assert task in auto_optimize._background_tasks
+    release.set()
+    await task
+    await asyncio.sleep(0)
+    assert task not in auto_optimize._background_tasks
+
+
+def test_trigger_holds_a_reference_to_the_after_capture_task(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    client.app.state.vc_observe = MagicMock()
+    spawned: list[str] = []
+
+    def record(coro):
+        spawned.append(coro.cr_code.co_name)
+        coro.close()
+
+    monkeypatch.setattr(auto_optimize, "_spawn_background", record)
+    fake_result = MagicMock(run_id="run-xyz", job_run_id=9999, job_url=None, status="QUEUED")
+    with patch.object(auto_optimize, "trigger_optimization", return_value=fake_result):
+        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+    assert resp.status_code == 200, resp.text
+    assert spawned == ["capture_after_when_complete"]
+
+
+def test_trigger_runs_trigger_optimization_off_the_event_loop(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    from backend.tests._event_loop import off_event_loop
+
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    seen: list[bool] = []
+
+    def fake_trigger(**kwargs):
+        seen.append(off_event_loop())
+        return MagicMock(run_id="run-xyz", job_run_id=9999, job_url=None, status="QUEUED")
+
+    monkeypatch.setattr(auto_optimize, "trigger_optimization", fake_trigger)
+    resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+    assert resp.status_code == 200, resp.text
+    assert seen == [True]

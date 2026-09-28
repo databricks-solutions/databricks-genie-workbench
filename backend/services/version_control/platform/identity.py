@@ -1,6 +1,7 @@
 """Server-side identity verification without authority repair or credential fallback."""
 
 import logging
+import time
 from urllib.parse import urlsplit
 
 from ..contracts import ActorContext, ExecutorContext
@@ -149,8 +150,44 @@ def verify_job_run_as(client, execution_ref: str, expected_principal_id: str) ->
         raise PermissionError("Job run_as does not match expected service principal")
 
 
-def verify_configured_job_run_as(environment, client_factory) -> None:
+def bounded_read_client(client, *, http_timeout_seconds: int = 30):
+    """Clone ``client`` for the run_as read with a 1 s SDK retry window and a short timeout.
+
+    The SDK retries throttling and 503s internally for up to 300 s per call, which
+    would turn ``check_configured_job_run_as``'s own retries into minutes of blocked
+    boot. Falls back to ``client`` if the config cannot be cloned.
+    """
+    import copy
+
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        cfg = copy.deepcopy(client.config)
+        cfg.retry_timeout_seconds = 1
+        cfg.http_timeout_seconds = http_timeout_seconds
+        return WorkspaceClient(config=cfg)
+    except Exception:  # noqa: BLE001 - correct auth beats the bounded read
+        logger.warning("Could not build a bounded run_as read client; using the default", exc_info=True)
+        return client
+
+
+RUN_AS_NOT_CONFIGURED = "not_configured"
+RUN_AS_VERIFIED = "verified"
+RUN_AS_UNAVAILABLE = "unavailable"
+RUN_AS_MISMATCH = "mismatch"
+
+
+def _configured_job_ref(environment) -> str | None:
     execution_ref = environment.get("GSO_JOB_ID", "")
+    if not execution_ref or not execution_ref.isdigit() or int(execution_ref) <= 0:
+        logger.warning(
+            "Optimizer integration not configured (GSO_JOB_ID=%r); skipping Job "
+            "run_as verification", execution_ref)
+        return None
+    return execution_ref
+
+
+def verify_configured_job_run_as(environment, client_factory) -> None:
     # "Not configured" and "configured but wrong" are different states; only the
     # second is an authority violation. An empty value, the unsubstituted deploy
     # placeholder "__GSO_JOB_ID__", or any non-digit / non-positive value all mean
@@ -160,11 +197,35 @@ def verify_configured_job_run_as(environment, client_factory) -> None:
     # startup authority repair: nothing is written; we simply do not verify what was
     # never configured. Only a CONFIGURED (all-digit, positive) Job whose run_as is
     # wrong or unreadable refuses.
-    if not execution_ref or not execution_ref.isdigit() or int(execution_ref) <= 0:
-        logger.warning(
-            "Optimizer integration not configured (GSO_JOB_ID=%r); skipping Job "
-            "run_as verification", execution_ref)
+    execution_ref = _configured_job_ref(environment)
+    if execution_ref is None:
         return
     client = client_factory()
     principal = client.config.client_id or environment.get("DATABRICKS_CLIENT_ID", "")
     verify_job_run_as(client, execution_ref, principal)
+
+
+def check_configured_job_run_as(environment, client_factory, *, attempts: int = 3,
+                                backoff_s: float = 2.0, sleep=time.sleep) -> str:
+    """Classify the optimizer Job's run_as for app startup and ``/trigger``.
+
+    Raises ``PermissionError`` only when run_as is readable and wrong. A read
+    that still fails after ``attempts`` tries returns ``RUN_AS_UNAVAILABLE``: the
+    caller refuses the optimizer rather than failing boot (VC-D-runas1).
+    """
+    if _configured_job_ref(environment) is None:
+        return RUN_AS_NOT_CONFIGURED
+    for attempt in range(1, attempts + 1):
+        try:
+            verify_configured_job_run_as(environment, client_factory)
+            return RUN_AS_VERIFIED
+        except PermissionError:
+            raise
+        except Exception:
+            if attempt == attempts:
+                logger.error(
+                    "Optimizer Job run_as unreadable after %d attempt(s); the optimizer "
+                    "is disabled until it verifies", attempts, exc_info=True)
+                return RUN_AS_UNAVAILABLE
+            sleep(backoff_s * 2 ** (attempt - 1))
+    return RUN_AS_UNAVAILABLE

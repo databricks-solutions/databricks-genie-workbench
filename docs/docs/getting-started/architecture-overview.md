@@ -69,7 +69,7 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 - Registers `OBOAuthMiddleware` for user identity on all `/api/*` routes
 - Mounts routers with their prefixes
 - Serves `frontend/dist/` as static files (SPA with fallback to `index.html`)
-- On startup, ensures the GSO job's `run_as` matches the app's SP via `_ensure_gso_job_run_as()`
+- On startup, verifies (never repairs) that the GSO job's `run_as` is the app's SP via `_verify_gso_job_run_as()`; a wrong `run_as` fails boot, an unreadable one disables only `POST /api/auto-optimize/trigger` (503) until it verifies
 
 ### Routers
 

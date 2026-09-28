@@ -15,7 +15,7 @@ _EXPORTS = {
         "provisioning": ("OwnerMigrationRunner", "PROVISION_ROLES", "build_grant_matrix", "build_owner_manifests", "provision", "repeatable_sandbox_provision"),
         "permissions": ("verify_artifact_permissions", "verify_coordination_permissions", "verify_fact_permissions"),
         "capabilities": ("FIRST_WRITE_CAPABILITIES", "REQUIRED_WRITER_PATHS", "capabilities_ready", "storage_write_ready", "topology_read_ready"),
-        "identity": ("PlatformIdentityProvider", "TrustedSnapshotReader", "verify_configured_job_run_as", "verify_job_run_as"),
+        "identity": ("PlatformIdentityProvider", "TrustedSnapshotReader", "bounded_read_client", "check_configured_job_run_as", "verify_configured_job_run_as", "verify_job_run_as"),
         "termination": ("PlatformTerminationEvidenceProvider",),
     }.items()
     for name in names

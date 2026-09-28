@@ -14,7 +14,7 @@ from threading import Barrier
 import pytest
 
 
-FIXTURES = Path(__file__).parent / "fixtures" / "vc_contracts"
+FIXTURES = Path(__file__).parents[2] / "frontend" / "src" / "contracts" / "vc"
 SPEC = Path(__file__).parents[2] / "docs/design/version_control/implementation_plan/contracts.md"
 
 

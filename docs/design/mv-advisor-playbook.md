@@ -251,9 +251,9 @@
      every VERIFY section.
    
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 751 backend + 1541 GSO,
-     measured 2026-09-14 (this supersedes the prior 751 + 1536 floor measured 2026-09-13). Historical
-     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 1253 backend + 1541 GSO,
+     measured 2026-09-28 (this supersedes the prior 751 + 1541 floor measured 2026-09-14). Historical
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -3204,6 +3204,31 @@ cross-bucket idempotency (legacy `metric_views` entry ⇒ no-op).*
 
 *VERIFY (local): backend MV suite green (idempotency rewritten for tables +
 new write-target pin). Deploying to fevm-serverless.*
+
+### Prompt 15.10 — PR #332 review remediation, M5: availability and deploy (findings 16–20b)
+
+Scope: the five availability findings from the PR #332 review, plus the three doc
+guards the version-control merges dropped. No job DAG, parameter or user-facing
+change. Decisions VC-D-runas1 and VC-D-poll1 are recorded in
+`backend/services/version_control/OBSERVE_ONLY_PIVOT_PLAN.md` §23.
+
+- 16: the contract JSON moved from `backend/tests/fixtures/vc_contracts/` to
+  `frontend/src/contracts/vc/`, because `tsc -b` compiles the demo adapter and
+  the notebook installer drops `tests/`. `test_frontend_build_inputs.py` guards it.
+- 17: an unreadable optimizer Job `run_as` degrades `/trigger` (503, re-checked
+  per trigger) instead of failing app boot; a readable, wrong `run_as` still fails
+  boot. The read uses `bounded_read_client` (1 s SDK retry window, 30 s timeout), and
+  `/trigger` also refuses a Job id that is not configured.
+- 18: the post-run poller is a coroutine with a 16 h budget (four tasks × 14400 s),
+  held by `_spawn_background`.
+- 19: `create_genie_space`, the initial capture and `trigger_optimization` run
+  off the event loop.
+- 20b: `/current-version` lists runs through `MV_ADVICE_RUN_EXCLUSION`, falling
+  back only for a table without `run_kind`.
+- Restored from `897603b1`: `test_rules_parity.py`, `test_gap_report_counts.py`,
+  `test_exposure_matrix.py`, `scripts/gap_report_counts.py`.
+
+*VERIFY (local): 1253 backend + 1541 GSO; notebook-shaped staged build green.*
 
 ### Prompt 16 — Docs, changelog, PR
 

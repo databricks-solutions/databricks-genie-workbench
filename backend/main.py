@@ -190,16 +190,20 @@ if not is_running_on_databricks_apps():
     )
 
 # Lakebase connection pool lifecycle
-def _verify_gso_job_run_as() -> None:
+def _verify_gso_job_run_as() -> str:
     from backend.services.auth import get_service_principal_client
-    from backend.services.version_control.platform import verify_configured_job_run_as
+    from backend.services.version_control.platform import (
+        bounded_read_client,
+        check_configured_job_run_as,
+    )
 
-    verify_configured_job_run_as(os.environ, get_service_principal_client)
+    return check_configured_job_run_as(
+        os.environ, lambda: bounded_read_client(get_service_principal_client()))
 
 
 @app.on_event("startup")
 async def startup():
-    _verify_gso_job_run_as()
+    app.state.gso_run_as = await asyncio.to_thread(_verify_gso_job_run_as)
     from backend.services.lakebase import init_pool
     await init_pool()
     from backend.services.create_agent_session import _ensure_table

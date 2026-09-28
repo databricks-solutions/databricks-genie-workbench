@@ -890,7 +890,10 @@ def trigger_client(monkeypatch):
         )
 
     monkeypatch.setattr(auto_optimize, "trigger_optimization", _fake_trigger)
+    from backend.services.version_control.platform.identity import RUN_AS_VERIFIED
+
     app = FastAPI()
+    app.state.gso_run_as = RUN_AS_VERIFIED
     app.include_router(auto_optimize.router)
     return TestClient(app), captured
 

@@ -1,11 +1,11 @@
 // Thin M02 contract views. Only demo routing/lineage and scenario overlays live here.
 // Real UI modules must never import this fake-server/test adapter.
 import type { ApprovalInputs, ApprovalRecord, BindingStatus, DeploymentReceipt, Fingerprints, VersionSummary } from '@/types/version-control'
-import binding from '../../../../backend/tests/fixtures/vc_contracts/binding_status.json'
-import version from '../../../../backend/tests/fixtures/vc_contracts/version_summary.json'
-import approval from '../../../../backend/tests/fixtures/vc_contracts/approval_inputs.json'
-import receipt from '../../../../backend/tests/fixtures/vc_contracts/deployment_receipt.json'
-import fingerprint from '../../../../backend/tests/fixtures/vc_contracts/fingerprints.json'
+import binding from '@/contracts/vc/binding_status.json'
+import version from '@/contracts/vc/version_summary.json'
+import approval from '@/contracts/vc/approval_inputs.json'
+import receipt from '@/contracts/vc/deployment_receipt.json'
+import fingerprint from '@/contracts/vc/fingerprints.json'
 
 export const fingerprints: Fingerprints = fingerprint.examples[0]
 export const bindingFixture: BindingStatus = {
