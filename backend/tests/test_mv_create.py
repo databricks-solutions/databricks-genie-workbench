@@ -881,6 +881,11 @@ def trigger_client(monkeypatch):
     monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: MagicMock())
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: MagicMock())
 
+    async def _allow_space_access(space_id, level):
+        return None
+
+    monkeypatch.setattr(auto_optimize, "require_space_access", _allow_space_access)
+
     captured: dict = {}
 
     def _fake_trigger(**kwargs):

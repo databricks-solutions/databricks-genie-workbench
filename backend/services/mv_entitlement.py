@@ -412,7 +412,7 @@ def probe(
         for privilege, securable_type, full_name, owned in checks
     ]
 
-    space_row = _space_manage_row(ws, space_id, principal, user_groups)
+    space_row = _space_manage_row(ws, space_id, principal)
     if space_row is not None:
         privileges.append(space_row)
 
@@ -451,9 +451,7 @@ def _default_warehouse_id() -> str:
     return os.environ.get("GSO_WAREHOUSE_ID") or os.environ.get("SQL_WAREHOUSE_ID", "")
 
 
-def _space_manage_row(
-    ws: Any, space_id: str, principal: str, user_groups: set[str],
-) -> MvPrivilegeRow | None:
+def _space_manage_row(ws: Any, space_id: str, principal: str) -> MvPrivilegeRow | None:
     """Check CAN_MANAGE on the Genie Agent whose config would be patched.
 
     CAN_EDIT is not enough: attaching the view rewrites
@@ -464,10 +462,7 @@ def _space_manage_row(
         return None
     from genie_space_optimizer.common.genie_client import user_can_manage_space
 
-    can_manage = user_can_manage_space(
-        ws, space_id, user_email=principal, user_groups=user_groups,
-        acl_client=get_service_principal_client(),
-    )
+    can_manage = user_can_manage_space(ws, space_id)
     return MvPrivilegeRow(
         label=f"CAN MANAGE on Genie Agent {space_id}",
         privilege="CAN_MANAGE",

@@ -186,7 +186,7 @@ def trigger_optimization(
             "Provide user_email or user_name."
         )
 
-    if not user_can_edit_space(ws, space_id, user_email=caller_email, acl_client=sp_ws):
+    if not user_can_edit_space(ws, space_id):
         raise PermissionError(
             "You need CAN_EDIT or CAN_MANAGE permission on this "
             "Genie Agent to start optimization."

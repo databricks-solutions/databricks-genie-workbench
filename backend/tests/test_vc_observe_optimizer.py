@@ -179,3 +179,10 @@ def test_after_poll_budget_covers_every_job_task_timeout():
     assert len(task_timeouts) == 4
     budget = inspect.signature(capture_after_when_complete).parameters["timeout_s"].default
     assert budget >= sum(task_timeouts)
+
+
+def test_after_poll_waits_with_asyncio_sleep_by_default():
+    import asyncio
+    import inspect
+
+    assert inspect.signature(capture_after_when_complete).parameters["sleep"].default is asyncio.sleep

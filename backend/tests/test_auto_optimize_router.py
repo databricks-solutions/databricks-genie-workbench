@@ -10,14 +10,16 @@ monkeypatching, no real Databricks connectivity required.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from backend.routers import auto_optimize
+from backend.services.space_access import SpaceAccessLevel
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -32,6 +34,8 @@ def client(monkeypatch) -> TestClient:
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
 
     from backend.services.version_control.platform.identity import RUN_AS_VERIFIED
+
+    _allow_space_access(monkeypatch)
 
     app = FastAPI()
     app.state.gso_run_as = RUN_AS_VERIFIED
@@ -54,6 +58,45 @@ def mock_sp_ws() -> MagicMock:
 @pytest.fixture
 def mock_user_ws() -> MagicMock:
     return MagicMock()
+
+
+def _allow_space_access(monkeypatch) -> None:
+    """Default-allow the MV-D109 gate; gate tests override it."""
+    async def allow(space_id, level):
+        return None
+
+    async def run_envelope(run_id):
+        return {"run_id": run_id, "space_id": "space-1", "status": "CONVERGED"}
+
+    monkeypatch.setattr(auto_optimize, "require_space_access", allow)
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", run_envelope)
+
+
+_SPACE_ACCESS_DENIED = {
+    "code": "space_access_denied",
+    "required": "edit",
+    "message": "You need Can Edit permission on this Genie Agent.",
+    "platform_message": 'You need "Can Edit" permission to perform this action',
+}
+
+
+def _deny_space_access(monkeypatch, asked: list | None = None) -> None:
+    async def deny(space_id, level):
+        if asked is not None:
+            asked.append((space_id, level))
+        raise HTTPException(status_code=403, detail=_SPACE_ACCESS_DENIED)
+
+    monkeypatch.setattr(auto_optimize, "require_space_access", deny)
+
+
+def _record_space_access(monkeypatch) -> list:
+    asked: list = []
+
+    async def allow(space_id, level):
+        asked.append((space_id, level))
+
+    monkeypatch.setattr(auto_optimize, "require_space_access", allow)
+    return asked
 
 
 # ── /permissions — advisory UI gate ─────────────────────────────────────
@@ -1712,15 +1755,8 @@ def test_remove_history_entry_persists_requesting_user(
             hidden_by=hidden_by,
         )
 
-    permission_check = MagicMock(return_value=True)
-    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
-    monkeypatch.setattr(auto_optimize, "user_can_edit_space", permission_check)
-    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-    monkeypatch.setattr(
-        auto_optimize,
-        "get_service_principal_client",
-        lambda: mock_sp_ws,
-    )
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
+    asked = _record_space_access(monkeypatch)
     monkeypatch.setattr(
         auto_optimize.workbench_lakebase,
         "hide_optimization_run_from_history",
@@ -1731,7 +1767,6 @@ def test_remove_history_entry_persists_requesting_user(
         f"/api/auto-optimize/runs/{_RUN}/history-entry",
         headers={
             "x-forwarded-email": "editor@example.com",
-            "x-forwarded-groups": "Data Team, Reviewers",
         },
     )
 
@@ -1747,13 +1782,7 @@ def test_remove_history_entry_persists_requesting_user(
         "space_id": "space-1",
         "hidden_by": "editor@example.com",
     }
-    permission_check.assert_called_once_with(
-        mock_user_ws,
-        "space-1",
-        user_email="editor@example.com",
-        user_groups={"data team", "reviewers"},
-        acl_client=mock_sp_ws,
-    )
+    assert asked == [("space-1", SpaceAccessLevel.EDIT)]
 
 
 @pytest.mark.parametrize("status", ["QUEUED", "IN_PROGRESS", "RUNNING"])
@@ -1763,7 +1792,7 @@ def test_remove_history_entry_rejects_active_run(
     async def load_run(_run_id: str) -> dict:
         return {"run_id": _RUN, "space_id": "space-1", "status": status}
 
-    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
 
     response = client.delete(f"/api/auto-optimize/runs/{_RUN}/history-entry")
 
@@ -1777,26 +1806,20 @@ def test_remove_history_entry_requires_edit_permission(
     async def load_run(_run_id: str) -> dict:
         return {"run_id": _RUN, "space_id": "space-1", "status": "FAILED"}
 
-    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
-    monkeypatch.setattr(auto_optimize, "user_can_edit_space", lambda *a, **k: False)
-    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-    monkeypatch.setattr(
-        auto_optimize,
-        "get_service_principal_client",
-        lambda: mock_sp_ws,
-    )
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
+    _deny_space_access(monkeypatch)
 
     response = client.delete(f"/api/auto-optimize/runs/{_RUN}/history-entry")
 
     assert response.status_code == 403
-    assert "CAN_EDIT or CAN_MANAGE" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "space_access_denied"
 
 
 def test_remove_history_entry_returns_not_found(client, monkeypatch) -> None:
     async def load_run(_run_id: str) -> None:
         return None
 
-    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
 
     response = client.delete(f"/api/auto-optimize/runs/{_RUN}/history-entry")
 
@@ -1813,14 +1836,7 @@ def test_remove_history_entry_fails_when_tombstone_cannot_be_persisted(
     async def fail_to_hide(*_args) -> None:
         raise RuntimeError("Lakebase unavailable")
 
-    monkeypatch.setattr(auto_optimize, "_load_run_for_history_removal", load_run)
-    monkeypatch.setattr(auto_optimize, "user_can_edit_space", lambda *a, **k: True)
-    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
-    monkeypatch.setattr(
-        auto_optimize,
-        "get_service_principal_client",
-        lambda: mock_sp_ws,
-    )
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
     monkeypatch.setattr(
         auto_optimize.workbench_lakebase,
         "hide_optimization_run_from_history",
@@ -2633,8 +2649,6 @@ def test_revert_options_returns_preview(
 
 
 async def test_spawned_background_task_is_held_until_it_finishes() -> None:
-    import asyncio
-
     release = asyncio.Event()
 
     async def work():
@@ -2685,3 +2699,167 @@ def test_trigger_runs_trigger_optimization_off_the_event_loop(
     resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
     assert resp.status_code == 200, resp.text
     assert seen == [True]
+
+
+# ── MV-D109: the space access gate (M1a) ───────────────────────────────
+
+
+def test_trigger_without_edit_is_refused_before_any_side_effect(client, monkeypatch) -> None:
+    from backend.services.version_control import observe_optimizer
+    from backend.services.version_control.platform import identity as vc_identity
+
+    client.app.state.vc_observe = MagicMock()
+    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
+    recheck = MagicMock()
+    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", recheck)
+    capture = MagicMock()
+    monkeypatch.setattr(observe_optimizer, "capture_before", capture)
+    advice = MagicMock()
+    monkeypatch.setattr(auto_optimize.workbench_lakebase, "get_join_advice", advice)
+    asked: list = []
+    _deny_space_access(monkeypatch, asked)
+
+    with patch.object(auto_optimize, "trigger_optimization") as trigger_mock:
+        resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "space_access_denied"
+    assert asked == [("space-abc", SpaceAccessLevel.EDIT)]
+    recheck.assert_not_called()
+    advice.assert_not_called()
+    capture.assert_not_called()
+    trigger_mock.assert_not_called()
+
+
+def test_trigger_asks_for_edit_even_when_create_and_attach_is_requested(
+    client, mock_sp_ws, mock_user_ws, monkeypatch,
+) -> None:
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    asked = _record_space_access(monkeypatch)
+    fake_result = MagicMock(run_id="run-xyz", job_run_id=1, job_url="u", status="QUEUED")
+
+    with patch.object(auto_optimize, "trigger_optimization", return_value=fake_result):
+        resp = client.post("/api/auto-optimize/trigger", json={
+            "space_id": "space-abc",
+            "enable_metric_view_suggestions": True,
+            "mv_action_mode": "create_and_attach",
+        })
+
+    assert resp.status_code == 200, resp.text
+    assert asked == [("space-abc", SpaceAccessLevel.EDIT)]
+
+
+_RUN_GATED_ROUTES = [
+    ("post", "apply", "apply_optimization"),
+    ("post", "discard", "discard_optimization"),
+    ("post", "revert", "revert_optimization"),
+    ("get", "revert-options", "preview_revert_options"),
+    ("delete", "history-entry", None),
+]
+
+
+@pytest.mark.parametrize("method,suffix,action", _RUN_GATED_ROUTES)
+def test_run_mutations_without_edit_are_refused_before_any_side_effect(
+    client, monkeypatch, method: str, suffix: str, action: str | None,
+) -> None:
+    asked: list = []
+    _deny_space_access(monkeypatch, asked)
+    hide = MagicMock()
+    monkeypatch.setattr(auto_optimize.workbench_lakebase, "hide_optimization_run_from_history", hide)
+    target = MagicMock()
+    if action:
+        monkeypatch.setattr(auto_optimize, action, target)
+
+    resp = getattr(client, method)(f"/api/auto-optimize/runs/{_RUN}/{suffix}")
+
+    assert resp.status_code == 403
+    assert asked == [("space-1", SpaceAccessLevel.EDIT)]
+    target.assert_not_called()
+    hide.assert_not_called()
+
+
+def test_run_gate_answers_404_for_an_unknown_run(client, monkeypatch) -> None:
+    async def load_run(_run_id):
+        return None
+
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
+    asked = _record_space_access(monkeypatch)
+    with patch.object(auto_optimize, "apply_optimization") as apply_mock:
+        resp = client.post(f"/api/auto-optimize/runs/{_RUN}/apply")
+    assert resp.status_code == 404
+    assert asked == []
+    apply_mock.assert_not_called()
+
+
+def test_run_gate_answers_503_when_the_run_store_is_unreadable(client, monkeypatch) -> None:
+    async def load_run(_run_id):
+        raise RuntimeError("warehouse unavailable")
+
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
+    with patch.object(auto_optimize, "discard_optimization") as discard_mock:
+        resp = client.post(f"/api/auto-optimize/runs/{_RUN}/discard")
+    assert resp.status_code == 503
+    discard_mock.assert_not_called()
+
+
+def test_run_gate_answers_409_for_a_run_without_a_space(client, monkeypatch) -> None:
+    async def load_run(run_id):
+        return {"run_id": run_id, "space_id": "", "status": "CONVERGED"}
+
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", load_run)
+    asked = _record_space_access(monkeypatch)
+    with patch.object(auto_optimize, "revert_optimization") as revert_mock:
+        resp = client.post(f"/api/auto-optimize/runs/{_RUN}/revert")
+    assert resp.status_code == 409
+    assert asked == []
+    revert_mock.assert_not_called()
+
+
+def test_trigger_identity_recheck_reads_through_a_bounded_sp_client(
+    client, mock_sp_ws, monkeypatch,
+) -> None:
+    from backend.services.version_control.platform import identity as vc_identity
+
+    client.app.state.gso_run_as = vc_identity.RUN_AS_UNAVAILABLE
+    bounded = object()
+    seen: dict = {}
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: mock_sp_ws)
+    monkeypatch.setattr(vc_identity, "bounded_read_client", lambda c: bounded if c is mock_sp_ws else None)
+
+    def check(environment, client_factory, *, attempts):
+        seen["client"] = client_factory()
+        return vc_identity.RUN_AS_UNAVAILABLE
+
+    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", check)
+
+    resp = client.post("/api/auto-optimize/trigger", json={"space_id": "space-abc"})
+
+    assert resp.status_code == 503
+    assert seen["client"] is bounded
+
+
+async def test_concurrent_identity_rechecks_share_one_jobs_api_read(monkeypatch) -> None:
+    import time
+    from types import SimpleNamespace
+
+    from backend.services.version_control.platform import identity as vc_identity
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        gso_run_as=vc_identity.RUN_AS_UNAVAILABLE)))
+    calls: list[int] = []
+
+    def check(environment, client_factory, *, attempts):
+        calls.append(attempts)
+        time.sleep(0.05)
+        return vc_identity.RUN_AS_VERIFIED
+
+    monkeypatch.setattr(vc_identity, "check_configured_job_run_as", check)
+
+    await asyncio.gather(*(
+        auto_optimize._require_verified_optimizer_identity(request) for _ in range(3)
+    ))
+
+    assert calls == [1]
+    assert request.app.state.gso_run_as == vc_identity.RUN_AS_VERIFIED
+

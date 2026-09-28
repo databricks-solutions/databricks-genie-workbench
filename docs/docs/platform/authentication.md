@@ -98,7 +98,7 @@ When a user triggers Auto-Optimize, the app uses **both** identities in a carefu
 flowchart TB
     subgraph r1 [" "]
         direction LR
-        click(["User clicks Optimize"]) --> trigger["POST /api/auto-optimize/trigger"] --> s1["1 · user_can_edit_space (OBO)<br/>verify CAN_EDIT / CAN_MANAGE<br/>— reject if unauthorized"]
+        click(["User clicks Optimize"]) --> trigger["POST /api/auto-optimize/trigger"] --> s1["1 · require_space_access (OBO)<br/>Genie answers: Can Edit?<br/>— reject if not"]
     end
     subgraph r2 [" "]
         direction LR
@@ -183,7 +183,8 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | GenieWatch traffic-gap analysis | OBO only, no SP fallback | `watch/routers/traffic_gaps.py` `require_obo_workspace_client()` | Conversation traffic requires `CAN_MANAGE`; SP fallback would leak other users' questions |
 | Genie API — fetch/list agents | OBO → SP fallback | `services/genie_client.py` `_is_scope_error()` | User token may lack `dashboards.genie` scope |
 | Create Agent — tools, SQL, agent creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Agent created under user identity |
-| Trigger optimization — permission check | OBO (user) | `integration/trigger.py` `user_can_edit_space()` | Verify user has CAN_EDIT/CAN_MANAGE |
+| Trigger optimization — permission check | OBO (user) | `backend/services/space_access.py` `require_space_access()` | Genie answers under the user's token; no SP fallback |
+| Run apply / discard / revert / history removal | OBO (user) | `routers/auto_optimize.py` `_require_run_space_access()` | Can Edit on the run's agent |
 | Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the agent |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
 | Optimization job execution (4-task DAG) | SP (run_as) | `run_as` set by the deployer; verified (never repaired) by `backend/main.py` `_verify_gso_job_run_as()` | Lakeflow Jobs have no OBO mechanism |

@@ -697,3 +697,18 @@ def test_no_code_path_issues_ddl(obo_client, monkeypatch):
     assert executed and all(sql.lstrip().upper().startswith("SELECT") for sql in executed)
     forbidden = ("CREATE ", "ALTER ", "DROP ", "GRANT ", "INSERT ", "MERGE ")
     assert not any(word in sql.upper() for sql in executed for word in forbidden)
+
+
+def test_the_space_row_asks_genie_with_the_callers_client_only(obo_client, monkeypatch):
+    """MV-D109: no service-principal client reaches the space check."""
+    seen: list = []
+
+    def can_manage(*args, **kwargs):
+        seen.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr("genie_space_optimizer.common.genie_client.user_can_manage_space", can_manage)
+
+    _probe()
+
+    assert seen == [((obo_client, "01ef_genie"), {})]

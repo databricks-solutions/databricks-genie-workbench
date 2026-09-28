@@ -109,7 +109,7 @@ def revert_optimization(
 
     from genie_space_optimizer.common.genie_client import user_can_edit_space
 
-    if not user_can_edit_space(ws, space_id, acl_client=sp_ws):
+    if not user_can_edit_space(ws, space_id):
         raise PermissionError(
             "You need CAN_EDIT or CAN_MANAGE permission on this Genie Agent "
             "to revert its configuration."
@@ -382,7 +382,7 @@ def preview_revert_options(
         raise ValueError("Run has no space_id; cannot preview revert options.")
     from genie_space_optimizer.common.genie_client import user_can_edit_space
 
-    if not user_can_edit_space(ws, space_id, acl_client=sp_ws):
+    if not user_can_edit_space(ws, space_id):
         raise PermissionError(
             "You need CAN_EDIT or CAN_MANAGE permission on this Genie Agent "
             "to preview revert options."

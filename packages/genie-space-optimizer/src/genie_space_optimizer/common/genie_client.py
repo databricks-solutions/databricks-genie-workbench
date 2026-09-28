@@ -13,11 +13,17 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, cast
 
 from databricks.sdk import WorkspaceClient
 
-from databricks.sdk.errors.platform import ResourceExhausted
+from databricks.sdk.errors.platform import (
+    NotFound,
+    PermissionDenied,
+    ResourceExhausted,
+    Unauthenticated,
+)
 
 from .config import (
     BENCHMARK_WINDOW_MAX,
@@ -153,10 +159,97 @@ def list_spaces(w: WorkspaceClient) -> list[dict[str, str]]:
     return all_spaces
 
 
-EDITABLE_PERMISSIONS = {"CAN_MANAGE", "CAN_EDIT"}
+# ── Space access (MV-D109) ──────────────────────────────────────────────
 
 
-# ── REST-based permission helpers ───────────────────────────────────────
+class SpaceAccessLevel(str, Enum):
+    """Genie Agent access tiers. VIEW is Genie's ``CAN_RUN`` ("Can View" in the UI);
+    the permissions API has no ``CAN_VIEW`` level."""
+
+    VIEW = "view"
+    EDIT = "edit"
+    MANAGE = "manage"
+
+
+@dataclass(frozen=True)
+class SpaceAccessCheck:
+    allowed: bool
+    status: int
+    message: str = ""
+
+
+class SpaceAccessUnavailable(RuntimeError):
+    """Genie did not answer the access question. This is not a denial."""
+
+
+def _has_serialized_space(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return False
+    exported = response.get("serialized_space")
+    if isinstance(exported, str):
+        return bool(exported.strip())
+    return bool(exported)
+
+
+def check_space_access(
+    w: WorkspaceClient, space_id: str, level: SpaceAccessLevel,
+) -> SpaceAccessCheck:
+    """Ask Genie whether the identity behind *w* holds *level* on the space.
+
+    Each level is the read Genie itself restricts to it: the space (VIEW), the
+    space with its configuration export (EDIT), and its ACL (MANAGE; the
+    permissions API answers only CAN MANAGE holders). Pass the user's own client:
+    the answer belongs to whoever *w* authenticates as.
+    """
+    level = SpaceAccessLevel(level)
+    if level is SpaceAccessLevel.MANAGE:
+        path, query = f"/api/2.0/permissions/genie/{space_id}", None
+    elif level is SpaceAccessLevel.EDIT:
+        path = f"/api/2.0/genie/spaces/{space_id}"
+        query = {"include_serialized_space": "true"}
+    else:
+        path = f"/api/2.0/genie/spaces/{space_id}"
+        query = None
+    try:
+        response = w.api_client.do("GET", path, query=query)
+    except NotFound as exc:
+        return SpaceAccessCheck(False, 404, str(exc))
+    except Unauthenticated as exc:
+        return SpaceAccessCheck(False, 401, str(exc))
+    except PermissionDenied as exc:
+        return SpaceAccessCheck(False, 403, str(exc))
+    except Exception as exc:
+        raise SpaceAccessUnavailable(
+            f"Genie did not answer the {level.value} access check for space {space_id}: {exc}"
+        ) from exc
+    if level is SpaceAccessLevel.EDIT and not _has_serialized_space(response):
+        return SpaceAccessCheck(False, 200, "Genie did not export this agent's configuration to the caller.")
+    return SpaceAccessCheck(True, 200)
+
+
+def _space_access_or_deny(w: WorkspaceClient, space_id: str, level: SpaceAccessLevel) -> bool:
+    try:
+        return check_space_access(w, space_id, level).allowed
+    except SpaceAccessUnavailable:
+        logger.warning("Could not check %s access on space %s — denying", level.value, space_id)
+        return False
+
+
+def user_can_edit_space(w: WorkspaceClient, space_id: str) -> bool:
+    """True when the caller behind *w* holds CAN EDIT or CAN MANAGE on the space."""
+    return _space_access_or_deny(w, space_id, SpaceAccessLevel.EDIT)
+
+
+def user_can_manage_space(w: WorkspaceClient, space_id: str) -> bool:
+    """True when the caller behind *w* holds CAN MANAGE on the space.
+
+    Patching ``data_sources.metric_views[]`` needs CAN MANAGE, so the metric
+    view entitlement probe asks this question and not the editable one.
+    """
+    return _space_access_or_deny(w, space_id, SpaceAccessLevel.MANAGE)
+
+
+# ── Service principal ACL read (the SP's own access) ────────────────────
 
 
 def get_space_permissions_rest(w: WorkspaceClient, space_id: str) -> dict | None:
@@ -171,28 +264,6 @@ def get_space_permissions_rest(w: WorkspaceClient, space_id: str) -> dict | None
         return resp if isinstance(resp, dict) else None
     except Exception:
         return None
-
-
-def _check_user_edit_from_rest_acl(
-    acl_response: dict, user_email: str, user_groups: set[str],
-) -> bool:
-    """Return True if *user_email* has CAN_MANAGE or CAN_EDIT in a REST ACL response."""
-    for entry in acl_response.get("access_control_list", []):
-        principal = (
-            entry.get("user_name") or entry.get("group_name") or ""
-        ).lower()
-        is_me = (
-            principal == user_email
-            or principal in user_groups
-            or entry.get("group_name") == "admins"
-        )
-        if not is_me:
-            continue
-        for p in entry.get("all_permissions", []):
-            level = str(p.get("permission_level", ""))
-            if level in EDITABLE_PERMISSIONS:
-                return True
-    return False
 
 
 def _check_sp_manage_from_rest_acl(
@@ -221,193 +292,6 @@ def _check_sp_manage_from_rest_acl(
         sp_aliases_lower, acl_principals,
     )
     return False
-
-
-def _check_user_manage_from_rest_acl(
-    acl_response: dict, user_email: str, user_groups: set[str],
-) -> bool:
-    """Return True if *user_email* has CAN_MANAGE (not just CAN_EDIT) in a REST ACL."""
-    for entry in acl_response.get("access_control_list", []):
-        principal = (
-            entry.get("user_name") or entry.get("group_name") or ""
-        ).lower()
-        is_me = (
-            principal == user_email
-            or principal in user_groups
-            or entry.get("group_name") == "admins"
-        )
-        if not is_me:
-            continue
-        for p in entry.get("all_permissions", []):
-            if str(p.get("permission_level", "")) == "CAN_MANAGE":
-                return True
-    return False
-
-
-def _check_user_edit_from_perms(
-    perms, user_email: str, user_groups: set[str],
-) -> bool:
-    """Return True if *user_email* has CAN_MANAGE or CAN_EDIT in SDK *perms*."""
-    for acl in getattr(perms, "access_control_list", None) or []:
-        principal = (acl.user_name or acl.group_name or "").lower()
-        is_me = (
-            principal == user_email
-            or principal in user_groups
-            or acl.group_name == "admins"
-        )
-        if not is_me:
-            continue
-        for p in acl.all_permissions or []:
-            if str(p.permission_level).replace("PermissionLevel.", "") in EDITABLE_PERMISSIONS:
-                return True
-    return False
-
-
-_PERMISSION_RANK = {"CAN_MANAGE": 3, "CAN_EDIT": 2, "CAN_VIEW": 1, "CAN_RUN": 1}
-
-
-def _get_user_access_level_from_rest_acl(
-    acl_response: dict, user_email: str, user_groups: set[str],
-) -> str | None:
-    """Return the user's highest permission level from a REST ACL response."""
-    best: str | None = None
-    best_rank = 0
-    for entry in acl_response.get("access_control_list", []):
-        principal = (
-            entry.get("user_name") or entry.get("group_name") or ""
-        ).lower()
-        is_me = (
-            principal == user_email
-            or principal in user_groups
-            or entry.get("group_name") == "admins"
-        )
-        if not is_me:
-            continue
-        for p in entry.get("all_permissions", []):
-            level = str(p.get("permission_level", ""))
-            rank = _PERMISSION_RANK.get(level, 0)
-            if rank > best_rank:
-                best_rank = rank
-                best = level
-    if best and best == "CAN_RUN":
-        best = "CAN_VIEW"
-    return best
-
-
-def get_user_access_level(
-    w: WorkspaceClient,
-    space_id: str,
-    *,
-    user_email: str | None = None,
-    user_groups: set[str] | None = None,
-    acl_client: WorkspaceClient | None = None,
-) -> str | None:
-    """Return the user's highest permission on a Genie Agent.
-
-    Returns ``"CAN_MANAGE"``, ``"CAN_EDIT"``, ``"CAN_VIEW"``, or ``None``.
-    """
-    try:
-        if not user_email:
-            me = w.current_user.me()
-            user_email = (me.user_name or "").lower()
-            if user_groups is None and me.groups:
-                user_groups = {g.display.lower() for g in me.groups if g.display}
-        else:
-            user_email = user_email.lower()
-        user_groups = user_groups or set()
-
-        for client in [w, acl_client] if acl_client else [w]:
-            acl_resp = get_space_permissions_rest(client, space_id)
-            if acl_resp is not None:
-                return _get_user_access_level_from_rest_acl(acl_resp, user_email, user_groups)
-
-        return None
-    except Exception:
-        logger.warning("Could not determine access level for space %s", space_id)
-        return None
-
-
-def user_can_edit_space(
-    w: WorkspaceClient,
-    space_id: str,
-    *,
-    user_email: str | None = None,
-    user_groups: set[str] | None = None,
-    acl_client: WorkspaceClient | None = None,
-    cached_perms: dict | object | None = None,
-) -> bool:
-    """Check whether a user has CAN_MANAGE or CAN_EDIT on a Genie Agent.
-
-    Uses REST API ``GET /api/2.0/permissions/genie/{id}`` via the OBO
-    client first, then falls back to the SP client.  The ``cached_perms``
-    parameter accepts either a raw REST dict or an SDK ``ObjectPermissions``.
-    """
-    try:
-        if not user_email:
-            me = w.current_user.me()
-            user_email = (me.user_name or "").lower()
-            if user_groups is None and me.groups:
-                user_groups = {g.display.lower() for g in me.groups if g.display}
-        else:
-            user_email = user_email.lower()
-        user_groups = user_groups or set()
-
-        if cached_perms is not None:
-            if isinstance(cached_perms, dict):
-                return _check_user_edit_from_rest_acl(cached_perms, user_email, user_groups)
-            return _check_user_edit_from_perms(cached_perms, user_email, user_groups)
-
-        # OBO REST first, SP REST fallback
-        for client in [w, acl_client] if acl_client else [w]:
-            acl_resp = get_space_permissions_rest(client, space_id)
-            if acl_resp is not None:
-                return _check_user_edit_from_rest_acl(acl_resp, user_email, user_groups)
-
-        return False
-    except Exception:
-        logger.warning("Could not check permissions for space %s — hiding", space_id)
-        return False
-
-
-def user_can_manage_space(
-    w: WorkspaceClient,
-    space_id: str,
-    *,
-    user_email: str | None = None,
-    user_groups: set[str] | None = None,
-    acl_client: WorkspaceClient | None = None,
-    cached_perms: dict | None = None,
-) -> bool:
-    """Check whether a user has CAN_MANAGE on a Genie Agent.
-
-    Stricter than :func:`user_can_edit_space`, which also accepts CAN_EDIT.
-    Patching ``data_sources.metric_views[]`` needs CAN_MANAGE, so the metric
-    view entitlement probe asks this question and not the editable one.
-    ``cached_perms`` accepts a raw REST dict from
-    :func:`get_space_permissions_rest`.
-    """
-    try:
-        if not user_email:
-            me = w.current_user.me()
-            user_email = (me.user_name or "").lower()
-            if user_groups is None and me.groups:
-                user_groups = {g.display.lower() for g in me.groups if g.display}
-        else:
-            user_email = user_email.lower()
-        user_groups = user_groups or set()
-
-        if cached_perms is not None:
-            return _check_user_manage_from_rest_acl(cached_perms, user_email, user_groups)
-
-        for client in [w, acl_client] if acl_client else [w]:
-            acl_resp = get_space_permissions_rest(client, space_id)
-            if acl_resp is not None:
-                return _check_user_manage_from_rest_acl(acl_resp, user_email, user_groups)
-
-        return False
-    except Exception:
-        logger.warning("Could not check CAN_MANAGE for space %s — denying", space_id)
-        return False
 
 
 def sp_can_manage_space(

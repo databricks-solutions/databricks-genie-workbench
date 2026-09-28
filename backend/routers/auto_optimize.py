@@ -67,6 +67,7 @@ from backend.services.genie_client import get_genie_space, get_serialized_space
 from backend.services.model_catalog import ModelValidationError, validate_chat_model
 from backend.services import mv_create, mv_entitlement
 from backend.services.mv_entitlement import MvProbeError
+from backend.services.space_access import SpaceAccessLevel, require_space_access
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.common.accuracy import (
     compute_run_scores,
@@ -76,7 +77,6 @@ from genie_space_optimizer.common.config import (
     MV_PROVENANCE_OBO_CREATED,
     MV_PROVENANCE_USER_CREATED,
 )
-from genie_space_optimizer.common.genie_client import user_can_edit_space
 from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
@@ -1707,23 +1707,31 @@ async def _require_verified_optimizer_identity(request: Request) -> None:
     """Refuse to launch the optimizer Job until its run_as identity verifies.
 
     Startup records the status on ``app.state.gso_run_as``. An unconfigured Job
-    always refuses; anything else short of verified is re-checked once per
-    trigger, so a Jobs API failure at boot recovers without a restart.
+    always refuses; anything else short of verified is re-checked, one caller at
+    a time, so a Jobs API failure at boot recovers without a restart.
     """
     from backend.services.version_control.platform import identity as vc_identity
 
-    status = getattr(request.app.state, "gso_run_as", None)
-    if status not in (vc_identity.RUN_AS_VERIFIED, vc_identity.RUN_AS_NOT_CONFIGURED):
-        try:
-            status = await _offload(
-                vc_identity.check_configured_job_run_as,
-                os.environ,
-                lambda: vc_identity.bounded_read_client(get_service_principal_client()),
-                attempts=1,
-            )
-        except PermissionError:
-            status = vc_identity.RUN_AS_MISMATCH
-        request.app.state.gso_run_as = status
+    settled = (vc_identity.RUN_AS_VERIFIED, vc_identity.RUN_AS_NOT_CONFIGURED)
+    state = request.app.state
+    status = getattr(state, "gso_run_as", None)
+    if status not in settled:
+        lock = getattr(state, "gso_run_as_lock", None)
+        if lock is None:
+            lock = state.gso_run_as_lock = asyncio.Lock()
+        async with lock:
+            status = getattr(state, "gso_run_as", None)
+            if status not in settled:
+                try:
+                    status = await _offload(
+                        vc_identity.check_configured_job_run_as,
+                        os.environ,
+                        lambda: vc_identity.bounded_read_client(get_service_principal_client()),
+                        attempts=1,
+                    )
+                except PermissionError:
+                    status = vc_identity.RUN_AS_MISMATCH
+                state.gso_run_as = status
     if status == vc_identity.RUN_AS_NOT_CONFIGURED:
         raise HTTPException(
             status_code=503,
@@ -1731,12 +1739,14 @@ async def _require_verified_optimizer_identity(request: Request) -> None:
                    "Redeploy before starting a run.",
         )
     if status == vc_identity.RUN_AS_MISMATCH:
+        logger.warning("Refusing /trigger: the optimizer job's run_as does not match the app service principal")
         raise HTTPException(
             status_code=503,
             detail="The optimizer job's run_as does not match the app service principal. "
                    "Redeploy the job before starting a run.",
         )
     if status == vc_identity.RUN_AS_UNAVAILABLE:
+        logger.warning("Refusing /trigger: the optimizer job's run_as could not be read")
         raise HTTPException(
             status_code=503,
             detail="The optimizer job's identity could not be verified. Try again shortly.",
@@ -1748,6 +1758,7 @@ async def trigger(body: TriggerRequest, request: Request):
     """Trigger an optimization run for a Genie Agent."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured. Set GSO_CATALOG and GSO_JOB_ID.")
+    await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
     await _require_verified_optimizer_identity(request)
 
     ws = get_workspace_client()
@@ -4738,6 +4749,7 @@ async def list_levers():
 @router.post("/runs/{run_id}/apply")
 async def apply_run(run_id: RunId):
     """Apply an optimization run's results to the Genie Agent."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     ws = get_workspace_client()
     config = _build_gso_config()
 
@@ -4757,6 +4769,7 @@ async def apply_run(run_id: RunId):
 @router.post("/runs/{run_id}/discard")
 async def discard_run(run_id: RunId):
     """Discard an optimization run and rollback to pre-optimization state."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
     config = _build_gso_config()
@@ -4805,6 +4818,7 @@ async def revert_run(
     benchmark block from the pre-run snapshot. Unlike ``/discard``, this leaves
     the historical run status untouched. Active same-Space runs are refused.
     """
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     resolved_config_target = target or config_target
     if resolved_config_target not in ("champion", "baseline"):
         raise HTTPException(
@@ -4846,6 +4860,7 @@ async def revert_run(
 @router.get("/runs/{run_id}/revert-options")
 async def get_revert_options(run_id: RunId):
     """Preview available revert targets and benchmark snapshot diffs."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
     config = _build_gso_config()
@@ -5471,8 +5486,8 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
     return _enrich_run_summaries(visible_runs)
 
 
-async def _load_run_for_history_removal(run_id: str) -> dict | None:
-    """Load the authoritative run envelope needed to authorize a removal."""
+async def _load_run_envelope(run_id: str) -> dict | None:
+    """Load the authoritative run envelope (run_id, space_id, status)."""
     run = await gso_lakebase.load_gso_run(run_id)
     if run or not _is_configured():
         return run
@@ -5484,6 +5499,25 @@ async def _load_run_for_history_removal(run_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+async def _require_run_space_access(run_id: str, level: SpaceAccessLevel) -> dict:
+    """Gate a run-keyed route on the run's Genie Agent; return the run envelope."""
+    try:
+        run = await _load_run_envelope(run_id)
+    except Exception as exc:
+        logger.warning("Failed to load run %s for authorization: %s", run_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Optimization history is temporarily unavailable.",
+        ) from exc
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    space_id = str(run.get("space_id") or "")
+    if not space_id:
+        raise HTTPException(status_code=409, detail="Run has no Genie Agent ID.")
+    await require_space_access(space_id, level)
+    return run
+
+
 @router.get("/spaces/{space_id}/runs")
 async def list_runs_for_space(space_id: SpaceId):
     """List past optimization runs for a space."""
@@ -5493,17 +5527,7 @@ async def list_runs_for_space(space_id: SpaceId):
 @router.delete("/runs/{run_id}/history-entry")
 async def remove_run_from_history(run_id: RunId, request: Request):
     """Hide a terminal run from Workbench history without deleting GSO audit data."""
-    try:
-        run = await _load_run_for_history_removal(run_id)
-    except Exception as exc:
-        logger.warning("Failed to load run %s for history removal: %s", run_id, exc)
-        raise HTTPException(
-            status_code=503,
-            detail="Optimization history is temporarily unavailable.",
-        ) from exc
-
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found.")
+    run = await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
 
     status = str(run.get("status") or "").upper()
     if status in _ACTIVE_RUN_STATUSES:
@@ -5512,40 +5536,11 @@ async def remove_run_from_history(run_id: RunId, request: Request):
             detail="An active optimization run cannot be removed from history.",
         )
 
-    space_id = str(run.get("space_id") or "")
-    if not space_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Run has no Genie Agent ID and cannot be removed from history.",
-        )
-
+    space_id = str(run["space_id"])
     user_email = (
         request.headers.get("x-forwarded-email")
         or request.headers.get("x-forwarded-user")
     )
-    user_groups = {
-        group.strip().lower()
-        for group in request.headers.get("x-forwarded-groups", "").split(",")
-        if group.strip()
-    }
-    ws = get_workspace_client()
-    sp_ws = get_service_principal_client()
-    can_edit = await _offload(
-        user_can_edit_space,
-        ws,
-        space_id,
-        user_email=user_email,
-        user_groups=user_groups,
-        acl_client=sp_ws,
-    )
-    if not can_edit:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "You need CAN_EDIT or CAN_MANAGE permission on this Genie Agent "
-                "to remove its optimization history entry."
-            ),
-        )
 
     hidden_by = user_email or os.environ.get("DEV_USER_EMAIL") or "unknown"
     try:

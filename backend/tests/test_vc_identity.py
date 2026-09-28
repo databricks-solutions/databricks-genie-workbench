@@ -329,3 +329,24 @@ def test_bounded_read_client_disables_sdk_retry_and_shortens_timeout(monkeypatch
     assert bounded.config.http_timeout_seconds == 30
     assert client.config.http_timeout_seconds == 300
     assert client.config.retry_timeout_seconds == original_retry
+
+
+def test_startup_run_as_check_reads_through_a_bounded_sp_client(monkeypatch):
+    from backend import main
+    from backend.services import auth
+    from backend.services.version_control import platform
+    from backend.services.version_control.platform import identity
+
+    sp, bounded = object(), object()
+    seen: dict = {}
+    monkeypatch.setattr(auth, "get_service_principal_client", lambda: sp)
+    monkeypatch.setattr(platform, "bounded_read_client", lambda c: bounded if c is sp else None)
+
+    def check(environment, client_factory):
+        seen["client"] = client_factory()
+        return identity.RUN_AS_VERIFIED
+
+    monkeypatch.setattr(platform, "check_configured_job_run_as", check)
+
+    assert main._verify_gso_job_run_as() == identity.RUN_AS_VERIFIED
+    assert seen["client"] is bounded
