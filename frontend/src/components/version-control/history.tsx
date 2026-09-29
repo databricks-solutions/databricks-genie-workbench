@@ -14,7 +14,7 @@ interface HistoryProps {
   selectedId?: string | null
   currentId?: string | null
   onNext: () => void
-  onSelect: (version: VersionSummary) => void
+  onSelect?: (version: VersionSummary) => void
   // Legacy dropdown compare (M02 demo surface). The space tab uses checkbox multi-select
   // instead — pass `onToggleCompare` (and `compareIds`) for that mode.
   onCompare?: (left: string, right: string) => void
@@ -22,6 +22,8 @@ interface HistoryProps {
   onToggleCompare?: (versionId: string) => void
   // Optional per-version tags, keyed by version_id (Task 5).
   tags?: VersionTagMap
+  // Empty-state copy for callers who cannot capture (viewers).
+  emptyHint?: string
 }
 
 const CHIP = 'inline-flex items-center gap-1 rounded-md border border-default bg-surface px-2 py-0.5 text-xs text-muted'
@@ -43,7 +45,7 @@ interface VersionRowProps {
   version: VersionSummary
   isCurrent: boolean
   isActive: boolean
-  onSelect: (version: VersionSummary) => void
+  onSelect?: (version: VersionSummary) => void
   compareChecked?: boolean
   onToggleCompare?: (versionId: string) => void
   tag?: VersionTag
@@ -59,18 +61,19 @@ function VersionRow({ version, isCurrent, isActive, onSelect, compareChecked, on
   const stop = (event: { stopPropagation: () => void }) => event.stopPropagation()
   return (
     <li>
-      {/* The whole card is the click target; nested copy/link controls stop propagation. */}
+      {/* When selectable, the whole card is the click target; nested copy/link controls stop propagation. */}
       <div
-        role="button"
-        tabIndex={0}
+        role={onSelect ? 'button' : undefined}
+        tabIndex={onSelect ? 0 : undefined}
         aria-current={isActive ? 'true' : undefined}
-        onClick={() => onSelect(version)}
-        onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(version) } }}
+        onClick={onSelect ? () => onSelect(version) : undefined}
+        onKeyDown={onSelect ? event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(version) } } : undefined}
         className={cn(
-          'cursor-pointer rounded-lg border p-3 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+          'rounded-lg border p-3 transition-colors',
+          onSelect && 'cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
           isActive
             ? 'border-accent/60 bg-surface-secondary ring-1 ring-accent/30'
-            : 'border-default bg-surface-secondary/40 hover:bg-surface-secondary/70',
+            : cn('border-default bg-surface-secondary/40', onSelect && 'hover:bg-surface-secondary/70'),
         )}
       >
         <div className="flex items-center gap-2 flex-wrap">
@@ -169,12 +172,12 @@ function LoadingRows() {
   )
 }
 
-function EmptyState() {
+function EmptyState({ hint }: { hint?: string }) {
   return (
     <div className="text-center py-16 text-muted">
       <GitBranch className="w-8 h-8 mx-auto mb-3 opacity-50" />
       <p className="text-secondary font-medium">No versions captured yet</p>
-      <p className="text-sm mt-1">Opening this tab auto-captures the current configuration. If nothing appears, use “Capture current state” to save one now.</p>
+      <p className="text-sm mt-1">{hint ?? 'Opening this tab auto-captures the current configuration. If nothing appears, use “Capture current state” to save one now.'}</p>
     </div>
   )
 }
@@ -183,12 +186,12 @@ function compareLabel(version: VersionSummary): string {
   return `${originMeta(version.origin).label} · ${relativeTime(version.observed_at)} · ${shortId(version.version_id)}`
 }
 
-export function History({ page, loading, selectedId, currentId, onNext, onSelect, onCompare, compareIds, onToggleCompare, tags }: HistoryProps) {
+export function History({ page, loading, selectedId, currentId, onNext, onSelect, onCompare, compareIds, onToggleCompare, tags, emptyHint }: HistoryProps) {
   const [left, setLeft] = useState('')
   const [right, setRight] = useState('')
 
   if (loading && !page.items.length) return <LoadingRows />
-  if (!page.items.length) return <EmptyState />
+  if (!page.items.length) return <EmptyState hint={emptyHint} />
 
   const checkboxMode = !!onToggleCompare
   const selectedCount = compareIds?.length ?? 0

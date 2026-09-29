@@ -7,6 +7,10 @@ state without knowing the internal binding id.
   enrolled); read, gated on ``vc_history_enabled``.
 * ``POST /spaces/{space_id}/observe`` — auto-enroll + capture the current state; write,
   gated on ``vc_writes_enabled``.
+
+Each route asks the space-access resolver before any registry read: history and tags need
+Can View; capture, restore and tag writes need Can Edit (VC-D-authz1). Live reads and
+writes run under the user's own token, with no service-principal fallback.
 """
 
 import json
@@ -17,6 +21,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
+from backend.services.space_access import SpaceAccessLevel
 from backend.services.version_control import contracts as vc
 from backend.services.version_control.observe_optimizer import resolve_or_enroll_bound
 from backend.services.version_control.restore_local import restore_space_version
@@ -45,6 +50,13 @@ def _obo_patch_live(client, space_id, serialized_space, description):
     client.api_client.do("PATCH", path, body={"serialized_space": json.dumps(serialized_space)})
     if description is not None:
         client.api_client.do("PATCH", path, body={"description": description})
+
+
+def _obo_read_live(client, space_id):
+    """GET the live space with its configuration as the OBO user. No SP fallback: a user
+    Genie refuses is never answered by the app's own identity."""
+    return client.api_client.do("GET", f"/api/2.0/genie/spaces/{space_id}",
+                                query={"include_serialized_space": "true"})
 
 
 def _error(status, code, message, *, stale=False, details=None):
@@ -80,7 +92,7 @@ def _invoke(call):
 def build_router(*, runtime):
     router = APIRouter(prefix="/api/version-control")
     ledger, registry, identity = runtime.ledger, runtime.registry, runtime.identity
-    flags, authorize_history = runtime.flags, runtime.authorize_history
+    flags, authorize_space = runtime.flags, runtime.authorize_space
     tag_store = runtime.tag_store
 
     def actor_for(request):
@@ -88,6 +100,17 @@ def build_router(*, runtime):
         if authentication is None:
             raise _error(401, "authentication_required", "Authentication required")
         return identity.actor(authentication)
+
+    def resolve_scoped(space_id, request, level):
+        """Authenticate the actor, ask for *level* on the space, then resolve its active
+        binding in this workspace. Returns ``(binding, actor)``; binding is None when the
+        space is not yet enrolled."""
+        actor = actor_for(request)
+        authorize_space(actor, space_id, level)
+        binding = registry.find_active_by_space_key(space_id)
+        if binding is not None and actor.workspace_id != binding.workspace_id:
+            raise PermissionError("Binding history scope denied")
+        return binding, actor
 
     @router.get("/config")
     def config():
@@ -106,13 +129,9 @@ def build_router(*, runtime):
         def read():
             if flags.enabled("vc_history_enabled") is not True:
                 raise _error(503, "vc_history_disabled", "VC history reads disabled", stale=True)
-            actor = actor_for(request)
-            binding = registry.find_active_by_space_key(space_id)
+            binding, _ = resolve_scoped(space_id, request, SpaceAccessLevel.VIEW)
             if binding is None:
                 return vc.VersionPage((), None)  # not enrolled yet -> empty history
-            if (actor.workspace_id != binding.workspace_id
-                    or authorize_history(actor, binding) is not True):
-                raise PermissionError("Binding history scope denied")
             return ledger.history(binding, cursor, limit)
         return _invoke(read)
 
@@ -122,18 +141,17 @@ def build_router(*, runtime):
             if flags.enabled("vc_writes_enabled") is not True:
                 raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
             actor = actor_for(request)
+            authorize_space(actor, space_id, SpaceAccessLevel.EDIT)
+            from backend.services.auth import require_obo_workspace_client
+            client = require_obo_workspace_client()
             binding = resolve_or_enroll_bound(runtime, space_id=space_id)
-            if authorize_history(actor, binding) is not True:
+            if actor.workspace_id != binding.workspace_id:
                 raise PermissionError("Binding history scope denied")
-            # Record the authenticated human as the ledger actor (authorship), and read the
-            # live serialized space under the SAME user (OBO) via `live_reader`: the app SP
-            # usually has no grant on a user-owned Genie space, so an SP-pinned read 403s
-            # (mirrors restore's OBO live GET). The lease, status read, and ledger append
-            # still run as the SP executor inside `capture_on_open`.
-            from backend.services.genie_client import get_genie_space
+            # The human is the ledger actor and the live read is theirs. The lease, status
+            # read and ledger append still run as the SP executor inside `capture_on_open`.
             return runtime.observer.capture_on_open(
                 binding, actor, actor_override=actor,
-                live_reader=lambda: get_genie_space(space_id))
+                live_reader=lambda: _obo_read_live(client, space_id))
         return _invoke(capture)
 
     @router.post("/spaces/{space_id}/restore")
@@ -143,35 +161,24 @@ def build_router(*, runtime):
                     or flags.enabled("vc_restore_enabled") is not True):
                 raise _error(503, "vc_restore_disabled", "VC restore is not enabled", stale=True)
             actor = actor_for(request)
-            # Live GET/PATCH run as the OBO user (their edit rights are the authorization);
-            # the ledger record runs as the SP via the runtime, like every other capture.
-            from backend.services.auth import get_workspace_client
-            from backend.services.genie_client import get_genie_space
-            client = get_workspace_client()
+            authorize_space(actor, space_id, SpaceAccessLevel.EDIT)
+            # Live GET/PATCH run as the OBO user with no SP fallback; the ledger record runs
+            # as the SP via the runtime, like every other capture.
+            from backend.services.auth import require_obo_workspace_client
+            client = require_obo_workspace_client()
             return restore_space_version(
                 runtime, space_id=space_id, version_id=str(body.version_id),
                 expected_current_version_id=str(body.expected_current_version_id), actor=actor,
-                live_reader=lambda sid: get_genie_space(sid),
+                live_reader=lambda sid: _obo_read_live(client, sid),
                 live_writer=lambda sid, ss, desc: _obo_patch_live(client, sid, ss, desc))
         return _invoke(restore)
-
-    def resolve_readable(space_id, request):
-        """Mirror the space_versions read gate: authenticate the actor, resolve the
-        space's active binding, and enforce the workspace + history scope. Returns
-        ``(binding, actor)``; binding is None when the space is not yet enrolled."""
-        actor = actor_for(request)
-        binding = registry.find_active_by_space_key(space_id)
-        if binding is not None and (actor.workspace_id != binding.workspace_id
-                                    or authorize_history(actor, binding) is not True):
-            raise PermissionError("Binding history scope denied")
-        return binding, actor
 
     @router.get("/spaces/{space_id}/tags")
     def space_tags(space_id: SpaceId, request: Request):
         def read():
             if flags.enabled("vc_history_enabled") is not True:
                 raise _error(503, "vc_history_disabled", "VC history reads disabled", stale=True)
-            binding, _ = resolve_readable(space_id, request)
+            binding, _ = resolve_scoped(space_id, request, SpaceAccessLevel.VIEW)
             if binding is None:
                 return {}  # not enrolled yet -> no tags
             return tag_store.get_tags(space_id)
@@ -182,7 +189,7 @@ def build_router(*, runtime):
         def write():
             if flags.enabled("vc_writes_enabled") is not True:
                 raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
-            binding, actor = resolve_readable(space_id, request)
+            binding, actor = resolve_scoped(space_id, request, SpaceAccessLevel.EDIT)
             if binding is None:
                 raise _error(404, "resource_not_found", "Space is not enrolled in version control")
             tag_store.set_tag(space_id, str(version_id), body.label, body.note,
@@ -196,7 +203,7 @@ def build_router(*, runtime):
         def write():
             if flags.enabled("vc_writes_enabled") is not True:
                 raise _error(503, "vc_writes_disabled", "VC writes disabled", stale=True)
-            binding, _ = resolve_readable(space_id, request)
+            binding, _ = resolve_scoped(space_id, request, SpaceAccessLevel.EDIT)
             if binding is None:
                 raise _error(404, "resource_not_found", "Space is not enrolled in version control")
             tag_store.delete_tag(space_id, str(version_id))

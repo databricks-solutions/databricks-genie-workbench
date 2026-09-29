@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.services.space_access import SpaceAccessLevel as L
 from backend.services.version_control import contracts as vc
 from backend.tests._vc_rig import rig, uid
 from backend.tests.test_vc_observer import observer_rig
@@ -38,7 +39,7 @@ def router_rig(rig, observer_rig):
     identity.executor.return_value = rig.executor
     registry = Mock(spec=vc.Registry)
     registry.resolve.return_value = rig.binding
-    authorize_history = Mock(return_value=True)
+    authorize = Mock()
     observer = Mock(spec=vc.Observer, wraps=observer)
     selection = vc.ExplicitExecutorSelection(rig.executor.workspace_id, rig.executor.host,
         rig.executor.principal_id, rig.executor.execution_ref, None)
@@ -53,9 +54,8 @@ def router_rig(rig, observer_rig):
                 request.state.vc_auth = authentication
             return await call_next(request)
 
-        router = build_router(observer=observer, restore=restore, identity=identity,
-            registry=registry, facts=rig.facts, authorize_history=authorize_history,
-            reader_selection=selection, flags=flags)
+        router = build_router(restore=restore, identity=identity, registry=registry,
+            facts=rig.facts, authorize=authorize, flags=flags)
         app.include_router(router)
         return TestClient(app), router
 
@@ -65,23 +65,6 @@ def router_rig(rig, observer_rig):
     body = {"version_id": request.source_version_id, "binding_revision": 1,
             "expected_base": request.expected_base, "approval_id": request.approval_id}
     return SimpleNamespace(**locals())
-
-
-@pytest.mark.parametrize("reason", ["open", "history", "refresh", "return"])
-def test_observe_delegates_to_authorized_observer(router_rig, reason):
-    setup = router_rig
-    response = setup.client.post(setup.prefix + "/observe", json={"reason": reason}, headers=setup.headers)
-    assert response.status_code == 200
-    result = response.json()
-    assert result["captured_version"]["version_id"] == result["status"]["heads"]["observed"]
-    assert setup.rig.ledger.append_observation.call_args.args[1].observation_reason == reason
-    if reason == "open":
-        setup.observer.capture_on_open.assert_called_once_with(setup.rig.binding, setup.actor)
-    else:
-        setup.observer.capture.assert_called_once_with(setup.rig.binding, reason, setup.rig.executor)
-    setup.authorize_history.assert_called_once_with(setup.actor, setup.rig.binding)
-    setup.identity.actor.assert_called_once_with(setup.authentication)
-    setup.dispatcher.submit_local.assert_not_called()
 
 
 @pytest.mark.parametrize("disabled", ["default", "vc_writes_enabled", "vc_restore_enabled"])
@@ -95,28 +78,31 @@ def test_restore_is_fail_closed_and_observation_stays_stale_safe(router_rig, dis
     setup.dispatcher.submit_local.assert_not_called()
     setup.rig.transport.patch_config_once.assert_not_called()
     setup.rig.ledger.verify_committed.side_effect = lambda observation: False
-    response = client.post(setup.prefix + "/observe", json={"reason": "open"}, headers=setup.headers)
-    assert response.status_code == 200
-    assert response.json()["status"]["stale"] is True
-    assert response.json()["status"]["allowed_actions"] == []
-    assert response.json()["captured_version"] is None
+    result = setup.observer.capture_on_open(setup.rig.binding, setup.actor)
+    assert result.status.stale is True
+    assert not result.status.allowed_actions
+    assert result.captured_version is None
 
 
-@pytest.mark.parametrize("route", ["observe", "restore"])
 @pytest.mark.parametrize("denial", ["authentication", "history", "workspace", "key"])
-def test_routes_require_server_identity_scope_and_command_key(router_rig, route, denial):
+def test_restore_requires_server_identity_scope_and_command_key(router_rig, denial):
     setup = router_rig
     client, _ = setup.make_client(authenticated=denial != "authentication")
     if denial == "history":
-        setup.authorize_history.return_value = False
+        setup.authorize.side_effect = PermissionError("Binding history scope denied")
     if denial == "workspace":
         setup.identity.actor.return_value = replace(setup.actor, workspace_id="other")
-    response = client.post(setup.prefix + "/" + route,
-        json=setup.body if route == "restore" else {"reason": "open"},
-        headers={} if denial == "key" else setup.headers)
+    response = client.post(setup.prefix + "/restore", json=setup.body,
+                           headers={} if denial == "key" else setup.headers)
     assert response.status_code == {"authentication": 401, "history": 403, "workspace": 403, "key": 422}[denial]
     setup.dispatcher.submit_local.assert_not_called()
     setup.rig.transport.get.assert_not_called()
+
+
+def test_restore_asks_for_edit_on_the_bound_space(router_rig):
+    setup = router_rig
+    setup.client.post(setup.prefix + "/restore", json=setup.body, headers=setup.headers)
+    setup.authorize.assert_called_once_with(setup.actor, setup.rig.binding, L.EDIT)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -147,6 +133,5 @@ def test_restore_requires_unique_durable_request(router_rig, history):
 
 def test_mutations_router_exposes_exact_contract_routes(router_rig):
     assert {(route.path, tuple(sorted(route.methods))) for route in router_rig.router.routes} == {
-        ("/api/version-control/bindings/{binding_id}/observe", ("POST",)),
         ("/api/version-control/bindings/{binding_id}/restore", ("POST",)),
     }

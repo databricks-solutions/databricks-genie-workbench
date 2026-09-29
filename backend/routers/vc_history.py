@@ -1,9 +1,9 @@
 """Authenticated VC version-history reads (M02 ledger); main mounts this router.
 
 Reads only — gated on ``vc_history_enabled`` (a read flag, independent of the write
-switches). Restore/observe writes live in ``vc_mutations``. History surfacing must
-never require ``vc_writes_enabled``: an operator can inspect what the optimizer
-changed even when governed writes stay off.
+switches). Restore lives in ``vc_mutations``; capture is space-keyed in ``vc_spaces``.
+History surfacing must never require ``vc_writes_enabled``: an operator can inspect
+what the optimizer changed even when governed writes stay off.
 """
 
 from typing import Annotated
@@ -11,6 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from backend.services.space_access import SpaceAccessLevel
 from backend.services.version_control import contracts as vc
 from backend.services.version_control.canonical_diff import semantic_diff
 
@@ -54,11 +55,11 @@ def _invoke(call):
         raise _error(503, "evidence_unavailable", "Evidence unavailable", stale=True) from error
 
 
-def build_router(*, ledger, registry, identity, authorize_history, flags=None):
+def build_router(*, ledger, registry, identity, authorize, flags=None):
     # main mounts this router and supplies authenticated context and scoped ports.
     router = APIRouter(prefix="/api/version-control")
 
-    def scope(request, binding_id):
+    def scope(request, binding_id, level):
         if flags is None or flags.enabled("vc_history_enabled") is not True:
             raise _error(503, "vc_history_disabled", "VC history reads disabled", stale=True)
         authentication = getattr(request.state, "vc_auth", None)
@@ -66,9 +67,9 @@ def build_router(*, ledger, registry, identity, authorize_history, flags=None):
             raise _error(401, "authentication_required", "Authentication required")
         actor = identity.actor(authentication)
         binding = registry.resolve(str(binding_id))
-        if (binding.binding_id != str(binding_id) or actor.workspace_id != binding.workspace_id
-                or authorize_history(actor, binding) is not True):
+        if binding.binding_id != str(binding_id) or actor.workspace_id != binding.workspace_id:
             raise PermissionError("Binding history scope denied")
+        authorize(actor, binding, level)
         return actor, binding
 
     @router.get("/bindings/{binding_id}/versions")
@@ -76,14 +77,14 @@ def build_router(*, ledger, registry, identity, authorize_history, flags=None):
                  limit: Annotated[int, Query(ge=1, le=100)] = 25,
                  cursor: str | None = None):
         def read():
-            _actor, binding = scope(request, binding_id)
+            _actor, binding = scope(request, binding_id, SpaceAccessLevel.VIEW)
             return ledger.history(binding, cursor, limit)
         return _invoke(read)
 
     @router.get("/bindings/{binding_id}/versions/{version_id}")
     def version_detail(binding_id: UUID, version_id: UUID, request: Request):
         def read():
-            _actor, binding = scope(request, binding_id)
+            _actor, binding = scope(request, binding_id, SpaceAccessLevel.EDIT)
             version = ledger.get_version(binding, str(version_id))  # KeyError -> 404
             detail = dict(vc.to_wire(_summary_of(version)))
             detail["snapshot"] = vc.to_wire(version.snapshot.serialized_space)
@@ -95,7 +96,7 @@ def build_router(*, ledger, registry, identity, authorize_history, flags=None):
              left: Annotated[str, Query(min_length=1)],
              right: Annotated[str, Query(min_length=1)]):
         def read():
-            _actor, binding = scope(request, binding_id)
+            _actor, binding = scope(request, binding_id, SpaceAccessLevel.EDIT)
             left_version = ledger.get_version(binding, left)  # KeyError -> 404
             right_version = ledger.get_version(binding, right)
             try:

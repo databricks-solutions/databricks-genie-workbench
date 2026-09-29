@@ -28,6 +28,7 @@ Restore/reconcile mutations are intentionally NOT built here; they stay fail-clo
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from backend.services.config_fingerprint import Canonicalizer
@@ -52,6 +53,7 @@ from backend.services.version_control.platform.termination import (
     PlatformTerminationEvidenceProvider,
 )
 from backend.services.version_control.registry import DeltaRegistry
+from backend.services.version_control import space_authz
 from backend.services.version_control.version_tags import DeltaVersionTagStore
 
 _REQUIRED_CONFIG = ("workspace_id", "catalog", "control_schema", "target_selection")
@@ -70,7 +72,8 @@ class ObserveRuntime:
     canonicalizer: Canonicalizer
     transport: GenieTransport
     reader_selection: vc.ExplicitExecutorSelection
-    authorize_history: Callable[[Any, Any], bool]
+    authorize: Callable[[Any, Any, Any], None]
+    authorize_space: Callable[[Any, str, Any], None]
     flags: FeatureFlags
     workspace_id: str
     actor: vc.ActorContext
@@ -99,8 +102,8 @@ class _EntryTrustedActorIdentity:
     Only ``actor`` is overridden; every other identity method (``executor``, credential
     verification, ``groups``, ``can_edit``, ``verify_run_as``, ...) delegates UNCHANGED to
     the underlying governed provider, so the read/capture leaves are untouched and the
-    governed promotion path keeps its own zero-trust ``resolve_actor``. Read authorization
-    still enforces the workspace boundary via ``authorize_history``; the human subject is
+    governed promotion path keeps its own zero-trust ``resolve_actor``. Authorization
+    still enforces the workspace boundary first, via ``authorize``; the human subject is
     used only for that boundary check (its ``subject_id`` is never consulted for capture
     provenance — the recorded actor is the SP executor — and never admits a mutation).
     """
@@ -205,15 +208,13 @@ def build_observe_runtime(config: dict, *, adapters: Any = None,
     # runs the ledger/coordination SQL. Not a governed fact — purely UX metadata.
     tag_store = DeltaVersionTagStore(sql, _qualified(config, "genie_space_version_tags"))
 
-    def authorize_history(actor_ctx: Any, binding: Any) -> bool:
-        # Target-local read authorization: the caller must resolve into the trusted
-        # target workspace (OBO reads are proxied through the SP actor by the router).
-        return actor_ctx.workspace_id == binding.workspace_id == workspace_id
-
     return ObserveRuntime(
         observer=observer, ledger=ledger, registry=registry, facts=facts, identity=identity,
         coordination=coordination, canonicalizer=canonicalizer, transport=transport,
-        reader_selection=selection, authorize_history=authorize_history, flags=flags,
+        reader_selection=selection,
+        authorize=partial(space_authz.authorize, workspace_id=workspace_id),
+        authorize_space=partial(space_authz.authorize_space, workspace_id=workspace_id),
+        flags=flags,
         workspace_id=workspace_id, actor=actor,
         environment=str(config.get("environment") or "prod"), tag_store=tag_store)
 

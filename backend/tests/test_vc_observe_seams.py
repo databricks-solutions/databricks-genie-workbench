@@ -103,11 +103,21 @@ def test_non_actor_identity_methods_delegate_to_governed_provider():
     assert executor.workspace_id == "target"
 
 
-def test_authorize_history_is_target_local():
+def test_authorize_is_target_local_and_asks_for_the_space(monkeypatch):
+    from backend.services import space_access
+    from backend.services.space_access import SpaceAccessLevel as L
+
+    asked = []
+    monkeypatch.setattr(space_access, "ensure_space_access",
+                        lambda space_id, level: asked.append((space_id, level)))
     runtime = build_observe_runtime(_config(), adapters=FakeAdapters())
     binding = vc.BindingRef(str(UUID(int=1)), 1, "sales", "target", "space-1", "dev")
-    assert runtime.authorize_history(vc.ActorContext("sp", "target", "service"), binding) is True
-    assert runtime.authorize_history(vc.ActorContext("sp", "other", "service"), binding) is False
+    runtime.authorize(vc.ActorContext("sp", "target", "service"), binding, L.EDIT)
+    runtime.authorize_space(vc.ActorContext("sp", "target", "service"), "space-2", L.VIEW)
+    assert asked == [("space-1", L.EDIT), ("space-2", L.VIEW)]
+    with pytest.raises(PermissionError):
+        runtime.authorize(vc.ActorContext("sp", "other", "service"), binding, L.VIEW)
+    assert len(asked) == 2
 
 
 def test_incomplete_config_stays_fail_closed():

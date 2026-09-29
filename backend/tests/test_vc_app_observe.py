@@ -113,12 +113,12 @@ def _app_with_observe(*, authenticated: bool):
     return app, runtime
 
 
-def test_mount_exposes_history_and_observe_and_restore_routes():
+def test_mount_exposes_history_and_restore_but_not_binding_observe():
     app, _ = _app_with_observe(authenticated=True)
     paths = {(route.path, tuple(sorted(route.methods))) for route in app.routes
              if getattr(route, "path", "").startswith("/api/version-control")}
     assert ("/api/version-control/bindings/{binding_id}/versions", ("GET",)) in paths
-    assert ("/api/version-control/bindings/{binding_id}/observe", ("POST",)) in paths
+    assert ("/api/version-control/bindings/{binding_id}/observe", ("POST",)) not in paths
     assert ("/api/version-control/bindings/{binding_id}/restore", ("POST",)) in paths
 
 

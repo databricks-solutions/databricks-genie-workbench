@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Camera, GitBranch, Info, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Tooltip } from '@/components/ui/tooltip'
 import { VersionControlApi, VersionControlError } from '@/lib/version-control-api'
 import type { ObservationResult, SemanticDiff, VersionDetail, VersionPage, VersionSummary, VersionTagMap } from '@/types/version-control'
+import { AccessNotice, DetailPlaceholder, NoAccessState, VersionControlHeader, VersionPanes } from './access-chrome'
+import {
+  canEditVersions, canReadVersions, EDITOR_DETAIL_HINT, resolveVcAccess, type VcAccessState,
+  VIEWER_DETAIL_HINT, VIEWER_EMPTY_HINT,
+} from './access-state'
 import { type CaptureNotice, describeCaptureError, describeObservation } from './capture-notice'
 import { History } from './history'
 import { VersionDetailPanel } from './version-detail-panel'
@@ -21,12 +24,6 @@ function errorMessage(err: unknown, fallback: string): string {
 const api = new VersionControlApi((input, init) => fetch(input, init))
 
 const EMPTY_PAGE: VersionPage = { items: [], next_cursor: null }
-
-// Static "read once" explainer — surfaced via an info tooltip (and aria-label) instead of a
-// permanent multi-line paragraph, to keep the header compact and the config area tall.
-const CAPTURE_EXPLAINER =
-  'A version is auto-captured whenever you open this tab and after each optimizer run. ' +
-  'Edits made directly in Genie are captured the next time you open this tab — there is no background watcher.'
 
 interface Props {
   spaceId: string
@@ -56,6 +53,12 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   const [pendingRestore, setPendingRestore] = useState<VersionSummary | null>(null)
   const [restoring, setRestoring] = useState(false)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [accessState, setAccessState] = useState<VcAccessState | null>(null)
+  // Keyed by space: after a switch, the previous space's answer must grant nothing.
+  const access = accessState?.spaceId === spaceId ? accessState.access : 'checking'
+  const accessReason = accessState?.spaceId === spaceId ? accessState.reason : null
+  const canEdit = canEditVersions(access)
+  const canRead = canReadVersions(access)
 
   const load = useCallback(async (cursor?: string): Promise<VersionPage | null> => {
     setLoading(true)
@@ -75,13 +78,13 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     }
   }, [spaceId])
 
-  // Auto-capture on open: fire a single observation when the tab opens (or the space
-  // switches) so edits made outside the workbench surface without a manual click. It is
-  // idempotent — the backend dedups on the config fingerprint, so an unchanged space appends
-  // no new version. Unlike the earlier silent version, this shows a visible "checking…"
-  // status and a terminal notice, so the user is never left staring at an unexplained lag
-  // (the slow step is the OBO live GET of the Genie space). The history read below remains
-  // the source of truth for what renders.
+  // Auto-capture on open (Can Edit only): fire a single observation when the tab opens
+  // (or the space switches) so edits made outside the workbench surface without a manual
+  // click. It is idempotent — the backend dedups on the config fingerprint, so an unchanged
+  // space appends no new version. Unlike the earlier silent version, this shows a visible
+  // "checking…" status and a terminal notice, so the user is never left staring at an
+  // unexplained lag (the slow step is the OBO live GET of the Genie space). The history
+  // read below remains the source of truth for what renders.
   const syncOnOpen = useCallback(async () => {
     // Paint the persisted history immediately — the fast read is the source of truth for
     // what renders. The observe below is the slow step (an OBO live GET of the Genie space);
@@ -105,6 +108,12 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   }, [spaceId, load])
 
   useEffect(() => {
+    let live = true
+    void resolveVcAccess(spaceId).then(next => { if (live) setAccessState(next) })
+    return () => { live = false }
+  }, [spaceId])
+
+  useEffect(() => {
     setNotice(null)
     setDetail(null)
     setSelectedId(null)
@@ -116,8 +125,11 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
     setCompareDiffError(null)
     setPendingRestore(null)
     setRestoreError(null)
-    void syncOnOpen()
-  }, [syncOnOpen])
+    if (!canRead) { setPage(EMPTY_PAGE); return }
+    // Auto-capture writes a version, so only Can Edit triggers it; everyone else reads.
+    if (canEdit) void syncOnOpen()
+    else void load()
+  }, [canRead, canEdit, syncOnOpen, load])
 
   // Bring the detail into view when opening a version (matters on stacked/small layouts).
   useEffect(() => {
@@ -143,9 +155,9 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   useEffect(() => {
     let live = true
     setTags({})
-    api.spaceTags(spaceId).then(next => { if (live) setTags(next) }).catch(() => {})
+    if (canRead) api.spaceTags(spaceId).then(next => { if (live) setTags(next) }).catch(() => {})
     return () => { live = false }
-  }, [spaceId])
+  }, [spaceId, canRead])
 
   const selectVersion = useCallback(async (version: VersionSummary) => {
     // Toggle: clicking the open row collapses it.
@@ -311,51 +323,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
 
   return (
     <div className="space-y-3">
-      {/* One-row header: identity + info tooltip on the left, live-status + actions on the
-          right. Keeps the config master–detail as high on the page as possible. */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="shrink-0 p-2 rounded-lg border border-default bg-surface-secondary text-muted">
-            <GitBranch className="w-4 h-4" />
-          </span>
-          <h3 className="text-lg font-display font-semibold text-primary">Version Control</h3>
-          <Tooltip content={<span className="block max-w-xs text-left">{CAPTURE_EXPLAINER}</span>}>
-            <span
-              aria-label={CAPTURE_EXPLAINER}
-              className="text-muted hover:text-secondary transition-colors cursor-help"
-            >
-              <Info className="w-4 h-4" />
-            </span>
-          </Tooltip>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {(syncing || capturing) && (
-            <span role="status" className="inline-flex items-center gap-1.5 text-xs text-muted">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              {capturing ? 'Capturing…' : 'Checking…'}
-            </span>
-          )}
-            {/* The compact icon and the labeled button run the same action — observe the
-                live Genie space (source-check + record). The icon is the quick repeat
-                affordance; "Capture current state" is the explicit, discoverable primary. */}
-            <button
-              onClick={capture}
-              disabled={capturing || syncing}
-              className="p-2 rounded-lg border border-default text-muted hover:text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50"
-              title="Check the live space for changes"
-            >
-              <RefreshCw className={`w-4 h-4 ${(capturing || syncing) ? 'animate-spin' : ''}`} />
-            </button>
-            <button
-              onClick={capture}
-              disabled={capturing || syncing}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-default text-sm font-medium text-secondary hover:bg-surface-secondary transition-colors disabled:opacity-50"
-            >
-              <Camera className="w-4 h-4" />
-              {capturing ? 'Capturing…' : 'Capture current state'}
-            </button>
-          </div>
-      </div>
+      <VersionControlHeader access={access} capturing={capturing} syncing={syncing} onCapture={capture} />
 
       <div className="space-y-3">
           {error && (
@@ -378,94 +346,104 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
               {notice.message}
             </div>
           )}
+          <AccessNotice access={access} />
 
-          {/* Master–detail: narrow versions rail (left) + wide detail (right). Each pane
-              scrolls on its own at lg+; below lg they stack and the page scrolls. */}
-          <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)] lg:items-start">
-            <div className="rounded-xl border border-default bg-surface p-3 lg:h-[78vh] lg:overflow-auto">
-              <History
-                page={page}
-                loading={loading}
-                selectedId={selectedId}
-                currentId={page.items[0]?.version_id ?? null}
-                onNext={() => { if (page.next_cursor) void load(page.next_cursor) }}
-                onSelect={version => { void selectVersion(version) }}
-                compareIds={compareIds}
-                onToggleCompare={toggleCompare}
-                tags={tags}
-              />
-            </div>
-
-            <div ref={detailRef} className="min-w-0 lg:h-[78vh]">
-              {detailError && (
-                <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
-                  {detailError}
-                </div>
-              )}
-              {compareIds.length === 2 ? (
-                <div className="flex h-full flex-col rounded-xl border border-default bg-surface">
-                  <header className="shrink-0 flex flex-wrap items-center gap-2 border-b border-default p-4">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-secondary">Comparing</span>
-                    {(() => {
-                      const [beforeId, afterId] = chronoPair(compareIds, page.items)
-                      return <span className="font-mono text-xs text-secondary">{shortId(beforeId)} → {shortId(afterId)}</span>
-                    })()}
-                    <button
-                      type="button"
-                      onClick={() => setCompareIds([])}
-                      className="ml-auto inline-flex items-center gap-1 rounded-md border border-default px-2.5 py-1 text-xs font-medium text-secondary hover:bg-surface-secondary transition-colors"
-                    >
-                      Clear selection
-                    </button>
-                  </header>
-                  <div className="min-h-0 flex-1 overflow-auto p-4">
-                    {compareDiffError ? (
-                      <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
-                        {compareDiffError}
+          {access === 'none' ? (
+            <NoAccessState reason={accessReason} />
+          ) : (
+            <VersionPanes
+              detailRef={detailRef}
+              rail={
+                <History
+                  page={page}
+                  loading={loading || access === 'checking'}
+                  selectedId={selectedId}
+                  currentId={page.items[0]?.version_id ?? null}
+                  onNext={() => { if (page.next_cursor) void load(page.next_cursor) }}
+                  onSelect={canEdit ? version => { void selectVersion(version) } : undefined}
+                  compareIds={canEdit ? compareIds : undefined}
+                  onToggleCompare={canEdit ? toggleCompare : undefined}
+                  tags={tags}
+                  emptyHint={canEdit ? undefined : VIEWER_EMPTY_HINT}
+                />
+              }
+              detail={
+                <>
+                  {detailError && (
+                    <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
+                      {detailError}
+                    </div>
+                  )}
+                  {canEdit && compareIds.length === 2 ? (
+                    <div className="flex h-full flex-col rounded-xl border border-default bg-surface">
+                      <header className="shrink-0 flex flex-wrap items-center gap-2 border-b border-default p-4">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-secondary">Comparing</span>
+                        {(() => {
+                          const [beforeId, afterId] = chronoPair(compareIds, page.items)
+                          return <span className="font-mono text-xs text-secondary">{shortId(beforeId)} → {shortId(afterId)}</span>
+                        })()}
+                        <button
+                          type="button"
+                          onClick={() => setCompareIds([])}
+                          className="ml-auto inline-flex items-center gap-1 rounded-md border border-default px-2.5 py-1 text-xs font-medium text-secondary hover:bg-surface-secondary transition-colors"
+                        >
+                          Clear selection
+                        </button>
+                      </header>
+                      <div className="min-h-0 flex-1 overflow-auto p-4">
+                        {compareDiffError ? (
+                          <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
+                            {compareDiffError}
+                          </div>
+                        ) : compareLoading ? (
+                          <p className="text-sm text-muted">Comparing…</p>
+                        ) : compareDiff ? (
+                          <SemanticDiffView diff={compareDiff} />
+                        ) : null}
                       </div>
-                    ) : compareLoading ? (
-                      <p className="text-sm text-muted">Comparing…</p>
-                    ) : compareDiff ? (
-                      <SemanticDiffView diff={compareDiff} />
-                    ) : null}
-                  </div>
-                </div>
-              ) : detail ? (
-                <div className={cn('h-full', detailLoading ? 'opacity-60 transition-opacity' : 'transition-opacity')}>
-                  <VersionDetailPanel
-                    key={detail.version_id}
-                    detail={detail}
-                    isCurrent={detail.version_id === page.items[0]?.version_id}
-                    onClose={closeDetail}
-                    onRestore={() => beginRestore(detail)}
-                    restoreEnabled={restoreEnabled}
-                    restoring={restoring && pendingRestore?.version_id === detail.version_id}
-                    awaitingConfirm={pendingRestore?.version_id === detail.version_id}
-                    restoreError={pendingRestore?.version_id === detail.version_id ? restoreError : null}
-                    onConfirmRestore={() => { void confirmRestore() }}
-                    onCancelRestore={() => { setPendingRestore(null); setRestoreError(null) }}
-                    tag={tags[detail.version_id]}
-                    onSetTag={(label, note) => setTag(detail.version_id, label, note)}
-                    onRemoveTag={() => removeTag(detail.version_id)}
-                  />
-                </div>
-              ) : !detailError && (
-                <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-default bg-surface p-6 text-center text-sm text-muted">
-                  {detailLoading ? 'Loading version…' : 'Select a version to inspect its configuration and restore it, or tick two versions to compare.'}
-                </div>
-              )}
-            </div>
-          </div>
+                    </div>
+                  ) : canEdit && detail ? (
+                    <div className={cn('h-full', detailLoading ? 'opacity-60 transition-opacity' : 'transition-opacity')}>
+                      <VersionDetailPanel
+                        key={detail.version_id}
+                        detail={detail}
+                        isCurrent={detail.version_id === page.items[0]?.version_id}
+                        onClose={closeDetail}
+                        onRestore={() => beginRestore(detail)}
+                        restoreEnabled={restoreEnabled}
+                        restoring={restoring && pendingRestore?.version_id === detail.version_id}
+                        awaitingConfirm={pendingRestore?.version_id === detail.version_id}
+                        restoreError={pendingRestore?.version_id === detail.version_id ? restoreError : null}
+                        onConfirmRestore={() => { void confirmRestore() }}
+                        onCancelRestore={() => { setPendingRestore(null); setRestoreError(null) }}
+                        tag={tags[detail.version_id]}
+                        onSetTag={(label, note) => setTag(detail.version_id, label, note)}
+                        onRemoveTag={() => removeTag(detail.version_id)}
+                      />
+                    </div>
+                  ) : !detailError && (
+                    <DetailPlaceholder>
+                      {access === 'checking'
+                        ? 'Checking your access…'
+                        : !canEdit
+                          ? VIEWER_DETAIL_HINT
+                          : detailLoading ? 'Loading version…' : EDITOR_DETAIL_HINT}
+                    </DetailPlaceholder>
+                  )}
+                </>
+              }
+            />
+          )}
 
           {/* Restore confirmation now renders inline inside VersionDetailPanel, adjacent to
               its trigger (issue #1). The diff preview (current -> selected) stays here in the
               wide area below the grid where there is room for it. */}
-          {diffError && (
+          {canEdit && diffError && (
             <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
               {diffError}
             </div>
           )}
-          {diff && <SemanticDiffView diff={diff} />}
+          {canEdit && diff && <SemanticDiffView diff={diff} />}
       </div>
     </div>
   )

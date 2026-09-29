@@ -153,3 +153,109 @@ def test_an_allow_expires(monkeypatch, as_user):
     _require()
     _require()
     assert len(calls) == 2
+
+
+def _ensure(level=L.EDIT, space_id=_SPACE):
+    space_access.ensure_space_access(space_id, level)
+
+
+def test_the_sync_entry_shares_the_async_entrys_cache(monkeypatch, as_user):
+    as_user()
+    calls = _genie(monkeypatch, _ALLOW)
+    _ensure(L.EDIT)
+    _require(L.EDIT)
+    assert len(calls) == 1
+
+
+def test_a_missing_oauth_scope_is_named_not_reported_as_a_permission_gap(monkeypatch, as_user):
+    as_user()
+    _genie(monkeypatch, SpaceAccessCheck(
+        False, 403, "Provided OAuth token does not have required scopes: dashboards.genie"))
+    refusal = _refusal()
+    assert refusal.status_code == 403
+    assert refusal.detail["code"] == "space_access_scope_missing"
+    assert "Can Edit" not in refusal.detail["message"]
+
+
+def test_a_missing_entitlement_is_named(monkeypatch, as_user):
+    as_user()
+    _genie(monkeypatch, SpaceAccessCheck(False, 403, "You need the aclPath entitlement: /sqlanalytics"))
+    refusal = _refusal()
+    assert refusal.status_code == 403
+    assert refusal.detail["code"] == "space_access_entitlement_missing"
+    assert refusal.detail["platform_message"] == "You need the aclPath entitlement: /sqlanalytics"
+
+
+@pytest.mark.parametrize("answers,held", [
+    ((_ALLOW, _ALLOW), L.MANAGE),
+    ((_ALLOW, _DENY), L.EDIT),
+    ((_DENY, _ALLOW), L.VIEW),
+    ((_DENY, _DENY), None),
+])
+def test_the_highest_level_is_the_one_genie_grants(monkeypatch, as_user, answers, held):
+    as_user()
+    calls = _genie(monkeypatch, *answers)
+    assert space_access.resolve_space_access_level(_SPACE) is held
+    second = L.MANAGE if answers[0] is _ALLOW else L.VIEW
+    assert [c[2] for c in calls] == [L.EDIT, second]
+
+
+def test_the_highest_level_never_hides_an_unanswered_check(monkeypatch, as_user):
+    as_user()
+    _genie(monkeypatch, SpaceAccessUnavailable("connection reset"))
+    with pytest.raises(HTTPException) as caught:
+        space_access.resolve_space_access_level(_SPACE)
+    assert caught.value.status_code == 503
+
+
+_SCOPE_403 = SpaceAccessCheck(
+    False, 403, "Provided OAuth token does not have required scopes: dashboards.genie")
+_ENTITLEMENT_403 = SpaceAccessCheck(
+    False, 403, "You need the aclPath entitlement: /sqlanalytics")
+_INSUFFICIENT_SCOPE_403 = SpaceAccessCheck(
+    False, 403, "error insufficient_scope: dashboards.genie is required")
+
+
+def test_highest_level_reports_edit_when_manage_is_a_scope_gap(monkeypatch, as_user):
+    # An editor whose MANAGE probe hits a missing OAuth scope still holds Can Edit —
+    # the scope gap must not erase the proven EDIT allow (downgrade, never upgrade).
+    as_user()
+    calls = _genie(monkeypatch, _ALLOW, _SCOPE_403)
+    assert space_access.resolve_space_access_level(_SPACE) is L.EDIT
+    assert [c[2] for c in calls] == [L.EDIT, L.MANAGE]
+
+
+def test_highest_level_reports_edit_when_manage_is_unverifiable(monkeypatch, as_user):
+    # MANAGE 503 after EDIT allow: report the proven EDIT, not 'unknown' and not VIEW.
+    as_user()
+    calls = _genie(monkeypatch, _ALLOW, SpaceAccessUnavailable("connection reset"))
+    assert space_access.resolve_space_access_level(_SPACE) is L.EDIT
+    assert [c[2] for c in calls] == [L.EDIT, L.MANAGE]
+
+
+def test_highest_level_reports_view_when_edit_is_an_entitlement_gap(monkeypatch, as_user):
+    # EDIT entitlement 403 is not a grant denial — ask VIEW. A cached EDIT allow would
+    # satisfy VIEW without another Genie call (_cached_allows rank), but EDIT was refused
+    # so nothing is cached; the ladder asks VIEW next.
+    as_user()
+    calls = _genie(monkeypatch, _ENTITLEMENT_403, _ALLOW)
+    assert space_access.resolve_space_access_level(_SPACE) is L.VIEW
+    assert [c[2] for c in calls] == [L.EDIT, L.VIEW]
+
+
+def test_highest_level_raises_entitlement_when_view_also_lacks_it(monkeypatch, as_user):
+    as_user()
+    calls = _genie(monkeypatch, _ENTITLEMENT_403, _ENTITLEMENT_403)
+    with pytest.raises(HTTPException) as caught:
+        space_access.resolve_space_access_level(_SPACE)
+    assert caught.value.status_code == 403
+    assert caught.value.detail["code"] == "space_access_entitlement_missing"
+    assert [c[2] for c in calls] == [L.EDIT, L.VIEW]
+
+
+def test_highest_level_reports_view_when_edit_names_insufficient_scope(monkeypatch, as_user):
+    # Pins the Task 1 deferred minor: the insufficient_scope marker lowers EDIT to VIEW.
+    as_user()
+    calls = _genie(monkeypatch, _INSUFFICIENT_SCOPE_403, _ALLOW)
+    assert space_access.resolve_space_access_level(_SPACE) is L.VIEW
+    assert [c[2] for c in calls] == [L.EDIT, L.VIEW]

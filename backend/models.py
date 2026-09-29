@@ -953,3 +953,10 @@ class CurrentVersionResponse(BaseModel):
         default_factory=list
     )
     live_update_time: str | None = None
+
+
+class SpaceAccess(BaseModel):
+    """The signed-in user's level on a Genie Agent, as Genie answers it."""
+
+    space_id: str
+    level: Literal["view", "edit", "manage"] | None

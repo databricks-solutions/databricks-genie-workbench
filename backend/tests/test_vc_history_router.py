@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.services.space_access import SpaceAccessLevel as L
 from backend.services.version_control import contracts as vc
 from backend.tests._vc_rig import rig, uid
 from backend.tests.vc_fakes.fixtures import actor_fixture
@@ -35,7 +36,7 @@ def history_rig(rig):
     identity.actor.return_value = actor
     registry = Mock(spec=vc.Registry)
     registry.resolve.return_value = rig.binding
-    authorize_history = Mock(return_value=True)
+    authorize = Mock()
     authentication = vc.AuthenticatedRequest("verified-session", actor.workspace_id)
 
     def make_client(flags=rig.flags, authenticated=True):
@@ -48,7 +49,7 @@ def history_rig(rig):
             return await call_next(request)
 
         router = build_router(ledger=ledger, registry=registry, identity=identity,
-            authorize_history=authorize_history, flags=flags)
+            authorize=authorize, flags=flags)
         app.include_router(router)
         return TestClient(app), router
 
@@ -66,7 +67,7 @@ def test_versions_delegates_to_ledger_history(history_rig):
     assert body["items"][0]["optimizer_run_id"] == "run-1"
     assert body["next_cursor"] == "cursor-2"
     setup.ledger.history.assert_called_once_with(setup.rig.binding, None, 5)
-    setup.authorize_history.assert_called_once_with(setup.actor, setup.rig.binding)
+    setup.authorize.assert_called_once_with(setup.actor, setup.rig.binding, L.VIEW)
     setup.identity.actor.assert_called_once_with(setup.authentication)
 
 
@@ -93,7 +94,7 @@ def test_history_requires_server_identity_scope(history_rig, denial, code):
     setup = history_rig
     client, _ = setup.make_client(authenticated=denial != "authentication")
     if denial == "history":
-        setup.authorize_history.return_value = False
+        setup.authorize.side_effect = PermissionError("Binding history scope denied")
     if denial == "workspace":
         setup.identity.actor.return_value = replace(setup.actor, workspace_id="other")
     response = client.get(setup.prefix + "/versions")
@@ -197,3 +198,17 @@ def test_diff_404_when_version_missing(history_rig):
     setup.ledger.get_version.side_effect = KeyError("nope")
     response = setup.client.get(setup.prefix + f"/diff?left={uid()}&right={uid()}")
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize("path,level", [
+    ("/versions", L.VIEW),
+    ("/versions/00000000-0000-4000-8000-000000000003", L.EDIT),
+    ("/diff?left=a&right=b", L.EDIT),
+])
+def test_each_binding_read_asks_for_its_level(history_rig, path, level):
+    setup = history_rig
+    setup.authorize.side_effect = PermissionError("denied")
+    assert setup.client.get(setup.prefix + path).status_code == 403
+    assert setup.authorize.call_args.args == (setup.actor, setup.rig.binding, level)
+    setup.ledger.history.assert_not_called()
+    setup.ledger.get_version.assert_not_called()

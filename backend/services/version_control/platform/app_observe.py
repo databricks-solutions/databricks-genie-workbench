@@ -149,11 +149,10 @@ class FailClosedRestore:
 
 
 def mount_observe_routers(app: Any, runtime: ObserveRuntime) -> None:
-    """Mount the reads-plus-capture routers (history + observe/restore) from the runtime.
-
-    History reads, observe capture, and the space-keyed in-workspace restore
-    (``vc_spaces``) are the native live surface. The governed binding-keyed restore on
-    ``vc_mutations`` stays fail-closed via ``FailClosedRestore``.
+    """Mount the history, restore and space-keyed routers from the runtime. History reads
+    and the space-keyed capture and in-workspace restore (``vc_spaces``) are the native
+    live surface. The governed binding-keyed restore on ``vc_mutations`` stays fail-closed
+    via ``FailClosedRestore``; there is no binding-keyed observe.
     """
     from backend.routers.vc_history import build_router as build_history_router
     from backend.routers.vc_mutations import build_router as build_mutations_router
@@ -161,11 +160,10 @@ def mount_observe_routers(app: Any, runtime: ObserveRuntime) -> None:
 
     app.include_router(build_history_router(
         ledger=runtime.ledger, registry=runtime.registry, identity=runtime.identity,
-        authorize_history=runtime.authorize_history, flags=runtime.flags))
+        authorize=runtime.authorize, flags=runtime.flags))
     app.include_router(build_mutations_router(
-        observer=runtime.observer, restore=FailClosedRestore(), identity=runtime.identity,
+        restore=FailClosedRestore(), identity=runtime.identity,
         registry=runtime.registry, facts=runtime.facts,
-        authorize_history=runtime.authorize_history,
-        reader_selection=runtime.reader_selection, flags=runtime.flags))
+        authorize=runtime.authorize, flags=runtime.flags))
     # Space-keyed bridge for the SpaceDetail Version Control tab.
     app.include_router(build_spaces_router(runtime=runtime))

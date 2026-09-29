@@ -24,10 +24,10 @@ export function describeObservation(
   return { tone: 'info', message: 'No changes since the last captured version.' }
 }
 
-// Map a capture/observe failure to a notice. 503 = writes flag off; 403 = the caller can't
-// read the live space; everything else surfaces the server message (or a generic fallback).
+// Access refusals carry the server's own reason (which level is missing, or a missing scope or entitlement); 503 = writes flag off; 403 = the caller can't read the live space; everything else surfaces the server message (or a generic fallback).
 export function describeCaptureError(err: unknown): CaptureNotice {
   if (err instanceof VersionControlError) {
+    if (err.code.startsWith('space_access_')) return { tone: 'error', message: err.message }
     if (err.status === 503) return { tone: 'error', message: 'Version capture is not enabled on this deployment.' }
     if (err.status === 403) return { tone: 'error', message: 'You do not have access to read this space’s configuration.' }
     return { tone: 'error', message: err.message }

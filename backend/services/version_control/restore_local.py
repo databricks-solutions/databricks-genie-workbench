@@ -21,6 +21,7 @@ live state and require it to still equal the version the user believed was curre
 
 import logging
 
+from backend.services.space_access import SpaceAccessLevel
 from backend.services.version_control import contracts as vc
 
 logger = logging.getLogger(__name__)
@@ -96,15 +97,16 @@ def restore_space_version(runtime, *, space_id, version_id, expected_current_ver
 
     Raises (mapped to HTTP by the router's ``_invoke``):
       * ``LookupError`` — space not enrolled / requested version unknown (404).
-      * ``PermissionError`` — actor is not scoped to the binding (403).
+      * ``PermissionError`` — actor is outside the binding's workspace (403).
+      * ``HTTPException`` — the space-access refusal, already in the version-control error shape.
       * ``ValueError`` — the client's view is stale or the space drifted (409).
     """
     binding = runtime.registry.find_active_by_space_key(space_id)
     if binding is None:
         raise LookupError("Space is not enrolled in version control")
-    if (actor.workspace_id != binding.workspace_id
-            or runtime.authorize_history(actor, binding) is not True):
+    if actor.workspace_id != binding.workspace_id:
         raise PermissionError("Binding history scope denied")
+    runtime.authorize_space(actor, space_id, SpaceAccessLevel.EDIT)
 
     # Restoring the version the caller already holds as current is a no-op (it would only
     # dedup to the head). Reject it up front with a specific, friendly 409 rather than doing

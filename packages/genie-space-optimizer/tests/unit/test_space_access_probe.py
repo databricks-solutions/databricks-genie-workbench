@@ -6,7 +6,7 @@ import inspect
 from unittest.mock import MagicMock
 
 import pytest
-from databricks.sdk.errors.platform import NotFound, PermissionDenied, Unauthenticated
+from databricks.sdk.errors.platform import BadRequest, NotFound, PermissionDenied, Unauthenticated
 
 from genie_space_optimizer.common import genie_client as gc
 from genie_space_optimizer.common.genie_client import SpaceAccessLevel
@@ -134,3 +134,9 @@ def test_the_boolean_helpers_deny_when_genie_does_not_answer():
 def test_the_boolean_helpers_take_only_the_callers_client():
     for helper in (gc.user_can_edit_space, gc.user_can_manage_space):
         assert list(inspect.signature(helper).parameters) == ["w", "space_id"]
+
+
+def test_a_malformed_space_id_reads_as_not_found():
+    w = _client(error=BadRequest("Invalid space id"))
+    result = gc.check_space_access(w, _SPACE, SpaceAccessLevel.VIEW)
+    assert (result.allowed, result.status) == (False, 404)

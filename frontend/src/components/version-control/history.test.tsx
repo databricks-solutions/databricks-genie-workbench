@@ -77,3 +77,12 @@ describe('History benchmark-changed chip', () => {
     expect(html).not.toContain('Benchmarks changed')
   })
 })
+
+it('history_without_onSelect_renders_read_only_rows_and_the_given_empty_hint', () => {
+  const html = renderToStaticMarkup(<History page={{ items: [versionFixture], next_cursor: null }} onNext={vi.fn()} />)
+  expect(html).not.toContain('role="button"')
+  expect(html).not.toContain('type="checkbox"')
+  const empty = renderToStaticMarkup(<History page={{ items: [], next_cursor: null }} onNext={vi.fn()} emptyHint="Viewer hint" />)
+  expect(empty).toContain('Viewer hint')
+  expect(empty).not.toContain('Capture current state')
+})

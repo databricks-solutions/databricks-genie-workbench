@@ -1,17 +1,14 @@
-"""Authenticated M04 observation and restore adapters; M08 mounts this router."""
+"""Authenticated M04 restore adapter; M08 mounts this router. There is no binding-keyed
+observe: capture is space-keyed (vc_spaces) and reads live as the user (VC-D-authz2)."""
 
-from typing import Annotated, Literal
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.services.space_access import SpaceAccessLevel
 from backend.services.version_control import contracts as vc
-
-
-class ObserveBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    reason: Literal["open", "history", "refresh", "return"] = "open"
 
 
 class RestoreBody(BaseModel):
@@ -45,8 +42,7 @@ def _invoke(call):
         raise _error(503, "evidence_unavailable", "Evidence unavailable; do not replay mutation", stale=True) from error
 
 
-def build_router(*, observer, restore, identity, registry, facts, authorize_history,
-                 reader_selection, flags=None):
+def build_router(*, restore, identity, registry, facts, authorize, flags=None):
     # M08 mounts this router and supplies authenticated context and scoped ports.
     router = APIRouter(prefix="/api/version-control")
 
@@ -56,22 +52,10 @@ def build_router(*, observer, restore, identity, registry, facts, authorize_hist
             raise _error(401, "authentication_required", "Authentication required")
         actor = identity.actor(authentication)
         binding = registry.resolve(str(binding_id))
-        if (binding.binding_id != str(binding_id) or actor.workspace_id != binding.workspace_id
-                or authorize_history(actor, binding) is not True):
+        if binding.binding_id != str(binding_id) or actor.workspace_id != binding.workspace_id:
             raise PermissionError("Binding history scope denied")
+        authorize(actor, binding, SpaceAccessLevel.EDIT)
         return actor, binding
-
-    @router.post("/bindings/{binding_id}/observe")
-    def observe(binding_id: UUID, body: ObserveBody, request: Request, idempotency_key: CommandKey):
-        def capture():
-            actor, binding = scope(request, binding_id)
-            if body.reason == "open":
-                return observer.capture_on_open(binding, actor)
-            executor = identity.executor(reader_selection)
-            if executor.workspace_id != binding.workspace_id:
-                raise PermissionError("Snapshot reader workspace mismatch")
-            return observer.capture(binding, body.reason, executor)
-        return _invoke(capture)
 
     @router.post("/bindings/{binding_id}/restore", status_code=202)
     def submit_restore(binding_id: UUID, body: RestoreBody, request: Request, idempotency_key: CommandKey):

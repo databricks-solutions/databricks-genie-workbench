@@ -1382,3 +1382,10 @@ export interface JoinAdviceResponse {
   updated_at?: string | null
   seeded_by?: string | null
 }
+
+// Mirrors backend/models.py SpaceAccess (GET /api/spaces/{space_id}/access).
+export type SpaceAccessLevel = 'view' | 'edit' | 'manage'
+export interface SpaceAccess {
+  space_id: string
+  level: SpaceAccessLevel | null
+}

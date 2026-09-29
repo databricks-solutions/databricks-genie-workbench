@@ -22,13 +22,23 @@ from genie_space_optimizer.common.genie_client import (
 
 from backend.services.auth import require_obo_workspace_client
 
-__all__ = ["SpaceAccessLevel", "clear_cache", "require_space_access"]
+__all__ = [
+    "SpaceAccessLevel",
+    "clear_cache",
+    "ensure_space_access",
+    "require_space_access",
+    "resolve_space_access_level",
+]
 
 logger = logging.getLogger(__name__)
 
 # Revocation takes effect within this window; denials are never cached.
 _ALLOW_TTL_S = 30.0
 _MAX_ENTRIES = 4096
+
+# Genie's 403 text for the two refusals that are not about the space's grants (M0 check V3).
+_SCOPE_MARKERS = ("required scope", "insufficient_scope")
+_ENTITLEMENT_MARKER = "entitlement"
 
 _RANK = {SpaceAccessLevel.VIEW: 1, SpaceAccessLevel.EDIT: 2, SpaceAccessLevel.MANAGE: 3}
 _LABEL = {
@@ -92,8 +102,12 @@ def _refuse(status_code: int, code: str, level: SpaceAccessLevel, message: str,
     })
 
 
-async def require_space_access(space_id: str, level: SpaceAccessLevel) -> None:
-    """Refuse unless the signed-in user holds *level* on the Genie Agent."""
+def ensure_space_access(space_id: str, level: SpaceAccessLevel) -> None:
+    """Refuse unless the signed-in user holds *level* on the Genie Agent.
+
+    Blocking. Sync handlers call it directly (Starlette's threadpool carries the OBO
+    ContextVar); async handlers use :func:`require_space_access`.
+    """
     level = SpaceAccessLevel(level)
     try:
         client = require_obo_workspace_client()
@@ -106,7 +120,7 @@ async def require_space_access(space_id: str, level: SpaceAccessLevel) -> None:
         return
 
     try:
-        result = await asyncio.to_thread(check_space_access, client, space_id, level)
+        result = check_space_access(client, space_id, level)
     except SpaceAccessUnavailable as exc:
         logger.warning("Space access check unavailable for %s (%s): %s", space_id, level.value, exc)
         raise _refuse(
@@ -124,5 +138,86 @@ async def require_space_access(space_id: str, level: SpaceAccessLevel) -> None:
     if result.status == 401:
         raise _refuse(401, "authentication_required", level,
                       "Your session could not be verified. Sign in again.", result.message)
-    raise _refuse(403, "space_access_denied", level,
-                  f"You need {_LABEL[level]} permission on this Genie Agent.", result.message)
+    raise _denied(level, result.message)
+
+
+async def require_space_access(space_id: str, level: SpaceAccessLevel) -> None:
+    """Refuse unless the signed-in user holds *level* on the Genie Agent."""
+    await asyncio.to_thread(ensure_space_access, space_id, level)
+
+
+# EDIT refusals that still let the ladder ask VIEW (never upgrade — only downgrade).
+_EDIT_LOWER_CODES = frozenset({
+    "space_access_denied",
+    "space_access_scope_missing",
+    "space_access_entitlement_missing",
+})
+
+
+def resolve_space_access_level(space_id: str) -> SpaceAccessLevel | None:
+    """The highest level Genie grants the signed-in user, or None below Can View.
+
+    Blocking. On the EDIT rung, a plain denial / missing OAuth scope / missing
+    entitlement lowers the answer to VIEW (or None); every other refusal is
+    raised. On MANAGE after a proven EDIT allow, any refusal except
+    ``authentication_required`` lowers the answer to EDIT (with a warning when
+    the code is not a plain denial). On VIEW, only a plain denial yields None;
+    every other refusal is raised unchanged.
+    """
+    if _holds(space_id, SpaceAccessLevel.EDIT, lower_codes=_EDIT_LOWER_CODES):
+        return (
+            SpaceAccessLevel.MANAGE
+            if _holds(space_id, SpaceAccessLevel.MANAGE, lower_codes=None)
+            else SpaceAccessLevel.EDIT
+        )
+    return (
+        SpaceAccessLevel.VIEW
+        if _holds(space_id, SpaceAccessLevel.VIEW, lower_codes=frozenset({"space_access_denied"}))
+        else None
+    )
+
+
+def _holds(
+    space_id: str,
+    level: SpaceAccessLevel,
+    *,
+    lower_codes: frozenset[str] | None,
+) -> bool:
+    """Return False when the refusal should lower the ladder answer; re-raise otherwise.
+
+    ``lower_codes is None`` means the MANAGE rung: every code except
+    ``authentication_required`` lowers to EDIT.
+    """
+    try:
+        ensure_space_access(space_id, level)
+    except HTTPException as refusal:
+        code = refusal.detail.get("code") if isinstance(refusal.detail, dict) else None
+        if lower_codes is None:
+            if code == "authentication_required":
+                raise
+            if code != "space_access_denied":
+                logger.warning(
+                    "Manage check refused for %s with %s; reporting Can Edit",
+                    space_id, code,
+                )
+            return False
+        if code in lower_codes:
+            return False
+        raise
+    return True
+
+
+def _denied(level: SpaceAccessLevel, platform_message: str) -> HTTPException:
+    lowered = (platform_message or "").lower()
+    if any(marker in lowered for marker in _SCOPE_MARKERS):
+        return _refuse(403, "space_access_scope_missing", level,
+                       "This app's sign-in is missing the Genie permission scope. "
+                       "Ask a workspace admin to check the app's user authorization.",
+                       platform_message)
+    if _ENTITLEMENT_MARKER in lowered:
+        return _refuse(403, "space_access_entitlement_missing", level,
+                       "Your account is missing a workspace entitlement Genie needs, such as "
+                       "Databricks SQL access. Ask a workspace admin to grant it.",
+                       platform_message)
+    return _refuse(403, "space_access_denied", level,
+                   f"You need {_LABEL[level]} permission on this Genie Agent.", platform_message)

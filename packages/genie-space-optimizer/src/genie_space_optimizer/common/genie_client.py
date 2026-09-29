@@ -19,6 +19,7 @@ from typing import Any, cast
 from databricks.sdk import WorkspaceClient
 
 from databricks.sdk.errors.platform import (
+    BadRequest,
     NotFound,
     PermissionDenied,
     ResourceExhausted,
@@ -212,7 +213,8 @@ def check_space_access(
         query = None
     try:
         response = w.api_client.do("GET", path, query=query)
-    except NotFound as exc:
+    except (NotFound, BadRequest) as exc:
+        # Genie answers an unparseable space id with 400: for the caller, no such space.
         return SpaceAccessCheck(False, 404, str(exc))
     except Unauthenticated as exc:
         return SpaceAccessCheck(False, 401, str(exc))

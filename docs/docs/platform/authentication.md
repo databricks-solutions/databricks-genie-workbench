@@ -185,6 +185,9 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | Create Agent — tools, SQL, agent creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Agent created under user identity |
 | Trigger optimization — permission check | OBO (user) | `backend/services/space_access.py` `require_space_access()` | Genie answers under the user's token; no SP fallback |
 | Run apply / discard / revert / history removal | OBO (user) | `routers/auto_optimize.py` `_require_run_space_access()` | Can Edit on the run's agent |
+| Version history list and tags | OBO (user) | `services/version_control/space_authz.py` `authorize_space()` | Can View on the agent |
+| Version detail, diff, capture, restore, tag writes | OBO (user) | `space_authz.py` `authorize()` / `authorize_space()`; live read/write in `routers/vc_spaces.py` | Can Edit; the live read and write run under the user's token, with no SP fallback |
+| The user's access level, for the UI | OBO (user) | `routers/spaces.py` `GET /api/spaces/{space_id}/access` | Genie answers; the tab hides what the user cannot do |
 | Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the agent |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
 | Optimization job execution (4-task DAG) | SP (run_as) | `run_as` set by the deployer; verified (never repaired) by `backend/main.py` `_verify_gso_job_run_as()` | Lakeflow Jobs have no OBO mechanism |

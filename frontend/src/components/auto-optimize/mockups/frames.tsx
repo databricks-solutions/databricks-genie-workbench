@@ -42,6 +42,14 @@ import {
   BlueprintUnknownRolesFrame,
   BlueprintWideTableFrame,
 } from "./SemanticBlueprintFidelityFrames"
+import {
+  VcCheckingFrame,
+  VcEditorFrame,
+  VcEntitlementFrame,
+  VcNoAccessFrame,
+  VcViewerEmptyFrame,
+  VcViewerFrame,
+} from "./VcAccessFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -108,4 +116,12 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "11f-blueprint-wide-table", title: "11f · Blueprint — single wide table (no joins is a valid model)", element: <BlueprintWideTableFrame /> },
   { id: "11g-blueprint-30-tables", title: "11g · Blueprint — 30-table snowflake (bridges at density)", element: <BlueprintScale30Frame /> },
   { id: "11h-blueprint-overview", title: "11h · Blueprint — star, Overview band (no measure chips)", element: <BlueprintStarOverviewFrame /> },
+  // PR #332 M1b — Version Control access states (VC-D-authz1): the REAL header, notices,
+  // permission state and rail. Capture and selection render only for Can Edit.
+  { id: "m1b-0-vc-checking", title: "M1b-0 · Version Control — checking access (no write affordance yet)", element: <VcCheckingFrame /> },
+  { id: "m1b-a-vc-editor", title: "M1b-a · Version Control — Can Edit (capture, select, compare)", element: <VcEditorFrame /> },
+  { id: "m1b-b-vc-viewer", title: "M1b-b · Version Control — Can View (history only, read-only rail)", element: <VcViewerFrame /> },
+  { id: "m1b-c-vc-viewer-empty", title: "M1b-c · Version Control — Can View, nothing captured yet", element: <VcViewerEmptyFrame /> },
+  { id: "m1b-d-vc-no-access", title: "M1b-d · Version Control — no access (permission state)", element: <VcNoAccessFrame /> },
+  { id: "m1b-e-vc-entitlement", title: "M1b-e · Version Control — refused for a missing entitlement (Genie's reason)", element: <VcEntitlementFrame /> },
 ]

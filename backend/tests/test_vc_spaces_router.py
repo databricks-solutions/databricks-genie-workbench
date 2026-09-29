@@ -7,9 +7,10 @@ from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from backend.services.space_access import SpaceAccessLevel as L
 from backend.services.version_control import contracts as vc
 
 SPACE_ID = "space-1"
@@ -57,7 +58,7 @@ def _runtime(*, history=True, writes=True, restore=True, existing=_BINDING):
         "vc_restore_enabled": restore}.get(switch, False)
     return SimpleNamespace(
         ledger=ledger, registry=registry, observer=observer, identity=identity, flags=flags,
-        canonicalizer=canonicalizer, authorize_history=Mock(return_value=True), actor=actor,
+        canonicalizer=canonicalizer, authorize=Mock(), authorize_space=Mock(), actor=actor,
         workspace_id="target", environment="prod", reader_selection=object(),
         tag_store=_FakeTagStore())
 
@@ -128,23 +129,22 @@ def test_space_versions_requires_authentication():
     assert response.status_code == 401
 
 
-def test_space_observe_captures_current_state(monkeypatch):
+def test_space_observe_captures_current_state_reading_live_as_the_user(monkeypatch):
     runtime = _runtime()
-    envelope = {"serialized_space": {}}
-    seen = {}
-    monkeypatch.setattr("backend.services.genie_client.get_genie_space",
-                        lambda sid: seen.update(sid=sid) or envelope)
+    envelope = {"serialized_space": "{}"}
+    client = Mock()
+    client.api_client.do.return_value = envelope
+    monkeypatch.setattr("backend.services.auth.require_obo_workspace_client", lambda: client)
+    monkeypatch.setattr("backend.services.genie_client.get_genie_space", _no_fallback)
     response = _client(runtime).post(f"/api/version-control/spaces/{SPACE_ID}/observe")
     assert response.status_code == 200
     assert response.json()["captured_version"]["version_id"] == str(UUID(int=9))
-    # The authenticated human is recorded as the ledger actor (authorship), not the SP.
     call = runtime.observer.capture_on_open.call_args
     assert call.args == (_BINDING, runtime.actor)
     assert call.kwargs["actor_override"] == runtime.actor
-    # The live serialized space is read under the SAME user (OBO): the injected reader
-    # resolves get_genie_space for this space (the SP may lack access to a user-owned space).
     assert call.kwargs["live_reader"]() is envelope
-    assert seen["sid"] == SPACE_ID
+    client.api_client.do.assert_called_once_with(
+        "GET", f"/api/2.0/genie/spaces/{SPACE_ID}", query={"include_serialized_space": "true"})
 
 
 def test_space_observe_fail_closed_when_writes_disabled():
@@ -187,11 +187,17 @@ def test_config_needs_no_authentication():
 _RESTORE_BODY = {"version_id": str(UUID(int=1)), "expected_current_version_id": str(UUID(int=9))}
 
 
+def _no_fallback(*_args, **_kwargs):
+    raise AssertionError("a gated version-control path used the SP-tolerant client")
+
+
 def _obo_patch(monkeypatch):
-    """Patch the OBO seams the restore route reaches for the live GET/PATCH."""
+    """Patch the strict OBO client the restore route uses for its live GET/PATCH."""
     client = Mock()
-    monkeypatch.setattr("backend.services.auth.get_workspace_client", lambda: client)
-    monkeypatch.setattr("backend.services.genie_client.get_genie_space", lambda sid: {"serialized_space": {}})
+    client.api_client.do.return_value = {"serialized_space": {}}
+    monkeypatch.setattr("backend.services.auth.require_obo_workspace_client", lambda: client)
+    monkeypatch.setattr("backend.services.auth.get_workspace_client", _no_fallback)
+    monkeypatch.setattr("backend.services.genie_client.get_genie_space", _no_fallback)
     return client
 
 
@@ -214,9 +220,14 @@ def test_space_restore_applies_snapshot_and_records_version(monkeypatch):
     assert live_reader() == {"serialized_space": {}}  # the OBO live GET, per _obo_patch
     # The live space was PATCHed as the OBO user, and the frozen snapshot was thawed to
     # plain JSON first (regression: a mappingproxy here raises "not JSON serializable" -> 409).
-    patch_call = client.api_client.do.call_args_list[0]
+    patch_call = next(c for c in client.api_client.do.call_args_list if c.args[0] == "PATCH")
     assert patch_call.args[0] == "PATCH"
     assert json.loads(patch_call.kwargs["body"]["serialized_space"]) == {"config": {}}
+    # Route ask + restore_local's defense-in-depth ask (deleting either fails this pin).
+    assert runtime.authorize_space.call_args_list == [
+        ((runtime.actor, SPACE_ID, L.EDIT), {}),
+        ((runtime.actor, SPACE_ID, L.EDIT), {}),
+    ]
 
 
 def test_space_restore_409_when_space_drifted(monkeypatch):
@@ -377,7 +388,7 @@ def test_put_tag_denies_actor_outside_binding_workspace():
     # Mirror `test_restore_service_denies_actor_outside_binding_workspace`, which forces the
     # scope gate to fail via a mismatched workspace_id on the actor (the binding lives in
     # "target"; the intruder authenticates from "other-ws"). Here the actor comes from
-    # `identity.actor`, so we mismatch it there: `resolve_readable` then raises
+    # `identity.actor`, so we mismatch it there: `resolve_scoped` then raises
     # PermissionError, which the router maps to 403 for the tag WRITE — proving the write is
     # denied (not merely that a read returns empty). DELETE enforces the same gate.
     runtime = _runtime()
@@ -390,3 +401,40 @@ def test_put_tag_denies_actor_outside_binding_workspace():
     delete = c.delete(f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag")
     assert delete.status_code == 403
     assert delete.json()["detail"]["code"] == "scope_denied"
+
+
+_LEVELED_ROUTES = [
+    ("get", f"/api/version-control/spaces/{SPACE_ID}/versions", None, L.VIEW),
+    ("get", f"/api/version-control/spaces/{SPACE_ID}/tags", None, L.VIEW),
+    ("post", f"/api/version-control/spaces/{SPACE_ID}/observe", None, L.EDIT),
+    ("post", f"/api/version-control/spaces/{SPACE_ID}/restore", _RESTORE_BODY, L.EDIT),
+    ("put", f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag", {"label": "Golden"}, L.EDIT),
+    ("delete", f"/api/version-control/spaces/{SPACE_ID}/versions/{_TAG_VID}/tag", None, L.EDIT),
+]
+
+
+@pytest.mark.parametrize("method,path,body,level", _LEVELED_ROUTES)
+def test_each_space_route_asks_for_its_level_before_touching_state(monkeypatch, method, path, body, level):
+    runtime = _runtime()
+    runtime.authorize_space.side_effect = PermissionError("denied")
+    enroll = Mock()
+    monkeypatch.setattr("backend.routers.vc_spaces.resolve_or_enroll_bound", enroll)
+    monkeypatch.setattr("backend.services.auth.require_obo_workspace_client", _no_fallback)
+    client = _client(runtime)
+    response = getattr(client, method)(path, **({"json": body} if body is not None else {}))
+    assert response.status_code == 403
+    assert runtime.authorize_space.call_args.args == (runtime.actor, SPACE_ID, level)
+    runtime.registry.find_active_by_space_key.assert_not_called()
+    enroll.assert_not_called()
+    runtime.observer.capture_on_open.assert_not_called()
+    runtime.observer.capture.assert_not_called()
+
+
+def test_a_space_access_refusal_reaches_the_client_in_the_vc_error_shape():
+    runtime = _runtime()
+    runtime.authorize_space.side_effect = HTTPException(403, detail={
+        "code": "space_access_denied", "message": "You need Can View permission on this Genie Agent.",
+        "retryable": False, "stale": False, "details": {"required": "view", "platform_message": ""}})
+    response = _client(runtime).get(f"/api/version-control/spaces/{SPACE_ID}/versions")
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "space_access_denied"

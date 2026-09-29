@@ -54,6 +54,7 @@ import type {
   JoinCandidate,
   JoinCandidatesResponse,
   JoinAdviceResponse,
+  SpaceAccess,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -247,6 +248,14 @@ export async function scanSpace(spaceId: string): Promise<ScanResult> {
 export async function getSpaceHistory(spaceId: string, days = 30): Promise<SpaceHistory> {
   return fetchWithTimeout<SpaceHistory>(
     `${API_BASE}/spaces/${spaceId}/history?days=${days}`,
+    {},
+    DEFAULT_TIMEOUT
+  )
+}
+
+export async function getSpaceAccess(spaceId: string): Promise<SpaceAccess> {
+  return fetchWithTimeout<SpaceAccess>(
+    `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/access`,
     {},
     DEFAULT_TIMEOUT
   )

@@ -26,7 +26,9 @@ from backend.models import (
     SpaceScanRequest,
     StarToggleRequest,
     ScanResult,
+    SpaceAccess,
 )
+from backend.services.space_access import resolve_space_access_level
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -211,6 +213,17 @@ async def get_history(
     except Exception as e:
         logger.exception(f"Failed to get history for {space_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to get history")
+
+
+@router.get("/spaces/{space_id}/access")
+async def get_space_access(space_id: SpaceId) -> SpaceAccess:
+    """The signed-in user's level on the Genie Agent, as Genie answers it (MV-D109).
+
+    ``level`` is None when Genie refuses even Can View. Any other refusal (not found,
+    unverifiable, a missing scope or entitlement) is raised with its structured detail.
+    """
+    level = await asyncio.to_thread(resolve_space_access_level, space_id)
+    return SpaceAccess(space_id=space_id, level=level.value if level else None)
 
 
 @router.put("/spaces/{space_id}/star")

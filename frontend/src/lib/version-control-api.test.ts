@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { createMutationIntent, VersionControlApi } from './version-control-api'
+import { createMutationIntent, VersionControlApi, VersionControlError } from './version-control-api'
 import { fingerprints } from '@/components/version-control/fixtures'
 
 it('double_click_or_network_loss_does_not_generate_new_mutation_key', async () => {
@@ -225,4 +225,33 @@ it('every_drift_and_operation_enum_and_full_approval_receipt_payload_parses_from
   expect(staleTransport.mock.calls[0][0]).toBe('/api/version-control/approvals')
   expect(approvalInputsFixture.target_binding).toHaveProperty('binding_revision')
   expect(fingerprints.canonicalizer_version).toBe('vc-c14n/1')
+})
+
+it('reads_the_error_where_fastapi_puts_it', async () => {
+  const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ detail: {
+    code: 'space_access_denied', message: 'You need Can Edit permission on this Genie Agent.',
+    retryable: false, stale: false, details: { required: 'edit' } } }), { status: 403 }))
+  const error = await new VersionControlApi(transport).spaceVersions('s').catch(err => err)
+  expect(error).toBeInstanceOf(VersionControlError)
+  expect(error.status).toBe(403)
+  expect(error.code).toBe('space_access_denied')
+  expect(error.message).toBe('You need Can Edit permission on this Genie Agent.')
+  expect(error.details).toEqual({ required: 'edit' })
+})
+
+it('still_reads_a_bare_error_body', async () => {
+  const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+    code: 'DEMO_409', message: 'demo conflict', retryable: false, stale: true }), { status: 409 }))
+  const error = await new VersionControlApi(transport).spaceVersions('s').catch(err => err)
+  expect(error.code).toBe('DEMO_409')
+  expect(error.message).toBe('demo conflict')
+  expect(error.stale).toBe(true)
+})
+
+it('names_the_status_when_the_error_body_is_not_json', async () => {
+  const transport = vi.fn<typeof fetch>(async () => new Response('<html>Bad gateway</html>', { status: 502 }))
+  const error = await new VersionControlApi(transport).spaceVersions('s').catch(err => err)
+  expect(error).toBeInstanceOf(VersionControlError)
+  expect(error.status).toBe(502)
+  expect(error.message).toBe('Request failed (502).')
 })

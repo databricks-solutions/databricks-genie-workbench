@@ -657,7 +657,7 @@ benchmarks are already versioned via `Fingerprints.benchmark` (`contracts.py:290
   stamped with the human actor. Returned as a separate per-space map
   (`GET /spaces/{id}/tags` → `{version_id: {label, note, author}}`) and merged client-side.
   `VersionSummary` and the ledger are untouched.
-- **VC-D-tag3 (auth):** tag writes reuse `actor_for` + `authorize_history(actor, binding)`
+- **VC-D-tag3 (auth):** _SUPERSEDED by VC-D-authz1 in §24 — the "same gate as history reads" was workspace-only, so any app user could re-tag any space's history._ tag writes reuse `actor_for` + `authorize_history(actor, binding)`
   (the same gate as history reads); the binding is resolved via
   `registry.find_active_by_space_key` (read-only) — tagging never enrolls.
 - **VC-D-diff (direction):** the checkbox-compare effect orders the two selected ids by
@@ -1711,3 +1711,66 @@ through the standard Genie APIs and VC passively records them to the immutable l
   It waits with `asyncio.sleep`, runs only the Jobs API read and the capture in a
   worker thread, and has a budget of four tasks × 14400 s. `/trigger` holds the
   task in `_background_tasks` until it finishes.
+
+## §24 — Space permission gates (PR #332 M1b, LANDED)
+
+> Numbering note: the brief called this §21; that number already names the
+> initial-capture hook above, so this lands as §24 (after §23 M5).
+
+### Decisions
+
+- **VC-D-authz1 (DECIDED 2026-09-28):** Version-control authorization moves from
+  workspace equality to space permission, through the MV-D109 resolver
+  (`backend/services/space_access.py`, `ensure_space_access` /
+  `resolve_space_access_level` at `:157`). Workspace equality stays the first
+  check and needs no Genie call (`space_authz.py:21-37`). Binding-keyed routes
+  take the space from `binding.space_id` and deny a binding without one.
+  Space-keyed routes ask about the path's `space_id` before any registry read
+  (`vc_spaces.resolve_scoped` at `:104`). Levels:
+
+  | Route | Level |
+  |---|---|
+  | `GET /spaces/{s}/versions`, `GET /spaces/{s}/tags`, `GET /bindings/{b}/versions` | VIEW |
+  | `GET /bindings/{b}/versions/{v}`, `GET /bindings/{b}/diff` | EDIT (MV-D110) |
+  | `POST /spaces/{s}/observe`, `POST /spaces/{s}/restore`, `PUT`/`DELETE /spaces/{s}/versions/{v}/tag`, `POST /bindings/{b}/restore` | EDIT |
+  | `POST /bindings/{b}/observe` | unmounted (VC-D-authz2) |
+  | `GET /config` | exempt (flags only, no space) |
+
+  Live anchors: `space_authz.authorize_space` / `authorize`
+  (`backend/services/version_control/space_authz.py:21`, `:31`);
+  `vc_spaces.resolve_scoped` (`backend/routers/vc_spaces.py:104`);
+  `vc_history.scope` (`backend/routers/vc_history.py:62`);
+  `vc_mutations.scope` (`backend/routers/vc_mutations.py:49`);
+  `restore_space_version` (`backend/services/version_control/restore_local.py:92`,
+  second EDIT ask at `:109`).
+
+  Proven-level ladder of `resolve_space_access_level`
+  (`backend/services/space_access.py:157`): returns the highest level Genie
+  proves. A later rung's non-denial failure never erases a proven level — EDIT
+  held + MANAGE rung ending in anything but `authentication_required` → EDIT
+  (warning logged). EDIT scope/entitlement refusals
+  (`space_access_scope_missing` / `space_access_entitlement_missing`) fall
+  through to VIEW. A 503 (or 404/401) on the EDIT rung raises so the UI shows
+  read-only `unknown`, never a claimed `view`.
+
+  Behaviour change on restore: a failure of its pre-write live read went from
+  409 `request_conflict` to 503 `evidence_unavailable` (now logged via
+  `vc_spaces._invoke`). Capture is unchanged in kind: `Observer._capture`
+  (`observer.py:67`) swallows live-read errors and returns 200 with busy/stale
+  status, which predates M1b.
+
+- **VC-D-authz2 (DECIDED 2026-09-28: A, unmount):** `POST /bindings/{b}/observe`
+  is not mounted. `mount_observe_routers`
+  (`backend/services/version_control/platform/app_observe.py:151`) mounts
+  history, mutations (fail-closed restore only), and spaces — no binding-keyed
+  observe.
+
+### Landed
+
+`GET /api/spaces/{space_id}/access` on the spaces router
+(`backend/routers/spaces.py:218`) returns
+`{"space_id", "level": "view"|"edit"|"manage"|null}`. The Version Control tab
+loads this before any history or capture call; viewers see a permission state
+and a read-only rail (no Capture / Restore / tag editor, no auto-capture);
+editors keep the prior CUJ. Live reads and writes on gated VC paths use
+`require_obo_workspace_client` with no SP fallback.

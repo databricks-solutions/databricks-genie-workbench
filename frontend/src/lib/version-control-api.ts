@@ -18,6 +18,22 @@ export class VersionControlError extends Error implements ApiError {
   }
 }
 
+// FastAPI wraps a raised error as {detail}; the demo transport returns the error bare.
+function errorBody(status: number, payload: unknown): ApiError {
+  const body = payload && typeof payload === 'object' && 'detail' in payload
+    ? (payload as { detail: unknown }).detail
+    : payload
+  if (body && typeof body === 'object') {
+    const error = body as Partial<ApiError>
+    if (typeof error.code === 'string' && typeof error.message === 'string') {
+      return { ...error, code: error.code, message: error.message,
+        retryable: error.retryable === true, stale: error.stale === true }
+    }
+  }
+  const message = typeof body === 'string' && body ? body : `Request failed (${status}).`
+  return { code: 'http_error', message, retryable: false, stale: false }
+}
+
 const bindingPath = (bindingId: string) => `/bindings/${encodeURIComponent(bindingId)}`
 export function createMutationIntent() {
   const keys = new Map<string, string>()
@@ -40,9 +56,11 @@ export class VersionControlApi {
   constructor(transport: typeof fetch) { this.transport = transport }
   private async request<Result>(path: string, init: RequestInit): Promise<Result> {
     const response = await this.transport(`/api/version-control${path}`, init)
-    const payload = await response.json()
-    if (!response.ok) throw new VersionControlError(response.status, payload)
-    return payload as Result
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => null)
+      throw new VersionControlError(response.status, errorBody(response.status, payload))
+    }
+    return await response.json() as Result
   }
   private get<Result>(path: string, signal?: AbortSignal) { return this.request<Result>(path, { signal }) }
   private post<Result>(path: string, body: unknown, key: string, dedupeIntent = true) {
