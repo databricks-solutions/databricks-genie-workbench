@@ -62,6 +62,13 @@ import {
   ScoreViewerUnscannedFrame,
   SpaceCardRefusedFrame,
 } from "./SpaceAccessFidelityFrames"
+import {
+  AttachedNotCreatedFrame,
+  SelectionNoneFrame,
+  SelectionSubsetFrame,
+  SelectionTwoSchemasFrame,
+  SelectionTwoSchemasSuggestOnlyFrame,
+} from "./MvSelectionFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -148,4 +155,11 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m1c2-h-optimize-viewer", title: "M1c2-h · Optimize — Can View (active status and run list, no actions)", element: <OptimizeViewerFrame /> },
   { id: "m1c2-i-optimize-viewer-empty", title: "M1c2-i · Optimize — Can View, no runs yet", element: <OptimizeViewerEmptyFrame /> },
   { id: "m1c2-j-list-scan-refused", title: "M1c2-j · Space list — scan refused below Can Edit", element: <SpaceCardRefusedFrame /> },
+  // PR #332 M2 — the selection decides the create target (MV-D112): the REAL run-setup
+  // section, and the run-output panel for a view the app attached but did not create.
+  { id: "m2-a-selection-subset", title: "M2-a · Run setup — two of three selected, one schema, permission checked", element: <SelectionSubsetFrame /> },
+  { id: "m2-b-selection-none", title: "M2-b · Run setup — create and attach with nothing selected", element: <SelectionNoneFrame /> },
+  { id: "m2-c-selection-two-schemas", title: "M2-c · Run setup — selection spans two schemas", element: <SelectionTwoSchemasFrame /> },
+  { id: "m2-d-attached-not-created", title: "M2-d · Run output — attached at approval, not created by the app (USER_CREATED)", element: <AttachedNotCreatedFrame /> },
+  { id: "m2-e-selection-two-schemas-suggest-only", title: "M2-e · Run setup — Suggest only, the default selection spans two schemas", element: <SelectionTwoSchemasSuggestOnlyFrame /> },
 ]

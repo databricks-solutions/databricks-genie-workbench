@@ -53,6 +53,13 @@ import {
   ScoreViewerFrame,
   ScoreViewerUnscannedFrame,
 } from "./SpaceAccessFidelityFrames"
+import {
+  AttachedNotCreatedFrame,
+  SelectionNoneFrame,
+  SelectionSubsetFrame,
+  SelectionTwoSchemasFrame,
+  SelectionTwoSchemasSuggestOnlyFrame,
+} from "./MvSelectionFidelityFrames"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 
@@ -408,5 +415,32 @@ describe("M1c-2 — viewer frames carry no write affordance", () => {
     expect(html).toContain("Re-scan")
     expect(html).toContain("Run Optimization")
     expect(html).toContain("Run a new IQ Scan")
+  })
+})
+
+describe("M2 — the selection decides the create target", () => {
+  it("names the selection's schema, or says why there is none", () => {
+    const subset = render(<SelectionSubsetFrame />)
+    expect(subset).toContain("finance.sales")
+    expect(subset).toContain("You can create metric views in")
+    expect(render(<SelectionNoneFrame />)).toContain("Select at least one metric view to create")
+    const two = render(<SelectionTwoSchemasFrame />)
+    expect(two).toContain("2 schemas (finance.sales, finance.marketing)")
+    expect(two).not.toContain("Target:")
+    expect(two).toContain("Available once the selected metric views are in one schema.")
+    const suggestOnly = render(<SelectionTwoSchemasSuggestOnlyFrame />)
+    expect(suggestOnly).toContain("2 schemas (finance.sales, finance.marketing)")
+    expect(suggestOnly).not.toContain("Available once you have permission")
+    for (const html of [subset, two, suggestOnly, render(<SelectionNoneFrame />)]) {
+      expect(html).not.toContain("confidence")
+      expect(html).not.toMatch(/\d+%/)
+    }
+  })
+  it("the attached-not-created panel is USER_CREATED with no drop", () => {
+    const html = render(<AttachedNotCreatedFrame />)
+    expect(html).toContain("it already existed when it was approved")
+    expect(html).toContain("dropping this one stays with its owner")
+    expect(html).not.toContain("you registered this view")
+    expect(html).not.toContain("Drop view")
   })
 })

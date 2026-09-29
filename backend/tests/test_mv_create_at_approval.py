@@ -19,9 +19,11 @@ Tested at the seam (no Databricks). What matters:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -57,14 +59,26 @@ _ARTIFACT = {
 }
 
 
+_OBO_WS = MagicMock(name="obo_ws")
+_SP_WS = MagicMock(name="sp_ws")
+
+
+class _Calls(list):
+    """Captured calls, with ``on`` holding the workspace client each ran on."""
+
+    def __init__(self):
+        super().__init__()
+        self.on: list = []
+
+
 @pytest.fixture
 def approval_env(monkeypatch):
-    executed: list[str] = []
-    upserts: list[dict] = []
+    executed = _Calls()
+    upserts = _Calls()
     advice_runs: list[dict] = []
 
-    monkeypatch.setattr(mv_create, "get_service_principal_client", lambda: MagicMock())
-    monkeypatch.setattr(mv_create, "require_obo_workspace_client", lambda: MagicMock())
+    monkeypatch.setattr(mv_create, "get_service_principal_client", lambda: _SP_WS)
+    monkeypatch.setattr(mv_create, "require_obo_workspace_client", lambda: _OBO_WS)
     monkeypatch.setattr(
         mv_create, "verify_consent", lambda **kw: (_verification(), dict(_CONSENT))
     )
@@ -84,7 +98,7 @@ def approval_env(monkeypatch):
     )
     monkeypatch.setattr(
         warehouse, "sql_warehouse_execute",
-        lambda ws, warehouse_id, sql: executed.append(sql),
+        lambda ws, warehouse_id, sql: (executed.on.append(ws), executed.append(sql)),
     )
     monkeypatch.setattr(
         warehouse, "wh_ensure_optimization_tables",
@@ -96,7 +110,8 @@ def approval_env(monkeypatch):
     )
     monkeypatch.setattr(
         warehouse, "wh_upsert_mv_created_object",
-        lambda ws, warehouse_id, **kw: (upserts.append(kw) or kw["full_name"]),
+        lambda ws, warehouse_id, **kw: (upserts.on.append(ws), upserts.append(kw))
+        and kw["full_name"],
     )
     # MV-D34 attach-at-approval: default the attach to success so the happy path
     # exercises the create-and-attach outcome. Tests that want the created-not-
@@ -104,6 +119,7 @@ def approval_env(monkeypatch):
     monkeypatch.setattr(
         mv_create, "_attach_metric_view_to_space", lambda *a, **k: True
     )
+    monkeypatch.setattr(mv_create, "_existing_view_matches", lambda *a, **k: (True, True, None))
     return executed, upserts, advice_runs
 
 
@@ -326,6 +342,8 @@ def test_existing_metric_view_is_attached_not_clobbered(approval_env, monkeypatc
     assert not any("DROP VIEW" in s for s in executed)
     assert upserts and upserts[0]["status"] == "ATTACHED"
     assert len(advice_runs) == 1
+    assert upserts[0]["provenance"] == mv_create.MV_PROVENANCE_OBO_CREATED
+    assert result.provenance == mv_create.MV_PROVENANCE_OBO_CREATED
 
 
 def test_existing_non_metric_object_is_refused(approval_env, monkeypatch):
@@ -343,6 +361,82 @@ def test_existing_non_metric_object_is_refused(approval_env, monkeypatch):
     assert not any("CREATE VIEW" in s for s in executed)
     assert not any("DROP VIEW" in s for s in executed)
     assert upserts == []
+
+
+def test_a_squatted_name_with_a_different_definition_is_refused(approval_env, monkeypatch):
+    """MV-D112: a metric view already at the consented name that is not this
+    proposal is refused. Nothing is created, attached, recorded or dropped."""
+    executed, upserts, advice_runs = approval_env
+    attaches: list[dict] = []
+    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+    monkeypatch.setattr(
+        mv_create, "_existing_view_matches",
+        lambda *a, **k: (False, False, "finance.sales.revenue_metrics already exists with a different definition than this proposal; refusing to attach it."),
+    )
+    monkeypatch.setattr(
+        mv_create, "_attach_metric_view_to_space",
+        lambda *a, **k: (attaches.append(k) or True),
+    )
+
+    result = _create()
+
+    assert result.created is False
+    assert result.degraded is False
+    assert "different definition" in (result.reason or "")
+    assert not any("CREATE VIEW" in s or "DROP VIEW" in s for s in executed)
+    assert attaches == []
+    assert upserts == []
+    assert advice_runs == []
+
+
+def test_a_matching_view_the_caller_does_not_own_is_attached_as_user_created(approval_env, monkeypatch):
+    executed, upserts, _ = approval_env
+    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+    monkeypatch.setattr(mv_create, "_existing_view_matches", lambda *a, **k: (True, False, None))
+
+    result = _create()
+
+    assert result.created is True
+    assert result.already_existed is True
+    assert result.provenance == mv_create.MV_PROVENANCE_USER_CREATED
+    assert upserts[0]["provenance"] == mv_create.MV_PROVENANCE_USER_CREATED
+    assert upserts.on == [_SP_WS]
+    assert not any("CREATE VIEW" in s for s in executed)
+
+
+def test_the_existing_view_is_checked_against_the_replayed_body_as_the_caller(approval_env, monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+    monkeypatch.setattr(
+        mv_create, "_existing_view_matches",
+        lambda ws, warehouse_id, **k: (calls.append({"ws": ws, **k}) or (True, True, None)),
+    )
+
+    _create()
+
+    assert calls == [{
+        "ws": _OBO_WS,
+        "full_name": "finance.sales.revenue_metrics",
+        "yaml_text": _ARTIFACT["yaml_text"],
+        "caller": "analyst@example.com",
+    }]
+
+
+def test_a_fresh_create_does_not_run_the_existing_view_check(approval_env, monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mv_create, "_existing_view_matches",
+        lambda *a, **k: (calls.append(k) or (True, True, None)),
+    )
+
+    executed, upserts, _ = approval_env
+
+    result = _create()
+
+    assert result.created is True and result.already_existed is False
+    assert calls == []
+    assert [ws for ws, sql in zip(executed.on, executed) if "CREATE VIEW" in sql] == [_OBO_WS]
+    assert upserts.on == [_SP_WS]
 
 
 def test_missing_candidate_returns_a_reason(approval_env, monkeypatch):
@@ -528,6 +622,145 @@ def test_grantees_empty_when_acl_unreadable(monkeypatch):
     assert auto_optimize._space_audience_grantees("space-1") == []
 
 
+# ── Existing-view definition check (MV-D112) ────────────────────────────────
+
+# What the app sends: the MV-D22 replay body.
+_PROPOSAL_YAML = (
+    'version: "1.1"\n'
+    "comment: |\n"
+    "  PURPOSE: Paid order revenue by day.\n"
+    "source: finance.sales.orders\n"
+    "dimensions: []\n"
+    "measures:\n"
+    "  - name: paid_revenue\n"
+    "    expr: SUM(CASE WHEN status = 'paid' THEN amount END)\n"
+    "    synonyms: ['2', revenue]\n"
+)
+
+# The same view as Unity Catalog stores it (check V4): quotes dropped, the empty
+# list dropped, the block scalar chomped, and keys reordered.
+_UC_VIEW_TEXT = (
+    "measures:\n"
+    "- name: paid_revenue\n"
+    "  expr: SUM(CASE WHEN status = 'paid' THEN amount END)\n"
+    "  synonyms:\n"
+    "  - 2\n"
+    "  - revenue\n"
+    "version: 1.1\n"
+    "source: finance.sales.orders\n"
+    "comment: |-\n"
+    "  PURPOSE: Paid order revenue by day.\n"
+)
+
+
+def _envelope(view_text=_UC_VIEW_TEXT, owner="analyst@example.com", type_="METRIC_VIEW"):
+    return {
+        "catalog_name": "finance", "schema_name": "sales", "table_name": "revenue_metrics",
+        "type": type_, "owner": owner, "view_text": view_text,
+    }
+
+
+def _describe_returns(monkeypatch, envelope):
+    seen = _Calls()
+
+    def query(ws, warehouse_id, sql):
+        seen.on.append(ws)
+        seen.append(sql)
+        return pd.DataFrame({"json_metadata": [json.dumps(envelope)]})
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", query)
+    return seen
+
+
+def _match(yaml_text=_PROPOSAL_YAML, caller="analyst@example.com"):
+    return mv_create._existing_view_matches(
+        _OBO_WS, "wh1",
+        full_name="finance.sales.revenue_metrics", yaml_text=yaml_text, caller=caller,
+    )
+
+
+def test_uc_rewritten_definition_matches_its_proposal(monkeypatch):
+    seen = _describe_returns(monkeypatch, _envelope())
+
+    assert _match() == (True, True, None)
+    assert seen == ["DESCRIBE TABLE EXTENDED `finance`.`sales`.`revenue_metrics` AS JSON"]
+    assert seen.on == [_OBO_WS]
+
+
+def test_a_changed_literal_is_a_different_definition(monkeypatch):
+    squatted = _UC_VIEW_TEXT.replace("'paid'", "'refunded'")
+    _describe_returns(monkeypatch, _envelope(view_text=squatted))
+
+    matches, owned, reason = _match()
+
+    assert (matches, owned) == (False, False)
+    assert "different definition" in reason
+
+
+@pytest.mark.parametrize(
+    "owner,expected",
+    [("other@example.com", False), ("ANALYST@example.com", True), ("", False)],
+)
+def test_ownership_is_the_describe_owner_against_the_caller(monkeypatch, owner, expected):
+    _describe_returns(monkeypatch, _envelope(owner=owner))
+
+    assert _match() == (True, expected, None)
+
+
+@pytest.mark.parametrize("scalar", ["true", "007", "0.10", "1:30"])
+def test_a_quoted_scalar_matches_its_unquoted_uc_form(monkeypatch, scalar):
+    proposal = _PROPOSAL_YAML.replace("['2', revenue]", f"['{scalar}', revenue]")
+    _describe_returns(monkeypatch, _envelope(view_text=_UC_VIEW_TEXT.replace("  - 2\n", f"  - {scalar}\n")))
+
+    assert _match(yaml_text=proposal) == (True, True, None)
+
+
+def test_a_bare_yaml_boolean_is_not_its_quoted_word(monkeypatch):
+    proposal = _PROPOSAL_YAML.replace("['2', revenue]", "['True', revenue]")
+    _describe_returns(monkeypatch, _envelope(view_text=_UC_VIEW_TEXT.replace("  - 2\n", "  - on\n")))
+
+    matches, _, reason = _match(yaml_text=proposal)
+
+    assert matches is False
+    assert "different definition" in reason
+
+
+def test_an_unparsable_definition_is_refused(monkeypatch):
+    _describe_returns(monkeypatch, _envelope(view_text="measures: [unclosed\n"))
+
+    matches, owned, reason = _match()
+
+    assert (matches, owned) == (False, False)
+    assert "could not be read" in reason
+
+
+def test_a_self_referencing_alias_is_refused_not_raised(monkeypatch):
+    _describe_returns(monkeypatch, _envelope(view_text="measures: &loop\n- *loop\n"))
+
+    matches, owned, reason = _match()
+
+    assert (matches, owned) == (False, False)
+    assert "could not be read" in reason
+
+
+def test_a_hidden_definition_is_refused(monkeypatch):
+    _describe_returns(monkeypatch, _envelope(view_text=""))
+
+    matches, _, reason = _match()
+
+    assert matches is False
+    assert "not visible to you" in reason
+
+
+def test_an_object_that_is_not_a_metric_view_is_refused(monkeypatch):
+    _describe_returns(monkeypatch, _envelope(type_="VIEW"))
+
+    matches, _, reason = _match()
+
+    assert matches is False
+    assert "could not be checked" in reason
+
+
 # ── Route: POST /spaces/{space_id}/mv/create ────────────────────────────────
 
 
@@ -614,6 +847,29 @@ def test_create_route_reports_already_existed_and_still_grants(client, monkeypat
     assert body["attached"] is True
     assert body["already_existed"] is True
     assert body["grant_sql"] and "GRANT SELECT ON VIEW finance.sales.revenue_metrics" in body["grant_sql"]
+
+
+def test_create_route_reports_user_created_provenance(client, monkeypatch):
+    monkeypatch.setattr(
+        mv_create, "create_at_approval",
+        lambda **k: mv_create.MvCreateAtApprovalResult(
+            created=True, attached=True, already_existed=True,
+            full_name="finance.sales.revenue_metrics", run_id="run-obo-2",
+            suggestion_id="sug1", verdict="SUFFICIENT",
+            provenance=mv_create.MV_PROVENANCE_USER_CREATED,
+        ),
+    )
+    monkeypatch.setattr(
+        auto_optimize, "_gso_sp_application_id",
+        lambda: "abcdef01-2345-6789-abcd-ef0123456789",
+    )
+    resp = client.post(
+        "/api/auto-optimize/spaces/space-1/mv/create",
+        json={"suggestion_id": "sug1", "probe_id": "p1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["provenance"] == "USER_CREATED"
+    assert resp.json()["already_existed"] is True
 
 
 def test_create_route_returns_degraded(client, monkeypatch):

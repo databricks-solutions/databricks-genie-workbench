@@ -1,6 +1,7 @@
 import { AlertTriangle, Check, Copy, Loader2, Sparkles } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Button } from "@/components/ui/button"
+import { mvCreateSelectionReason, selectedMvProposals } from "@/components/auto-optimize/optimizationRequest"
 import type { MvProposal, MvProbeResult } from "@/types"
 
 // The "Suggest metric views" run-config section (Prompt 11, MV-D1/D23) —
@@ -30,13 +31,15 @@ export interface MvSuggestSectionProps {
   onToggleProposal: (suggestionId: string) => void
   mode: "suggest_only" | "create_and_attach"
   onModeChange: (mode: "suggest_only" | "create_and_attach") => void
-  /** catalog.schema derived from the approved proposals (deriveMvTarget). */
+  /** catalog.schema derived from the selected proposals (deriveMvTarget). */
   target: { catalog: string; schema: string } | null
   probe: MvProbeResult | null
   probeLoading: boolean
   probeError: string | null
   /** Copies probe.remediation_sql to the clipboard (owned by the parent). */
   onCopyGrant: () => void
+  /** Why the current selection cannot be created (MV-D112), or null. */
+  selectionMessage?: string | null
 }
 
 function targetLabel(target: { catalog: string; schema: string } | null): string {
@@ -60,11 +63,13 @@ export function MvSuggestSection(props: MvSuggestSectionProps) {
     probeLoading,
     probeError,
     onCopyGrant,
+    selectionMessage,
   } = props
 
   const isFirstRun = proposals.length === 0
   const granted = probe?.verdict === "SUFFICIENT"
   const label = targetLabel(target)
+  const createSelectionReason = mvCreateSelectionReason(selectedMvProposals(proposals, selectedProposalIds))
 
   return (
     <div className="space-y-4 rounded-lg border border-default bg-surface-subtle px-4 py-3">
@@ -134,6 +139,13 @@ export function MvSuggestSection(props: MvSuggestSectionProps) {
                 ))}
               </div>
 
+              {selectionMessage && (
+                <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{selectionMessage}</span>
+                </p>
+              )}
+
               {label && (
                 <p className="text-xs font-medium text-secondary">
                   Target: <span className="font-mono text-primary">{label}</span>
@@ -165,6 +177,7 @@ export function MvSuggestSection(props: MvSuggestSectionProps) {
                 mode={mode}
                 onModeChange={onModeChange}
                 createEnabled={granted}
+                createSelectionReason={createSelectionReason}
                 target={label}
               />
             </>
@@ -220,12 +233,14 @@ function RerunModes({
   mode,
   onModeChange,
   createEnabled,
+  createSelectionReason,
   target,
 }: {
   disabled?: boolean
   mode: "suggest_only" | "create_and_attach"
   onModeChange: (mode: "suggest_only" | "create_and_attach") => void
   createEnabled: boolean
+  createSelectionReason: string | null
   target: string
 }) {
   return (
@@ -260,8 +275,9 @@ function RerunModes({
           <span className="font-medium">Create and attach, then optimize.</span>{" "}
           <span className={createEnabled ? "text-muted" : undefined}>
             {createEnabled
-              ? `Create approved metric views in ${target}, add them to this Genie Agent, then optimize the space with them in place.`
-              : "Available once you have permission to create metric views in the target schema."}
+              ? `Create the selected metric views in ${target}, add them to this Genie Agent, then optimize the space with them in place.`
+              : createSelectionReason ??
+                "Available once you have permission to create metric views in the target schema."}
           </span>
         </span>
       </label>

@@ -189,7 +189,17 @@ approve a recommendation from the card, choose the target schema, and complete a
 fresh entitlement check. Workbench then creates the metric view under that user's
 OBO identity and attaches it to the live Genie Agent in the same request. If
 creation succeeds but attachment fails, the result is reported as partial success
-and can be retried safely.
+and can be retried safely. If a metric view with that name already exists,
+Workbench attaches it only when its definition matches the recommendation
+(Unity Catalog's reformatting of the stored YAML is ignored). A different or
+unreadable definition is refused, and the existing view is left untouched. An
+existing view you don't own is recorded as user-created, and Workbench never drops it.
+
+In run setup, **Create and attach** creates only the recommendations you select,
+and they must share one target schema. The permission check covers exactly the
+selected recommendations. Start stays disabled while nothing is selected, while
+the selection spans schemas, and while the check runs. If the check does not
+pass, the run continues in suggest-only mode.
 
 This Genie v2 deployment round-trips attached metric views under
 `data_sources.tables`. Workbench normalizes UC-confirmed metric views on read, so

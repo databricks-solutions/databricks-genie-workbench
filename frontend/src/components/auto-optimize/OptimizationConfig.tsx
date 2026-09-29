@@ -11,8 +11,11 @@ import {
   buildOptimizationTriggerRequest,
   collectMvSourceTables,
   deriveMvTarget,
+  mvSelectionMessage,
+  mvStartBlockReason,
   parseMaxAttempts,
   parseTargetAccuracy,
+  selectedMvProposals,
 } from "@/components/auto-optimize/optimizationRequest"
 import type { GSOPermissionCheck, MvProbeResult, MvProposal } from "@/types"
 
@@ -35,6 +38,14 @@ interface OptimizationConfigProps {
   healthIssues?: string[]
   onRefreshPermissions?: () => void
   initialMv?: MvRerunPrefill | null
+}
+
+// One entitlement answer, tagged with the selection it was asked for.
+interface MvProbeState {
+  key: string
+  probe: MvProbeResult | null
+  error: string | null
+  loading: boolean
 }
 
 // Levers 1–6 scope the bounded native patch/eval attempts. There is no
@@ -103,9 +114,11 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [mvMode, setMvMode] = useState<"suggest_only" | "create_and_attach">(
     initialMv?.mode ?? "suggest_only",
   )
-  const [mvProbe, setMvProbe] = useState<MvProbeResult | null>(null)
-  const [mvProbeLoading, setMvProbeLoading] = useState(false)
-  const [mvProbeError, setMvProbeError] = useState<string | null>(null)
+  // The consent covers exactly the selected proposals' schema and source tables,
+  // so each selection gets its own probe. The in-flight guard is a ref for the
+  // same reason as mvProposalsInFlight above.
+  const [mvProbeState, setMvProbeState] = useState<MvProbeState | null>(null)
+  const mvProbeInFlight = useRef<string | null>(null)
 
   const hasHealthIssues = (healthIssues?.length ?? 0) > 0
   const targetAccuracy = parseTargetAccuracy(targetPercent)
@@ -113,7 +126,14 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const knobsValid = targetAccuracy !== null && maxAttempts !== null
   const canStart = permissions?.can_start === true && !hasHealthIssues
 
-  const mvTarget = useMemo(() => deriveMvTarget(mvProposals), [mvProposals])
+  const mvSelected = useMemo(() => selectedMvProposals(mvProposals, mvSelectedIds), [mvProposals, mvSelectedIds])
+  const mvTarget = useMemo(() => deriveMvTarget(mvSelected), [mvSelected])
+  const mvSourceTables = useMemo(() => collectMvSourceTables(mvSelected), [mvSelected])
+  const mvProbeKey = mvTarget ? `${mvTarget.catalog}.${mvTarget.schema}|${mvSourceTables.join(",")}` : null
+  const mvProbeCurrent = mvProbeState && mvProbeState.key === mvProbeKey ? mvProbeState : null
+  const mvProbe = mvProbeCurrent?.probe ?? null
+  const mvProbeLoading = mvProbeKey !== null && (mvProbeCurrent === null || mvProbeCurrent.loading)
+  const mvProbeError = mvProbeCurrent?.error ?? null
   const mvGranted = mvProbe?.verdict === "SUFFICIENT"
 
   // Load the space's proposals the first time the section expands (MV-D23 —
@@ -162,32 +182,37 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     }
   }, [mvEnabled, mvProposalsLoaded, spaceId, prefillSuggestionId])
 
-  // Probe entitlement once approved proposals with a target are known (re-run).
-  // Fires once per target; a failure records an error rather than re-looping.
+  // Probe entitlement for the selection's target and source tables (re-run). A
+  // changed selection re-probes; an answer for an earlier selection is dropped.
   useEffect(() => {
-    if (!mvEnabled || !mvProposalsLoaded || !mvTarget) return
-    if (mvProbe || mvProbeLoading || mvProbeError) return
-    let cancelled = false
-    setMvProbeLoading(true)
+    if (!mvEnabled || !mvProposalsLoaded || !mvTarget || !mvProbeKey) return
+    if (mvProbeState?.key === mvProbeKey || mvProbeInFlight.current === mvProbeKey) return
+    const key = mvProbeKey
+    mvProbeInFlight.current = key
+    setMvProbeState({ key, probe: null, error: null, loading: true })
     probeMvEntitlement({
       catalog: mvTarget.catalog,
       schema: mvTarget.schema,
       space_id: spaceId,
-      source_tables: collectMvSourceTables(mvProposals),
+      source_tables: mvSourceTables,
     })
       .then((res) => {
-        if (!cancelled) setMvProbe(res)
+        if (mvProbeInFlight.current === key) setMvProbeState({ key, probe: res, error: null, loading: false })
       })
       .catch((e) => {
-        if (!cancelled) setMvProbeError(e instanceof Error ? e.message : "Entitlement probe failed.")
+        if (mvProbeInFlight.current === key) {
+          setMvProbeState({
+            key,
+            probe: null,
+            error: e instanceof Error ? e.message : "Entitlement probe failed.",
+            loading: false,
+          })
+        }
       })
       .finally(() => {
-        if (!cancelled) setMvProbeLoading(false)
+        if (mvProbeInFlight.current === key) mvProbeInFlight.current = null
       })
-    return () => {
-      cancelled = true
-    }
-  }, [mvEnabled, mvProposalsLoaded, mvTarget, mvProbe, mvProbeLoading, mvProbeError, mvProposals, spaceId])
+  }, [mvEnabled, mvProposalsLoaded, mvTarget, mvProbeKey, mvProbeState?.key, mvSourceTables, spaceId])
 
   function toggleLever(id: number) {
     setSelectedLevers((prev) => {
@@ -241,7 +266,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
                 enabled: true,
                 mode: effectiveMvMode,
                 minConfidence: null,
-                approvedSuggestionIds: Array.from(mvSelectedIds).sort(),
+                approvedSuggestionIds: mvSelected.map((p) => p.suggestion_id).sort(),
                 consent:
                   effectiveMvMode === "create_and_attach" && mvProbe
                     ? {
@@ -264,6 +289,14 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
       setLoading(false)
     }
   }
+
+  const mvStartBlock = mvStartBlockReason({
+    enabled: mvEnabled,
+    mode: mvMode,
+    proposals: mvProposals,
+    selected: mvSelected,
+    probeLoading: mvProbeLoading,
+  })
 
   return (
     <Card>
@@ -490,6 +523,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           probeLoading={mvProbeLoading}
           probeError={mvProbeError}
           onCopyGrant={handleCopyGrant}
+          selectionMessage={mvSelectionMessage(mvSelected, mvMode)}
         />
 
         {/* Operator guidance (Semantic Blueprint §7): optional free-text hints for
@@ -547,9 +581,9 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           <div className="flex justify-end">
             <button
               onClick={handleStart}
-              disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid}
+              disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid || mvStartBlock !== null}
               className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white font-semibold hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title={!canStart ? "Required permissions are missing" : !knobsValid ? "Enter valid stopping criteria" : undefined}
+              title={!canStart ? "Required permissions are missing" : !knobsValid ? "Enter valid stopping criteria" : mvStartBlock ?? undefined}
             >
               <Rocket className="w-4 h-4" />
               {loading ? "Starting..." : "Start Optimization"}

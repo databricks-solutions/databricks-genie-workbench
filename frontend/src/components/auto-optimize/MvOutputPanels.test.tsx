@@ -172,9 +172,14 @@ describe("create-and-attach panel — USER_CREATED (bring-your-own, MV-D24 invar
     created_by: "prashanth@example.com",
   }
   const html = render(<MvCreateAttachPanel obj={userCreated} ddl={ddl} catalogUrl={null} />)
-  it("renders the USER_CREATED badge and the frame-8b vocabulary", () => {
+  it("renders the USER_CREATED badge and copy true for a teammate's view", () => {
     expect(html).toContain("USER_CREATED")
-    expect(html).toContain("dropping this one stays in your hands")
+    expect(html).toContain("the app didn’t create this view for you")
+    expect(html).toContain("dropping this one stays with its owner")
+    // MV-D112: a view that already existed at approval is USER_CREATED too, so the
+    // copy must not claim the user registered it.
+    expect(html).toContain("it already existed when it was approved")
+    expect(html).not.toContain("you registered this view")
   })
   it("NEVER renders a Drop view action, even while DETACHED", () => {
     expect(html).toContain("DETACHED")

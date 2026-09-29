@@ -220,12 +220,12 @@ def create_and_attach_for_run(
     schema: str,
     warehouse_id: str,
 ) -> MvAttachHandoff:
-    """Create the approved metric views under OBO and return the attach handoff.
+    """Create the selected metric views under OBO and return the attach handoff.
 
     Called by ``trigger_optimization``'s ``mv_attach_hook`` with the run's
     ``run_id``. Never raises for a create problem — a per-suggestion failure
     drops that suggestion and the run proceeds; a whole-run problem (no consent,
-    downgraded re-verification, nothing approved) returns a ``suggest_only``
+    downgraded re-verification, nothing selected) returns a ``suggest_only``
     handoff.
     """
     from genie_space_optimizer.common.warehouse import (
@@ -295,6 +295,16 @@ def create_and_attach_for_run(
             downgrade_reason=verification.downgrade_reason,
         )
 
+    approved = set(approved_suggestion_ids or [])
+    if not approved:
+        downgrade_reason = "no metric views were selected for this run"
+        _stamp_consent(verdict=verification.verdict, downgrade_reason=downgrade_reason)
+        return MvAttachHandoff(
+            action_mode="suggest_only",
+            consent_id=probe_id,
+            downgrade_reason=downgrade_reason,
+        )
+
     fresh_probe = verification.fresh_probe
     sp_ws = get_service_principal_client()
     obo_ws = require_obo_workspace_client()
@@ -303,9 +313,7 @@ def create_and_attach_for_run(
         sp_ws, warehouse_id, catalog, schema,
         target_space_id=space_id, approved_for_rerun=True,
     )
-    approved = set(approved_suggestion_ids or [])
-    if approved:
-        candidates = [c for c in candidates if c.get("suggestion_id") in approved]
+    candidates = [c for c in candidates if c.get("suggestion_id") in approved]
 
     attach_views: list[str] = []
     created: list[MvCreatedObject] = []
@@ -385,14 +393,32 @@ def create_and_attach_for_run(
                     logger.warning("Could not clean up %s after a failed create", full_name)
                 continue
 
-            wh_upsert_mv_created_object(
-                sp_ws, warehouse_id,
-                catalog=catalog, schema=schema,
-                run_id=run_id, suggestion_id=suggestion_id,
-                full_name=full_name, created_by=fresh_probe.checked_as,
-                status="CREATED",
-                provenance=MV_PROVENANCE_OBO_CREATED,
-            )
+            try:
+                wh_upsert_mv_created_object(
+                    sp_ws, warehouse_id,
+                    catalog=catalog, schema=schema,
+                    run_id=run_id, suggestion_id=suggestion_id,
+                    full_name=full_name, created_by=fresh_probe.checked_as,
+                    status="CREATED",
+                    provenance=MV_PROVENANCE_OBO_CREATED,
+                )
+            except Exception:
+                # An unrecorded view is invisible to the drop route and makes the
+                # next run refuse its name, so it cannot be left behind.
+                logger.error(
+                    "Created %s for suggestion %s but could not record it; dropping it",
+                    full_name, suggestion_id, exc_info=True,
+                )
+                try:
+                    sql_warehouse_execute(
+                        obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {full_name}"
+                    )
+                except Exception:
+                    logger.error(
+                        "Could not drop unrecorded metric view %s; it must be dropped by hand",
+                        full_name, exc_info=True,
+                    )
+                continue
             attach_views.append(full_name)
             created.append(MvCreatedObject(
                 run_id=run_id, suggestion_id=suggestion_id, full_name=full_name,
@@ -413,7 +439,7 @@ def create_and_attach_for_run(
         # collisions). The verdict stays SUFFICIENT — this is a create-time
         # outcome, not a consent downgrade — but the run and its reason are still
         # stamped so /mv-created can explain the empty result.
-        downgrade_reason = "no metric view could be created for the approved candidates"
+        downgrade_reason = "no metric view could be created for the selected candidates"
         _stamp_consent(verdict=verification.verdict, downgrade_reason=downgrade_reason)
         return MvAttachHandoff(
             action_mode="suggest_only",
@@ -473,15 +499,14 @@ def _obo_identity(obo_ws) -> str:
         return ""
 
 
-def _recover_registered_metric_view(
+def _describe_metric_view(
     obo_ws, warehouse_id: str, full_name: str
-) -> tuple[bool, str | None, str | None]:
-    """Verify under OBO that ``full_name`` is a metric view; recover its YAML.
+) -> tuple[dict | None, str | None]:
+    """``DESCRIBE TABLE EXTENDED ... AS JSON`` of a metric view, under OBO.
 
-    Returns ``(ok, yaml_text, reason)``. Read under the caller's OBO client so
-    the caller's own visibility governs — an object they cannot see is refused,
-    not resolved through the SP. ``DESCRIBE TABLE EXTENDED ... AS JSON`` carries
-    both the ``type`` assertion and the ``view_text`` YAML body.
+    Returns ``(envelope, None)`` for a metric view, else ``(None, reason)``. Read
+    under the caller's OBO client so the caller's own visibility governs — an
+    object they cannot see is refused, not resolved through the SP.
     """
     from genie_space_optimizer.backend.utils import safe_json_parse
     from genie_space_optimizer.common.warehouse import sql_warehouse_query
@@ -492,14 +517,14 @@ def _recover_registered_metric_view(
             obo_ws, warehouse_id, f"DESCRIBE TABLE EXTENDED {fq} AS JSON"
         )
     except Exception:
-        logger.warning("register: DESCRIBE failed for %s", full_name, exc_info=True)
+        logger.warning("DESCRIBE ... AS JSON failed for %s", full_name, exc_info=True)
         return (
-            False, None,
+            None,
             f"{full_name} could not be described — it may not exist, or you may "
             "not have access to it",
         )
     if getattr(df, "empty", True):
-        return False, None, f"{full_name} returned no metadata"
+        return None, f"{full_name} returned no metadata"
 
     envelope = None
     for cell in df.to_numpy().ravel():
@@ -508,32 +533,111 @@ def _recover_registered_metric_view(
             envelope = parsed
             break
     if not isinstance(envelope, dict):
-        return (
-            False, None,
-            f"{full_name}: could not parse the DESCRIBE ... AS JSON envelope",
-        )
+        return None, f"{full_name}: could not parse the DESCRIBE ... AS JSON envelope"
 
     type_str = str(envelope.get("type") or "").strip().upper()
     if type_str != "METRIC_VIEW":
         return (
-            False, None,
+            None,
             f"{full_name} is not a metric view (type={type_str or 'unknown'}); "
             "only a metric view can be registered",
         )
+    return envelope, None
 
+
+def _view_text_of(envelope: dict) -> str:
     view_text = (
         envelope.get("view_text")
         or envelope.get("View Text")
         or envelope.get("view_definition")
         or ""
     )
-    if not isinstance(view_text, str) or not view_text.strip():
+    return view_text if isinstance(view_text, str) else ""
+
+
+def _recover_registered_metric_view(
+    obo_ws, warehouse_id: str, full_name: str
+) -> tuple[bool, str | None, str | None]:
+    """Verify under OBO that ``full_name`` is a metric view; recover its YAML.
+
+    Returns ``(ok, yaml_text, reason)``. ``DESCRIBE TABLE EXTENDED ... AS JSON``
+    carries both the ``type`` assertion and the ``view_text`` YAML body.
+    """
+    envelope, reason = _describe_metric_view(obo_ws, warehouse_id, full_name)
+    if envelope is None:
+        return False, None, reason
+    view_text = _view_text_of(envelope)
+    if not view_text.strip():
         return (
             False, None,
             f"{full_name}: its definition (view_text) is not visible to you — "
             "you may not be its owner, so it cannot be verified",
         )
     return True, view_text, None
+
+
+def _canonical_definition(value):
+    """A metric view definition without Unity Catalog's storage rewrites.
+
+    UC stores ``view_text`` re-serialized: scalars lose their quotes (``'1.1'``
+    becomes ``1.1``), empty lists are dropped, block scalars lose their trailing
+    newline, and keys are reordered. None of those change the view.
+    """
+    if isinstance(value, dict):
+        out = {str(k): _canonical_definition(v) for k, v in value.items()}
+        return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+    if isinstance(value, list):
+        return [_canonical_definition(v) for v in value]
+    if value is None:
+        return None
+    return str(value).strip()
+
+
+def _existing_view_matches(
+    obo_ws, warehouse_id: str, *, full_name: str, yaml_text: str, caller: str
+) -> tuple[bool, bool, str | None]:
+    """Whether the metric view already at ``full_name`` IS this proposal (MV-D112).
+
+    Returns ``(matches, owned_by_caller, reason)``; ``reason`` explains a refusal.
+    Ownership is the view's UC ``owner`` against the caller, so a view someone
+    else wrote is never recorded as one the app created.
+    """
+    import yaml as _yaml
+
+    envelope, why = _describe_metric_view(obo_ws, warehouse_id, full_name)
+    if envelope is None:
+        return (
+            False, False,
+            f"{full_name} already exists but could not be checked against this "
+            f"proposal ({why}); refusing to attach it",
+        )
+    view_text = _view_text_of(envelope)
+    if not view_text.strip():
+        return (
+            False, False,
+            f"{full_name} already exists, but its definition is not visible to you, "
+            "so it can't be checked against this proposal; refusing to attach it",
+        )
+    # BaseLoader keeps every scalar a string: UC drops quotes ('2' returns as 2),
+    # and YAML 1.1 typing would turn 'on' and 'True' into the same boolean.
+    try:
+        existing = _canonical_definition(_yaml.load(view_text, Loader=_yaml.BaseLoader))
+        proposed = _canonical_definition(_yaml.load(yaml_text, Loader=_yaml.BaseLoader))
+    except Exception:
+        return (
+            False, False,
+            f"{full_name} already exists, but its definition could not be read; "
+            "refusing to attach it",
+        )
+    if existing != proposed:
+        return (
+            False, False,
+            f"{full_name} already exists with a different definition than this "
+            "proposal; refusing to attach it. Rename or drop the existing view and "
+            "approve again.",
+        )
+    owner = str(envelope.get("owner") or "").strip().lower()
+    return True, bool(owner) and owner == (caller or "").strip().lower(), None
 
 
 def _claim_matches_view(
@@ -719,8 +823,9 @@ class MvCreateAtApprovalResult:
     """Outcome of accepting a suggestion on the IQ surface (MV-D34).
 
     ``created`` true: the metric view exists under OBO in the consented schema —
-    ``full_name`` and the sentinel advice ``run_id`` hosting the ``OBO_CREATED``
-    ledger row, picked up and measured on the next run. ``degraded`` true: the
+    ``full_name`` and the sentinel advice ``run_id`` hosting its ledger row
+    (``provenance``: ``OBO_CREATED``, or ``USER_CREATED`` for a matching view the
+    caller does not own), picked up and measured on the next run. ``degraded`` true: the
     fresh probe re-verified below SUFFICIENT, so nothing was created and the card
     falls back to [Approve for later] with ``remediation_sql``. Both false: a
     create-time failure (revalidation drop, collision) with ``reason``.
@@ -857,12 +962,15 @@ def create_at_approval(
     created-not-attached view (``attached=False``, ledger ``CREATED``) the card
     explains, never a silent no-op.
 
-    Idempotent on an existing view: if the consented object is ALREADY a usable
-    metric view (created in a prior round, or left created-not-attached by an
-    earlier failed PATCH), it skips the CREATE and only (re)attaches — approving
-    again is never a "refusing to clobber" dead end. Only a same-named object that
-    is NOT a metric view is refused. ``already_existed`` reports which happened so
-    the card can say "attached an existing view" rather than claim a fresh create.
+    Idempotent on an existing view: if the consented object is ALREADY a metric
+    view whose definition matches this proposal (created in a prior round, or
+    left created-not-attached by an earlier failed PATCH), it skips the CREATE and
+    only (re)attaches (MV-D34). A same-named object that is not a metric view, or
+    a metric view whose definition differs or cannot be read, is refused and left
+    untouched (MV-D112). The ledger row is ``OBO_CREATED`` only when the caller
+    owns the view; otherwise it is ``USER_CREATED``, which the app never drops.
+    ``already_existed`` reports which happened so the card can say "attached an
+    existing view" rather than claim a fresh create.
 
     Identity is the hard-fail seam: ``require_obo_workspace_client`` raises if no
     user token reached us, so a create/attach can never silently run as the SP.
@@ -948,15 +1056,12 @@ def create_at_approval(
             reason="re-validation demands a join strategy below the rendered one; "
             "not creating (MV-D22)",
         )
-    # MV-D34 idempotent re-approval. The old guard refused any existing object
-    # ("refusing to clobber"), which stranded a view created in a prior round (or
-    # left created-not-attached by a failed PATCH): it kept getting suggested but
-    # could never be actioned. Approving is the user's decision to put the view on
-    # their Agent, so if the object is ALREADY a usable metric view we skip the
-    # CREATE and fall through to attach — the config is the source of truth, so
-    # attaching is exactly what clears it from the list. Only a same-named object
-    # that is NOT a metric view is a genuine collision we refuse to touch.
+    # MV-D34 idempotent re-approval, narrowed by MV-D112: an existing metric view
+    # is re-attached only when its definition is this proposal's. Attaching any
+    # same-named view would put a definition the user never reviewed on their
+    # Agent, recorded as one the app created.
     already_existed = _object_exists(obo_ws, warehouse_id, full_name)
+    provenance = MV_PROVENANCE_OBO_CREATED
     if already_existed:
         if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
             return MvCreateAtApprovalResult(
@@ -964,6 +1069,17 @@ def create_at_approval(
                 reason=f"{full_name} already exists and is not a metric view; "
                 "refusing to clobber it",
             )
+        matches, owned_by_caller, mismatch = _existing_view_matches(
+            obo_ws, warehouse_id,
+            full_name=full_name, yaml_text=yaml_text, caller=fresh_probe.checked_as,
+        )
+        if not matches:
+            return MvCreateAtApprovalResult(
+                created=False, degraded=False, suggestion_id=suggestion_id,
+                reason=mismatch,
+            )
+        if not owned_by_caller:
+            provenance = MV_PROVENANCE_USER_CREATED
     else:
         sql_warehouse_execute(obo_ws, warehouse_id, create_ddl(full_name, yaml_text))
         if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
@@ -1008,18 +1124,19 @@ def create_at_approval(
         run_id=run_id, suggestion_id=suggestion_id,
         full_name=full_name, created_by=created_by,
         status="ATTACHED" if attached else "CREATED",
-        provenance=MV_PROVENANCE_OBO_CREATED,
+        provenance=provenance,
     )
     logger.info(
-        "%s OBO_CREATED metric view %s for space %s at approval "
+        "%s %s metric view %s for space %s at approval "
         "(run %s, attached=%s)",
         "Attached pre-existing" if already_existed else "Created",
-        full_name, space_id, run_id, attached,
+        provenance, full_name, space_id, run_id, attached,
     )
     return MvCreateAtApprovalResult(
         created=True, attached=attached, already_existed=already_existed,
         full_name=full_name, run_id=run_id,
         suggestion_id=suggestion_id, verdict=verification.verdict,
+        provenance=provenance,
     )
 
 

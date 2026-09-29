@@ -46,10 +46,12 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
   const [configExpanded, setConfigExpanded] = useState(false)
 
   // Prompt 15.6 finding 6 — a proposal carried from the IQ-scan "Review in run
-  // setup" deep-link. Seeds the optimize tab's MV prefill on mount, then is
-  // cleared when the user leaves the optimize tab so a later plain visit does
-  // not reopen create_and_attach.
+  // setup" deep-link. Seeds the optimize tab's MV prefill on mount, and is
+  // cleared when a run starts, a run is opened, or the user leaves the optimize tab, so a later
+  // visit does not reopen create_and_attach. The nonce keys the tab: each deep
+  // link remounts it, and clearing the prefill does not.
   const [mvPrefill, setMvPrefill] = useState<MvRerunPrefill | null>(null)
+  const [mvPrefillNonce, setMvPrefillNonce] = useState(0)
 
   useEffect(() => {
     if (activeTab !== "optimize" && mvPrefill) setMvPrefill(null)
@@ -62,6 +64,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
           ? { mode: "create_and_attach", suggestionId: proposal.suggestion_id }
           : { mode: "create_and_attach", suggestionId: null },
       )
+      setMvPrefillNonce((n) => n + 1)
       onNavigate("optimize")
     },
     [onNavigate],
@@ -386,13 +389,14 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
             {activeTab === "optimize" && (
               canEdit ? (
                 <AutoOptimizeTab
-                  key={`${runId ?? "configure"}:${mvPrefill?.suggestionId ?? ""}`}
+                  key={`${runId ?? "configure"}:${mvPrefillNonce}`}
                   spaceId={spaceId}
                   requestedRunId={runId}
                   onRunChange={(nextRunId) => onNavigate("optimize", nextRunId)}
                   onRefreshIqScore={handlePostOptimizationScan}
                   onViewIqScore={() => onNavigate("score")}
                   initialMvPrefill={mvPrefill}
+                  onMvPrefillConsumed={() => setMvPrefill(null)}
                 />
               ) : access === "checking" ? (
                 <CheckingAccess />

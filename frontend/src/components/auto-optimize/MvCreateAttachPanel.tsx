@@ -104,9 +104,9 @@ export function MvCreateAttachPanel({ obj, ddl, catalogUrl, onDropped }: MvCreat
           </p>
           {userCreated ? (
             <p className="mt-0.5 text-xs text-muted">
-              Provenance <span className="font-mono">USER_CREATED</span> — you registered this view
-              yourself. The app never drops views it didn&rsquo;t create; dropping this one stays in
-              your hands.
+              Provenance <span className="font-mono">USER_CREATED</span> — the app didn&rsquo;t create
+              this view for you: it was registered, or it already existed when it was approved. The app
+              never drops views it didn&rsquo;t create for you; dropping this one stays with its owner.
             </p>
           ) : (
             <p className="mt-0.5 text-xs text-muted">

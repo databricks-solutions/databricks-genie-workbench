@@ -228,10 +228,10 @@ class TriggerRequest(BaseModel):
     ] = Field(default_factory=list, max_length=20)
     # Metric view advisor knobs (Prompt 9, MV-D1/D5). enable_metric_view_suggestions
     # gates the job's advisor phase; mv_action_mode="create_and_attach" additionally
-    # asks the backend to create the approved candidates under OBO before submit
+    # asks the backend to create the selected candidates under OBO before submit
     # (MV-D20). create_and_attach requires mv_consent (a re-verifiable probe_id) and
-    # is gated on approved_for_rerun candidates (MV-D1); it silently downgrades to
-    # suggest_only whenever re-verification or every create fails.
+    # creates only mv_approved_suggestion_ids — empty creates none (MV-D112); it
+    # downgrades to suggest_only whenever re-verification or every create fails.
     enable_metric_view_suggestions: bool = False
     mv_action_mode: Literal["suggest_only", "create_and_attach"] = "suggest_only"
     mv_min_confidence: int | None = Field(None, ge=0, le=100)
@@ -4035,15 +4035,15 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
             detail="Only the user who created this metric view may drop it.",
         )
     # MV-D24 invariant 1, placed BEFORE the status check: the app never drops a
-    # USER_CREATED (bring-your-own) view — we did not create it and do not own
-    # its lifecycle — so it is refused on provenance even when status=DETACHED.
+    # USER_CREATED view — the app did not create it for the caller and does not
+    # own its lifecycle — so it is refused on provenance even when status=DETACHED.
     provenance = str(obj.get("provenance") or "").strip().upper()
     if provenance == MV_PROVENANCE_USER_CREATED:
         raise HTTPException(
             status_code=409,
             detail=(
-                "This metric view was created by you outside the app "
-                "(bring-your-own); the app never drops a user-created view. "
+                "This metric view was not created by the app for you; "
+                "the app never drops a user-created view. "
                 "Drop it yourself in a SQL editor if you no longer need it."
             ),
         )

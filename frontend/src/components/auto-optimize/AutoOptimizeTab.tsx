@@ -52,6 +52,8 @@ interface AutoOptimizeTabProps {
    * prefill flow; does not fork it).
    */
   initialMvPrefill?: MvRerunPrefill | null
+  /** The parent's deep-link prefill has been used (a run started or was opened). */
+  onMvPrefillConsumed?: () => void
 }
 
 type View = "configure" | "monitoring" | "detail"
@@ -144,6 +146,7 @@ export function AutoOptimizeTab({
   onRefreshIqScore,
   onViewIqScore,
   initialMvPrefill,
+  onMvPrefillConsumed,
 }: AutoOptimizeTabProps) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [healthIssues, setHealthIssues] = useState<string[]>([])
@@ -416,6 +419,7 @@ export function AutoOptimizeTab({
           }}
           onStarted={(runId) => {
             setMvRerunPrefill(null)
+            onMvPrefillConsumed?.()
             setActiveRunId(runId)
             setStepperComplete(true)
           }}
@@ -436,6 +440,7 @@ export function AutoOptimizeTab({
           onLiveStateChanged={(runId) => refreshIqScore(runId, true)}
           onSelectRun={(runId) => {
             setMvRerunPrefill(null)
+            onMvPrefillConsumed?.()
             setSelectedRunId(runId)
             setView("detail")
           }}

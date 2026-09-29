@@ -50,14 +50,27 @@ _ARTIFACT = {
 }
 
 
+_OBO_WS = MagicMock(name="obo_ws")
+_SP_WS = MagicMock(name="sp_ws")
+
+
+class _Calls(list):
+    """Captured calls, with ``on`` holding the workspace client each ran on."""
+
+    def __init__(self):
+        super().__init__()
+        self.on: list = []
+        self.described_on: list = []
+
+
 @pytest.fixture
 def create_env(monkeypatch):
     """Wire the create path down to captured warehouse calls."""
-    executed: list[str] = []
-    upserts: list[dict] = []
+    executed = _Calls()
+    upserts = _Calls()
 
-    monkeypatch.setattr(mv_create, "get_service_principal_client", lambda: MagicMock())
-    monkeypatch.setattr(mv_create, "require_obo_workspace_client", lambda: MagicMock())
+    monkeypatch.setattr(mv_create, "get_service_principal_client", lambda: _SP_WS)
+    monkeypatch.setattr(mv_create, "require_obo_workspace_client", lambda: _OBO_WS)
     monkeypatch.setattr(
         mv_create, "verify_consent",
         lambda **kw: (_verification(), dict(_CONSENT)),
@@ -69,15 +82,22 @@ def create_env(monkeypatch):
     monkeypatch.setattr(
         mv_create, "_load_ddl_artifact", lambda *a, **k: dict(_ARTIFACT),
     )
-    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: False)
-    monkeypatch.setattr(mv_create, "_confirm_metric_view", lambda *a, **k: True)
+    monkeypatch.setattr(
+        mv_create, "_object_exists",
+        lambda ws, *a, **k: (executed.described_on.append(ws) or False),
+    )
+    monkeypatch.setattr(
+        mv_create, "_confirm_metric_view",
+        lambda ws, *a, **k: (executed.described_on.append(ws) or True),
+    )
     monkeypatch.setattr(
         warehouse, "sql_warehouse_execute",
-        lambda ws, warehouse_id, sql: executed.append(sql),
+        lambda ws, warehouse_id, sql: (executed.on.append(ws), executed.append(sql)),
     )
     monkeypatch.setattr(
         warehouse, "wh_upsert_mv_created_object",
-        lambda ws, warehouse_id, **kw: (upserts.append(kw) or kw["full_name"]),
+        lambda ws, warehouse_id, **kw: (upserts.on.append(ws), upserts.append(kw))
+        and kw["full_name"],
     )
     return executed, upserts
 
@@ -285,6 +305,136 @@ def test_existing_object_is_not_clobbered(create_env, monkeypatch):
 
     assert handoff.action_mode == "suggest_only"
     assert not any("CREATE VIEW" in s for s in executed)
+
+
+def _run_create_selecting(ids):
+    return mv_create.create_and_attach_for_run(
+        "run-1", space_id="space-1", probe_id="p1",
+        approved_suggestion_ids=ids,
+        catalog="main", schema="gso", warehouse_id="wh1",
+    )
+
+
+def _view_ddl_clients(executed):
+    return [ws for ws, sql in zip(executed.on, executed) if sql.startswith(("CREATE VIEW", "DROP VIEW"))]
+
+
+def _two_candidates(monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [
+            {"suggestion_id": "sug1", "dedup_fingerprint": "fp1"},
+            {"suggestion_id": "sug2", "dedup_fingerprint": "fp2"},
+        ],
+    )
+    names = {"fp1": "warehouse.raw.revenue_metrics", "fp2": "warehouse.raw.order_counts"}
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, fingerprint, **k: {**_ARTIFACT, "proposed_object": names[fingerprint]},
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+
+
+@pytest.mark.parametrize("ids", [[], None])
+def test_create_and_attach_with_nothing_selected_creates_nothing(create_env, monkeypatch, ids):
+    """MV-D112: an empty selection means none, never "every approved candidate"."""
+    executed, upserts = create_env
+    loads: list[dict] = []
+    stamps: list[dict] = []
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: (loads.append(k) or []))
+    monkeypatch.setattr(
+        warehouse, "wh_mark_mv_consent_reverified",
+        lambda ws, warehouse_id, **kw: stamps.append((ws, kw)),
+    )
+
+    handoff = _run_create_selecting(ids)
+
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.attach_views == []
+    assert handoff.consent_id == "p1"
+    assert handoff.downgrade_reason == "no metric views were selected for this run"
+    assert executed == [] and upserts == [] and loads == []
+    assert executed.described_on == []
+    assert len(stamps) == 1
+    assert stamps[0][0] is _SP_WS
+    assert stamps[0][1]["downgrade_reason"] == "no metric views were selected for this run"
+
+
+def test_only_the_selected_candidates_are_created(create_env, monkeypatch):
+    executed, upserts = create_env
+    _two_candidates(monkeypatch)
+
+    handoff = _run_create_selecting(["sug2"])
+
+    creates = [s for s in executed if "CREATE VIEW" in s]
+    assert handoff.attach_views == ["finance.sales.order_counts"]
+    assert len(creates) == 1 and "CREATE VIEW finance.sales.order_counts" in creates[0]
+    assert not any("revenue_metrics" in s for s in executed)
+    assert _view_ddl_clients(executed) == [_OBO_WS]
+    assert executed.described_on and all(ws is _OBO_WS for ws in executed.described_on)
+    assert [kw["suggestion_id"] for kw in upserts] == ["sug2"] and upserts.on == [_SP_WS]
+
+
+def test_an_unrecorded_create_is_dropped_and_the_run_moves_on(create_env, monkeypatch):
+    """MV-D112: a view whose ledger row cannot be written is dropped at once.
+    Left in place, the next run refuses its name and no drop route can see it."""
+    executed, upserts = create_env
+    _two_candidates(monkeypatch)
+
+    def upsert(ws, warehouse_id, **kw):
+        upserts.on.append(ws)
+        if kw["suggestion_id"] == "sug1":
+            raise RuntimeError("delta write failed")
+        upserts.append(kw)
+
+    monkeypatch.setattr(warehouse, "wh_upsert_mv_created_object", upsert)
+
+    handoff = _run_create_selecting(["sug1", "sug2"])
+
+    assert "DROP VIEW IF EXISTS finance.sales.revenue_metrics" in executed
+    assert _view_ddl_clients(executed) == [_OBO_WS] * 3
+    assert upserts.on == [_SP_WS, _SP_WS]
+    assert handoff.action_mode == "create_and_attach"
+    assert handoff.attach_views == ["finance.sales.order_counts"]
+    assert [c.suggestion_id for c in handoff.created] == ["sug2"]
+
+
+def test_a_failed_cleanup_drop_is_logged_for_manual_removal(create_env, monkeypatch, caplog):
+    executed, _ = create_env
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_upsert_mv_created_object",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("delta write failed")),
+    )
+
+    drops_on: list = []
+
+    def execute(ws, warehouse_id, sql):
+        if sql.startswith("DROP VIEW"):
+            drops_on.append(ws)
+            raise RuntimeError("drop failed")
+        executed.on.append(ws)
+        executed.append(sql)
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute", execute)
+
+    with caplog.at_level("ERROR", logger="backend.services.mv_create"):
+        handoff = _run_create_selecting(["sug1"])
+
+    assert handoff.action_mode == "suggest_only"
+    assert _view_ddl_clients(executed) == [_OBO_WS] and drops_on == [_OBO_WS]
+    assert any(
+        r.levelname == "ERROR"
+        and "finance.sales.revenue_metrics" in r.getMessage()
+        and "must be dropped by hand" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 @pytest.mark.parametrize(

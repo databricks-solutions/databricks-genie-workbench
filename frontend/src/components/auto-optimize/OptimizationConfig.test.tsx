@@ -6,8 +6,13 @@ import {
   buildOptimizationTriggerRequest,
   collectMvSourceTables,
   deriveMvTarget,
+  deriveMvTargets,
+  mvCreateSelectionReason,
+  mvSelectionMessage,
+  mvStartBlockReason,
   parseMaxAttempts,
   parseTargetAccuracy,
+  selectedMvProposals,
 } from "./optimizationRequest"
 import type { MvProbeResult, MvProposal } from "@/types"
 
@@ -350,6 +355,59 @@ describe("deriveMvTarget / collectMvSourceTables", () => {
   })
 })
 
+describe("selection helpers (MV-D112)", () => {
+  const a = proposal({ suggestion_id: "sug_a", proposed_object: "finance.sales.order_revenue" })
+  const b = proposal({ suggestion_id: "sug_b", proposed_object: "finance.sales.customer_ltv" })
+  const c = proposal({ suggestion_id: "sug_c", proposed_object: "finance.marketing.campaign_roi" })
+
+  it("selectedMvProposals keeps list order and only the ticked ids", () => {
+    expect(selectedMvProposals([a, b, c], new Set(["sug_c", "sug_a"]))).toEqual([a, c])
+  })
+
+  it("deriveMvTargets lists each schema once, first seen first", () => {
+    expect(deriveMvTargets([c, a, b, proposal({ proposed_object: null })])).toEqual([
+      { catalog: "finance", schema: "marketing" },
+      { catalog: "finance", schema: "sales" },
+    ])
+  })
+
+  it("deriveMvTarget has no target when the selection spans two schemas", () => {
+    expect(deriveMvTarget([a, b])).toEqual({ catalog: "finance", schema: "sales" })
+    expect(deriveMvTarget([a, c])).toBeNull()
+  })
+
+  it("mvSelectionMessage names an empty or multi-schema selection, else nothing", () => {
+    expect(mvSelectionMessage([a, b])).toBeNull()
+    expect(mvSelectionMessage([])).toBe("Select at least one metric view to create, or choose Suggest only.")
+    expect(mvSelectionMessage([a, c])).toBe(
+      "The selected metric views are in 2 schemas (finance.sales, finance.marketing). Create and attach uses one schema, so select views from one schema, or choose Suggest only.",
+    )
+    expect(mvSelectionMessage([], "suggest_only")).toBeNull()
+    expect(mvSelectionMessage([a, c], "suggest_only")).toBe(
+      "The selected metric views are in 2 schemas (finance.sales, finance.marketing). Create and attach uses one schema, so select views from one schema to use it.",
+    )
+  })
+
+  it("mvCreateSelectionReason names a selection problem, never a permission one", () => {
+    expect(mvCreateSelectionReason([a, b])).toBeNull()
+    expect(mvCreateSelectionReason([])).toBe("Available once you select a metric view to create.")
+    expect(mvCreateSelectionReason([a, c])).toBe("Available once the selected metric views are in one schema.")
+  })
+
+  it("mvStartBlockReason blocks only create-and-attach on a re-run", () => {
+    const base = { enabled: true, mode: "create_and_attach" as const, proposals: [a, b, c], selected: [a], probeLoading: false }
+    expect(mvStartBlockReason(base)).toBeNull()
+    expect(mvStartBlockReason({ ...base, mode: "suggest_only", selected: [] })).toBeNull()
+    expect(mvStartBlockReason({ ...base, enabled: false, selected: [] })).toBeNull()
+    expect(mvStartBlockReason({ ...base, proposals: [], selected: [] })).toBeNull()
+    expect(mvStartBlockReason({ ...base, selected: [] })).toContain("Select at least one")
+    expect(mvStartBlockReason({ ...base, selected: [a, c] })).toContain("2 schemas")
+    expect(mvStartBlockReason({ ...base, probeLoading: true })).toBe(
+      "Checking your permissions for the selected metric views…",
+    )
+  })
+})
+
 describe("MvSuggestSection states", () => {
   const commonProps = {
     onToggle: noop,
@@ -472,6 +530,7 @@ describe("MvSuggestSection states", () => {
     expect(html).toContain("finance.sales.order_revenue")
     expect(html).toContain("You can create metric views in")
     expect(html).toContain("Create and attach, then optimize")
+    expect(html).toContain("Create the selected metric views in finance.sales")
     // Never names the run as the data source (space-scoped, MV-D23).
     expect(html).not.toContain("from run")
   })
@@ -497,5 +556,24 @@ describe("MvSuggestSection states", () => {
     expect(html).toContain("permission to create metric views")
     expect(html).toContain("Copy grant request")
     expect(html).toContain("GRANT CREATE TABLE ON SCHEMA finance.sales")
+  })
+
+  it("create-and-attach says why the selection can't be created, with no target (MV-D112)", () => {
+    const html = renderToStaticMarkup(
+      <MvSuggestSection
+        {...commonProps}
+        enabled
+        mode="create_and_attach"
+        proposalsLoading={false}
+        proposals={[proposal()]}
+        target={null}
+        probe={null}
+        probeLoading={false}
+        probeError={null}
+        selectionMessage="Select at least one metric view to create, or choose Suggest only."
+      />,
+    )
+    expect(html).toContain("Select at least one metric view to create")
+    expect(html).not.toContain("Target:")
   })
 })

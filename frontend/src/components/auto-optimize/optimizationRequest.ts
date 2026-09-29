@@ -91,20 +91,75 @@ export function buildOptimizationTriggerRequest(args: {
   return request
 }
 
-// Derive the create target (catalog.schema) from approved proposals. Approved
-// proposals for a space share a schema in the common case; take the first that
-// carries a three-part `proposed_object`. Returns null when none do (first-run,
-// or proposals without a proposed object) — the panel then stays in suggest-only.
-export function deriveMvTarget(
-  proposals: MvProposal[],
-): { catalog: string; schema: string } | null {
+export type MvTarget = { catalog: string; schema: string }
+
+// The proposals the user has ticked, in list order.
+export function selectedMvProposals(proposals: MvProposal[], selectedIds: Set<string>): MvProposal[] {
+  return proposals.filter((p) => selectedIds.has(p.suggestion_id))
+}
+
+// Every distinct catalog.schema the proposals would be created in, first seen
+// first. A proposal without a three-part `proposed_object` adds none.
+export function deriveMvTargets(proposals: MvProposal[]): MvTarget[] {
+  const targets = new Map<string, MvTarget>()
   for (const proposal of proposals) {
     const parts = (proposal.proposed_object ?? "").split(".")
     if (parts.length === 3 && parts[0] && parts[1]) {
-      return { catalog: parts[0], schema: parts[1] }
+      const key = `${parts[0]}.${parts[1]}`
+      if (!targets.has(key)) targets.set(key, { catalog: parts[0], schema: parts[1] })
     }
   }
+  return Array.from(targets.values())
+}
+
+// The create target for the selected proposals. A consent covers one schema, so
+// a selection spanning two has none; null also covers first-run (MV-D112).
+export function deriveMvTarget(proposals: MvProposal[]): MvTarget | null {
+  const targets = deriveMvTargets(proposals)
+  return targets.length === 1 ? targets[0] : null
+}
+
+// Why create-and-attach cannot use this selection, or null when it can.
+export function mvSelectionMessage(
+  selected: MvProposal[],
+  mode: "suggest_only" | "create_and_attach" = "create_and_attach",
+): string | null {
+  const creating = mode === "create_and_attach"
+  if (selected.length === 0) {
+    return creating ? "Select at least one metric view to create, or choose Suggest only." : null
+  }
+  const targets = deriveMvTargets(selected)
+  if (targets.length > 1) {
+    const names = targets.map((t) => `${t.catalog}.${t.schema}`).join(", ")
+    const next = creating ? "select views from one schema, or choose Suggest only." : "select views from one schema to use it."
+    return `The selected metric views are in ${targets.length} schemas (${names}). Create and attach uses one schema, so ${next}`
+  }
   return null
+}
+
+// Why the create radio is unavailable because of the selection itself, or null
+// when the selection names one schema and only the permission check decides.
+export function mvCreateSelectionReason(selected: MvProposal[]): string | null {
+  if (selected.length === 0) return "Available once you select a metric view to create."
+  if (deriveMvTargets(selected).length > 1) return "Available once the selected metric views are in one schema."
+  return null
+}
+
+// Why Start is blocked by the metric-view section, or null. Only a re-run in
+// create-and-attach can block: Start waits for a creatable selection and for the
+// permission check that covers exactly that selection.
+export function mvStartBlockReason(args: {
+  enabled: boolean
+  mode: "suggest_only" | "create_and_attach"
+  proposals: MvProposal[]
+  selected: MvProposal[]
+  probeLoading: boolean
+}): string | null {
+  if (!args.enabled || args.mode !== "create_and_attach" || args.proposals.length === 0) return null
+  return (
+    mvSelectionMessage(args.selected) ??
+    (args.probeLoading ? "Checking your permissions for the selected metric views…" : null)
+  )
 }
 
 // Collect the distinct three-part source tables across proposals' evidence, for
