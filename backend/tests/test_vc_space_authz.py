@@ -10,6 +10,8 @@ from backend.services.space_access import SpaceAccessLevel as L
 from backend.services.version_control import contracts as vc
 from backend.services.version_control import space_authz
 
+pytestmark = pytest.mark.real_space_access
+
 _ACTOR = vc.ActorContext("user@x", "target", "human")
 _BINDING = vc.BindingRef(str(UUID(int=1)), 1, "space-1", "target", "space-1", "prod")
 

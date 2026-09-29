@@ -3425,7 +3425,7 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
     if not config and not display_name and not description:
         return {"success": False, "error": "No config, display_name, or description provided"}
     try:
-        from backend.services.auth import get_workspace_client, get_databricks_host
+        from backend.services.auth import get_databricks_host, require_obo_workspace_client
         from backend.genie_creator import _enforce_constraints, _clean_config
 
         body: dict[str, Any] = {}
@@ -3449,7 +3449,9 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
         if description:
             body["description"] = description
 
-        client = get_workspace_client()
+        # The model chooses space_id; Genie's Can Edit check on the user's token is the
+        # authority for this write, so it must never fall back to the service principal.
+        client = require_obo_workspace_client()
         client.api_client.do(
             method="PATCH",
             path=f"/api/2.0/genie/spaces/{space_id}",

@@ -13,6 +13,8 @@ from backend.services.space_access import SpaceAccessLevel as L
 from backend.tests._event_loop import off_event_loop
 from genie_space_optimizer.common.genie_client import SpaceAccessCheck, SpaceAccessUnavailable
 
+pytestmark = pytest.mark.real_space_access
+
 _SPACE = "01f19f413ccc1ea3a42055a66e886302"
 _ALLOW = SpaceAccessCheck(True, 200)
 _DENY = SpaceAccessCheck(False, 403, 'You need "Can Edit" permission to perform this action')
@@ -259,3 +261,35 @@ def test_highest_level_reports_view_when_edit_names_insufficient_scope(monkeypat
     calls = _genie(monkeypatch, _INSUFFICIENT_SCOPE_403, _ALLOW)
     assert space_access.resolve_space_access_level(_SPACE) is L.VIEW
     assert [c[2] for c in calls] == [L.EDIT, L.VIEW]
+
+
+def test_access_check_uses_a_bounded_clone_of_the_users_client(monkeypatch, as_user):
+    as_user("tok-bounded")
+    seen = []
+
+    def fake(client, space_id, level):
+        seen.append(client)
+        return _ALLOW
+
+    monkeypatch.setattr(space_access, "check_space_access", fake)
+    monkeypatch.setattr(
+        space_access, "bounded_read_client",
+        lambda client, *, http_timeout_seconds: SimpleNamespace(
+            config=SimpleNamespace(token=client.config.token), bounded=http_timeout_seconds),
+    )
+    _require()
+    assert seen[0].bounded == space_access._CHECK_HTTP_TIMEOUT_S
+    assert seen[0].config.token == "tok-bounded"
+
+
+def test_cache_hit_builds_no_check_client(monkeypatch, as_user):
+    as_user("tok-cached")
+    _genie(monkeypatch, _ALLOW)
+    built = []
+    monkeypatch.setattr(
+        space_access, "bounded_read_client",
+        lambda client, *, http_timeout_seconds: built.append(client) or client,
+    )
+    _require()
+    _require()
+    assert len(built) == 1

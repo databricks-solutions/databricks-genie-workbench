@@ -4,6 +4,8 @@ import logging
 import time
 from urllib.parse import urlsplit
 
+from backend.services.auth import bounded_read_client  # noqa: F401  (re-exported for vc_identity callers)
+
 from ..contracts import ActorContext, ExecutorContext
 
 logger = logging.getLogger(__name__)
@@ -148,27 +150,6 @@ def verify_job_run_as(client, execution_ref: str, expected_principal_id: str) ->
     if (getattr(run_as, "service_principal_name", None) != expected_principal_id
             or getattr(run_as, "user_name", None)):
         raise PermissionError("Job run_as does not match expected service principal")
-
-
-def bounded_read_client(client, *, http_timeout_seconds: int = 30):
-    """Clone ``client`` for the run_as read with a 1 s SDK retry window and a short timeout.
-
-    The SDK retries throttling and 503s internally for up to 300 s per call, which
-    would turn ``check_configured_job_run_as``'s own retries into minutes of blocked
-    boot. Falls back to ``client`` if the config cannot be cloned.
-    """
-    import copy
-
-    try:
-        from databricks.sdk import WorkspaceClient
-
-        cfg = copy.deepcopy(client.config)
-        cfg.retry_timeout_seconds = 1
-        cfg.http_timeout_seconds = http_timeout_seconds
-        return WorkspaceClient(config=cfg)
-    except Exception:  # noqa: BLE001 - correct auth beats the bounded read
-        logger.warning("Could not build a bounded run_as read client; using the default", exc_info=True)
-        return client
 
 
 RUN_AS_NOT_CONFIGURED = "not_configured"

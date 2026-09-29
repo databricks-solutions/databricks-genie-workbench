@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from backend.routers import auto_optimize
@@ -27,6 +27,7 @@ from backend.services import mv_create
 from genie_space_optimizer.common import warehouse
 from genie_space_optimizer.optimization import mv_yaml
 
+_REAL_LOAD_RUN_ENVELOPE = auto_optimize._load_run_envelope
 
 # ── Service: create_and_attach_for_run ─────────────────────────────────────
 
@@ -299,6 +300,16 @@ def test_rung_below(downgrade_to, stored, expected):
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _run_envelope_for_run_keyed_routes(monkeypatch):
+    """Run-keyed gates resolve the run's space before Can Edit; stub the envelope."""
+
+    async def run_envelope(run_id):
+        return {"run_id": run_id, "space_id": "space-1", "status": "CONVERGED"}
+
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", run_envelope)
 
 
 @pytest.fixture
@@ -696,9 +707,12 @@ def test_decision_404_when_suggestion_not_in_space(client, monkeypatch):
     assert resp.status_code == 404
 
 
+_DROP_RUN = "33333333-3333-4333-8333-333333333333"
+
+
 def _created_row(status="DETACHED", created_by="analyst@example.com"):
     return {
-        "run_id": "r1", "suggestion_id": "sug1",
+        "run_id": _DROP_RUN, "suggestion_id": "sug1",
         "full_name": "finance.sales.revenue_metrics",
         "created_by": created_by, "status": status,
     }
@@ -712,7 +726,7 @@ def _obo_as(email):
 
 def test_drop_requires_confirm(client):
     resp = client.post(
-        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": "r1", "confirm": False},
+        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": _DROP_RUN, "confirm": False},
     )
     assert resp.status_code == 400
 
@@ -728,7 +742,7 @@ def test_drop_happy_path(client, monkeypatch):
     monkeypatch.setattr(warehouse, "wh_update_mv_created_object_status",
                         lambda *a, **k: None)
     resp = client.post(
-        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": "r1", "confirm": True},
+        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": _DROP_RUN, "confirm": True},
     )
     assert resp.status_code == 200
     assert resp.json()["dropped"] is True
@@ -741,7 +755,7 @@ def test_drop_forbidden_for_non_owner(client, monkeypatch):
     monkeypatch.setattr(warehouse, "wh_load_mv_created_object",
                         lambda *a, **k: _created_row(created_by="owner@example.com"))
     resp = client.post(
-        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": "r1", "confirm": True},
+        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": _DROP_RUN, "confirm": True},
     )
     assert resp.status_code == 403
 
@@ -752,9 +766,65 @@ def test_drop_refuses_a_non_detached_object(client, monkeypatch):
     monkeypatch.setattr(warehouse, "wh_load_mv_created_object",
                         lambda *a, **k: _created_row(status="ATTACHED"))
     resp = client.post(
-        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": "r1", "confirm": True},
+        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": _DROP_RUN, "confirm": True},
     )
     assert resp.status_code == 409
+
+
+def test_drop_asks_run_space_access_before_owner_check(client, monkeypatch):
+    """Denied Can Edit on the run's space returns 403 before current_user.me."""
+    obo_ws = MagicMock()
+    me = MagicMock()
+    obo_ws.current_user.me = me
+    monkeypatch.setattr(auto_optimize, "require_obo_workspace_client", lambda: obo_ws)
+    ledger = MagicMock(side_effect=AssertionError("ledger load ran before the space gate"))
+    monkeypatch.setattr(warehouse, "wh_load_mv_created_object", ledger)
+
+    async def deny(space_id, level):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "space_access_denied",
+                "required": "edit",
+                "message": "You need Can Edit permission on this Genie Agent.",
+                "platform_message": 'You need "Can Edit" permission to perform this action',
+            },
+        )
+
+    monkeypatch.setattr(auto_optimize, "require_space_access", deny)
+
+    resp = client.post(
+        "/api/auto-optimize/mv/created/sug1/drop",
+        json={"run_id": _DROP_RUN, "confirm": True},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "space_access_denied"
+    me.assert_not_called()
+    ledger.assert_not_called()
+
+
+def test_drop_rejects_a_malformed_run_id_before_any_io(client, monkeypatch):
+    """A non-uuid body run_id is a 422 before the run gate touches Lakebase or Delta."""
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", _REAL_LOAD_RUN_ENVELOPE)
+    touched: list[str] = []
+
+    async def lakebase_miss(run_id):
+        touched.append(f"lakebase:{run_id}")
+        return None
+
+    def delta(sql, *, strict=False):
+        touched.append(sql)
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", lakebase_miss)
+    monkeypatch.setattr(auto_optimize, "_delta_query", delta)
+
+    resp = client.post(
+        "/api/auto-optimize/mv/created/sug1/drop",
+        json={"run_id": "x' UNION SELECT 'a', 'attacker-space', 'X' --", "confirm": True},
+    )
+    assert resp.status_code == 422
+    assert touched == []
 
 
 # ── Created-object results read (Prompt 13 step 0) ─────────────────────────

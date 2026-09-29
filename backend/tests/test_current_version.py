@@ -176,6 +176,8 @@ def test_current_version_has_no_managed_mutation(client, monkeypatch, live_instr
     for module in (auto_optimize, genie_client):
         monkeypatch.setattr(module, "get_workspace_client", lambda: workspace)
         monkeypatch.setattr(module, "get_service_principal_client", lambda: workspace)
+    # M1c-D3: get_genie_space is strict OBO — supply the user client there.
+    monkeypatch.setattr(genie_client, "require_obo_workspace_client", lambda: workspace)
     writes = []
     for owner, names in (
         (genie_client.GenieTransport, ("create_once", "patch_config_once", "patch_description_once")),

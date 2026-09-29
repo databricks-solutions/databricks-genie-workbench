@@ -637,7 +637,7 @@ export async function createMvAtApproval(
 }
 
 // Space-scoped semantic model graph for the Model tab (Prompt 12, MV-D23). The
-// server assembles nodes/edges live from serialized_space (the same OBO-tolerant
+// server assembles nodes/edges live from serialized_space (the same strict OBO
 // read /space/fetch uses) plus the space-scoped proposals read; the ghosted
 // overlay is synthesized client-side from `proposals`.
 export async function fetchSemanticGraph(

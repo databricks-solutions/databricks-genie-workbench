@@ -52,7 +52,7 @@ from backend.models import (
     SchemaAccessStatus,
     VersionMatch,
 )
-from backend.routers._validators import RunId, SpaceId
+from backend.routers._validators import RUN_ID_PATTERN, RunId, SpaceId
 
 from backend.services.auth import (
     get_databricks_host,
@@ -1401,6 +1401,7 @@ async def health():
 @router.get("/permissions/{space_id}")
 async def check_permissions(space_id: SpaceId):
     """Pre-check SP and UC permissions for a Genie Agent before optimization."""
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
@@ -1452,11 +1453,7 @@ async def check_permissions(space_id: SpaceId):
         )
         from genie_space_optimizer.common.sp_permissions import probe_sp_required_access
 
-        ws = get_workspace_client()
-        try:
-            config = fetch_space_config(ws, space_id)
-        except Exception:
-            config = fetch_space_config(sp_ws, space_id)
+        config = fetch_space_config(require_obo_workspace_client(), space_id)
         refs = extract_genie_space_table_refs(config)
         unique_schemas = set(get_unique_schemas(refs))
 
@@ -1669,6 +1666,7 @@ async def probe_mv_entitlement(body: MvProbeRequest):
     record is best-effort, so a Delta write hiccup returns the probe with
     ``consent_recorded=false`` rather than losing it behind a 500.
     """
+    await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
@@ -1703,25 +1701,42 @@ async def probe_mv_entitlement(body: MvProbeRequest):
     return result
 
 
+_RUN_AS_RECHECK_S = 30.0
+
+
+def _run_as_clock() -> float:
+    # Tests patch this, not time.monotonic, which the event loop also reads.
+    return time.monotonic()
+
+
 async def _require_verified_optimizer_identity(request: Request) -> None:
     """Refuse to launch the optimizer Job until its run_as identity verifies.
 
     Startup records the status on ``app.state.gso_run_as``. An unconfigured Job
-    always refuses; anything else short of verified is re-checked, one caller at
-    a time, so a Jobs API failure at boot recovers without a restart.
+    always refuses; anything else short of verified is re-checked at most every
+    30 s, one caller at a time, so a Jobs API failure at boot recovers without a
+    restart.
     """
     from backend.services.version_control.platform import identity as vc_identity
 
     settled = (vc_identity.RUN_AS_VERIFIED, vc_identity.RUN_AS_NOT_CONFIGURED)
     state = request.app.state
+
+    def _fresh(status) -> bool:
+        if status in settled:
+            return True
+        checked_at = getattr(state, "gso_run_as_checked_at", None)
+        return (status is not None and checked_at is not None
+                and _run_as_clock() - checked_at < _RUN_AS_RECHECK_S)
+
     status = getattr(state, "gso_run_as", None)
-    if status not in settled:
+    if not _fresh(status):
         lock = getattr(state, "gso_run_as_lock", None)
         if lock is None:
             lock = state.gso_run_as_lock = asyncio.Lock()
         async with lock:
             status = getattr(state, "gso_run_as", None)
-            if status not in settled:
+            if not _fresh(status):
                 try:
                     status = await _offload(
                         vc_identity.check_configured_job_run_as,
@@ -1732,6 +1747,7 @@ async def _require_verified_optimizer_identity(request: Request) -> None:
                 except PermissionError:
                     status = vc_identity.RUN_AS_MISMATCH
                 state.gso_run_as = status
+                state.gso_run_as_checked_at = _run_as_clock()
     if status == vc_identity.RUN_AS_NOT_CONFIGURED:
         raise HTTPException(
             status_code=503,
@@ -1756,9 +1772,9 @@ async def _require_verified_optimizer_identity(request: Request) -> None:
 @router.post("/trigger")
 async def trigger(body: TriggerRequest, request: Request):
     """Trigger an optimization run for a Genie Agent."""
+    await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured. Set GSO_CATALOG and GSO_JOB_ID.")
-    await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
     await _require_verified_optimizer_identity(request)
 
     ws = get_workspace_client()
@@ -2133,17 +2149,13 @@ def _mv_attach_provenance_labels(proposals: list[MvProposal], config: Any) -> No
 
 
 def _mv_fetch_space_config(space_id: str) -> Any:
-    """Best-effort space-config read for serve-time provenance resolution.
+    """Best-effort space-config read, as the signed-in user, for provenance labels.
 
-    OBO first (the caller's identity), SP fallback (mirrors the permission-check
-    path). Any failure returns ``None`` so label resolution degrades quietly."""
+    Any failure returns ``None`` so label resolution degrades quietly."""
     try:
         from genie_space_optimizer.common.genie_client import fetch_space_config
 
-        try:
-            return fetch_space_config(get_workspace_client(), space_id)
-        except Exception:
-            return fetch_space_config(get_service_principal_client(), space_id)
+        return fetch_space_config(require_obo_workspace_client(), space_id)
     except Exception:
         logger.info("Could not fetch config for %s provenance labels", space_id, exc_info=True)
         return None
@@ -2188,6 +2200,7 @@ def _mv_mark_attached(proposals: list[MvProposal], space_config: Any) -> None:
 @router.get("/runs/{run_id}/mv-proposals", response_model=MvProposalsResponse)
 async def list_mv_proposals(run_id: RunId):
     """List the metric view proposals the advisor recorded for this run (MV-D21)."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -2238,6 +2251,7 @@ async def list_space_mv_proposals(
     ``wh_load_mv_candidates`` already reads by space, so this is a read of
     existing state — not a new key on the MV tables.
     """
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -2329,6 +2343,7 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
     service principal, exactly as the in-job advisor does — and nothing here
     creates or drops a UC object, so no OBO write is involved.
     """
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -2340,18 +2355,10 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
     obo_ws = require_obo_workspace_client()
     sp_ws = get_service_principal_client()
 
-    from genie_space_optimizer.common.genie_client import (
-        MissingSerializedSpaceError,
-        fetch_space_config,
-    )
+    from genie_space_optimizer.common.genie_client import fetch_space_config
 
     try:
         raw = await _offload(fetch_space_config, obo_ws, space_id)
-    except MissingSerializedSpaceError:
-        # The OBO client could not export the space config (e.g. the request
-        # lacks the genie OAuth scope). Fall back to the SP for this read only —
-        # the same scope-fallback the rest of the GSO surface uses.
-        raw = await _offload(fetch_space_config, sp_ws, space_id)
     except Exception as exc:
         logger.warning("mv/suggest: could not fetch space %s config: %s", space_id, exc)
         raise HTTPException(
@@ -2446,6 +2453,7 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
     ``_offload`` (which copies the contextvars context into its worker). The
     advisor itself runs as the SP, unchanged.
     """
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     from backend.services.auth import clear_obo_user_token, set_obo_user_token
 
     if not _is_configured():
@@ -2471,10 +2479,7 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
     )
 
     from backend.services import mv_suggest
-    from genie_space_optimizer.common.genie_client import (
-        MissingSerializedSpaceError,
-        fetch_space_config,
-    )
+    from genie_space_optimizer.common.genie_client import fetch_space_config
     from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
 
     async def event_stream():
@@ -2487,13 +2492,11 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
 
             # Identity-bound read: fetch_space_config runs under the OBO client
             # obtained from the re-set ContextVar. _offload copies the context in,
-            # so the worker thread sees the same user identity. Scope-error falls
-            # back to the SP for this read only, as the blocking route does.
+            # so the worker thread sees the same user identity. A failed read ends
+            # the stream with an error event.
             obo_ws = require_obo_workspace_client()
             try:
                 raw = await _offload(fetch_space_config, obo_ws, space_id)
-            except MissingSerializedSpaceError:
-                raw = await _offload(fetch_space_config, sp_ws, space_id)
             except Exception as exc:
                 logger.warning(
                     "mv/suggest/stream: could not fetch space %s config: %s",
@@ -2620,6 +2623,7 @@ async def register_space_mv(space_id: SpaceId, body: MvRegisterRequest):
     write that fails after verification is a 500 the user retries — never a
     verified-but-recorded-anyway view (invariant 2).
     """
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -2687,8 +2691,10 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
     ``attached`` + ``grant_sql``), degraded (fresh probe below SUFFICIENT →
     [Approve for later] + remediation GRANT, nothing created), and a create-time
     failure with a reason. Missing OBO is a 401 (MV-D20) — a create never falls
-    back to the SP.
+    back to the SP. Can Edit is asked at the route; Can Manage is the fresh
+    probe's row, which downgrades to Approve for later rather than refusing.
     """
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -3487,17 +3493,18 @@ async def get_space_semantic_graph(space_id: SpaceId):
 
     The base graph (tables, joins, metric views, curated/governed/ungoverned
     measure concepts) is assembled from a LIVE ``serialized_space`` read via
-    ``get_serialized_space`` — the SAME OBO-tolerant path ``/space/fetch`` uses,
+    ``get_serialized_space`` — the SAME strict OBO read ``/space/fetch`` uses,
     so the graph reflects what the signed-in user is entitled to see, never a run
     artifact or cache. ``proposals`` is the Prompt 11 space-scoped read (SP-side,
     like every Delta read) carried so the client can synthesize the ghosted
     proposal overlay from the same MvProposal shape — no new proposal payload.
     Renders for a never-optimized space: proposals stay empty, the config-derived
     base graph still returns. The governed measure chips (Prompt 12b) read the
-    real MV definition (DESCRIBE ... AS JSON view_text) under the same
-    OBO-tolerant client, best-effort — a DESCRIBE that cannot run yields no chips,
+    real MV definition (DESCRIBE ... AS JSON view_text) under
+    ``get_workspace_client``, best-effort — a DESCRIBE that cannot run yields no chips,
     the honest fallback the deleted config-marker probe used to produce.
     """
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     try:
         space_data = await _offload(get_serialized_space, space_id)
     except Exception as exc:
@@ -3569,10 +3576,11 @@ async def get_space_semantic_graph(space_id: SpaceId):
 async def get_join_candidates(space_id: SpaceId):
     """Discover data-grounded Join Advisor candidates for a space (§7).
 
-    Reads the LIVE ``serialized_space`` (OBO-tolerant, like the semantic-graph
+    Reads the LIVE ``serialized_space`` (a strict OBO read, like the semantic-graph
     route), then discovers candidate joins from name+type matching and declared
     UC foreign keys, scored by a warehouse containment probe. Never mutates the
     space. Honest-empty on no warehouse / no candidates via ``status``."""
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     from backend.services import join_advisor
 
     try:
@@ -3593,6 +3601,7 @@ async def get_join_candidates(space_id: SpaceId):
 @router.get("/spaces/{space_id}/join-advice", response_model=JoinAdviceResponse)
 async def get_join_advice(space_id: SpaceId):
     """Read the pending Join Advisor advice seeded for a space (§7)."""
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     record = await workbench_lakebase.get_join_advice(space_id)
     if not record:
         return JoinAdviceResponse(space_id=space_id, seeds=[])
@@ -3613,6 +3622,7 @@ async def save_join_advice(space_id: SpaceId, body: JoinAdvicePayload, request: 
     ``add_join_spec``). This never writes a declared ``join_spec``; the optimizer
     can add/update joins but cannot remove them, so a locked wrong join would be a
     foot-gun (the §7 asymmetry). An empty ``seeds`` clears the pending advice."""
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     seeded_by = request.headers.get("x-forwarded-email") or request.headers.get(
         "x-forwarded-preferred-username"
     )
@@ -3643,7 +3653,7 @@ def _read_metric_view_yamls(space_data: dict) -> dict[str, dict]:
 
     Reads each ``data_sources.metric_views[].identifier`` via ``DESCRIBE … AS
     JSON`` through ``metric_view_catalog``'s existing parsing
-    (``estate_metric_view_yamls``) under the OBO-tolerant client, so the result
+    (``estate_metric_view_yamls``) under ``get_workspace_client``, so the result
     reflects what the signed-in user is entitled to see. Returns the
     ``{fq_lower: parsed_yaml}`` dict (``source`` / ``joins`` / ``dimensions`` /
     ``measures``). Best-effort by contract: no warehouse, no configuration, or a
@@ -3845,6 +3855,7 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
     unexecuted body; the real validation (echo-check + capability rung) lives on
     the artifact and is re-run by the create path before any write.
     """
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
@@ -3889,6 +3900,7 @@ async def decide_mv_proposal(
     """
     if not re.fullmatch(r"[0-9a-zA-Z_-]{1,128}", suggestion_id or ""):
         raise HTTPException(status_code=422, detail="Invalid suggestion_id.")
+    await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -3976,11 +3988,13 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
     OBO only and destructive: it refuses unless ``confirm`` is set, the caller is
     the ``created_by`` owner, and the object is already ``DETACHED`` — the run's
     detach-never-drop invariant means a live/attached view is never dropped here.
+    Can Edit on the run's Agent is asked first, before the owner check.
     """
     if not re.fullmatch(r"[0-9a-zA-Z_-]{1,128}", suggestion_id or ""):
         raise HTTPException(status_code=422, detail="Invalid suggestion_id.")
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to drop a metric view.")
+    await _require_run_space_access(body.run_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -4136,9 +4150,11 @@ async def list_mv_created(run_id: RunId):
     The create-and-attach output panel reads this: each created object with its
     isolated-lift report (baseline vs post-attach accuracy, needs-review, both
     eval-run ids) plus the run-level ``downgrade_reason`` from the consent row.
-    Read-only, so the SP-tolerant client is correct here (MV-D20) — only writes
-    that create or drop a UC object require the hard-fail OBO client.
+    Read-only, so the SP-tolerant client is correct here (MV-D20); Can Edit on
+    the run's Agent is asked first (MV-D110) — only writes that create or drop a
+    UC object require the hard-fail OBO client.
     """
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
     config = _build_gso_config()
@@ -4483,6 +4499,7 @@ def _map_stages_to_steps(
 @router.get("/runs/{run_id}")
 async def get_run(run_id: RunId):
     """Get full run detail including stages, iterations, levers, and patches."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     run = await gso_lakebase.load_gso_run(run_id)
     if not run and _is_configured():
         rows = await _delta_query_async(
@@ -4656,6 +4673,7 @@ async def get_run(run_id: RunId):
 @router.get("/runs/{run_id}/status")
 async def get_run_status(run_id: RunId):
     """Lightweight status poll endpoint."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.VIEW)
     run = await gso_lakebase.load_gso_run(run_id)
     if not run and _is_configured():
         rows = await _delta_query_async(
@@ -4954,7 +4972,7 @@ def _live_space_fingerprints(
 ) -> tuple[str | None, str | None, str | None]:
     """Return ``(config_fp, benchmark_fp, update_time)`` for the live space.
 
-    Uses the OBO client with SP fallback (via ``get_genie_space``), cached for
+    Reads the live space as the signed-in user (``get_genie_space``), cached for
     ``_LIVE_FP_CACHE_TTL_S`` per (space, principal) so repeated History loads
     do not hammer the Genie API. ``force_refresh`` bypasses that cache after
     the browser returns from Genie. Failures and unparseable configs return
@@ -5083,6 +5101,7 @@ async def get_current_version(
     expected visible version has an authoritative, fingerprintable capture
     for that component.
     """
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         return CurrentVersionResponse(status="no_known_versions")
     config = _build_gso_config()
@@ -5355,6 +5374,7 @@ async def get_active_run(space_id: SpaceId):
     Reconciles zombie runs first (same as trigger.py), then returns active run info.
     Falls back gracefully when GSO is not configured or the warehouse is unavailable.
     """
+    await require_space_access(space_id, SpaceAccessLevel.VIEW)
     if not _is_configured():
         return {"hasActiveRun": False, "activeRunId": None, "activeRunStatus": None}
 
@@ -5491,23 +5511,32 @@ async def _load_run_envelope(run_id: str) -> dict | None:
     run = await gso_lakebase.load_gso_run(run_id)
     if run or not _is_configured():
         return run
+    from genie_space_optimizer.common.warehouse import _wh_literal
+
     rows = await _delta_query_async(
         f"SELECT run_id, space_id, status FROM {_delta_table('genie_opt_runs')} "
-        f"WHERE run_id = '{run_id}' LIMIT 1",
+        f"WHERE run_id = {_wh_literal(run_id)} LIMIT 1",
         strict=True,
     )
     return rows[0] if rows else None
 
 
+_RUN_ACCESS_UNAVAILABLE = (
+    "Could not load this optimization run to check your access. Try again shortly."
+)
+
+
 async def _require_run_space_access(run_id: str, level: SpaceAccessLevel) -> dict:
     """Gate a run-keyed route on the run's Genie Agent; return the run envelope."""
+    if not re.fullmatch(RUN_ID_PATTERN, run_id or ""):
+        raise HTTPException(status_code=404, detail="Run not found.")
     try:
         run = await _load_run_envelope(run_id)
     except Exception as exc:
         logger.warning("Failed to load run %s for authorization: %s", run_id, exc)
         raise HTTPException(
             status_code=503,
-            detail="Optimization history is temporarily unavailable.",
+            detail=_RUN_ACCESS_UNAVAILABLE,
         ) from exc
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
@@ -5521,6 +5550,7 @@ async def _require_run_space_access(run_id: str, level: SpaceAccessLevel) -> dic
 @router.get("/spaces/{space_id}/runs")
 async def list_runs_for_space(space_id: SpaceId):
     """List past optimization runs for a space."""
+    await require_space_access(space_id, SpaceAccessLevel.VIEW)
     return await load_runs_with_fallback(space_id)
 
 
@@ -5567,6 +5597,7 @@ async def remove_run_from_history(run_id: RunId, request: Request):
 @router.get("/runs/{run_id}/iterations")
 async def list_iterations(run_id: RunId):
     """Get per-iteration evaluation details for a run (excludes rows_json for performance)."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
         iterations = await _offload(_select_iterations_delta, run_id)
@@ -5848,6 +5879,7 @@ async def get_loop_state(run_id: RunId):
     columns / rows) returns ``loopState=null`` + ``attempts=[]`` so the UI can
     fall back to the classic iteration view without error.
     """
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     loop_rows = await _offload(_select_loop_state_delta, run_id) if _is_configured() else []
     # Attempts = ONE authoritative full-benchmark row per attempt_no
     # (current rows use llm_patch; legacy rows may use coverage/surgical),
@@ -5923,6 +5955,7 @@ async def get_publish_record(run_id: RunId):
     ``{runId, publishRecord}`` with ``publishRecord=null`` when the run has not
     reached publish yet or predates the artifact (legacy run).
     """
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     payload = await _offload(_load_latest_artifact, run_id, "publish_record") if _is_configured() else None
     return {
         "runId": run_id,
@@ -5998,6 +6031,7 @@ def _build_benchmark_qc(payload: dict) -> dict:
 @router.get("/runs/{run_id}/debug-data")
 async def debug_data(run_id: RunId):
     """Diagnostic: inspect raw data sources for patches and iterations."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     config = _build_gso_config()
     diag: dict = {
         "is_configured": _is_configured(),
@@ -6131,6 +6165,7 @@ async def list_eval_results(run_id: RunId, iteration: int = Query(..., descripti
     NEEDS_REVIEW) and ``assessment_reasons[]`` (the ``failure_type``
     successor) — sourced from the iteration's rows_json.
     """
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     rows_json_str = await _load_iteration_rows_json(run_id, iteration)
     return _parse_official_eval_results(rows_json_str)
 
@@ -6138,6 +6173,7 @@ async def list_eval_results(run_id: RunId, iteration: int = Query(..., descripti
 @router.get("/runs/{run_id}/question-results")
 async def list_question_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
     """Get per-question results (question text + SQL) for a specific iteration."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     rows_json_str = await _load_iteration_rows_json(run_id, iteration)
     return _parse_question_rows(rows_json_str)
 
@@ -6145,6 +6181,7 @@ async def list_question_results(run_id: RunId, iteration: int = Query(..., descr
 @router.get("/runs/{run_id}/patches")
 async def list_patches(run_id: RunId):
     """Get all optimization patches for a run."""
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     patches = await gso_lakebase.load_gso_patches(run_id)
     if not patches and _is_configured():
         patches = _delta_query(
@@ -6170,6 +6207,7 @@ async def list_benchmark_changes(run_id: RunId):
     used / max, validity findings) from the ``benchmark_qc`` artifact, so the
     QC + provenance views share one fetch. ``qc`` is null for legacy runs.
     """
+    await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     mutations = await gso_lakebase.load_gso_benchmark_mutations(run_id)
     if not mutations and _is_configured():
         mutations = await _delta_query_async(

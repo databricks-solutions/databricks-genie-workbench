@@ -181,10 +181,18 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 |-----------|----------|---------------|-----------|
 | Browse Genie Agents, UC catalogs/schemas/tables | OBO (user) | `services/uc_client.py`, `routers/create.py` | User sees only what they have access to |
 | GenieWatch traffic-gap analysis | OBO only, no SP fallback | `watch/routers/traffic_gaps.py` `require_obo_workspace_client()` | Conversation traffic requires `CAN_MANAGE`; SP fallback would leak other users' questions |
-| Genie API — fetch/list agents | OBO → SP fallback | `services/genie_client.py` `_is_scope_error()` | User token may lack `dashboards.genie` scope |
+| Genie API — fetch a gated agent's configuration | OBO (user) only | `services/genie_client.py` `get_genie_space` / `get_serialized_space` | Strict OBO; no SP retry on a gated path |
+| Genie API — list agents for the space list | OBO (user) | `routers/spaces.py` `list_genie_spaces(sp_fallback=False)` | Genie filters the list to the caller |
 | Create Agent — tools, SQL, agent creation | OBO (user) | `services/create_agent.py`, `services/create_agent_tools.py` | Agent created under user identity |
+| Create Agent — new chat session on an existing space | OBO (user) | `routers/create.py` `POST /api/create/agent/chat` | Can Edit when `body.space_id` pre-seeds a new session |
 | Trigger optimization — permission check | OBO (user) | `backend/services/space_access.py` `require_space_access()` | Genie answers under the user's token; no SP fallback |
+| Auto-Optimize reads that expose configuration | OBO (user) | `routers/auto_optimize.py` `require_space_access` / `_require_run_space_access` | Can Edit (MV-D110): proposals, semantic graph, join advice, mv-ddl, mv-created, run detail |
+| Run status, run list, and active-run badge | OBO (user) | `routers/auto_optimize.py` | Can View on the run's agent |
+| Auto-Optimize writes and metric-view routes | OBO (user) | `routers/auto_optimize.py` | Can Edit; create-and-attach needs Can Manage through the probe, which downgrades |
 | Run apply / discard / revert / history removal | OBO (user) | `routers/auto_optimize.py` `_require_run_space_access()` | Can Edit on the run's agent |
+| Space detail, history, and star | OBO (user) | `routers/spaces.py` | Can View |
+| IQ Scan | OBO for the space; SP for GSO run data | `routers/spaces.py` scan; `services/scanner.py` | Can Edit (the scan reads the export); the GSO run lookup (Lakebase, then Delta) runs as the SP |
+| `/api/space/fetch` | OBO (user) | `routers/analysis.py` fetch | Can Edit (the fetch reads the export) |
 | Version history list and tags | OBO (user) | `services/version_control/space_authz.py` `authorize_space()` | Can View on the agent |
 | Version detail, diff, capture, restore, tag writes | OBO (user) | `space_authz.py` `authorize()` / `authorize_space()`; live read/write in `routers/vc_spaces.py` | Can Edit; the live read and write run under the user's token, with no SP fallback |
 | The user's access level, for the UI | OBO (user) | `routers/spaces.py` `GET /api/spaces/{space_id}/access` | Genie answers; the tab hides what the user cannot do |
@@ -193,8 +201,9 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | Optimization job execution (4-task DAG) | SP (run_as) | `run_as` set by the deployer; verified (never repaired) by `backend/main.py` `_verify_gso_job_run_as()` | Lakeflow Jobs have no OBO mechanism |
 | GSO Delta table reads/writes | SP | `routers/auto_optimize.py` `_delta_query()` | Optimizer state tables owned by SP |
 | Lakebase persistence | SP | `services/lakebase.py` | App-level storage, not user-scoped |
-| IQ Scan | OBO (user) → SP for GSO data | `services/scanner.py` | Space fetch via OBO; GSO run data via SP |
-| Apply optimization results | OBO (user) | `routers/auto_optimize.py` `/runs/{id}/apply` | Changes applied under user identity |
+| GenieWatch space reads | OBO → SP fallback (flagged) | `watch/services/genie_client.py` `get_genie_space_with_sp_fallback` | Outside MV-D109; keeps the scope fallback |
+
+Space configuration reads and writes on user paths run as the user, with no service-principal fallback. That includes the Create Agent's `update_space` tool: the model chooses the space, so Genie's Can Edit check on the user's token is the authority for the write. Flagged exceptions keep an SP fallback: GenieWatch space reads (scope fallback), the space list behind `/api/admin/*` (`list_genie_spaces()` default), and new-agent creation in `genie_creator.py` (`create_genie_space` uses the OBO-first client, which falls back to the SP when no user token is set, and the post-create list lookup also retries as the SP on an OAuth scope error).
 
 ## Security Considerations
 

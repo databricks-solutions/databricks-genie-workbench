@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from backend.routers._validators import RUN_ID_PATTERN
+
 # Hard ceiling on a Genie Agent space description. Enforced here for the wizard endpoint
 # and on the live create-agent path (see backend/services/create_agent.py, which imports it).
 MAX_DESCRIPTION_CHARS = 2000
@@ -831,7 +833,7 @@ class MvDropRequest(BaseModel):
     ``confirm`` must be ``true`` — the UC object may already have other consumers,
     so the drop is explicit and refuses unless ``status = DETACHED`` (MV-D6)."""
 
-    run_id: str
+    run_id: str = Field(..., pattern=RUN_ID_PATTERN)
     confirm: bool = False
 
 

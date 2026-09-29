@@ -201,3 +201,64 @@ def test_transport_get_pins_by_value_not_object_identity():
                 replace(executor, execution_ref="job/999")):
         with pytest.raises(PermissionError, match="pinned"):
             transport.get(binding, bad)
+
+
+# ── Strict OBO space reads (M1c-D3 / MV-D109) ───────────────────────────────
+# Helper is `_strict_client` (not `_client`) so it does not shadow the UC
+# table-type helper used by the normalize tests above.
+
+
+def _strict_client(name, fail=None):
+    calls = []
+
+    def do(method, path, query=None):
+        calls.append((name, path))
+        if fail:
+            raise fail
+        return {"space_id": "s", "serialized_space": "{}"}
+
+    return SimpleNamespace(api_client=SimpleNamespace(do=do), config=SimpleNamespace(
+        host="h", auth_type="pat")), calls
+
+
+def test_get_genie_space_never_retries_as_the_service_principal(monkeypatch):
+    from backend.services import genie_client
+
+    user, user_calls = _strict_client("user", fail=RuntimeError("insufficient_scope: genie"))
+    sp, sp_calls = _strict_client("sp")
+    monkeypatch.setattr(genie_client, "require_obo_workspace_client", lambda: user)
+    monkeypatch.setattr(genie_client, "get_service_principal_client", lambda: sp)
+    with pytest.raises(ValueError):
+        genie_client.get_genie_space("s")
+    assert user_calls and not sp_calls
+
+
+def test_get_genie_space_refuses_without_a_user_token(monkeypatch):
+    from backend.services import genie_client
+
+    def no_token():
+        raise RuntimeError("no user token")
+
+    monkeypatch.setattr(genie_client, "require_obo_workspace_client", no_token)
+    with pytest.raises(RuntimeError):
+        genie_client.get_genie_space("s")
+
+
+def test_watch_keeps_its_explicit_fallback(monkeypatch):
+    from backend.services import genie_client
+    from backend.watch.services import genie_client as watch_genie
+
+    assert watch_genie.get_genie_space is genie_client.get_genie_space_with_sp_fallback
+
+
+def test_list_without_fallback_does_not_ask_the_service_principal(monkeypatch):
+    from backend.services import genie_client
+
+    user, user_calls = _strict_client("user", fail=RuntimeError("insufficient_scope"))
+    sp, sp_calls = _strict_client("sp")
+    monkeypatch.setattr(genie_client, "require_obo_workspace_client", lambda: user)
+    monkeypatch.setattr(genie_client, "get_workspace_client", lambda: sp)
+    monkeypatch.setattr(genie_client, "get_service_principal_client", lambda: sp)
+    with pytest.raises(RuntimeError):
+        genie_client.list_genie_spaces(sp_fallback=False)
+    assert user_calls and not sp_calls

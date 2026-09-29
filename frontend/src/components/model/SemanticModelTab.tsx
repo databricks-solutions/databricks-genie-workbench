@@ -6,7 +6,7 @@
  * layered SVG (SemanticGraph), with any space-scoped proposals offered as a
  * ghosted, default-off overlay. The base graph must render for a space that has
  * never been optimized. Config is fetched live on tab entry (the server reads
- * serialized_space the same OBO-tolerant way /space/fetch does), never from a run
+ * serialized_space with the same strict OBO read /space/fetch uses), never from a run
  * artifact or cache — a refresh affordance re-reads because the config can change
  * under the tab (including edits made outside the workbench).
  *

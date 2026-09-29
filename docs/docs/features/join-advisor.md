@@ -25,7 +25,7 @@ validate**, and the optimizer adds only the joins that hold.
 ## Candidate discovery
 
 `GET /api/auto-optimize/spaces/{space_id}/join-candidates` reads the live
-`serialized_space` (OBO-tolerant, like the semantic-graph route) and discovers
+`serialized_space` (a strict OBO read, like the semantic-graph route) and discovers
 candidates two ways, then scores each with a warehouse **containment probe**:
 
 - **Declared UC foreign keys** between configured tables.

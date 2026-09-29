@@ -16,6 +16,7 @@ from backend.services.uc_client import (
     get_table_columns,
 )
 from backend.genie_creator import create_genie_space
+from backend.services.space_access import SpaceAccessLevel, require_space_access
 from backend.services.version_control.platform.app_observe import capture_initial_version
 
 router = APIRouter(prefix="/api/create")
@@ -182,7 +183,11 @@ class AgentChatRequest(BaseModel):
     message: str = Field("", max_length=10000)
     session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
     selections: dict | None = Field(None, description="UI selections from interactive elements")
-    space_id: str | None = Field(None, description="Pre-seed session with existing space ID for fix/update flows")
+    space_id: str | None = Field(
+        None,
+        pattern=r"^[0-9a-zA-Z_-]{1,128}$",
+        description="Pre-seed session with existing space ID for fix/update flows",
+    )
     model: str | None = Field(None, max_length=256, description="Optional serving endpoint name for this session.")
 
 
@@ -205,6 +210,9 @@ async def agent_chat(body: AgentChatRequest, request: Request):
     )
     from backend.services.auth import get_workspace_client, set_obo_user_token, clear_obo_user_token
     from backend.services.model_catalog import ModelValidationError, validate_chat_model
+
+    if body.space_id and not body.session_id:
+        await require_space_access(body.space_id, SpaceAccessLevel.EDIT)
 
     agent = get_create_agent()
 

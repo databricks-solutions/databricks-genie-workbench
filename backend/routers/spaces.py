@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.routers._validators import SpaceId
 
-from backend.services.auth import get_workspace_client, get_service_principal_client
-from backend.services.genie_client import list_genie_spaces, is_scope_error
+from backend.services.auth import get_workspace_client, require_obo_workspace_client
+from backend.services.genie_client import list_genie_spaces
 from backend.services.lakebase import (
     get_latest_score,
     get_latest_scores_batch,
@@ -28,7 +28,11 @@ from backend.models import (
     ScanResult,
     SpaceAccess,
 )
-from backend.services.space_access import resolve_space_access_level
+from backend.services.space_access import (
+    SpaceAccessLevel,
+    require_space_access,
+    resolve_space_access_level,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -48,7 +52,7 @@ async def list_spaces(
     """
     try:
         try:
-            raw_spaces = list_genie_spaces()
+            raw_spaces = list_genie_spaces(sp_fallback=False)
         except Exception as e:
             logger.error(f"Failed to list Genie Agents: {e}")
             raise HTTPException(status_code=500, detail="Failed to fetch Genie Agents from Databricks")
@@ -123,27 +127,13 @@ async def list_spaces(
 @router.get("/spaces/{space_id}")
 async def get_space_detail(space_id: SpaceId) -> dict:
     """Get space details with latest scan result."""
+    await require_space_access(space_id, SpaceAccessLevel.VIEW)
     try:
-        client = get_workspace_client()
-
-        try:
-            space = client.api_client.do(
-                method="GET",
-                path=f"/api/2.0/genie/spaces/{space_id}",
-            )
-        except Exception as e:
-            if is_scope_error(e):
-                logger.info("OBO token lacks genie scope, retrying with service principal")
-                sp_client = get_service_principal_client()
-                if sp_client is not client:
-                    space = sp_client.api_client.do(
-                        method="GET",
-                        path=f"/api/2.0/genie/spaces/{space_id}",
-                    )
-                else:
-                    raise
-            else:
-                raise
+        client = require_obo_workspace_client()
+        space = client.api_client.do(
+            method="GET",
+            path=f"/api/2.0/genie/spaces/{space_id}",
+        )
 
         # Get latest score and star status concurrently
         score_data, starred = await asyncio.gather(
@@ -164,6 +154,7 @@ async def get_space_detail(space_id: SpaceId) -> dict:
 @router.post("/spaces/{space_id}/scan")
 async def trigger_scan(space_id: SpaceId) -> ScanResult:
     """Trigger an IQ scan for a Genie Agent and persist results."""
+    await require_space_access(space_id, SpaceAccessLevel.EDIT)
     try:
         scan_data = await scan_space(space_id)
 
@@ -193,6 +184,7 @@ async def get_history(
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
     """Get unified score + optimization history for a Genie Agent."""
+    await require_space_access(space_id, SpaceAccessLevel.VIEW)
     try:
         scans, opt_runs = await asyncio.gather(
             get_score_history(space_id, days=days),
@@ -229,6 +221,7 @@ async def get_space_access(space_id: SpaceId) -> SpaceAccess:
 @router.put("/spaces/{space_id}/star")
 async def toggle_star(space_id: SpaceId, request: StarToggleRequest) -> dict:
     """Toggle star status for a Genie Agent."""
+    await require_space_access(space_id, SpaceAccessLevel.VIEW)
     try:
         await star_space(space_id, request.starred)
         return {"space_id": space_id, "starred": request.starred}

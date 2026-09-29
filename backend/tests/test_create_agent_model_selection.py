@@ -40,6 +40,67 @@ def test_agent_chat_request_model_is_saved_on_session(monkeypatch):
     assert isinstance(captured["session"], AgentSession)
 
 
+def test_agent_chat_rejects_a_malformed_space_id():
+    app = FastAPI()
+    app.include_router(create.router)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/create/agent/chat",
+            json={"message": "hi", "space_id": "../x"},
+        )
+
+    assert resp.status_code == 422
+
+
+def test_agent_chat_continuation_is_not_gated(monkeypatch):
+    asked: list[tuple[str, object]] = []
+
+    async def record_ask(space_id, level):
+        asked.append((space_id, level))
+
+    class FakeAgent:
+        async def chat(self, session, user_message, selections=None, vc_capture=None):
+            yield {"event": "done", "data": {"needs_continuation": False}}
+
+    session = AgentSession(session_id="cont-1", space_id="space-seeded")
+
+    async def load_session(session_id):
+        assert session_id == "cont-1"
+        return session
+
+    monkeypatch.setattr(create, "require_space_access", record_ask)
+    monkeypatch.setattr(
+        "backend.services.create_agent.get_create_agent", lambda: FakeAgent()
+    )
+    monkeypatch.setattr(
+        "backend.services.create_agent_session.get_session_async", load_session
+    )
+    monkeypatch.setattr(
+        "backend.services.model_catalog.validate_chat_model",
+        lambda model, client=None: model,
+    )
+    monkeypatch.setattr("backend.services.auth.get_workspace_client", lambda: object())
+    monkeypatch.setattr(create, "persist_session", lambda session: None, raising=False)
+
+    app = FastAPI()
+    app.include_router(create.router)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/create/agent/chat",
+            json={
+                "session_id": "cont-1",
+                "message": "",
+                "space_id": "space-seeded",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert "event: done" in resp.text
+    assert asked == []
+
+
 def test_agent_session_persistence_round_trips_llm_model(monkeypatch):
     class FakeConn:
         def __init__(self):

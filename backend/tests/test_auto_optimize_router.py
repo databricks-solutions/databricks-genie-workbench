@@ -110,6 +110,9 @@ def test_permissions_contract_omits_prompt_registry_fields(
         auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
     )
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(
+        auto_optimize, "require_obo_workspace_client", lambda: mock_user_ws
+    )
 
     with patch(
         "genie_space_optimizer.common.sp_permissions.get_sp_principal_aliases",
@@ -147,6 +150,9 @@ def test_permissions_happy_path_allows_start(
         auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
     )
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(
+        auto_optimize, "require_obo_workspace_client", lambda: mock_user_ws
+    )
 
     with patch(
         "genie_space_optimizer.common.sp_permissions.get_sp_principal_aliases",
@@ -180,6 +186,9 @@ def test_permissions_blocks_start_when_schema_read_is_missing(
         auto_optimize, "get_service_principal_client", lambda: mock_sp_ws
     )
     monkeypatch.setattr(auto_optimize, "get_workspace_client", lambda: mock_user_ws)
+    monkeypatch.setattr(
+        auto_optimize, "require_obo_workspace_client", lambda: mock_user_ws
+    )
 
     with patch(
         "genie_space_optimizer.common.sp_permissions.get_sp_principal_aliases",
@@ -910,6 +919,7 @@ def test_iterations_endpoint_emits_phase6_counts_and_gate(monkeypatch) -> None:
     monkeypatch.setenv("GSO_CATALOG", "main")
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    _allow_space_access(monkeypatch)
 
     from backend.routers import auto_optimize
 
@@ -974,6 +984,7 @@ def test_benchmark_changes_endpoint_groups_by_op(monkeypatch) -> None:
     monkeypatch.setenv("GSO_CATALOG", "main")
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    _allow_space_access(monkeypatch)
 
     from backend.routers import auto_optimize
 
@@ -1017,6 +1028,7 @@ def test_benchmark_changes_recovers_snapshot_sql_and_hides_fragment_only_changes
     monkeypatch.setenv("GSO_CATALOG", "main")
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    _allow_space_access(monkeypatch)
 
     from backend.routers import auto_optimize
 
@@ -1202,6 +1214,7 @@ def test_iterations_official_accuracy_uses_num_questions_not_evaluated_count(mon
     monkeypatch.setenv("GSO_CATALOG", "main")
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    _allow_space_access(monkeypatch)
 
     from backend.routers import auto_optimize
 
@@ -1257,6 +1270,7 @@ def test_iterations_official_v2_reports_full_30_question_corpus(monkeypatch) -> 
     monkeypatch.setenv("GSO_CATALOG", "main")
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    _allow_space_access(monkeypatch)
 
     from backend.routers import auto_optimize
 
@@ -1299,6 +1313,7 @@ def _gso_client(monkeypatch) -> TestClient:
     monkeypatch.setenv("GSO_SCHEMA", "gso_test")
     monkeypatch.setenv("GSO_JOB_ID", "12345")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    _allow_space_access(monkeypatch)
     app = FastAPI()
     app.include_router(auto_optimize.router)
     return TestClient(app)
@@ -2862,4 +2877,135 @@ async def test_concurrent_identity_rechecks_share_one_jobs_api_read(monkeypatch)
 
     assert calls == [1]
     assert request.app.state.gso_run_as == vc_identity.RUN_AS_VERIFIED
+
+
+def test_identity_failure_is_reused_within_the_recheck_window(monkeypatch):
+    from types import SimpleNamespace
+
+    from backend.services.version_control.platform import identity as vc_identity
+
+    checks = []
+    monkeypatch.setattr(
+        vc_identity, "check_configured_job_run_as",
+        lambda *a, **k: checks.append(1) or vc_identity.RUN_AS_UNAVAILABLE,
+    )
+    clock = [1000.0]
+    monkeypatch.setattr(auto_optimize, "_run_as_clock", lambda: clock[0])
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(gso_run_as=None)))
+
+    for _ in range(2):
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
+        assert caught.value.status_code == 503
+    assert len(checks) == 1
+
+    clock[0] += auto_optimize._RUN_AS_RECHECK_S + 1
+    with pytest.raises(HTTPException):
+        asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
+    assert len(checks) == 2
+
+
+def test_identity_success_still_settles_forever(monkeypatch):
+    from types import SimpleNamespace
+
+    from backend.services.version_control.platform import identity as vc_identity
+
+    checks = []
+    monkeypatch.setattr(
+        vc_identity, "check_configured_job_run_as",
+        lambda *a, **k: checks.append(1) or vc_identity.RUN_AS_VERIFIED,
+    )
+    clock = [1000.0]
+    monkeypatch.setattr(auto_optimize, "_run_as_clock", lambda: clock[0])
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(gso_run_as=None)))
+
+    asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
+    assert len(checks) == 1
+
+    clock[0] += auto_optimize._RUN_AS_RECHECK_S + 1
+    asyncio.run(auto_optimize._require_verified_optimizer_identity(request))
+    assert len(checks) == 1
+
+
+def test_run_gate_reads_the_lakebase_envelope_and_asks_its_space(monkeypatch):
+    async def lakebase_run(run_id):
+        return {"run_id": run_id, "space_id": "space-lb", "status": "CONVERGED"}
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", lakebase_run)
+    asked = _record_space_access(monkeypatch)
+    run = asyncio.run(auto_optimize._require_run_space_access(_RUN, SpaceAccessLevel.EDIT))
+    assert run["space_id"] == "space-lb"
+    assert asked == [("space-lb", SpaceAccessLevel.EDIT)]
+
+
+def test_run_gate_503_when_the_delta_fallback_fails(monkeypatch):
+    async def miss(run_id):
+        return None
+
+    async def delta_down(*args, **kwargs):
+        raise RuntimeError("warehouse down")
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", miss)
+    monkeypatch.setattr(auto_optimize, "_is_configured", lambda: True)
+    monkeypatch.setattr(auto_optimize, "_delta_query_async", delta_down)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(auto_optimize._require_run_space_access(_RUN, SpaceAccessLevel.EDIT))
+    assert caught.value.status_code == 503
+    assert caught.value.detail == auto_optimize._RUN_ACCESS_UNAVAILABLE
+
+
+def test_run_gate_404_when_unconfigured_and_lakebase_misses(monkeypatch):
+    async def miss(run_id):
+        return None
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", miss)
+    monkeypatch.setattr(auto_optimize, "_is_configured", lambda: False)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(auto_optimize._require_run_space_access(_RUN, SpaceAccessLevel.EDIT))
+    assert caught.value.status_code == 404
+
+
+def test_run_gate_404s_a_malformed_run_id_before_any_io(monkeypatch):
+    touched: list[str] = []
+
+    async def lakebase(run_id):
+        touched.append("lakebase")
+        return {"run_id": run_id, "space_id": "space-lb", "status": "CONVERGED"}
+
+    async def delta(*args, **kwargs):
+        touched.append("delta")
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", lakebase)
+    monkeypatch.setattr(auto_optimize, "_is_configured", lambda: True)
+    monkeypatch.setattr(auto_optimize, "_delta_query_async", delta)
+    asked = _record_space_access(monkeypatch)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(auto_optimize._require_run_space_access(
+            "x' OR '1'='1", SpaceAccessLevel.EDIT))
+    assert caught.value.status_code == 404
+    assert caught.value.detail == "Run not found."
+    assert touched == []
+    assert asked == []
+
+
+def test_run_envelope_delta_fallback_escapes_the_run_id_literal(monkeypatch):
+    captured: list[str] = []
+
+    async def miss(run_id):
+        return None
+
+    async def delta(sql, *, strict=False):
+        captured.append(sql)
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", miss)
+    monkeypatch.setattr(auto_optimize, "_is_configured", lambda: True)
+    monkeypatch.setattr(auto_optimize, "_delta_table", lambda name: f"c.s.{name}")
+    monkeypatch.setattr(auto_optimize, "_delta_query_async", delta)
+    assert asyncio.run(auto_optimize._load_run_envelope("x' UNION SELECT 1 --")) is None
+    assert captured == [
+        "SELECT run_id, space_id, status FROM c.s.genie_opt_runs "
+        "WHERE run_id = 'x'' UNION SELECT 1 --' LIMIT 1"
+    ]
 

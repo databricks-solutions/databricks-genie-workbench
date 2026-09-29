@@ -17,7 +17,12 @@ import requests
 
 from dotenv import load_dotenv
 
-from backend.services.auth import get_workspace_client, get_service_principal_client, is_running_on_databricks_apps
+from backend.services.auth import (
+    get_workspace_client,
+    get_service_principal_client,
+    is_running_on_databricks_apps,
+    require_obo_workspace_client,
+)
 from backend.services.version_control import contracts as vc
 
 load_dotenv()
@@ -252,24 +257,13 @@ def call_with_sp_fallback(fn, *, what: str = "genie API call"):
         raise
 
 
-def get_genie_space(
+def get_genie_space_with_sp_fallback(
     genie_space_id: str | None = None,
 ) -> dict:
-    """Fetch and parse a Genie Agent's serialized configuration.
+    """Fetch a Genie Agent, retrying as the service principal on an OAuth scope error.
 
-    Uses the Databricks SDK's API client which automatically handles
-    OBO authentication when running on Databricks Apps, ensuring that
-    the user's permissions are checked. Users without access to the Genie
-    Space will receive a 403/404 error.
-
-    Args:
-        genie_space_id: The Genie Agent ID (defaults to GENIE_SPACE_ID env var)
-
-    Returns:
-        Parsed serialized space configuration as a dictionary
-
-    Raises:
-        Exception: If the API request fails (e.g., 403 for no access)
+    GenieWatch only (outside the MV-D109 control plane). User paths call
+    :func:`get_genie_space`, which never answers as the service principal.
     """
     genie_space_id = genie_space_id or os.environ.get("GENIE_SPACE_ID")
     if not genie_space_id:
@@ -296,6 +290,23 @@ def get_genie_space(
         raise ValueError(f"Unable to get agent [{genie_space_id}]. {e}")
 
 
+def get_genie_space(genie_space_id: str | None = None) -> dict:
+    """Fetch a Genie Agent with its serialized configuration, as the signed-in user.
+
+    Never falls back to the service principal (MV-D109). Raises ``RuntimeError``
+    without a user token and ``ValueError`` when Genie refuses the read.
+    """
+    genie_space_id = genie_space_id or os.environ.get("GENIE_SPACE_ID")
+    if not genie_space_id:
+        raise ValueError("genie_space_id is required")
+    client = require_obo_workspace_client()
+    try:
+        return _get_space_with_client(client, genie_space_id)
+    except Exception as e:
+        logger.error(f"Failed to fetch Genie Agent {genie_space_id}: {e}")
+        raise ValueError(f"Unable to get agent [{genie_space_id}]. {e}")
+
+
 def _get_space_with_client(client, genie_space_id: str) -> dict:
     """Fetch a single Genie Agent using the given client."""
     response = client.api_client.do(
@@ -306,12 +317,15 @@ def _get_space_with_client(client, genie_space_id: str) -> dict:
     return response
 
 
-def list_genie_spaces() -> list[dict]:
+def list_genie_spaces(*, sp_fallback: bool = True) -> list[dict]:
     """Fetch all Genie Agents from the Databricks API with cursor pagination.
 
     Returns list of dicts with: id, display_name, description, create_time, update_time
     Raises an Exception on failure (callers should handle as appropriate).
+    ``sp_fallback=False`` lists only what the caller can see (MV-D109).
     """
+    if not sp_fallback:
+        return _list_spaces_with_client(require_obo_workspace_client())
     return call_with_sp_fallback(_list_spaces_with_client, what="list_genie_spaces")
 
 

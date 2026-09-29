@@ -565,3 +565,80 @@ def test_stream_without_a_user_token_is_a_clean_401(monkeypatch):
 
     resp = stream_client.post("/api/auto-optimize/spaces/space-1/mv/suggest/stream")
     assert resp.status_code == 401
+
+
+def test_suggest_scope_error_does_not_read_as_the_service_principal(client, monkeypatch):
+    """M1c-D3: MissingSerializedSpaceError from the user's read is a 502 —
+    never a second fetch_space_config call with the service principal."""
+    from genie_space_optimizer.common import genie_client
+    from genie_space_optimizer.common.genie_client import MissingSerializedSpaceError
+
+    user_ws = MagicMock(name="user_ws")
+    sp_ws = MagicMock(name="sp_ws")
+    monkeypatch.setattr(auto_optimize, "require_obo_workspace_client", lambda: user_ws)
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: sp_ws)
+
+    seen: list[object] = []
+
+    def _fetch(ws, space_id):
+        seen.append(ws)
+        raise MissingSerializedSpaceError("no serialized_space")
+
+    monkeypatch.setattr(genie_client, "fetch_space_config", _fetch)
+
+    resp = client.post("/api/auto-optimize/spaces/space-1/mv/suggest")
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "Could not read the Agent configuration."
+    assert seen == [user_ws]
+
+
+def test_suggest_stream_config_error_emits_error_event(monkeypatch):
+    """M1c-D3 stream: a failed OBO config read ends with an error event, no SP retry."""
+    import json as _json
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.main import OBOAuthMiddleware
+    from backend.services import auth
+    from genie_space_optimizer.common import genie_client
+    from genie_space_optimizer.common.genie_client import MissingSerializedSpaceError
+
+    monkeypatch.setenv("GSO_CATALOG", "main")
+    monkeypatch.setenv("GSO_SCHEMA", "gso_test")
+    monkeypatch.setenv("GSO_JOB_ID", "12345")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://test.cloud.databricks.com")
+
+    monkeypatch.setattr(auth, "Config", lambda **k: SimpleNamespace(**k))
+    monkeypatch.setattr(
+        auth, "WorkspaceClient", lambda config=None, **k: SimpleNamespace(config=config)
+    )
+    sp_client = SimpleNamespace(config=SimpleNamespace(token="sp-token"))
+    monkeypatch.setattr(auth, "_get_default_client", lambda: sp_client)
+
+    seen: list[object] = []
+
+    def _fetch(ws, space_id):
+        seen.append(getattr(getattr(ws, "config", None), "token", None))
+        raise MissingSerializedSpaceError("no serialized_space")
+
+    monkeypatch.setattr(genie_client, "fetch_space_config", _fetch)
+
+    app = FastAPI()
+    app.add_middleware(OBOAuthMiddleware)
+    app.include_router(auto_optimize.router)
+    stream_client = TestClient(app)
+
+    resp = stream_client.post(
+        "/api/auto-optimize/spaces/space-1/mv/suggest/stream",
+        headers={"x-forwarded-access-token": "user-token"},
+    )
+    assert resp.status_code == 200
+    frames = _parse_sse(resp.text)
+    kinds = [e for e, _ in frames]
+    assert "error" in kinds
+    assert "result" not in kinds
+    assert seen == ["user-token"]
+    err = _json.loads(next(d for e, d in frames if e == "error"))
+    assert err["detail"] == "Could not read the Agent configuration."

@@ -45,6 +45,16 @@ def _obo_as(email="analyst@example.com"):
 # ── Service: verification + sequencing ─────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _run_envelope_for_run_keyed_routes(monkeypatch):
+    """Drop is body-run-keyed; stub the envelope so the space gate can answer."""
+
+    async def run_envelope(run_id):
+        return {"run_id": run_id, "space_id": "space-1", "status": "CONVERGED"}
+
+    monkeypatch.setattr(auto_optimize, "_load_run_envelope", run_envelope)
+
+
 @pytest.fixture
 def register_env(monkeypatch):
     calls: list[str] = []
@@ -220,6 +230,9 @@ def test_register_route_requires_obo(client, monkeypatch):
     assert resp.status_code == 401
 
 
+_DROP_RUN = "33333333-3333-4333-8333-333333333333"
+
+
 def test_drop_refuses_a_user_created_view_on_provenance_even_when_detached(client, monkeypatch):
     # Invariant 1: the app never drops a USER_CREATED view — refused on
     # provenance before the status check, so DETACHED does not let it through.
@@ -228,7 +241,7 @@ def test_drop_refuses_a_user_created_view_on_provenance_even_when_detached(clien
     monkeypatch.setattr(
         warehouse, "wh_load_mv_created_object",
         lambda *a, **k: {
-            "run_id": "r1", "suggestion_id": "sug1",
+            "run_id": _DROP_RUN, "suggestion_id": "sug1",
             "full_name": "main.sales.revenue_metrics",
             "created_by": "owner@example.com",
             "status": "DETACHED", "provenance": "USER_CREATED",
@@ -236,7 +249,7 @@ def test_drop_refuses_a_user_created_view_on_provenance_even_when_detached(clien
     )
     resp = client.post(
         "/api/auto-optimize/mv/created/sug1/drop",
-        json={"run_id": "r1", "confirm": True},
+        json={"run_id": _DROP_RUN, "confirm": True},
     )
     assert resp.status_code == 409
     assert "user-created" in resp.json()["detail"].lower() or "bring-your-own" in resp.json()["detail"].lower()

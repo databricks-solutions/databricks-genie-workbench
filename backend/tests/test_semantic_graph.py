@@ -12,7 +12,7 @@ Seams tested without Databricks:
   are one chip and a higher rung absorbs its twin (Debt 3).
 - **Coverage lens** (``_apply_coverage``): curated-SQL touch counts per node,
   cold spots at 0, the MV-D15 status vocabulary (EMPTY / UNAVAILABLE / COMPUTED).
-- **The route**: the base graph is read the OBO-tolerant way ``/space/fetch``
+- **The route**: the base graph is read the strict OBO way ``/space/fetch``
   reads (``get_serialized_space``); the governed chips ride a best-effort
   DESCRIBE read; proposals ride the SP-side Delta read; a never-optimized space
   still renders; a config-read failure surfaces as 502.

@@ -20,7 +20,7 @@ from genie_space_optimizer.common.genie_client import (
     check_space_access,
 )
 
-from backend.services.auth import require_obo_workspace_client
+from backend.services.auth import bounded_read_client, require_obo_workspace_client
 
 __all__ = [
     "SpaceAccessLevel",
@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 # Revocation takes effect within this window; denials are never cached.
 _ALLOW_TTL_S = 30.0
 _MAX_ENTRIES = 4096
+
+# A stuck Genie read must not pin a worker thread for the SDK's 300 s retry window.
+_CHECK_HTTP_TIMEOUT_S = 20
 
 # Genie's 403 text for the two refusals that are not about the space's grants (M0 check V3).
 _SCOPE_MARKERS = ("required scope", "insufficient_scope")
@@ -120,7 +123,10 @@ def ensure_space_access(space_id: str, level: SpaceAccessLevel) -> None:
         return
 
     try:
-        result = check_space_access(client, space_id, level)
+        result = check_space_access(
+            bounded_read_client(client, http_timeout_seconds=_CHECK_HTTP_TIMEOUT_S),
+            space_id, level,
+        )
     except SpaceAccessUnavailable as exc:
         logger.warning("Space access check unavailable for %s (%s): %s", space_id, level.value, exc)
         raise _refuse(
