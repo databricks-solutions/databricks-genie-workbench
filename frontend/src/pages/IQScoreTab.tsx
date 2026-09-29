@@ -5,12 +5,13 @@ import { useState } from "react"
 import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Check, X, Rocket, Loader2 } from "lucide-react"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
+import { SCAN_VIEWER_EMPTY } from "@/lib/space-access"
 import type { ScanResult, CheckDetail } from "@/types"
 
 interface IQScoreTabProps {
   scanResult: ScanResult | null
   isLoading?: boolean
-  onScan: () => void
+  onScan?: () => void
   isScanning: boolean
   spaceId: string
   /** Single contextual action — label/icon/callback determined by maturity tier */
@@ -40,15 +41,21 @@ export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, onAction
           <span className="text-2xl text-muted font-bold">?</span>
         </div>
         <h3 className="text-lg font-semibold text-primary mb-2">Not yet scanned</h3>
-        <p className="text-muted mb-6">Run an IQ scan to assess this Genie Agent's maturity</p>
-        <button
-          onClick={onScan}
-          disabled={isScanning}
-          className="flex items-center gap-2 mx-auto px-4 py-2 rounded-lg bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
-        >
-          {isScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-          {isScanning ? "Scanning..." : "Run IQ Scan"}
-        </button>
+        {onScan ? (
+          <>
+            <p className="text-muted mb-6">Run an IQ scan to assess this Genie Agent's maturity</p>
+            <button
+              onClick={onScan}
+              disabled={isScanning}
+              className="flex items-center gap-2 mx-auto px-4 py-2 rounded-lg bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
+            >
+              {isScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+              {isScanning ? "Scanning..." : "Run IQ Scan"}
+            </button>
+          </>
+        ) : (
+          <p className="text-muted">{SCAN_VIEWER_EMPTY}</p>
+        )}
       </div>
     )
   }
@@ -86,15 +93,17 @@ export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, onAction
                 {scanResult.maturity}
               </span>
             )}
-            <button
-              onClick={onScan}
-              disabled={isScanning}
-              className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
-              title="Re-run IQ Scan"
-            >
-              <RefreshCw className={`w-3 h-3 ${isScanning ? "animate-spin" : ""}`} />
-              {isScanning ? "Scanning..." : "Re-scan"}
-            </button>
+            {onScan && (
+              <button
+                onClick={onScan}
+                disabled={isScanning}
+                className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+                title="Re-run IQ Scan"
+              >
+                <RefreshCw className={`w-3 h-3 ${isScanning ? "animate-spin" : ""}`} />
+                {isScanning ? "Scanning..." : "Re-scan"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -224,7 +233,9 @@ export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, onAction
         {/* Hint when no check data (old scan) */}
         {totalChecks === 0 && (
           <p className="mt-4 text-sm text-muted text-center">
-            Check details not available for this scan. Run a new IQ Scan to see individual checks.
+            {onScan
+              ? "Check details not available for this scan. Run a new IQ Scan to see individual checks."
+              : "Check details not available for this scan."}
           </p>
         )}
       </div>

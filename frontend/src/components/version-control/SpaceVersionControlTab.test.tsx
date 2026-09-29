@@ -71,11 +71,18 @@ it('relabels the workbench origin as Auto-captured', () => {
 })
 
 it('earns no write affordance before the access route answers', () => {
-  const html = renderToStaticMarkup(<SpaceVersionControlTab spaceId="space-1" />)
+  const html = renderToStaticMarkup(<SpaceVersionControlTab spaceId="space-1" access="checking" accessReason={null} />)
   expect(html).toContain('Checking access')
   expect(html).not.toContain('Capture current state')
   expect(html).not.toContain('Check the live space for changes')
   expect(html).not.toContain('No versions captured yet')
+})
+
+it('an unconfirmed answer names its reason and still offers no write', () => {
+  const html = renderToStaticMarkup(<SpaceVersionControlTab spaceId="space-1" access="unknown" accessReason="Could not verify your access to this Genie Agent. Try again shortly." />)
+  expect(html).toContain('could not be confirmed')
+  expect(html).toContain('Could not verify your access')
+  expect(html).not.toContain('Capture current state')
 })
 
 it('shows an editor the capture controls and the auto-capture explanation', () => {

@@ -293,3 +293,22 @@ def test_cache_hit_builds_no_check_client(monkeypatch, as_user):
     _require()
     _require()
     assert len(built) == 1
+
+
+def test_space_access_held_is_true_when_the_gate_allows(monkeypatch):
+    monkeypatch.setattr(space_access, "ensure_space_access", lambda _s, _l: None)
+    assert space_access.space_access_held("s", space_access.SpaceAccessLevel.EDIT) is True
+
+
+def test_space_access_held_is_false_on_a_denial(monkeypatch):
+    def deny(_s, level):
+        raise space_access._denied(level, "")
+    monkeypatch.setattr(space_access, "ensure_space_access", deny)
+    assert space_access.space_access_held("s", space_access.SpaceAccessLevel.EDIT) is False
+
+
+def test_space_access_held_fails_closed_when_the_check_is_unanswered(monkeypatch):
+    def unavailable(_s, level):
+        raise space_access._refuse(503, "space_access_unavailable", level, "Try again shortly.")
+    monkeypatch.setattr(space_access, "ensure_space_access", unavailable)
+    assert space_access.space_access_held("s", space_access.SpaceAccessLevel.EDIT) is False

@@ -63,13 +63,16 @@ export function VersionControlHeader({ access, capturing = false, syncing = fals
   )
 }
 
-export function AccessNotice({ access }: { access: VcAccess }) {
+export function AccessNotice({ access, reason = null }: { access: VcAccess; reason?: string | null }) {
   const message = access === 'view' ? VIEW_NOTICE : access === 'unknown' ? UNKNOWN_NOTICE : null
   if (!message) return null
   return (
     <div role="status" className="flex items-start gap-2 text-sm rounded-lg border border-default bg-surface-secondary text-secondary px-3 py-2">
       <Lock className="w-4 h-4 mt-0.5 shrink-0 text-muted" />
-      <span>{message}</span>
+      <span>
+        {message}
+        {access === 'unknown' && reason && <span className="block text-xs text-muted mt-0.5">{reason}</span>}
+      </span>
     </div>
   )
 }

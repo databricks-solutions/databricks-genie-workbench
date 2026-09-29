@@ -50,6 +50,18 @@ import {
   VcViewerEmptyFrame,
   VcViewerFrame,
 } from "./VcAccessFidelityFrames"
+import {
+  CheckingFrame,
+  ModelViewerFrame,
+  NoAccessPageFrame,
+  OptimizeViewerEmptyFrame,
+  OptimizeViewerFrame,
+  ScoreEditorFrame,
+  ScoreUnknownFrame,
+  ScoreViewerFrame,
+  ScoreViewerUnscannedFrame,
+  SpaceCardRefusedFrame,
+} from "./SpaceAccessFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -124,4 +136,16 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m1b-c-vc-viewer-empty", title: "M1b-c · Version Control — Can View, nothing captured yet", element: <VcViewerEmptyFrame /> },
   { id: "m1b-d-vc-no-access", title: "M1b-d · Version Control — no access (permission state)", element: <VcNoAccessFrame /> },
   { id: "m1b-e-vc-entitlement", title: "M1b-e · Version Control — refused for a missing entitlement (Genie's reason)", element: <VcEntitlementFrame /> },
+  // PR #332 M1c-2 — agent-page access states (M1c-D5/D6): the REAL notices, read-only Score
+  // tab, locked sections, Optimize viewer list and list card. Writes render only for Can Edit.
+  { id: "m1c2-a-score-editor", title: "M1c2-a · Score — Can Edit (reference: today's tab)", element: <ScoreEditorFrame /> },
+  { id: "m1c2-b-score-viewer", title: "M1c2-b · Score — Can View (stored score, no scan, configuration locked)", element: <ScoreViewerFrame /> },
+  { id: "m1c2-c-score-viewer-unscanned", title: "M1c2-c · Score — Can View, never scanned", element: <ScoreViewerUnscannedFrame /> },
+  { id: "m1c2-d-score-unknown", title: "M1c2-d · Score — access unconfirmed (read-only, with the reason)", element: <ScoreUnknownFrame /> },
+  { id: "m1c2-e-no-access", title: "M1c2-e · Agent page — no access (permission state, no tabs)", element: <NoAccessPageFrame /> },
+  { id: "m1c2-f-model-viewer", title: "M1c2-f · Model — Can View (locked)", element: <ModelViewerFrame /> },
+  { id: "m1c2-g-checking", title: "M1c2-g · Model / Optimize — checking access", element: <CheckingFrame /> },
+  { id: "m1c2-h-optimize-viewer", title: "M1c2-h · Optimize — Can View (active status and run list, no actions)", element: <OptimizeViewerFrame /> },
+  { id: "m1c2-i-optimize-viewer-empty", title: "M1c2-i · Optimize — Can View, no runs yet", element: <OptimizeViewerEmptyFrame /> },
+  { id: "m1c2-j-list-scan-refused", title: "M1c2-j · Space list — scan refused below Can Edit", element: <SpaceCardRefusedFrame /> },
 ]

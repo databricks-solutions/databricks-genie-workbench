@@ -536,7 +536,15 @@ async def get_latest_scores_batch(space_ids: list[str]) -> dict[str, dict]:
 async def get_score_history(space_id: str, days: int = 30) -> list[dict]:
     """Get score history for a space over the last N days."""
     if not _lakebase_available or _pool is None:
-        return _memory_store["history"].get(space_id, [])
+        return [
+            {
+                "score": s["score"],
+                "maturity": s["maturity"],
+                "optimization_accuracy": s.get("optimization_accuracy"),
+                "scanned_at": s["scanned_at"],
+            }
+            for s in _memory_store["history"].get(space_id, [])
+        ]
 
     import json
     async with _pool.acquire() as conn:

@@ -20,7 +20,7 @@ from backend.services.lakebase import (
     get_all_scan_summaries,
 )
 from backend.routers.auto_optimize import load_runs_with_fallback, _isoformat
-from backend.services.scanner import scan_space
+from backend.services.scanner import redact_for_viewer, scan_space
 from backend.models import (
     SpaceListItem,
     SpaceScanRequest,
@@ -32,6 +32,7 @@ from backend.services.space_access import (
     SpaceAccessLevel,
     require_space_access,
     resolve_space_access_level,
+    space_access_held,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,8 @@ async def list_spaces(
 async def get_space_detail(space_id: SpaceId) -> dict:
     """Get space details with latest scan result."""
     await require_space_access(space_id, SpaceAccessLevel.VIEW)
+    # Quoted instruction text and column names are configuration (MV-D110).
+    can_edit = await asyncio.to_thread(space_access_held, space_id, SpaceAccessLevel.EDIT)
     try:
         client = require_obo_workspace_client()
         space = client.api_client.do(
@@ -143,7 +146,7 @@ async def get_space_detail(space_id: SpaceId) -> dict:
 
         return {
             "space": space,
-            "scan_result": score_data,
+            "scan_result": score_data if can_edit else redact_for_viewer(score_data),
             "is_starred": starred,
         }
     except Exception as e:

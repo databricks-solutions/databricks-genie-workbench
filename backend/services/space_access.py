@@ -28,6 +28,7 @@ __all__ = [
     "ensure_space_access",
     "require_space_access",
     "resolve_space_access_level",
+    "space_access_held",
 ]
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,18 @@ def ensure_space_access(space_id: str, level: SpaceAccessLevel) -> None:
 async def require_space_access(space_id: str, level: SpaceAccessLevel) -> None:
     """Refuse unless the signed-in user holds *level* on the Genie Agent."""
     await asyncio.to_thread(ensure_space_access, space_id, level)
+
+
+def space_access_held(space_id: str, level: SpaceAccessLevel) -> bool:
+    """Whether the signed-in user holds *level*; any refusal, answered or not, reads as False.
+
+    For deciding what to show, never as a gate: it cannot tell a denial from an outage.
+    """
+    try:
+        ensure_space_access(space_id, level)
+    except HTTPException:
+        return False
+    return True
 
 
 # EDIT refusals that still let the ladder ask VIEW (never upgrade — only downgrade).

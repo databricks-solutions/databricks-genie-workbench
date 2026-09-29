@@ -4,9 +4,10 @@ import { VersionControlApi, VersionControlError } from '@/lib/version-control-ap
 import type { ObservationResult, SemanticDiff, VersionDetail, VersionPage, VersionSummary, VersionTagMap } from '@/types/version-control'
 import { AccessNotice, DetailPlaceholder, NoAccessState, VersionControlHeader, VersionPanes } from './access-chrome'
 import {
-  canEditVersions, canReadVersions, EDITOR_DETAIL_HINT, resolveVcAccess, type VcAccessState,
+  canEditVersions, canReadVersions, EDITOR_DETAIL_HINT, vcAccessFromSpace,
   VIEWER_DETAIL_HINT, VIEWER_EMPTY_HINT,
 } from './access-state'
+import type { SpaceAccessState } from '@/lib/space-access'
 import { type CaptureNotice, describeCaptureError, describeObservation } from './capture-notice'
 import { History } from './history'
 import { VersionDetailPanel } from './version-detail-panel'
@@ -27,9 +28,11 @@ const EMPTY_PAGE: VersionPage = { items: [], next_cursor: null }
 
 interface Props {
   spaceId: string
+  access: SpaceAccessState
+  accessReason: string | null
 }
 
-export function SpaceVersionControlTab({ spaceId }: Props) {
+export function SpaceVersionControlTab({ spaceId, access: spaceAccess, accessReason }: Props) {
   const [page, setPage] = useState<VersionPage>(EMPTY_PAGE)
   const [tags, setTags] = useState<VersionTagMap>({})
   const [loading, setLoading] = useState(false)
@@ -53,10 +56,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
   const [pendingRestore, setPendingRestore] = useState<VersionSummary | null>(null)
   const [restoring, setRestoring] = useState(false)
   const [restoreError, setRestoreError] = useState<string | null>(null)
-  const [accessState, setAccessState] = useState<VcAccessState | null>(null)
-  // Keyed by space: after a switch, the previous space's answer must grant nothing.
-  const access = accessState?.spaceId === spaceId ? accessState.access : 'checking'
-  const accessReason = accessState?.spaceId === spaceId ? accessState.reason : null
+  const access = vcAccessFromSpace(spaceAccess)
   const canEdit = canEditVersions(access)
   const canRead = canReadVersions(access)
 
@@ -106,12 +106,6 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
       setSyncing(false)
     }
   }, [spaceId, load])
-
-  useEffect(() => {
-    let live = true
-    void resolveVcAccess(spaceId).then(next => { if (live) setAccessState(next) })
-    return () => { live = false }
-  }, [spaceId])
 
   useEffect(() => {
     setNotice(null)
@@ -346,7 +340,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
               {notice.message}
             </div>
           )}
-          <AccessNotice access={access} />
+          <AccessNotice access={access} reason={accessReason} />
 
           {access === 'none' ? (
             <NoAccessState reason={accessReason} />
@@ -369,7 +363,7 @@ export function SpaceVersionControlTab({ spaceId }: Props) {
               }
               detail={
                 <>
-                  {detailError && (
+                  {canEdit && detailError && (
                     <div role="alert" className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 px-3 py-2">
                       {detailError}
                     </div>

@@ -42,6 +42,17 @@ import {
   BlueprintUnknownRolesFrame,
   BlueprintWideTableFrame,
 } from "./SemanticBlueprintFidelityFrames"
+import {
+  CheckingFrame,
+  ModelViewerFrame,
+  NoAccessPageFrame,
+  OptimizeViewerEmptyFrame,
+  OptimizeViewerFrame,
+  ScoreEditorFrame,
+  ScoreUnknownFrame,
+  ScoreViewerFrame,
+  ScoreViewerUnscannedFrame,
+} from "./SpaceAccessFidelityFrames"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 
@@ -368,5 +379,34 @@ describe("frame 11 — Semantic Blueprint P1 fidelity", () => {
     expect(html).not.toContain('data-chip="measure"')
     expect(html).not.toContain('data-caption="role"')
     expect(html).not.toContain("customer_count")
+  })
+})
+
+describe("M1c-2 — viewer frames carry no write affordance", () => {
+  const viewerFrames = [ScoreViewerFrame, ScoreViewerUnscannedFrame, ScoreUnknownFrame, NoAccessPageFrame, ModelViewerFrame, CheckingFrame, OptimizeViewerFrame, OptimizeViewerEmptyFrame]
+  it.each(viewerFrames.map(f => [f.name, f] as const))("%s", (_name, Frame) => {
+    const html = render(<Frame />)
+    for (const label of ["Re-scan", "Run IQ Scan", "Run Optimization", "View Details", "Revert Options", "Remove From History", "View Active Run", "Start Optimization"]) {
+      expect(html).not.toContain(label)
+    }
+    expect(html).not.toContain("confidence")
+    expect(html).not.toContain("Run a new IQ Scan")
+    // MV-D35 percent ban targets metric-view suggestion cards. Narrowed away from
+    // frames that embed IQScoreTab (MaturityCurve SVG stop offsets 0%/33%/…) or
+    // AutoOptimizeViewerView (championAccuracyText "N%") — those are legitimate
+    // score/accuracy percents, not MV confidence display.
+    if (
+      Frame !== ScoreViewerFrame &&
+      Frame !== ScoreUnknownFrame &&
+      Frame !== OptimizeViewerFrame
+    ) {
+      expect(html).not.toMatch(/\d+%/)
+    }
+  })
+  it("the editor reference keeps its controls", () => {
+    const html = render(<ScoreEditorFrame />)
+    expect(html).toContain("Re-scan")
+    expect(html).toContain("Run Optimization")
+    expect(html).toContain("Run a new IQ Scan")
   })
 })

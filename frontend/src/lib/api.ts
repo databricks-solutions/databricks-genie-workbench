@@ -231,7 +231,7 @@ export async function listSpaces(params?: {
 
 export async function getSpaceDetail(spaceId: string): Promise<SpaceDetailResponse> {
   return fetchWithTimeout<SpaceDetailResponse>(
-    `${API_BASE}/spaces/${spaceId}`,
+    `${API_BASE}/spaces/${encodeURIComponent(spaceId)}`,
     {},
     DEFAULT_TIMEOUT
   )
@@ -239,7 +239,7 @@ export async function getSpaceDetail(spaceId: string): Promise<SpaceDetailRespon
 
 export async function scanSpace(spaceId: string): Promise<ScanResult> {
   return fetchWithTimeout<ScanResult>(
-    `${API_BASE}/spaces/${spaceId}/scan`,
+    `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/scan`,
     { method: "POST", headers: { "Content-Type": "application/json" } },
     LONG_TIMEOUT
   )
@@ -247,7 +247,7 @@ export async function scanSpace(spaceId: string): Promise<ScanResult> {
 
 export async function getSpaceHistory(spaceId: string, days = 30): Promise<SpaceHistory> {
   return fetchWithTimeout<SpaceHistory>(
-    `${API_BASE}/spaces/${spaceId}/history?days=${days}`,
+    `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/history?days=${days}`,
     {},
     DEFAULT_TIMEOUT
   )
@@ -263,7 +263,7 @@ export async function getSpaceAccess(spaceId: string): Promise<SpaceAccess> {
 
 export async function toggleStar(spaceId: string, starred: boolean): Promise<void> {
   await fetchWithTimeout(
-    `${API_BASE}/spaces/${spaceId}/star`,
+    `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/star`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
