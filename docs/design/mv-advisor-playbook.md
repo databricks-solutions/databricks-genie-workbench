@@ -29,7 +29,7 @@
    Repo reality (and the gap report) wins over older POV wording. Do not
    revive taskValues, condition tasks, run_if, extra job tasks, or a second
    eval adapter.
-   
+
    READ-BEFORE-WRITE CONTRACT (applies to every prompt on this branch):
    - Before modifying ANY file, you must first output a PLAN section containing:
      (1) the exact file paths you intend to modify or create,
@@ -64,7 +64,7 @@
      are kept byte-identical. Any third copy found outside the repository (a
      workspace-root .cursor/, another checkout) is stale by definition: report
      it, do not read it as guidance.
-   
+
    FEATURE RULES (amended after Prompt 0 recon — repo reality wins):
    - Design sources of truth: docs/design/metric-view-suggestion-engine-pov.md
      AS AMENDED BY docs/design/mv-advisor-gap-report.md. Where they disagree,
@@ -249,11 +249,11 @@
    - Every new module ships with pytest tests in the same PR-sized commit.
      The repo has NO test CI — run the suites locally and report results in
      every VERIFY section.
-   
+
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 1406 backend + 1556 GSO,
-     measured 2026-09-29 (this supersedes the prior 1382 + 1556 floor measured 2026-09-29). Historical
-     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 1416 backend + 1621 GSO,
+     measured 2026-09-29 (this supersedes the prior 1415 + 1611 floor measured 2026-09-29). Historical
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -628,7 +628,7 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 *Why this survived to a live workspace, which is the more useful finding.* Every offline fixture was literal-free, and nothing in the offline suite executes DDL. `mv_yaml.validate` — the MV-D8 sole gate whose whole purpose is that emitted YAML is never "invalid or silently wrong" — has no check for placeholder tokens (`?n`, `?s`) in an emitted expression, so it passed a body that cannot be created. **The POV's own worked example is the exact expression that fails**: `SUM(l_extendedprice * (1 - l_discount))` appears at `metric-view-suggestion-engine-pov.md:114` as the headline candidate and at `:176` as the sample YAML body. A defect that makes the design document's canonical example unrenderable is not an edge case.
 
-*Decision (Prompt 15.2), taking the resolution shape as stated.* `FingerprintRecurrence` and `MeasureRef` gain a `representative_expr`: a **literal-preserving** render form of one recorded occurrence — the same normalization `canonicalize_expr` runs (qualifiers stripped so it references the metric view's `source:` columns, identifiers and temporal units normalized) **minus the `_erase_literals` pass**, so `1 - l_discount` survives verbatim. It is a NEW field used ONLY as the render source: identity, scoring and dedup keep reading `canonical_expr` / `MetricViewCandidate.canonical_measure_expr` (which prefers `recurrence.canonical_expr`), and a test pins that two measures differing only in a literal still share one `fingerprint` while their `representative_expr` differs. `canonicalize_expr` output is byte-identical to before (the new form is a separate `erase_literals=False` code path). `candidate_from_measure` renders `measure_expr=representative_expr`. The firewall becomes an actual gate: before a candidate is scored or persisted, `LeakageOracle.contains_sql(representative_expr)` runs, and a representative that matches the benchmark corpus DROPS the candidate (`candidates_dropped_for_leakage` on the outcome) rather than shipping either a masked body or a leaked literal — the existing oracle, no second scanner. `mv_yaml.validate` (and `validate_registered`) reject `?n` / `?s` anywhere in an emitted `expr`, the cheap MV-D8 static guard that would have caught this at Prompt 5.5. `representative_expr` is NOT persisted as a Delta column (it flows through in-memory to the emitted `yaml_text`, which the artifact already carries), so the exposure matrix gains no row; the `yaml_text` SERVED classification now legitimately covers oracle-passed literals. The rejected alternative (context-sensitive erasure) stays rejected: it is an MV-D10 change to fingerprint identity, out of scope for a defect fix.
+*Decision (Prompt 15.2), taking the resolution shape as stated.* `FingerprintRecurrence` and `MeasureRef` gain a `representative_expr`: a **literal-preserving** render form of one recorded occurrence — the same normalization `canonicalize_expr` runs (qualifiers stripped so it references the metric view's `source:` columns, identifiers and temporal units normalized) **minus the `_erase_literals` pass**, so `1 - l_discount` survives verbatim. It is a NEW field used ONLY as the render source: identity, scoring and dedup keep reading `canonical_expr` / `MetricViewCandidate.canonical_measure_expr` (which prefers `recurrence.canonical_expr`), and a test pins that two measures differing only in a literal still share one `fingerprint` while their `representative_expr` differs. `canonicalize_expr` output is byte-identical to before (the new form is a separate `erase_literals=False` code path). `candidate_from_measure` renders `measure_expr=representative_expr`. The firewall becomes an actual gate: before a candidate is scored or persisted, `LeakageOracle.contains_sql(representative_expr)` runs, and a representative that matches the benchmark corpus DROPS the candidate (`candidates_dropped_for_leakage` on the outcome) rather than shipping either a masked body or a leaked literal — the existing oracle, no second scanner. `mv_yaml.validate` (and `validate_registered`) reject `?n` / `?s` anywhere in an emitted `expr`, the cheap MV-D8 static guard that would have caught this at Prompt 5.5. `representative_expr` is NOT persisted as a Delta column (it flows through in-memory to the emitted `yaml_text`, which the artifact already carries), so the exposure matrix gains no row; the `yaml_text` SERVED classification now legitimately covers oracle-passed literals. The rejected alternative (context-sensitive erasure) stays rejected: it is an MV-D10 change to fingerprint identity, out of scope for a defect fix. MV-D113 narrows the render source further: `render_expr` no longer shares `canonicalize_expr`'s normalization.
 
 **MV-D30 — Proposal grain: a proposal is a metric VIEW, not a measure (DECIDED at Prompt 15.3).** Found by the first human smoke run: a real space produced a wall of LOW-confidence cards, one per recurring measure, each proposing its own single-measure view (`_proposed_object` renders `{catalog}.{schema}.{concept}_metrics` per measure, `mv_advisor.py:759` — `measure_total_booking_value_metrics`, `measure_booking_count_metrics`, …). That is the wrong product: a metric view's value is BUNDLING the measures and dimensions of one grain behind one governed object — the POV's own sample YAML carries two measures and two dimensions. One-view-per-measure also makes every candidate individually weak (each splits the evidence), which is why everything surfaced LOW. What 15.3 decides: consolidation mechanics — group measure candidates by source-table set (the natural grain key) into one view proposal carrying multiple MeasureRequests, at GENERATION time (preferred: one candidate row per view, evidence union, confidence from the strongest members) versus presentation time (cheaper, but the ledger and create path then disagree with the screen about what a suggestion is — the two-readers hazard). Constraints not open: `canonicalize_expr`/MV-D10 identity is untouched (per-measure fingerprints remain the dedup/suppression grain — a rejected measure stays rejected inside any bundle); `mv_yaml.generate` already accepts multiple measures; the surfacing floor rises — the panel shows MEDIUM+ by default with LOW behind an explicit disclosure, and a candidate with no `proposed_object` never surfaces at all (the smoke run's first card rendered a BLANK title — validate, don't render). And EVERY surfaced proposal carries its justification on the card: the measures it would govern, the evidence (recurrence, distinct sources, contributing questions), and what the user gains ("these 4 measures recur across 9 curated queries and are ungoverned today").
 
@@ -688,6 +688,97 @@ The service principal never answers the question. There is no group matching, be
 **MV-D111 — Run-keyed read routes come under the control plane in this PR (DECIDED 2026-09-28 — PR #332 review M0, option A).** The run-keyed reads (`GET /runs/{run_id}`, `/status`, `/revert-options`, `/iterations`, `/loop-state`, `/publish`, `/debug-data`, `/eval-results`, `/question-results`, `/patches`, `/benchmark-changes`) and the space-keyed `current-version`, `active-run`, and `runs` were ungated on `main` and expose patch text, SQL, and evaluation detail for any space whose run ID a caller knows. Option A includes them in M1: resolve `run_id` to `space_id` from `genie_opt_runs`, then content-bearing reads require EDIT (MV-D110) and status/list reads require VIEW. The MV-D109 route-table test enforces this with no allowlist. Option B (defer with a named allowlist) was rejected so the gap cannot grow silently. A denied run read is a 403, never an empty 200.
 
 **MV-D112 — Metric-view object and consent integrity (DECIDED 2026-09-29 — PR #332 review M2, option A on each).** Five decisions. (1) Create-at-approval re-attaches an existing metric view only when its definition is the proposal's: both YAML bodies are parsed and compared after removing what Unity Catalog rewrites on store (scalar quoting, dropped empty lists, block-scalar chomping, key order), so any content change — an expression, a literal, a filter, a join, the comment, a synonym — refuses, as do a definition the caller cannot see and one that cannot be read. This amends MV-D34's idempotent re-approval, which accepted any metric view at the consented name and recorded it `OBO_CREATED`. Evidence: M2 check V4 on an app-created view — its `view_text` differs from the body the app sent, byte for byte and after parsing (`version: '1.1'` returns as `1.1`, `dimensions: []` is dropped), yet is equal after normalization; the register path's measure fingerprint was rejected because `canonical_expr` erases literals. (2) The re-attached view's ledger row is `OBO_CREATED` only when its UC `owner` (the same `DESCRIBE TABLE EXTENDED … AS JSON`) is the caller; otherwise `USER_CREATED`, which the drop route refuses (MV-D24 invariant 1). (3) When the run-time hook has created a view but cannot write its ledger row, it drops that view under OBO — the same cleanup it already does for a view that fails the post-create check — and a failed drop is logged as an error naming the view. (4) In `create_and_attach`, an empty `mv_approved_suggestion_ids` creates nothing: the run proceeds `suggest_only` with the stamped reason "no metric views were selected for this run", and run setup keeps Start disabled until a view is selected. (5) Run setup derives the consent target and the probe's source tables from the selected proposals only, re-probes when the selection changes, and blocks Start when the selection spans more than one schema; the backend's retargeting to the consented schema (MV-D22) is unchanged.
+
+### MV-D113 — Correct SQL for generated metric views (DECIDED 2026-09-29 — PR #332 M3)
+
+Findings 7, 8, and 10: generated bodies were not executable as written — string
+literals lost case, temporal units were folded, and identifiers with spaces or
+reserved words were unquoted. The fix splits **render** from **identity**:
+`render_expr` / `_render_source` keep author spelling (literal case, inner
+whitespace, temporal units) and backtick-quote every column; `canonicalize_expr`
+and every MV-D7 fingerprint / candidate / bundle identity stay byte-unchanged,
+proven by the baseline fixture captured at `ab2e68cf`
+(`test_mv_identity_baseline.py`). Finding 9: `FingerprintRecurrence.has_unresolved_columns`
+is now read — measures that do not resolve to one source table are dropped before
+scoring. The old `erase_literals=False` share of `canonicalize_expr`'s
+normalization is gone from the render path. `_claim_matches_view` extracts with
+`FROM {source} AS source` so quoted generated bodies still match.
+
+**Decisions (d1–d5).**
+- **d1** — render-version stamp; stamped-only replay; unstamped refused at
+  approval / skipped with a log at run time; display routes unchanged.
+- **d2** — drop only the failing measure, before scoring and before the
+  `[:limit]` slice, counted as `candidates_dropped_unresolved`, logged with
+  fingerprint + reason code only.
+- **d3** — unprofiled source passes on structural checks alone (one source
+  table, `has_unresolved_columns` False).
+- **d4** — fourth empty variant keyed on `NO_SERVABLE_MEASURES` (IQ-scan
+  surface; the run-output surface returns null for that skip and has no
+  skip-keyed empty state by design).
+- **d5** — quote every view-name part in every executed CREATE / DESCRIBE /
+  SELECT / DROP and refuse at create when `_valid_uc_identifier` fails —
+  column/source identifiers are quoted, never refused. The display-only
+  `GRANT … ON VIEW` remediation text is not quoted yet; carried to M6 (C-5).
+
+Unstamped bodies persist `render_version` 0 (copied as
+`(rendered.evidence or {}).get("render_version", 0)`); the replay gate needs
+`>= MV_RENDER_VERSION`. The long-literal leakage fixture stayed above the
+Jaccard threshold even when quoted, so the gate pin uses a short `'X'` CASE
+instead. Fidelity frame `m3-a` matched reference 7b in both themes.
+
+**Dry run (2026-09-29, owner-approved, warehouse `41cfe645e10807a4`, schema
+`serverless_stable_6t92c3_catalog.prashanth_wanderbricks_gold`).** Both
+unprofiled (bare quoted columns) and profiled (`source.`-qualified) bodies
+created as one 4-measure bundle with source
+`` `cat`.`sch`.`m3_dry_run_orders` ``; `DESCRIBE EXTENDED` reported
+`METRIC_VIEW` and queryable True; `MEASURE` values: `'Paid'` sum = 10.00 (the
+`'paid'` row excluded — literal case preserved), `SUM(\`Order Amount\`)` = 22.00
+(spaced column), `AVG(DATEDIFF(DAY, created, shipped))` = 3.333,
+`COUNT(DISTINCT DATE_TRUNC('MONTH', ts))` = 2; M2's `_existing_view_matches`
+returned `(True, True, None)` — UC's storage rewrite keeps quoted bodies
+matchable, so plan risk 1 (UC rewrite breaking definition match) did not
+materialise. All objects dropped.
+
+**M6 carry-overs.** Pre-M3 app-created views vs re-scanned quoted bodies
+(textual mismatch → drop-and-re-approve; MV-D112 compare not loosened);
+display text now shows quoted author-case exprs (Semantic Blueprint /
+proposal cards); cross-table name-collision split (finding 11); bundle
+`dedup_fingerprint` vs per-measure `_claim_matches_view` (pre-existing);
+displayed (never executed) `GRANT … ON VIEW {name}` remediation text stays
+unquoted.
+
+**Fix wave (final review).** The in-job candidate writer now puts `yaml_text`
+in the same MERGE as the stamped evidence, `None` included, so an older body
+never survives under a newer stamp (`mv_state.upsert_mv_candidate`,
+`mv_scoring.persist_proposal`, the in-job lambda in `mv_advisor.py:1111`).
+A column-free aggregate (`COUNT(*)`) is not "unservable": `_unservable_reason`
+returns None for a measure with no tables and no columns, so it flows on and
+is dropped later for having no grain, as before M3; the `NO_SERVABLE_MEASURES`
+copy is unchanged because it is now true for every measure that reaches it.
+`generate` turns `quote_fqn`'s error on an unqualified source into a failed
+render. The playbook's rules fence closes at its opening indent again, and
+`test_rules_parity.py` pins that.
+
+**Carried to M6 (final review).**
+- C-1 — pre-M3 app-created views are refused on re-approve (`mv_create.py:146`,
+  `:187-188`); at run time the skip is only a log line.
+- C-2 — `/runs/{run_id}/mv-ddl` (`auto_optimize.py:3837`, via `:524` / `:550`)
+  still serves unstamped bodies; label or refuse them.
+- C-3 — claim matching falls back to the quoted `source:` string
+  (`mv_create.py:747`); normalize with `split_fqn`, with C-4.
+- C-4 — attribute `COUNT(*)` to its statement's single FROM table for the
+  bundle key only, never the MV-D7 fingerprint (`_bundle_grain`,
+  `mv_advisor.py:840`).
+- C-5 — quote the displayed GRANT text (`auto_optimize.py:1655`, built by
+  `_mv_optimizer_grant_sql` at `:1634`).
+- C-6 — fold identifier quoting symmetrically in `leakage._strip_sql`
+  (`leakage.py:69`) rather than one-sided in `_leakage_view`
+  (`mv_advisor.py:1652`).
+- C-7 — struct field access (`o.payload.amount`) renders as the leaf column;
+  predates M3.
+- C-8 — prove the join and subquery rungs in Unity Catalog before enabling
+  them; unreachable today because `profiling_for` (`mv_advisor.py:930`)
+  supplies no join hops or attributes.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

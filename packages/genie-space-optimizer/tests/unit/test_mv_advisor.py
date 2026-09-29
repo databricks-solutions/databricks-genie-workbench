@@ -10,8 +10,10 @@ the oracle actually being wired — rather than about SQL round-trips.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
+import yaml
 
 from genie_space_optimizer.common import config
 from genie_space_optimizer.optimization import mv_advisor
@@ -696,9 +698,9 @@ def test_the_rendered_body_carries_the_literal_not_a_placeholder(monkeypatch) ->
     )
 
     ddl = artifacts[0]["payload"]["ddl"]
-    # Source columns are `source.`-qualified by the renderer; the structural
-    # constant `1` is what MV-D29 had to preserve.
-    assert "SUM(source.l_extendedprice * (1 - source.l_discount))" in ddl
+    # Source columns are `source.`-qualified and quoted by the renderer; the
+    # structural constant `1` is what MV-D29 had to preserve.
+    assert "SUM(source.`l_extendedprice` * (1 - source.`l_discount`))" in ddl
     assert "?n" not in ddl
     assert "?s" not in ddl
 
@@ -1384,6 +1386,7 @@ def test_ddl_artifact_persists_raw_yaml_text(monkeypatch) -> None:
     rendered = SimpleNamespace(
         yaml_text="version: 0.1\nsource: sales.core.orders\n",
         join_strategy="subquery_source",
+        evidence={},
     )
 
     mv_advisor._write_ddl_artifact(
@@ -1906,3 +1909,274 @@ def test_on_stage_stays_silent_when_the_corpus_skips_early() -> None:
     )
     assert outcome.status == mv_advisor.STATUS_SKIPPED
     assert seen == [mv_advisor.STAGE_SCANNING]
+
+
+def test_view_and_measure_names_are_plain_identifiers() -> None:
+    corpus = [
+        (f"SELECT SUM(o.`Order Amount`) FROM main.sales.orders o", f"q{i}")
+        for i in range(8)
+    ]
+    captured: list = []
+    outcome = _advise_from_corpus_directly(
+        corpus_entries=corpus,
+        persist_proposal=lambda p, r: captured.append((p, r)) or True,
+        write_ddl_artifact=lambda p, r: True,
+    )
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    proposal, rendered = captured[0]
+    assert proposal.proposed_object == "main.sales.orders_metrics"
+    doc = yaml.safe_load(rendered.yaml_text)
+    for m in doc["measures"]:
+        assert re.fullmatch(r"[a-z0-9_]+", m["name"]), m["name"]
+    assert "SUM(`Order Amount`)" in rendered.yaml_text
+
+
+# ── MV-D113 finding 9: drop measures that do not resolve to one source table ─
+
+TWO_TABLE_SQL = (
+    "SELECT SUM(l.qty * p.price) FROM main.sales.lines l "
+    "JOIN main.sales.products p ON l.pid = p.id"
+)
+BARE_JOIN_SQL = (
+    "SELECT SUM(qty) FROM main.sales.lines l "
+    "JOIN main.sales.products p ON l.pid = p.id"
+)
+
+
+def _noop_persist(proposal, rendered) -> bool:
+    return True
+
+
+def test_a_two_table_measure_is_dropped_before_scoring() -> None:
+    corpus = [(REVENUE_SQL, f"r{i}") for i in range(8)] + [
+        (TWO_TABLE_SQL, f"t{i}") for i in range(8)
+    ]
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=corpus,
+    )
+    alone = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(REVENUE_SQL, f"r{i}") for i in range(8)],
+    )
+    assert outcome.candidates_dropped_unresolved == 1
+    assert [p.dedup_fingerprint for p in outcome.proposals] == [
+        p.dedup_fingerprint for p in alone.proposals
+    ]
+    assert outcome.detail()["candidates_dropped_unresolved"] == 1
+
+
+def test_a_bare_column_across_a_join_is_dropped() -> None:
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(BARE_JOIN_SQL, f"b{i}") for i in range(8)],
+    )
+    assert outcome.status == "SKIPPED"
+    assert outcome.skip_reason == "NO_SERVABLE_MEASURES"
+
+
+def test_a_column_missing_from_the_profiled_source_is_dropped() -> None:
+    sql = f"SELECT SUM(l_tax) FROM {LINEITEM}"
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(sql, f"x{i}") for i in range(8)],
+        wide_schema_inventory=INVENTORY,
+    )
+    assert outcome.candidates_dropped_unresolved == 1
+    assert outcome.skip_reason == "NO_SERVABLE_MEASURES"
+
+
+def test_an_unprofiled_single_table_measure_still_proposes() -> None:
+    sql = f"SELECT SUM(l_tax) FROM {LINEITEM}"
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(sql, f"x{i}") for i in range(8)],
+        wide_schema_inventory=None,
+    )
+    assert outcome.candidates_dropped_unresolved == 0
+    assert outcome.proposals
+
+
+def test_every_measure_unservable_skips_with_its_own_reason() -> None:
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(TWO_TABLE_SQL, f"t{i}") for i in range(8)],
+    )
+    assert outcome.status == "SKIPPED"
+    assert outcome.skip_reason == "NO_SERVABLE_MEASURES"
+    assert outcome.measures_found >= 1
+    assert outcome.detail()["candidates_dropped_unresolved"] == 1
+
+
+ROW_COUNT_SQL = "SELECT COUNT(*) FROM main.sales.orders o"
+
+
+def test_a_row_count_alone_is_not_an_unservable_measure() -> None:
+    """A column-free aggregate names no table and no column, so it is neither
+    multi-table nor unresolved; it flows on as it did before MV-D113."""
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(ROW_COUNT_SQL, f"n{i}") for i in range(8)],
+    )
+    assert outcome.skip_reason != "NO_SERVABLE_MEASURES"
+    assert outcome.candidates_dropped_unresolved == 0
+    assert outcome.status == "COMPLETE"
+    assert outcome.proposals == ()
+
+
+def test_a_row_count_beside_a_sum_is_not_counted_as_dropped() -> None:
+    corpus = [(ROW_COUNT_SQL, f"n{i}") for i in range(8)] + [
+        ("SELECT SUM(o.amount) FROM main.sales.orders o", f"s{i}") for i in range(8)
+    ]
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=corpus,
+    )
+    assert outcome.candidates_dropped_unresolved == 0
+    assert len(outcome.proposals) == 1
+
+
+def test_an_unresolved_column_is_dropped_with_its_own_code() -> None:
+    measure = FingerprintRecurrence(
+        fingerprint="fp_u",
+        canonical_expr="sum(qty)",
+        kind="SUM",
+        recurrence=8,
+        provenance_ids=("q1",),
+        provenance_count=1,
+        source_columns=("qty",),
+        source_tables=("main.sales.lines",),
+        has_unresolved_columns=True,
+    )
+    assert mv_advisor._unservable_reason(measure, {}) == "unresolved_column"
+
+
+def test_the_unresolved_drop_logs_ids_and_codes_only(caplog) -> None:
+    caplog.set_level("INFO")
+    _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(TWO_TABLE_SQL, f"t{i}") for i in range(8)],
+    )
+    text = " ".join(
+        r.getMessage() for r in caplog.records if "finding 9" in r.getMessage()
+    )
+    assert "not_single_table" in text
+    assert "price" not in text and "SUM" not in text
+
+
+# ── MV-D113: render_version stamp + backtick-free leakage view ───────────
+
+
+def test_bundle_evidence_carries_the_render_version() -> None:
+    captured: list = []
+    _advise_from_corpus_directly(
+        corpus_entries=[(REVENUE_SQL, f"r{i}") for i in range(8)],
+        persist_proposal=lambda p, r: captured.append(p) or True,
+        write_ddl_artifact=_noop_persist,
+    )
+    assert captured and all(
+        p.evidence["render_version"] == config.MV_RENDER_VERSION for p in captured
+    )
+
+
+def test_ddl_artifact_payload_carries_the_render_version(monkeypatch) -> None:
+    _stages, artifacts, _upserts = patch_writes(monkeypatch)
+    advise(
+        monkeypatch,
+        [iteration(recurring())],
+        wide_schema_inventory=INVENTORY,
+    )
+    assert artifacts[0]["payload"]["render_version"] == config.MV_RENDER_VERSION
+
+
+def test_the_in_job_writer_persists_the_body_with_its_stamp(monkeypatch) -> None:
+    """MV-D113 d1: the stamped evidence and the body come from one ``rendered``
+    and land in one candidate write, so an older body cannot survive under it."""
+    _stages, artifacts, upserts = patch_writes(monkeypatch)
+    advise(monkeypatch, [iteration(recurring())], wide_schema_inventory=INVENTORY)
+
+    assert upserts and artifacts
+    body = artifacts[0]["payload"]["yaml_text"]
+    assert body
+    assert upserts[0]["yaml_text"] == body
+    assert upserts[0]["proposal"].evidence["render_version"] == config.MV_RENDER_VERSION
+
+
+def test_the_in_job_writer_writes_no_body_for_a_failed_render(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_advise(**kwargs):
+        captured.update(kwargs)
+        return AdvisorOutcome(status=mv_advisor.STATUS_COMPLETE)
+
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", fake_advise)
+    _stages, _artifacts, upserts = patch_writes(monkeypatch)
+    advise(monkeypatch, [iteration(recurring())])
+
+    persist = captured["persist_proposal"]
+    proposal = type("P", (), {"dedup_fingerprint": "fp1"})()
+    persist(proposal, type("R", (), {"ok": True, "yaml_text": "version: '1.1'\n"})())
+    persist(proposal, type("R", (), {"ok": False, "yaml_text": "partial"})())
+
+    assert [u["yaml_text"] for u in upserts] == ["version: '1.1'\n", None]
+
+
+class _SpyOracle:
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def contains_sql(self, text: str, *, w=None) -> bool:
+        self.seen.append(text)
+        return False
+
+
+def test_the_leakage_gate_never_sees_a_backtick(monkeypatch) -> None:
+    spy = _SpyOracle()
+    monkeypatch.setattr(mv_advisor, "LeakageOracle", lambda corpus: spy)
+    _advise_from_corpus_directly(
+        corpus_entries=[
+            ("SELECT SUM(o.`Order Amount`) FROM main.sales.orders o", f"q{i}")
+            for i in range(8)
+        ],
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+    )
+    assert spy.seen
+    assert not any("`" in text for text in spy.seen)
+
+
+def test_a_quoted_representative_echoing_a_benchmark_is_still_dropped() -> None:
+    """Backticks break character-3-gram Jaccard below the oracle threshold; the
+    gate must still drop after stripping them (MV-D29 + MV-D113).
+
+    The brief's long ``Paid in full`` CASE stays above threshold even when
+    quoted (Jaccard ≈0.69), so it cannot prove RED. Used instead a short
+    literal-bearing measure whose quoted form scores 0.596 (<0.6) against the
+    bare representative as ``expected_sql`` — quoted misses, bare hits.
+    """
+    sql = (
+        "SELECT SUM(CASE WHEN o.status = 'X' THEN o.amt END) "
+        "FROM main.sales.orders o"
+    )
+    # Bare representative form — what ``_leakage_view`` produces from the
+    # render_expr output ``SUM(CASE WHEN \`status\` = 'X' THEN \`amt\` END)``.
+    bench_sql = "SUM(CASE WHEN status = 'X' THEN amt END)"
+    outcome = _advise_from_corpus_directly(
+        corpus_entries=[(sql, f"q{i}") for i in range(8)],
+        benchmarks=[
+            {"id": "b1", "question": "paid status revenue", "expected_sql": bench_sql}
+        ],
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+    )
+    assert outcome.candidates_dropped_for_leakage >= 1
+    assert not outcome.proposals

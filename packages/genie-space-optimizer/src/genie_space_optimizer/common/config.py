@@ -2727,6 +2727,14 @@ does, so the advisor L2-normalizes in our code rather than trusting either."""
 MV_ADVISOR_GENERATED_BY = "gwb-mv-advisor@1.0"
 """``provenance.generated_by`` stamped on every proposal (POV Part 4)."""
 
+MV_RENDER_VERSION = 2
+"""Version of the metric-view body renderer, stamped on every rendered body.
+
+Version 2 (MV-D113) keeps literal case and temporal units and quotes every
+identifier. The backend replays only a body stamped at this version or later;
+an older persisted body is refused at approval and skipped at run time, never
+re-rendered (MV-D22)."""
+
 
 # ── 24. Metric View Advisor runtime capability floors (MV-D8) ───────────
 

@@ -1453,6 +1453,7 @@ def persist_proposal(
     run_id: str | None = None,
     requested_mode: str | None = None,
     effective_mode: str | None = None,
+    yaml_text: str | None = None,
 ) -> str | None:
     """Upsert a proposal through the Prompt 1 accessor. Returns its fingerprint,
     or ``None`` when the verdict is not persistable.
@@ -1493,6 +1494,7 @@ def persist_proposal(
         conflicts=[dict(entry) for entry in proposal.conflicts],
         requested_mode=requested_mode,
         effective_mode=effective_mode,
+        yaml_text=yaml_text,
     )
 
     # MV-D30 as-implemented (Prompt 15.6): when this run persists a view-grained

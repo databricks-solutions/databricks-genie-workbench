@@ -59,6 +59,7 @@ from genie_space_optimizer.common.config import (
     MV_JOIN_STRATEGY_DIRECT,
     MV_JOIN_STRATEGY_NESTED,
     MV_JOIN_STRATEGY_SUBQUERY,
+    MV_RENDER_VERSION,
     MV_SYNONYM_MAX_CHARS,
     MV_SYNONYMS_MAX,
     MV_SYNONYMS_MIN,
@@ -98,6 +99,8 @@ __all__ = [
     "ValidationReport",
     "create_ddl",
     "generate",
+    "quote_fqn",
+    "quote_identifier",
     "validate",
     "validate_registered",
 ]
@@ -462,6 +465,49 @@ _CURRENCY_HINTS = ("price", "revenue", "cost", "amount", "spend", "sales", "char
 _PERCENT_HINTS = ("rate", "pct", "percent", "share", "ratio", "margin")
 _DATE_HINTS = ("date", "day", "month", "year", "week", "quarter")
 
+
+def _split_name(name: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    quoted = False
+    text = name.strip()
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "`":
+            if quoted and text[i + 1 : i + 2] == "`":
+                current.append("``")
+                i += 2
+                continue
+            quoted = not quoted
+            current.append(ch)
+        elif ch == "." and not quoted:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    parts.append("".join(current))
+    return parts
+
+
+def quote_identifier(name: str) -> str:
+    """One identifier part, backtick-quoted; an already-quoted part is unwrapped
+    first so quoting is idempotent."""
+    part = name.strip()
+    if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
+        part = part[1:-1].replace("``", "`")
+    return "`" + part.replace("`", "``") + "`"
+
+
+def quote_fqn(name: str) -> str:
+    """A dotted name with every part backtick-quoted (MV-D113)."""
+    parts = _split_name(name)
+    if not name.strip() or any(not p.strip() for p in parts):
+        raise ValueError(f"not a qualified name: {name!r}")
+    return ".".join(quote_identifier(p) for p in parts)
+
+
 _SOURCE_ALIAS = "fact"
 """Alias for the fact relation inside a subquery source. Never appears in an
 emitted ``expr`` — the semantic layer always refers to the source as ``source``."""
@@ -600,7 +646,7 @@ def _plan_joins(profiling: MvProfiling) -> _JoinPlan:
             strategy=MV_JOIN_STRATEGY_DIRECT,
             reason="all attributes reachable through first-level joins; no multi-hop decision needed",
             joins=joins,
-            source=profiling.source_table,
+            source=quote_fqn(profiling.source_table),
             column_map=_direct_column_map(profiling),
             evidence={"max_hop_depth": max_depth},
         )
@@ -650,7 +696,7 @@ def _try_denormalized(profiling: MvProfiling) -> _JoinPlan | None:
             return None
         if not profiling.has_column(hop.table, column):
             return None
-        resolved[attribute.name] = f"{alias}.{column}"
+        resolved[attribute.name] = f"{alias}.{quote_identifier(column)}"
 
     kept = tuple(h for h in profiling.hops if profiling.hop_depth(h.alias) == 1)
     joins = tuple(_render_join(h, profiling, parent_scope="source") for h in kept)
@@ -663,7 +709,7 @@ def _try_denormalized(profiling: MvProfiling) -> _JoinPlan | None:
             "dimension, so the deeper hops are unnecessary"
         ),
         joins=joins,
-        source=profiling.source_table,
+        source=quote_fqn(profiling.source_table),
         column_map=column_map,
         evidence={"denormalized_attributes": sorted(resolved)},
     )
@@ -704,7 +750,7 @@ def _try_nested(profiling: MvProfiling, *, max_depth: int) -> _JoinPlan | None:
             "key is proven 1:1, so the chain can stay in the semantic layer"
         ),
         joins=tuple(roots),
-        source=profiling.source_table,
+        source=quote_fqn(profiling.source_table),
         column_map=_nested_column_map(profiling),
         evidence={"max_hop_depth": max_depth, "uniqueness_proofs": proofs},
     )
@@ -731,18 +777,28 @@ def _subquery_source(profiling: MvProfiling, *, max_depth: int) -> _JoinPlan:
         if hop is None:
             continue
         alias_column = f"{attribute.name}"
-        select_parts.append(f"{hop.alias}.{attribute.column} AS {alias_column}")
-        attribute_columns[attribute.name] = f"source.{alias_column}"
+        select_parts.append(
+            f"{hop.alias}.{quote_identifier(attribute.column)} AS {quote_identifier(alias_column)}"
+        )
+        attribute_columns[attribute.name] = f"source.{quote_identifier(alias_column)}"
 
-    lines = [f"SELECT {', '.join(select_parts)}", f"FROM {profiling.source_table} AS {_SOURCE_ALIAS}"]
+    lines = [
+        f"SELECT {', '.join(select_parts)}",
+        f"FROM {quote_fqn(profiling.source_table)} AS {_SOURCE_ALIAS}",
+    ]
     for hop in ordered:
         parent = _SOURCE_ALIAS if not hop.parent else hop.parent
         keyed = _deduplicated_relation(hop, profiling)
-        condition = f"{parent}.{hop.left_key} = {hop.alias}.{hop.right_key}"
+        condition = (
+            f"{parent}.{quote_identifier(hop.left_key)} = "
+            f"{hop.alias}.{quote_identifier(hop.right_key)}"
+        )
         lines.append(f"LEFT JOIN {keyed} AS {hop.alias} ON {condition}")
 
     column_map = {
-        a.name: f"source.{a.column}" for a in profiling.attributes if not a.hop_alias
+        a.name: f"source.{quote_identifier(a.column)}"
+        for a in profiling.attributes
+        if not a.hop_alias
     }
     column_map.update(attribute_columns)
 
@@ -782,13 +838,15 @@ def _deduplicated_relation(hop: JoinHop, profiling: MvProfiling) -> str:
             if a.hop_alias == hop.alias and a.column != hop.right_key
         }
     )
-    projected = [hop.right_key] + [f"MAX({c}) AS {c}" for c in payload]
+    projected = [quote_identifier(hop.right_key)] + [
+        f"MAX({quote_identifier(c)}) AS {quote_identifier(c)}" for c in payload
+    ]
     where = ""
     if hop.is_current_column:
-        where = f" WHERE {hop.is_current_column} = true"
+        where = f" WHERE {quote_identifier(hop.is_current_column)} = true"
     return (
-        f"(SELECT {', '.join(projected)} FROM {hop.table}{where} "
-        f"GROUP BY {hop.right_key})"
+        f"(SELECT {', '.join(projected)} FROM {quote_fqn(hop.table)}{where} "
+        f"GROUP BY {quote_identifier(hop.right_key)})"
     )
 
 
@@ -817,13 +875,16 @@ def _render_join(hop: JoinHop, profiling: MvProfiling, *, parent_scope: str) -> 
     ``table`` are never emitted — the first is unsupported and the second is the
     wrong key name for the relation, and both fail at create time.
     """
-    condition = f"{parent_scope}.{hop.left_key} = {hop.alias}.{hop.right_key}"
+    condition = (
+        f"{parent_scope}.{quote_identifier(hop.left_key)} = "
+        f"{hop.alias}.{quote_identifier(hop.right_key)}"
+    )
     if hop.is_current_column:
-        condition += f" AND {hop.alias}.{hop.is_current_column} = true"
+        condition += f" AND {hop.alias}.{quote_identifier(hop.is_current_column)} = true"
 
     entry: dict[str, Any] = {
         "name": hop.alias,
-        "source": hop.table,
+        "source": quote_fqn(hop.table),
         "on": condition,
     }
     evidence = profiling.is_unique(hop.table, hop.right_key)
@@ -836,9 +897,11 @@ def _direct_column_map(profiling: MvProfiling) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for attribute in profiling.attributes:
         if attribute.hop_alias:
-            mapping[attribute.name] = f"{attribute.hop_alias}.{attribute.column}"
+            mapping[attribute.name] = (
+                f"{attribute.hop_alias}.{quote_identifier(attribute.column)}"
+            )
         else:
-            mapping[attribute.name] = f"source.{attribute.column}"
+            mapping[attribute.name] = f"source.{quote_identifier(attribute.column)}"
     return mapping
 
 
@@ -847,7 +910,7 @@ def _nested_column_map(profiling: MvProfiling) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for attribute in profiling.attributes:
         if not attribute.hop_alias:
-            mapping[attribute.name] = f"source.{attribute.column}"
+            mapping[attribute.name] = f"source.{quote_identifier(attribute.column)}"
             continue
         path: list[str] = []
         cursor = profiling.hop(attribute.hop_alias)
@@ -856,7 +919,10 @@ def _nested_column_map(profiling: MvProfiling) -> dict[str, str]:
             seen.add(cursor.alias)
             path.append(cursor.alias)
             cursor = profiling.hop(cursor.parent)
-        mapping[attribute.name] = ".".join(reversed(path) if path else []) + f".{attribute.column}"
+        mapping[attribute.name] = (
+            ".".join(reversed(path) if path else [])
+            + f".{quote_identifier(attribute.column)}"
+        )
     return mapping
 
 
@@ -864,7 +930,8 @@ def _nested_column_map(profiling: MvProfiling) -> dict[str, str]:
 
 
 def _qualify_source_columns(expr: str, source_columns: set[str]) -> str:
-    """Qualify bare fact columns with ``source.``, leaving qualified ones alone.
+    """Qualify bare fact columns with ``source.`` and backtick-quote every column
+    identifier. Qualifiers (``source``, join aliases) stay bare.
 
     Done on the parsed tree rather than by regex because a textual substitution
     cannot tell the column ``sum`` from the function ``SUM``, and metric views
@@ -875,10 +942,11 @@ def _qualify_source_columns(expr: str, source_columns: set[str]) -> str:
     except Exception:
         return expr
     for column in tree.find_all(exp.Column):
-        if column.table:
-            continue
-        if column.name.lower() in source_columns:
+        if not column.table and column.name.lower() in source_columns:
             column.set("table", exp.to_identifier("source"))
+        identifier = column.this
+        if isinstance(identifier, exp.Identifier):
+            identifier.set("quoted", True)
     return tree.sql(dialect="databricks")
 
 
@@ -1286,7 +1354,14 @@ def generate(
             rejections=tuple(str(c["reason"]) for c in conflicts),
         )
 
-    plan = _plan_joins(profiling)
+    try:
+        plan = _plan_joins(profiling)
+    except ValueError as exc:
+        return GeneratedMetricView(
+            join_strategy=MV_JOIN_STRATEGY_DIRECT,
+            strategy_reason="not planned: the source is not a qualified table name",
+            rejections=(str(exc),),
+        )
 
     try:
         dimensions = _dimension_entries(profiling, plan, concept=concept)
@@ -1383,6 +1458,7 @@ def generate(
             "join_strategy_reason": plan.reason,
             "benchmark_question_ids": list(candidate.benchmark_question_ids),
             "echo_check": echo_check,
+            "render_version": MV_RENDER_VERSION,
         }
     )
     return GeneratedMetricView(
@@ -1982,6 +2058,8 @@ def create_ddl(full_name: str, yaml_text: str, *, comment: str = "") -> str:
     Only the backend executes this, under the signed-in user's OBO client — the
     job runs as the service principal and never creates the object.
 
+    Every name part is backtick-quoted; an empty name raises ValueError.
+
     A note on validating the wrapper: sqlglot has no grammar for
     ``WITH METRICS LANGUAGE YAML`` and parses the whole statement as an opaque
     ``Command``. So round-tripping it proves the YAML body survives intact, not
@@ -1989,7 +2067,7 @@ def create_ddl(full_name: str, yaml_text: str, *, comment: str = "") -> str:
     responsible for and what :func:`validate` checks structurally.
     """
     body = yaml_text if yaml_text.endswith("\n") else yaml_text + "\n"
-    statement = [f"CREATE VIEW {full_name}", "WITH METRICS", "LANGUAGE YAML"]
+    statement = [f"CREATE VIEW {quote_fqn(full_name)}", "WITH METRICS", "LANGUAGE YAML"]
     if comment:
         statement.append("COMMENT '" + comment.replace("'", "''") + "'")
     statement.append("AS $$")

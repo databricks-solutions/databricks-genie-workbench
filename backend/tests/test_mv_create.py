@@ -25,9 +25,12 @@ from fastapi.testclient import TestClient
 from backend.routers import auto_optimize
 from backend.services import mv_create
 from genie_space_optimizer.common import warehouse
+from genie_space_optimizer.common.config import MV_RENDER_VERSION
 from genie_space_optimizer.optimization import mv_yaml
 
 _REAL_LOAD_RUN_ENVELOPE = auto_optimize._load_run_envelope
+_REAL_OBJECT_EXISTS = mv_create._object_exists
+_REAL_CONFIRM_METRIC_VIEW = mv_create._confirm_metric_view
 
 # ── Service: create_and_attach_for_run ─────────────────────────────────────
 
@@ -47,6 +50,7 @@ _ARTIFACT = {
     "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
     "join_strategy": "nested",
     "proposed_object": "warehouse.raw.revenue_metrics",
+    "render_version": MV_RENDER_VERSION,
 }
 
 
@@ -127,7 +131,7 @@ def test_happy_path_creates_and_attaches_at_the_consented_name(create_env, monke
     # Re-targeted to the CONSENTED catalog/schema, not the render-time
     # proposed_object (warehouse.raw.*). Base name is preserved.
     assert handoff.attach_views == ["finance.sales.revenue_metrics"]
-    assert any("CREATE VIEW finance.sales.revenue_metrics" in s for s in executed)
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
     assert upserts and upserts[0]["status"] == "CREATED"
     assert upserts[0]["created_by"] == "analyst@example.com"
 
@@ -146,7 +150,7 @@ def test_candidate_yaml_text_is_the_fallback_when_no_artifact(create_env, monkey
             "dedup_fingerprint": "fp1",
             "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
             "proposed_object": "warehouse.raw.revenue_metrics",
-            "evidence": {"join_strategy": "nested"},
+            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
         }],
     )
     monkeypatch.setattr(
@@ -157,7 +161,7 @@ def test_candidate_yaml_text_is_the_fallback_when_no_artifact(create_env, monkey
     handoff = _run_create()
 
     assert handoff.attach_views == ["finance.sales.revenue_metrics"]
-    assert any("CREATE VIEW finance.sales.revenue_metrics" in s for s in executed)
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
     assert upserts and upserts[0]["status"] == "CREATED"
 
 
@@ -175,6 +179,222 @@ def test_no_artifact_and_no_candidate_body_skips(create_env, monkeypatch):
     assert handoff.action_mode == "suggest_only"
     assert not any("CREATE VIEW" in s for s in executed)
     assert upserts == []
+
+
+def test_run_hook_skips_an_unstamped_body(create_env, monkeypatch, caplog):
+    """MV-D113: an unstamped (or render_version=0) body is skipped with a log;
+    the loop continues and still creates a later stamped suggestion."""
+    executed, upserts = create_env
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [
+            {"suggestion_id": "sug1", "dedup_fingerprint": "fp1"},
+            {"suggestion_id": "sug2", "dedup_fingerprint": "fp2"},
+        ],
+    )
+    names = {
+        "fp1": "warehouse.raw.revenue_metrics",
+        "fp2": "warehouse.raw.order_counts",
+    }
+
+    def load_artifact(*a, fingerprint, **k):
+        if fingerprint == "fp1":
+            return {
+                "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
+                "join_strategy": "nested",
+                "proposed_object": names[fingerprint],
+                # absent render_version — pre-M3 body
+            }
+        return {**_ARTIFACT, "proposed_object": names[fingerprint]}
+
+    monkeypatch.setattr(mv_create, "_load_ddl_artifact", load_artifact)
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+
+    body0, reason0 = mv_create._replay_body(
+        {"yaml_text": "x", "render_version": 0}, {},
+    )
+    assert body0 is None and reason0 == mv_create._STALE_BODY_REASON
+
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
+        handoff = _run_create_selecting(["sug1", "sug2"])
+
+    assert any(
+        "sug1" in r.getMessage() and "earlier version" in r.getMessage()
+        for r in caplog.records
+    )
+    assert handoff.action_mode == "create_and_attach"
+    assert handoff.attach_views == ["finance.sales.order_counts"]
+    assert not any("revenue_metrics" in s for s in executed)
+    assert any("CREATE VIEW `finance`.`sales`.`order_counts`" in s for s in executed)
+    assert [kw["suggestion_id"] for kw in upserts] == ["sug2"]
+
+
+def test_run_hook_prefers_a_stamped_candidate_over_a_stale_artifact(
+    create_env, monkeypatch,
+):
+    """When the artifact is unstamped but the candidate row is stamped, replay
+    the candidate body (MV-D113) rather than refusing the whole suggestion."""
+    executed, upserts = create_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            "yaml_text": "version: 0.1\nsource: stale.artifact.body\n",
+            "join_strategy": "nested",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+        },
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "sug1",
+            "dedup_fingerprint": "fp1",
+            "yaml_text": "version: 0.1\nsource: finance.sales.orders\n# candidate\n",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+        }],
+    )
+    seen_bodies: list[str] = []
+
+    def validate(text, **kw):
+        seen_bodies.append(text)
+        return mv_yaml.ValidationReport(ok=True, downgrade_to=None)
+
+    monkeypatch.setattr(mv_yaml, "validate", validate)
+
+    handoff = _run_create()
+
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert any("# candidate" in t for t in seen_bodies)
+    assert not any("stale.artifact.body" in t for t in seen_bodies)
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
+    assert upserts and upserts[0]["status"] == "CREATED"
+
+
+def test_run_hook_refuses_a_non_plain_target_name(create_env, monkeypatch, caplog):
+    executed, upserts = create_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            **_ARTIFACT,
+            "proposed_object": "main.sales.revenue metrics",
+        },
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert handoff.action_mode == "suggest_only"
+    assert not any("DESCRIBE" in s or "CREATE VIEW" in s for s in executed)
+    assert upserts == []
+    assert any(
+        "sug1" in r.getMessage() and "not a plain three-part name" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_every_statement_naming_the_view_quotes_it(create_env, monkeypatch):
+    """DESCRIBE / SELECT / CREATE / DROP issued by the create path quote every
+    view-name part (MV-D113)."""
+    import pandas as pd
+
+    executed, upserts = create_env
+    monkeypatch.setattr(mv_create, "_object_exists", _REAL_OBJECT_EXISTS)
+    monkeypatch.setattr(mv_create, "_confirm_metric_view", _REAL_CONFIRM_METRIC_VIEW)
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+    queries: list[str] = []
+
+    def fake_query(ws, warehouse_id, sql):
+        queries.append(sql)
+        if sql.startswith("DESCRIBE TABLE ") and "EXTENDED" not in sql:
+            return pd.DataFrame()
+        if "DESCRIBE EXTENDED" in sql:
+            return pd.DataFrame({"col_name": ["Type"], "data_type": ["METRIC_VIEW"]})
+        if sql.startswith("SELECT 1 FROM"):
+            return pd.DataFrame({"ok": [1]})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", fake_query)
+
+    handoff = _run_create()
+
+    quoted = "`finance`.`sales`.`revenue_metrics`"
+    bare = "finance.sales.revenue_metrics"
+    naming = [s for s in list(executed) + queries if bare in s or quoted in s]
+    assert naming, "expected at least one statement naming the view"
+    assert all(quoted in s for s in naming)
+    assert not any(
+        bare in s.replace(quoted, "") for s in naming
+    )
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert upserts and upserts[0]["status"] == "CREATED"
+
+
+def test_claim_matches_a_quoted_generated_body(monkeypatch):
+    """A quoted M3 body still claim-matches the candidate fingerprint (MV-D113)."""
+    from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
+    from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+
+    space = "space-1"
+    fp = mv_candidate_fingerprint(
+        space, canonicalize_expr("SUM(amount)"), ("main.sales.orders",),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{"suggestion_id": "sug1", "dedup_fingerprint": fp}],
+    )
+    monkeypatch.setattr(mv_create, "get_service_principal_client", lambda: _SP_WS)
+    yaml_text = (
+        'version: "1.1"\n'
+        "source: '`main`.`sales`.`orders`'\n"
+        "measures:\n"
+        "- name: total\n"
+        "  expr: SUM(source.`amount`)\n"
+    )
+    ok, reason = mv_create._claim_matches_view(
+        _SP_WS, "wh1",
+        catalog="main", schema="gso",
+        space_id=space, suggestion_id="sug1", yaml_text=yaml_text,
+    )
+    assert ok is True and reason is None
+
+
+def test_claim_still_matches_a_pre_m3_body(monkeypatch):
+    """Pre-M3 unquoted bodies keep matching after the AS-source fix."""
+    from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
+    from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+
+    space = "space-1"
+    fp = mv_candidate_fingerprint(
+        space, canonicalize_expr("SUM(amount)"), ("main.sales.orders",),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{"suggestion_id": "sug1", "dedup_fingerprint": fp}],
+    )
+    monkeypatch.setattr(mv_create, "get_service_principal_client", lambda: _SP_WS)
+    yaml_text = (
+        'version: "1.1"\n'
+        "source: main.sales.orders\n"
+        "measures:\n"
+        "- name: total\n"
+        "  expr: SUM(source.amount)\n"
+    )
+    ok, reason = mv_create._claim_matches_view(
+        _SP_WS, "wh1",
+        catalog="main", schema="gso",
+        space_id=space, suggestion_id="sug1", yaml_text=yaml_text,
+    )
+    assert ok is True and reason is None
 
 
 def test_revalidation_downgrade_aborts_the_create(create_env, monkeypatch):
@@ -371,7 +591,7 @@ def test_only_the_selected_candidates_are_created(create_env, monkeypatch):
 
     creates = [s for s in executed if "CREATE VIEW" in s]
     assert handoff.attach_views == ["finance.sales.order_counts"]
-    assert len(creates) == 1 and "CREATE VIEW finance.sales.order_counts" in creates[0]
+    assert len(creates) == 1 and "CREATE VIEW `finance`.`sales`.`order_counts`" in creates[0]
     assert not any("revenue_metrics" in s for s in executed)
     assert _view_ddl_clients(executed) == [_OBO_WS]
     assert executed.described_on and all(ws is _OBO_WS for ws in executed.described_on)
@@ -394,7 +614,7 @@ def test_an_unrecorded_create_is_dropped_and_the_run_moves_on(create_env, monkey
 
     handoff = _run_create_selecting(["sug1", "sug2"])
 
-    assert "DROP VIEW IF EXISTS finance.sales.revenue_metrics" in executed
+    assert "DROP VIEW IF EXISTS `finance`.`sales`.`revenue_metrics`" in executed
     assert _view_ddl_clients(executed) == [_OBO_WS] * 3
     assert upserts.on == [_SP_WS, _SP_WS]
     assert handoff.action_mode == "create_and_attach"
@@ -745,7 +965,7 @@ def test_get_mv_ddl_falls_back_to_candidate_yaml_text(client, monkeypatch):
     assert data["suggestion_id"] == "sugA"
     assert data["yaml_text"] == "version: 0.1\n"
     assert data["join_strategy"] == "subquery_source"
-    assert "CREATE VIEW finance.sales.revenue_metrics" in data["ddl"]
+    assert "CREATE VIEW `finance`.`sales`.`revenue_metrics`" in data["ddl"]
     assert (
         "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO "
         "`a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`;" in data["grant_sql"]
@@ -896,7 +1116,7 @@ def test_drop_happy_path(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["dropped"] is True
-    assert any("DROP VIEW IF EXISTS finance.sales.revenue_metrics" in s for s in executed)
+    assert any("DROP VIEW IF EXISTS `finance`.`sales`.`revenue_metrics`" in s for s in executed)
 
 
 def test_drop_forbidden_for_non_owner(client, monkeypatch):

@@ -209,6 +209,13 @@ summary. The Model tab's Semantic Blueprint shows the live Agent model together
 with governed, curated, and proposed measures, metric-view structure, measure
 lineage, and advice-only join findings.
 
+Generated metric views keep the SQL as written in the Agent: text values keep
+their capitalization, and date functions keep their units. Every table and column
+name is quoted, so names with spaces or reserved words work. A recurring measure
+that combines columns from more than one table isn't proposed yet; when that's
+all the scan finds, the IQ scan says so. A proposal made before this change must
+be re-scanned before it can be approved or created at run time.
+
 ## Evaluation and leakage safety
 
 Current runs use Genie's native benchmark Eval-Run API as the sole evaluation

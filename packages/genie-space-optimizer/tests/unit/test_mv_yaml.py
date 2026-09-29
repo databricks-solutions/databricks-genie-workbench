@@ -14,6 +14,7 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
 import sqlglot
 import yaml
 
@@ -26,6 +27,7 @@ from genie_space_optimizer.common.config import (
     MV_JOIN_STRATEGY_DIRECT,
     MV_JOIN_STRATEGY_NESTED,
     MV_JOIN_STRATEGY_SUBQUERY,
+    MV_RENDER_VERSION,
     MV_SYNONYMS_MAX,
     MV_SYNONYMS_MIN,
 )
@@ -56,6 +58,8 @@ from genie_space_optimizer.optimization.mv_yaml import (
     RequestedAttribute,
     create_ddl,
     generate,
+    quote_fqn,
+    quote_identifier,
     validate,
 )
 
@@ -209,16 +213,16 @@ def test_direct_rung_golden_whole_document():
         '  JOINS: dim_customer (customer attributes)\n'
         '\n'
         '  NOTE: Joined dimensions are current-version only where the dimension is versioned\n'
-        'source: main.sales.fact_orders\n'
+        "source: '`main`.`sales`.`fact_orders`'\n"
         'joins:\n'
         '  - name: dim_customer\n'
-        '    source: main.sales.dim_customer\n'
-        '    \'on\': source.customer_id = dim_customer.customer_id AND dim_customer.is_current = true\n'
+        "    source: '`main`.`sales`.`dim_customer`'\n"
+        "    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\n"
         '    rely:\n'
         '      at_most_one_match: true\n'
         'dimensions:\n'
         '  - name: order_date\n'
-        '    expr: source.order_date\n'
+        '    expr: source.`order_date`\n'
         '    comment: Order Date for slicing revenue.\n'
         '    display_name: Order Date\n'
         '    synonyms:\n'
@@ -227,7 +231,7 @@ def test_direct_rung_golden_whole_document():
         '      - revenue order date\n'
         '      - revenue\n'
         '  - name: market_segment\n'
-        '    expr: dim_customer.market_segment\n'
+        '    expr: dim_customer.`market_segment`\n'
         '    comment: Market Segment for slicing revenue.\n'
         '    display_name: Market Segment\n'
         '    synonyms:\n'
@@ -237,7 +241,7 @@ def test_direct_rung_golden_whole_document():
         '      - revenue\n'
         'measures:\n'
         '  - name: total_revenue\n'
-        '    expr: SUM(source.net_revenue)\n'
+        '    expr: SUM(source.`net_revenue`)\n'
         '    comment: Net revenue after discounts.\n'
         '    display_name: Total Revenue\n'
         '    format:\n'
@@ -281,17 +285,17 @@ def test_denormalized_rung_collapses_the_far_hop():
     assert result.ok
     assert result.join_strategy == MV_JOIN_STRATEGY_DENORMALIZED
     assert _joins_region(result.yaml_text) == (
-        "source: main.sales.fact_orders\n"
+        "source: '`main`.`sales`.`fact_orders`'\n"
         "joins:\n"
         "  - name: dim_customer\n"
-        "    source: main.sales.dim_customer\n"
-        "    'on': source.customer_id = dim_customer.customer_id AND dim_customer.is_current = true\n"
+        "    source: '`main`.`sales`.`dim_customer`'\n"
+        "    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\n"
         "    rely:\n"
         "      at_most_one_match: true"
     )
     definition = yaml.safe_load(result.yaml_text)
     nation = next(d for d in definition["dimensions"] if d["name"] == "nation_name")
-    assert nation["expr"] == "dim_customer.customer_nation_name"
+    assert nation["expr"] == "dim_customer.`customer_nation_name`"
     assert [j["name"] for j in definition["joins"]] == ["dim_customer"]
     assert validate(result.yaml_text).ok
 
@@ -309,23 +313,23 @@ def test_nested_rung_requires_capability_and_proven_keys():
     assert result.ok
     assert result.join_strategy == MV_JOIN_STRATEGY_NESTED
     assert _joins_region(result.yaml_text) == (
-        "source: main.sales.fact_orders\n"
+        "source: '`main`.`sales`.`fact_orders`'\n"
         "joins:\n"
         "  - name: dim_customer\n"
-        "    source: main.sales.dim_customer\n"
-        "    'on': source.customer_id = dim_customer.customer_id AND dim_customer.is_current = true\n"
+        "    source: '`main`.`sales`.`dim_customer`'\n"
+        "    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\n"
         "    rely:\n"
         "      at_most_one_match: true\n"
         "    joins:\n"
         "      - name: dim_nation\n"
-        "        source: main.sales.dim_nation\n"
-        "        'on': dim_customer.nation_id = dim_nation.nation_id\n"
+        "        source: '`main`.`sales`.`dim_nation`'\n"
+        "        'on': dim_customer.`nation_id` = dim_nation.`nation_id`\n"
         "        rely:\n"
         "          at_most_one_match: true"
     )
     definition = yaml.safe_load(result.yaml_text)
     nation = next(d for d in definition["dimensions"] if d["name"] == "nation_name")
-    assert nation["expr"] == "dim_customer.dim_nation.nation_name"
+    assert nation["expr"] == "dim_customer.dim_nation.`nation_name`"
     assert validate(result.yaml_text, capabilities=profiling.capabilities).ok
 
 
@@ -345,15 +349,27 @@ def test_subquery_rung_when_nested_capability_is_unknown():
     assert "joins" not in definition
 
     source_sql = definition["source"]
+    assert "FROM `main`.`sales`.`fact_orders` AS fact" in source_sql
     assert "LEFT JOIN" in source_sql
-    assert "GROUP BY customer_id" in source_sql
-    assert "GROUP BY nation_id" in source_sql
-    assert "WHERE is_current = true" in source_sql
+    assert "GROUP BY `customer_id`" in source_sql
+    assert "GROUP BY `nation_id`" in source_sql
+    assert "WHERE `is_current` = true" in source_sql
     assert sqlglot.parse_one(source_sql, read="databricks") is not None
 
     nation = next(d for d in definition["dimensions"] if d["name"] == "nation_name")
-    assert nation["expr"] == "source.nation_name"
+    assert nation["expr"] == "source.`nation_name`"
     assert validate(result.yaml_text, capabilities=profiling.capabilities).ok
+
+
+def test_an_unqualified_source_is_a_failed_render_not_a_raise():
+    """``quote_fqn`` raises on an empty source; ``generate`` must return a
+    failed render so the error never crosses the advisor phase boundary."""
+    from dataclasses import replace
+
+    result = generate(_candidate(), replace(_profiling(), source_table=""))
+
+    assert not result.ok
+    assert result.rejections
 
 
 def test_subquery_rung_when_an_intermediate_key_is_not_proven():
@@ -619,7 +635,7 @@ def test_pct_of_total_uses_a_fixed_lod_dimension_never_measure_over_measure():
     lod = next(
         d for d in definition["dimensions"] if d["expr"].endswith("OVER ()")
     )
-    assert lod["expr"] == "SUM(source.net_revenue) OVER ()"
+    assert lod["expr"] == "SUM(source.`net_revenue`) OVER ()"
 
     share = next(m for m in definition["measures"] if m["name"] == "revenue_pct_of_total")
     assert "ANY_VALUE(" in share["expr"]
@@ -810,7 +826,7 @@ def test_conditional_count_uses_filter_not_case():
     assert result.ok
     definition = yaml.safe_load(result.yaml_text)
     measure = next(m for m in definition["measures"] if m["name"] == "fulfilled_orders")
-    assert measure["expr"] == "COUNT(1) FILTER (WHERE source.status = 'F')"
+    assert measure["expr"] == "COUNT(1) FILTER (WHERE source.`status` = 'F')"
     assert "CASE" not in measure["expr"].upper()
 
 
@@ -1264,14 +1280,14 @@ def test_create_ddl_round_trips_the_yaml_body_through_sqlglot():
     )
     ddl = create_ddl("main.sales.mv_revenue", result.yaml_text, comment="revenue metrics")
 
-    assert "CREATE VIEW main.sales.mv_revenue" in ddl
+    assert "CREATE VIEW `main`.`sales`.`mv_revenue`" in ddl
     assert "WITH METRICS" in ddl
     assert "LANGUAGE YAML" in ddl
 
     parsed = sqlglot.parse_one(ddl, read="databricks")
     rendered = parsed.sql(dialect="databricks")
-    assert "SUM(source.net_revenue)" in rendered
-    assert "dim_customer.market_segment" in rendered
+    assert "SUM(source.`net_revenue`)" in rendered
+    assert "dim_customer.`market_segment`" in rendered
 
     body = ddl.split("AS $$\n", 1)[1].rsplit("$$", 1)[0]
     assert yaml.safe_load(body) == yaml.safe_load(result.yaml_text)
@@ -1281,6 +1297,70 @@ def test_create_ddl_escapes_single_quotes_in_the_comment():
     ddl = create_ddl("c.s.v", "version: '1.1'\n", comment="it's fine")
 
     assert "COMMENT 'it''s fine'" in ddl
+
+
+# ── MV-D113 finding 10: every interpolated identifier is quoted ──
+
+
+@pytest.mark.parametrize(
+    ("raw", "quoted"),
+    [
+        ("main.sales.orders", "`main`.`sales`.`orders`"),
+        ("`main`.`sales`.`orders`", "`main`.`sales`.`orders`"),
+        ("main.sales.`order lines`", "`main`.`sales`.`order lines`"),
+        ("main.sales.we`ird", "`main`.`sales`.`we``ird`"),
+        ("`a.b`.c.d", "`a.b`.`c`.`d`"),
+    ],
+)
+def test_quote_fqn_quotes_each_part_and_is_idempotent(raw: str, quoted: str) -> None:
+    assert quote_fqn(raw) == quoted
+    assert quote_fqn(quote_fqn(raw)) == quoted
+
+
+def test_quote_identifier_doubles_inner_backticks() -> None:
+    assert quote_identifier("Order Amount") == "`Order Amount`"
+    assert quote_identifier("we`ird") == "`we``ird`"
+    assert quote_identifier("`we``ird`") == "`we``ird`"
+
+
+def test_create_ddl_quotes_every_name_part() -> None:
+    ddl = create_ddl("main.sales.orders_metrics", 'version: "1.1"\nsource: x\n')
+    assert ddl.splitlines()[0] == "CREATE VIEW `main`.`sales`.`orders_metrics`"
+
+
+@pytest.mark.parametrize("name", ["", "main..orders_metrics"])
+def test_create_ddl_refuses_an_empty_name_part(name: str) -> None:
+    with pytest.raises(ValueError):
+        create_ddl(name, 'version: "1.1"\nsource: x\n')
+
+
+def test_generated_body_quotes_source_and_a_spaced_column() -> None:
+    measure = MeasureRequest(name="order_amount", expr="SUM(`Order Amount`)")
+    profiling = MvProfiling(
+        source_table="main.sales.orders",
+        table_columns={"main.sales.orders": _columns("Order Amount", "status")},
+        measures=(measure,),
+        domain="sales",
+    )
+    rendered = generate(_candidate(measure_expr="SUM(`Order Amount`)"), profiling)
+    assert rendered.ok, rendered.rejections
+    doc = yaml.safe_load(rendered.yaml_text)
+    assert doc["source"] == "`main`.`sales`.`orders`"
+    assert doc["measures"][0]["expr"] == "SUM(source.`Order Amount`)"
+
+
+def test_generated_evidence_carries_the_render_version() -> None:
+    """MV-D113: every rendered body is stamped so Task 6 can refuse a pre-M3 replay."""
+    rendered = generate(
+        _candidate(),
+        _profiling(
+            hops=(CUSTOMER_HOP,),
+            attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR),
+            uniqueness=PROVEN,
+        ),
+    )
+    assert rendered.ok, rendered.rejections
+    assert rendered.evidence["render_version"] == MV_RENDER_VERSION
 
 
 # ── The sole-renderer property ───────────────────────────────────────────

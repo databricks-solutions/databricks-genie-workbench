@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from backend.routers import auto_optimize
 from backend.services import mv_create
 from genie_space_optimizer.common import warehouse
+from genie_space_optimizer.common.config import MV_RENDER_VERSION
 from genie_space_optimizer.optimization import mv_yaml
 
 
@@ -56,6 +57,7 @@ _ARTIFACT = {
     "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
     "join_strategy": "nested",
     "proposed_object": "warehouse.raw.revenue_metrics",
+    "render_version": MV_RENDER_VERSION,
 }
 
 
@@ -142,7 +144,7 @@ def test_happy_path_creates_and_attaches_at_the_consented_name(approval_env):
     assert result.attached is True
     # Re-targeted to the CONSENTED catalog/schema, base name preserved.
     assert result.full_name == "finance.sales.revenue_metrics"
-    assert any("CREATE VIEW finance.sales.revenue_metrics" in s for s in executed)
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
     assert len(advice_runs) == 1 and advice_runs[0]["space_id"] == "space-1"
     assert upserts and upserts[0]["status"] == "ATTACHED"
     assert upserts[0]["provenance"] == mv_create.MV_PROVENANCE_OBO_CREATED
@@ -161,7 +163,7 @@ def test_attach_failure_records_created_not_attached(approval_env, monkeypatch):
 
     assert result.created is True
     assert result.attached is False
-    assert any("CREATE VIEW finance.sales.revenue_metrics" in s for s in executed)
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
     assert upserts and upserts[0]["status"] == "CREATED"
 
 
@@ -261,12 +263,123 @@ def test_candidate_yaml_text_is_the_fallback_when_no_artifact(approval_env, monk
             "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
             "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
             "proposed_object": "warehouse.raw.revenue_metrics",
-            "evidence": {"join_strategy": "nested"},
+            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
         }],
     )
     result = _create()
     assert result.created is True
-    assert any("CREATE VIEW finance.sales.revenue_metrics" in s for s in executed)
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
+
+
+def test_approval_refuses_an_unstamped_body_with_rescan_reason(approval_env, monkeypatch):
+    executed, upserts, advice_runs = approval_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
+            "join_strategy": "nested",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+        },
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+            "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
+            "evidence": {"join_strategy": "nested", "render_version": 0},
+        }],
+    )
+
+    result = _create()
+
+    assert result.created is False
+    assert result.degraded is False
+    assert result.reason == mv_create._STALE_BODY_REASON
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []
+
+
+def test_approval_refuses_a_stamped_row_whose_body_the_in_job_writer_cleared(
+    approval_env, monkeypatch,
+):
+    """The in-job writer overwrites ``yaml_text`` with None when its render did
+    not produce a body, so a stamp never re-arms an older body."""
+    executed, upserts, advice_runs = approval_env
+    monkeypatch.setattr(mv_create, "_load_ddl_artifact", lambda *a, **k: None)
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+            "yaml_text": None,
+            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+        }],
+    )
+
+    result = _create()
+
+    assert result.created is False
+    assert result.reason == mv_create._NO_BODY_REASON
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []
+
+
+def test_approval_uses_a_stamped_candidate_when_the_artifact_is_stale(
+    approval_env, monkeypatch,
+):
+    executed, upserts, _ = approval_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            "yaml_text": "version: 0.1\nsource: stale.artifact.body\n",
+            "join_strategy": "nested",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+        },
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "yaml_text": "version: 0.1\nsource: finance.sales.orders\n# candidate\n",
+            "proposed_object": "warehouse.raw.revenue_metrics",
+            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+        }],
+    )
+    seen_bodies: list[str] = []
+
+    def validate(text, **kw):
+        seen_bodies.append(text)
+        return mv_yaml.ValidationReport(ok=True, downgrade_to=None)
+
+    monkeypatch.setattr(mv_yaml, "validate", validate)
+
+    result = _create()
+
+    assert result.created is True
+    assert any("# candidate" in t for t in seen_bodies)
+    assert not any("stale.artifact.body" in t for t in seen_bodies)
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
+    assert upserts and upserts[0]["status"] == "ATTACHED"
+
+
+def test_approval_refuses_a_non_plain_target_name(approval_env, monkeypatch):
+    executed, upserts, advice_runs = approval_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            **_ARTIFACT,
+            "proposed_object": "main.sales.revenue metrics",
+        },
+    )
+
+    result = _create()
+
+    assert result.created is False
+    assert result.degraded is False
+    assert "not a plain Unity Catalog name" in (result.reason or "")
+    assert not any("DESCRIBE" in s or "CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []
 
 
 def test_insufficient_fresh_probe_degrades_with_remediation_and_creates_nothing(approval_env, monkeypatch):

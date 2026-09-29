@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -152,6 +153,10 @@ SKIP_NO_CANDIDATES = "NO_CANDIDATES"
 """The corpus parsed and contained no aggregate worth proposing. A real finding:
 the space's queries do not repeat a measure."""
 
+SKIP_NO_SERVABLE_MEASURES = "NO_SERVABLE_MEASURES"
+"""Recurring ungoverned measures exist, but none reads a single table whose
+columns it resolves to, so no single-table view can serve them (MV-D113)."""
+
 
 # ── Progress stages (MV-D31) ─────────────────────────────────────────────
 #
@@ -237,6 +242,7 @@ class AdvisorOutcome:
     candidates_scored: int = 0
     candidates_dropped_for_leakage: int = 0
     candidates_dropped_suppressed: int = 0
+    candidates_dropped_unresolved: int = 0
     candidates_render_failed: int = 0
     proposals_persisted: int = 0
     artifacts_written: int = 0
@@ -261,6 +267,7 @@ class AdvisorOutcome:
             "candidates_scored": self.candidates_scored,
             "candidates_dropped_for_leakage": self.candidates_dropped_for_leakage,
             "candidates_dropped_suppressed": self.candidates_dropped_suppressed,
+            "candidates_dropped_unresolved": self.candidates_dropped_unresolved,
             "candidates_render_failed": self.candidates_render_failed,
             "proposals_persisted": self.proposals_persisted,
             "artifacts_written": self.artifacts_written,
@@ -711,6 +718,13 @@ def column_facts_from_inventory(
 
 # ── Candidates ───────────────────────────────────────────────────────────
 
+_NAME_UNSAFE_RE = re.compile(r"[^a-z0-9_]+")
+
+
+def _plain_name(text: str) -> str:
+    """A generated UC/YAML name: lowercase letters, digits and underscores only."""
+    return _NAME_UNSAFE_RE.sub("_", text.lower()).strip("_")
+
 
 def _concept_for(measure: FingerprintRecurrence) -> str:
     """A short, literal-free name for what the measure counts.
@@ -723,7 +737,7 @@ def _concept_for(measure: FingerprintRecurrence) -> str:
     columns = [c.split(".")[-1] for c in measure.source_columns if c]
     stem = "_".join(columns[:2]) if columns else "measure"
     kind = (measure.kind or "measure").lower()
-    return f"{kind}_{stem}".strip("_").lower() or "measure"
+    return _plain_name(f"{kind}_{stem}") or "measure"
 
 
 def candidate_from_measure(
@@ -837,7 +851,7 @@ def _bundle_grain(source_tables: Sequence[str]) -> tuple[str | None, str]:
     if not refs:
         return None, "metrics"
     catalog, schema, name = refs[0]
-    concept = f"{name}_metrics"
+    concept = f"{_plain_name(name) or 'source'}_metrics"
     return f"{catalog}.{schema}.{concept}", concept
 
 
@@ -1102,6 +1116,7 @@ def _advise(
             run_id=run_id,
             requested_mode="suggest_only",
             effective_mode="suggest_only",
+            yaml_text=rendered.yaml_text if rendered.ok else None,
         ),
         write_ddl_artifact=lambda proposal, rendered: _write_ddl_artifact(
             spark,
@@ -1280,6 +1295,28 @@ def _build_bundle(
     return _with_generation_evidence(bundle_proposal, rendered), rendered
 
 
+def _unservable_reason(
+    measure: FingerprintRecurrence, columns_by_table: Mapping[str, set[str]]
+) -> str | None:
+    """Why a measure cannot be served by a view over one source table, or None.
+
+    A profiled source proves the columns exist; an unprofiled one is accepted on
+    the structural checks alone (MV-D113 d3). A column-free aggregate such as
+    ``COUNT(*)`` names no table, so it is neither multi-table nor unresolved."""
+    if not measure.source_tables and not measure.source_columns:
+        return None
+    if len(measure.source_tables) != 1:
+        return "not_single_table"
+    if measure.has_unresolved_columns:
+        return "unresolved_column"
+    known = columns_by_table.get(measure.source_tables[0].lower())
+    if known is not None:
+        wanted = {c.split(".")[-1].lower() for c in measure.source_columns if c}
+        if not wanted <= known:
+            return "column_not_on_source"
+    return None
+
+
 def advise_from_corpus(
     *,
     space_id: str,
@@ -1372,8 +1409,33 @@ def advise_from_corpus(
             parse_failures=scan.parse_failures,
             measures_found=len(scan.measures),
         )
-    measures = seed_measures[: max(0, limit)]
     table_columns = column_facts_from_inventory(wide_schema_inventory)
+    columns_by_table = {
+        table.lower(): {facts.name.lower() for facts in facts_list}
+        for table, facts_list in table_columns.items()
+    }
+    servable: list[FingerprintRecurrence] = []
+    dropped_unresolved = 0
+    for measure in seed_measures:
+        reason = _unservable_reason(measure, columns_by_table)
+        if reason is None:
+            servable.append(measure)
+            continue
+        dropped_unresolved += 1
+        logger.info(
+            "mv_advisor: dropped measure %s — %s (MV-D113 finding 9)",
+            measure.fingerprint, reason,
+        )
+    if not servable:
+        return AdvisorOutcome(
+            status=STATUS_SKIPPED,
+            skip_reason=SKIP_NO_SERVABLE_MEASURES,
+            statements_scanned=scan.statements_scanned,
+            parse_failures=scan.parse_failures,
+            measures_found=len(scan.measures),
+            candidates_dropped_unresolved=dropped_unresolved,
+        )
+    measures = servable[: max(0, limit)]
     # POV Part 5 step 3: trusted assets are authoritative in a conflict. They live
     # in example_question_sqls, a different field from text_instructions, so
     # without this the gate could only see governed metric views and a proposal
@@ -1405,7 +1467,7 @@ def advise_from_corpus(
         fragments = [frag for _, frag in shape.render_components] or [
             frag for _, frag in shape.components
         ]
-        if any(oracle.contains_sql(frag) for frag in fragments):
+        if any(oracle.contains_sql(_leakage_view(frag)) for frag in fragments):
             shape_leak += 1
             logger.info(
                 "mv_advisor: dropped recurring shape %s — a render component "
@@ -1464,7 +1526,7 @@ def advise_from_corpus(
         # representative must clear the SAME leakage oracle the comment echo check
         # uses before it can be scored, rendered, or persisted. A match DROPS the
         # candidate — it never ships masked and never ships leaked.
-        if candidate.measure_expr and oracle.contains_sql(candidate.measure_expr):
+        if candidate.measure_expr and oracle.contains_sql(_leakage_view(candidate.measure_expr)):
             dropped_for_leakage += 1
             logger.info(
                 "mv_advisor: dropped candidate %s — representative measure "
@@ -1577,6 +1639,7 @@ def advise_from_corpus(
         candidates_scored=len(measures) - dropped_for_leakage - dropped_suppressed,
         candidates_dropped_for_leakage=dropped_for_leakage + shape_leak,
         candidates_dropped_suppressed=dropped_suppressed,
+        candidates_dropped_unresolved=dropped_unresolved,
         candidates_render_failed=render_failed,
         proposals_persisted=persisted,
         artifacts_written=artifacts,
@@ -1584,6 +1647,11 @@ def advise_from_corpus(
         render_failures=tuple(render_failures),
         proposals=tuple(proposals),
     )
+
+
+def _leakage_view(text: str) -> str:
+    """The oracle shingles characters; identifier quoting must not break a match."""
+    return text.replace("`", "")
 
 
 def _with_generation_evidence(proposal: ScoredProposal, rendered: Any) -> ScoredProposal:
@@ -1602,6 +1670,7 @@ def _with_generation_evidence(proposal: ScoredProposal, rendered: Any) -> Scored
     evidence["join_strategy_evidence"] = dict(rendered.evidence or {})
     evidence["generation_verdict"] = rendered.verdict
     evidence["comment_echo_check"] = rendered.echo_check
+    evidence["render_version"] = (rendered.evidence or {}).get("render_version", 0)
     if rendered.rejections:
         evidence["generation_rejections"] = list(rendered.rejections)
     return replace(proposal, evidence=evidence)
@@ -1666,6 +1735,7 @@ def _write_ddl_artifact(
         "target_space_id": proposal.target_space_id,
         "proposed_object": target,
         "join_strategy": rendered.join_strategy,
+        "render_version": (rendered.evidence or {}).get("render_version", 0),
         # The immutable rendered body (MV-D22). The backend recovers this to
         # re-wrap for the consented target via ``create_ddl`` and revalidate,
         # rather than string-slicing the AS $$…$$ fence out of ``ddl``.
@@ -1700,6 +1770,7 @@ __all__ = [
     "SKIP_NO_ITERATIONS",
     "SKIP_NO_ITERATION_ZERO",
     "SKIP_NO_PARSEABLE_SQL",
+    "SKIP_NO_SERVABLE_MEASURES",
     "STATUS_COMPLETE",
     "STATUS_FAILED",
     "STATUS_SKIPPED",

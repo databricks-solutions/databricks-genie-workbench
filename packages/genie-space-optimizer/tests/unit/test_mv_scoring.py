@@ -1431,6 +1431,19 @@ def test_persist_proposal_maps_the_payload_onto_the_prompt_1_accessor(monkeypatc
     # Human decision columns are the accessor's business, never this module's.
     assert "decision" not in kwargs
     assert "approved_for_rerun" not in kwargs
+    assert kwargs["yaml_text"] is None
+
+
+def test_persist_proposal_passes_the_body_through(monkeypatch) -> None:
+    spy = UpsertSpy()
+    monkeypatch.setattr(mv_scoring, "upsert_mv_candidate", spy)
+    proposal = score_candidate(strong_candidate(), run_id="run_5521")
+
+    persist_proposal(
+        object(), proposal, catalog="main", schema="gso", yaml_text="version: '1.1'\n",
+    )
+
+    assert spy.calls[0]["yaml_text"] == "version: '1.1'\n"
 
 
 def test_persist_proposal_writes_a_conflict(monkeypatch) -> None:

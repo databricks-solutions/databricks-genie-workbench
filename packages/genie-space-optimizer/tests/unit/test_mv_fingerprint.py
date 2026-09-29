@@ -218,7 +218,7 @@ def test_representative_expr_preserves_literals_and_strips_qualifiers() -> None:
     ``source:`` columns rather than a query alias. This is the POV's headline
     expression — the exact one whose canonical form was unrenderable."""
     measure = extract_measures(DISCOUNTED_REVENUE_VARIANTS["alias_li"])[0]
-    assert measure.representative_expr == "sum(l_extendedprice * (1 - l_discount))"
+    assert measure.representative_expr == "SUM(`l_extendedprice` * (1 - `l_discount`))"
     assert NUMERIC_PLACEHOLDER not in measure.representative_expr
     # The canonical form — the identity — still erases the literal.
     assert measure.canonical_expr == "sum(l_extendedprice * (?n - l_discount))"
@@ -275,16 +275,17 @@ def test_representative_expr_is_never_an_identity() -> None:
     assert one.fingerprint == two.fingerprint
     assert one.canonical_expr == two.canonical_expr
     assert one.representative_expr != two.representative_expr
-    assert one.representative_expr == "sum(l_extendedprice * (1 - l_discount))"
-    assert two.representative_expr == "sum(l_extendedprice * (2 - l_discount))"
+    assert one.representative_expr == "SUM(`l_extendedprice` * (1 - `l_discount`))"
+    assert two.representative_expr == "SUM(`l_extendedprice` * (2 - `l_discount`))"
 
 
-def test_render_expr_matches_canonical_shape_minus_literal_erasure() -> None:
-    """``render_expr`` and ``canonicalize_expr`` are the same normalization but
-    for literals: strip the literals from the render form and the two agree."""
+def test_render_expr_keeps_spelling_and_canonical_erases_literals() -> None:
+    """render keeps the author's spelling minus aliases; the canonical form
+    erases literals — and canonicalizing the render recovers the identity."""
     src = "SUM(li.l_extendedprice * (1 - li.l_discount))"
-    assert render_expr(src) == "sum(l_extendedprice * (1 - l_discount))"
+    assert render_expr(src) == "SUM(`l_extendedprice` * (1 - `l_discount`))"
     assert canonicalize_expr(src) == "sum(l_extendedprice * (?n - l_discount))"
+    assert canonicalize_expr(render_expr(src)) == canonicalize_expr(src)
     # Unparseable input degrades to "" for both, identically.
     assert render_expr("((( not sql") == ""
 
@@ -651,7 +652,21 @@ def test_fingerprint_recurrence_to_dict_key_set_is_pinned() -> None:
         "source_tables",
         "shapes",
         "representative_expr",
+        "has_unresolved_columns",
     }
+
+
+def test_recurrence_is_unresolved_when_no_occurrence_resolved() -> None:
+    sql = "SELECT SUM(qty * price) FROM main.sales.lines l JOIN main.sales.products p ON l.pid = p.id"
+    scan = corpus_scan([(sql, "q0"), (sql, "q1")])
+    assert scan.measures[0].has_unresolved_columns is True
+
+
+def test_recurrence_is_resolved_when_any_occurrence_resolved() -> None:
+    bare = "SELECT SUM(qty) FROM main.sales.lines l JOIN main.sales.products p ON l.pid = p.id"
+    qualified = "SELECT SUM(l.qty) FROM main.sales.lines l"
+    scan = corpus_scan([(bare, "q0"), (qualified, "q1")])
+    assert scan.measures[0].has_unresolved_columns is False
 
 
 def test_corpus_scan_carries_representative_expr_on_measures_only() -> None:
@@ -666,7 +681,7 @@ def test_corpus_scan_carries_representative_expr_on_measures_only() -> None:
         ]
     )
     top = scan.measures[0]
-    assert top.representative_expr == "sum(l_extendedprice * (1 - l_discount))"
+    assert top.representative_expr == "SUM(`l_extendedprice` * (1 - `l_discount`))"
     assert top.canonical_expr == "sum(l_extendedprice * (?n - l_discount))"
     for bucket in (*scan.dimensions, *scan.filters, *scan.join_keys):
         assert bucket.representative_expr == ""
@@ -822,3 +837,78 @@ def test_cte_statements_canonicalize_without_leaking_aliases() -> None:
 def test_canonicalize_expr_accepts_a_parsed_expression() -> None:
     parsed = sqlglot.parse_one(DISCOUNTED_REVENUE, read=mf.DIALECT)
     assert canonicalize_expr(parsed) == canonicalize_expr(DISCOUNTED_REVENUE)
+
+
+# ── MV-D113: render keeps the author's spelling; identity does not move ──
+
+
+def test_render_keeps_string_literal_case() -> None:
+    assert (
+        render_expr("SUM(CASE WHEN o.status = 'Paid' THEN o.amount END)")
+        == "SUM(CASE WHEN `status` = 'Paid' THEN `amount` END)"
+    )
+
+
+def test_render_keeps_whitespace_inside_a_literal() -> None:
+    assert (
+        render_expr("COUNT(CASE WHEN note = 'Smith,  John' THEN 1 END)")
+        == "COUNT(CASE WHEN `note` = 'Smith,  John' THEN 1 END)"
+    )
+
+
+def test_render_keeps_date_trunc_and_its_unit() -> None:
+    assert (
+        render_expr("COUNT(DISTINCT DATE_TRUNC('MONTH', o.ts))")
+        == "COUNT(DISTINCT DATE_TRUNC('MONTH', `ts`))"
+    )
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "AVG(DATEDIFF(o.shipped, o.created))",
+        "AVG(DATEDIFF(DAY, o.created, o.shipped))",
+    ],
+)
+def test_render_emits_an_executable_datediff(src: str) -> None:
+    assert render_expr(src) == "AVG(DATEDIFF(DAY, `created`, `shipped`))"
+
+
+def test_render_quotes_a_column_with_a_space() -> None:
+    assert render_expr("SUM(o.`Order Amount`)") == "SUM(`Order Amount`)"
+
+
+def test_canonical_form_still_folds_temporal_units_and_case() -> None:
+    measure = extract_measures(
+        "SELECT COUNT(DISTINCT DATE_TRUNC('MONTH', o.ts)) FROM main.sales.orders o"
+    )[0]
+    assert measure.canonical_expr == canonicalize_expr("count(distinct date_trunc('month', ts))")
+    assert measure.canonical_expr == measure.canonical_expr.lower()
+
+
+def test_shape_render_components_keep_case_and_quote() -> None:
+    shapes = shapes_in_statement(
+        "SELECT COUNT(CASE WHEN o.Region = 'EMEA' THEN 1 END) FROM main.sales.orders o"
+    )
+    rendered = dict(shapes[0].render_components)
+    assert "`Region` = 'EMEA'" in " ".join(rendered.values())
+    assert "'emea'" not in " ".join(rendered.values())
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "SUM(li.l_extendedprice * (1 - li.l_discount))",
+        "SUM(CASE WHEN o.status = 'Paid' THEN o.amount END)",
+        "COUNT(CASE WHEN note = 'Smith,  John' THEN 1 END)",
+        "COUNT(DISTINCT DATE_TRUNC('MONTH', o.ts))",
+        "AVG(DATEDIFF(o.shipped, o.created))",
+        "SUM(o.`Order Amount`)",
+        "SUM(o.`order`)",
+        "SUM(o.`we``ird`)",
+    ],
+)
+def test_render_round_trips_to_the_canonical_identity(src: str) -> None:
+    rendered = render_expr(src)
+    assert rendered
+    assert canonicalize_expr(rendered) == canonicalize_expr(src)

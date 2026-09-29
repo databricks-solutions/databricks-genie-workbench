@@ -304,6 +304,10 @@ class FingerprintRecurrence:
     occurrence of this fingerprint in the scan (deterministic — corpus order is
     fixed). Populated for measures; the other kinds leave it ``""``. It is a
     render source only — ``canonical_expr`` remains the sole identity."""
+    has_unresolved_columns: bool = False
+    """True when no occurrence of this measure resolved every column to a table
+    (MV-D113, finding 9). One clean occurrence is enough: the advisor then knows
+    which table the measure reads."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -602,19 +606,12 @@ def _sort_conjunctions(tree: exp.Expression) -> None:
             chain.replace(exp.and_(*conjuncts, copy=False))
 
 
-def _canonicalize_tree(
-    tree: exp.Expression, *, strip_qualifiers: bool, erase_literals: bool = True
-) -> exp.Expression:
+def _canonicalize_tree(tree: exp.Expression, *, strip_qualifiers: bool) -> exp.Expression:
     """The full pass order. Ordinal resolution must precede literal erasure and
     conjunct sorting must follow everything else; the rest is independent.
 
-    ``erase_literals`` defaults to ``True`` — the firewall default that every
-    canonical form (fingerprint identity, dedup key) depends on. It is turned
-    off for exactly one consumer, :func:`render_expr` (MV-D29): the render
-    source needs a *literal-preserving* form so a structural constant such as
-    the ``1`` in ``1 - l_discount`` survives into an executable body. That form
-    never feeds identity, scoring, or dedup, and it is gated by ``LeakageOracle``
-    before it can reach shipped YAML.
+    Literal erasure is unconditional: every canonical form is safe to log and to
+    hash.
     """
     tree = tree.copy()
     _resolve_projection_refs(tree)
@@ -628,8 +625,7 @@ def _canonicalize_tree(
         _rename_relations(tree)
     _normalize_identifiers(tree)
     tree = _normalize_temporal_units(tree)
-    if erase_literals:
-        tree = _erase_literals(tree)
+    tree = _erase_literals(tree)
     _flatten_boolean_parens(tree)
     _sort_conjunctions(tree)
     return tree
@@ -682,35 +678,48 @@ def canonicalize_expr(expr: str | exp.Expression, *, strip_qualifiers: bool = Tr
         return ""
 
 
+def _render_source(node: exp.Expression) -> str:
+    """Emit a render tree exactly as parsed: no case folding, no whitespace
+    collapse (it would rewrite text inside a literal), no temporal-unit fold."""
+    return node.sql(dialect=DIALECT, comments=False, pretty=False).strip()
+
+
 def render_expr(expr: str | exp.Expression, *, strip_qualifiers: bool = True) -> str:
-    """Return a *literal-preserving* render form of a single expression (MV-D29).
+    r"""Return the *render* form of a single expression (MV-D29, MV-D113).
 
-    Same normalization as :func:`canonicalize_expr` — qualifiers stripped by
-    default so the result references the metric view's ``source:`` columns,
-    identifiers and temporal units normalized, conjunctions flattened and
-    sorted — **except that literals are kept**. So ``SUM(l.l_extendedprice *
-    (1 - l.l_discount))`` renders as ``SUM(l_extendedprice * (1 - l_discount))``,
-    an expression that a ``CREATE VIEW`` can actually execute, where
-    :func:`canonicalize_expr` would emit ``SUM(l_extendedprice * (?n -
-    l_discount))``.
+    The author's spelling minus query aliases: output aliases and projection
+    references are resolved, table qualifiers are stripped (so the result
+    references the metric view's ``source:`` columns), and every column
+    identifier is backtick-quoted. Nothing else is normalized — string literals
+    keep their case and inner whitespace, and DATE_TRUNC / DATEDIFF keep the
+    unit the author wrote. ``SUM(o.\`Order Amount\`)`` renders as
+    ``SUM(\`Order Amount\`)``; ``o.status = 'Paid'`` stays ``'Paid'``.
 
-    **This is not a canonical form and must never be treated as one.** It is
-    only a render source: it never feeds :func:`expr_fingerprint`, the MV-D7
-    dedup key, or scoring. Because it can carry a benchmark/PII predicate
-    literal, a consumer MUST pass it through ``LeakageOracle`` before it reaches
-    a shipped body and drop the candidate if it matches — the firewall moves
-    from erasure-by-construction to an actual gate (MV-D29). Returns ``""`` when
-    the expression does not parse, exactly like :func:`canonicalize_expr`.
+    **This is not a canonical form and must never be treated as one.** It never
+    feeds :func:`expr_fingerprint`, the MV-D7 dedup key, or scoring;
+    ``canonicalize_expr(render_expr(x)) == canonicalize_expr(x)`` is the
+    invariant that keeps the two aligned. Because it can carry a benchmark/PII
+    predicate literal, a consumer MUST pass it through ``LeakageOracle`` before
+    it reaches a shipped body and drop the candidate if it matches (MV-D29).
+    Returns ``""`` when the expression does not parse, exactly like
+    :func:`canonicalize_expr`.
     """
     tree = _parse_expression(expr) if isinstance(expr, str) else expr
     if tree is None:
         return ""
     try:
-        return _render(
-            _canonicalize_tree(
-                tree, strip_qualifiers=strip_qualifiers, erase_literals=False
-            )
-        )
+        tree = tree.copy()
+        _resolve_projection_refs(tree)
+        _strip_output_aliases(tree)
+        for column in tree.find_all(exp.Column):
+            if strip_qualifiers:
+                column.set("table", None)
+                column.set("db", None)
+                column.set("catalog", None)
+            identifier = column.this
+            if isinstance(identifier, exp.Identifier):
+                identifier.set("quoted", True)
+        return _render_source(tree)
     except Exception as exc:  # noqa: BLE001
         logger.debug("mv_fingerprint: expression render failed (%s)", exc)
         return ""
@@ -1204,6 +1213,7 @@ class _Bucket:
 
     __slots__ = (
         "canonical_expr",
+        "clean_seen",
         "columns",
         "curated_provenance_ids",
         "first_seen",
@@ -1217,6 +1227,7 @@ class _Bucket:
         "representative_expr",
         "shapes",
         "tables",
+        "unresolved_seen",
     )
 
     def __init__(
@@ -1243,18 +1254,26 @@ class _Bucket:
         self.last_seen: str | None = None
         self.first_ts: datetime | None = None
         self.last_ts: datetime | None = None
+        self.clean_seen = False
+        self.unresolved_seen = False
 
     def observe(
         self,
         provenance: Provenance,
         columns: Iterable[str] = (),
         tables: Iterable[str] = (),
+        *,
+        unresolved: bool = False,
     ) -> None:
         self.recurrence += 1
         if provenance.id:
             self.provenance_ids.add(provenance.id)
             if provenance.kind == CURATED_PROVENANCE_KIND:
                 self.curated_provenance_ids.add(provenance.id)
+        if unresolved:
+            self.unresolved_seen = True
+        else:
+            self.clean_seen = True
         self.columns.update(columns)
         self.tables.update(tables)
 
@@ -1288,6 +1307,7 @@ class _Bucket:
             source_tables=tuple(sorted(self.tables)),
             shapes=tuple(sorted(self.shapes)),
             representative_expr=self.representative_expr,
+            has_unresolved_columns=self.unresolved_seen and not self.clean_seen,
         )
 
 
@@ -1390,7 +1410,12 @@ def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
                     measure.representative_expr,
                 ),
             )
-            bucket.observe(provenance, measure.source_columns, measure.source_tables)
+            bucket.observe(
+                provenance,
+                measure.source_columns,
+                measure.source_tables,
+                unresolved=measure.has_unresolved_columns,
+            )
             bucket.shapes.update(shape_kinds_by_expr.get(measure.canonical_expr, ()))
 
         for dimension in extract_dimensions(sql):

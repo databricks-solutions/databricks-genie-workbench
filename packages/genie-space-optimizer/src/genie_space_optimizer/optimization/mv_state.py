@@ -212,6 +212,7 @@ def upsert_mv_candidate(
     conflicts: list | None = None,
     requested_mode: str | None = None,
     effective_mode: str | None = None,
+    yaml_text: str | None = None,
 ) -> str:
     """Upsert one advisor proposal; return its ``dedup_fingerprint``.
 
@@ -220,6 +221,10 @@ def upsert_mv_candidate(
     duplicating it. Human decision columns are deliberately not written here —
     a re-proposing run must not resurrect a candidate the user rejected. Use
     :func:`record_mv_candidate_decision` for those.
+
+    ``yaml_text`` is always written, ``None`` included: the body must come from
+    the same render as the ``render_version`` in ``evidence`` (MV-D113 d1), so an
+    older body never survives under a newer stamp.
     """
     if candidate_type not in MV_CANDIDATE_TYPES:
         raise ValueError(
@@ -252,6 +257,7 @@ def upsert_mv_candidate(
         "conflicts_json": _opt_json(conflicts),
         "requested_mode": requested_mode,
         "effective_mode": effective_mode,
+        "yaml_text": yaml_text,
         "updated_at": now,
     }
 
@@ -263,7 +269,7 @@ def upsert_mv_candidate(
         {"target_space_id": target_space_id, "dedup_fingerprint": dedup_fingerprint},
         value_cols,
         insert_only_cols={"created_at": now, "approved_for_rerun": False},
-        base64_string_columns=set(_CANDIDATE_JSON_COLUMNS),
+        base64_string_columns={*_CANDIDATE_JSON_COLUMNS, "yaml_text"},
     )
     logger.info(
         "Upserted metric view candidate %s (%s, tier=%s) for space %s run %s",

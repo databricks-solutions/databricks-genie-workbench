@@ -4055,12 +4055,14 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
         )
 
     full_name = str(obj.get("full_name") or "")
+    from genie_space_optimizer.optimization.mv_yaml import quote_fqn
+
     try:
         await _offload(
             sql_warehouse_execute,
             obo_ws,
             config.warehouse_id,
-            f"DROP VIEW IF EXISTS {full_name}",
+            f"DROP VIEW IF EXISTS {quote_fqn(full_name)}",
         )
     except Exception as exc:
         logger.exception("OBO drop of %s failed: %s", full_name, exc)

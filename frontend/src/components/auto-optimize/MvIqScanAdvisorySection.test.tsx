@@ -126,6 +126,17 @@ describe("IQ Scan advisory — EMPTY (MV-D15/D30, governance ladder)", () => {
     expect(html).toContain("example question")
     expect(html).not.toContain("No recurring measures to propose yet")
   })
+
+  it("says why when every recurring measure spans several tables", () => {
+    const html = renderToStaticMarkup(
+      <MvAdvisoryEmpty skipReason="NO_SERVABLE_MEASURES" measuresFound={3} />,
+    )
+    expect(html).toContain("none can be proposed yet")
+    expect(html).toContain("single table")
+    expect(html).not.toContain("No recurring measures to propose yet")
+    expect(html).not.toContain("already governed")
+    expect(html).not.toMatch(/%|confidence/i)
+  })
 })
 
 describe("MvProposalCard — uniform skeleton + explicit expand/collapse (15.6 finding 2)", () => {

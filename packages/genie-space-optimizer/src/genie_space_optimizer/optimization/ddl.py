@@ -370,9 +370,9 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_RUNS, "run_kind", "STRING COMMENT 'MV-D23: optimization (default; NULL is treated as optimization) | mv_advice (a standalone metric-view advice request that never ran an eval). Advice runs are excluded from run-history and accuracy aggregates via the MV_ADVICE_RUN_EXCLUSION predicate.'"),
     # MV-D23: the rendered replay body on the candidate row, so the MV-D22
     # create path no longer depends on the run-partitioned mv_candidate_ddl
-    # artifact. The in-job advisor keeps writing the artifact byte-unchanged;
-    # the standalone (no-run) advisor writes yaml_text here, and
-    # mv_create._load_ddl_artifact falls back to it.
+    # artifact. Both advisor writers put yaml_text here in the same write as
+    # the stamped evidence (MV-D113); the in-job one also writes the artifact,
+    # and mv_create._load_ddl_artifact falls back to this column.
     (TABLE_MV_CANDIDATES, "yaml_text", "STRING COMMENT 'MV-D23: the immutable rendered metric-view YAML body for this candidate (MV-D22 replay source), so a standalone advice candidate is replayable without a run-partitioned genie_opt_artifacts row.'"),
     # MV-D24: the create-path discriminator. NULL/OBO_CREATED = the backend
     # created it under OBO; USER_CREATED = a bring-your-own view the user

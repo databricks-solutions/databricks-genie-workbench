@@ -69,6 +69,7 @@ import {
   SelectionTwoSchemasFrame,
   SelectionTwoSchemasSuggestOnlyFrame,
 } from "./MvSelectionFidelityFrames"
+import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -162,4 +163,5 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m2-c-selection-two-schemas", title: "M2-c · Run setup — selection spans two schemas", element: <SelectionTwoSchemasFrame /> },
   { id: "m2-d-attached-not-created", title: "M2-d · Run output — attached at approval, not created by the app (USER_CREATED)", element: <AttachedNotCreatedFrame /> },
   { id: "m2-e-selection-two-schemas-suggest-only", title: "M2-e · Run setup — Suggest only, the default selection spans two schemas", element: <SelectionTwoSchemasSuggestOnlyFrame /> },
+  { id: "m3-a-iqscan-empty-unservable", title: "M3-a · IQ scan — recurring measures, none single-table (NO_SERVABLE_MEASURES)", element: <IqScanUnservableFrame /> },
 ]

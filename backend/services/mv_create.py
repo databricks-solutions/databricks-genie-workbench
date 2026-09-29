@@ -36,6 +36,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from backend.models import MvConsentVerification, MvCreatedObject
 from backend.services.auth import (
@@ -46,6 +47,7 @@ from backend.services import mv_entitlement
 from genie_space_optimizer.common.config import (
     MV_PROVENANCE_OBO_CREATED,
     MV_PROVENANCE_USER_CREATED,
+    MV_RENDER_VERSION,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,11 +142,61 @@ def _load_ddl_artifact(
     return payload if isinstance(payload, dict) else None
 
 
+_NO_BODY_REASON = "this proposal has no rendered body to create; re-scan and retry"
+_STALE_BODY_REASON = (
+    "this proposal was rendered by an earlier version of the advisor; "
+    "re-scan the Agent and approve it again"
+)
+
+
+class _ReplayBody(NamedTuple):
+    yaml_text: str
+    stored_strategy: str | None
+    proposed_object: str
+
+
+def _stamped(record: dict) -> bool:
+    try:
+        return int(record.get("render_version") or 0) >= MV_RENDER_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
+def _replay_body(
+    artifact: dict | None, candidate: dict
+) -> tuple[_ReplayBody | None, str | None]:
+    """The MV-D22 replay body, artifact first, candidate row as fallback.
+
+    Only a body stamped at MV_RENDER_VERSION or later replays (MV-D113): an older
+    one was rendered lowercased and unquoted and is never re-rendered here."""
+    evidence = candidate.get("evidence") or {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    if artifact and artifact.get("yaml_text") and _stamped(artifact):
+        return _ReplayBody(
+            str(artifact["yaml_text"]),
+            artifact.get("join_strategy"),
+            str(artifact.get("proposed_object") or ""),
+        ), None
+    if candidate.get("yaml_text") and _stamped(evidence):
+        return _ReplayBody(
+            str(candidate["yaml_text"]),
+            evidence.get("join_strategy"),
+            str(candidate.get("proposed_object") or ""),
+        ), None
+    if (artifact and artifact.get("yaml_text")) or candidate.get("yaml_text"):
+        return None, _STALE_BODY_REASON
+    return None, _NO_BODY_REASON
+
+
 def _object_exists(obo_ws, warehouse_id: str, full_name: str) -> bool:
     from genie_space_optimizer.common.warehouse import sql_warehouse_query
+    from genie_space_optimizer.optimization.mv_yaml import quote_fqn
 
     try:
-        df = sql_warehouse_query(obo_ws, warehouse_id, f"DESCRIBE TABLE {full_name}")
+        df = sql_warehouse_query(
+            obo_ws, warehouse_id, f"DESCRIBE TABLE {quote_fqn(full_name)}"
+        )
         return not getattr(df, "empty", True)
     except Exception:
         return False
@@ -157,10 +209,12 @@ def _confirm_metric_view(obo_ws, warehouse_id: str, full_name: str) -> bool:
     the semantic layer resolves without pulling data.
     """
     from genie_space_optimizer.common.warehouse import sql_warehouse_query
+    from genie_space_optimizer.optimization.mv_yaml import quote_fqn
 
+    quoted = quote_fqn(full_name)
     try:
         df = sql_warehouse_query(
-            obo_ws, warehouse_id, f"DESCRIBE EXTENDED {full_name}"
+            obo_ws, warehouse_id, f"DESCRIBE EXTENDED {quoted}"
         )
     except Exception:
         logger.warning("DESCRIBE EXTENDED failed for %s", full_name, exc_info=True)
@@ -170,7 +224,7 @@ def _confirm_metric_view(obo_ws, warehouse_id: str, full_name: str) -> bool:
         logger.warning("Created object %s is not reported as a metric view", full_name)
         return False
     try:
-        sql_warehouse_query(obo_ws, warehouse_id, f"SELECT 1 FROM {full_name} LIMIT 0")
+        sql_warehouse_query(obo_ws, warehouse_id, f"SELECT 1 FROM {quoted} LIMIT 0")
     except Exception:
         logger.warning("Created metric view %s is not queryable", full_name, exc_info=True)
         return False
@@ -232,7 +286,7 @@ def create_and_attach_for_run(
         wh_load_mv_candidates,
         wh_upsert_mv_created_object,
     )
-    from genie_space_optimizer.optimization.mv_yaml import create_ddl, validate
+    from genie_space_optimizer.optimization.mv_yaml import create_ddl, quote_fqn, validate
 
     if materialize:
         # Materialization is a separate consent (MV-D7) and a separate DDL path;
@@ -331,26 +385,26 @@ def create_and_attach_for_run(
             # (``yaml_text`` + ``evidence.join_strategy``). The artifact is the
             # authority when present — it pins ``join_strategy`` beside the body
             # — and the candidate row is the fallback, never a second render.
+            # Only a body stamped at MV_RENDER_VERSION replays (MV-D113).
             artifact = _load_ddl_artifact(
                 sp_ws, warehouse_id, catalog=catalog, schema=schema,
                 fingerprint=fingerprint,
             )
-            if artifact and artifact.get("yaml_text"):
-                yaml_text = str(artifact["yaml_text"])
-                stored_strategy = artifact.get("join_strategy")
-                proposed_object = str(artifact.get("proposed_object") or "")
-            elif candidate.get("yaml_text"):
-                yaml_text = str(candidate["yaml_text"])
-                evidence = candidate.get("evidence") or {}
-                stored_strategy = evidence.get("join_strategy") if isinstance(evidence, dict) else None
-                proposed_object = str(candidate.get("proposed_object") or "")
-            else:
+            body, refusal = _replay_body(artifact, candidate)
+            if body is None:
                 logger.warning(
-                    "No rendered yaml_text for suggestion %s; skipping", suggestion_id
+                    "Not creating suggestion %s: %s", suggestion_id, refusal
                 )
                 continue
+            yaml_text, stored_strategy, proposed_object = body
 
             full_name = _consented_full_name(consent, proposed_object)
+            if not _valid_uc_identifier(full_name):
+                logger.warning(
+                    "Not creating suggestion %s: %s is not a plain three-part name",
+                    suggestion_id, full_name,
+                )
+                continue
 
             # MV-D22 replay-with-revalidation. NOT_COMPARED (no oracle at trigger
             # time) is a clean firewall, not a failure — the body is immutable and
@@ -387,7 +441,7 @@ def create_and_attach_for_run(
                 # view; drop the half-made object so nothing is left behind.
                 try:
                     sql_warehouse_execute(
-                        obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {full_name}"
+                        obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {quote_fqn(full_name)}"
                     )
                 except Exception:
                     logger.warning("Could not clean up %s after a failed create", full_name)
@@ -411,7 +465,7 @@ def create_and_attach_for_run(
                 )
                 try:
                     sql_warehouse_execute(
-                        obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {full_name}"
+                        obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {quote_fqn(full_name)}"
                     )
                 except Exception:
                     logger.error(
@@ -510,8 +564,9 @@ def _describe_metric_view(
     """
     from genie_space_optimizer.backend.utils import safe_json_parse
     from genie_space_optimizer.common.warehouse import sql_warehouse_query
+    from genie_space_optimizer.optimization.mv_yaml import quote_fqn
 
-    fq = ".".join(f"`{p.strip().strip('`')}`" for p in full_name.split("."))
+    fq = quote_fqn(full_name)
     try:
         df = sql_warehouse_query(
             obo_ws, warehouse_id, f"DESCRIBE TABLE EXTENDED {fq} AS JSON"
@@ -683,7 +738,9 @@ def _claim_matches_view(
         if not expr or not source:
             continue
         try:
-            refs = extract_measures(f"SELECT {expr} AS m FROM {source}")
+            # Alias the FROM clause as ``source`` so a quoted table fqn resolves
+            # the ``source.`` qualifier the same way an unquoted one does.
+            refs = extract_measures(f"SELECT {expr} AS m FROM {source} AS source")
         except Exception:
             continue
         for ref in refs:
@@ -982,7 +1039,7 @@ def create_at_approval(
         wh_load_mv_candidates,
         wh_upsert_mv_created_object,
     )
-    from genie_space_optimizer.optimization.mv_yaml import create_ddl, validate
+    from genie_space_optimizer.optimization.mv_yaml import create_ddl, quote_fqn, validate
 
     obo_ws = require_obo_workspace_client()
     sp_ws = get_service_principal_client()
@@ -1024,25 +1081,25 @@ def create_at_approval(
     fingerprint = str(candidate.get("dedup_fingerprint") or "")
     # MV-D22 replay body — artifact first, candidate row fallback (never a
     # second render), identical to create_and_attach_for_run.
+    # Only a body stamped at MV_RENDER_VERSION replays (MV-D113).
     artifact = _load_ddl_artifact(
         sp_ws, warehouse_id, catalog=catalog, schema=schema, fingerprint=fingerprint
     )
-    if artifact and artifact.get("yaml_text"):
-        yaml_text = str(artifact["yaml_text"])
-        stored_strategy = artifact.get("join_strategy")
-        proposed_object = str(artifact.get("proposed_object") or "")
-    elif candidate.get("yaml_text"):
-        yaml_text = str(candidate["yaml_text"])
-        evidence = candidate.get("evidence") or {}
-        stored_strategy = evidence.get("join_strategy") if isinstance(evidence, dict) else None
-        proposed_object = str(candidate.get("proposed_object") or "")
-    else:
+    body, refusal = _replay_body(artifact, candidate)
+    if body is None:
         return MvCreateAtApprovalResult(
             created=False, degraded=False, suggestion_id=suggestion_id,
-            reason="this proposal has no rendered body to create; re-scan and retry",
+            reason=refusal,
         )
+    yaml_text, stored_strategy, proposed_object = body
 
     full_name = _consented_full_name(consent, proposed_object)
+    if not _valid_uc_identifier(full_name):
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason=f"{full_name} is not a plain Unity Catalog name "
+            "(letters, digits and underscores only); not creating it",
+        )
     report = validate(yaml_text, capabilities=fresh_probe.capabilities)
     if not report.ok:
         return MvCreateAtApprovalResult(
@@ -1085,7 +1142,7 @@ def create_at_approval(
         if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
             try:
                 sql_warehouse_execute(
-                    obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {full_name}"
+                    obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {quote_fqn(full_name)}"
                 )
             except Exception:
                 logger.warning("Could not clean up %s after a failed create", full_name)

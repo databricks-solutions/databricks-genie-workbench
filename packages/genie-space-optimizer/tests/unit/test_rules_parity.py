@@ -23,35 +23,56 @@ PLAYBOOK = REPO_ROOT / "docs" / "design" / "mv-advisor-playbook.md"
 INDENT = "   "
 
 
-def _fenced_rules_block(markdown: str) -> str:
-    """Return the single fenced block containing 'FEATURE RULES', de-indented.
+def _rules_fence(markdown: str) -> tuple[str, str, list[str]]:
+    """Return ``(opener, closer, body)`` of the one fence containing 'FEATURE RULES'.
 
     A fence boundary is any line whose stripped form starts with ``` so a
     language-tagged opener (```` ```bash ````) pairs with its bare ``` close.
     The block of interest is the only one whose body mentions FEATURE RULES.
-    The uniform three-space indent is stripped so the result can be compared
-    byte-for-byte against the ``.mdc``.
     """
-    blocks: list[list[str]] = []
-    body: list[str] | None = None
+    blocks: list[tuple[str, str, list[str]]] = []
+    opener: str | None = None
+    body: list[str] = []
     for line in markdown.splitlines():
         if line.strip().startswith("```"):
-            if body is None:
-                body = []
+            if opener is None:
+                opener, body = line, []
             else:
-                blocks.append(body)
-                body = None
+                blocks.append((opener, line, body))
+                opener = None
             continue
-        if body is not None:
+        if opener is not None:
             body.append(line)
 
-    matches = [b for b in blocks if any("FEATURE RULES" in ln for ln in b)]
+    matches = [b for b in blocks if any("FEATURE RULES" in ln for ln in b[2])]
     assert len(matches) == 1, (
         "expected exactly one fenced block containing 'FEATURE RULES' in "
         f"{PLAYBOOK.name}, found {len(matches)}"
     )
-    dedented = [ln[len(INDENT):] if ln.startswith(INDENT) else ln for ln in matches[0]]
+    return matches[0]
+
+
+def _leading_whitespace(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _fenced_rules_block(markdown: str) -> str:
+    """The rules fence body with its uniform three-space indent stripped, so it
+    can be compared byte-for-byte against the ``.mdc``."""
+    _opener, _closer, body = _rules_fence(markdown)
+    dedented = [ln[len(INDENT):] if ln.startswith(INDENT) else ln for ln in body]
     return "\n".join(dedented) + "\n"
+
+
+def test_the_rules_fence_closes_at_its_opening_indent() -> None:
+    """A closing fence at a different indent than its opener leaves the list
+    item, so CommonMark never closes the block and swallows the rest of the
+    playbook."""
+    opener, closer, _body = _rules_fence(PLAYBOOK.read_text(encoding="utf-8"))
+    assert _leading_whitespace(closer) == _leading_whitespace(opener), (
+        f"closing fence indent {_leading_whitespace(closer)!r} != opening fence "
+        f"indent {_leading_whitespace(opener)!r} in {PLAYBOOK.name}"
+    )
 
 
 def test_playbook_fenced_rules_block_matches_the_operative_mdc() -> None:

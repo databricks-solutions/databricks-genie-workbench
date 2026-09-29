@@ -753,17 +753,20 @@ export function ScanProgress({
   )
 }
 
-// ── EMPTY (MV-D15/D30) — three variants keyed on the governance ladder ───────
+// ── EMPTY (MV-D15/D30/D113) — four variants keyed on the governance ladder ───
 //
-// A single "nothing to propose" copy misread three distinct states as one. The
+// A single "nothing to propose" copy misread distinct states as one. The
 // advisor's skip_reason + measures_found distinguish them, and each earns its
-// own honest copy (Prompt 15.3, finding 3):
+// own honest copy (Prompt 15.3, finding 3; MV-D113 d4):
 //   - NO_PARSEABLE_SQL          → no curated SQL to read yet (add example
 //                                  questions / SQL snippets, then re-scan)
 //   - NO_CANDIDATES, found == 0 → the scan looked and found nothing recurring
 //                                  (the original clean-result copy)
 //   - NO_CANDIDATES, found > 0  → every recurring measure is ALREADY governed —
 //                                  the "you're in good shape" confidence empty
+//   - NO_SERVABLE_MEASURES      → recurring measures exist, but none resolve to
+//                                  a single table (finding 9); no count shown —
+//                                  measuresFound includes governed ones too
 // Any other/absent reason falls back to the found-nothing copy (a clean empty is
 // the safe default; we never imply a failure the advisor didn't report).
 export function MvAdvisoryEmpty({
@@ -797,6 +800,19 @@ export function MvAdvisoryEmpty({
           is already defined in a governed metric view. There&rsquo;s nothing new to propose &mdash; the measures
           your questions rely on are already governed. Re-scan after adding new SQL and any un-governed measures
           will appear here.
+        </p>
+      </div>
+    )
+  }
+
+  if (skipReason === "NO_SERVABLE_MEASURES") {
+    return (
+      <div className="rounded-xl border border-default bg-elevated px-4 py-6 text-center">
+        <p className="text-sm font-medium text-primary">Recurring measures found &mdash; none can be proposed yet</p>
+        <p className="mx-auto mt-2 max-w-prose text-sm text-muted">
+          This Agent&rsquo;s SQL repeats some measures, but each one combines columns from more than one table or
+          reads a column that isn&rsquo;t on its table. Metric view proposals are built over a single table for now.
+          Measures computed from one table&rsquo;s columns will appear here after a re-scan.
         </p>
       </div>
     )

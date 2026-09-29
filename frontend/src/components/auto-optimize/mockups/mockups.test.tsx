@@ -60,6 +60,7 @@ import {
   SelectionTwoSchemasFrame,
   SelectionTwoSchemasSuggestOnlyFrame,
 } from "./MvSelectionFidelityFrames"
+import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 
@@ -415,6 +416,13 @@ describe("M1c-2 — viewer frames carry no write affordance", () => {
     expect(html).toContain("Re-scan")
     expect(html).toContain("Run Optimization")
     expect(html).toContain("Run a new IQ Scan")
+  })
+})
+
+describe("M3 — IQ scan unservable empty (MV-D113 d4)", () => {
+  it("m3-a renders the unservable empty state through the real component", () => {
+    const html = render(<IqScanUnservableFrame />)
+    expect(html).toContain("none can be proposed yet")
   })
 })
 

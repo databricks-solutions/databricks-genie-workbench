@@ -543,6 +543,31 @@ def test_re_upserting_the_same_fingerprint_refreshes_one_row() -> None:
     assert candidates[0]["confidence_score"] == 91.5
 
 
+def test_the_body_rides_the_same_merge_as_the_stamped_evidence() -> None:
+    """MV-D113 d1: the stamp and the body it describes land in one write."""
+    spark = FakeDeltaSpark()
+    body = "version: '1.1'\nsource: '`main`.`sales`.`orders`'\n"
+    _upsert_candidate(spark, evidence={"render_version": 2}, yaml_text=body)
+
+    merge = spark.statements[0]
+    update_set = _MERGE_RE.search(merge).group("set")
+    assert "t.yaml_text = CAST(unbase64(" in update_set
+    row = mv_state.load_mv_candidates(spark, "cat", "sch", target_space_id="space-1")[0]
+    assert row["yaml_text"] == body
+
+
+def test_a_re_proposal_without_a_body_overwrites_the_old_one() -> None:
+    """An old body never survives under a new stamp."""
+    spark = FakeDeltaSpark()
+    _upsert_candidate(spark, evidence={"render_version": 0}, yaml_text="version: 0.1\n")
+    _upsert_candidate(spark, run_id="run-2", evidence={"render_version": 2})
+
+    assert "t.yaml_text = NULL" in spark.statements[-1]
+    row = mv_state.load_mv_candidates(spark, "cat", "sch", target_space_id="space-1")[0]
+    assert row["evidence"] == {"render_version": 2}
+    assert row["yaml_text"] is None
+
+
 def test_a_different_fingerprint_is_a_different_candidate() -> None:
     spark = FakeDeltaSpark()
     _upsert_candidate(spark)
