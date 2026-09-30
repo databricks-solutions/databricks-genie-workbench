@@ -17,7 +17,14 @@ the loop — call ``compute_run_scores``.
 
 from __future__ import annotations
 
-from genie_space_optimizer.common.accuracy import RunScores, compute_run_scores
+import pytest
+
+from genie_space_optimizer.common.accuracy import (
+    METRIC_VIEW_SCOPE,
+    RunScores,
+    compute_run_scores,
+)
+from genie_space_optimizer.optimization.champion import BaselineReset
 
 
 def _row(
@@ -433,3 +440,35 @@ def test_enrichment_row_alone_without_baseline_returns_none() -> None:
     ]
     scores = compute_run_scores(rows)
     assert scores == RunScores(None, None, None, None)
+
+
+# MV-D118 — a kept metric-view attach is its own iteration-0 scored step.
+
+_ZERO = {
+    "iteration": 0, "eval_scope": "full", "eval_run_id": "eval-b",
+    "timestamp": "2026-09-29T10:00:00", "overall_accuracy": 86.67,
+    "correct_count": 13, "evaluated_count": 15, "rolled_back": False,
+}
+
+
+def test_a_kept_attach_is_the_iteration_zero_winner() -> None:
+    scores = compute_run_scores([dict(_ZERO)], baseline_reset=BaselineReset("eval-b", 90.0))
+    assert scores.baseline == pytest.approx(86.67, abs=0.01)
+    assert scores.optimized == 90.0
+    assert scores.best_iteration == 0
+    assert scores.best_eval_scope == METRIC_VIEW_SCOPE
+
+
+def test_a_later_lever_beats_the_attach() -> None:
+    lever = {**_ZERO, "iteration": 1, "eval_run_id": "eval-1", "correct_count": 14,
+             "overall_accuracy": 93.33, "timestamp": "2026-09-29T11:00:00"}
+    scores = compute_run_scores(
+        [dict(_ZERO), lever], baseline_reset=BaselineReset("eval-b", 90.0),
+    )
+    assert (scores.best_iteration, scores.best_eval_scope) == (1, "full")
+
+
+def test_a_reset_for_another_baseline_changes_nothing() -> None:
+    scores = compute_run_scores([dict(_ZERO)], baseline_reset=BaselineReset("eval-x", 90.0))
+    assert (scores.best_iteration, scores.best_eval_scope) == (0, "full")
+    assert scores.optimized == scores.baseline

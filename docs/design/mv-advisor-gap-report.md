@@ -16,7 +16,7 @@ written — see [§3 Decisions needed](#3-decisions-needed).
 | Pre-17.0 drift check | **Clean as of 2026-08-25** (branch @ `9aeabc70`). `git fetch` + `git rev-list --count HEAD..origin/main` = **0** — `origin/main` is still at `ae8c4367`, exactly this branch's merge-base, so no upstream commit has moved under the gap-report surfaces (job YAML, optimizer package, routers, UI components) since the 2026-08-23 survey. No Prompt 0 diff-mode re-run is required; 17.0's PLAN phase may treat this recon as current rather than re-deriving it. Re-run this line if `main` advances before 17.0 starts. |
 | Method | Direct file reads. Every quote below was read from the working tree on the date above. Line numbers are from that state. |
 | Scope | Read-only. No feature code was written or modified in producing this report. |
-| Last MV-D9 refresh | 2026-09-30, in the PR #332 remediation M6b final-review fix commit (MV-D117: the text-field probe folds, the stale-sibling list rule, the lower-ranked disclosure's header, and the `no longer available` skip). The generated package-layout block counts none of the files this wave touched, so `--write` left it unchanged. Refreshed here: every anchor the fix wave moved, content unchanged: in `leakage.py` (−8 below `_check_string_against_corpus`, whose SQL and question passes now normalize the probe the way each corpus side was) `is_benchmark_leak` `:431-437` → `:423-429` and the Appendix list `:464`/`:766`/`:937`/`:981` → `:456`/`:758`/`:929`/`:973` (`:46-57`, `:149-154`, `:184`, `:199`, `:230`, `:296-299` and both fences unchanged); in `backend/routers/auto_optimize.py` (+25 below the new `_drop_stale_with_current_sibling`) `_build_semantic_graph` `:3021` → `:3046` and `get_space_semantic_graph` `:3502` → `:3527` (`:92`, `:170`, `:217`, `:1402-1572`, `:1663`, `:1776`, `:1982` and the `212:228` and `1775:1862` fences unchanged). `mv_create.py` has no anchor here. No `_ALL_DDL` member, task key, patch shape, route or parameter changed. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-30, in the PR #332 remediation M6b commit (MV-D117: the M3 carry-overs — stale bodies, row counts, struct paths, the firewall's quoting, and the unproven rungs). Refreshed here: the generated package-layout block (`mv_fingerprint.py` 1597 → 1673 L); the MV-D35 resolution paragraph (a stale body proves neither validated nor executable, `auto_optimize.py:1982`); the "Existing MV detection for dedup" row (a `source.`-headed struct reference canonicalizes with its path, `mv_fingerprint.py:629`, `:854`); and every anchor M6b moved, content unchanged: in `leakage.py` (+10 below the new `_fold_identifier_quotes` and `_sql_shingles`) `is_benchmark_leak` `:421-427` → `:431-437`, `_PATCH_TEXT_FIELDS` `:286-289` → `:296-299`, the embedding fields `:139-144` → `:149-154`, `_cosine_similarity` `:174` → `:184`, `get_embedding` `:189` → `:199`, `precompute_benchmark_embeddings` `:220` → `:230`, the Appendix list `:454`/`:756`/`:927`/`:971` → `:464`/`:766`/`:937`/`:981`, and the two fences `286:296` → `296:306` and `291:296` → `301:306` (`:46-57` unchanged); in `backend/routers/auto_optimize.py` (the candidate-DDL `render_version`, the quoted GRANT and the stale checks) permissions `:1401-1571` → `:1402-1572`, `/mv/probe` `:1660` → `:1663` (both sites), `/trigger` `:1773` → `:1776`, the `POST /trigger` fence `1772:1859` → `1775:1862`, `_build_semantic_graph` `:3010` → `:3021` and `get_space_semantic_graph` `:3491` → `:3502` (`:92`, `:170`, `:217` and the `212:228` fence unchanged); and in `backend/models.py` (`MvProposal.stale_body`) `MvSemanticGraphNode`/`Edge`/`MvSemanticGraph` `:563`/`:651`/`:694` → `:566`/`:654`/`:697`. `mv_advisor.py:1654` did not move (M6b's removal of `_leakage_view` is below it); `mv_create.py`, `mv_yaml.py`, `mv_scoring.py` and GSO `models.py` anchors are unchanged. No `_ALL_DDL` member, task key, patch shape, route or parameter changed. Known stale, not touched by M6b (MV-D9 not triggered — M6b touches none of these files): 19 fences into `databricks.yml`, `scripts/deploy_lib/gso_job.py`, `job_launcher.py`, `test_phase7_job_dag.py`, `ddl.py`, `backend/services/auth.py` and `integration/trigger.py`. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-30, in the PR #332 remediation M6a final-review fix commit (MV-D116). Refreshed here: the generated package-layout block (`mv_fingerprint.py` 1596 → 1597 L, `mv_scoring.py` 1636 → 1640 L); the "Existing MV detection for dedup" row (a query join source now empties the field's table set too, like a query `source:`; the governed-match anchor `:1110` → `:1114`, moved by that rule in `_definition_tables`). No `_ALL_DDL` member, task key, patch shape, route or parameter changed. Previously, 2026-09-30, in the PR #332 remediation M6a commit (MV-D116: a measure's identity includes its tables). Refreshed here: the generated package-layout block (`mv_fingerprint.py` 1505 → 1596 L, `mv_scoring.py` 1591 → 1636 L; `mv_signals.py` and `mv_advisor.py` carry no count here); the §1.5 "Deferred, bounded cost — D re-reads and re-scans the space history per candidate" paragraph (the per-candidate filter now also requires the candidate's table names, `mv_signals.py:448`); the "Existing MV detection for dedup" row (each flattened field carries its view's source and join tables, `mv_scoring.py:873` `_definition_tables`, and the governed match requires them to overlap, `:1110`); and two anchors M6a moved: the Scenario A persist/artifact pair `mv_advisor.py:1631` → `:1654` (the table-aware seed exclusion and the merged-key suppression read land above it; content unchanged) and the L-signal anchor `mv_scoring.py:158` → `:169` (`LineageOverlap`; already stale at HEAD at `:164`, moved by the new `source_table_name`/`tables_overlap` import and `source_tables` field). No `_ALL_DDL` member, task key, patch shape, route or parameter changed, and no fenced quote covers a line M6a touched. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-29, in the PR #332 remediation M4 commit, which also carries MV-D115 (the metric-view probe's space row asks Can Edit) and the two M4 live-run fixes (publish keeps a kept attach's post-attach accuracy; `attached_identifiers` reads `tables` too). For the live-run fixes, refreshed here: the leakage anchor `publish.py:601` → `:607` (the `BaselineReset` and `kept_attach_baseline_reset` imports and the `resolve_champion_row` signature moved it; content unchanged, `:32` unchanged). `mv_attach.py`, `models.py` and `champion.py` carry no line anchor or count here, and `unified_loop.py` is untouched. For MV-D115, refreshed here: the §7.3.1 probe paragraph (`CAN MANAGE` via `user_can_manage_space` → `CAN EDIT` via `user_can_edit_space`) and an amendment note there for POV §7.3.1 and §7.8. Its `auto_optimize.py` and `genie_client.py` edits are docstring-only and line-count neutral, so `/mv/probe :1660`, `/trigger :1773` and `genie_client.py:1305` do not move; `mv_entitlement.py` has no anchor here. For MV-D114 (attach and lift integrity in the job), refreshed here: the generated package-layout block (`unified_loop.py` 3877 → 3904 L; `state.py` unchanged, M4 does not touch it); the `_ALLOWED_PATCH_TYPES` fence `83:97` → `84:98` and the transient-retry anchors `unified_loop.py:137-150` → `:138-151` and `:1278-1298` → `:1279-1299` (one import line M4 added); the §1 "Baseline eval is in-process" fence `2894:2899` → `3052:3057`, content unchanged, already stale at HEAD; the candidate-eval anchor `unified_loop.py:3373-3378` → `:3549-3554` and the Appendix `baseline` task row `:2894-2899` → `:3052-3057`, both already stale at HEAD; the §2.6 `on_regression: DETACH_ONLY_NEVER_DROP` row (an exception after the attach reverts the same way, and a revert that fails twice is reported and stays `CREATED`); the §2.6 `mv_baseline` row, **MATCHES, without the extra full eval** → **SUPERSEDED IN PART by MV-D114**, its evidence re-quoted (one full-suite post-attach eval through `_native_eval`; `run_subset` on the seam, unused); and a supersession note appended to the §3 item 10 resolution, which is otherwise left as the historical record. The sweep of `run_subset`, `mv_lift`, "affected question" and "lift eval" found no other live claim to change: the §1.4 seam rows and the seam contract-test sentence still describe `run_subset` as an available method, which stays true. The gap report quotes no `mv_attach.py` line. `scripts/gap_report_counts.py --check` passes. The M4 final-review fix wave (the live-read unmeasured report and the parse-log firewall) then re-counted `unified_loop.py` 3904 → 3927 L and `mv_fingerprint.py` 1499 → 1503 L (generated block; 1505 L after the follow-up that made every `mv_fingerprint` failure log type-only, which quotes no line here), and moved the anchors below its new live-read helper and `_reconcile_mv_attachment` parameters: the transient-retry anchor `:1279-1299` → `:1288-1308`, the §1 "Baseline eval is in-process" fence `3052:3057` → `3070:3075` and the Appendix `baseline` row with it, and the candidate-eval anchor `:3549-3554` → `:3569-3574`, all content unchanged; `:138-151` and the `84:98` fence did not move. Previously, 2026-09-29, in the PR #332 remediation M3 commit (MV-D113: correct SQL for generated metric views). Refreshed here: the generated package-layout block (`config.py` 2907 → 2915 L, `mv_fingerprint.py` 1474 → 1499 L, `mv_yaml.py` 1997 → 2068 L); the §1.4 `mv_yaml.py` row (its count, and `quote_fqn` / `quote_identifier` added to its function list); the `WITH METRICS` row (every name part backtick-quoted); the Prompt 15.2 MV-D29 resolution (a supersession note, and its render example re-quoted with backticked columns); and the Tier-2 Scenario A anchor `mv_advisor.py:1499-1501` → `:1627`. The M3 final-review fix wave then re-counted `mv_scoring.py` 1589 → 1591 L, `mv_state.py` 871 → 877 L and `mv_yaml.py` 2068 → 2075 L (block and §1.4 row), and moved the Scenario A anchor `:1627` → `:1631` (the in-job persist now writes `yaml_text`, and `_unservable_reason` passes column-free aggregates). No fenced quote moved, and no site here quotes the `upsert_mv_candidate` signature or a `yaml_text` writer list. Previously, 2026-09-29, in the PR #332 remediation M2 commit (MV-D112: metric-view object and consent integrity). Refreshed here: the run-config panel's file sizes, state anchors, Start-gate and builder quotes, helper sentence and benchmark-repair anchor, and the target-picker and GRANT-remediation rows. The `TriggerRequest` comment edit is line-count neutral, so `auto_optimize.py` `212:228` and `1772:1859` are unchanged, and `mv_create.py` has no anchors here. The M2 final-review fix wave then re-counted the two run-config test files (`OptimizationConfig.test.tsx` 567 → 579 L, `OptimizationConfig.selection.test.tsx` 133 → 174 L) and extended the helper sentence (`mvCreateSelectionReason`); its `OptimizationConfig.tsx` edit is in place (still 596 L; `:584`, `:78-90`, `:98-121`, `:332-351`, `:480-488`, `:499-504` unchanged), and its drop-route edit in `auto_optimize.py` is line-count neutral and below every anchor. Previously, 2026-09-28, in the PR #332 remediation M1c-1 commit (MV-D109 as implemented across Auto-Optimize and `/api/spaces`). Refreshed here: the `POST /trigger` fenced quote (`1756:1843` → `1772:1859`, gate moved above `_is_configured`); `/trigger` `:1756` → `:1773`; `/mv/probe` `:1662` → `:1660`; permissions `:1401-1574` → `:1401-1571`; `get_space_semantic_graph` `:3485` → `:3491`; `_build_semantic_graph` `:3004` → `:3010`. The M1c-1 final-review fix wave then re-quoted the semantic-graph row's read ("the OBO-tolerant `/space/fetch` read" → the strict OBO `get_serialized_space` read, matching the route docstring) and moved its model anchors `backend/models.py:561`/`:649`/`:692` → `:563`/`:651`/`:694` (the `RUN_ID_PATTERN` import `MvDropRequest.run_id` now shares with `RunId`); its `auto_optimize.py` edits land in place or after `:3491`, so no other anchor moved. `genie_client.py:1305` (`compute_benchmark_window_recommendation`) and `auto_optimize.py:92` (router prefix) unchanged. Previously, 2026-09-28, in the PR #332 remediation M1b commit (VC-D-authz1/authz2: version control asks the space). Refreshed here: the benchmark-window anchor `genie_client.py:1309` → `:1305` (now the function definition of `compute_benchmark_window_recommendation`, which moved +2 from `:1303` to `:1305` — one `BadRequest` import and one comment line added in `check_space_access`; the docstring is at `:1311`). No other site moved: M1b changes no `auto_optimize.py` or `main.py` line, no `TriggerRequest` field, and `backend/models.py` grows only after `MvSemanticGraph` (`:692`). Previously, 2026-09-28, in the PR #332 remediation M1a commit (MV-D109: one space access resolver). Refreshed here: the probe paragraph's `user_can_manage_space` claim (now Genie-asked under the caller's token); the `POST /trigger` fenced quote (`1746:1832` → `1756:1843`, adds `require_space_access(..., EDIT)` before the identity gate); three `auto_optimize.py` line anchors M1a shifted (`/trigger` `:1746` → `:1756`, `_build_semantic_graph` `:2993` → `:3004`, `get_space_semantic_graph` `:3474` → `:3485`); the benchmark-window docstring `genie_client.py:1425` → `:1309` (`compute_benchmark_window_recommendation`, file shrank under M1a then gained the level-coercion guard); and the semantic-graph models row `backend/models.py:377` → `MvSemanticGraphNode` `:561` / `MvSemanticGraphEdge` `:649` / `MvSemanticGraph` `:692` (live `:377` is `MvProposal.attached`). Permissions (`:1401-1574`) and `/mv/probe` (`:1662`) unchanged by M1a — the end anchor was an off-by-one correction (1573 → 1574) already stale at HEAD. Previously, 2026-09-28, in the PR #332 remediation M5 commit (availability: findings 16–20b). Refreshed here: the two "self-heals run_as" claims (the app verifies and never repairs; VC-D-runas1); every `auto_optimize.py` line anchor, all eight already stale at HEAD and five of them further moved by M5 (`/permissions`, `/mv/probe`, `/trigger`, `_build_semantic_graph`, `get_space_semantic_graph`); and four fences already stale at HEAD, re-quoted (`main.py` router mounts and `OBOAuthMiddleware.dispatch`, `auto_optimize.py` `TriggerRequest` and `POST /trigger`), of which M5 further moved the `main.py` router-mount fence and changed `POST /trigger`. The three guards the version-control merges dropped are restored, so `scripts/gap_report_counts.py --check` runs again. Known stale, not touched by M5 (MV-D9 not triggered — M5 changed neither count): the §1.7 "Request model — 8 fields" and "seven `mv_*` fields" claims (`TriggerRequest` has 15 fields, five of them `mv_*`) and the "23 routes" inventory (the router has 37), the §2.4 "`TriggerRequest` now has 14 fields" row (15), and the `backend/services/auth.py` 104:114 and 117:127 fences. Previously, 2026-08-25, in the Prompt 15.8 commit (create-at-approval + facts-lead display: MV-D34/MV-D35). Refreshed here: four third-look findings appended below — the dead acceptance CUJ (RESOLVED, MV-D34), the "% confidence" category error (RESOLVED, MV-D35), the four presentation defects (RESOLVED), and finding 1's semantic-canvas fidelity gap (OPEN, tracked to Prompt 12f in the same redeploy); the baseline-count line in both rules copies moved to the measured floor 673 backend + 1512 GSO. No fenced code quotes moved (`checks`/`audience_grantees` are computed/derived, not persisted columns, so the exposure matrix and the generated package-layout block are unchanged). Previously, 2026-08-25, in the Prompt 15.5 commit (Tier-2 read-back integrity: the bundle body and the downgrade reason). Refreshed here: the two 2026-08-25 Tier-2 findings (Scenario A in-job `mv-ddl` 404; Scenario B downgraded-run `downgrade_reason` NULL) flipped OPEN → RESOLVED with root-cause resolutions appended; the generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`mv_yaml.py` grew by the `render_components` render path); no fenced code quotes moved. Previously, 2026-08-24, in the Prompt 12b commit (semantic-graph coverage lens + deferred parsing: the three debts Prompt 12 signed as swap-point comments are paid). Refreshed here: the semantic-graph API row (§ API surface) re-anchored `auto_optimize.py:1869 → :2236` (`get_space_semantic_graph`, shifted by the assembler rewrite and the new `_build_semantic_graph` at `:1990`) and `models.py:323 → :377` (`MvSemanticGraph{,Node,Edge}`, additive lens fields `coverage`/`weight`/`coverage_status`/`coverage_reason`), status moved **LANDED → LANDED+EXTENDED**; the deleted `_is_measure_column` speculative probe and the exact-name concept identity it described are gone from the code and from that row's prose (governed chips now read `DESCRIBE ... AS JSON` via `metric_view_catalog`, concept identity is `canonicalize_expr`). No fenced code quotes moved. Previously, 2026-08-23, in the Prompt 7 review commit (MV-D18 champion-record fix, end-of-run reconciliation, trusted-asset conflict surface). Refreshed there: **two fenced quotes this commit moved** (`unified_loop.py` `80-94` → `83-97` and `2862-2867` → `2894-2899`, both shifted by the reconciliation import and helper) and **six line anchors** — `unified_loop.py:3287-3292` → `:3373-3378` (candidate eval), `:2854-2859` → `:2894-2899` (Appendix baseline row), `:133-146` → `:137-150` (`_TRANSIENT_EVAL_STATUSES`, which had drifted onto the leak-drop frozenset), `state.py:923-966` → `:889` + `:983-1004` (`write_iteration` and its `eval_run_status` columns), `state.py:1101-1108` → `:1168-1175` (`mark_patches_rolled_back`), and `mv_scoring.py:150` → `:158` (`LineageOverlap`, shifted by the trusted-asset docstring). **The two fences that were already stale at HEAD are now clean**: `ddl.py:182` byte-matches (the `artifact_kind` enum gained `mv_candidate_ddl` in Prompt 6) and `test_phase7_job_dag.py:397-405` matches. The generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`unified_loop.py` 3674 → 3727 L, `state.py` 1804 → 1871 L, `mv_scoring.py` 1327 → 1498 L). All 48 fenced quotes byte-match live source as of this row; the third staleness class this exposed is recorded in MV-D9. Previously, in the Prompt 7 commit (attach patch type + lift phase). Refreshed there: **six fenced quotes whose line numbers this commit moved** (`unified_loop.py` `79-93` → `80-94` and `2854-2859` → `2862-2867`; `applier.py` `3914-3917` → `3974-3977` and `4550-4560` → `4617-4627`; `ddl.py` `280-290` → `281-291` and `292-297` → `293-298` — the `_ALL_DDL` and migrations fences shifted by the `lift_report_json` column, exactly as MV-D7 anticipated); the `PATCH_TYPES` count (50 → 51) and the now-accurate section comment; the patch-path anchor table (`_apply_action_to_config` `:3409` → `:3442`, `_apply_action_to_uc` `:3942` → `:4002`, `apply_patch_set` `:4025` → `:4091`); the "critical gap — nothing attaches a metric view" paragraph, which this commit closed; the §2.2 parameter preamble (three widget reads landed ahead of Prompt 8's mirrors); five §2.5/§2.6 rows moved off DOES-NOT-EXIST-YET (attach, rollback inheritance, `DETACH_ONLY_NEVER_DROP`, `mv_baseline`, raw-table companion); §3 items 8, 9 and 10 resolved, item 8's `attach_metric_view`/`detach_metric_view` proposal replaced by the shipped `mv_attach_data_source` so two names are not left live; and the `update_mv_yaml` follow-up ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)) closed. **Two quotes were already stale at HEAD and are re-quoted in passing** (`test_phase7_job_dag.py:397-406` → `397-405`, unchanged content one line shorter; `ddl.py:182` `artifact_kind`, whose comment gained `mv_candidate_ddl` in Prompt 6 without the fence being refreshed) — neither file was touched by this commit. All 48 fenced quotes byte-match live source as of this row. Previously, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
+| Last MV-D9 refresh | 2026-09-30, in the PR #332 remediation M6c final-review fix commit (MV-D118: a mixed attach request records status for, and measures, only the views the run applied). Refreshed here: §3 item 11, the last `_ALL_DDL` claim site still saying nine tables, now says ten (naming MV-D30's `genie_opt_mv_suppressions` as the other sites do). The fix moves only `mv_attach.py`, which carries no anchor or count here, so no fence or anchor moved. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-30, in the PR #332 remediation M6c docs commit (MV-D118: the M4/M5 carry-overs — the net-suite detach, the unconfirmed PATCH, the kept attach as its own scored step, the widened matcher, the wide-schema re-plan, `run_subset` deleted, and the resolver that stops asking MANAGE). The generated package-layout block was already current, so `--write` left it unchanged. Refreshed here: all 26 stale fences re-quoted from live code (19 stale at the M6c base, 7 moved by M6c), three with changed content — `JOB_PARAMETERS` `87:103` → `92:116` and the launcher's `job_parameters` `106:125` → `114:142`, each now carrying the five MV-D5 advisor keys, and `_ALL_DDL` `281:291` → `304:315` with `TABLE_MV_SUPPRESSIONS`; the `_ALL_DDL` claim sites (§1.6 heading, the MV-D7 note, the table list, the §2.6 persistence row and the Appendix POV row) moved from nine tables to ten; the §1.1 declared-parameter table (15 → 20, `databricks.yml:76-126`) and the §1.2 run_now count (14 → 19 keys); the `run_subset` sites (§1.4 seam paragraph, the seam contract tests, the §2.6 adapter and `mv_baseline` rows) now say MV-D118 deleted it, and §3 item 10 keeps its historical sentence with a note; and the prose anchors, each re-derived by content: `eval_runner.py` (872 L; Protocol `:305-323`, runner `:461-512`, `list_eval_runs` `:514-526`, `lift_report` method `:528-534`, the SDK rows, the docstring, assessment, poll, fail-closed and D2 lines), `unified_loop.py` (`:140-153`, `:1290-1310`, `:3596-3601`, `:3080-3085`), `applier.py` (`:3921-3954`, `:3982-4000`, `:4000`, `:4010`, `:4099`, `:4631-4641`), `config.py` (`PATCH_TYPES` `:2023`, the MV subset `:2086-2121`, `mv_attach_data_source` `:2122-2132`, `update_mv_yaml` `:2116`, table names `:1832-1896`, retired templates `:1902`), `ddl.py` (`:98`, `:100`, `:101`, `:102`, `:185`, `:266`), `run_optimize.py` (`:366` and the §2.2 widget rows), `databricks.yml` (`:40`, `:23-28`, `:60-61`, `:75`, `:79-80`, `:117-126`, `:196-200`), `scripts/deploy_lib/gso_job.py` (`upload_job_notebooks` `:127-137`, `:90`), `job_launcher.py:99-143`, `test_phase7_job_dag.py` (`:54-67`, `:186`, `:258-283`, `:469-477`), `levers.py:20-21`, `warehouse.py` (`:184-264`, `:318`, `wh_upsert_mv_consent` `:689`), `trigger.py` (`:229`, `:290`, `:384`), `auth.py:166-175`, `OptimizationConfig.tsx` (`:334-353`, `:482-490`, `:501-506`), `publish.py:647`, `test_auto_optimize_router.py:1337`, and `backend/routers/auto_optimize.py` (+1 throughout: `:93`, `:171`, `:218`, `:1403-1573`, `:1664`, `:1777`, `:1983`, `:3047`, `:3528`). Several were stale before M6c; the D8 Appendix list is re-derived to the lines that cite D8 (`leakage.py:303`/`:463`/`:773`/`:936`/`:980`, `applier.py:4119`/`:4137`) rather than shifted again, because earlier offset-only refreshes had carried it onto unrelated lines. The §3 resolution anchors (`config.py:2098-2115` in item 8) are historical records and stay. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-30, in the PR #332 remediation M6b final-review fix commit (MV-D117: the text-field probe folds, the stale-sibling list rule, the lower-ranked disclosure's header, and the `no longer available` skip). The generated package-layout block counts none of the files this wave touched, so `--write` left it unchanged. Refreshed here: every anchor the fix wave moved, content unchanged: in `leakage.py` (−8 below `_check_string_against_corpus`, whose SQL and question passes now normalize the probe the way each corpus side was) `is_benchmark_leak` `:431-437` → `:423-429` and the Appendix list `:464`/`:766`/`:937`/`:981` → `:456`/`:758`/`:929`/`:973` (`:46-57`, `:149-154`, `:184`, `:199`, `:230`, `:296-299` and both fences unchanged); in `backend/routers/auto_optimize.py` (+25 below the new `_drop_stale_with_current_sibling`) `_build_semantic_graph` `:3021` → `:3046` and `get_space_semantic_graph` `:3502` → `:3527` (`:92`, `:170`, `:217`, `:1402-1572`, `:1663`, `:1776`, `:1982` and the `212:228` and `1775:1862` fences unchanged). `mv_create.py` has no anchor here. No `_ALL_DDL` member, task key, patch shape, route or parameter changed. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-30, in the PR #332 remediation M6b commit (MV-D117: the M3 carry-overs — stale bodies, row counts, struct paths, the firewall's quoting, and the unproven rungs). Refreshed here: the generated package-layout block (`mv_fingerprint.py` 1597 → 1673 L); the MV-D35 resolution paragraph (a stale body proves neither validated nor executable, `auto_optimize.py:1982`); the "Existing MV detection for dedup" row (a `source.`-headed struct reference canonicalizes with its path, `mv_fingerprint.py:629`, `:854`); and every anchor M6b moved, content unchanged: in `leakage.py` (+10 below the new `_fold_identifier_quotes` and `_sql_shingles`) `is_benchmark_leak` `:421-427` → `:431-437`, `_PATCH_TEXT_FIELDS` `:286-289` → `:296-299`, the embedding fields `:139-144` → `:149-154`, `_cosine_similarity` `:174` → `:184`, `get_embedding` `:189` → `:199`, `precompute_benchmark_embeddings` `:220` → `:230`, the Appendix list `:454`/`:756`/`:927`/`:971` → `:464`/`:766`/`:937`/`:981`, and the two fences `286:296` → `296:306` and `291:296` → `301:306` (`:46-57` unchanged); in `backend/routers/auto_optimize.py` (the candidate-DDL `render_version`, the quoted GRANT and the stale checks) permissions `:1401-1571` → `:1402-1572`, `/mv/probe` `:1660` → `:1663` (both sites), `/trigger` `:1773` → `:1776`, the `POST /trigger` fence `1772:1859` → `1775:1862`, `_build_semantic_graph` `:3010` → `:3021` and `get_space_semantic_graph` `:3491` → `:3502` (`:92`, `:170`, `:217` and the `212:228` fence unchanged); and in `backend/models.py` (`MvProposal.stale_body`) `MvSemanticGraphNode`/`Edge`/`MvSemanticGraph` `:563`/`:651`/`:694` → `:566`/`:654`/`:697`. `mv_advisor.py:1654` did not move (M6b's removal of `_leakage_view` is below it); `mv_create.py`, `mv_yaml.py`, `mv_scoring.py` and GSO `models.py` anchors are unchanged. No `_ALL_DDL` member, task key, patch shape, route or parameter changed. Known stale, not touched by M6b (MV-D9 not triggered — M6b touches none of these files): 19 fences into `databricks.yml`, `scripts/deploy_lib/gso_job.py`, `job_launcher.py`, `test_phase7_job_dag.py`, `ddl.py`, `backend/services/auth.py` and `integration/trigger.py`. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-30, in the PR #332 remediation M6a final-review fix commit (MV-D116). Refreshed here: the generated package-layout block (`mv_fingerprint.py` 1596 → 1597 L, `mv_scoring.py` 1636 → 1640 L); the "Existing MV detection for dedup" row (a query join source now empties the field's table set too, like a query `source:`; the governed-match anchor `:1110` → `:1114`, moved by that rule in `_definition_tables`). No `_ALL_DDL` member, task key, patch shape, route or parameter changed. Previously, 2026-09-30, in the PR #332 remediation M6a commit (MV-D116: a measure's identity includes its tables). Refreshed here: the generated package-layout block (`mv_fingerprint.py` 1505 → 1596 L, `mv_scoring.py` 1591 → 1636 L; `mv_signals.py` and `mv_advisor.py` carry no count here); the §1.5 "Deferred, bounded cost — D re-reads and re-scans the space history per candidate" paragraph (the per-candidate filter now also requires the candidate's table names, `mv_signals.py:448`); the "Existing MV detection for dedup" row (each flattened field carries its view's source and join tables, `mv_scoring.py:873` `_definition_tables`, and the governed match requires them to overlap, `:1110`); and two anchors M6a moved: the Scenario A persist/artifact pair `mv_advisor.py:1631` → `:1654` (the table-aware seed exclusion and the merged-key suppression read land above it; content unchanged) and the L-signal anchor `mv_scoring.py:158` → `:169` (`LineageOverlap`; already stale at HEAD at `:164`, moved by the new `source_table_name`/`tables_overlap` import and `source_tables` field). No `_ALL_DDL` member, task key, patch shape, route or parameter changed, and no fenced quote covers a line M6a touched. `scripts/gap_report_counts.py --check` passes. Previously, 2026-09-29, in the PR #332 remediation M4 commit, which also carries MV-D115 (the metric-view probe's space row asks Can Edit) and the two M4 live-run fixes (publish keeps a kept attach's post-attach accuracy; `attached_identifiers` reads `tables` too). For the live-run fixes, refreshed here: the leakage anchor `publish.py:601` → `:607` (the `BaselineReset` and `kept_attach_baseline_reset` imports and the `resolve_champion_row` signature moved it; content unchanged, `:32` unchanged). `mv_attach.py`, `models.py` and `champion.py` carry no line anchor or count here, and `unified_loop.py` is untouched. For MV-D115, refreshed here: the §7.3.1 probe paragraph (`CAN MANAGE` via `user_can_manage_space` → `CAN EDIT` via `user_can_edit_space`) and an amendment note there for POV §7.3.1 and §7.8. Its `auto_optimize.py` and `genie_client.py` edits are docstring-only and line-count neutral, so `/mv/probe :1660`, `/trigger :1773` and `genie_client.py:1305` do not move; `mv_entitlement.py` has no anchor here. For MV-D114 (attach and lift integrity in the job), refreshed here: the generated package-layout block (`unified_loop.py` 3877 → 3904 L; `state.py` unchanged, M4 does not touch it); the `_ALLOWED_PATCH_TYPES` fence `83:97` → `84:98` and the transient-retry anchors `unified_loop.py:137-150` → `:138-151` and `:1278-1298` → `:1279-1299` (one import line M4 added); the §1 "Baseline eval is in-process" fence `2894:2899` → `3052:3057`, content unchanged, already stale at HEAD; the candidate-eval anchor `unified_loop.py:3373-3378` → `:3549-3554` and the Appendix `baseline` task row `:2894-2899` → `:3052-3057`, both already stale at HEAD; the §2.6 `on_regression: DETACH_ONLY_NEVER_DROP` row (an exception after the attach reverts the same way, and a revert that fails twice is reported and stays `CREATED`); the §2.6 `mv_baseline` row, **MATCHES, without the extra full eval** → **SUPERSEDED IN PART by MV-D114**, its evidence re-quoted (one full-suite post-attach eval through `_native_eval`; `run_subset` on the seam, unused); and a supersession note appended to the §3 item 10 resolution, which is otherwise left as the historical record. The sweep of `run_subset`, `mv_lift`, "affected question" and "lift eval" found no other live claim to change: the §1.4 seam rows and the seam contract-test sentence still describe `run_subset` as an available method, which stays true. The gap report quotes no `mv_attach.py` line. `scripts/gap_report_counts.py --check` passes. The M4 final-review fix wave (the live-read unmeasured report and the parse-log firewall) then re-counted `unified_loop.py` 3904 → 3927 L and `mv_fingerprint.py` 1499 → 1503 L (generated block; 1505 L after the follow-up that made every `mv_fingerprint` failure log type-only, which quotes no line here), and moved the anchors below its new live-read helper and `_reconcile_mv_attachment` parameters: the transient-retry anchor `:1279-1299` → `:1288-1308`, the §1 "Baseline eval is in-process" fence `3052:3057` → `3070:3075` and the Appendix `baseline` row with it, and the candidate-eval anchor `:3549-3554` → `:3569-3574`, all content unchanged; `:138-151` and the `84:98` fence did not move. Previously, 2026-09-29, in the PR #332 remediation M3 commit (MV-D113: correct SQL for generated metric views). Refreshed here: the generated package-layout block (`config.py` 2907 → 2915 L, `mv_fingerprint.py` 1474 → 1499 L, `mv_yaml.py` 1997 → 2068 L); the §1.4 `mv_yaml.py` row (its count, and `quote_fqn` / `quote_identifier` added to its function list); the `WITH METRICS` row (every name part backtick-quoted); the Prompt 15.2 MV-D29 resolution (a supersession note, and its render example re-quoted with backticked columns); and the Tier-2 Scenario A anchor `mv_advisor.py:1499-1501` → `:1627`. The M3 final-review fix wave then re-counted `mv_scoring.py` 1589 → 1591 L, `mv_state.py` 871 → 877 L and `mv_yaml.py` 2068 → 2075 L (block and §1.4 row), and moved the Scenario A anchor `:1627` → `:1631` (the in-job persist now writes `yaml_text`, and `_unservable_reason` passes column-free aggregates). No fenced quote moved, and no site here quotes the `upsert_mv_candidate` signature or a `yaml_text` writer list. Previously, 2026-09-29, in the PR #332 remediation M2 commit (MV-D112: metric-view object and consent integrity). Refreshed here: the run-config panel's file sizes, state anchors, Start-gate and builder quotes, helper sentence and benchmark-repair anchor, and the target-picker and GRANT-remediation rows. The `TriggerRequest` comment edit is line-count neutral, so `auto_optimize.py` `212:228` and `1772:1859` are unchanged, and `mv_create.py` has no anchors here. The M2 final-review fix wave then re-counted the two run-config test files (`OptimizationConfig.test.tsx` 567 → 579 L, `OptimizationConfig.selection.test.tsx` 133 → 174 L) and extended the helper sentence (`mvCreateSelectionReason`); its `OptimizationConfig.tsx` edit is in place (still 596 L; `:584`, `:78-90`, `:98-121`, `:332-351`, `:480-488`, `:499-504` unchanged), and its drop-route edit in `auto_optimize.py` is line-count neutral and below every anchor. Previously, 2026-09-28, in the PR #332 remediation M1c-1 commit (MV-D109 as implemented across Auto-Optimize and `/api/spaces`). Refreshed here: the `POST /trigger` fenced quote (`1756:1843` → `1772:1859`, gate moved above `_is_configured`); `/trigger` `:1756` → `:1773`; `/mv/probe` `:1662` → `:1660`; permissions `:1401-1574` → `:1401-1571`; `get_space_semantic_graph` `:3485` → `:3491`; `_build_semantic_graph` `:3004` → `:3010`. The M1c-1 final-review fix wave then re-quoted the semantic-graph row's read ("the OBO-tolerant `/space/fetch` read" → the strict OBO `get_serialized_space` read, matching the route docstring) and moved its model anchors `backend/models.py:561`/`:649`/`:692` → `:563`/`:651`/`:694` (the `RUN_ID_PATTERN` import `MvDropRequest.run_id` now shares with `RunId`); its `auto_optimize.py` edits land in place or after `:3491`, so no other anchor moved. `genie_client.py:1305` (`compute_benchmark_window_recommendation`) and `auto_optimize.py:92` (router prefix) unchanged. Previously, 2026-09-28, in the PR #332 remediation M1b commit (VC-D-authz1/authz2: version control asks the space). Refreshed here: the benchmark-window anchor `genie_client.py:1309` → `:1305` (now the function definition of `compute_benchmark_window_recommendation`, which moved +2 from `:1303` to `:1305` — one `BadRequest` import and one comment line added in `check_space_access`; the docstring is at `:1311`). No other site moved: M1b changes no `auto_optimize.py` or `main.py` line, no `TriggerRequest` field, and `backend/models.py` grows only after `MvSemanticGraph` (`:692`). Previously, 2026-09-28, in the PR #332 remediation M1a commit (MV-D109: one space access resolver). Refreshed here: the probe paragraph's `user_can_manage_space` claim (now Genie-asked under the caller's token); the `POST /trigger` fenced quote (`1746:1832` → `1756:1843`, adds `require_space_access(..., EDIT)` before the identity gate); three `auto_optimize.py` line anchors M1a shifted (`/trigger` `:1746` → `:1756`, `_build_semantic_graph` `:2993` → `:3004`, `get_space_semantic_graph` `:3474` → `:3485`); the benchmark-window docstring `genie_client.py:1425` → `:1309` (`compute_benchmark_window_recommendation`, file shrank under M1a then gained the level-coercion guard); and the semantic-graph models row `backend/models.py:377` → `MvSemanticGraphNode` `:561` / `MvSemanticGraphEdge` `:649` / `MvSemanticGraph` `:692` (live `:377` is `MvProposal.attached`). Permissions (`:1401-1574`) and `/mv/probe` (`:1662`) unchanged by M1a — the end anchor was an off-by-one correction (1573 → 1574) already stale at HEAD. Previously, 2026-09-28, in the PR #332 remediation M5 commit (availability: findings 16–20b). Refreshed here: the two "self-heals run_as" claims (the app verifies and never repairs; VC-D-runas1); every `auto_optimize.py` line anchor, all eight already stale at HEAD and five of them further moved by M5 (`/permissions`, `/mv/probe`, `/trigger`, `_build_semantic_graph`, `get_space_semantic_graph`); and four fences already stale at HEAD, re-quoted (`main.py` router mounts and `OBOAuthMiddleware.dispatch`, `auto_optimize.py` `TriggerRequest` and `POST /trigger`), of which M5 further moved the `main.py` router-mount fence and changed `POST /trigger`. The three guards the version-control merges dropped are restored, so `scripts/gap_report_counts.py --check` runs again. Known stale, not touched by M5 (MV-D9 not triggered — M5 changed neither count): the §1.7 "Request model — 8 fields" and "seven `mv_*` fields" claims (`TriggerRequest` has 15 fields, five of them `mv_*`) and the "23 routes" inventory (the router has 37), the §2.4 "`TriggerRequest` now has 14 fields" row (15), and the `backend/services/auth.py` 104:114 and 117:127 fences. Previously, 2026-08-25, in the Prompt 15.8 commit (create-at-approval + facts-lead display: MV-D34/MV-D35). Refreshed here: four third-look findings appended below — the dead acceptance CUJ (RESOLVED, MV-D34), the "% confidence" category error (RESOLVED, MV-D35), the four presentation defects (RESOLVED), and finding 1's semantic-canvas fidelity gap (OPEN, tracked to Prompt 12f in the same redeploy); the baseline-count line in both rules copies moved to the measured floor 673 backend + 1512 GSO. No fenced code quotes moved (`checks`/`audience_grantees` are computed/derived, not persisted columns, so the exposure matrix and the generated package-layout block are unchanged). Previously, 2026-08-25, in the Prompt 15.5 commit (Tier-2 read-back integrity: the bundle body and the downgrade reason). Refreshed here: the two 2026-08-25 Tier-2 findings (Scenario A in-job `mv-ddl` 404; Scenario B downgraded-run `downgrade_reason` NULL) flipped OPEN → RESOLVED with root-cause resolutions appended; the generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`mv_yaml.py` grew by the `render_components` render path); no fenced code quotes moved. Previously, 2026-08-24, in the Prompt 12b commit (semantic-graph coverage lens + deferred parsing: the three debts Prompt 12 signed as swap-point comments are paid). Refreshed here: the semantic-graph API row (§ API surface) re-anchored `auto_optimize.py:1869 → :2236` (`get_space_semantic_graph`, shifted by the assembler rewrite and the new `_build_semantic_graph` at `:1990`) and `models.py:323 → :377` (`MvSemanticGraph{,Node,Edge}`, additive lens fields `coverage`/`weight`/`coverage_status`/`coverage_reason`), status moved **LANDED → LANDED+EXTENDED**; the deleted `_is_measure_column` speculative probe and the exact-name concept identity it described are gone from the code and from that row's prose (governed chips now read `DESCRIBE ... AS JSON` via `metric_view_catalog`, concept identity is `canonicalize_expr`). No fenced code quotes moved. Previously, 2026-08-23, in the Prompt 7 review commit (MV-D18 champion-record fix, end-of-run reconciliation, trusted-asset conflict surface). Refreshed there: **two fenced quotes this commit moved** (`unified_loop.py` `80-94` → `83-97` and `2862-2867` → `2894-2899`, both shifted by the reconciliation import and helper) and **six line anchors** — `unified_loop.py:3287-3292` → `:3373-3378` (candidate eval), `:2854-2859` → `:2894-2899` (Appendix baseline row), `:133-146` → `:137-150` (`_TRANSIENT_EVAL_STATUSES`, which had drifted onto the leak-drop frozenset), `state.py:923-966` → `:889` + `:983-1004` (`write_iteration` and its `eval_run_status` columns), `state.py:1101-1108` → `:1168-1175` (`mark_patches_rolled_back`), and `mv_scoring.py:150` → `:158` (`LineageOverlap`, shifted by the trusted-asset docstring). **The two fences that were already stale at HEAD are now clean**: `ddl.py:182` byte-matches (the `artifact_kind` enum gained `mv_candidate_ddl` in Prompt 6) and `test_phase7_job_dag.py:397-405` matches. The generated package-layout block was rewritten by `scripts/gap_report_counts.py --write` (`unified_loop.py` 3674 → 3727 L, `state.py` 1804 → 1871 L, `mv_scoring.py` 1327 → 1498 L). All 48 fenced quotes byte-match live source as of this row; the third staleness class this exposed is recorded in MV-D9. Previously, in the Prompt 7 commit (attach patch type + lift phase). Refreshed there: **six fenced quotes whose line numbers this commit moved** (`unified_loop.py` `79-93` → `80-94` and `2854-2859` → `2862-2867`; `applier.py` `3914-3917` → `3974-3977` and `4550-4560` → `4617-4627`; `ddl.py` `280-290` → `281-291` and `292-297` → `293-298` — the `_ALL_DDL` and migrations fences shifted by the `lift_report_json` column, exactly as MV-D7 anticipated); the `PATCH_TYPES` count (50 → 51) and the now-accurate section comment; the patch-path anchor table (`_apply_action_to_config` `:3409` → `:3442`, `_apply_action_to_uc` `:3942` → `:4002`, `apply_patch_set` `:4025` → `:4091`); the "critical gap — nothing attaches a metric view" paragraph, which this commit closed; the §2.2 parameter preamble (three widget reads landed ahead of Prompt 8's mirrors); five §2.5/§2.6 rows moved off DOES-NOT-EXIST-YET (attach, rollback inheritance, `DETACH_ONLY_NEVER_DROP`, `mv_baseline`, raw-table companion); §3 items 8, 9 and 10 resolved, item 8's `attach_metric_view`/`detach_metric_view` proposal replaced by the shipped `mv_attach_data_source` so two names are not left live; and the `update_mv_yaml` follow-up ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)) closed. **Two quotes were already stale at HEAD and are re-quoted in passing** (`test_phase7_job_dag.py:397-406` → `397-405`, unchanged content one line shorter; `ddl.py:182` `artifact_kind`, whose comment gained `mv_candidate_ddl` in Prompt 6 without the fence being refreshed) — neither file was touched by this commit. All 48 fenced quotes byte-match live source as of this row. Previously, in the Prompt 5.5 remediation commit. Line counts are no longer hand-maintained: the package-layout block below is generated between markers by `scripts/gap_report_counts.py`, and `test_gap_report_counts.py` fails on a stale block or a stale `(N L)` claim anywhere else in this file. Refreshed here: the generated block (`config.py` 2632 → 2669 L, `mv_yaml.py` 1643 → 1755 L), the metric-view surface row for `mv_yaml.py`, the §2.5 sole-renderer paragraph (a second guard now covers the DDL wrapper), and a new open-follow-up note for `update_mv_yaml` ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)). Byte-matched and unchanged: all 48 fenced quotes. Previously, in the Prompt 5.5 commit `e104a779`: Refreshed for that commit: `config.py` (2545 → 2632 L), the new `mv_yaml.py` row in §1.4's layout and metric-view-surface tables, and the two `WITH METRICS` claims in §2.5 and the patch-path table — that row moves from DOES-NOT-EXIST-YET to PARTIALLY MATCHES now that the statement is rendered but still not executed. Two unrelated counts in §6's test table were found stale by one line each and corrected in passing (`test_phase7_job_dag.py` 406 → 405, `test_four_notebook_architecture.py` 86 → 85); neither file changed in this commit. All 48 fenced code quotes in this report were byte-matched against live source, and every `(N L)` claim re-counted — both clean as of this row. Refreshed just before it, at `7b55df61`: the `config.py` and `mv_scoring.py` counts, the same two `WITH METRICS` claims, the `is_benchmark_leak` anchor in §2.7 (`:414-420` → `:421-427`), and one blank-line anchor in the Appendix leakage list (`:764` → `:756`). Byte-matched and unchanged: every other §1.4 count and both `leakage.py` fences (`286-296`, `291-296`). Still imprecise, intent unverified rather than wrong: `leakage.py:454`, `:927`, `:971` and `applier.py:4045`, `:4063` land on guard, comment, or docstring lines near their subject rather than on a definition. |
 
 ## Headline
 
@@ -44,7 +44,7 @@ DAG.
 
 Resource key `gso-optimization-runner`, job name `gso-optimization-job`:
 
-```49:59:databricks.yml
+```51:61:databricks.yml
     gso-optimization-runner:
       name: "gso-optimization-job"
       description: >-
@@ -70,7 +70,7 @@ Resource key `gso-optimization-runner`, job name `gso-optimization-job`:
 Every task carries `environment_key: default`, `timeout_seconds: 14400`,
 `max_retries: 0`. Task 1 verbatim:
 
-```116:137:databricks.yml
+```133:154:databricks.yml
         - task_key: intake_and_snapshot
           notebook_task:
             notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_intake_and_snapshot.py
@@ -98,7 +98,7 @@ Every task carries `environment_key: default`, `timeout_seconds: 14400`,
 Note the handoff mechanism: **`base_parameters` referencing `{{job.parameters.*}}`**, not
 `{{tasks.*.values.*}}`. The bundle states the rule explicitly:
 
-```110:114:databricks.yml
+```127:131:databricks.yml
       # Every task carries its job-parameter subset as base_parameters so there
       # is NO inter-task task-value plumbing (D9). run_id/catalog/schema
       # bootstrap each notebook; all other handoff state is read from Delta by
@@ -106,7 +106,7 @@ Note the handoff mechanism: **`base_parameters` referencing `{{job.parameters.*}
       # task (Workbench-specific — see the parameter note above).
 ```
 
-**The 15 declared job parameters** (`databricks.yml:74-109`):
+**The 20 declared job parameters** (`databricks.yml:76-126`):
 
 | Parameter | Default |
 |---|---|
@@ -125,6 +125,11 @@ Note the handoff mechanism: **`base_parameters` referencing `{{job.parameters.*}
 | `warehouse_id` | `""` |
 | `workload_warehouse_ids` | `"[]"` |
 | `llm_model` | `${var.llm_model}` |
+| `enable_metric_view_suggestions` | `"false"` |
+| `mv_action_mode` | `"suggest_only"` |
+| `mv_attach_views` | `""` |
+| `mv_consent_id` | `""` |
+| `mv_min_confidence` | `"75"` |
 
 #### Package bundle — `packages/genie-space-optimizer/databricks.yml`
 
@@ -149,7 +154,7 @@ Jobs REST API rather than DABs:
 # reads job params + durable Delta state by run_id — no task-value plumbing, D9).
 ```
 
-```87:103:scripts/deploy_lib/gso_job.py
+```92:116:scripts/deploy_lib/gso_job.py
 JOB_PARAMETERS = {
     "run_id": "",
     "space_id": "",
@@ -166,6 +171,14 @@ JOB_PARAMETERS = {
     "warehouse_id": "",
     "workload_warehouse_ids": "[]",
     "llm_model": "",
+    # Metric view advisor parameters (MV-D5 four-place lockstep). Defaults mirror
+    # both databricks.yml bundles. mv_action_mode / mv_min_confidence are
+    # declared-but-unconsumed today (see run_optimize.py and gap report §2.2).
+    "enable_metric_view_suggestions": "false",
+    "mv_action_mode": "suggest_only",
+    "mv_attach_views": "",
+    "mv_consent_id": "",
+    "mv_min_confidence": "75",
 }
 ```
 
@@ -209,8 +222,8 @@ Where the POV's stages went:
 |---|---|
 | `preflight` | Split: snapshot + manifest → `intake_and_snapshot`; benchmark QC → `benchmark_qc_and_repair`. The module `optimization/preflight.py` still exists and is imported by both. |
 | `baseline` (eval task) | **In-process**, iteration 0 inside `optimize`. Not a task. See [§1.4](#14-genie-benchmark-eval-api). |
-| `enrichment` | Absorbed into `optimize` (lever 0, "Proactive Enrichment", always runs, not user-selectable — `integration/levers.py:22-24`). |
-| `lever_loop` | `run_unified_optimization_loop` in `optimization/unified_loop.py`, called in-process from `run_optimize.py:337`. |
+| `enrichment` | Absorbed into `optimize` (lever 0, "Proactive Enrichment", always runs, not user-selectable — `integration/levers.py:20-21`). |
+| `lever_loop` | `run_unified_optimization_loop` in `optimization/unified_loop.py`, called in-process from `run_optimize.py:366`. |
 | `finalize` | `publish_and_audit` |
 | `deploy` | **Removed — out of scope (D7).** No task, no `deploy_target` parameter. |
 
@@ -233,7 +246,7 @@ parameter arrives and is ignored.
 
 The constraint is documented in the launcher itself:
 
-```98:105:packages/genie-space-optimizer/src/genie_space_optimizer/backend/job_launcher.py
+```106:113:packages/genie-space-optimizer/src/genie_space_optimizer/backend/job_launcher.py
             # Only send parameters the 4-task job declares. Every key here must
             # be a job parameter on the runner (run_now rejects undeclared
             # keys), so this set MUST stay a subset of the declared params in
@@ -245,10 +258,10 @@ The constraint is documented in the launcher itself:
 ```
 
 **`run_now` rejects undeclared keys.** That is the hard edge: place 4 must be a *subset*
-of places 1–3. The existing set is 14 keys — one fewer than the 15 declared, because
+of places 1–3. The existing set is 19 keys — one fewer than the 20 declared, because
 `benchmark_repair_max_tries` is deliberately left to its job default:
 
-```106:125:packages/genie-space-optimizer/src/genie_space_optimizer/backend/job_launcher.py
+```114:142:packages/genie-space-optimizer/src/genie_space_optimizer/backend/job_launcher.py
             job_parameters={
                 "run_id": run_id,
                 "space_id": space_id,
@@ -268,6 +281,15 @@ of places 1–3. The existing set is 14 keys — one fewer than the 15 declared,
                 "llm_model": llm_model or os.getenv("LLM_MODEL", ""),
                 "workload_warehouse_ids": workload_warehouse_ids,
                 "benchmark_policy": benchmark_policy,
+                # Metric view advisor parameters (MV-D5). enable_metric_view_suggestions
+                # gates the advisor phase in run_optimize.py; mv_attach_views /
+                # mv_consent_id drive the MV-D16 attach phase. mv_action_mode and
+                # mv_min_confidence are declared-but-unconsumed today (see run_optimize).
+                "enable_metric_view_suggestions": enable_metric_view_suggestions,
+                "mv_action_mode": mv_action_mode,
+                "mv_attach_views": mv_attach_views,
+                "mv_consent_id": mv_consent_id,
+                "mv_min_confidence": mv_min_confidence,
             },
 ```
 
@@ -322,7 +344,7 @@ requires:
 
 Existing tests already pin the launcher end of this contract:
 
-```348:376:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
+```420:448:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
 def test_submit_optimization_threads_loop_knobs_into_job_parameters():
     """GSO v2 Phase 10 (item 4): an app-chosen target_accuracy / max_attempts
     rides into the Jobs run_now job_parameters so a user override beats the
@@ -370,7 +392,7 @@ def test_submit_optimization_threads_loop_knobs_into_job_parameters():
 |---|---|---|
 | Distribution name | `genie-space-optimizer` | `packages/genie-space-optimizer/pyproject.toml:2` |
 | Import name | `genie_space_optimizer` | `src/genie_space_optimizer/` |
-| Version | Dynamic, from git via `uv-dynamic-versioning`; built wheel is renamed to the fixed `genie_space_optimizer-0.0.0-py3-none-any.whl` | `pyproject.toml` `[tool.hatch.version]`; `databricks.yml:38` |
+| Version | Dynamic, from git via `uv-dynamic-versioning`; built wheel is renamed to the fixed `genie_space_optimizer-0.0.0-py3-none-any.whl` | `pyproject.toml` `[tool.hatch.version]`; `databricks.yml:40` |
 | Python | `>=3.10` (root app requires `>=3.11`) | `pyproject.toml:5` |
 | Test config | `pythonpath=["src"]`, `testpaths=["tests"]` | `pyproject.toml` `[tool.pytest.ini_options]` |
 
@@ -413,11 +435,12 @@ src/genie_space_optimizer/jobs/
 ```
 
 Each begins with `# Databricks notebook source` and is uploaded either by
-`databricks sync` (bundle path, `databricks.yml:22-23` sync include) or by
-`upload_source_notebook` (installer path, `scripts/deploy_lib/gso_job.py:114-124`). The
+`databricks sync` (bundle path, `databricks.yml:23-28` sync include) or by
+`upload_job_notebooks` (installer path, `scripts/deploy_lib/gso_job.py:127-137`, which calls
+`upload_source_notebook` once per task at `:136`). The
 wheel is attached as a serverless environment dependency, not as an executable:
 
-```198:203:databricks.yml
+```224:229:databricks.yml
       environments:
         - environment_key: default
           spec:
@@ -435,7 +458,7 @@ has **no precedent in this repo** and would be the first wheel task.
 
 **Task values: forbidden.** Cross-task state is Delta-by-`run_id` only, enforced by test:
 
-```397:405:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
+```469:477:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
 def test_no_dbutils_notebook_run_or_task_values_in_new_notebooks():
     """D9: the new notebook entrypoints must not use dbutils.notebook.run or
     inter-task task values."""
@@ -451,7 +474,7 @@ The replacement pattern is the **artifact table** — `write_required_artifact` 
 `load_latest_artifact_record` downstream, with a missing-record gate. The QC handoff is
 the worked example, and its ordering is itself pinned by test:
 
-```186:211:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
+```258:283:packages/genie-space-optimizer/tests/unit/test_phase7_job_dag.py
 def test_benchmark_qc_is_a_required_verified_handoff():
     jobs_dir = (
         _PKG_ROOT
@@ -495,7 +518,7 @@ src/genie_space_optimizer/
   integration/    trigger.py, apply.py, discard.py, revert.py, levers.py, types.py
   iq_scan/        scoring.py, context.py, rls_audit.py
   jobs/           the four notebooks + _helpers.py
-  optimization/   applier.py (4788 L), benchmarking.py (4594 L), unified_loop.py (3927 L),
+  optimization/   applier.py (4802 L), benchmarking.py (4594 L), unified_loop.py (3955 L),
                   preflight.py (3461 L), state.py (1871 L), publish.py, ddl.py,
                   eval_runner.py, leakage.py, models.py, champion.py,
                   wide_schema*.py, genie_eval_taxonomy.py,
@@ -526,11 +549,12 @@ exists**, including the CMK/unavailable fallback path.
 for "a thin adapter so a contract change costs you one file." That adapter exists.
 
 **Single seam:** `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py`
-(890 L). The `EvalRunner` Protocol (`:305-330`) is the only interface the optimizer
-evaluates through; `OfficialBenchmarkRunner` (`:468-518`) is the sole implementation.
-Additive MV-advisor methods on that same class: `run_subset` (`:520-530`),
-`list_eval_runs` (`:532-544`), and `lift_report` (`:232-301` module function /
-`:546-552` method). There is no second adapter.
+(872 L). The `EvalRunner` Protocol (`:305-323`) is the only interface the optimizer
+evaluates through; `OfficialBenchmarkRunner` (`:461-512`) is the sole implementation, and
+its `run` serializes calls across threads. Additive MV-advisor methods on that same class:
+`list_eval_runs` (`:514-526`) and `lift_report` (`:232-301` module function /
+`:528-534` method). There is no second adapter. `run_subset` was deleted by MV-D118
+(PR #332 M6c): nothing called it once MV-D114 moved the lift eval to the full suite.
 
 ```1:19:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/eval_runner.py
 """EvalRunner seam over the official Databricks Genie Benchmark (Eval-Run) API.
@@ -556,11 +580,11 @@ We never double-run the retired in-process scorer path.
 
 | POV API | Repo call | Called via | Line |
 |---|---|---|---|
-| Create eval run | `genie_create_eval_run(space_id, benchmark_question_ids=qids)` | SDK method on `w.genie` | `eval_runner.py:583-585` |
-| Get / poll | `genie_get_eval_run(space_id, eval_run_id)` | SDK | `eval_runner.py:638` |
-| List eval runs | `genie_list_eval_runs(space_id, page_size, page_token)` | SDK, paginated via `OfficialBenchmarkRunner.list_eval_runs` | `eval_runner.py:544-546` |
-| List results | `genie_list_eval_results(space_id, eval_run_id, page_size, page_token)` | SDK, paginated | `eval_runner.py:662-667` |
-| Result details | `genie_get_eval_result_details(space_id, eval_run_id, result_id)` | SDK | `eval_runner.py:669-671` |
+| Create eval run | `genie_create_eval_run(space_id, benchmark_question_ids=qids)` | SDK method on `w.genie` | `eval_runner.py:558-560` |
+| Get / poll | `genie_get_eval_run(space_id, eval_run_id)` | SDK | `eval_runner.py:613` |
+| List eval runs | `genie_list_eval_runs(space_id, page_size, page_token)` | SDK, paginated via `OfficialBenchmarkRunner.list_eval_runs` | `eval_runner.py:519-521` |
+| List results | `genie_list_eval_results(space_id, eval_run_id, page_size, page_token)` | SDK, paginated | `eval_runner.py:637-642` |
+| Result details | `genie_get_eval_result_details(space_id, eval_run_id, result_id)` | SDK | `eval_runner.py:644-646` |
 
 All calls are **SDK methods, not raw REST**. Neither `optimization/benchmarking.py` nor
 `common/genie_client.py` touches the eval-run APIs.
@@ -576,7 +600,7 @@ _TERMINAL_STATUSES = frozenset(
 ```
 
 One correction to the POV: the SDK field is **`eval_run_status`, not `status`** — flagged
-in the module docstring at `:29-31` as a planning-note error already caught once.
+in the module docstring at `:30-32` as a planning-note error already caught once.
 
 **Assessment reasons.** All four the POV names (`EMPTY_RESULT`, `RESULT_MISSING_ROWS`,
 `RESULT_EXTRA_ROWS`, `RESULT_MISSING_COLUMNS`) exist in
@@ -584,7 +608,7 @@ in the module docstring at `:29-31` as a planning-note error already caught once
 `SINGLE_CELL_DIFFERENCE`, `EMPTY_GOOD_SQL`, `COLUMN_TYPE_DIFFERENCE`, and a family of
 `LLM_JUDGE_*` keys, exported as `ASSESSMENT_REASON_CODES` (`genie_eval_taxonomy.py:87`).
 Per-question assessment is `GOOD` / `BAD` / `NEEDS_REVIEW`
-(`eval_runner.py:416-439`).
+(`eval_runner.py:409-432`).
 
 **Retry and polling.**
 
@@ -604,15 +628,16 @@ EVAL_RUN_PAGE_SIZE: int = int(os.getenv("GSO_EVAL_RUN_PAGE_SIZE", "100"))
 ```
 
 Fixed 20 s interval (no backoff), 2700 s deadline, never sleeping past the deadline
-(`eval_runner.py:633-655`). An **outer** transient retry sits in `unified_loop.py`: up to
+(`eval_runner.py:608-630`). An **outer** transient retry sits in `unified_loop.py`: up to
 `_MAX_TRANSIENT_EVAL_RETRIES = 2` extra attempts, but only for
 `_TRANSIENT_EVAL_STATUSES = {"EVALUATION_TIMEOUT", "EVALUATION_CANCELLED"}` —
-`EVALUATION_FAILED` is returned on the first attempt (`unified_loop.py:138-151`,
-`:1288-1308`).
+`EVALUATION_FAILED` is returned on the first attempt (`unified_loop.py:140-153`,
+`:1290-1310`).
 
 `tests/unit/test_eval_timeouts.py` covers conversation/statement timeouts, **not** the
-eval-run adapter. Seam contract tests (terminal statuses, taxonomy reasons, `run_subset`
-serialization, `lift_report`) live in `tests/unit/test_eval_runner.py`.
+eval-run adapter. Seam contract tests (terminal statuses, taxonomy reasons, `run`
+serialization, `lift_report`, and the MV-D118 pin that the seam has no subset method) live
+in `tests/unit/test_eval_runner.py`.
 
 **Where `eval_run_id` is stored:** `genie_opt_iterations.eval_run_id` /
 `.eval_run_status`, written by `state.write_iteration` (`state.py:889`, columns at `:983-1004`). This
@@ -621,7 +646,7 @@ though the accuracy is *also* stored, in `overall_accuracy`.
 
 **Baseline eval is in-process, not a task:**
 
-```3070:3075:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
+```3080:3085:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
     baseline_eval = _native_eval(
         w,
         space_id=space_id,
@@ -630,8 +655,8 @@ though the accuracy is *also* stored, in `overall_accuracy`.
     )
 ```
 
-reached from `jobs/run_optimize.py:337` → `run_unified_optimization_loop(...)`. Candidate
-evals run in the same loop at `unified_loop.py:3569-3574`.
+reached from `jobs/run_optimize.py:366` → `run_unified_optimization_loop(...)`. Candidate
+evals run in the same loop at `unified_loop.py:3596-3601`.
 
 ---
 
@@ -676,17 +701,17 @@ MLflow run. The champion iteration is selected from ``genie_opt_iterations``
 | `new_value` | `new_text` (with `old_text` for the prior value) |
 | `operation` | `op` on the *rendered command*, one of `add` / `update` / `remove` / `update_section` / `rewrite` |
 
-**Patch types.** The canonical registry is `PATCH_TYPES` in `common/config.py:2005` — 51
+**Patch types.** The canonical registry is `PATCH_TYPES` in `common/config.py:2023` — 51
 keys. The Lever-2 metric-view subset exists (`add_mv_measure`, `update_mv_measure`,
 `remove_mv_measure`, `add_mv_dimension`, `remove_mv_dimension`, `update_mv_yaml`, all
-`scope: uc_artifact`) at `config.py:2068-2103`, joined in Prompt 7 by
-`mv_attach_data_source` (`scope: genie_config`, `HIGH_RISK`) at `config.py:2104-2115`.
+`scope: uc_artifact`) at `config.py:2086-2121`, joined in Prompt 7 by
+`mv_attach_data_source` (`scope: genie_config`, `HIGH_RISK`) at `config.py:2122-2132`.
 
 The **live loop allowlist is 11 types and contains no MV type** — and under **MV-D16** the
 attach type stays out of it deliberately, because this frozenset is the surface the LLM is
 allowed to propose from, not the surface the engine is allowed to apply:
 
-```84:98:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
+```86:100:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/unified_loop.py
 _ALLOWED_PATCH_TYPES: frozenset[str] = frozenset(
     {
         "update_description",
@@ -711,18 +736,18 @@ _ALLOWED_PATCH_TYPES: frozenset[str] = frozenset(
 | `proposals_to_patches` | `(proposals: list[dict]) -> list[dict]` | `applier.py:2411` |
 | `render_patch` | `(patch: dict, space_id: str, space_config: dict) -> dict` | `applier.py:2926` |
 | `_apply_action_to_config` | `(config: dict, action: dict) -> bool` | `applier.py:3442` |
-| `_apply_action_to_uc` | `(w: WorkspaceClient, action: dict) -> bool` | `applier.py:4002` |
-| `apply_patch_set` | `(w, space_id, patches, metadata_snapshot, *, apply_mode, deploy_target, force_apply, benchmark_corpus) -> dict` | `applier.py:4091` |
+| `_apply_action_to_uc` | `(w: WorkspaceClient, action: dict) -> bool` | `applier.py:4010` |
+| `apply_patch_set` | `(w, space_id, patches, metadata_snapshot, *, apply_mode, deploy_target, force_apply, benchmark_corpus) -> dict` | `applier.py:4099` |
 
 **This was the report's "critical gap — nothing attaches a metric view to a space", and
 Prompt 7 closed it.** `add_table` / `remove_table` mutate `data_sources.tables` only
 (`applier.py:3905-3919`); the attach now has its own `metric_views` branch beside them
-(`applier.py:3921-3946`), which appends the entry and re-sorts the collection the way the
+(`applier.py:3921-3954`), which appends the entry and re-sorts the collection the way the
 Genie API requires. The Lever-2 `uc_artifact` MV sections remain explicit config-level
 no-ops, and that is still correct — they describe an already-attached view's measures and
 dimensions, which live in UC and not in the space config:
 
-```3974:3977:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
+```3982:3985:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
     # ── TVF / MV operations (config-level no-ops for uc_artifact patches) ──
     if section in ("tvf_parameters", "tvf_definition", "tvfs", "mv_measures", "mv_dimensions", "mv_yaml"):
         if section == "tvfs":
@@ -730,7 +755,7 @@ dimensions, which live in UC and not in the space config:
 ```
 
 Only the `tvfs` branch does anything (it appends to `instructions.sql_functions`); the
-three `mv_*` sections fall straight through to `return True` at `applier.py:3993`.
+three `mv_*` sections fall straight through to `return True` at `applier.py:4000`.
 `mv_attach_data_source` is routed nowhere near this region — it has its own `metric_views`
 branch above, which is the point of MV-D16's "a real applier action, not the render-only
 path".
@@ -740,7 +765,7 @@ path".
 not an executable path — it is the `created_by` column comment on the MV-D7 created-objects
 table added by Commit 1:
 
-```262:262:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```266:266:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
     created_by          STRING        NOT NULL COMMENT 'Identity that executed CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never the service principal',
 ```
 
@@ -750,7 +775,7 @@ body and the wrapping `CREATE VIEW … WITH METRICS LANGUAGE YAML` (`mv_yaml.cre
 the only module in the package that renders either — pinned by two guards:
 `test_mv_yaml_is_the_only_module_that_renders_yaml`, which fails on a `yaml.dump` anywhere else,
 and `test_mv_yaml_is_the_only_module_that_builds_metric_view_ddl`, which fails on `CREATE VIEW`
-or `WITH METRICS` in any executable string outside it — the `ddl.py:262` comment above is
+or `WITH METRICS` in any executable string outside it — the `ddl.py:266` comment above is
 allowed by exact `(path, line)` pin, not by a substring exemption, so a new f-string assembly
 site fails even if it copies that wording. Execution remains the backend's under OBO (MV-D1);
 the job, which runs as the service principal, still never issues the statement.
@@ -837,7 +862,7 @@ with it. (L is genuinely per-candidate — its footprint read is scoped by each 
 
 **Closed in Prompt 7 — `update_mv_yaml` is validated**
 ([#331](https://github.com/databricks-solutions/databricks-genie-workbench/issues/331)).
-`update_mv_yaml` (`config.py:2098`) was the one path by which LLM-authored metric view YAML
+`update_mv_yaml` (`config.py:2116`) was the one path by which LLM-authored metric view YAML
 entered the system, and it transported `new_text` verbatim while every engine-generated path
 was checked by `mv_yaml.validate`. `render_patch` now runs that same validator on the
 incoming YAML (`applier.py:3392-3404`) and raises `RuntimeError` when it fails, which is the
@@ -866,7 +891,7 @@ That is the extent of Lever 2 today — "Update metric view column descriptions"
 
 **Rollback is snapshot-based, not patch-inverse.**
 
-```4617:4627:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
+```4631:4641:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/applier.py
 def rollback(
     apply_log: dict,
     w: WorkspaceClient | None,
@@ -923,11 +948,11 @@ and `synonyms` — all free text — so a new MV patch type must be added to
 
 ### 1.6 Persistence
 
-#### Delta — nine tables, not ~15
+#### Delta — ten tables, not ~15
 
 `optimization/ddl.py` is the sole definition point:
 
-```281:291:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```304:315:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
 _ALL_DDL: dict[str, str] = {
     TABLE_RUNS: _GENIE_OPT_RUNS_DDL,
     TABLE_STAGES: _GENIE_OPT_STAGES_DDL,
@@ -938,11 +963,14 @@ _ALL_DDL: dict[str, str] = {
     TABLE_MV_CANDIDATES: _GENIE_OPT_MV_CANDIDATES_DDL,
     TABLE_MV_CONSENTS: _GENIE_OPT_MV_CONSENTS_DDL,
     TABLE_MV_CREATED_OBJECTS: _GENIE_OPT_MV_CREATED_OBJECTS_DDL,
+    TABLE_MV_SUPPRESSIONS: _GENIE_OPT_MV_SUPPRESSIONS_DDL,
 }
 ```
 
-> **Refreshed for `MV-D7`:** the last three entries are the metric view advisor
-> tables added in Prompt 1; the counts in this section were refreshed with them.
+> **Refreshed for `MV-D7`:** the three `genie_opt_mv_candidates` / `_consents` /
+> `_created_objects` entries are the metric view advisor tables added in Prompt 1; the
+> counts in this section were refreshed with them. `genie_opt_mv_suppressions` joined in
+> Prompt 15.3 (MV-D30), which made the set ten.
 
 | Table | Grain | Partition | Notes |
 |---|---|---|---|
@@ -955,11 +983,12 @@ _ALL_DDL: dict[str, str] = {
 | `genie_opt_mv_candidates` | one row per (`target_space_id`, `dedup_fingerprint`) | `target_space_id` | MV-D7; upserted, so a re-proposing run refreshes rather than duplicates |
 | `genie_opt_mv_consents` | one row per `probe_id` | *none* | MV-D7; unpartitioned because `run_id` is NULL until trigger time |
 | `genie_opt_mv_created_objects` | one row per (`run_id`, `suggestion_id`) | `run_id` | MV-D7; `CREATED\|ATTACHED\|DETACHED\|DROPPED` lifecycle |
+| `genie_opt_mv_suppressions` | one row per (`target_space_id`, `measure_fingerprint`) | `target_space_id` | MV-D30; a bundle rejection fans out here per measure |
 
 Two more exist outside `_ALL_DDL`: `genie_opt_scan_snapshots` (`scan_snapshots.py:41-58`)
 and the per-domain `genie_benchmarks_{domain}` (`benchmarks.py:194-209`).
 
-Names are constants in `common/config.py:1830-1845`. FQN is
+Names are constants in `common/config.py:1832-1896`. FQN is
 `{catalog}.{schema}.<table>`, resolved by string replacement:
 
 ```69:70:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/state.py
@@ -970,7 +999,7 @@ Names are constants in `common/config.py:1830-1845`. FQN is
 `genie_opt_artifacts.artifact_kind` is the extension point an advisor would use — it is a
 documented enum in the column comment:
 
-```182:182:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```183:183:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
     artifact_kind       STRING        NOT NULL COMMENT 'run_manifest | wide_schema_inventory | wide_schema_evidence | wide_schema_selection_plan | wide_schema_profile_telemetry | wide_schema_prompt_telemetry | wide_schema_audit | space_metadata | benchmark_qc | space_quality_enrichment | publish_record | mv_candidate_ddl',
 ```
 
@@ -978,7 +1007,7 @@ documented enum in the column comment:
 
 Additive only, via a tuple of `(table, column, "TYPE COMMENT '...'")`:
 
-```293:298:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
+```317:322:packages/genie-space-optimizer/src/genie_space_optimizer/optimization/ddl.py
 ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (TABLE_RUNS, "job_id", "STRING COMMENT 'Databricks Job definition ID'"),
     (TABLE_PATCHES, "provenance_json", "STRING COMMENT 'JSON: full provenance chain from judge verdicts to this patch'"),
@@ -989,7 +1018,7 @@ ADDITIVE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
 
 Applied as `ALTER TABLE ... ADD COLUMN` by `state._apply_one_migration` (`state.py:167-181`),
 driven from `ensure_optimization_tables` → `_migrate_add_columns` (`state.py:54-92`,
-`:119-146`). A warehouse-side twin lives at `common/warehouse.py:183-261`.
+`:119-146`). A warehouse-side twin lives at `common/warehouse.py:184-264`.
 
 **To add a new column:** edit the CREATE DDL string, append to
 `ADDITIVE_COLUMN_MIGRATIONS`, wire the writer, extend the Workbench API model, add tests —
@@ -1017,7 +1046,7 @@ has no basis. Grep for `/Volumes` across `packages/` returns **zero** hits; in `
 it appears only in `tests/test_deploy_lib.py` fixtures. The one real Volumes use is the
 GSO **wheel** upload path:
 
-```164:167:scripts/deploy_lib/gso_job.py
+```177:180:scripts/deploy_lib/gso_job.py
     wheel_path = (
         cfg.gso_wheel_path
         or f"/Volumes/{cfg.catalog}/{cfg.gso_schema}/app_artifacts/genie_space_optimizer-0.0.0-py3-none-any.whl"
@@ -1080,7 +1109,7 @@ app.include_router(watch_admin_router)
 
 Prefixes are declared on the router objects, not at inclusion: `/api` (analysis, spaces),
 `/api/admin`, `/api/auth`, `/api/create`, `/api/auto-optimize`
-(`backend/routers/auto_optimize.py:92`), `/api/watch/*`.
+(`backend/routers/auto_optimize.py:93`), `/api/watch/*`.
 
 #### OBO token extraction
 
@@ -1123,7 +1152,7 @@ Prefixes are declared on the router objects, not at inclusion: `/api` (analysis,
 
 Three accessors, and the distinction matters for the POV's security model:
 
-```104:114:backend/services/auth.py
+```117:127:backend/services/auth.py
 def get_workspace_client() -> WorkspaceClient:
     """Get the WorkspaceClient for the current context.
 
@@ -1137,7 +1166,7 @@ def get_workspace_client() -> WorkspaceClient:
     return _get_default_client()
 ```
 
-```117:127:backend/services/auth.py
+```130:140:backend/services/auth.py
 def require_obo_workspace_client() -> WorkspaceClient:
     """Return only the request's user-authorized client.
 
@@ -1151,7 +1180,7 @@ def require_obo_workspace_client() -> WorkspaceClient:
     return obo
 ```
 
-`get_service_principal_client()` (`:130-139`) returns the singleton SP client.
+`get_service_principal_client()` (`:166-175`) returns the singleton SP client.
 
 > **`require_obo_workspace_client` is the right primitive for the POV's entitlement
 > probe.** `get_workspace_client` silently falls back to the SP when no user token is
@@ -1162,7 +1191,7 @@ def require_obo_workspace_client() -> WorkspaceClient:
 `POST /api/auto-optimize/trigger` — **not** `POST /api/auto-optimize/runs` as POV §7.6
 states.
 
-```1775:1862:backend/routers/auto_optimize.py
+```1776:1863:backend/routers/auto_optimize.py
 @router.post("/trigger")
 async def trigger(body: TriggerRequest, request: Request):
     """Trigger an optimization run for a Genie Agent."""
@@ -1255,7 +1284,7 @@ async def trigger(body: TriggerRequest, request: Request):
 
 **Request model — 8 fields, defined inline in the router, not in `backend/models.py`:**
 
-```212:228:backend/routers/auto_optimize.py
+```213:229:backend/routers/auto_optimize.py
 class TriggerRequest(BaseModel):
     space_id: str = Field(..., pattern=r"^[0-9a-zA-Z_-]{1,128}$")
     apply_mode: str = "genie_config"
@@ -1279,7 +1308,7 @@ None of the POV's seven `mv_*` fields exist.
 
 **Full route inventory** (23 routes, all under `/api/auto-optimize`): `GET /health`,
 `GET /permissions/{space_id}`, `POST /mv/probe` (added by Prompt 5 — the OBO
-entitlement probe, `auto_optimize.py:1663`), `POST /trigger`, `GET /runs/{run_id}`,
+entitlement probe, `auto_optimize.py:1664`), `POST /trigger`, `GET /runs/{run_id}`,
 `GET /runs/{run_id}/status`, `GET /levers`, `POST /runs/{run_id}/apply`,
 `POST /runs/{run_id}/discard`, `POST /runs/{run_id}/revert`,
 `GET /runs/{run_id}/revert-options`, `GET /spaces/{space_id}/current-version`,
@@ -1292,20 +1321,20 @@ entitlement probe, `auto_optimize.py:1663`), `POST /trigger`, `GET /runs/{run_id
 
 #### Which identity launches the job — the SP
 
-```114:115:packages/genie-space-optimizer/src/genie_space_optimizer/integration/trigger.py
+```122:123:packages/genie-space-optimizer/src/genie_space_optimizer/integration/trigger.py
         ws: OBO-authenticated ``WorkspaceClient`` for the requesting user.
         sp_ws: Service-principal ``WorkspaceClient`` for job submission.
 ```
 
 `trigger_optimization` writes run state with the **OBO** client (`wh_create_run(ws, ...)`,
-`trigger.py:265`) and submits with the **SP** (`submit_optimization(sp_ws, ...)`,
-`trigger.py:281`).
+`trigger.py:290`) and submits with the **SP** (`submit_optimization(sp_ws, ...)`,
+`trigger.py:384`).
 
 > **This is the single biggest architectural obstacle in the POV.** POV §7.8 step 4 says
 > the MV is created *"under OBO"* inside `metric_view_apply`, and POV §5 says *"the SP is
 > never a write path for metric views."* But the job runs as the SP — the bundle
 > description says so plainly ("SP executes with granted privileges on user schemas",
-> `databricks.yml:58-59`), and the app verifies — never repairs — at startup that the Job's `run_as` is the app SP
+> `databricks.yml:60-61`), and the app verifies — never repairs — at startup that the Job's `run_as` is the app SP
 > (`backend/main.py:193-222`, `_verify_gso_job_run_as` and `startup`). **The user's OBO token does not exist inside the job.**
 > Either the DDL executes in the app process under OBO before the job starts, or it
 > executes in the job as the SP and the POV's security model is violated. See
@@ -1313,7 +1342,7 @@ entitlement probe, `auto_optimize.py:1663`), `POST /trigger`, `GET /runs/{run_id
 
 #### The user-level UC entitlement probe — built by Prompt 5
 
-`GET /api/auto-optimize/permissions/{space_id}` (`auto_optimize.py:1402-1572`) probes the
+`GET /api/auto-optimize/permissions/{space_id}` (`auto_optimize.py:1403-1573`) probes the
 **service principal** — Genie `CAN_MANAGE` plus SP schema read via
 `probe_sp_required_access(sp_ws, ...)` — and returns grant SQL naming the SP. It answers
 "can the SP run this job", not "may this user create an object here." It remains
@@ -1371,7 +1400,7 @@ State is local `useState` / `useRef` hooks — ten run-config (`:78-90`) plus ei
 MV-advisor states and two in-flight refs (`:98-121`, from `mvEnabled` to
 `mvProbeInFlight`). The Start button gate:
 
-```584:584:frontend/src/components/auto-optimize/OptimizationConfig.tsx
+```586:586:frontend/src/components/auto-optimize/OptimizationConfig.tsx
               disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid || mvStartBlock !== null}
 ```
 
@@ -1556,10 +1585,10 @@ incompatible, and adopting the POV means changing or deleting existing behaviour
 
 | POV assumption | Status | Evidence |
 |---|---|---|
-| `preflight` task | **CONFLICTS** | Split into `intake_and_snapshot` + `benchmark_qc_and_repair`; `test_phase7_job_dag.py:57-67` asserts `preflight` absent |
-| `baseline` task | **CONFLICTS** | In-process iteration 0 in `optimize` (`unified_loop.py:3070-3075`); `baseline_eval` asserted absent |
+| `preflight` task | **CONFLICTS** | Split into `intake_and_snapshot` + `benchmark_qc_and_repair`; `test_phase7_job_dag.py:54-67` asserts `preflight` absent |
+| `baseline` task | **CONFLICTS** | In-process iteration 0 in `optimize` (`unified_loop.py:3080-3085`); `baseline_eval` asserted absent |
 | `enrichment` task | **CONFLICTS** | Absorbed into `optimize` as lever 0; asserted absent |
-| `lever_loop` task | **CONFLICTS** | `run_unified_optimization_loop` in-process (`run_optimize.py:337`); asserted absent |
+| `lever_loop` task | **CONFLICTS** | `run_unified_optimization_loop` in-process (`run_optimize.py:366`); asserted absent |
 | `finalize` task | **CONFLICTS** | Renamed `publish_and_audit`; asserted absent |
 | `deploy` task | **CONFLICTS** | Removed, out of scope (D7); asserted absent |
 | `mv_gate` (`condition_task`) | **CONFLICTS** | `test_no_condition_tasks` (`:70-76`) forbids all condition tasks |
@@ -1578,14 +1607,14 @@ incompatible, and adopting the POV means changing or deleting existing behaviour
 
 As of **Prompt 8**, the five shipped advisor parameters are **registered job parameters**
 with the four-place lockstep of [§1.2](#12-the-four-place-parameter-lockstep-requirement)
-complete: declared in the root bundle (`databricks.yml:115-124`), the package bundle
+complete: declared in the root bundle (`databricks.yml:117-126`), the package bundle
 (`packages/genie-space-optimizer/databricks.yml:81-90`), `gso_job.JOB_PARAMETERS`
 (`scripts/deploy_lib/gso_job.py:111-115`), and the launcher's run_now map
 (`backend/job_launcher.py:137-141`, with defaulted keyword-only kwargs at `:85-89`; as of
 **Prompt 9** the caller `integration/trigger.py` now threads real values through
 `trigger_optimization` — the effective `mv_action_mode`, `mv_attach_views` from the OBO create
 hook, `mv_consent_id` (probe id), and `mv_min_confidence`). Each is also passed
-to the **optimize task's** `base_parameters` in every mirror (`databricks.yml:194-198`,
+to the **optimize task's** `base_parameters` in every mirror (`databricks.yml:196-200`,
 `packages/genie-space-optimizer/databricks.yml:156-160`, `gso_job.py:70-71` base_param_keys)
 — the pass-through step that actually delivers a job value to the `run_optimize.py` widget;
 a parameter declared but omitted there silently resolves to the widget default. `space_id`
@@ -1603,12 +1632,12 @@ base_parameters wiring above; before Prompt 8 every one resolved to its widget d
 
 | Parameter | Default | Status |
 |---|---|---|
-| `space_id` | `""` | **MATCHES** — `databricks.yml:77-78` |
-| `enable_metric_view_suggestions` | `"false"` | **MATCHES (Prompt 8)** — declared `databricks.yml:115`, pkg `:81`, `gso_job.py:111`, launcher `:137`/`:85`; passed to optimize `databricks.yml:194`; consumed as the advisor gate `run_optimize.py:117-118`, `:461` |
-| `mv_attach_views` | `""` | **MATCHES (Prompt 8)** — declared `databricks.yml:119`, pkg `:85`, `gso_job.py:113`, launcher `:139`/`:87`; passed to optimize `:196`; consumed by the MV-D16 attach phase `run_optimize.py:126`, `:383`. Shipped attach input, not in the POV's list |
-| `mv_consent_id` | `""` | **MATCHES (Prompt 8)** — declared `databricks.yml:121`, pkg `:87`, `gso_job.py:114`, launcher `:140`/`:88`; passed to optimize `:197`; consumed `run_optimize.py:127`, `:384`. Shipped name for the POV's `mv_consent`; value is a **probe id** |
-| `mv_action_mode` | `"suggest_only"` | **MATCHES (Prompt 9 threads it)** — declared `databricks.yml:117`, pkg `:83`, `gso_job.py:112`, launcher `:138`/`:86`; passed to optimize `:195`; read at `run_optimize.py:134`. The **effective** mode is now set by the trigger flow: `trigger_optimization` sends the caller's `mv_action_mode` but downgrades it to `suggest_only` when the create hook attaches nothing (MV-D1) |
-| `mv_min_confidence` | `"75"` | **MATCHES (Prompt 9 threads it)** — declared `databricks.yml:123`, pkg `:89`, `gso_job.py:115`, launcher `:141`/`:89`; passed to optimize `:198`; read at `run_optimize.py:135`. The trigger flow now forwards the request's `mv_min_confidence` (or the `"75"` default) instead of always sending the default. Job-side consumption as the advisor confidence cutoff remains a `mv_advisor`/`mv_scoring` follow-on |
+| `space_id` | `""` | **MATCHES** — `databricks.yml:79-80` |
+| `enable_metric_view_suggestions` | `"false"` | **MATCHES (Prompt 8)** — declared `databricks.yml:117`, pkg `:81`, `gso_job.py:111`, launcher `:137`/`:85`; passed to optimize `databricks.yml:196`; consumed as the advisor gate `run_optimize.py:118-119`, `:462` |
+| `mv_attach_views` | `""` | **MATCHES (Prompt 8)** — declared `databricks.yml:121`, pkg `:85`, `gso_job.py:113`, launcher `:139`/`:87`; passed to optimize `:198`; consumed by the MV-D16 attach phase `run_optimize.py:127`, `:384`. Shipped attach input, not in the POV's list |
+| `mv_consent_id` | `""` | **MATCHES (Prompt 8)** — declared `databricks.yml:123`, pkg `:87`, `gso_job.py:114`, launcher `:140`/`:88`; passed to optimize `:199`; consumed `run_optimize.py:128`, `:385`. Shipped name for the POV's `mv_consent`; value is a **probe id** |
+| `mv_action_mode` | `"suggest_only"` | **MATCHES (Prompt 9 threads it)** — declared `databricks.yml:119`, pkg `:83`, `gso_job.py:112`, launcher `:138`/`:86`; passed to optimize `:197`; read at `run_optimize.py:135`. The **effective** mode is now set by the trigger flow: `trigger_optimization` sends the caller's `mv_action_mode` but downgrades it to `suggest_only` when the create hook attaches nothing (MV-D1) |
+| `mv_min_confidence` | `"75"` | **MATCHES (Prompt 9 threads it)** — declared `databricks.yml:125`, pkg `:89`, `gso_job.py:115`, launcher `:141`/`:89`; passed to optimize `:200`; read at `run_optimize.py:136`. The trigger flow now forwards the request's `mv_min_confidence` (or the `"75"` default) instead of always sending the default. Job-side consumption as the advisor confidence cutoff remains a `mv_advisor`/`mv_scoring` follow-on |
 | `mv_target_catalog` | `""` | **DOES-NOT-EXIST-YET (out of job scope)** — the target lives on the consent row, not a job parameter (playbook Prompt 8) |
 | `mv_target_schema` | `""` | **DOES-NOT-EXIST-YET (out of job scope)** — same; note `schema` already means the GSO state schema, so the `mv_` prefix would be load-bearing if it were ever added |
 | `mv_materialize` | `"false"` | **DOES-NOT-EXIST-YET (out of job scope)** — materialization is a separate backend/OBO consent (MV-D1), never a job parameter. **Accepted-but-inert (Prompt 9):** `TriggerRequest.mv_materialize` now exists and `mv_create.create_and_attach_for_run` accepts it, but the create path logs it and installs a **non-materialized** metric view — materialization is a separate DDL path (`CREATE MATERIALIZED VIEW` + its own `materialize_consented` consent, MV-D7). **Resolved (Prompt 11):** the run-config panel surfaces NO materialize control — not live, and deliberately not disabled-with-rationale either (a disabled control for an *unbuilt* feature advertises vapor, unlike first-run "Create and attach" which is disabled because the user can still unlock it). `mv_materialize` stays plumbed through `buildOptimizationTriggerRequest` and is cleared with every other `mv_*` field when the toggle is off (tested); the materialization prompt adds the control and nothing else. **Owner:** the materialization path, a post-Phase-3 prompt — note MV-D1 also requires an `EXPLAIN CREATE MATERIALIZED VIEW` precheck that exists nowhere yet |
@@ -1622,29 +1651,29 @@ root bundle are strings (19 in the package bundle, which omits the Workbench-onl
 
 | POV task value | Status | Evidence |
 |---|---|---|
-| `{{tasks.enrichment.values.profile_table}}` | **CONFLICTS** | Task values forbidden (`test_phase7_job_dag.py:397-406`); no `enrichment` task |
-| `{{tasks.baseline.values.eval_run_id}}` | **CONFLICTS** | Same; `eval_run_id` lives in `genie_opt_iterations.eval_run_id` (`ddl.py:101`) |
+| `{{tasks.enrichment.values.profile_table}}` | **CONFLICTS** | Task values forbidden (`test_phase7_job_dag.py:469-477`); no `enrichment` task |
+| `{{tasks.baseline.values.eval_run_id}}` | **CONFLICTS** | Same; `eval_run_id` lives in `genie_opt_iterations.eval_run_id` (`ddl.py:102`) |
 | `{{tasks.preflight.values.mv_effective_mode}}` | **CONFLICTS** | Same; no `preflight` task |
 | `{{tasks.metric_view_advisor.values.candidate_table}}` | **CONFLICTS** | Same |
 | `{{tasks.metric_view_apply.values.created_metric_views}}` | **CONFLICTS** | Same |
-| The whole §7.7.1 JSON contract (`candidate_count`, `high_confidence_count`, `requested_mode`, `effective_mode`, `downgrade_reason`, `consent_probe_id`, `baseline_eval_run_id`, `created_metric_views`, `ddl_artifact_path`, `space_patch_ids`, `tables_freed`, `advisor_status`) | **CONFLICTS as a mechanism; viable as a payload** | The *fields* are fine. Persist them as a `genie_opt_artifacts` row with a new `artifact_kind` (e.g. `mv_advisor`) and read them downstream by `run_id`, exactly as `benchmark_qc` does (`test_phase7_job_dag.py:186-211`) |
+| The whole §7.7.1 JSON contract (`candidate_count`, `high_confidence_count`, `requested_mode`, `effective_mode`, `downgrade_reason`, `consent_probe_id`, `baseline_eval_run_id`, `created_metric_views`, `ddl_artifact_path`, `space_patch_ids`, `tables_freed`, `advisor_status`) | **CONFLICTS as a mechanism; viable as a payload** | The *fields* are fine. Persist them as a `genie_opt_artifacts` row with a new `artifact_kind` (e.g. `mv_advisor`) and read them downstream by `run_id`, exactly as `benchmark_qc` does (`test_phase7_job_dag.py:258-283`) |
 | "Only numeric, string, and boolean values are usable inside If/else operands" | **MOOT** | No If/else tasks exist; the constraint disappears with the mechanism |
 
 ### 2.4 The consent gate and entitlement probe (POV §7.3, §7.3.1, §7.6)
 
 | POV assumption | Status | Evidence |
 |---|---|---|
-| `POST /api/auto-optimize/runs` starts a run | **CONFLICTS (path)** | The route is `POST /api/auto-optimize/trigger` (`auto_optimize.py:1776`) |
+| `POST /api/auto-optimize/runs` starts a run | **CONFLICTS (path)** | The route is `POST /api/auto-optimize/trigger` (`auto_optimize.py:1777`) |
 | Request body carries `enable_metric_view_suggestions` etc. | **MATCHES (Prompt 9)** | `TriggerRequest` now has 14 fields (`auto_optimize.py` — the 8 loop fields plus `enable_metric_view_suggestions`, `mv_action_mode`, `mv_min_confidence`, `mv_approved_suggestion_ids`, `mv_consent`, `mv_materialize`), threaded through `trigger()` into `trigger_optimization(..., mv_attach_hook=...)` |
-| `jobs.run_now(job_parameters={...})` | **MATCHES** | `job_launcher.py:91-126` |
-| Pre-run entitlement probe under OBO | **MATCHES** | `mv_entitlement.probe` reads `grants.get_effective(principal=<user>)` under `require_obo_workspace_client`, exposed as `POST /mv/probe` (`auto_optimize.py:1663`). `/permissions/{space_id}` still probes the **SP** and is unchanged |
+| `jobs.run_now(job_parameters={...})` | **MATCHES** | `job_launcher.py:99-143` |
+| Pre-run entitlement probe under OBO | **MATCHES** | `mv_entitlement.probe` reads `grants.get_effective(principal=<user>)` under `require_obo_workspace_client`, exposed as `POST /mv/probe` (`auto_optimize.py:1664`). `/permissions/{space_id}` still probes the **SP** and is unchanged |
 | Probe result JSON (`probe_id`, `checked_as`, `verdict`, `missing`, `remediation_sql`, `fallback_mode`) | **MATCHES** | `MvProbeResult` in `backend/models.py`, plus the typed `privileges` / `capabilities` rows MV-D8 requires and POV §7.3.1's sample now shows |
-| Consent recorded with the run | **MATCHES** | Recorded in `genie_opt_mv_consents` keyed on `probe_id`, not as a `genie_opt_runs` column — so no `ADDITIVE_COLUMN_MIGRATIONS` entry is needed. Written from the backend by `wh_upsert_mv_consent` (`common/warehouse.py:473`), the Statement-Execution twin of `mv_state.upsert_mv_consent`, because the app has no SparkSession. `run_id` stays NULL until trigger time |
-| "Writes execute under OBO" | **CONFLICTS** | The job runs as the SP (`databricks.yml:58-59`; `main.py:193-222` verifies `run_as` is the SP (VC-D-runas1)). No OBO token exists inside the job. |
+| Consent recorded with the run | **MATCHES** | Recorded in `genie_opt_mv_consents` keyed on `probe_id`, not as a `genie_opt_runs` column — so no `ADDITIVE_COLUMN_MIGRATIONS` entry is needed. Written from the backend by `wh_upsert_mv_consent` (`common/warehouse.py:689`), the Statement-Execution twin of `mv_state.upsert_mv_consent`, because the app has no SparkSession. `run_id` stays NULL until trigger time |
+| "Writes execute under OBO" | **CONFLICTS** | The job runs as the SP (`databricks.yml:60-61`; `main.py:193-222` verifies `run_as` is the SP (VC-D-runas1)). No OBO token exists inside the job. |
 | "The SP is never a write path for metric views" | **CONFLICTS** | Directly contradicted by the above |
 | Preflight re-verification / downgrade-never-upgrade | **PARTIALLY MATCHES** | `mv_entitlement.verify(consent, fresh_probe)` implements the comparison and only ever returns `create_and_attach` or `suggest_only` with a `downgrade_reason`. Downgrades on a worse fresh verdict, an identity or target change, a **missing consent row** (reachable because persistence is best-effort), and a **different `observed_warehouse_id`** than the capabilities were read on (MV-D13). **Now called (Prompt 9):** `mv_create.verify_consent` loads the consent, runs a fresh OBO probe against the consented target, and calls `verify` before any create; a downgrade abandons the create and the run proceeds as `suggest_only`. Re-verification belongs in the backend at trigger time, not in a job task — the job has no OBO token |
 | UI toggle + target picker + mode radio | **MATCHES (Prompt 11)** | `MvSuggestSection` (wired into `OptimizationConfig.tsx`) renders the "Suggest metric views" toggle, the suggest-only / create-and-attach mode radios, and — on the re-run gate — the approved-proposal checkboxes. The target is READ from the selected proposals' `proposed_object` (`deriveMvTarget` over `selectedMvProposals`; a selection spanning two schemas has no target and blocks Start, MV-D112), not chosen in a free-form catalog/schema picker (MV-D23); first-run disables create-and-attach with the MV-D1 rationale, and the OBO probe gates it on the re-run. Follows the benchmark-repair consent idiom at `:332-351` |
-| Copyable `GRANT` remediation | **PARTIALLY MATCHES** | Same idiom already exists for warehouse grants — read-only `<textarea>` at `OptimizationConfig.tsx:480-488` and `:499-504`. The `GET /runs/{run_id}/mv-ddl` route now returns a `grant_sql` template alongside the DDL |
+| Copyable `GRANT` remediation | **PARTIALLY MATCHES** | Same idiom already exists for warehouse grants — read-only `<textarea>` at `OptimizationConfig.tsx:482-490` and `:501-506`. The `GET /runs/{run_id}/mv-ddl` route now returns a `grant_sql` template alongside the DDL |
 
 *Prompt 9 backend surface (landed).* Four routes on `auto_optimize.py`: `GET /runs/{run_id}/mv-proposals`, `GET /runs/{run_id}/mv-ddl`, `POST /mv/proposals/{id}/decision`, `POST /mv/created/{id}/drop` (OBO, confirm-gated, DETACHED-only, non-owner 403). **Five** `wh_*` helpers in `common/warehouse.py` (not four — the drop route needs `wh_load_mv_created_object` to authorize the read): `wh_load_mv_candidates`, `wh_record_mv_candidate_decision`, `wh_upsert_mv_created_object`, `wh_update_mv_created_object_status`, `wh_load_mv_created_object`, pinned to the `mv_state` column contract by `test_wh_mv_state.py`. The OBO create-and-attach orchestration is `backend/services/mv_create.py`, reached from the engine through `trigger_optimization`'s `mv_attach_hook` (MV-D20/D22). *Prompt 11 adds a fifth route:* `GET /spaces/{space_id}/mv-proposals?approved_for_rerun=` — the space-scoped twin of the run-keyed proposals route (MV-D23), reusing `wh_load_mv_candidates`'s `target_space_id` / `approved_for_rerun` filters and returning the SAME `MvProposal` element type via a sibling `MvSpaceProposalsResponse`. *Prompt 13 adds a sixth route:* `GET /runs/{run_id}/mv-created` — the create-and-attach results read the output panel needs, returning the run's `MvCreatedObject` ledger with each object's `lift_report` (the frozen 14-key `LiftReport` mirrored as `MvLiftReport`, not reshaped) plus the run-level `downgrade_reason` from the consent row. Read-only and SP-tolerant (MV-D20). This grows the run-scoped Prompt-9 family from **four routes to five**. It also lands **two more `wh_*` readers** (now seven): `wh_load_mv_created_objects` (plural, by `run_id`, mirroring the singular loader) and `wh_load_mv_consent_by_run` (the consent table is `probe_id`-keyed but carries `run_id` from trigger time), both pinned by `test_wh_mv_state.py`. **TS mirror (Prompt 11 landed the run-config consumers):** `MvConsentPayload`, `MvProposal`, `MvProposalsResponse`, `MvSpaceProposalsResponse`, and `MvProbeRequest` are mirrored in `frontend/src/types/index.ts` and consumed by `MvSuggestSection`. **Prompt 13 landed the output-screen consumers:** `MvDdlArtifact`, `MvLiftReport`, `MvCreatedObject`, `MvCreatedObjectsResponse`, `MvProposalDecisionRequest`/`Response`, and `MvDropRequest`/`Response` are now mirrored too, consumed by `MvSuggestOnlyPanel` / `MvCreateAttachPanel` (via `MvRunOutputSection`) on the run-detail screen.
 
@@ -1654,13 +1683,13 @@ root bundle are strings (19 in the package bundle, which omits the Workbench-onl
 |---|---|---|
 | Patch = `field_path` + `new_value` | **CONFLICTS** | Patches are dicts of `type`/`target`/`new_text`/`old_text` (`applier.py:2649-2659`); `field_path` appears nowhere in `src/` |
 | `field_path: "data_sources.metric_views"`, `operation: "append"` | **CONFLICTS** | No path-addressed patches; `op` ∈ `add`/`update`/`remove`/`update_section`/`rewrite` on the *rendered command* |
-| Attach MV by patching `data_sources.metric_views[]` | **MATCHES** | `mv_attach_data_source` (`config.py:2104-2115`) with a real `metric_views` branch in `_apply_action_to_config` (`applier.py:3921-3946`); the Lever-2 `uc_artifact` MV sections remain no-ops (`:3975-3993`) and are unrelated |
+| Attach MV by patching `data_sources.metric_views[]` | **MATCHES** | `mv_attach_data_source` (`config.py:2122-2132`) with a real `metric_views` branch in `_apply_action_to_config` (`applier.py:3921-3954`); the Lever-2 `uc_artifact` MV sections remain no-ops (`:3982-4000`) and are unrelated |
 | Companion patch removing covered raw tables | **PARTIALLY MATCHES** | `remove_table` exists (`applier.py:3914-3919`) and is not in `_ALLOWED_PATCH_TYPES`; MV-D16 reuses it rather than adding an `mv_remove_raw_table` twin, so the raw-table half is available to a caller and not to the LLM |
 | `CREATE VIEW … WITH METRICS LANGUAGE YAML` | **MATCHES (Prompt 9)** | `mv_yaml.create_ddl` builds the statement and `mv_yaml.generate` the YAML body it wraps; `mv_create.create_and_attach_for_run` now executes it under OBO via `sql_warehouse_execute(obo_ws, ...)` after replaying the persisted `yaml_text` and revalidating (MV-D22). Every name part is backtick-quoted (MV-D113). The job still runs as the SP and never issues it |
 | `EXPLAIN CREATE MATERIALIZED VIEW` precheck | **DOES-NOT-EXIST-YET** | — |
-| "Inherits existing versioning, diff, rollback" | **MATCHES** | `genie_opt_patches` carries the attach (`mv_attach.py`, keyed `run_id:0:2:idx`); rollback is still whole-snapshot (`applier.py:4617-4627`), which MV-D16 makes sufficient by placing the attach where nothing else is in its snapshot |
+| "Inherits existing versioning, diff, rollback" | **MATCHES** | `genie_opt_patches` carries the attach (`mv_attach.py`, keyed `run_id:0:2:idx`); rollback is still whole-snapshot (`applier.py:4631-4641`), which MV-D16 makes sufficient by placing the attach where nothing else is in its snapshot |
 | `on_regression: DETACH_ONLY_NEVER_DROP` | **MATCHES** | `mv_attach._detach` reverts through `applier.rollback` and writes status `DETACHED` with the lift report; no code path drops the UC object; an exception after the attach reverts the same way; a revert that fails twice is reported and the row stays `CREATED`, never `DETACHED` (MV-D114) |
-| Idempotency key `sha256(space_id \| expr \| sources)` | **PARTIALLY MATCHES (precedent)** | `genie_opt_artifacts.content_hash` exists for exactly this (`ddl.py:184`); the launcher already builds a SHA-256 idempotency token (`job_launcher.py:33-37`) |
+| Idempotency key `sha256(space_id \| expr \| sources)` | **PARTIALLY MATCHES (precedent)** | `genie_opt_artifacts.content_hash` exists for exactly this (`ddl.py:185`); the launcher already builds a SHA-256 idempotency token (`job_launcher.py:33-37`) |
 | `tables_freed` / 30-table cap | **DOES-NOT-EXIST-YET** | No table-count ceiling logic |
 | Free text in MV proposals must clear the leakage firewall | **CONFLICTS with current coverage** | `_PATCH_TEXT_FIELDS` covers only example-SQL types (`leakage.py:296-299`); package AGENTS.md requires new text-carrying patch types to be routed through it. `mv_attach_data_source` needs no entry — it carries an identifier and no free text — so the obligation still belongs to whatever ships MV `comment`/`synonyms` edits. Prompt 6c's curated harvest also needs no `_PATCH_TEXT_FIELDS` entry, but for a different reason: it carries no free text into evidence at all — every curated statement is canonicalized through `mv_fingerprint` (which erases literals) before it reaches a bucket's `canonical_expr`, so a quoted literal a human wrote into a snippet or example cannot survive into persisted evidence (pinned by `test_no_curated_corpus_statement_leaks_a_quoted_literal`) |
 
@@ -1668,18 +1697,18 @@ root bundle are strings (19 in the package bundle, which omits the Workbench-onl
 
 | POV assumption | Status | Evidence |
 |---|---|---|
-| Create eval run for benchmarks | **MATCHES** | `eval_runner.py:583-585` |
-| Get eval run / poll | **MATCHES** | `eval_runner.py:638` |
-| List evaluation results | **MATCHES** | `eval_runner.py:662-667` |
-| Get result details | **MATCHES** | `eval_runner.py:669-671` |
+| Create eval run for benchmarks | **MATCHES** | `eval_runner.py:558-560` |
+| Get eval run / poll | **MATCHES** | `eval_runner.py:613` |
+| List evaluation results | **MATCHES** | `eval_runner.py:637-642` |
+| Get result details | **MATCHES** | `eval_runner.py:644-646` |
 | List eval runs in space | **MATCHES** | `OfficialBenchmarkRunner.list_eval_runs` (`eval_runner.py:539-551`) |
-| "Wrap the Beta endpoints behind a thin adapter" | **MATCHES — already done** | `EvalRunner` Protocol + `OfficialBenchmarkRunner`, single seam (`eval_runner.py:305-330`, `:468-518`); `run_subset` / `lift_report` / `list_eval_runs` are additive on that seam |
+| "Wrap the Beta endpoints behind a thin adapter" | **MATCHES — already done** | `EvalRunner` Protocol + `OfficialBenchmarkRunner`, single seam (`eval_runner.py:305-323`, `:461-512`); `lift_report` / `list_eval_runs` are additive on that seam (`run_subset` was deleted by MV-D118) |
 | Statuses `RUNNING`/`DONE`/`NOT_STARTED`/`EVALUATION_FAILED`/`EVALUATION_CANCELLED`/`EVALUATION_TIMEOUT` | **MATCHES** | `eval_runner.py:33-34`, `:59-63` |
 | Reasons `EMPTY_RESULT`/`RESULT_MISSING_ROWS`/`RESULT_EXTRA_ROWS`/`RESULT_MISSING_COLUMNS` | **MATCHES** | `genie_eval_taxonomy.py:8-20` |
-| `num_questions`/`num_correct`/`num_needs_review`/`num_done` | **PARTIALLY MATCHES** | `num_needs_review` is a persisted column (`ddl.py:100`); accuracy is `num_correct/num_questions`; `num_done` is not persisted |
-| Store `eval_run_id` not a copied score | **MATCHES** | `genie_opt_iterations.eval_run_id` (`ddl.py:101`) — though `overall_accuracy` is stored too |
-| `mv_baseline` as a separate eval run isolating MV lift | **SUPERSEDED IN PART by MV-D114** | one full-suite post-attach eval through `_native_eval` (`OfficialBenchmarkRunner`) scores the affected subset and, when kept, re-baselines the loop; `run_subset` remains on the seam unused |
-| "roughly 15 Delta tables plus Lakebase" | **CONFLICTS** | Nine tables in `_ALL_DDL` (+2 outside it) — MV-D7 added the three `genie_opt_mv_*` tables |
+| `num_questions`/`num_correct`/`num_needs_review`/`num_done` | **PARTIALLY MATCHES** | `num_needs_review` is a persisted column (`ddl.py:101`); accuracy is `num_correct/num_questions`; `num_done` is not persisted |
+| Store `eval_run_id` not a copied score | **MATCHES** | `genie_opt_iterations.eval_run_id` (`ddl.py:102`) — though `overall_accuracy` is stored too |
+| `mv_baseline` as a separate eval run isolating MV lift | **SUPERSEDED IN PART by MV-D114** | one full-suite post-attach eval through `_native_eval` (`OfficialBenchmarkRunner`) scores the affected subset and, when kept, re-baselines the loop; MV-D118 also detaches on a net loss across the whole suite, scores a kept attach as its own step over the unchanged pre-attach baseline, and deleted `run_subset` |
+| "roughly 15 Delta tables plus Lakebase" | **CONFLICTS** | Ten tables in `_ALL_DDL` (+2 outside it) — MV-D7 added three `genie_opt_mv_*` tables and MV-D30 added `genie_opt_mv_suppressions` |
 | "MLflow… still the home for run provenance and versioning" | **CONFLICTS** | Decommissioned in Phase 5 (D3/D7). `models.py:1-16`: *"no MLflow LoggedModel snapshot, no UC Model Registry version, no per-mutation MLflow run."* GSO uses MLflow for **tracing only**. |
 
 ### 2.7 Scoring, signals, and outputs (POV §2, §3, §7.5)
@@ -1699,7 +1728,7 @@ root bundle are strings (19 in the package bundle, which omits the Workbench-onl
 | `ddl_artifact_path` on a Volume | **CONFLICTS** | No Volumes convention for run artifacts; use `genie_opt_artifacts` |
 | `candidate_table: main.genie_workbench.mv_candidates` | **CONFLICTS (location)** | GSO tables live in `{GSO_CATALOG}.{GSO_SCHEMA}` as `genie_opt_*`, not `genie_workbench` |
 | Lineage/graph visualization | **MATCHES (Watch only — not Prompt 12's renderer)** | `react-force-graph-2d` already used in `watch/pages/ResourceGraphView.tsx`, and that is where it stays. The semantic-model view is a deterministic layered SVG per the amended Prompt 12 body (playbook) — do not read this row as an instruction to use force-graph there |
-| `GET /api/auto-optimize/spaces/{space_id}/semantic-graph` | **LANDED (Prompt 12), EXTENDED (Prompt 12b)** — `backend/routers/auto_optimize.py:3527` (`get_space_semantic_graph`), assembler `_build_semantic_graph` at `:3046`, models `MvSemanticGraphNode` at `backend/models.py:566`, `MvSemanticGraphEdge` at `:654`, `MvSemanticGraph` at `:697`, TS mirror `SemanticGraphResponse` in `frontend/src/types/index.ts`, rendered by `frontend/src/components/model/SemanticModelTab.tsx` | Space-scoped nodes/edges JSON assembled live from `serialized_space` (`get_serialized_space` — the SAME strict OBO read `/space/fetch` uses) + the Prompt 11 space-scoped proposals read; the ghosted overlay is synthesized client-side. Prompt 12b paid the three deferred debts: governed chips now read the real MV definition (`DESCRIBE ... AS JSON` via `metric_view_catalog` → `metric_view_fields`, the deleted `_is_measure_column` speculative probe gone), curated concepts are harvested from `example_question_sqls` (`extract_measures`), and concept identity is canonicalized-expr (`canonicalize_expr`), not exact-name. The SQL-coverage lens adds the additive `node.coverage` / `edge.weight` / `coverage_status`+`coverage_reason` fields (MV-D15 vocabulary); a lens-free Prompt 12 client is unchanged (MV-D16(b): nothing here re-enters the advisor corpus) |
+| `GET /api/auto-optimize/spaces/{space_id}/semantic-graph` | **LANDED (Prompt 12), EXTENDED (Prompt 12b)** — `backend/routers/auto_optimize.py:3528` (`get_space_semantic_graph`), assembler `_build_semantic_graph` at `:3047`, models `MvSemanticGraphNode` at `backend/models.py:566`, `MvSemanticGraphEdge` at `:654`, `MvSemanticGraph` at `:697`, TS mirror `SemanticGraphResponse` in `frontend/src/types/index.ts`, rendered by `frontend/src/components/model/SemanticModelTab.tsx` | Space-scoped nodes/edges JSON assembled live from `serialized_space` (`get_serialized_space` — the SAME strict OBO read `/space/fetch` uses) + the Prompt 11 space-scoped proposals read; the ghosted overlay is synthesized client-side. Prompt 12b paid the three deferred debts: governed chips now read the real MV definition (`DESCRIBE ... AS JSON` via `metric_view_catalog` → `metric_view_fields`, the deleted `_is_measure_column` speculative probe gone), curated concepts are harvested from `example_question_sqls` (`extract_measures`), and concept identity is canonicalized-expr (`canonicalize_expr`), not exact-name. The SQL-coverage lens adds the additive `node.coverage` / `edge.weight` / `coverage_status`+`coverage_reason` fields (MV-D15 vocabulary); a lens-free Prompt 12 client is unchanged (MV-D16(b): nothing here re-enters the advisor corpus) |
 
 ### 2.8 Discover curation (POV §8)
 
@@ -1823,9 +1852,11 @@ separate opt-in.
 > only paid on a run that was given `mv_attach_views`.
 >
 > *Superseded in part by MV-D114 (PR #332 M4): a kept attach now costs one full-suite eval, so that no lever is credited with the view's gain; iteration 0 stays the pre-attach measurement.*
+>
+> *`run_subset` itself was deleted by MV-D118 (PR #332 M6c); the seam keeps `run` and `list_eval_runs`.*
 
-**11. Correct the POV's factual claims.** Nine Delta tables not ~15 (MV-D7 added
-three `genie_opt_mv_*` tables); MLflow is tracing-only, not the provenance home;
+**11. Correct the POV's factual claims.** Ten Delta tables not ~15 (MV-D7 added
+three `genie_opt_mv_*` tables and MV-D30 added `genie_opt_mv_suppressions`); MLflow is tracing-only, not the provenance home;
 the route is `POST /api/auto-optimize/trigger`; no Volumes artifact path; the
 eval-run status field is `eval_run_status` not `status`.
 
@@ -1941,7 +1972,7 @@ We never double-run the retired in-process scorer path.
 ```
 
 Corollaries: **fail-closed** — *"a non-DONE / partial / empty run NEVER reads as a"*
-success (`eval_runner.py:810`); the knobs at `common/config.py:116-133` are the D1
+success (`eval_runner.py:785`); the knobs at `common/config.py:116-133` are the D1
 implementation surface.
 
 **Impact on the MV advisor.** POV Recommendation 2 is already satisfied. Any MV lift
@@ -1965,7 +1996,7 @@ DEFAULT_THRESHOLDS = {
 ```
 
 Corroborated at `benchmarking.py:1790` (*"the 9 scored judges are retired, so gating is on
-API accuracy"*) and `eval_runner.py:367`, `:463` (asset-type annotation on BAD /
+API accuracy"*) and `eval_runner.py:360`, `:456` (asset-type annotation on BAD /
 NEEDS_REVIEW rows, "Phase 3, D2").
 
 **Impact.** The POV's Caveat that *"public write-ups describing a bank of automated MLflow
@@ -1988,9 +2019,9 @@ MLflow run. The champion iteration is selected from ``genie_opt_iterations``
 ``integration.discard`` (``genie_opt_runs.config_snapshot`` re-PATCH).
 ```
 
-Artefacts: `genie_opt_iterations.config_json` and `.is_champion` (`ddl.py:97`, `:99`); the
+Artefacts: `genie_opt_iterations.config_json` and `.is_champion` (`ddl.py:98`, `:100`); the
 whitelisted config projection (`state.py:607`, `:627`); the scrubbed `experiment_name`
-column (`trigger.py:201`, `warehouse.py:296`); retired templates at `config.py:1884`.
+column (`trigger.py:229`, `warehouse.py:318`); retired templates at `config.py:1902`.
 
 **Impact.** **Directly contradicts POV §1c**, which lists MLflow as *"Still the home for
 run provenance and versioning."* It is not. Per
@@ -2025,9 +2056,9 @@ inference should not be relied on. **Do not build against an assumed D4.**
 
 ### D7 — Cross-environment deploy is out of scope
 
-**Reconstruction: high confidence.** Cited at `scripts/deploy_lib/gso_job.py:27`, `:85`;
-`databricks.yml:73`; `models.py:3`; `config.py:1884`;
-`test_phase7_job_dag.py:114`; `backend/tests/test_auto_optimize_router.py:1136`.
+**Reconstruction: high confidence.** Cited at `scripts/deploy_lib/gso_job.py:27`, `:90`;
+`databricks.yml:75`; `models.py:3`; `config.py:1902`;
+`test_phase7_job_dag.py:186`; `backend/tests/test_auto_optimize_router.py:1337`.
 
 Consequences: the `deploy` task is gone, the `deploy_target` parameter is gone, and there
 is no UC Model Registry path. `models.py:14-16` notes a future intent to use *"the official
@@ -2053,8 +2084,8 @@ _EXAMPLE_SQL_PATCH_TYPES: frozenset[str] = frozenset(
 )
 ```
 
-Also at `leakage.py:456`, `:758`, `:929`, `:973`; `applier.py:4045`, `:4063`;
-`publish.py:32`, `:607`; `test_scored_benchmark_qa_exclusion.py:1`. Note *"no train/held-out
+Also at `leakage.py:303`, `:463`, `:773`, `:936`, `:980`; `applier.py:4119`, `:4137`;
+`publish.py:32`, `:647`; `test_scored_benchmark_qa_exclusion.py:1`. Note *"no train/held-out
 split per D8"* — the whole scored set is protected.
 
 *Window.* A 30–40 question working set, recommended (not enforced) over the post-merge
@@ -2071,7 +2102,7 @@ means Page bodies and MV comments must be routed through the leakage firewall, a
 
 **Reconstruction: high confidence.** The most consequential decision for this feature.
 
-```110:113:databricks.yml
+```127:130:databricks.yml
       # Every task carries its job-parameter subset as base_parameters so there
       # is NO inter-task task-value plumbing (D9). run_id/catalog/schema
       # bootstrap each notebook; all other handoff state is read from Delta by
@@ -2088,10 +2119,10 @@ Three rules, each enforced by a passing test:
 | Rule | Test |
 |---|---|
 | No condition tasks; every task is a `notebook_task` | `test_phase7_job_dag.py:70-76` |
-| No `dbutils.notebook.run`, no `taskValues.set` / `.get` | `test_phase7_job_dag.py:397-406` |
+| No `dbutils.notebook.run`, no `taskValues.set` / `.get` | `test_phase7_job_dag.py:469-477` |
 | Strictly linear dependency chain | `test_phase7_job_dag.py:79-89` |
 
-Plus the round-trip contract at `auto_optimize.py:170`, `:217` ("arch §13 / D9") and the
+Plus the round-trip contract at `auto_optimize.py:171`, `:218` ("arch §13 / D9") and the
 installer mirror at `gso_job.py:30`.
 
 **Impact.** D9 is what invalidates POV §7.2 and §7.7 wholesale — `mv_gate`,
@@ -2113,7 +2144,7 @@ design must express gating as **in-notebook conditionals on job parameters** and
 | `{{tasks.X.values.Y}}` | `genie_opt_artifacts` row read by `run_id` |
 | `condition_task` gates | In-notebook `if` on a job parameter |
 | Patch = `field_path` + `new_value` | Patch = `type` + `target` + `new_text` |
-| "roughly 15 Delta tables" | Nine in `_ALL_DDL` after MV-D7 (eleven counting `genie_opt_scan_snapshots` and `genie_benchmarks_{domain}`) |
+| "roughly 15 Delta tables" | Ten in `_ALL_DDL` after MV-D7 and MV-D30 (twelve counting `genie_opt_scan_snapshots` and `genie_benchmarks_{domain}`) |
 | MLflow = provenance and versioning home | Delta-only (D3); MLflow is tracing-only |
 | `POST /api/auto-optimize/runs` | `POST /api/auto-optimize/trigger` |
 | `/Volumes/.../runs/<id>/metric_views.sql` | No Volumes convention; use `genie_opt_artifacts` |
@@ -2127,8 +2158,8 @@ design must express gating as **in-notebook conditionals on job parameters** and
 persistence · MV detection and YAML extraction (`metric_view_catalog.py`) ·
 `system.query.history` mining with fallback (`wide_schema_history.py`) · artifact-based
 handoff with content hashing (`genie_opt_artifacts`) · consent-checkbox-with-warning UI
-pattern (`OptimizationConfig.tsx:332-351`) · copyable grant-SQL textarea pattern
-(`OptimizationConfig.tsx:480-488`) · diff viewer, SQL code block, force-directed graph
+pattern (`OptimizationConfig.tsx:334-353`) · copyable grant-SQL textarea pattern
+(`OptimizationConfig.tsx:482-490`) · diff viewer, SQL code block, force-directed graph
 (Watch resource view only — the semantic-model view is layered SVG per the amended
 Prompt 12 body), charts (all in `frontend/package.json`) · OBO-only client accessor
 (`require_obo_workspace_client`).
@@ -2454,7 +2485,7 @@ only when its gate provably ran for that row (`_mv_checks_from_row` in
 `auto_optimize.py`, computed at hydration from `proposed_object` + `conflicts`,
 never persisted, so a check that did not run is never rendered). A stale body
 (MV-D117) proves neither validated nor executable: the key pair is set only
-`and not mv_create.proposal_body_is_stale(row)` (`auto_optimize.py:1982`), so a
+`and not mv_create.proposal_body_is_stale(row)` (`auto_optimize.py:1983`), so a
 proposal whose body predates `MV_RENDER_VERSION` shows at most no-overlap, and a
 re-scan notice in place of its actions. The numeric
 score orders the list and picks one Recommended (or an orthogonality callout

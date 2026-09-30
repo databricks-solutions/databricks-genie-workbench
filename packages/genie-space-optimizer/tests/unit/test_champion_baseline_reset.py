@@ -7,10 +7,17 @@ baseline row that eval was measured against at that value.
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
-from genie_space_optimizer.optimization import models
+import pytest
+from genie_space_optimizer.optimization import models, mv_attach
 from genie_space_optimizer.optimization.champion import (
+    _KEPT_VERDICT,
     BaselineReset,
+    apply_baseline_reset,
+    baseline_reset_from_stage_rows,
+    is_reset_row,
     select_champion_row,
 )
 
@@ -107,3 +114,53 @@ def test_promote_best_model_stamps_the_post_attach_accuracy(monkeypatch) -> None
     assert promoted == 0
     assert marked == [0]
     assert updates == [{"best_iteration": 0, "best_accuracy": 90.0}]
+
+
+def _stage(verdict, *, accuracy=90.0, eval_id="eval-b", remaining=2, as_text=True):
+    detail = {
+        "phase": "mv_attach", "verdict": verdict, "post_attach_accuracy": accuracy,
+        "baseline_eval_run_id": eval_id, "post_attach_remaining_failures": remaining,
+    }
+    return {"stage": "MV_ATTACH", "detail_json": json.dumps(detail) if as_text else detail}
+
+
+def test_the_kept_verdict_is_the_attach_phases() -> None:
+    assert _KEPT_VERDICT == mv_attach.VERDICT_ATTACHED
+
+
+@pytest.mark.parametrize("as_text", [True, False])
+def test_the_latest_kept_stage_row_is_the_reset(as_text) -> None:
+    reset = baseline_reset_from_stage_rows([
+        _stage("DETACHED", accuracy=70.0, as_text=as_text),
+        _stage("ATTACHED", as_text=as_text),
+    ])
+    assert reset == ("eval-b", 90.0, 2)
+
+
+def test_a_later_detached_row_cancels_the_reset() -> None:
+    assert baseline_reset_from_stage_rows([_stage("ATTACHED"), _stage("DETACHED")]) is None
+
+
+def test_other_stages_and_unparsable_rows_are_ignored() -> None:
+    rows = [{"stage": "MV_ATTACH_RECONCILE", "detail_json": "{}"},
+            {"stage": "MV_ATTACH", "detail_json": "not json"}, _stage("ATTACHED")]
+    assert baseline_reset_from_stage_rows(rows).accuracy == 90.0
+
+
+@pytest.mark.parametrize("remaining", [True, "2", None, -1])
+def test_a_non_count_remaining_failures_is_dropped(remaining) -> None:
+    reset = baseline_reset_from_stage_rows([_stage("ATTACHED", remaining=remaining)])
+    assert reset.remaining_failures is None
+
+
+def test_apply_baseline_reset_scores_only_the_measured_baseline_row() -> None:
+    rows = [
+        {"iteration": 0, "eval_scope": "full", "eval_run_id": "eval-b", "overall_accuracy": 86.67},
+        {"iteration": 0, "eval_scope": "full", "eval_run_id": "eval-restart", "overall_accuracy": 80.0},
+        {"iteration": 1, "eval_scope": "full", "eval_run_id": "eval-1", "overall_accuracy": 88.0},
+    ]
+    out = apply_baseline_reset(rows, BaselineReset("eval-b", 90.0))
+    assert [r["overall_accuracy"] for r in out] == [90.0, 80.0, 88.0]
+    assert rows[0]["overall_accuracy"] == 86.67
+    assert is_reset_row(out[0], BaselineReset("eval-b", 90.0))
+    assert apply_baseline_reset(rows, None) == rows

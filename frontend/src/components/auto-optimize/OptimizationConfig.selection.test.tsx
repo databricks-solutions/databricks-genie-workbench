@@ -172,3 +172,36 @@ it("an answer for an earlier selection never unlocks Start for the current one",
   await act(async () => startButton().click())
   expect(api.triggerAutoOptimize.mock.calls[0][0].mv_consent.probe_id).toBe("probe_2")
 })
+
+it("an earlier answer for the same selection never replaces the latest request's", async () => {
+  const pending: Array<(r: MvProbeResult) => void> = []
+  api.probeMvEntitlement.mockImplementation(() => new Promise<MvProbeResult>((resolve) => pending.push(resolve)))
+  await mount()
+  await toggle("finance.marketing.campaign_roi")
+  await toggle("finance.sales.customer_ltv")
+  await toggle("finance.sales.customer_ltv")
+  expect(api.probeMvEntitlement).toHaveBeenCalledTimes(3)
+  await act(async () => pending[0](probe("probe_1")))
+  expect(startButton().disabled).toBe(true)
+  await act(async () => pending[2](probe("probe_3")))
+  expect(startButton().disabled).toBe(false)
+  await act(async () => startButton().click())
+  expect(api.triggerAutoOptimize.mock.calls[0][0].mv_consent.probe_id).toBe("probe_3")
+})
+
+it("turning the section off and on during a probe keeps that probe's answer", async () => {
+  const pending: Array<(r: MvProbeResult) => void> = []
+  api.probeMvEntitlement.mockImplementation(() => new Promise<MvProbeResult>((resolve) => pending.push(resolve)))
+  await mount()
+  await toggle("finance.marketing.campaign_roi")
+  const section = () =>
+    [...host.querySelectorAll("label")].find((l) => l.textContent?.includes("Suggest metric views"))!
+      .querySelector("button, input") as HTMLElement
+  await act(async () => section().click())
+  await act(async () => section().click())
+  expect(api.probeMvEntitlement).toHaveBeenCalledTimes(1)
+  await act(async () => pending[0](probe("probe_1")))
+  expect(startButton().disabled).toBe(false)
+  await act(async () => startButton().click())
+  expect(api.triggerAutoOptimize.mock.calls[0][0].mv_consent.probe_id).toBe("probe_1")
+})

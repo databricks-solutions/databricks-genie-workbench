@@ -170,6 +170,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
         baselineScore: run.baselineScore,
         optimizedScore: run.optimizedScore,
         bestIteration: run.bestIteration,
+        bestEvalScope: run.bestEvalScope,
         status: run.status,
       })
     : presentBaselineScore(null)
@@ -178,6 +179,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
         baselineScore: run.baselineScore,
         optimizedScore: run.optimizedScore,
         bestIteration: run.bestIteration,
+        bestEvalScope: run.bestEvalScope,
         status: run.status,
         convergenceReason: run.convergenceReason,
       })

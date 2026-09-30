@@ -45,7 +45,10 @@ def _verification(effective_mode="create_and_attach", downgrade_reason=None, ver
     )
 
 
-_CONSENT = {"target_catalog": "finance", "target_schema": "sales", "probe_id": "p1"}
+_CONSENT = {
+    "target_catalog": "finance", "target_schema": "sales", "probe_id": "p1",
+    "probe_results": {"privileges": [{"privilege": "SELECT", "securable": "finance.sales.orders"}]},
+}
 _ARTIFACT = {
     "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
     "join_strategy": "direct",
@@ -902,6 +905,7 @@ def test_the_stale_reason_does_not_promise_a_refresh():
         ("no_body", "no rendered body"),
         ("unproven_rung", "needs a join strategy not yet proven in Unity Catalog"),
         ("invalid_name", "not a plain Unity Catalog name"),
+        ("uncovered", "reads a table the access check did not cover"),
         ("revalidation", "failed re-validation"),
         ("rung_below", "re-validation demands a lower join strategy"),
         ("exists", "already exists in the consented schema"),
@@ -918,7 +922,7 @@ def test_each_skip_key_names_its_label(key, label):
 
 def test_the_skip_labels_are_pinned_in_order():
     assert [key for key, _ in mv_create._SKIP_ORDER] == [
-        "unavailable", "stale", "no_body", "unproven_rung", "invalid_name",
+        "unavailable", "stale", "no_body", "unproven_rung", "invalid_name", "uncovered",
         "revalidation", "rung_below", "exists", "not_confirmed", "unrecorded", "error",
     ]
 
@@ -1160,6 +1164,17 @@ def test_a_stale_proposal_with_a_current_sibling_leaves_the_list(client, monkeyp
 
     resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
 
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
+
+
+def test_the_run_keyed_list_drops_a_stale_sibling(client, monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: _stale_beside_its_successor("finance.sales.new_metrics"),
+    )
+    monkeypatch.setattr(auto_optimize, "_mv_fetch_space_config", lambda space_id: None)
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-proposals")
     assert resp.status_code == 200
     assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
 
@@ -1425,6 +1440,47 @@ def test_mv_ddl_refuses_a_stale_candidate_row(client, monkeypatch):
     assert resp.json()["detail"] == mv_create.STALE_BODY_REASON
 
 
+def _ddl_payload(**extra):
+    return {
+        "suggestion_id": "sug1", "dedup_fingerprint": "fp1", "target_space_id": "space-1",
+        "proposed_object": "finance.sales.revenue_metrics", "yaml_text": "version: 0.1\n",
+        "ddl": "CREATE VIEW finance.sales.revenue_metrics ...", "validation": {"ok": True},
+        **extra,
+    }
+
+
+def test_mv_ddl_falls_back_to_a_current_candidate_body(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(auto_optimize, "_load_candidate_ddl_artifact", lambda *a: _ddl_payload())
+    monkeypatch.setattr(
+        auto_optimize, "_load_candidate_ddl_fallback",
+        lambda *a: _ddl_payload(yaml_text="version: '1.1'\n", render_version=MV_RENDER_VERSION),
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 200
+    assert resp.json()["yaml_text"] == "version: '1.1'\n"
+
+
+def test_mv_ddl_refuses_when_both_bodies_are_stale(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_load_candidate_ddl_artifact", lambda *a: _ddl_payload())
+    monkeypatch.setattr(auto_optimize, "_load_candidate_ddl_fallback", lambda *a: _ddl_payload())
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 409
+
+
+def test_mv_ddl_does_not_read_the_fallback_for_a_current_artifact(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_candidate_ddl_artifact",
+        lambda *a: _ddl_payload(render_version=MV_RENDER_VERSION),
+    )
+    monkeypatch.setattr(
+        auto_optimize, "_load_candidate_ddl_fallback",
+        lambda *a: pytest.fail("fallback read for a current artifact"),
+    )
+    assert client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl").status_code == 200
+
+
 def test_the_grant_quotes_a_spaced_view_name():
     grant = auto_optimize._mv_optimizer_grant_sql(
         "main.sales.order revenue", "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e"
@@ -1576,6 +1632,27 @@ def test_drop_happy_path(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["dropped"] is True
     assert any("DROP VIEW IF EXISTS `finance`.`sales`.`revenue_metrics`" in s for s in executed)
+
+
+@pytest.mark.parametrize(
+    "full_name", ["finance.sales.revenue metrics", "finance.sales", "finance.sales.x; DROP TABLE y"],
+)
+def test_drop_refuses_a_recorded_name_that_is_not_plain(client, monkeypatch, full_name):
+    executed: list[str] = []
+    monkeypatch.setattr(auto_optimize, "require_obo_workspace_client",
+                        lambda: _obo_as("analyst@example.com"))
+    monkeypatch.setattr(warehouse, "wh_load_mv_created_object",
+                        lambda *a, **k: {**_created_row(), "full_name": full_name})
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute",
+                        lambda ws, warehouse_id, sql: executed.append(sql))
+    monkeypatch.setattr(warehouse, "wh_update_mv_created_object_status",
+                        lambda *a, **k: None)
+    resp = client.post(
+        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": _DROP_RUN, "confirm": True},
+    )
+    assert resp.status_code == 409
+    assert "SQL editor" in resp.json()["detail"]
+    assert executed == []
 
 
 def test_drop_forbidden_for_non_owner(client, monkeypatch):
@@ -1835,3 +1912,66 @@ def test_trigger_omits_hook_when_suggest_only(trigger_client):
     assert resp.status_code == 200
     assert captured["mv_attach_hook"] is None
     assert captured["mv_action_mode"] == "suggest_only"
+
+
+def test_run_hook_refuses_a_body_reading_a_table_the_consent_did_not_cover(create_env, monkeypatch, caplog):
+    executed, upserts = create_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {**_ARTIFACT, "yaml_text": "version: 0.1\nsource: finance.hr.salaries\n"},
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate", lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
+        handoff = _run_create()
+    assert handoff.action_mode == "suggest_only"
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == []
+    assert "salaries" not in caplog.text
+
+
+@pytest.mark.parametrize("spelling", ["'`finance`.`sales`.`orders`'", "FINANCE.SALES.ORDERS"])
+def test_run_hook_matches_covered_tables_by_normalized_name(create_env, monkeypatch, spelling):
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {**_ARTIFACT, "yaml_text": f"version: 0.1\nsource: {spelling}\n"},
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate", lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+    handoff = _run_create()
+    assert handoff.action_mode == "create_and_attach"
+
+
+def test_the_uncovered_skip_is_named_when_nothing_builds(create_env, monkeypatch):
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {**_ARTIFACT, "yaml_text": "version: 0.1\nsource: finance.hr.salaries\n"},
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate", lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+    handoff = _run_create()
+    assert "reads a table the access check did not cover" in (handoff.downgrade_reason or "")
+    assert "salaries" not in (handoff.downgrade_reason or "")
+
+
+def test_uncovered_tables_reads_joins_and_refuses_an_unreadable_body():
+    consent = dict(_CONSENT)
+    body = (
+        "version: '1.1'\nsource: finance.sales.orders\njoins:\n"
+        "  - name: c\n    source: finance.sales.customers\n    on: source.cid = c.id\n"
+    )
+    assert mv_create._uncovered_tables(body, consent) == ["finance.sales.customers"]
+    assert mv_create._uncovered_tables("version: 0.1\nsource: finance.sales.orders\n", consent) == []
+    assert mv_create._uncovered_tables(": not yaml :", consent) is None
+    assert mv_create._uncovered_tables("version: 0.1\njoins: [1, 2]\nsource: finance.sales.orders\n", consent) is None
+    assert mv_create._uncovered_tables("version: 0.1\njoins: 5\nsource: finance.sales.orders\n", consent) is None
+    nested_list = (
+        "version: 0.1\nsource: finance.sales.orders\njoins:\n"
+        "  - name: c\n    source: finance.sales.orders\n    joins:\n"
+        "      - - source: finance.hr.salaries\n"
+    )
+    assert mv_create._uncovered_tables(nested_list, consent) is None
+    assert mv_create._uncovered_tables("version: 0.1\nsource: SELECT 1\n", consent) is None

@@ -23,6 +23,12 @@ import pandas as pd
 
 from genie_space_optimizer.optimization import publish as P
 from genie_space_optimizer.optimization.champion import BaselineReset
+from genie_space_optimizer.optimization.publish import (
+    METRIC_VIEW_ATTACH_MODE,
+    _residual_failure_count,
+    as_audit_context,
+    build_improvement_trajectory,
+)
 
 
 # ── fixtures / builders ─────────────────────────────────────────────────────
@@ -855,3 +861,66 @@ def test_without_a_kept_attach_publish_keeps_the_stored_baseline_score():
 
     assert promote.call_args.kwargs["baseline_reset"] is None
     assert updates[-1]["best_accuracy"] == 86.67
+
+
+_BASE = {
+    "iteration": 0, "eval_scope": "full", "eval_run_id": "eval-b",
+    "overall_accuracy": 86.67, "timestamp": "2026-09-29T10:00:00",
+    "remaining_failures": ["q1", "q2", "q3", "q4"],
+}
+
+
+def test_the_trajectory_gains_the_attach_step_after_the_baseline() -> None:
+    trajectory = build_improvement_trajectory(
+        [dict(_BASE)], baseline_reset=BaselineReset("eval-b", 90.0, 3),
+    )
+    assert [e["attempt_mode"] for e in trajectory] == ["baseline", METRIC_VIEW_ATTACH_MODE]
+    assert trajectory[0]["accuracy"] == 86.67
+    assert trajectory[1]["accuracy"] == 90.0
+    assert trajectory[1]["delta_vs_baseline"] == 3.33
+
+
+def test_no_step_when_the_reset_names_another_baseline() -> None:
+    trajectory = build_improvement_trajectory(
+        [dict(_BASE)], baseline_reset=BaselineReset("eval-other", 90.0),
+    )
+    assert [e["attempt_mode"] for e in trajectory] == ["baseline"]
+
+
+def test_the_residual_count_is_the_post_attach_one_for_the_reset_champion() -> None:
+    reset = BaselineReset("eval-b", 90.0, 3)
+    assert _residual_failure_count(dict(_BASE), reset) == 3
+    assert _residual_failure_count(dict(_BASE), BaselineReset("eval-b", 90.0)) == 4
+    assert _residual_failure_count(dict(_BASE)) == 4
+
+
+def test_the_audit_context_keeps_the_pre_attach_baseline_and_adds_the_step() -> None:
+    reset = BaselineReset("eval-b", 90.0, 3)
+    champion = {**_BASE, "overall_accuracy": 90.0}
+    context = as_audit_context(
+        "run-1", "space-1", [dict(_BASE)], None,
+        terminal_reason="TARGET_REACHED", champion_row=champion,
+        target_accuracy=0.9, max_attempts=3, baseline_reset=reset,
+    )
+    assert context["baseline_accuracy"] == 86.67
+    assert context["champion_accuracy"] == 90.0
+    assert context["residual_failure_count"] == 3
+    assert context["improvement_trajectory"][1]["attempt_mode"] == METRIC_VIEW_ATTACH_MODE
+
+
+def test_the_attach_step_carries_the_champion_flag_off_the_baseline() -> None:
+    trajectory = build_improvement_trajectory(
+        [{**_BASE, "is_champion": True}], baseline_reset=BaselineReset("eval-b", 90.0, 3),
+    )
+    assert [(e["attempt_mode"], e["is_champion"]) for e in trajectory] == [
+        ("baseline", False), (METRIC_VIEW_ATTACH_MODE, True),
+    ]
+
+
+def test_an_unflagged_baseline_leaves_the_attach_step_unflagged() -> None:
+    trajectory = build_improvement_trajectory(
+        [{**_BASE, "is_champion": False}], baseline_reset=BaselineReset("eval-b", 90.0, 3),
+    )
+    assert [(e["attempt_mode"], e["is_champion"]) for e in trajectory] == [
+        ("baseline", False), (METRIC_VIEW_ATTACH_MODE, False),
+    ]

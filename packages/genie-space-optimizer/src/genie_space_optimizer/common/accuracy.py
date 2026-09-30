@@ -20,16 +20,23 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genie_space_optimizer.backend.utils import safe_float, safe_int
 
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.champion import BaselineReset
+
 __all__ = [
+    "METRIC_VIEW_SCOPE",
     "RunScores",
     "compute_run_scores",
     "compute_run_scores_by_run_id",
     "derived_accuracy",
 ]
+
+# ``RunScores.best_eval_scope`` of a kept metric-view attach (MV-D118).
+METRIC_VIEW_SCOPE = "metric_view"
 
 
 def derived_accuracy(
@@ -147,6 +154,8 @@ class RunScores:
       - ``"full"`` and ``best_iteration == 0`` → baseline retained / mid-run.
       - ``"enrichment"`` and ``best_iteration == 0`` → enrichment drove the
         improvement (lever loop may have skipped).
+      - ``"metric_view"`` and ``best_iteration == 0`` → a kept metric-view
+        attach drove the improvement (MV-D118).
       - ``"full"`` and ``best_iteration > 0`` → lever-loop iteration N drove
         the improvement.
       Defaults to ``"full"`` so existing callers stay compatible.
@@ -193,6 +202,7 @@ def compute_run_scores(
     *,
     run_id: str | None = None,
     logger: logging.Logger | None = None,
+    baseline_reset: "BaselineReset | None" = None,
 ) -> RunScores:
     """Canonical baseline + optimized scores for a run.
 
@@ -203,6 +213,9 @@ def compute_run_scores(
         run_id: Only used for drift-log identification.
         logger: Optional logger for drift lines emitted by
             :func:`derived_accuracy`.
+        baseline_reset: A kept metric-view attach's re-baseline, read by
+            ``baseline_reset_from_stage_rows``. Only ``eval_run_id`` and
+            ``accuracy`` (0–100) are read.
 
     Returns:
         :class:`RunScores`. See class docstring for the full contract.
@@ -235,8 +248,11 @@ def compute_run_scores(
        never below baseline. (PR description: "regressions don't get posted —
        they should either stay as baseline or an improvement.")
     7. ``best_eval_scope`` reports the scope of the winning candidate
-       (``"full"`` or ``"enrichment"``). When baseline is retained the
-       value is ``"full"``.
+       (``"full"``, ``"enrichment"`` or ``"metric_view"``). When baseline is
+       retained the value is ``"full"``.
+
+    A kept attach competes as the iteration-0 candidate ``metric_view``; the
+    baseline stays the stored pre-attach score.
     """
     if not iter_rows:
         return RunScores(None, None, None, None)
@@ -302,6 +318,14 @@ def compute_run_scores(
             continue
         candidates.append((0, acc, "enrichment"))
 
+    # MV-D118: a kept metric-view attach is scored as its own iteration-0 step. The
+    # reset names the baseline eval it was measured against (MV-D114 d7).
+    if baseline_reset is not None and (
+        not baseline_reset.eval_run_id
+        or str(iter_zero.get("eval_run_id") or "") == baseline_reset.eval_run_id
+    ):
+        candidates.append((0, float(baseline_reset.accuracy), METRIC_VIEW_SCOPE))
+
     if not candidates:
         # Mid-run: Baseline Evaluation finished but no candidate has been
         # accepted yet. Optimized == baseline, best_iteration == 0. The
@@ -320,7 +344,7 @@ def compute_run_scores(
     # prefer ``"full"`` before ``"enrichment"`` so an iter > 0 lever win
     # always wins over a tied iter-0 enrichment candidate. Matches
     # ``promote_best_model``'s earliest-plateau preference.
-    _scope_rank = {"full": 0, "enrichment": 1}
+    _scope_rank = {"full": 0, METRIC_VIEW_SCOPE: 1, "enrichment": 2}
     candidates.sort(
         key=lambda triple: (-triple[1], triple[0], _scope_rank.get(triple[2], 99)),
     )

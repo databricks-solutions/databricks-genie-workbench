@@ -153,6 +153,50 @@ UNPROVEN_RUNG_REASON = (
     "this proposal needs a join strategy that is not yet proven in Unity Catalog; "
     "it cannot be created yet"
 )
+UNCOVERED_TABLES_REASON = (
+    "reads a table the access check did not cover; re-run the access check for this proposal"
+)
+
+
+def _uncovered_tables(yaml_text: str, consent: dict) -> list[str] | None:
+    """The tables the body reads that the consent's SELECT probe did not cover.
+
+    ``None`` when the body's tables cannot be read, which refuses like an uncovered
+    table: the fresh probe re-checks only the consent's own tables
+    (``_source_tables_from_consent``), so a table outside them was never checked
+    for this user. A join entry that is not a mapping is unreadable too, because
+    ``_definition_tables`` skips it rather than reading any table under it.
+    """
+    import yaml
+    from genie_space_optimizer.optimization.mv_scoring import _definition_tables
+
+    try:
+        definition = yaml.safe_load(yaml_text)
+        if not isinstance(definition, dict) or not _joins_are_mappings(definition):
+            return None
+        tables = _definition_tables(definition)
+    except Exception:  # noqa: BLE001 - an unreadable body is refused, not raised
+        return None
+    if not tables:
+        return None
+    covered = {_norm_table(t) for t in _source_tables_from_consent(consent)}
+    return [t for t in tables if _norm_table(t) not in covered]
+
+
+def _joins_are_mappings(definition: Mapping) -> bool:
+    pending = [definition]
+    while pending:
+        joins = pending.pop().get("joins")
+        if joins is None:
+            continue
+        if not isinstance(joins, list) or not all(isinstance(j, Mapping) for j in joins):
+            return False
+        pending.extend(joins)
+    return True
+
+
+def _norm_table(name: str) -> str:
+    return str(name or "").replace("`", "").strip().lower()
 
 
 def _unproven_rung(stored_strategy: str | None) -> bool:
@@ -293,6 +337,7 @@ _SKIP_ORDER = (
     ("no_body", "no rendered body"),
     ("unproven_rung", "needs a join strategy not yet proven in Unity Catalog"),
     ("invalid_name", "not a plain Unity Catalog name"),
+    ("uncovered", "reads a table the access check did not cover"),
     ("revalidation", "failed re-validation"),
     ("rung_below", "re-validation demands a lower join strategy"),
     ("exists", "already exists in the consented schema"),
@@ -464,6 +509,12 @@ def create_and_attach_for_run(
                     suggestion_id, full_name,
                 )
                 skips["invalid_name"] = skips.get("invalid_name", 0) + 1
+                continue
+            if _uncovered_tables(yaml_text, consent) != []:
+                logger.warning(
+                    "Not creating suggestion %s: %s", suggestion_id, UNCOVERED_TABLES_REASON
+                )
+                skips["uncovered"] = skips.get("uncovered", 0) + 1
                 continue
 
             # MV-D22 replay-with-revalidation. NOT_COMPARED (no oracle at trigger
@@ -1181,6 +1232,11 @@ def create_at_approval(
             reason=f"{full_name} is not a plain Unity Catalog name "
             "(letters, digits and underscores only); not creating it",
         )
+    if _uncovered_tables(yaml_text, consent) != []:
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason=UNCOVERED_TABLES_REASON,
+        )
     report = validate(yaml_text, capabilities=fresh_probe.capabilities)
     if not report.ok:
         return MvCreateAtApprovalResult(
@@ -1280,6 +1336,7 @@ def create_at_approval(
 
 __all__ = [
     "STALE_BODY_REASON",
+    "UNCOVERED_TABLES_REASON",
     "UNPROVEN_RUNG_REASON",
     "MvAttachHandoff",
     "MvCreateAtApprovalResult",

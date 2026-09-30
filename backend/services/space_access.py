@@ -178,17 +178,12 @@ def resolve_space_access_level(space_id: str) -> SpaceAccessLevel | None:
 
     Blocking. On the EDIT rung, a plain denial / missing OAuth scope / missing
     entitlement lowers the answer to VIEW (or None); every other refusal is
-    raised. On MANAGE after a proven EDIT allow, any refusal except
-    ``authentication_required`` lowers the answer to EDIT (with a warning when
-    the code is not a plain denial). On VIEW, only a plain denial yields None;
-    every other refusal is raised unchanged.
+    raised. On VIEW, only a plain denial yields None; every other refusal is
+    raised unchanged. MANAGE is never asked: the app's user token cannot prove
+    it (MV-D115, MV-D118), and nothing gates on it.
     """
     if _holds(space_id, SpaceAccessLevel.EDIT, lower_codes=_EDIT_LOWER_CODES):
-        return (
-            SpaceAccessLevel.MANAGE
-            if _holds(space_id, SpaceAccessLevel.MANAGE, lower_codes=None)
-            else SpaceAccessLevel.EDIT
-        )
+        return SpaceAccessLevel.EDIT
     return (
         SpaceAccessLevel.VIEW
         if _holds(space_id, SpaceAccessLevel.VIEW, lower_codes=frozenset({"space_access_denied"}))
@@ -200,26 +195,13 @@ def _holds(
     space_id: str,
     level: SpaceAccessLevel,
     *,
-    lower_codes: frozenset[str] | None,
+    lower_codes: frozenset[str],
 ) -> bool:
-    """Return False when the refusal should lower the ladder answer; re-raise otherwise.
-
-    ``lower_codes is None`` means the MANAGE rung: every code except
-    ``authentication_required`` lowers to EDIT.
-    """
+    """Return False when the refusal should lower the ladder answer; re-raise otherwise."""
     try:
         ensure_space_access(space_id, level)
     except HTTPException as refusal:
         code = refusal.detail.get("code") if isinstance(refusal.detail, dict) else None
-        if lower_codes is None:
-            if code == "authentication_required":
-                raise
-            if code != "space_access_denied":
-                logger.warning(
-                    "Manage check refused for %s with %s; reporting Can Edit",
-                    space_id, code,
-                )
-            return False
         if code in lower_codes:
             return False
         raise

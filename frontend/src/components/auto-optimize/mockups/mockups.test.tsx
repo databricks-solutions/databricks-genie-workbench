@@ -68,6 +68,12 @@ import {
   RunOutputCurrentCalloutFrame,
   RunOutputStaleFrame,
 } from "./MvStaleBodyFidelityFrames"
+import {
+  BaselineRetainedFrame,
+  KeptAttachRunningFrame,
+  KeptAttachTerminalFrame,
+  SingularGainCardFrame,
+} from "./MvM6cFidelityFrames"
 import { STALE_PROPOSAL_NOTICE } from "../mvFormat"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
@@ -533,6 +539,57 @@ describe("M6b-e — the IQ LOW disclosure with a stale proposal (MV-D117)", () =
   it("is registered after the other M6b frames", () => {
     const ids = MOCKUP_FRAMES.map((f) => f.id)
     expect(ids.indexOf("m6b-e-iqscan-low-stale")).toBe(ids.indexOf("m6b-d-run-output-current-callout") + 1)
+  })
+})
+
+describe("M6c — the run headline counts a kept metric-view attach (MV-D118)", () => {
+  it("m6c-a: the post-attach score is the improvement, not a retained baseline", () => {
+    const html = render(<KeptAttachTerminalFrame />)
+    expect(html).toContain("90.0%")
+    expect(html).not.toContain("Baseline retained")
+  })
+
+  it("m6c-b: mid-run shows the post-attach score, not the in-progress dash", () => {
+    const html = render(<KeptAttachRunningFrame />)
+    expect(html).toContain("90.0%")
+    expect(html).not.toContain("—")
+  })
+
+  it("m6c-c: a full-scope iteration 0 still reads Baseline retained", () => {
+    expect(render(<BaselineRetainedFrame />)).toContain("Baseline retained")
+  })
+
+  it("is registered after the M6b frames, in order", () => {
+    const ids = MOCKUP_FRAMES.map((f) => f.id)
+    const at = ids.indexOf("m6b-e-iqscan-low-stale")
+    expect(ids.slice(at + 1, at + 5)).toEqual([
+      "m6c-a-kept-attach-terminal",
+      "m6c-b-kept-attach-running",
+      "m6c-c-baseline-retained",
+      "m6c-d-singular-gain-card",
+    ])
+  })
+})
+
+describe("M6c-d — a one-measure proposal reads in the singular (MV-D118)", () => {
+  const html = render(<SingularGainCardFrame />)
+
+  it("states the gain in the singular, never 'These 1'", () => {
+    expect(html).toContain("This measure recurs across 1 curated query")
+    expect(html).not.toContain("These 1")
+  })
+
+  it("renders the expanded card's SQL block like the approved 15.8a frame", () => {
+    expect(html).toContain("<pre")
+    const text = html.replace(/<[^>]*>/g, "")
+    expect(text).toContain("WITH METRICS")
+    expect(text).toContain("GRANT SELECT ON VIEW")
+  })
+
+  it("is a current card: no re-scan notice, no percent, no confidence (MV-D35, MV-D117)", () => {
+    expect(html).not.toContain(NOTICE_MARKUP)
+    expect(html.toLowerCase()).not.toContain("confidence")
+    expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\d+%/)
   })
 })
 

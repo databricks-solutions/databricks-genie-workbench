@@ -188,18 +188,18 @@ def test_a_missing_entitlement_is_named(monkeypatch, as_user):
     assert refusal.detail["platform_message"] == "You need the aclPath entitlement: /sqlanalytics"
 
 
-@pytest.mark.parametrize("answers,held", [
-    ((_ALLOW, _ALLOW), L.MANAGE),
-    ((_ALLOW, _DENY), L.EDIT),
-    ((_DENY, _ALLOW), L.VIEW),
-    ((_DENY, _DENY), None),
+@pytest.mark.parametrize("answers,held,asked", [
+    ((_ALLOW,), L.EDIT, [L.EDIT]),
+    ((_DENY, _ALLOW), L.VIEW, [L.EDIT, L.VIEW]),
+    ((_DENY, _DENY), None, [L.EDIT, L.VIEW]),
 ])
-def test_the_highest_level_is_the_one_genie_grants(monkeypatch, as_user, answers, held):
+def test_the_highest_level_is_proved_without_asking_manage(monkeypatch, as_user, answers, held, asked):
+    # MV-D115 carry-over, MV-D118: the app's user token cannot prove MANAGE, so an
+    # EDIT allow is the highest level the resolver reports.
     as_user()
     calls = _genie(monkeypatch, *answers)
     assert space_access.resolve_space_access_level(_SPACE) is held
-    second = L.MANAGE if answers[0] is _ALLOW else L.VIEW
-    assert [c[2] for c in calls] == [L.EDIT, second]
+    assert [c[2] for c in calls] == asked
 
 
 def test_the_highest_level_never_hides_an_unanswered_check(monkeypatch, as_user):
@@ -210,29 +210,10 @@ def test_the_highest_level_never_hides_an_unanswered_check(monkeypatch, as_user)
     assert caught.value.status_code == 503
 
 
-_SCOPE_403 = SpaceAccessCheck(
-    False, 403, "Provided OAuth token does not have required scopes: dashboards.genie")
 _ENTITLEMENT_403 = SpaceAccessCheck(
     False, 403, "You need the aclPath entitlement: /sqlanalytics")
 _INSUFFICIENT_SCOPE_403 = SpaceAccessCheck(
     False, 403, "error insufficient_scope: dashboards.genie is required")
-
-
-def test_highest_level_reports_edit_when_manage_is_a_scope_gap(monkeypatch, as_user):
-    # An editor whose MANAGE probe hits a missing OAuth scope still holds Can Edit —
-    # the scope gap must not erase the proven EDIT allow (downgrade, never upgrade).
-    as_user()
-    calls = _genie(monkeypatch, _ALLOW, _SCOPE_403)
-    assert space_access.resolve_space_access_level(_SPACE) is L.EDIT
-    assert [c[2] for c in calls] == [L.EDIT, L.MANAGE]
-
-
-def test_highest_level_reports_edit_when_manage_is_unverifiable(monkeypatch, as_user):
-    # MANAGE 503 after EDIT allow: report the proven EDIT, not 'unknown' and not VIEW.
-    as_user()
-    calls = _genie(monkeypatch, _ALLOW, SpaceAccessUnavailable("connection reset"))
-    assert space_access.resolve_space_access_level(_SPACE) is L.EDIT
-    assert [c[2] for c in calls] == [L.EDIT, L.MANAGE]
 
 
 def test_highest_level_reports_view_when_edit_is_an_entitlement_gap(monkeypatch, as_user):

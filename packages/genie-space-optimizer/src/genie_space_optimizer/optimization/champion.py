@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, Mapping, NamedTuple
+
+from genie_space_optimizer.common.config import MV_ATTACH_PHASE_NAME
 
 PROMOTION_EVAL_SCOPES: frozenset[str] = frozenset({"full"})
 
@@ -72,16 +75,72 @@ class BaselineReset(NamedTuple):
 
     ``eval_run_id`` is the baseline eval the attach was measured against; it
     names the iteration-0 row the reset applies to.
+    ``remaining_failures`` is the post-attach eval's failing-question count,
+    when the stage row recorded one.
     """
 
     eval_run_id: str
     accuracy: float
+    remaining_failures: int | None = None
 
 
-def _is_reset_row(row: Mapping[str, Any], reset: BaselineReset) -> bool:
+def is_reset_row(row: Mapping[str, Any], reset: BaselineReset) -> bool:
     if not _is_baseline_row(row):
         return False
     return not reset.eval_run_id or str(row.get("eval_run_id") or "") == reset.eval_run_id
+
+
+# The attach phase's kept verdict (``mv_attach.VERDICT_ATTACHED``); this module
+# stays importable without the phase, and a test pins the two equal.
+_KEPT_VERDICT = "ATTACHED"
+
+
+def apply_baseline_reset(
+    rows: Iterable[Mapping[str, Any]], reset: BaselineReset | None,
+) -> list[dict]:
+    """Copies of ``rows`` with the reset's iteration-0 row scored at the reset accuracy."""
+    materialized = [dict(row) for row in rows]
+    if reset is not None:
+        for row in materialized:
+            if is_reset_row(row, reset):
+                row["overall_accuracy"] = reset.accuracy
+    return materialized
+
+
+def baseline_reset_from_stage_rows(
+    records: Iterable[Mapping[str, Any]] | None,
+) -> BaselineReset | None:
+    """The reset a kept attach gave the loop, from ``genie_opt_stages`` rows oldest first.
+
+    The latest ``MV_ATTACH`` row decides: its verdict must be the kept one and it
+    must carry ``post_attach_accuracy`` (MV-D114 d7). Pure: the job and the app
+    both call it, the app on rows it read from Lakebase or Delta.
+    """
+    stage_name = MV_ATTACH_PHASE_NAME.upper()
+    latest: Mapping[str, Any] | None = None
+    for row in records or ():
+        if not isinstance(row, Mapping) or str(row.get("stage") or "").upper() != stage_name:
+            continue
+        detail = row.get("detail_json")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except (TypeError, ValueError):
+                continue
+        if isinstance(detail, Mapping):
+            latest = detail
+    if latest is None or str(latest.get("verdict") or "").upper() != _KEPT_VERDICT:
+        return None
+    accuracy = _as_float(latest.get("post_attach_accuracy"))
+    if accuracy is None:
+        return None
+    remaining = latest.get("post_attach_remaining_failures")
+    count = (
+        remaining
+        if isinstance(remaining, int) and not isinstance(remaining, bool) and remaining >= 0
+        else None
+    )
+    return BaselineReset(str(latest.get("baseline_eval_run_id") or ""), accuracy, count)
 
 
 def select_champion_row(
@@ -104,13 +163,9 @@ def select_champion_row(
     against at the post-attach accuracy instead; the returned row is a copy
     carrying it. A restart's second iteration-0 row keeps its own score.
     """
-    materialized = [dict(row) for row in rows]
+    materialized = apply_baseline_reset(rows, baseline_reset)
     if not materialized:
         return None
-    if baseline_reset is not None:
-        for row in materialized:
-            if _is_reset_row(row, baseline_reset):
-                row["overall_accuracy"] = baseline_reset.accuracy
 
     universe = _promotion_universe(materialized)
     flagged = [row for row in universe if _is_champion_flag(row)]

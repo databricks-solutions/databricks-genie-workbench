@@ -3930,9 +3930,17 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             identifier = asset.get("identifier", "")
             if not identifier:
                 return False
-            if any(mv.get("identifier") == identifier for mv in metric_views):
-                # Already shelved. Reported as a no-op rather than a success so
-                # the apply log does not claim an attach that changed nothing.
+            wanted = identifier.strip().lower()
+            shelves = config.get("data_sources", {})
+            if any(
+                str(entry.get("identifier") or "").strip().lower() == wanted
+                for key in ("metric_views", "tables")
+                for entry in shelves.get(key) or ()
+                if isinstance(entry, dict)
+            ):
+                # Already attached on either shelf: Genie exports an attached view
+                # under ``tables``. A no-op, not a success, so the apply log does
+                # not claim an attach that changed nothing.
                 return False
             metric_views.append(asset)
             sort_genie_config(config)
@@ -4378,6 +4386,7 @@ def apply_patch_set(
             "validation_errors": [],
             "patch_deployed": True,
             "patch_error": "",
+            "patch_error_type": "",
             "dropped_patches": early_dropped_patches + leak_dropped_patches,
             "applier_decisions": [d.__dict__ for d in applier_decisions],
         }
@@ -4496,6 +4505,7 @@ def apply_patch_set(
 
     patch_deployed = False
     patch_error: str = ""
+    patch_error_type: str = ""
     dropped_patches: list[dict] = []
 
     if w is not None and config_applied:
@@ -4504,6 +4514,7 @@ def apply_patch_set(
             patch_deployed = True
         except Exception as exc:
             patch_error = str(exc)
+            patch_error_type = type(exc).__name__
             logger.exception(
                 "Failed to PATCH Genie Agent config after retries — "
                 "patches were NOT deployed remotely",
@@ -4539,6 +4550,7 @@ def apply_patch_set(
                         patch_space_config(w, space_id, config_retry)
                         patch_deployed = True
                         patch_error = ""
+                        patch_error_type = ""
                         config = config_retry
                         dropped_patches = [e["patch"] for e in join_spec_entries]
                         applied = applied_retry
@@ -4551,6 +4563,7 @@ def apply_patch_set(
                         )
                     except Exception as exc2:
                         patch_error = str(exc2)
+                        patch_error_type = type(exc2).__name__
                         logger.exception("Retry without join specs also failed")
     elif applied:
         patch_deployed = True
@@ -4600,6 +4613,7 @@ def apply_patch_set(
         "validation_errors": [],
         "patch_deployed": patch_deployed,
         "patch_error": patch_error,
+        "patch_error_type": patch_error_type,
         "dropped_patches": dropped_patches + early_dropped_patches + leak_dropped_patches,
         # Task 3 — per-patch applier decision audit so the unified loop can
         # reconcile cap-selected vs applier-applied identity sets and
@@ -4681,7 +4695,7 @@ def rollback(
                         patch_space_config(w, space_id, live_snapshot)
                     except Exception as exc:
                         compensation_errors.append(
-                            f"serialized_space compensation failed: {exc}"
+                            f"serialized_space compensation failed: {type(exc).__name__}"
                         )
                     try:
                         live_description = live_snapshot.get("description")
@@ -4696,7 +4710,7 @@ def rollback(
                         update_space_description(w, space_id, live_description)
                     except Exception as exc:
                         compensation_errors.append(
-                            f"description compensation failed: {exc}"
+                            f"description compensation failed: {type(exc).__name__}"
                         )
                 errors = ["Failed to apply rollback description via API"]
                 errors.extend(compensation_errors)

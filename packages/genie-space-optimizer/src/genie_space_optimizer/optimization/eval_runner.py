@@ -308,8 +308,8 @@ class EvalRunner(Protocol):
     Implementations run a benchmark eval over ``space_id``.
     ``benchmark_question_ids=None`` evaluates every benchmark question.
 
-    ``run``'s signature is frozen (unified loop). ``run_subset`` / ``list_eval_runs``
-    are additive MV-advisor methods on the same seam — not a second adapter.
+    ``run``'s signature is frozen (unified loop). ``list_eval_runs`` is an
+    additive MV-advisor method on the same seam — not a second adapter.
     """
 
     def run(
@@ -318,13 +318,6 @@ class EvalRunner(Protocol):
         benchmark_question_ids: Sequence[str] | None = None,
         *,
         eval_scope: str = FULL,
-    ) -> EvalRunResult: ...
-
-    def run_subset(
-        self,
-        space_id: str,
-        question_ids: Sequence[str],
-        label: str,
     ) -> EvalRunResult: ...
 
     def list_eval_runs(self, space_id: str) -> Sequence[Any]: ...
@@ -500,8 +493,9 @@ class OfficialBenchmarkRunner:
         self._clock = clock
         self._sleep = sleep
         self._progress = progress
-        # Workspace eval throughput is ~20 q/min; never overlap create/poll
-        # on this runner (subset and full runs share the same lock).
+        # Workspace eval throughput is ~20 q/min; never overlap create/poll on
+        # this runner. The lock serializes runs within this process only; there
+        # is no cross-run eval mutex.
         self._eval_lock = threading.RLock()
 
     # -- public API --------------------------------------------------------
@@ -516,25 +510,6 @@ class OfficialBenchmarkRunner:
             return self._run_locked(
                 space_id, benchmark_question_ids, eval_scope=eval_scope
             )
-
-    def run_subset(
-        self,
-        space_id: str,
-        question_ids: Sequence[str],
-        label: str,
-    ) -> EvalRunResult:
-        """Labeled eval over an explicit question subset (serialized via ``run``).
-
-        ``OfficialBenchmarkRunner._eval_lock`` serializes subset and full eval
-        runs *within this process* so one optimize-task runner respects the
-        ~20 q/min workspace ceiling. It does **not** coordinate concurrent
-        Databricks job runs against the same space; there is no cross-run
-        eval mutex in this repo.
-        """
-        qids = [str(qid) for qid in question_ids if str(qid)]
-        if not qids:
-            raise EvalRunError("run_subset requires a non-empty question_ids list")
-        return self.run(space_id, qids, eval_scope=label)
 
     def list_eval_runs(self, space_id: str) -> list[Any]:
         """Paginated ``genie_list_eval_runs`` for cross-run history on this space."""

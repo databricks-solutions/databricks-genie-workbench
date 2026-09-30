@@ -54,6 +54,7 @@ from genie_space_optimizer.common.config import (
 )
 from genie_space_optimizer.optimization.champion import (
     BaselineReset,
+    is_reset_row,
     select_champion_row,
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
@@ -271,6 +272,8 @@ def _champion_config_version_id(champion_row: dict | None) -> str | None:
 
 # ── Improvement trajectory + audit context (leak-free) ──────────────────────
 
+METRIC_VIEW_ATTACH_MODE = "metric_view_attach"
+
 
 def _trajectory_sort_key(row: dict) -> tuple:
     """Order: baseline first, then by attempt_no, then timestamp."""
@@ -279,7 +282,9 @@ def _trajectory_sort_key(row: dict) -> tuple:
     return (primary, str(row.get("timestamp") or ""), _as_int(row.get("iteration")) or 0)
 
 
-def build_improvement_trajectory(scored_iters: list[dict]) -> list[dict]:
+def build_improvement_trajectory(
+    scored_iters: list[dict], *, baseline_reset: BaselineReset | None = None,
+) -> list[dict]:
     """Structured per-attempt staircase: baseline -> patch/eval iterations.
 
     Only STRUCTURAL / bounded fields (B3 §3.6 firewall): the free-text
@@ -341,6 +346,31 @@ def build_improvement_trajectory(scored_iters: list[dict]) -> list[dict]:
             "decision": decision,
             "rolled_back": _is_rolled_back(row),
             "is_champion": _is_champion_flag(row),
+        })
+    if (
+        baseline_reset is not None
+        and baseline_row is not None
+        and is_reset_row(baseline_row, baseline_reset)
+    ):
+        at = next(
+            (i for i, e in enumerate(trajectory) if e["attempt_mode"] == "baseline"), -1,
+        )
+        if at >= 0:
+            trajectory[at]["is_champion"] = False
+        trajectory.insert(at + 1, {
+            "iteration": 0,
+            "attempt_no": None,
+            "attempt_mode": METRIC_VIEW_ATTACH_MODE,
+            "eval_scope": "full",
+            "accuracy": baseline_reset.accuracy,
+            "delta_vs_baseline": (
+                round(baseline_reset.accuracy - baseline_acc, 2)
+                if baseline_acc is not None else None
+            ),
+            "best_accuracy": None,
+            "decision": "accept",
+            "rolled_back": False,
+            "is_champion": _is_champion_flag(baseline_row),
         })
     return trajectory
 
@@ -559,8 +589,17 @@ def _patch_attempt_summaries(scored_iters: list[dict]) -> list[dict[str, Any]]:
     return attempts
 
 
-def _residual_failure_count(champion_row: dict | None) -> int:
+def _residual_failure_count(
+    champion_row: dict | None, baseline_reset: BaselineReset | None = None,
+) -> int:
     """Count residual failures recorded on the champion iteration."""
+    if (
+        baseline_reset is not None
+        and baseline_reset.remaining_failures is not None
+        and champion_row is not None
+        and is_reset_row(champion_row, baseline_reset)
+    ):
+        return baseline_reset.remaining_failures
     residual_count = 0
     if champion_row is not None:
         remaining = champion_row.get("remaining_failures")
@@ -601,6 +640,7 @@ def as_audit_context(
     champion_row: dict | None,
     target_accuracy: float | None,
     max_attempts: int | None,
+    baseline_reset: BaselineReset | None = None,
 ) -> dict:
     """Build the LEAK-FREE structural prompt context for the audit summary.
 
@@ -611,8 +651,11 @@ def as_audit_context(
     NO ``expected_sql`` / ground-truth, NO judge rationale — those are the leakage
     surface and are excluded by construction; ``_assert_leak_free`` enforces it
     recursively. ``scored_iters`` is the ``full`` + ``enrichment`` set.
+
+    A kept attach (``baseline_reset``) is a trajectory step after the baseline;
+    the baseline stays the pre-attach score (MV-D118).
     """
-    trajectory = build_improvement_trajectory(scored_iters)
+    trajectory = build_improvement_trajectory(scored_iters, baseline_reset=baseline_reset)
     baseline_accuracy = next(
         (
             _as_float(r.get("overall_accuracy"))
@@ -630,7 +673,7 @@ def as_audit_context(
     )
 
     total_patches, rolled_back_patches, patch_families = _patch_family_counts(patches_df)
-    residual_failure_count = _residual_failure_count(champion_row)
+    residual_failure_count = _residual_failure_count(champion_row, baseline_reset)
     failure_summaries = _failure_reason_summaries(scored_iters)
     baseline_failure_summary = _pick_failure_summary(
         failure_summaries,
@@ -929,7 +972,7 @@ def publish_and_audit(
                     "champion was NOT published.",
                 )
             )
-        residual_count = _residual_failure_count(champion_row)
+        residual_count = _residual_failure_count(champion_row, baseline_reset)
         if residual_count:
             concerns.append(
                 f"{residual_count} benchmark question(s) still failing on the "
@@ -947,6 +990,7 @@ def publish_and_audit(
         champion_row=champion_row,
         target_accuracy=target_accuracy,
         max_attempts=max_attempts,
+        baseline_reset=baseline_reset,
     )
     audit_summary, summary_concern = build_audit_summary(w, audit_context)
     if summary_concern:

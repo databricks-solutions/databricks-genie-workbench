@@ -71,6 +71,7 @@ import {
 } from "./MvSelectionFidelityFrames"
 import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
 import { IqScanApprovedStaleFrame, IqScanLowStaleFrame, IqScanStaleFrame, RunOutputCurrentCalloutFrame, RunOutputStaleFrame } from "./MvStaleBodyFidelityFrames"
+import { BaselineRetainedFrame, KeptAttachRunningFrame, KeptAttachTerminalFrame, SingularGainCardFrame } from "./MvM6cFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -172,4 +173,10 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m6b-c-approved-stale", title: "M6b-c · IQ scan — approved before M3, re-scan to create", element: <IqScanApprovedStaleFrame /> },
   { id: "m6b-d-run-output-current-callout", title: "M6b-d · Run output — two independent current proposals beside a stale one", element: <RunOutputCurrentCalloutFrame /> },
   { id: "m6b-e-iqscan-low-stale", title: "M6b-e · IQ scan — the lower-ranked disclosure, one current and one stale proposal", element: <IqScanLowStaleFrame /> },
+  // PR #332 M6c — the run headline after a kept metric-view attach (MV-D118): the REAL
+  // ScoreSummary and convergence-reason copy.
+  { id: "m6c-a-kept-attach-terminal", title: "M6c-a · Run headline — a kept metric view is the improvement (MV-D118)", element: <KeptAttachTerminalFrame /> },
+  { id: "m6c-b-kept-attach-running", title: "M6c-b · Run headline — the same, mid-run", element: <KeptAttachRunningFrame /> },
+  { id: "m6c-c-baseline-retained", title: "M6c-c · Run headline — control: a full-scope iteration 0 still reads Baseline retained", element: <BaselineRetainedFrame /> },
+  { id: "m6c-d-singular-gain-card", title: "M6c-d · IQ scan — a one-measure proposal reads in the singular", element: <SingularGainCardFrame /> },
 ]

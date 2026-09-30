@@ -195,7 +195,7 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | `/api/space/fetch` | OBO (user) | `routers/analysis.py` fetch | Can Edit (the fetch reads the export) |
 | Version history list and tags | OBO (user) | `services/version_control/space_authz.py` `authorize_space()` | Can View on the agent |
 | Version detail, diff, capture, restore, tag writes | OBO (user) | `space_authz.py` `authorize()` / `authorize_space()`; live read/write in `routers/vc_spaces.py` | Can Edit; the live read and write run under the user's token, with no SP fallback |
-| The user's access level, for the UI | OBO (user) | `routers/spaces.py` `GET /api/spaces/{space_id}/access` | Genie answers once per agent page; below Can Edit the page shows the score, runs and history read-only, and sends no request that needs Can Edit |
+| The user's access level, for the UI | OBO (user) | `routers/spaces.py` `GET /api/spaces/{space_id}/access` | Genie answers once per agent page; below Can Edit the page shows the score, runs and history read-only, and sends no request that needs Can Edit. The highest level it reports is Can Edit, because the app's user token can't prove Can Manage, so a manager reads as Can Edit |
 | Trigger optimization — SP entitlement check | SP | `integration/trigger.py` `sp_can_manage_space()` | Verify SP can manage the agent |
 | Optimization job submission | SP | `backend/job_launcher.py` `submit_optimization()` | `jobs.run_now()` requires SP |
 | Optimization job execution (4-task DAG) | SP (run_as) | `run_as` set by the deployer; verified (never repaired) by `backend/main.py` `_verify_gso_job_run_as()` | Lakeflow Jobs have no OBO mechanism |

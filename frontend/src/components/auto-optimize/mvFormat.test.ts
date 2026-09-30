@@ -251,7 +251,18 @@ describe("proposalGainSentence (MV-D30 justification)", () => {
       ],
     })
     expect(proposalGainSentence(p)).toBe(
-      "These 1 measure recur across 1 curated query and are ungoverned today.",
+      "This measure recurs across 1 curated query and is ungoverned today.",
+    )
+  })
+
+  it("uses singular grammar for one measure over several queries", () => {
+    const p = mk({
+      measures: [
+        { display_name: "a", expr: "SUM(x)", dedup_fingerprint: "m1", recurrence: 2, provenance_count: 2, benchmark_question_ids: ["q1", "q2"] },
+      ],
+    })
+    expect(proposalGainSentence(p)).toBe(
+      "This measure recurs across 2 curated queries and is ungoverned today.",
     )
   })
 
@@ -268,7 +279,7 @@ describe("proposalGainSentence (MV-D30 justification)", () => {
   it("degrades to a generic gain when no question ids are present anywhere", () => {
     const p = mk({ measures: [], evidence: null })
     expect(proposalGainSentence(p)).toBe(
-      "These 1 measure recur in this Agent\u2019s generated SQL and are ungoverned today.",
+      "This measure recurs in this Agent\u2019s generated SQL and is ungoverned today.",
     )
   })
 })

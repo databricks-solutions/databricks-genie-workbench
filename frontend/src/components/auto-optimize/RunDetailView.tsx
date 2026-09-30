@@ -152,6 +152,7 @@ export function RunDetailView({ runId, onBack, onRefreshIqScore, onRerunWithMv }
           baselineScore={run.baselineScore}
           optimizedScore={run.optimizedScore}
           bestIteration={run.bestIteration}
+          bestEvalScope={run.bestEvalScope}
           status={run.status}
           needsReviewCount={needsReviewCount}
         />

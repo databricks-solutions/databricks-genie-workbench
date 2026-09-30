@@ -22,6 +22,7 @@ import base64
 import copy
 import json
 import re
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -483,8 +484,9 @@ def test_the_verdict_scores_the_affected_subset_of_a_full_suite_eval() -> None:
     assert report["graded_suite_count"] == 3
 
 
-def test_a_regression_outside_the_subset_does_not_detach_a_wash() -> None:
-    """d4: at delta_affected == 0, only a regression INSIDE the subset detaches."""
+def test_a_wash_with_a_regression_outside_the_subset_detaches_on_the_suite_loss() -> None:
+    """d4: the regression outside the subset is not a subset regression, but it is
+    a net suite loss, and MV-D118 (net_suite) detaches on that."""
     spark = FakeDeltaSpark()
     _seed(spark, benchmark_questions=["rev_001"])
     baseline = _baseline_output([_row("rev_001", "GOOD"), _row("rev_009", "GOOD")])
@@ -493,7 +495,8 @@ def test_a_regression_outside_the_subset_does_not_detach_a_wash() -> None:
     outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
 
     assert outcome.delta_affected == pytest.approx(0.0)
-    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+    assert outcome.delta_suite < 0
+    assert outcome.verdict == mv_attach.VERDICT_DETACHED
     assert outcome.regressed_question_count == 0
 
 
@@ -686,7 +689,7 @@ def test_an_exception_after_the_attach_is_rolled_back_and_recorded(monkeypatch) 
 
     assert calls == [SPACE_ID]
     assert outcome.status == mv_attach.STATUS_FAILED
-    assert "eval service exploded" in (outcome.error or "")
+    assert outcome.error == "RuntimeError"
     assert outcome.rollback_status == mv_attach.ROLLBACK_REVERTED
     assert outcome.attached == ()
     assert outcome.config["data_sources"]["metric_views"] == []
@@ -694,6 +697,7 @@ def test_an_exception_after_the_attach_is_rolled_back_and_recorded(monkeypatch) 
     stage = _stage_statements(spark, "MV_ATTACH")
     assert stage and "'FAILED'" in stage[-1]
     assert '"rollback_status": "reverted"' in stage[-1]
+    assert "eval service exploded" not in stage[-1]
 
 
 @pytest.mark.parametrize("where", ["lift_report", "update_iteration_observed_config"])
@@ -806,6 +810,90 @@ def test_a_failure_before_deploy_does_not_revert(monkeypatch) -> None:
     assert calls == []
     assert outcome.status == mv_attach.STATUS_FAILED
     assert outcome.rollback_status is None
+
+
+# ── MV-D118: no exception text leaves the phase; a late failure keeps its lift ──
+
+
+_SENTINEL = "secret_literal"
+
+
+def test_a_post_deploy_exception_persists_its_type_only(monkeypatch, caplog) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    _spy_rollback(monkeypatch)
+    with caplog.at_level("DEBUG"):
+        outcome = _run_phase(
+            spark, config=_config(),
+            baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+            runner=_FakeRunner([], raises=RuntimeError(f"SELECT {_SENTINEL} FROM t")),
+        )
+    assert outcome.error == "RuntimeError"
+    assert _SENTINEL not in caplog.text
+    assert not [s for s in spark.statements if _SENTINEL in s]
+
+
+def test_a_raised_revert_is_recorded_by_type(monkeypatch, caplog) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+
+    def raising(*_a, **_k):
+        raise RuntimeError(_SENTINEL)
+
+    monkeypatch.setattr(mv_attach, "rollback", raising)
+    with caplog.at_level("DEBUG"):
+        outcome = _run_phase(
+            spark, config=_config(),
+            baseline=_baseline_output([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+            runner=_FakeRunner([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        )
+    assert outcome.rollback_status == mv_attach.ROLLBACK_FAILED
+    assert outcome.rollback_error == "RuntimeError"
+    assert _SENTINEL not in (outcome.error or "")
+    assert _SENTINEL not in caplog.text
+    assert not [s for s in spark.statements if _SENTINEL in s]
+
+
+def test_a_pre_deploy_exception_persists_its_type_only(monkeypatch, caplog) -> None:
+    spark = FakeDeltaSpark()
+    monkeypatch.setattr(
+        mv_attach, "load_mv_consent",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError(_SENTINEL)),
+    )
+    with caplog.at_level("DEBUG"):
+        outcome = _run_phase(
+            spark, config=_config(),
+            baseline=_baseline_output([_row("rev_001", "BAD")]),
+            runner=_FakeRunner([]),
+        )
+    assert outcome.status == mv_attach.STATUS_FAILED
+    assert outcome.error == "RuntimeError"
+    assert _SENTINEL not in caplog.text
+
+
+def test_a_failure_after_the_measurement_keeps_the_measured_fields(monkeypatch) -> None:
+    """m-2: the lift was measured before the failure, so the outcome says so."""
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    _spy_rollback(monkeypatch)
+    monkeypatch.setattr(
+        mv_attach, "update_iteration_observed_config",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("late")),
+    )
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=_FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+    )
+    assert outcome.status == mv_attach.STATUS_FAILED
+    assert outcome.error == "RuntimeError"
+    assert outcome.verdict is None
+    assert outcome.rollback_status == mv_attach.ROLLBACK_REVERTED
+    assert outcome.lift_eval_run_id == "eval-lift"
+    assert outcome.graded_affected_count == 2
+    assert outcome.delta_affected is not None and outcome.delta_affected > 0
+    assert outcome.delta_suite is not None
+    assert json.loads(_created_row(spark)["lift_report_json"])["question_subset"] == AFFECTED
 
 
 # ── The phase: every verify-before-attach mismatch is a recorded skip ────
@@ -963,7 +1051,7 @@ def test_a_phase_exception_is_swallowed_and_recorded() -> None:
         mv_attach.load_mv_consent = original  # type: ignore[assignment]
 
     assert outcome.status == mv_attach.STATUS_FAILED
-    assert "consent table unreadable" in (outcome.error or "")
+    assert outcome.error == "RuntimeError"
     assert outcome.config is config
 
 
@@ -1087,6 +1175,99 @@ def test_a_bundle_member_fingerprint_selects_rows_too() -> None:
 
     outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
 
+    assert outcome.affected_question_count == 1
+
+
+UNQUALIFIED_REVENUE_SQL = "SELECT SUM(amount) FROM fact_orders"
+
+
+def _revenue_bundle_evidence() -> dict[str, Any]:
+    return {
+        "bundle": True,
+        "benchmark_question_ids": [],
+        "source_tables": ["main.sales.fact_orders"],
+        "measures": [{"dedup_fingerprint": _revenue_fingerprint(), "benchmark_question_ids": []}],
+    }
+
+
+def test_unqualified_sql_over_the_candidates_table_selects_the_row() -> None:
+    """m-4: the statement's table set is the leaf; the candidate recorded the FQN."""
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_revenue_bundle_evidence())
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql=UNQUALIFIED_REVENUE_SQL), _row("rev_002", "GOOD"),
+    ])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    assert outcome.affected_question_count == 1
+
+
+def test_the_same_expression_over_another_table_does_not_select() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_revenue_bundle_evidence())
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql="SELECT SUM(amount) FROM main.sales.fact_returns"),
+    ])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=_FakeRunner([]))
+    assert outcome.skip_reason == mv_attach.SKIP_NO_AFFECTED_QUESTIONS
+
+
+def test_without_candidate_tables_the_fallback_does_not_run() -> None:
+    """Legacy or CONFLICT rows record no ``source_tables``, so only the exact match runs."""
+    spark = FakeDeltaSpark()
+    evidence = _revenue_bundle_evidence()
+    del evidence["source_tables"]
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=evidence)
+    baseline = _baseline_output([_row("rev_001", "BAD", sql=UNQUALIFIED_REVENUE_SQL)])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=_FakeRunner([]))
+    assert outcome.skip_reason == mv_attach.SKIP_NO_AFFECTED_QUESTIONS
+
+
+def test_a_bare_expression_with_no_from_selects_through_the_fallback() -> None:
+    """MV-D118 Ruling 6: a statement that resolves no table matches by design."""
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_revenue_bundle_evidence())
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql="SELECT SUM(amount)"), _row("rev_002", "GOOD"),
+    ])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    assert outcome.affected_question_count == 1
+
+
+@pytest.mark.parametrize("key", ["expected_sql", "inputs/expected_response"])
+def test_each_expected_sql_key_selects_alone(key: str) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint=_revenue_fingerprint(), benchmark_questions=[])
+    row = {"question_id": "rev_001", "assessment": "BAD", "needs_review": False, key: REVENUE_SQL}
+    outcome = _run_phase(
+        spark, config=_config(), baseline=_baseline_output([row]),
+        runner=_FakeRunner([_row("rev_001", "GOOD")]),
+    )
+    assert outcome.affected_question_count == 1
+
+
+@pytest.mark.parametrize("key", ["generated_sql", "outputs/response"])
+def test_each_generated_sql_key_selects_alone(key: str) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint=_revenue_fingerprint(), benchmark_questions=[])
+    row = {"question_id": "rev_001", "assessment": "BAD", "needs_review": False, key: REVENUE_SQL}
+    outcome = _run_phase(
+        spark, config=_config(), baseline=_baseline_output([row]),
+        runner=_FakeRunner([_row("rev_001", "GOOD")]),
+    )
+    assert outcome.affected_question_count == 1
+
+
+@pytest.mark.parametrize("key", ["benchmark_question_ids", "benchmark_questions"])
+def test_each_recorded_id_key_selects_alone(key: str) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, benchmark_questions=None, evidence={key: ["rev_001"]})
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=_FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+    )
     assert outcome.affected_question_count == 1
 
 
@@ -1346,7 +1527,8 @@ def _loop_eval(accuracy: float) -> dict[str, Any]:
 def _loop(
     monkeypatch, *, attach, accuracies, spark=None, raise_at=None, observed="live",
     status_calls: list | None = None, proposed: list | None = None,
-    record: list | None = None,
+    record: list | None = None, w: Any = None, phase_calls: list | None = None,
+    **loop_kwargs,
 ):
     """Drive the loop with a fixed attach outcome and accuracy trajectory.
 
@@ -1356,8 +1538,9 @@ def _loop(
 
     The optional lists capture what the loop did: ``status_calls`` the kwargs of
     every ``update_run_status``, ``proposed`` the kwargs of every
-    ``propose_patches``, and ``record`` one ``eval:<accuracy>`` entry per
-    ``_native_eval`` the loop ran.
+    ``propose_patches``, ``record`` one ``eval:<accuracy>`` entry per
+    ``_native_eval`` the loop ran, and ``phase_calls`` the kwargs the loop handed
+    ``run_mv_attach_phase``. ``w`` is the workspace client the loop is given.
 
     ``observed`` models the per-iteration authoritative read-back at
     ``unified_loop.py:3382``, which the loop prefers over its own submitted
@@ -1405,6 +1588,11 @@ def _loop(
         if status_calls is not None:
             status_calls.append(kwargs)
 
+    def phase(*_args, **kwargs):
+        if phase_calls is not None:
+            phase_calls.append(kwargs)
+        return attach
+
     monkeypatch.setattr(
         unified_loop,
         "fetch_space_config",
@@ -1416,7 +1604,7 @@ def _loop(
         lambda *_a, **_k: SimpleNamespace(current_config=copy.deepcopy(pre_attach)),
     )
     monkeypatch.setattr(unified_loop, "_native_eval", evaluate)
-    monkeypatch.setattr(unified_loop, "run_mv_attach_phase", lambda *_a, **_k: attach)
+    monkeypatch.setattr(unified_loop, "run_mv_attach_phase", phase)
     monkeypatch.setattr(
         unified_loop,
         "_read_observed_config_after_evaluation",
@@ -1432,7 +1620,7 @@ def _loop(
     monkeypatch.setattr(unified_loop, "_stamp_terminal", lambda *_a, **kw: stamped.update(kw))
 
     out = unified_loop.run_unified_optimization_loop(
-        None,
+        w,
         spark if spark is not None else MagicMock(),
         run_id=RUN_ID,
         space_id=SPACE_ID,
@@ -1444,6 +1632,7 @@ def _loop(
         target_accuracy=99.0,
         mv_attach_views=f'["{MV_NAME}"]',
         mv_consent_id=PROBE_ID,
+        **loop_kwargs,
     )
     return out, stamped
 
@@ -1667,6 +1856,117 @@ def test_a_detached_attach_leaves_the_baseline_alone(monkeypatch) -> None:
     _out, stamped = _loop(monkeypatch, attach=detached, accuracies=[10.0, 60.0])
     assert stamped["iteration"] == 1
     assert stamped["best_accuracy"] == pytest.approx(60.0)
+
+
+# ── MV-D118 (wide_schema = rerun): wide schema re-plans after a kept attach ──
+
+
+def test_a_kept_attach_re_plans_wide_schema_on_its_own_failures(monkeypatch) -> None:
+    seen: list[str] = []
+    real = unified_loop._failure_rows
+
+    def spy(eval_result, *a, **k):
+        seen.append(str(eval_result.get("eval_run_id")))
+        return real(eval_result, *a, **k)
+
+    monkeypatch.setattr(unified_loop, "_failure_rows", spy)
+    monkeypatch.setattr(unified_loop, "validate_inventory", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "validate_selection_plan", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "active_column_keys", lambda *_a, **_k: set())
+    _loop(
+        monkeypatch, attach=_kept_attach(90.0), accuracies=[10.0],
+        wide_schema_inventory={"inventory_hash": "h"},
+        wide_schema_plan={"profiling_budget": {}},
+        wide_schema_profile_budget={},
+    )
+    assert "eval-10.0" in seen and "eval-90.0" in seen
+    assert seen.index("eval-10.0") < seen.index("eval-90.0")
+
+
+def test_a_detached_attach_does_not_re_plan(monkeypatch) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        unified_loop, "_failure_rows",
+        lambda eval_result, *a, **k: seen.append(str(eval_result.get("eval_run_id"))) or [],
+    )
+    monkeypatch.setattr(unified_loop, "validate_inventory", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "validate_selection_plan", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "active_column_keys", lambda *_a, **_k: set())
+    detached = mv_attach.AttachOutcome(
+        status=mv_attach.STATUS_COMPLETE, verdict=mv_attach.VERDICT_DETACHED, config=_config(),
+    )
+    _loop(
+        monkeypatch, attach=detached, accuracies=[10.0],
+        wide_schema_inventory={"inventory_hash": "h"},
+        wide_schema_plan={"profiling_budget": {}},
+        wide_schema_profile_budget={},
+    )
+    assert seen.count("eval-10.0") >= 1 and "eval-90.0" not in seen
+
+
+# ── MV-D118 (d4 = net_suite): a suite loss is a regression ───────────────
+
+
+def test_a_net_suite_loss_detaches_even_when_the_subset_improves(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    reverts = _spy_rollback(monkeypatch)
+    baseline = _baseline_output([
+        _row("rev_001", "BAD"), _row("rev_002", "GOOD"),
+        _row("rev_003", "GOOD"), _row("rev_004", "GOOD"),
+    ])
+    runner = _FakeRunner([
+        _row("rev_001", "GOOD"), _row("rev_002", "GOOD"),
+        _row("rev_003", "BAD"), _row("rev_004", "BAD"),
+    ])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    assert outcome.delta_affected > 0
+    assert outcome.delta_suite < 0
+    assert outcome.verdict == mv_attach.VERDICT_DETACHED
+    assert reverts == [SPACE_ID]
+    assert outcome.config["data_sources"]["metric_views"] == []
+
+
+def test_an_even_suite_keeps_a_subset_gain(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    baseline = _baseline_output([
+        _row("rev_001", "BAD"), _row("rev_002", "GOOD"), _row("rev_003", "GOOD"),
+    ])
+    runner = _FakeRunner([
+        _row("rev_001", "GOOD"), _row("rev_002", "GOOD"), _row("rev_003", "BAD"),
+    ])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    assert outcome.delta_suite == 0
+    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+
+
+def test_an_even_suite_keeps_a_wash_whose_only_regression_is_outside_the_subset() -> None:
+    """d4 with net_suite: an outside regression offset by an outside gain is noise."""
+    spark = FakeDeltaSpark()
+    _seed(spark, benchmark_questions=["rev_001"])
+    baseline = _baseline_output([
+        _row("rev_001", "GOOD"), _row("rev_008", "GOOD"), _row("rev_009", "BAD"),
+    ])
+    runner = _FakeRunner([
+        _row("rev_001", "GOOD"), _row("rev_008", "BAD"), _row("rev_009", "GOOD"),
+    ])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    assert outcome.delta_affected == pytest.approx(0.0)
+    assert outcome.delta_suite == 0
+    assert outcome.regressed_question_count == 0
+    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+
+
+def test_the_attach_diagnostic_carries_delta_suite(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    attach = replace(_kept_attach(90.0), delta_affected=0.5, delta_suite=0.25)
+    _loop(
+        monkeypatch, attach=attach, accuracies=[10.0],
+        diagnostic_callback=lambda event, **payload: events.append((event, payload)),
+    )
+    measured = [p for e, p in events if e == "Metric view attach measured"]
+    assert measured and measured[0]["delta_suite"] == 0.25
 
 
 # ── Status truthfulness: end-of-run reconciliation ───────────────────────
@@ -2178,3 +2478,366 @@ def test_the_loop_live_read_is_best_effort(monkeypatch) -> None:
 
     monkeypatch.setattr(unified_loop, "fetch_space_config", fail)
     assert unified_loop._read_live_space_config(object(), "space-1", run_id=RUN_ID) is None
+
+
+# ── MV-D118: a view attached before the run is not this run's to report ──
+
+
+def test_the_stage_row_records_views_already_on_the_config(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    runner = _FakeRunner([])
+    outcome = _run_phase(
+        spark, config=_config([{"identifier": MV_NAME.upper()}]),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=runner,
+    )
+    assert outcome.skip_reason == mv_attach.SKIP_ATTACH_NOT_APPLIED
+    assert runner.calls == []
+    stage = _stage_statements(spark, "MV_ATTACH")
+    assert f'"pre_attached": ["{MV_NAME}"]' in stage[-1]
+
+
+def test_the_unmeasured_report_skips_a_pre_attached_view() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    mv_state.update_mv_created_object_status(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID,
+        suggestion_id=SUGGESTION_ID, status="CREATED", attach_patch_id="ref",
+    )
+    live = _config([{"identifier": MV_NAME}])
+    with patch.object(mv_attach, "load_stages", return_value=[]):
+        assert mv_attach.report_unmeasured_attachments(
+            spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+            live_config=lambda: live, exclude=[MV_NAME],
+        ) == []
+        assert mv_attach.report_unmeasured_attachments(
+            spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+            live_config=lambda: live,
+        ) == [MV_NAME]
+
+
+def test_the_earliest_stage_rows_pre_attached_survives_a_restart() -> None:
+    """A restart's config may carry a view a failed revert left: the first row wins."""
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    mv_state.update_mv_created_object_status(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID,
+        suggestion_id=SUGGESTION_ID, status="CREATED", attach_patch_id="ref",
+    )
+    # FakeDeltaSpark does not serve write_stage's INSERTs back, so the two rows
+    # _record would write are served the way the reset tests serve them.
+    stages = _stages(
+        mv_attach.AttachOutcome(status="COMPLETE", pre_attached=()).detail(),
+        mv_attach.AttachOutcome(status="SKIPPED", pre_attached=(MV_NAME,)).detail(),
+    )
+    live = _config([{"identifier": MV_NAME}])
+    with patch.object(mv_attach, "load_stages", return_value=stages):
+        assert mv_attach.report_unmeasured_attachments(
+            spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+            live_config=lambda: live, exclude=[MV_NAME],
+        ) == [MV_NAME]
+
+
+def test_loop_exit_passes_the_phases_pre_attached(monkeypatch) -> None:
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        unified_loop, "report_unmeasured_attachments",
+        lambda *_a, **kw: seen.append(kw) or [],
+    )
+    attach = replace(_kept_attach(90.0), pre_attached=(MV_NAME,))
+    _loop(monkeypatch, attach=attach, accuracies=[10.0])
+    assert seen and list(seen[-1]["exclude"]) == [MV_NAME]
+
+
+MV_ORDERS = "main.sales.mv_orders"
+SUGGESTION_ORDERS = "sug-2"
+
+
+def _seed_mixed(spark: FakeDeltaSpark) -> None:
+    """MV_NAME is already on the space before the run; MV_ORDERS is new.
+
+    rev_001 is MV_NAME's alone, rev_002 MV_ORDERS' alone, rev_003 both views'.
+    """
+    _seed(spark, benchmark_questions=["rev_001", "rev_003"])
+    mv_state.upsert_mv_created_object(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID,
+        suggestion_id=SUGGESTION_ORDERS, full_name=MV_ORDERS, created_by=USER,
+        status="CREATED",
+    )
+    mv_state.upsert_mv_candidate(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID, target_space_id=SPACE_ID,
+        suggestion_id=SUGGESTION_ORDERS, dedup_fingerprint="fp-2",
+        candidate_type="NEW_METRIC_VIEW",
+        evidence={"benchmark_questions": ["rev_002", "rev_003"]},
+    )
+
+
+def _created_row_for(spark: FakeDeltaSpark, suggestion_id: str) -> dict[str, Any]:
+    return next(
+        row for row in spark.rows
+        if row.get("full_name") is not None and row.get("suggestion_id") == suggestion_id
+    )
+
+
+def _run_mixed(monkeypatch, spark: FakeDeltaSpark, *, baseline_rows, post_rows):
+    updated: list[str] = []
+    real_update = mv_attach.update_mv_created_object_status
+
+    def spy(*args, **kwargs):
+        updated.append(kwargs["suggestion_id"])
+        return real_update(*args, **kwargs)
+
+    monkeypatch.setattr(mv_attach, "update_mv_created_object_status", spy)
+    outcome = _run_phase(
+        spark, config=_config([{"identifier": MV_NAME}]),
+        baseline=_baseline_output(baseline_rows), runner=_FakeRunner(post_rows),
+        attach_views=json.dumps([MV_NAME, MV_ORDERS]),
+    )
+    return outcome, updated
+
+
+def test_a_mixed_kept_attach_records_only_the_view_it_applied(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    _seed_mixed(spark)
+    before = dict(_created_row_for(spark, SUGGESTION_ID))
+    outcome, updated = _run_mixed(
+        monkeypatch, spark,
+        baseline_rows=[_row("rev_001", "GOOD"), _row("rev_002", "BAD"), _row("rev_003", "BAD")],
+        post_rows=[_row("rev_001", "GOOD"), _row("rev_002", "GOOD"), _row("rev_003", "GOOD")],
+    )
+    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+    assert outcome.pre_attached == (MV_NAME,)
+    assert outcome.attached == (MV_ORDERS,)
+    assert outcome.suggestion_ids == (SUGGESTION_ORDERS,)
+    assert _created_row_for(spark, SUGGESTION_ORDERS)["status"] == "ATTACHED"
+    assert SUGGESTION_ID not in updated
+    assert _created_row_for(spark, SUGGESTION_ID) == before
+
+
+def test_a_mixed_detach_leaves_the_pre_attached_view_and_its_row(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    _seed_mixed(spark)
+    before = dict(_created_row_for(spark, SUGGESTION_ID))
+    outcome, updated = _run_mixed(
+        monkeypatch, spark,
+        baseline_rows=[_row("rev_001", "GOOD"), _row("rev_002", "GOOD"), _row("rev_003", "GOOD")],
+        post_rows=[_row("rev_001", "GOOD"), _row("rev_002", "BAD"), _row("rev_003", "GOOD")],
+    )
+    assert outcome.verdict == mv_attach.VERDICT_DETACHED
+    assert outcome.detached == (MV_ORDERS,)
+    assert outcome.config["data_sources"]["metric_views"] == [{"identifier": MV_NAME}]
+    assert _created_row_for(spark, SUGGESTION_ORDERS)["status"] == "DETACHED"
+    assert SUGGESTION_ID not in updated
+    assert _created_row_for(spark, SUGGESTION_ID) == before
+
+
+def test_a_mixed_request_measures_only_the_applied_views_questions(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    _seed_mixed(spark)
+    outcome, _ = _run_mixed(
+        monkeypatch, spark,
+        baseline_rows=[_row("rev_001", "GOOD"), _row("rev_002", "BAD"), _row("rev_003", "BAD")],
+        post_rows=[_row("rev_001", "GOOD"), _row("rev_002", "GOOD"), _row("rev_003", "GOOD")],
+    )
+    assert outcome.affected_question_count == 2
+    report = json.loads(_created_row_for(spark, SUGGESTION_ORDERS)["lift_report_json"])
+    assert report["question_subset"] == ["rev_002", "rev_003"]
+
+
+def test_a_bring_your_own_view_without_a_candidate_is_not_measured() -> None:
+    """m-6: USER_CREATED waives the creator check, but a view needs questions."""
+    spark = FakeDeltaSpark()
+    _seed(
+        spark, provenance="USER_CREATED", created_by="someone-else@example.com",
+        benchmark_questions=None, evidence=None,
+    )
+    runner = _FakeRunner([])
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD")]), runner=runner,
+    )
+    assert outcome.skip_reason == mv_attach.SKIP_NO_AFFECTED_QUESTIONS
+    assert runner.calls == []
+    assert outcome.config["data_sources"]["metric_views"] == []
+
+
+# ── MV-D118 (patch = read_then_revert): a PATCH that raised may have landed ──
+
+
+def _unconfirmed_apply_log(**extra: Any) -> dict[str, Any]:
+    return {
+        "applied": [{"action": {"target": MV_NAME}, "patch": {"type": "mv_attach_data_source"}}],
+        "patch_deployed": False,
+        "patch_error": f"timed out {_SENTINEL}",
+        "patch_error_type": "TimeoutError",
+        "pre_snapshot": _config(),
+        "post_snapshot": _config([{"identifier": MV_NAME}]),
+        **extra,
+    }
+
+
+def _run_unconfirmed(monkeypatch, *, live, apply_log=None, rollback_ok=True, w=None):
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    reverts: list[str] = []
+    reads: list[str] = []
+    monkeypatch.setattr(
+        mv_attach, "apply_patch_set", lambda *_a, **_k: apply_log or _unconfirmed_apply_log(),
+    )
+
+    def rollback(_log, _w, space_id):
+        reverts.append(space_id)
+        return {"status": "ok"} if rollback_ok else {"status": "error", "errors": ["Failed to apply rollback via API"]}
+
+    monkeypatch.setattr(mv_attach, "rollback", rollback)
+
+    def read():
+        reads.append("read")
+        if isinstance(live, BaseException):
+            raise live
+        return live
+
+    outcome = mv_attach.run_mv_attach_phase(
+        spark, run_id=RUN_ID, space_id=SPACE_ID, catalog=CATALOG, schema=SCHEMA,
+        attach_views=f'["{MV_NAME}"]', consent_probe_id=PROBE_ID, config=_config(),
+        baseline_eval=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        w=w if w is not None else MagicMock(), post_attach_eval=_FakeRunner([]),
+        live_config=read,
+    )
+    return spark, outcome, reverts, reads
+
+
+@pytest.mark.parametrize("shelf", ["metric_views", "tables"])
+def test_a_landed_unconfirmed_patch_is_reverted(monkeypatch, shelf) -> None:
+    live = _config()
+    live["data_sources"][shelf].append({"identifier": MV_NAME})
+    spark, outcome, reverts, _ = _run_unconfirmed(monkeypatch, live=live)
+    assert reverts == [SPACE_ID]
+    assert outcome.status == mv_attach.STATUS_SKIPPED
+    assert outcome.skip_reason == mv_attach.SKIP_PATCH_UNCONFIRMED
+    assert outcome.rollback_status == mv_attach.ROLLBACK_REVERTED
+    assert outcome.error == "TimeoutError"
+    assert outcome.config["data_sources"]["metric_views"] == []
+    assert not [s for s in spark.statements if _SENTINEL in s]
+
+
+def test_an_unlanded_unconfirmed_patch_is_not_reverted(monkeypatch) -> None:
+    _, outcome, reverts, reads = _run_unconfirmed(monkeypatch, live=_config())
+    assert reads == ["read"] and reverts == []
+    assert outcome.skip_reason == mv_attach.SKIP_ATTACH_NOT_APPLIED
+    assert outcome.error == "TimeoutError"
+
+
+def test_an_unreadable_space_is_treated_as_landed(monkeypatch) -> None:
+    _, outcome, reverts, _ = _run_unconfirmed(monkeypatch, live=RuntimeError(_SENTINEL))
+    assert reverts == [SPACE_ID]
+    assert outcome.skip_reason == mv_attach.SKIP_PATCH_UNCONFIRMED
+
+
+def test_a_failed_revert_of_an_unconfirmed_patch_is_reported(monkeypatch) -> None:
+    live = _config([{"identifier": MV_NAME}])
+    spark, outcome, reverts, _ = _run_unconfirmed(monkeypatch, live=live, rollback_ok=False)
+    assert reverts == [SPACE_ID, SPACE_ID]
+    assert outcome.status == mv_attach.STATUS_FAILED
+    assert outcome.rollback_status == mv_attach.ROLLBACK_FAILED
+    assert (outcome.error or "").startswith("ROLLBACK_FAILED")
+    assert "PATCH_UNCONFIRMED: TimeoutError" in outcome.error
+    assert _created_row(spark)["attach_patch_id"]
+    assert mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+        live_config=lambda: live,
+    ) == [MV_NAME]
+
+
+def test_a_validation_failure_is_not_an_unconfirmed_patch(monkeypatch) -> None:
+    log = _unconfirmed_apply_log(
+        validation_errors=["bad"], patch_error="Validation failed: ['bad']", patch_error_type="",
+    )
+    _, outcome, reverts, reads = _run_unconfirmed(monkeypatch, live=_config(), apply_log=log)
+    assert reads == [] and reverts == []
+    assert outcome.skip_reason == mv_attach.SKIP_ATTACH_NOT_APPLIED
+
+
+def test_a_patch_the_real_applier_saw_raise_is_read_back(monkeypatch) -> None:
+    """The applier's PATCH-raised log carries ``validation_errors: []`` and the type."""
+
+    def raise_timeout(*_a, **_k):
+        raise TimeoutError(_SENTINEL)
+
+    monkeypatch.setattr(applier, "patch_space_config", raise_timeout)
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    logs: list[dict[str, Any]] = []
+    reverts: list[str] = []
+    real_apply = mv_attach.apply_patch_set
+    monkeypatch.setattr(
+        mv_attach, "apply_patch_set",
+        lambda *a, **k: logs.append(real_apply(*a, **k)) or logs[-1],
+    )
+    monkeypatch.setattr(
+        mv_attach, "rollback",
+        lambda _log, _w, space_id: reverts.append(space_id) or {"status": "ok"},
+    )
+    outcome = mv_attach.run_mv_attach_phase(
+        spark, run_id=RUN_ID, space_id=SPACE_ID, catalog=CATALOG, schema=SCHEMA,
+        attach_views=f'["{MV_NAME}"]', consent_probe_id=PROBE_ID, config=_config(),
+        baseline_eval=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        w=MagicMock(), post_attach_eval=_FakeRunner([]),
+        live_config=lambda: _config([{"identifier": MV_NAME}]),
+    )
+    assert logs[0]["validation_errors"] == [] and logs[0]["patch_error_type"] == "TimeoutError"
+    assert reverts == [SPACE_ID]
+    assert outcome.skip_reason == mv_attach.SKIP_PATCH_UNCONFIRMED
+    assert outcome.error == "TimeoutError"
+    assert not [s for s in spark.statements if _SENTINEL in s]
+
+
+def test_the_loop_hands_the_phase_a_live_reader(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+    skipped = mv_attach.AttachOutcome(status=mv_attach.STATUS_SKIPPED, config=_config())
+    _loop(monkeypatch, attach=skipped, accuracies=[95.0], w=MagicMock(), phase_calls=calls)
+    live = _config([{"identifier": MV_NAME}])
+    monkeypatch.setattr(
+        unified_loop, "fetch_space_config", lambda *_a, **_k: {"_parsed_space": copy.deepcopy(live)},
+    )
+    reader = calls[-1]["live_config"]
+    assert callable(reader)
+    assert reader()["data_sources"]["metric_views"] == [{"identifier": MV_NAME}]
+
+    _loop(monkeypatch, attach=skipped, accuracies=[95.0], phase_calls=calls)
+    assert calls[-1]["live_config"] is None
+
+
+def test_a_kept_attach_records_its_remaining_failures() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+    real_call = runner.__call__
+
+    def with_failures():
+        out = real_call()
+        out["remaining_failures"] = ["rev_009"]
+        return out
+
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=with_failures,
+    )
+    assert outcome.post_attach_remaining_failures == 1
+    assert '"post_attach_remaining_failures": 1' in _stage_statements(spark, "MV_ATTACH")[-1]
+
+
+def test_the_restart_lookup_scores_iteration_zero_at_the_reset(monkeypatch) -> None:
+    rows = [
+        {"iteration": 0, "eval_scope": "full", "eval_run_id": "eval-b", "overall_accuracy": 86.67},
+        {"iteration": 1, "eval_scope": "full", "eval_run_id": "eval-1", "overall_accuracy": 88.0},
+    ]
+    monkeypatch.setattr(unified_loop, "load_all_scored_iterations", lambda *_a, **_k: rows)
+    monkeypatch.setattr(
+        unified_loop, "kept_attach_baseline_reset", lambda *_a, **_k: BaselineReset("eval-b", 90.0),
+    )
+    assert unified_loop._best_persisted_iteration(MagicMock(), RUN_ID, catalog=CATALOG, schema=SCHEMA) == (0, 90.0)
+    monkeypatch.setattr(unified_loop, "kept_attach_baseline_reset", lambda *_a, **_k: None)
+    assert unified_loop._best_persisted_iteration(MagicMock(), RUN_ID, catalog=CATALOG, schema=SCHEMA) == (1, 88.0)

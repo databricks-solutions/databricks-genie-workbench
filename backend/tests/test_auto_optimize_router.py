@@ -1503,6 +1503,85 @@ def test_status_keeps_earliest_iteration_zero_as_baseline(monkeypatch) -> None:
     assert body["bestIteration"] == 0
 
 
+# MV-D118 — a kept metric-view attach is the run's improvement, scored as its own
+# iteration-0 step against the stored pre-attach baseline.
+
+
+def _kept_attach_stages():
+    return [{
+        "stage": "MV_ATTACH", "status": "COMPLETE", "started_at": "2026-09-29T10:05:00",
+        "detail_json": json.dumps({
+            "phase": "mv_attach", "verdict": "ATTACHED",
+            "post_attach_accuracy": 90.0, "baseline_eval_run_id": "eval-b",
+        }),
+    }]
+
+
+def _stub_run_reads(monkeypatch, *, stages):
+    async def fake_run(_rid):
+        return {"run_id": _RUN, "space_id": "space-1", "status": "CONVERGED",
+                "convergence_reason": "TARGET_REACHED"}
+
+    async def iterations(_rid):
+        return [{"iteration": 0, "eval_scope": "full", "eval_run_id": "eval-b",
+                 "timestamp": "2026-09-29T10:00:00", "overall_accuracy": 86.67,
+                 "correct_count": 13, "evaluated_count": 15, "rolled_back": False}]
+
+    async def load_stages(_rid):
+        return stages
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_run", fake_run)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_stages", load_stages)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iterations", iterations)
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda *a, **k: [])
+    monkeypatch.setattr(auto_optimize, "_resolve_run_knobs", lambda _run: (0.9, 3))
+
+
+def _status_with(monkeypatch, *, stages, job_progress=None):
+    _stub_run_reads(monkeypatch, stages=stages)
+    if job_progress is not None:
+        monkeypatch.setattr(auto_optimize, "_job_task_progress", lambda _run: job_progress)
+    return _gso_client(monkeypatch).get(f"/api/auto-optimize/runs/{_RUN}/status")
+
+
+def test_status_counts_a_kept_attach_as_the_improvement(monkeypatch) -> None:
+    body = _status_with(monkeypatch, stages=_kept_attach_stages()).json()
+    assert body["baselineScore"] == pytest.approx(86.67, abs=0.01)
+    assert body["optimizedScore"] == 90.0
+    assert (body["bestIteration"], body["bestEvalScope"]) == (0, "metric_view")
+
+
+def test_status_reads_the_attach_stage_even_when_the_jobs_api_answers(monkeypatch) -> None:
+    body = _status_with(monkeypatch, stages=_kept_attach_stages(), job_progress=(4, None)).json()
+    assert body["stepsCompleted"] == 4
+    assert body["bestEvalScope"] == "metric_view"
+
+
+def test_status_without_an_attach_stage_is_unchanged(monkeypatch) -> None:
+    body = _status_with(monkeypatch, stages=[]).json()
+    assert (body["bestIteration"], body["bestEvalScope"]) == (0, "full")
+
+
+def test_run_detail_counts_a_kept_attach_as_the_improvement(monkeypatch) -> None:
+    _stub_run_reads(monkeypatch, stages=_kept_attach_stages())
+
+    async def no_rows(*_a, **_k):
+        return None
+
+    async def no_patches(_rid):
+        return []
+
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_iteration_rows", no_rows)
+    monkeypatch.setattr(auto_optimize.gso_lakebase, "load_gso_patches", no_patches)
+    monkeypatch.setattr(auto_optimize, "get_databricks_host", lambda: "")
+    resp = _gso_client(monkeypatch).get(f"/api/auto-optimize/runs/{_RUN}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["baselineScore"] == pytest.approx(86.67, abs=0.01)
+    assert body["optimizedScore"] == 90.0
+    assert (body["bestIteration"], body["bestEvalScope"]) == (0, "metric_view")
+
+
 def test_status_endpoint_uses_latest_downstream_task_for_current_step(monkeypatch) -> None:
     async def fake_run(_rid):
         return {"run_id": _RUN, "space_id": "space-1", "status": "IN_PROGRESS"}

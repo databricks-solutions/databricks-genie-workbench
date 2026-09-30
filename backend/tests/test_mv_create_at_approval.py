@@ -52,7 +52,10 @@ def _verification(effective_mode="create_and_attach", downgrade_reason=None, ver
     )
 
 
-_CONSENT = {"target_catalog": "finance", "target_schema": "sales", "probe_id": "p1"}
+_CONSENT = {
+    "target_catalog": "finance", "target_schema": "sales", "probe_id": "p1",
+    "probe_results": {"privileges": [{"privilege": "SELECT", "securable": "finance.sales.orders"}]},
+}
 _ARTIFACT = {
     "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
     "join_strategy": "direct",
@@ -1043,3 +1046,18 @@ def test_create_route_requires_obo(client, monkeypatch):
         json={"suggestion_id": "sug1", "probe_id": "p1"},
     )
     assert resp.status_code == 401
+
+
+def test_approval_refuses_a_body_reading_a_table_the_consent_did_not_cover(approval_env, monkeypatch):
+    executed, upserts, advice_runs = approval_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {**_ARTIFACT, "yaml_text": "version: 0.1\nsource: finance.hr.salaries\n"},
+    )
+    result = _create()
+    assert result.created is False
+    assert result.degraded is False
+    assert result.reason == mv_create.UNCOVERED_TABLES_REASON
+    assert not result.remediation_sql
+    assert not any("DESCRIBE" in s or "CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []

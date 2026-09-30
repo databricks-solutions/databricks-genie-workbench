@@ -170,13 +170,13 @@ function distinctQuestionCount(proposal: MvProposal): number {
 
 export function proposalGainSentence(proposal: MvProposal): string {
   const n = (proposal.measures ?? []).length || 1
-  const measureWord = n === 1 ? "measure" : "measures"
   const q = distinctQuestionCount(proposal)
-  if (q > 0) {
-    const queryWord = q === 1 ? "curated query" : "curated queries"
-    return `These ${n} ${measureWord} recur across ${q} ${queryWord} and are ungoverned today.`
-  }
-  return `These ${n} ${measureWord} recur in this Agent\u2019s generated SQL and are ungoverned today.`
+  const queryWord = q === 1 ? "curated query" : "curated queries"
+  const subject = n === 1 ? "This measure recurs" : `These ${n} measures recur`
+  const verdict = n === 1 ? "is ungoverned today" : "are ungoverned today"
+  return q > 0
+    ? `${subject} across ${q} ${queryWord} and ${verdict}.`
+    : `${subject} in this Agent\u2019s generated SQL and ${verdict}.`
 }
 
 // Prompt 15.6 finding 1 — evidence for humans, never raw ids. The advisor's

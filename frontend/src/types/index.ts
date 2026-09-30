@@ -343,6 +343,9 @@ export interface GSORunStatus {
   // later lever iteration. ``N > 0`` is the lever iteration that achieved
   // ``optimizedScore``. ``null`` if there's no baseline at all yet.
   bestIteration: number | null
+  // Scope of the winning candidate: "full", "enrichment", or "metric_view" (a kept
+  // metric-view attach improved the run at iteration 0, MV-D118).
+  bestEvalScope?: string | null
   convergenceReason: string | null
   // GSO v2 — typed loop terminal reason (null for legacy free-text reasons /
   // in-progress runs); supersedes parsing convergenceReason on the client. The
@@ -520,6 +523,7 @@ export interface GSOPipelineRun {
   optimizedScore: number | null
   baselineIteration: number | null
   bestIteration: number | null
+  bestEvalScope?: string | null
   steps: GSOPipelineStep[]
   stages: GSOStageEvent[]
   levers: GSOLeverStatus[]

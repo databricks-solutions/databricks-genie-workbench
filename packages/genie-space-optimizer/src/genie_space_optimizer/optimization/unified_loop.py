@@ -15,7 +15,7 @@ import math
 import os
 import re
 from contextlib import nullcontext
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from genie_space_optimizer.common.config import (
     OPTIMIZER_PROMPT_MAX_CHARS,
@@ -31,6 +31,7 @@ from genie_space_optimizer.optimization.applier import (
     rollback,
 )
 from genie_space_optimizer.optimization.benchmarking import _extract_json
+from genie_space_optimizer.optimization.champion import apply_baseline_reset
 from genie_space_optimizer.optimization.eval_runner import (
     FULL,
     OfficialBenchmarkRunner,
@@ -44,6 +45,7 @@ from genie_space_optimizer.optimization.leakage import (
 )
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.mv_attach import (
+    kept_attach_baseline_reset,
     reconcile_attached_objects,
     report_unmeasured_attachments,
     run_mv_attach_phase,
@@ -221,10 +223,10 @@ def _read_observed_config_after_evaluation(
 
 
 def _read_live_space_config(w: Any, space_id: str, *, run_id: str) -> dict[str, Any] | None:
-    """The space's current config for the end-of-run attach report, or ``None``."""
+    """The space's current config for the attach phase and its end-of-run report, or ``None``."""
     try:
         return _parsed_space(fetch_space_config(w, space_id))
-    except Exception:  # noqa: BLE001 - the report falls back to the in-memory config
+    except Exception:  # noqa: BLE001 - each caller decides what an unread space means
         logger.warning("Could not read the live space config for run %s", run_id)
         return None
 
@@ -2598,6 +2600,9 @@ def _best_persisted_iteration(
     never win. Returns ``None`` only when no eligible rows exist. Read failures
     propagate so callers fail closed instead of overwriting a durable champion
     with incomplete in-memory state.
+
+    A kept attach's reset scores iteration 0 at its post-attach accuracy, as
+    publish does (MV-D118).
     """
     try:
         rows = load_all_scored_iterations(spark, run_id, catalog, schema)
@@ -2609,6 +2614,9 @@ def _best_persisted_iteration(
             exc_info=True,
         )
         raise
+    rows = apply_baseline_reset(
+        rows, kept_attach_baseline_reset(spark, run_id, catalog, schema),
+    )
 
     best_iter: int | None = None
     best_acc = float("-inf")
@@ -2644,6 +2652,7 @@ def _reconcile_mv_attachment(
     emit: Any,
     w: Any = None,
     space_id: str | None = None,
+    pre_attached: Iterable[str] = (),
 ) -> None:
     """Verify every recorded attachment against the config the run ends on.
 
@@ -2674,6 +2683,7 @@ def _reconcile_mv_attachment(
             if w is not None and space_id
             else None
         ),
+        exclude=pre_attached,
     )
     if live:
         emit("Metric view may still be attached", identifiers=live)
@@ -3221,6 +3231,11 @@ def run_unified_optimization_loop(
         ),
         apply_mode=apply_mode,
         benchmark_corpus=benchmark_corpus,
+        live_config=(
+            (lambda: _read_live_space_config(w, space_id, run_id=run_id))
+            if w is not None
+            else None
+        ),
     )
     if mv_attach_outcome.config is not None:
         current_config = mv_attach_outcome.config
@@ -3233,6 +3248,16 @@ def run_unified_optimization_loop(
         update_run_status(
             spark, run_id, catalog, schema, best_iteration=0, best_accuracy=best_accuracy,
         )
+        # MV-D118: wide-schema activation follows the failures the loop will now
+        # work on, which are the post-attach ones.
+        current_config, wide_schema_plan, wide_schema_parent_artifact_id = (
+            _adapt_wide_schema_for_failures(
+                best_eval,
+                current_config,
+                wide_schema_plan,
+                wide_schema_parent_artifact_id,
+            )
+        )
     if mv_attach_outcome.verdict:
         _emit_diagnostic(
             "Metric view attach measured",
@@ -3240,6 +3265,7 @@ def run_unified_optimization_loop(
             attached=list(mv_attach_outcome.attached),
             detached=list(mv_attach_outcome.detached),
             delta_affected=mv_attach_outcome.delta_affected,
+            delta_suite=mv_attach_outcome.delta_suite,
             affected_questions=mv_attach_outcome.affected_question_count,
             baseline_eval_run_id=mv_attach_outcome.baseline_eval_run_id,
             lift_eval_run_id=mv_attach_outcome.lift_eval_run_id,
@@ -3259,6 +3285,7 @@ def run_unified_optimization_loop(
             emit=_emit_diagnostic,
             w=w,
             space_id=space_id,
+            pre_attached=mv_attach_outcome.pre_attached,
         )
         _stamp_terminal(
             spark,
@@ -3856,6 +3883,7 @@ def run_unified_optimization_loop(
         emit=_emit_diagnostic,
         w=w,
         space_id=space_id,
+        pre_attached=mv_attach_outcome.pre_attached,
     )
 
     # Option A-min: on a candidate-eval EVAL_INVALID (the mid-loop transient

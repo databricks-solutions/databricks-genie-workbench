@@ -119,6 +119,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   // same reason as mvProposalsInFlight above.
   const [mvProbeState, setMvProbeState] = useState<MvProbeState | null>(null)
   const mvProbeInFlight = useRef<string | null>(null)
+  const mvProbeSeq = useRef(0)
 
   const hasHealthIssues = (healthIssues?.length ?? 0) > 0
   const targetAccuracy = parseTargetAccuracy(targetPercent)
@@ -182,12 +183,13 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     }
   }, [mvEnabled, mvProposalsLoaded, spaceId, prefillSuggestionId])
 
-  // Probe entitlement for the selection's target and source tables (re-run). A
-  // changed selection re-probes; an answer for an earlier selection is dropped.
+  // Probe entitlement for the selection's target and source tables (re-run).
+  // A changed selection re-probes; only the latest request's answer is kept.
   useEffect(() => {
     if (!mvEnabled || !mvProposalsLoaded || !mvTarget || !mvProbeKey) return
     if (mvProbeState?.key === mvProbeKey || mvProbeInFlight.current === mvProbeKey) return
     const key = mvProbeKey
+    const token = ++mvProbeSeq.current
     mvProbeInFlight.current = key
     setMvProbeState({ key, probe: null, error: null, loading: true })
     probeMvEntitlement({
@@ -197,10 +199,10 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
       source_tables: mvSourceTables,
     })
       .then((res) => {
-        if (mvProbeInFlight.current === key) setMvProbeState({ key, probe: res, error: null, loading: false })
+        if (mvProbeSeq.current === token) setMvProbeState({ key, probe: res, error: null, loading: false })
       })
       .catch((e) => {
-        if (mvProbeInFlight.current === key) {
+        if (mvProbeSeq.current === token) {
           setMvProbeState({
             key,
             probe: null,
@@ -210,7 +212,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
         }
       })
       .finally(() => {
-        if (mvProbeInFlight.current === key) mvProbeInFlight.current = null
+        if (mvProbeSeq.current === token) mvProbeInFlight.current = null
       })
   }, [mvEnabled, mvProposalsLoaded, mvTarget, mvProbeKey, mvProbeState?.key, mvSourceTables, spaceId])
 

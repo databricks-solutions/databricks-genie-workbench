@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from backend.models import MvProposal
 from backend.routers import auto_optimize
 from genie_space_optimizer.common import warehouse
+from genie_space_optimizer.common.config import MV_RENDER_VERSION
 
 
 _SPACE = {
@@ -873,6 +874,24 @@ def test_semantic_graph_lens_free_response_is_backward_compatible(client, monkey
     # New top-level lens keys exist (additive), and the base shape is unchanged.
     assert "coverage_status" in data
     assert {"space_id", "nodes", "edges", "proposals"} <= set(data)
+
+
+def test_semantic_graph_drops_a_stale_proposal_beside_its_successor(client, monkeypatch):
+    base = {"target_space_id": "space-1", "candidate_type": "NEW_METRIC_VIEW",
+            "approved_for_rerun": True, "conflicts": [],
+            "proposed_object": "finance.sales.new_metrics"}
+    monkeypatch.setattr(auto_optimize, "get_serialized_space", lambda space_id: dict(_SPACE))
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [
+            {**base, "suggestion_id": "sug_stale", "dedup_fingerprint": "fp_s", "evidence": {}},
+            {**base, "suggestion_id": "sug_current", "dedup_fingerprint": "fp_c",
+             "evidence": {"render_version": MV_RENDER_VERSION}},
+        ],
+    )
+    resp = client.get("/api/auto-optimize/spaces/space-1/semantic-graph")
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
 
 
 def test_semantic_graph_carries_proposals_and_ungoverned_overlay(client, monkeypatch):

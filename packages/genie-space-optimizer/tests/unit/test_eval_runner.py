@@ -179,28 +179,14 @@ def test_run_times_out_while_non_terminal() -> None:
     assert exc.value.last_status == "RUNNING"
 
 
-def test_run_subset_passes_question_ids_and_label() -> None:
-    fake = _FakeGenie(statuses=["DONE"])
-    result = _runner(fake).run_subset("space-1", ["q1", "q2"], "mv_lift")
-    assert fake.create_calls[0]["benchmark_question_ids"] == ["q1", "q2"]
-    assert result.eval_scope == "mv_lift"
-    assert result.requested_question_ids == ("q1", "q2")
-
-
-def test_run_subset_rejects_empty_question_ids() -> None:
-    fake = _FakeGenie(statuses=["DONE"])
-    with pytest.raises(EvalRunError):
-        _runner(fake).run_subset("space-1", [], "mv_lift")
-
-
-def test_run_subset_is_serialized_across_threads() -> None:
+def test_runs_are_serialized_across_threads() -> None:
     fake = _FakeGenie(statuses=["RUNNING", "DONE", "RUNNING", "DONE"])
     runner = _runner(fake)
     errors: list[BaseException] = []
 
     def _go() -> None:
         try:
-            runner.run_subset("space-1", ["q1"], "mv_lift")
+            runner.run("space-1", ["q1"])
         except BaseException as exc:  # noqa: BLE001 — collect for assertion
             errors.append(exc)
 
@@ -212,6 +198,26 @@ def test_run_subset_is_serialized_across_threads() -> None:
     assert errors == []
     assert fake.max_in_flight == 1
     assert len(fake.create_calls) == 2
+
+
+def test_run_forwards_the_ids_and_labels_the_result_with_the_scope() -> None:
+    fake = _FakeGenie(statuses=["DONE"])
+    result = _runner(fake).run("space-1", ["q1", "q2"], eval_scope="x")
+    assert fake.create_calls == [
+        {"space_id": "space-1", "benchmark_question_ids": ["q1", "q2"]}
+    ]
+    assert result.eval_scope == "x"
+    assert result.requested_question_ids == ("q1", "q2")
+
+
+def test_the_seam_has_no_subset_method() -> None:
+    from genie_space_optimizer.optimization.eval_runner import (
+        EvalRunner,
+        OfficialBenchmarkRunner,
+    )
+
+    assert not hasattr(EvalRunner, "run_subset")
+    assert not hasattr(OfficialBenchmarkRunner, "run_subset")
 
 
 @pytest.mark.parametrize("reason", sorted(ASSESSMENT_REASON_CODES))

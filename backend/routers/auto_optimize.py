@@ -86,6 +86,7 @@ from genie_space_optimizer.integration import (
     get_lever_info,
     IntegrationConfig,
 )
+from genie_space_optimizer.optimization.champion import baseline_reset_from_stage_rows
 
 logger = logging.getLogger(__name__)
 
@@ -2252,7 +2253,7 @@ async def list_mv_proposals(run_id: RunId):
     except Exception as exc:
         logger.warning("Could not load MV proposals for run %s: %s", run_id, exc)
         rows = []
-    proposals = [_mv_proposal_from_row(r) for r in rows]
+    proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
     # Prompt 15.9 item (d): resolve provenance ids to human labels from the space
     # config (run rows carry target_space_id). One config read for the whole list.
     space_id = next((str(r.get("target_space_id") or "") for r in rows if r.get("target_space_id")), "")
@@ -3563,7 +3564,7 @@ async def get_space_semantic_graph(space_id: SpaceId):
                     config.schema_name,
                     target_space_id=space_id,
                 )
-                proposals = [_mv_proposal_from_row(r) for r in rows]
+                proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
             except Exception as exc:
                 logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
 
@@ -3889,17 +3890,21 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
     fallback it selects that row, else the **best-wins** highest-confidence one.
     On that fallback path ``validation`` is ``None`` — it is a preview of an
     unexecuted body; the real validation (echo-check + capability rung) lives on
-    the artifact and is re-run by the create path before any write. A body
-    rendered before MV_RENDER_VERSION is refused with 409 (MV-D117): the app no
-    longer serves a body it would not create.
+    the artifact and is re-run by the create path before any write. A stale
+    artifact falls back to a current candidate row; when neither is current the
+    body is refused with 409 (MV-D117, MV-D118).
     """
     await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
     payload = await _offload(_load_candidate_ddl_artifact, run_id, suggestion_id)
-    if not payload:
-        payload = await _offload(_load_candidate_ddl_fallback, run_id, suggestion_id)
+    if not (payload and mv_create.is_current_render(payload)):
+        # MV-D118: the create path replays the candidate row when the artifact is
+        # stale (``mv_create._replay_body``), so the preview serves the same body.
+        fallback = await _offload(_load_candidate_ddl_fallback, run_id, suggestion_id)
+        if fallback and (not payload or mv_create.is_current_render(fallback)):
+            payload = fallback
     if not payload:
         raise HTTPException(status_code=404, detail="No metric view DDL artifact for this run.")
     if not mv_create.is_current_render(payload):
@@ -4026,8 +4031,9 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
     """Drop a metric view the backend created under OBO (MV-D6).
 
     OBO only and destructive: it refuses unless ``confirm`` is set, the caller is
-    the ``created_by`` owner, and the object is already ``DETACHED`` — the run's
-    detach-never-drop invariant means a live/attached view is never dropped here.
+    the ``created_by`` owner, the object is already ``DETACHED`` — the run's
+    detach-never-drop invariant means a live/attached view is never dropped here —
+    and the recorded name is a plain three-part Unity Catalog name.
     Can Edit on the run's Agent is asked first, before the owner check.
     """
     if not re.fullmatch(r"[0-9a-zA-Z_-]{1,128}", suggestion_id or ""):
@@ -4095,6 +4101,14 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
         )
 
     full_name = str(obj.get("full_name") or "")
+    if not mv_create._valid_uc_identifier(full_name):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The recorded name of this metric view is not a plain Unity Catalog "
+                "name, so the app will not drop it. Drop it yourself in a SQL editor."
+            ),
+        )
     from genie_space_optimizer.optimization.mv_yaml import quote_fqn
 
     try:
@@ -4600,7 +4614,10 @@ async def get_run(run_id: RunId):
     # contract — closes the "100% Optimized during baseline-only phase" UI
     # bug by enforcing full-scope-only filtering, rolled-back exclusion, and
     # the floor-at-baseline invariant.
-    run_scores = compute_run_scores(iterations, run_id=run_id, logger=logger)
+    run_scores = compute_run_scores(
+        iterations, run_id=run_id, logger=logger,
+        baseline_reset=baseline_reset_from_stage_rows(stages or []),
+    )
     baseline_accuracy = run_scores.baseline
     run["baseline_accuracy"] = baseline_accuracy
 
@@ -4699,6 +4716,7 @@ async def get_run(run_id: RunId):
         "optimizedScore": optimized_score,
         "baselineIteration": baseline_iteration,
         "bestIteration": best_iteration,
+        "bestEvalScope": run_scores.best_eval_scope,
         "steps": steps,
         "stages": stage_events,
         "levers": levers,
@@ -4736,6 +4754,7 @@ async def get_run_status(run_id: RunId):
     # warehouse read that the Jobs path lets us skip entirely on the hot poll.
     steps_completed = 0
     current_step_name: str | None = None
+    stages: list[dict] | None = None
     job_progress = await _offload(_job_task_progress, run) if _is_configured() else None
     if job_progress is not None:
         steps_completed, current_step_name = job_progress
@@ -4769,7 +4788,14 @@ async def get_run_status(run_id: RunId):
     # headline mid-run (the "100% Optimized at step 2/6" screenshot bug),
     # and rolled-back iterations were not filtered. The canonical helper
     # closes both: full-scope only, exclude rolled-back, floor-at-baseline.
-    run_scores = compute_run_scores(iterations, run_id=run_id, logger=logger)
+    #
+    # The attach stage row carries a kept attach's score (MV-D118). The hot poll
+    # reads it from Lakebase only; without Lakebase the stored rows answer alone.
+    score_stages = stages if stages is not None else await gso_lakebase.load_gso_stages(run_id)
+    run_scores = compute_run_scores(
+        iterations, run_id=run_id, logger=logger,
+        baseline_reset=baseline_reset_from_stage_rows(score_stages or []),
+    )
 
     # Echo the loop knobs in force (0–1 target, surgical max_attempts), resolved
     # from durable run-level sources so they are present from trigger time
@@ -4787,6 +4813,7 @@ async def get_run_status(run_id: RunId):
         "baselineScore": run_scores.baseline,
         "optimizedScore": run_scores.optimized,
         "bestIteration": run_scores.best_iteration,
+        "bestEvalScope": run_scores.best_eval_scope,
         "convergenceReason": run.get("convergence_reason"),
         # GSO v2 — typed loop terminal reason (closed set; None for legacy
         # free-text reasons / in-progress runs) + round-tripped loop knobs.

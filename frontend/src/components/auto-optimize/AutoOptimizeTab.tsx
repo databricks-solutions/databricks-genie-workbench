@@ -499,6 +499,7 @@ export function AutoOptimizeTab({
           baselineScore: statusForRun.baselineScore,
           optimizedScore: statusForRun.optimizedScore,
           bestIteration: statusForRun.bestIteration,
+          bestEvalScope: statusForRun.bestEvalScope,
           status: statusForRun.status,
           convergenceReason: statusForRun.convergenceReason,
         })
