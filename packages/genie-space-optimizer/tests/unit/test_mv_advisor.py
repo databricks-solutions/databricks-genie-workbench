@@ -31,8 +31,10 @@ from genie_space_optimizer.optimization.mv_scoring import (
     DemandSignal,
     LineageOverlap,
     coverage_ceiling,
+    metric_view_fields,
 )
 from genie_space_optimizer.optimization.mv_signals import SignalResult
+from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
 
 SPACE_ID = "01f04ac8c1f11c9a9e5b3b2b0e5d5c11"
 LINEITEM = "samples.tpch.lineitem"
@@ -1676,6 +1678,101 @@ def _advise_from_corpus_directly(*, persist_proposal, write_ddl_artifact, **over
     )
     kwargs.update(overrides)
     return mv_advisor.advise_from_corpus(**kwargs)
+
+
+def test_the_demand_read_is_scoped_to_the_measures_tables(monkeypatch) -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def fake_demand(**kwargs):
+        seen.append(tuple(kwargs.get("candidate_source_tables", ("<missing>",))))
+        return SignalResult(DemandSignal(), config.MV_SIGNAL_EMPTY, "stub")
+
+    monkeypatch.setattr(mv_advisor, "demand_signal", fake_demand)
+    _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        signal_reader=lambda sql: [],
+    )
+    assert seen and all(tables == (LINEITEM,) for tables in seen)
+
+
+def _amount_corpus(table):
+    sql = f"SELECT SUM(amount) AS total, region FROM {table} GROUP BY region"
+    return [(sql, f"{table}_{i}") for i in range(8)]
+
+
+def _orders_amount_fields():
+    return metric_view_fields(
+        {"finance.sales.order_metrics": {
+            "source": "main.sales.orders",
+            "measures": [{"name": "total_amount", "expr": "SUM(amount)"}],
+        }}
+    )
+
+
+def test_a_governed_measure_over_another_table_does_not_exclude_the_seed():
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=_amount_corpus("main.sales.refunds"),
+        metric_view_reader=lambda tables: _orders_amount_fields(),
+    )
+    assert outcome.candidates_scored == 1
+
+
+def test_a_governed_measure_over_the_same_table_still_excludes_the_seed():
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=_amount_corpus("main.sales.orders"),
+        metric_view_reader=lambda tables: _orders_amount_fields(),
+    )
+    assert outcome.candidates_scored == 0
+    assert outcome.skip_reason == mv_advisor.SKIP_NO_CANDIDATES
+
+
+def _split_amount_corpus():
+    return _amount_corpus("main.sales.orders") + _amount_corpus("main.sales.refunds")
+
+
+def test_a_rejection_of_the_merged_measure_keeps_both_halves_hidden():
+    merged_key = mv_candidate_fingerprint(
+        SPACE_ID, "sum(amount)", ("main.sales.orders", "main.sales.refunds")
+    )
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=_split_amount_corpus(),
+        read_suppressed_fingerprints=lambda: {merged_key},
+    )
+    assert outcome.candidates_dropped_suppressed == 2
+
+
+def test_a_rejection_of_one_half_hides_only_that_half():
+    orders_key = mv_candidate_fingerprint(SPACE_ID, "sum(amount)", ("main.sales.orders",))
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=_split_amount_corpus(),
+        read_suppressed_fingerprints=lambda: {orders_key},
+    )
+    assert outcome.candidates_dropped_suppressed == 1
+
+
+def test_a_rejection_of_the_merged_measure_hides_the_half_a_governed_view_leaves():
+    merged_key = mv_candidate_fingerprint(
+        SPACE_ID, "sum(amount)", ("main.sales.orders", "main.sales.refunds")
+    )
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=_split_amount_corpus(),
+        metric_view_reader=lambda tables: _orders_amount_fields(),
+        read_suppressed_fingerprints=lambda: {merged_key},
+    )
+    assert outcome.candidates_dropped_suppressed == 1
+    assert outcome.candidates_scored == 0
+    assert outcome.proposals == ()
 
 
 def assert_every_surfaced_proposal_is_servable(outcome, *, has_body) -> None:

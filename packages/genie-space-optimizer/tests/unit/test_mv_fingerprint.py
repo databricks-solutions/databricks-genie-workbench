@@ -38,8 +38,12 @@ from genie_space_optimizer.optimization.mv_fingerprint import (
     extract_join_keys,
     extract_measures,
     render_expr,
+    same_tables,
     shapes_in_statement,
+    source_table_name,
     statement_grain,
+    table_leaves,
+    tables_overlap,
 )
 from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
 
@@ -961,3 +965,106 @@ def test_a_canonicalize_or_render_failure_never_logs_its_text(
         assert sentinel not in record.getMessage()
         assert sentinel not in repr(record.args)
         assert record.exc_info is None
+
+
+ORDERS_AMOUNT = "SELECT SUM(amount) FROM main.sales.orders"
+REFUNDS_AMOUNT = "SELECT SUM(amount) FROM main.sales.refunds"
+AMOUNT_JOIN = (
+    "SELECT SUM(amount) FROM main.sales.orders o "
+    "JOIN main.sales.refunds r ON o.order_id = r.order_id"
+)
+
+
+def test_table_leaves_are_lowercase_unqualified_names():
+    assert table_leaves(["Main.Sales.Orders", "`cat`.`sch`.`Refunds`", "orders", ""]) == frozenset(
+        {"orders", "refunds"}
+    )
+
+
+@pytest.mark.parametrize(
+    "left,right,expected",
+    [
+        (("main.sales.orders",), ("tpch.orders",), True),
+        (("main.sales.orders",), ("main.sales.refunds",), False),
+        (("main.sales.orders", "main.sales.fx"), ("main.sales.orders",), False),
+        ((), ("main.sales.refunds",), True),
+    ],
+)
+def test_same_tables(left, right, expected):
+    assert same_tables(left, right) is expected
+
+
+@pytest.mark.parametrize(
+    "left,right,expected",
+    [
+        (("main.sales.orders",), ("main.sales.orders", "main.sales.customers"), True),
+        (("main.sales.orders",), ("main.sales.refunds",), False),
+        (("main.sales.orders",), (), True),
+    ],
+)
+def test_tables_overlap(left, right, expected):
+    assert tables_overlap(left, right) is expected
+
+
+def test_source_table_name_reads_a_table_and_refuses_a_query():
+    assert source_table_name("`main`.`sales`.`orders`") == "main.sales.orders"
+    assert source_table_name("SELECT * FROM main.sales.orders WHERE x = 1") == ""
+    assert source_table_name("") == ""
+    assert source_table_name(None) == ""
+
+
+def test_source_table_name_refuses_a_source_that_does_not_tokenize():
+    assert source_table_name("`main`.`sales`.`orders") == ""
+
+
+def test_the_same_aggregate_over_two_table_names_is_two_measures():
+    scan = corpus_scan([(ORDERS_AMOUNT, "a1"), (ORDERS_AMOUNT, "a2"), (REFUNDS_AMOUNT, "r1")])
+    assert sorted((m.source_tables, m.recurrence) for m in scan.measures) == [
+        (("main.sales.orders",), 2),
+        (("main.sales.refunds",), 1),
+    ]
+    assert len({m.fingerprint for m in scan.measures}) == 1
+
+
+def test_one_table_spelled_two_ways_stays_one_measure():
+    scan = corpus_scan(
+        [
+            "SELECT SUM(o_totalprice) FROM samples.tpch.orders",
+            "SELECT SUM(o.o_totalprice) FROM tpch.orders o",
+        ]
+    )
+    assert len(scan.measures) == 1
+    assert scan.measures[0].recurrence == 2
+    assert set(scan.measures[0].source_tables) == {"samples.tpch.orders", "tpch.orders"}
+
+
+def test_a_table_less_occurrence_joins_the_only_table_it_could_be():
+    scan = corpus_scan(
+        [
+            "SELECT SUM(l_quantity) FROM samples.tpch.lineitem",
+            (
+                "SELECT SUM(l_quantity) FROM samples.tpch.lineitem l "
+                "JOIN samples.tpch.orders o ON l.l_orderkey = o.o_orderkey"
+            ),
+        ]
+    )
+    assert len(scan.measures) == 1
+    measure = scan.measures[0]
+    assert measure.recurrence == 2
+    assert measure.source_tables == ("samples.tpch.lineitem",)
+    assert not measure.has_unresolved_columns
+
+
+def test_a_table_less_occurrence_is_not_guessed_into_a_split():
+    scan = corpus_scan([(ORDERS_AMOUNT, "a1"), (REFUNDS_AMOUNT, "r1"), (AMOUNT_JOIN, "j1")])
+    by_tables = {m.source_tables: m for m in scan.measures}
+    assert set(by_tables) == {("main.sales.orders",), ("main.sales.refunds",), ()}
+    assert by_tables[()].has_unresolved_columns
+    assert by_tables[("main.sales.orders",)].provenance_ids == ("a1",)
+
+
+def test_split_measures_rank_the_same_whatever_the_corpus_order():
+    entries = [(REFUNDS_AMOUNT, "r1"), (ORDERS_AMOUNT, "a1")]
+    first = corpus_scan(entries).measures
+    assert first == corpus_scan(list(reversed(entries))).measures
+    assert [m.source_tables for m in first] == [("main.sales.orders",), ("main.sales.refunds",)]

@@ -184,7 +184,11 @@ Metric view advice is available from two surfaces:
   returns no recurring measures, even if unrelated query history exists.
 
 Recommendations bundle compatible measures at one grain and show validation facts
-and evidence rather than presenting the ranking score as a probability. A user can
+and evidence rather than presenting the ranking score as a probability. A measure
+is identified by its expression and the tables it reads, so the same aggregate over
+two tables is two suggestions, each in its own table's view. An aggregate that names
+no column, such as `COUNT(*)`, resolves no table and is never split. An older
+rejection of the combined measure still hides both suggestions. A user can
 approve a recommendation from the card, choose the target schema, and complete a
 fresh entitlement check. Workbench then creates the metric view under that user's
 OBO identity and attaches it to the live Genie Agent in the same request. If

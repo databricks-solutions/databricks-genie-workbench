@@ -80,6 +80,7 @@ from .mv_fingerprint import (
     CorpusScan,
     FingerprintRecurrence,
     corpus_scan,
+    tables_overlap,
 )
 from .mv_scoring import (
     FIELD_MEASURE,
@@ -896,7 +897,8 @@ def _candidate_signals(
     L is genuinely per-candidate: the footprint read is scoped by this measure's
     own ``source_tables``, so it varies candidate to candidate. D re-reads the
     whole space history and re-fingerprints it per candidate (the read and scan
-    are identical across candidates; only the final fingerprint filter differs) —
+    are identical across candidates; only the final fingerprint-and-table filter
+    differs, MV-D116) —
     a known, bounded cost the ``MV_ADVISOR_MAX_CANDIDATES`` cap keeps small; the
     named fix, a batch ``demand_signals`` that reads once and returns a
     per-fingerprint map, is recorded in the gap report and is the right move only
@@ -922,6 +924,7 @@ def _candidate_signals(
         demand = demand_signal(
             space_id=space_id,
             candidate_fingerprints=(measure.fingerprint,),
+            candidate_source_tables=measure.source_tables,
             run_query=signal_reader,
         )
     return lineage, demand
@@ -1395,12 +1398,20 @@ def advise_from_corpus(
     # they came from. corpus_scan has no evidence-only channel — anything it scans
     # becomes a seed — so the exclusion is applied here, at the assembly site that
     # already holds the estate index, rather than by complicating the scan.
-    governed = {
-        field_.canonical_expr
+    governed = [
+        field_
         for field_ in mv_fields
         if field_.kind == FIELD_MEASURE and field_.canonical_expr
-    }
-    seed_measures = tuple(m for m in scan.measures if m.canonical_expr not in governed)
+    ]
+    seed_measures = tuple(
+        m
+        for m in scan.measures
+        if not any(
+            field_.canonical_expr == m.canonical_expr
+            and tables_overlap(m.source_tables, field_.source_tables)
+            for field_ in governed
+        )
+    )
     if not seed_measures:
         return AdvisorOutcome(
             status=STATUS_SKIPPED,
@@ -1450,6 +1461,13 @@ def advise_from_corpus(
     # path and the backend suggest route), so the two surfaces agree on what
     # "rejected" means; None means a caller that opted out of suppression (tests).
     suppressed = read_suppressed_fingerprints() if read_suppressed_fingerprints else set()
+    # MV-D116: before the split, a measure over several tables was one row keyed
+    # over all of them, and a rejection recorded that key. It still hides both halves.
+    merged_tables: dict[str, set[str]] = {}
+    rows_per_fingerprint: dict[str, int] = {}
+    for recurrence in scan.measures:
+        merged_tables.setdefault(recurrence.fingerprint, set()).update(recurrence.source_tables)
+        rows_per_fingerprint[recurrence.fingerprint] = rows_per_fingerprint.get(recurrence.fingerprint, 0) + 1
 
     # MV-D29 shape firewall (Prompt 15.5): a recurring shape's components now
     # render literal-preserving (mv_fingerprint.render_components), so a
@@ -1503,7 +1521,12 @@ def advise_from_corpus(
         measure_fp = mv_candidate_fingerprint(
             space_id, measure.canonical_expr, measure.source_tables
         )
-        if measure_fp in suppressed:
+        merged_fp = (
+            mv_candidate_fingerprint(space_id, measure.canonical_expr, merged_tables[measure.fingerprint])
+            if rows_per_fingerprint[measure.fingerprint] > 1
+            else measure_fp
+        )
+        if measure_fp in suppressed or merged_fp in suppressed:
             dropped_suppressed += 1
             logger.info(
                 "mv_advisor: dropped measure %s — per-measure fingerprint is "

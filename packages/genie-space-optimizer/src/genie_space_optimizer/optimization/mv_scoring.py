@@ -93,7 +93,12 @@ from genie_space_optimizer.common.config import (
     MV_TIER_MEDIUM_MIN,
 )
 
-from .mv_fingerprint import canonicalize_expr, extract_measures
+from .mv_fingerprint import (
+    canonicalize_expr,
+    extract_measures,
+    source_table_name,
+    tables_overlap,
+)
 from .mv_state import (
     MV_CANDIDATE_TYPES,
     mv_candidate_fingerprint,
@@ -252,6 +257,8 @@ class MetricViewField:
     canonical_expr: str = ""
     text: str = ""
     source_columns: frozenset[str] = frozenset()
+    source_tables: tuple[str, ...] = ()
+    """The view's source and join tables (MV-D116); empty when the source is a query."""
 
     @property
     def pointer(self) -> str:
@@ -314,6 +321,7 @@ class InstructionDefinition:
     canonical_expr: str = ""
     measure_columns: frozenset[str] = frozenset()
     aggregate: str = ""
+    source_tables: tuple[str, ...] = ()
 
 
 class SemanticReference(Protocol):
@@ -862,6 +870,32 @@ class DedupOutcome:
     conflicts: tuple[dict[str, Any], ...] = ()
 
 
+def _definition_tables(definition: Mapping[str, Any]) -> tuple[str, ...]:
+    """The tables a metric view reads: its ``source`` and every join's, nested ones too.
+
+    A query as the ``source`` or as any join's source makes the whole set unknown
+    (``()``), which the governed match treats as matching any table, so a view over
+    a subquery blocks as before MV-D116. A join with no ``source`` adds no table.
+    """
+    source = source_table_name(definition.get("source"))
+    if not source:
+        return ()
+    tables = [source]
+    pending = list(definition.get("joins") or ())
+    while pending:
+        join = pending.pop(0)
+        if not isinstance(join, Mapping):
+            continue
+        if str(join.get("source") or "").strip():
+            name = source_table_name(join.get("source"))
+            if not name:
+                return ()
+            if name not in tables:
+                tables.append(name)
+        pending.extend(join.get("joins") or ())
+    return tuple(tables)
+
+
 def metric_view_fields(yamls: Mapping[str, Mapping[str, Any]]) -> tuple[MetricViewField, ...]:
     """Flatten ``detect_metric_views_via_catalog``'s YAML dicts into fields.
 
@@ -873,6 +907,7 @@ def metric_view_fields(yamls: Mapping[str, Mapping[str, Any]]) -> tuple[MetricVi
     for fqn, definition in (yamls or {}).items():
         if not isinstance(definition, Mapping):
             continue
+        tables = _definition_tables(definition)
         for kind, key in ((FIELD_MEASURE, "measures"), (FIELD_DIMENSION, "dimensions")):
             for entry in definition.get(key) or ():
                 if not isinstance(entry, Mapping):
@@ -890,6 +925,7 @@ def metric_view_fields(yamls: Mapping[str, Mapping[str, Any]]) -> tuple[MetricVi
                         canonical_expr=canonicalize_expr(expr) if expr else "",
                         text=_field_text(name, entry),
                         source_columns=_expr_columns(expr),
+                        source_tables=tables,
                     )
                 )
     return tuple(out)
@@ -967,7 +1003,7 @@ def trusted_asset_definitions(
     ``_defines_same_quantity`` is for.
     """
     out: list[InstructionDefinition] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for identifier, sql in example_question_sql_statements(config):
         source = f"{TRUSTED_ASSET_SOURCE_PREFIX}:{identifier}"
         try:
@@ -981,7 +1017,7 @@ def trusted_asset_definitions(
         for measure in measures:
             if not measure.canonical_expr:
                 continue
-            key = (source, measure.canonical_expr)
+            key = (source, measure.canonical_expr, tuple(sorted(measure.source_tables)))
             if key in seen:
                 continue
             seen.add(key)
@@ -993,6 +1029,7 @@ def trusted_asset_definitions(
                     canonical_expr=measure.canonical_expr,
                     measure_columns=frozenset(measure.source_columns),
                     aggregate=measure.aggregate,
+                    source_tables=tuple(measure.source_tables),
                 )
             )
     return tuple(out)
@@ -1069,7 +1106,13 @@ def dedup_gate(
         return DedupOutcome()
 
     measures = [f for f in mv_fields if f.kind == FIELD_MEASURE]
-    exact = [f for f in measures if f.canonical_expr and f.canonical_expr == canonical]
+    exact = [
+        f
+        for f in measures
+        if f.canonical_expr
+        and f.canonical_expr == canonical
+        and tables_overlap(candidate.source_tables, f.source_tables)
+    ]
     by_measure, by_concept = _conflicting_definitions(candidate, canonical, instructions)
     conflicting = by_measure + (by_concept if exact else ())
 
@@ -1130,10 +1173,16 @@ def _defines_same_quantity(
     Both sides must actually carry a column set: an empty one is unknown
     provenance, and treating unknown as a match would let one unparsed asset
     conflict with every candidate in the space.
+
+    The two must also share a table (MV-D116): ``SUM(amount)`` over refunds is
+    not a claim about ``SUM(amount)`` over orders. An unknown table side overlaps,
+    so a definition whose tables were not resolved conflicts as before.
     """
     left = _bare_columns(definition.measure_columns)
     right = _bare_columns(candidate.measure_columns)
     if not left or not right or left != right:
+        return False
+    if not tables_overlap(definition.source_tables, candidate.source_tables):
         return False
     aggregate = (definition.aggregate or "").strip().lower()
     return bool(aggregate) and aggregate == _leading_aggregate(

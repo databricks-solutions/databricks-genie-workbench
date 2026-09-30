@@ -54,7 +54,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import sqlglot
 from sqlglot import expressions as exp
@@ -285,6 +285,10 @@ class FingerprintRecurrence:
     only the benchmark generator produced (MV-D17). It is deliberately separate
     from the breadth question ``provenance_count`` would answer — damping raw
     recurrence by distinct-source breadth is a distinct, deferred fix (MV-D17).
+
+    For a measure, one row is one expression over one set of table names
+    (MV-D116): the same aggregate over two different tables is two rows sharing
+    a ``fingerprint``.
     """
 
     fingerprint: str
@@ -760,6 +764,44 @@ def expr_fingerprint(expr: str | exp.Expression) -> str:
 def _table_fqn(table: exp.Table) -> str:
     parts = [part for part in (table.catalog, table.db, table.name) if part]
     return ".".join(part.lower() for part in parts)
+
+
+def table_leaves(tables: Iterable[str]) -> frozenset[str]:
+    """Lowercase unqualified table names — the grain MV-D116 compares tables at.
+
+    One table spelled two ways (``samples.tpch.orders``, ``tpch.orders``) stays
+    one table. The same name in two catalogs also reads as one table.
+    """
+    leaves: set[str] = set()
+    for table in tables:
+        leaf = str(table or "").strip().rsplit(".", 1)[-1].strip().strip("`").lower()
+        if leaf:
+            leaves.add(leaf)
+    return frozenset(leaves)
+
+
+def same_tables(left: Iterable[str], right: Iterable[str]) -> bool:
+    """Whether two table sets name the same tables. An unknown side matches."""
+    left_leaves, right_leaves = table_leaves(left), table_leaves(right)
+    return not left_leaves or not right_leaves or left_leaves == right_leaves
+
+
+def tables_overlap(left: Iterable[str], right: Iterable[str]) -> bool:
+    """Whether two table sets share a table. An unknown side overlaps."""
+    left_leaves, right_leaves = table_leaves(left), table_leaves(right)
+    return not left_leaves or not right_leaves or bool(left_leaves & right_leaves)
+
+
+def source_table_name(source: Any) -> str:
+    """The table a metric view ``source:`` names, or ``""`` for a query source."""
+    text = str(source or "").strip()
+    if not text:
+        return ""
+    try:
+        table = sqlglot.parse_one(text, into=exp.Table, dialect=DIALECT)
+    except sqlglot.errors.SqlglotError:
+        return ""
+    return _table_fqn(table) if isinstance(table, exp.Table) else ""
 
 
 def _relation_map(tree: exp.Expression) -> tuple[dict[str, str], tuple[str, ...]]:
@@ -1317,6 +1359,53 @@ class _Bucket:
         )
 
 
+class _MeasureOccurrence(NamedTuple):
+    measure: MeasureRef
+    provenance: Provenance
+    shape_kinds: frozenset[str]
+
+
+def _measure_buckets(occurrences: dict[str, list[_MeasureOccurrence]]) -> list[_Bucket]:
+    """One bucket per expression — or per table grain when it spans several (MV-D116).
+
+    With at most one distinct non-empty set of table names, the bucket holds every
+    occurrence in corpus order, exactly as before MV-D116. With several, each set
+    gets its own bucket, and occurrences that resolved to no table form a
+    table-less remainder rather than being guessed into one.
+    """
+    buckets: list[_Bucket] = []
+    for fingerprint, found in occurrences.items():
+        groups: dict[frozenset[str], list[_MeasureOccurrence]] = {}
+        for occurrence in found:
+            groups.setdefault(table_leaves(occurrence.measure.source_tables), []).append(occurrence)
+        named = [leaves for leaves in groups if leaves]
+        if len(named) <= 1:
+            partitions = [found]
+        else:
+            partitions = [groups[leaves] for leaves in named]
+            if frozenset() in groups:
+                partitions.append(groups[frozenset()])
+        for partition in partitions:
+            first = partition[0].measure
+            bucket = _Bucket(
+                fingerprint,
+                first.canonical_expr,
+                "measure",
+                first.representative_expr,
+            )
+            for occurrence in partition:
+                measure = occurrence.measure
+                bucket.observe(
+                    occurrence.provenance,
+                    measure.source_columns,
+                    measure.source_tables,
+                    unresolved=measure.has_unresolved_columns,
+                )
+                bucket.shapes.update(occurrence.shape_kinds)
+            buckets.append(bucket)
+    return buckets
+
+
 def _before(
     left: str | None,
     left_ts: datetime | None,
@@ -1330,7 +1419,14 @@ def _before(
 
 def _rank(buckets: Iterable[_Bucket]) -> tuple[FingerprintRecurrence, ...]:
     frozen = [bucket.freeze() for bucket in buckets]
-    frozen.sort(key=lambda row: (-row.recurrence, -row.provenance_count, row.fingerprint))
+    frozen.sort(
+        key=lambda row: (
+            -row.recurrence,
+            -row.provenance_count,
+            row.fingerprint,
+            row.source_tables,
+        )
+    )
     return tuple(frozen)
 
 
@@ -1353,10 +1449,11 @@ def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
     ``provenance`` may be a plain id string, a :class:`Provenance`, or a mapping
     with ``id`` / ``kind`` / ``seen_at``; a bare SQL string is accepted as an
     entry with no provenance. Results are ranked by recurrence, then by distinct
-    provenance count, then by fingerprint — total and deterministic, so two
-    scans of one corpus produce byte-identical output.
+    provenance count, then by fingerprint, then by source tables (the rows of a
+    measure split by its tables share a fingerprint, MV-D116) — total and
+    deterministic, so two scans of one corpus produce byte-identical output.
     """
-    measures: dict[str, _Bucket] = {}
+    measure_occurrences: dict[str, list[_MeasureOccurrence]] = {}
     dimensions: dict[str, _Bucket] = {}
     filters: dict[str, _Bucket] = {}
     join_keys: dict[str, _Bucket] = {}
@@ -1407,22 +1504,13 @@ def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
             )
 
         for measure in extract_measures(sql):
-            bucket = measures.setdefault(
-                measure.fingerprint,
-                _Bucket(
-                    measure.fingerprint,
-                    measure.canonical_expr,
-                    "measure",
-                    measure.representative_expr,
-                ),
+            measure_occurrences.setdefault(measure.fingerprint, []).append(
+                _MeasureOccurrence(
+                    measure,
+                    provenance,
+                    frozenset(shape_kinds_by_expr.get(measure.canonical_expr, ())),
+                )
             )
-            bucket.observe(
-                provenance,
-                measure.source_columns,
-                measure.source_tables,
-                unresolved=measure.has_unresolved_columns,
-            )
-            bucket.shapes.update(shape_kinds_by_expr.get(measure.canonical_expr, ()))
 
         for dimension in extract_dimensions(sql):
             bucket = dimensions.setdefault(
@@ -1451,7 +1539,7 @@ def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
     )
 
     return CorpusScan(
-        measures=_rank(measures.values()),
+        measures=_rank(_measure_buckets(measure_occurrences)),
         dimensions=_rank(dimensions.values()),
         filters=_rank(filters.values()),
         join_keys=_rank(join_keys.values()),
@@ -1500,6 +1588,10 @@ __all__ = [
     "extract_measures",
     "parse_statement",
     "render_expr",
+    "same_tables",
     "shapes_in_statement",
+    "source_table_name",
     "statement_grain",
+    "table_leaves",
+    "tables_overlap",
 ]

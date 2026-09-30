@@ -1064,6 +1064,122 @@ def test_an_unparseable_candidate_proposes_nothing_and_raises_nothing() -> None:
     assert outcome.alternatives == ()
 
 
+def governed_amount_yaml(source="main.sales.orders", joins=()):
+    return {
+        "finance.sales.order_metrics": {
+            "source": source,
+            "joins": list(joins),
+            "measures": [{"name": "total_amount", "expr": "SUM(amount)"}],
+        }
+    }
+
+
+def amount_candidate(tables):
+    return candidate(
+        measure_expr="SUM(amount)",
+        source_tables=tables,
+        measure_columns=frozenset({"amount"}),
+        concept="amount",
+    )
+
+
+def test_metric_view_fields_carry_the_source_and_join_tables():
+    yaml_doc = governed_amount_yaml(
+        source="`main`.`sales`.`orders`",
+        joins=[{
+            "name": "c", "source": "main.sales.customers", "on": "source.cid = c.id",
+            "joins": [{"name": "g", "source": "main.geo.regions", "on": "c.rid = g.id"}],
+        }],
+    )
+    assert metric_view_fields(yaml_doc)[0].source_tables == (
+        "main.sales.orders", "main.sales.customers", "main.geo.regions",
+    )
+
+
+def test_a_governed_measure_over_another_table_does_not_block():
+    fields = metric_view_fields(governed_amount_yaml())
+    outcome = dedup_gate(amount_candidate(("main.sales.refunds",)), mv_fields=fields)
+    assert outcome.verdict == mv_scoring.VERDICT_PROPOSE
+
+
+def test_a_governed_measure_over_the_same_table_still_blocks():
+    outcome = dedup_gate(
+        amount_candidate(("main.sales.orders",)), mv_fields=metric_view_fields(governed_amount_yaml())
+    )
+    assert outcome.verdict == mv_scoring.VERDICT_BLOCKED
+
+
+def test_a_governed_view_over_a_query_source_blocks_as_before():
+    fields = metric_view_fields(
+        governed_amount_yaml(source="SELECT * FROM main.sales.orders WHERE amount > 0")
+    )
+    assert fields[0].source_tables == ()
+    outcome = dedup_gate(amount_candidate(("main.sales.refunds",)), mv_fields=fields)
+    assert outcome.verdict == mv_scoring.VERDICT_BLOCKED
+
+
+def _tables_of(definition):
+    return metric_view_fields({"finance.sales.order_metrics": {
+        "measures": [{"name": "total_amount", "expr": "SUM(amount)"}], **definition,
+    }})[0].source_tables
+
+
+@pytest.mark.parametrize("joins", [{"name": "c", "source": "main.sales.customers"}, "main.sales.customers"])
+def test_a_joins_value_that_is_not_a_list_adds_no_table(joins):
+    assert _tables_of({"source": "main.sales.orders", "joins": joins}) == ("main.sales.orders",)
+
+
+def test_a_join_without_a_source_is_skipped_and_the_set_stays_known():
+    assert _tables_of({
+        "source": "main.sales.orders",
+        "joins": [{"name": "c", "on": "source.cid = c.id"}, {"name": "r", "source": "main.sales.refunds"}],
+    }) == ("main.sales.orders", "main.sales.refunds")
+
+
+def test_a_query_join_source_makes_the_whole_set_unknown():
+    assert _tables_of({
+        "source": "main.sales.orders",
+        "joins": [
+            {"name": "c", "source": "main.sales.customers"},
+            {"name": "r", "source": "SELECT * FROM main.sales.refunds WHERE amount > 0"},
+        ],
+    }) == ()
+
+
+def test_a_nested_query_join_source_makes_the_whole_set_unknown():
+    assert _tables_of({
+        "source": "main.sales.orders",
+        "joins": [{
+            "name": "c", "source": "main.sales.customers",
+            "joins": [{"name": "g", "source": "SELECT id FROM main.geo.regions"}],
+        }],
+    }) == ()
+
+
+def test_a_table_named_twice_is_listed_once():
+    assert _tables_of({
+        "source": "main.sales.orders",
+        "joins": [
+            {"name": "o2", "source": "`main`.`sales`.`orders`"},
+            {"name": "c", "source": "main.sales.customers"},
+            {"name": "c2", "source": "MAIN.SALES.CUSTOMERS"},
+        ],
+    }) == ("main.sales.orders", "main.sales.customers")
+
+
+def test_a_trusted_asset_over_another_table_is_not_a_conflict():
+    assets = trusted_asset_definitions(
+        {"instructions": {"example_question_sqls": [
+            {"id": "a1", "sql": "SELECT SUM(ABS(amount)) FROM main.sales.refunds"}
+        ]}}
+    )
+    assert assets[0].source_tables == ("main.sales.refunds",)
+    orders = dedup_gate(amount_candidate(("main.sales.orders",)), instructions=assets)
+    assert orders.verdict == mv_scoring.VERDICT_PROPOSE
+    refunds = dedup_gate(amount_candidate(("main.sales.refunds",)), instructions=assets)
+    assert refunds.verdict == mv_scoring.VERDICT_CONFLICT
+
+
 # ── Proposal assembly ────────────────────────────────────────────────────
 
 

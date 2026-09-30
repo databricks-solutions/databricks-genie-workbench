@@ -1,0 +1,108 @@
+{
+  "bundles": [
+    {
+      "dedup_fingerprint": "16e33b8b6541388099d6918339fa0222c5c9ef9392187c9418aed360d0fc63e8",
+      "members": [
+        "7064ea940a3a90890c007810dacfcef56be834cd3057291f7858d6c3bf04ecda"
+      ],
+      "source_tables": [
+        "main.sales.refunds"
+      ],
+      "suggestion_id": "sug_16e33b8b6541"
+    },
+    {
+      "dedup_fingerprint": "62398c8c4a723936380710f8ff7f09372c1960dda6ff0ffeef9af4375daf299f",
+      "members": [
+        "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+        "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef"
+      ],
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ],
+      "suggestion_id": "sug_62398c8c4a72"
+    },
+    {
+      "dedup_fingerprint": "b238af9363ae8bf5d26c357f00a59cdad74c7bfa2d37c62d92ab955bb2e6782f",
+      "members": [
+        "651c4ceefd614b0bb6bdb177c827bd4aa8573435987f61ee63441410a7c6868a"
+      ],
+      "source_tables": [
+        "main.sales.orders"
+      ],
+      "suggestion_id": "sug_b238af9363ae"
+    }
+  ],
+  "captured_at_head": "9d972e46",
+  "scan": [
+    {
+      "candidate_fingerprint": "0afabd88a153b45874aa60bf3fbc5335a24f74ebccb4820d8a78564ac53752cc",
+      "canonical_expr": "sum(amount)",
+      "fingerprint": "26a1a7f50fcbd9eed1d7de0b385de83147d1dc36dc0da2968fc2e3263f9c0632",
+      "has_unresolved_columns": false,
+      "provenance_count": 24,
+      "recurrence": 24,
+      "source_tables": [
+        "main.sales.orders",
+        "main.sales.refunds"
+      ]
+    },
+    {
+      "candidate_fingerprint": "1d7c36f79e3bfcbe3d13d8c052dce02a6dcdc2ac8df5fbc81754b380ec8f11dd",
+      "canonical_expr": "sum(c_acctbal)",
+      "fingerprint": "3b66fe7d789552facfda9b2767d32f9a8cf02f4a23df583a66cfe062f0651421",
+      "has_unresolved_columns": false,
+      "provenance_count": 16,
+      "recurrence": 16,
+      "source_tables": [
+        "samples.tpch.customer",
+        "tpch.customer"
+      ]
+    },
+    {
+      "candidate_fingerprint": "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+      "canonical_expr": "sum(l_quantity)",
+      "fingerprint": "449958ffe459bb03d935328c841975bfb786a3432b0b82007aeb9108fffafcee",
+      "has_unresolved_columns": false,
+      "provenance_count": 16,
+      "recurrence": 16,
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ]
+    },
+    {
+      "candidate_fingerprint": "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef",
+      "canonical_expr": "count(l_orderkey)",
+      "fingerprint": "21e5b6a187a4d9736186cba336c7993ed64999fea34366a5e3852bde987c1a4b",
+      "has_unresolved_columns": false,
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ]
+    },
+    {
+      "candidate_fingerprint": "7064ea940a3a90890c007810dacfcef56be834cd3057291f7858d6c3bf04ecda",
+      "canonical_expr": "count(refund_id)",
+      "fingerprint": "475be8acc07da2821f17004c3850308b257063d5495c8faa90401dedaf59e746",
+      "has_unresolved_columns": false,
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "main.sales.refunds"
+      ]
+    },
+    {
+      "candidate_fingerprint": "651c4ceefd614b0bb6bdb177c827bd4aa8573435987f61ee63441410a7c6868a",
+      "canonical_expr": "count(order_id)",
+      "fingerprint": "ea4e058b36da63f88d60648d943b4793be937477d67b6a7e38718c3287026d7f",
+      "has_unresolved_columns": false,
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "main.sales.orders"
+      ]
+    }
+  ],
+  "space_id": "01f04ac8c1f11c9a9e5b3b2b0e5d5c11",
+  "sqlglot": "30.0.3"
+}

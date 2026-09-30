@@ -67,7 +67,7 @@ from genie_space_optimizer.common.config import (
     MV_SIGNAL_UNAVAILABLE,
 )
 
-from .mv_fingerprint import Provenance, corpus_scan
+from .mv_fingerprint import Provenance, corpus_scan, same_tables
 from .mv_scoring import (
     REFERENCE_GOVERNED_MV,
     REFERENCE_LINEAGE_FOOTPRINT,
@@ -372,6 +372,7 @@ def demand_signal(
     *,
     space_id: str,
     candidate_fingerprints: Iterable[str],
+    candidate_source_tables: Iterable[str] = (),
     run_query: RunQuery,
     lookback_days: int = MV_DEMAND_HISTORY_LOOKBACK_DAYS,
     now: datetime | None = None,
@@ -384,6 +385,9 @@ def demand_signal(
     result. From the matched statements: ``frequency`` = summed recurrence,
     ``distinct_users`` = distinct ``executed_by``, ``cost_ms`` = summed
     ``total_duration_ms``, ``age_days`` from the most recent occurrence.
+
+    ``candidate_source_tables`` scopes the match: only traffic over the same table
+    names counts (MV-D116); empty counts every table.
 
     This is a *distinct population* from the **Y** signal (MV-D15): Y counts the
     benchmark-derived corpus scored by the advisor, D counts real query-history
@@ -437,7 +441,12 @@ def demand_signal(
         )
 
     scan = corpus_scan(entries)
-    matched = [m for m in scan.measures if m.fingerprint in fingerprints]
+    matched = [
+        m
+        for m in scan.measures
+        if m.fingerprint in fingerprints
+        and same_tables(m.source_tables, candidate_source_tables)
+    ]
     if not matched:
         # Traffic exists, but none of it re-derives this candidate's measure.
         return SignalResult(DemandSignal(), MV_SIGNAL_EMPTY, "no matching measure in history")

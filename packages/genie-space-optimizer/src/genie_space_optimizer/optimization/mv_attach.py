@@ -380,7 +380,7 @@ def _measure_matched_ids(
 ) -> set[str]:
     """Baseline questions whose generated or expected SQL uses a member measure.
 
-    The fingerprint is the advisor's own (mv_advisor.py:1503-1505), so "uses this
+    The fingerprint is the advisor's own (mv_advisor.py:1521-1523), so "uses this
     measure" means exactly what it meant when the view was proposed. Expected SQL
     is read here to choose ids and nothing else — no SQL leaves this function.
     """

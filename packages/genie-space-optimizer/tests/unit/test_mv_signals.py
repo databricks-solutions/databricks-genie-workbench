@@ -200,6 +200,47 @@ def test_demand_unavailable_when_space_id_missing_reads_nothing() -> None:
     assert reader.calls == 0
 
 
+# ── D: scoped to the candidate's tables (MV-D116) ────────────────────────
+
+ORDERS_AMOUNT = "SELECT SUM(amount) FROM main.sales.orders"
+REFUNDS_AMOUNT = "SELECT SUM(amount) FROM main.sales.refunds"
+
+
+def _amount_rows() -> list[dict[str, Any]]:
+    return [
+        {"statement_id": "o1", "executed_by": "a@example.com", "start_time": "2026-08-20T10:00:00Z",
+         "total_duration_ms": 100, "statement_text": ORDERS_AMOUNT},
+        {"statement_id": "r1", "executed_by": "b@example.com", "start_time": "2026-08-21T10:00:00Z",
+         "total_duration_ms": 200, "statement_text": REFUNDS_AMOUNT},
+        {"statement_id": "r2", "executed_by": "c@example.com", "start_time": "2026-08-22T10:00:00Z",
+         "total_duration_ms": 300, "statement_text": REFUNDS_AMOUNT},
+    ]
+
+
+def _amount_demand(tables: tuple[str, ...]) -> SignalResult:
+    return demand_signal(
+        space_id="sp1",
+        candidate_fingerprints={corpus_scan([ORDERS_AMOUNT]).measures[0].fingerprint},
+        candidate_source_tables=tables,
+        run_query=_Reader(rows=_amount_rows()),
+        now=NOW,
+    )
+
+
+def test_demand_counts_only_traffic_over_the_candidates_tables() -> None:
+    result = _amount_demand(("main.sales.orders",))
+    assert result.status == MV_SIGNAL_COMPUTED
+    assert (result.payload.frequency, result.payload.distinct_users) == (1, 1)
+
+
+def test_demand_over_a_table_nobody_queried_is_empty() -> None:
+    assert _amount_demand(("main.sales.returns",)).status == MV_SIGNAL_EMPTY
+
+
+def test_demand_without_candidate_tables_counts_every_table() -> None:
+    assert _amount_demand(()).payload.frequency == 3
+
+
 def test_demand_unavailable_on_empty_statement_text_cmk_redaction() -> None:
     rows = [
         {
