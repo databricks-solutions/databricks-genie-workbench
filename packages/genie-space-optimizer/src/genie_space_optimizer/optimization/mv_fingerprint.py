@@ -357,7 +357,9 @@ def parse_statement(sql: str) -> exp.Expression | None:
     try:
         return sqlglot.parse_one(sql, read=DIALECT)
     except Exception as exc:  # noqa: BLE001 - any parse error is just a skip
-        logger.debug("mv_fingerprint: unparseable SQL skipped (%s)", exc)
+        # The type only: sqlglot's message quotes the statement, literals included,
+        # and benchmark expected SQL reaches this parser (MV-D114).
+        logger.debug("mv_fingerprint: unparseable SQL skipped (%s)", type(exc).__name__)
         return None
 
 
@@ -367,7 +369,9 @@ def _parse_expression(expr: str) -> exp.Expression | None:
     try:
         return sqlglot.parse_one(expr, read=DIALECT)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("mv_fingerprint: unparseable expression skipped (%s)", exc)
+        logger.debug(
+            "mv_fingerprint: unparseable expression skipped (%s)", type(exc).__name__,
+        )
         return None
 
 
@@ -651,7 +655,7 @@ def canonicalize_sql_ast(sql: str) -> str:
     try:
         return _render(_canonicalize_tree(tree, strip_qualifiers=False))
     except Exception as exc:  # noqa: BLE001 - a canonicalization gap is a skip
-        logger.debug("mv_fingerprint: canonicalization failed (%s)", exc)
+        logger.debug("mv_fingerprint: canonicalization failed (%s)", type(exc).__name__)
         return ""
 
 
@@ -674,7 +678,9 @@ def canonicalize_expr(expr: str | exp.Expression, *, strip_qualifiers: bool = Tr
     try:
         return _render(_canonicalize_tree(tree, strip_qualifiers=strip_qualifiers))
     except Exception as exc:  # noqa: BLE001
-        logger.debug("mv_fingerprint: expression canonicalization failed (%s)", exc)
+        logger.debug(
+            "mv_fingerprint: expression canonicalization failed (%s)", type(exc).__name__,
+        )
         return ""
 
 
@@ -721,7 +727,7 @@ def render_expr(expr: str | exp.Expression, *, strip_qualifiers: bool = True) ->
                 identifier.set("quoted", True)
         return _render_source(tree)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("mv_fingerprint: expression render failed (%s)", exc)
+        logger.debug("mv_fingerprint: expression render failed (%s)", type(exc).__name__)
         return ""
 
 

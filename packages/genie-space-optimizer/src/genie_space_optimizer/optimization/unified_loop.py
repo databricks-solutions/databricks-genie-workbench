@@ -45,6 +45,7 @@ from genie_space_optimizer.optimization.leakage import (
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.mv_attach import (
     reconcile_attached_objects,
+    report_unmeasured_attachments,
     run_mv_attach_phase,
 )
 from genie_space_optimizer.optimization.space_quality_enrichment import (
@@ -217,6 +218,15 @@ def _read_observed_config_after_evaluation(
             exc_info=True,
         )
     return None
+
+
+def _read_live_space_config(w: Any, space_id: str, *, run_id: str) -> dict[str, Any] | None:
+    """The space's current config for the end-of-run attach report, or ``None``."""
+    try:
+        return _parsed_space(fetch_space_config(w, space_id))
+    except Exception:  # noqa: BLE001 - the report falls back to the in-memory config
+        logger.warning("Could not read the live space config for run %s", run_id)
+        return None
 
 
 def _stable_config_id(config: dict[str, Any]) -> str:
@@ -2632,13 +2642,19 @@ def _reconcile_mv_attachment(
     schema: str,
     config: dict[str, Any] | None,
     emit: Any,
+    w: Any = None,
+    space_id: str | None = None,
 ) -> None:
     """Verify every recorded attachment against the config the run ends on.
 
     Called at each loop exit that can follow the attach phase (MV-D18). Silent
     unless something was actually checked, so a run with the phase off adds no
     noise, and it emits only when a row had to be demoted — the interesting case
-    is an attachment the run lost track of, not a routine confirmation.
+    is an attachment the run lost track of, not a routine confirmation. It then
+    reports any view left live by a revert that failed (MV-D114 d6); that report
+    writes no status. Reconciliation checks the in-memory config; the report
+    checks the live space when ``w`` and ``space_id`` are given, because after a
+    failed revert the in-memory config is the pre-attach one.
     """
     outcome = reconcile_attached_objects(
         spark, run_id=run_id, catalog=catalog, schema=schema, config=config,
@@ -2651,6 +2667,16 @@ def _reconcile_mv_attachment(
             demoted=outcome.get("demoted"),
             demoted_identifiers=outcome.get("identifiers"),
         )
+    live = report_unmeasured_attachments(
+        spark, run_id=run_id, catalog=catalog, schema=schema, config=config,
+        live_config=(
+            (lambda: _read_live_space_config(w, space_id, run_id=run_id))
+            if w is not None and space_id
+            else None
+        ),
+    )
+    if live:
+        emit("Metric view may still be attached", identifiers=live)
 
 
 def _stamp_terminal(
@@ -3175,6 +3201,8 @@ def run_unified_optimization_loop(
     # run_mv_attach_phase never raises; it writes its own stage row and returns the
     # config to carry forward — the pre-attach one when it skipped, failed, or
     # detached on regression. So the loop below runs whatever this left behind.
+    # On a kept attach it also returns the post-attach full-suite eval, which the
+    # loop adopts as its baseline below.
     mv_attach_outcome = run_mv_attach_phase(
         spark,
         run_id=run_id,
@@ -3186,12 +3214,25 @@ def run_unified_optimization_loop(
         config=current_config,
         baseline_eval=baseline_eval,
         w=w,
-        eval_runner=OfficialBenchmarkRunner(w) if w is not None else None,
+        post_attach_eval=(
+            (lambda: _native_eval(w, space_id=space_id, benchmarks=benchmarks, iteration=0))
+            if w is not None
+            else None
+        ),
         apply_mode=apply_mode,
         benchmark_corpus=benchmark_corpus,
     )
     if mv_attach_outcome.config is not None:
         current_config = mv_attach_outcome.config
+    # MV-D114 d7: a kept attach re-baselines the loop on its own full-suite eval, so a
+    # lever is judged against the space it actually changes. Iteration 0's row keeps
+    # its pre-attach score (MV-D18: it was measured without the view).
+    if mv_attach_outcome.post_attach_eval is not None:
+        best_eval = mv_attach_outcome.post_attach_eval
+        best_accuracy = _metric(best_eval.get("overall_accuracy"))
+        update_run_status(
+            spark, run_id, catalog, schema, best_iteration=0, best_accuracy=best_accuracy,
+        )
     if mv_attach_outcome.verdict:
         _emit_diagnostic(
             "Metric view attach measured",
@@ -3202,6 +3243,9 @@ def run_unified_optimization_loop(
             affected_questions=mv_attach_outcome.affected_question_count,
             baseline_eval_run_id=mv_attach_outcome.baseline_eval_run_id,
             lift_eval_run_id=mv_attach_outcome.lift_eval_run_id,
+            graded_affected_count=mv_attach_outcome.graded_affected_count,
+            post_attach_accuracy=mv_attach_outcome.post_attach_accuracy,
+            baseline_reset=mv_attach_outcome.post_attach_eval is not None,
         )
 
     if best_accuracy >= target_accuracy:
@@ -3213,6 +3257,8 @@ def run_unified_optimization_loop(
             schema=schema,
             config=current_config,
             emit=_emit_diagnostic,
+            w=w,
+            space_id=space_id,
         )
         _stamp_terminal(
             spark,
@@ -3808,15 +3854,19 @@ def run_unified_optimization_loop(
         schema=schema,
         config=current_config,
         emit=_emit_diagnostic,
+        w=w,
+        space_id=space_id,
     )
 
     # Option A-min: on a candidate-eval EVAL_INVALID (the mid-loop transient
     # failure path), preserve a higher-accuracy champion a prior execution
     # already committed rather than stamping this execution's lower best. Scoped
-    # to EVAL_INVALID: on TARGET_REACHED / MAX_ATTEMPTS / NO_NEW_HYPOTHESIS the
-    # in-memory best already equals the persisted best, so this never fires. The
-    # champion's config pointer is read off the (already-written) iteration row,
-    # so overriding iteration/accuracy here re-flags the correct row safely.
+    # to EVAL_INVALID; TARGET_REACHED / MAX_ATTEMPTS / NO_NEW_HYPOTHESIS stamp the
+    # in-memory best as is. After a kept attach (MV-D114) that best is the
+    # post-attach full-suite eval, which can differ from iteration 0's persisted
+    # score in either direction. The champion's config pointer is read off the
+    # (already-written) iteration row, so overriding iteration/accuracy here
+    # re-flags the correct row safely.
     stamp_iteration, stamp_accuracy = best_iteration, best_accuracy
     if terminal_reason == "EVAL_INVALID":
         persisted_best = _best_persisted_iteration(

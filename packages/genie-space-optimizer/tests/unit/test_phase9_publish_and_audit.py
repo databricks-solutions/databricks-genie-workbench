@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from genie_space_optimizer.optimization import publish as P
+from genie_space_optimizer.optimization.champion import BaselineReset
 
 
 # ── fixtures / builders ─────────────────────────────────────────────────────
@@ -814,3 +815,43 @@ def test_improvement_trajectory_recovers_duplicate_iteration_zero():
     assert [row["attempt_mode"] for row in trajectory] == ["baseline", "enrichment"]
     assert [row["attempt_no"] for row in trajectory] == [None, 1]
     assert [row["delta_vs_baseline"] for row in trajectory] == [0.0, 5.88]
+
+
+# ── Kept metric-view attach re-baselines iteration 0 (MV-D114 d7) ────────────
+
+
+def _baseline_only_iters(*, accuracy: float = 86.67) -> list[dict]:
+    """A run that reached target on iteration 0: no lever attempt was needed."""
+    return [{
+        "iteration": 0, "eval_scope": "full", "rolled_back": False,
+        "overall_accuracy": accuracy, "attempt_no": None, "attempt_mode": None,
+        "decision": None, "is_champion": False, "terminal_reason": "TARGET_REACHED",
+        "eval_run_id": "eval-baseline-1",
+        "target_accuracy": 90.0, "max_attempts": 3, "remaining_failures": "[]",
+    }]
+
+
+def test_a_kept_attach_publishes_the_post_attach_accuracy_not_the_stored_baseline():
+    """The M4 live run: publish re-stamped iteration 0's pre-attach 86.67 over 90.0."""
+    reset = BaselineReset("eval-baseline-1", 90.0)
+    with patch.object(P, "kept_attach_baseline_reset", return_value=reset):
+        result, artifacts, updates, promote, _llm = _run_publish_and_audit(
+            scored_iters=_baseline_only_iters(), promoted_iteration=0,
+        )
+
+    assert result["published"] is True
+    assert promote.call_args.kwargs["baseline_reset"] == reset
+    assert artifacts[0]["payload"]["champion_iteration"] == 0
+    assert artifacts[0]["payload"]["champion_accuracy"] == 90.0
+    assert updates[-1]["best_iteration"] == 0
+    assert updates[-1]["best_accuracy"] == 90.0
+
+
+def test_without_a_kept_attach_publish_keeps_the_stored_baseline_score():
+    with patch.object(P, "kept_attach_baseline_reset", return_value=None):
+        _result, _artifacts, updates, promote, _llm = _run_publish_and_audit(
+            scored_iters=_baseline_only_iters(), promoted_iteration=0,
+        )
+
+    assert promote.call_args.kwargs["baseline_reset"] is None
+    assert updates[-1]["best_accuracy"] == 86.67

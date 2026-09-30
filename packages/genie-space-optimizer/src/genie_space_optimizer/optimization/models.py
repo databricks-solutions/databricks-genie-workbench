@@ -20,7 +20,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from genie_space_optimizer.optimization.champion import select_champion_row
+from genie_space_optimizer.optimization.champion import (
+    BaselineReset,
+    select_champion_row,
+)
 from genie_space_optimizer.optimization.state import (
     load_iterations,
     load_run,
@@ -39,12 +42,17 @@ def promote_best_model(
     run_id: str,
     catalog: str,
     schema: str,
+    *,
+    baseline_reset: BaselineReset | None = None,
 ) -> int | None:
     """Select and mark the champion iteration in Delta.
 
     Reads all iterations from Delta, picks the one with the highest
     ``overall_accuracy``, marks it as the Delta champion, and records
     ``best_iteration`` / ``best_accuracy`` on the run row.
+
+    ``baseline_reset`` is passed to ``select_champion_row``: the post-attach
+    accuracy iteration 0 is scored at after a kept metric-view attach.
 
     Returns the champion iteration number, or None on failure.
     """
@@ -58,7 +66,9 @@ def promote_best_model(
         logger.warning("No iterations found for run %s", run_id)
         return None
 
-    best_row = select_champion_row(iterations_df.to_dict("records"))
+    best_row = select_champion_row(
+        iterations_df.to_dict("records"), baseline_reset=baseline_reset,
+    )
     if best_row is None:
         logger.warning(
             "No promotable full/enrichment iterations for run %s",

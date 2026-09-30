@@ -52,9 +52,13 @@ from genie_space_optimizer.common.config import (
     AUDIT_SUMMARY_PROMPT,
     LEVER_NAMES,
 )
-from genie_space_optimizer.optimization.champion import select_champion_row
+from genie_space_optimizer.optimization.champion import (
+    BaselineReset,
+    select_champion_row,
+)
 from genie_space_optimizer.optimization.llm_client import call_llm
 from genie_space_optimizer.optimization.models import promote_best_model
+from genie_space_optimizer.optimization.mv_attach import kept_attach_baseline_reset
 from genie_space_optimizer.optimization.scan_snapshots import run_postflight_scan
 from genie_space_optimizer.optimization.state import (
     load_all_scored_iterations,
@@ -186,13 +190,15 @@ def _is_baseline_row(row: dict) -> bool:
     return _as_int(row.get("iteration")) == 0 and str(row.get("eval_scope")) == "full"
 
 
-def resolve_champion_row(scored_iters: list[dict]) -> dict | None:
+def resolve_champion_row(
+    scored_iters: list[dict], *, baseline_reset: BaselineReset | None = None,
+) -> dict | None:
     """Pick the champion over the PROMOTION candidate universe (arch §7.4 / Phase 4).
 
     Delegates to the same selector used by ``promote_best_model`` so publish/audit
-    and champion stamping cannot drift.
+    and champion stamping cannot drift; pass both the same ``baseline_reset``.
     """
-    return select_champion_row(scored_iters)
+    return select_champion_row(scored_iters, baseline_reset=baseline_reset)
 
 
 def resolve_terminal_reason(champion_row: dict | None) -> str | None:
@@ -871,8 +877,11 @@ def publish_and_audit(
     # old runs render a complete trajectory; select_champion_row restricts
     # promotion to full-scope rows for the unified loop.
     scored_iters = load_all_scored_iterations(spark, run_id, catalog, schema)
+    # A kept metric-view attach re-baselined the loop on its post-attach eval
+    # (MV-D114 d7); without it here, publish would re-stamp the pre-attach score.
+    baseline_reset = kept_attach_baseline_reset(spark, run_id, catalog, schema)
 
-    champion_row = resolve_champion_row(scored_iters)
+    champion_row = resolve_champion_row(scored_iters, baseline_reset=baseline_reset)
     # B1: gate ONLY on the champion row's stamped reason (fail-closed when absent).
     terminal_reason = resolve_terminal_reason(champion_row)
 
@@ -888,7 +897,9 @@ def publish_and_audit(
         # Idempotent Delta-only champion publish: re-stamps is_champion + the
         # run's best_*. NO live-space mutation (the loop already applied accepted
         # patches in-place); NO example-SQL firewall path is invoked here.
-        promoted = promote_best_model(spark, run_id, catalog, schema)
+        promoted = promote_best_model(
+            spark, run_id, catalog, schema, baseline_reset=baseline_reset,
+        )
         published = True
         publish_outcome = "published"
         if promoted is not None:

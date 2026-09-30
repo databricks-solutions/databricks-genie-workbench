@@ -245,8 +245,8 @@ def user_can_edit_space(w: WorkspaceClient, space_id: str) -> bool:
 def user_can_manage_space(w: WorkspaceClient, space_id: str) -> bool:
     """True when the caller behind *w* holds CAN MANAGE on the space.
 
-    Patching ``data_sources.metric_views[]`` needs CAN MANAGE, so the metric
-    view entitlement probe asks this question and not the editable one.
+    Proof is the permissions API, which the app's user token cannot call, so
+    the metric view entitlement probe asks the editable question (MV-D115).
     """
     return _space_access_or_deny(w, space_id, SpaceAccessLevel.MANAGE)
 

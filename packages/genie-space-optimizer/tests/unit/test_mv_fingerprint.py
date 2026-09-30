@@ -14,6 +14,7 @@ fingerprints from a different parser.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
@@ -912,3 +913,51 @@ def test_render_round_trips_to_the_canonical_identity(src: str) -> None:
     rendered = render_expr(src)
     assert rendered
     assert canonicalize_expr(rendered) == canonicalize_expr(src)
+
+
+@pytest.mark.parametrize("parse", [mf.parse_statement, mf._parse_expression])
+def test_an_unparseable_statement_never_logs_its_text(parse, caplog) -> None:
+    """sqlglot's ParseError quotes the statement, literals included (MV-D114).
+
+    The attach phase feeds benchmark expected SQL through this parser, so the
+    skip log names the exception type and nothing else.
+    """
+    sentinel = "EMEA-SECRET"
+    caplog.set_level(logging.DEBUG, logger=mf.__name__)
+
+    assert parse(f"SELECT SUM(amount) FROM t WHERE region = '{sentinel}' AND (") is None
+
+    records = [r for r in caplog.records if r.name == mf.__name__]
+    assert records, "positive control: the skip must still be logged"
+    for record in records:
+        assert sentinel not in record.getMessage()
+        assert sentinel not in repr(record.args)
+        assert record.exc_info is None
+
+
+@pytest.mark.parametrize("fn,inner,arg", [
+    ("canonicalize_expr", "_canonicalize_tree", "SUM(o.amount)"),
+    ("render_expr", "_render_source", "SUM(o.amount)"),
+    ("canonicalize_sql_ast", "_canonicalize_tree", "SELECT SUM(o.amount) FROM t o"),
+])
+def test_a_canonicalize_or_render_failure_never_logs_its_text(
+    fn, inner, arg, monkeypatch, caplog,
+) -> None:
+    """The failure text can quote a literal (``render_expr`` preserves them), and
+    ``extract_measures`` runs these on benchmark expected SQL (MV-D114)."""
+    sentinel = "EMEA-SECRET"
+
+    def fail(*_a, **_k):
+        raise ValueError(f"cannot handle region = '{sentinel}'")
+
+    monkeypatch.setattr(mf, inner, fail)
+    caplog.set_level(logging.DEBUG, logger=mf.__name__)
+
+    assert getattr(mf, fn)(arg) == ""
+
+    records = [r for r in caplog.records if r.name == mf.__name__]
+    assert records, "positive control: the failure must still be logged"
+    for record in records:
+        assert sentinel not in record.getMessage()
+        assert sentinel not in repr(record.args)
+        assert record.exc_info is None

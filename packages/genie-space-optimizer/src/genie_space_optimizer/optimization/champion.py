@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, NamedTuple
 
 PROMOTION_EVAL_SCOPES: frozenset[str] = frozenset({"full"})
 
@@ -67,7 +67,28 @@ def _promotion_universe(rows: list[dict]) -> list[dict]:
     return scoped or rows
 
 
-def select_champion_row(rows: Iterable[Mapping[str, Any]]) -> dict | None:
+class BaselineReset(NamedTuple):
+    """A kept metric-view attach's re-baseline (MV-D114 d7).
+
+    ``eval_run_id`` is the baseline eval the attach was measured against; it
+    names the iteration-0 row the reset applies to.
+    """
+
+    eval_run_id: str
+    accuracy: float
+
+
+def _is_reset_row(row: Mapping[str, Any], reset: BaselineReset) -> bool:
+    if not _is_baseline_row(row):
+        return False
+    return not reset.eval_run_id or str(row.get("eval_run_id") or "") == reset.eval_run_id
+
+
+def select_champion_row(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    baseline_reset: BaselineReset | None = None,
+) -> dict | None:
     """Return the champion row using the promotion/audit candidate rules.
 
     Candidate universe:
@@ -76,10 +97,20 @@ def select_champion_row(rows: Iterable[Mapping[str, Any]]) -> dict | None:
     - Existing ``is_champion`` flags are authoritative inside that universe.
     - Otherwise choose the highest-accuracy non-rolled-back row, keeping the
       iteration-0 full baseline as the floor even if it is mislabeled rolled back.
+
+    ``baseline_reset`` is the loop's re-baseline after a kept metric-view attach
+    (MV-D114 d7). The stored iteration-0 row keeps its pre-attach score (MV-D18),
+    so the selection scores the iteration-0 row whose eval the attach was measured
+    against at the post-attach accuracy instead; the returned row is a copy
+    carrying it. A restart's second iteration-0 row keeps its own score.
     """
     materialized = [dict(row) for row in rows]
     if not materialized:
         return None
+    if baseline_reset is not None:
+        for row in materialized:
+            if _is_reset_row(row, baseline_reset):
+                row["overall_accuracy"] = baseline_reset.accuracy
 
     universe = _promotion_universe(materialized)
     flagged = [row for row in universe if _is_champion_flag(row)]

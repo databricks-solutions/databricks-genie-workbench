@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from genie_space_optimizer.common.config import (
@@ -34,7 +35,8 @@ from genie_space_optimizer.common.config import (
     TABLE_MV_CREATED_OBJECTS,
 )
 from genie_space_optimizer.optimization import applier, mv_attach, mv_state, unified_loop
-from genie_space_optimizer.optimization.eval_runner import EvalRunResult, lift_report
+from genie_space_optimizer.optimization.champion import BaselineReset
+from genie_space_optimizer.optimization.eval_runner import lift_report
 from genie_space_optimizer.optimization.mv_yaml import (
     ColumnFacts,
     MeasureRequest,
@@ -70,12 +72,23 @@ def _config(metric_views: list[dict] | None = None) -> dict[str, Any]:
     }
 
 
-def _row(question_id: str, assessment: str) -> dict[str, Any]:
-    return {
+def _row(
+    question_id: str,
+    assessment: str,
+    *,
+    sql: str | None = None,
+    expected: str | None = None,
+) -> dict[str, Any]:
+    row = {
         "question_id": question_id,
         "assessment": assessment,
         "needs_review": assessment == "NEEDS_REVIEW",
     }
+    if sql is not None:
+        row["generated_sql"] = sql
+    if expected is not None:
+        row["expected_sql"] = expected
+    return row
 
 
 def _baseline_output(rows: list[dict[str, Any]], *, failed: bool = False) -> dict[str, Any]:
@@ -94,28 +107,29 @@ def _baseline_output(rows: list[dict[str, Any]], *, failed: bool = False) -> dic
 
 
 class _FakeRunner:
-    """Records what the lift eval was asked to score, and answers with rows."""
+    """The post-attach full-suite eval (MV-D114 d3): records calls, answers rows."""
 
-    def __init__(self, rows: list[dict[str, Any]], *, status: str = "DONE") -> None:
+    def __init__(
+        self, rows: list[dict[str, Any]], *, status: str = "DONE",
+        raises: BaseException | None = None,
+    ) -> None:
         self.rows = rows
         self.status = status
-        self.calls: list[tuple[str, list[str], str]] = []
+        self.raises = raises
+        self.calls: list[str] = []
 
-    def run_subset(self, space_id: str, question_ids: Any, label: str) -> EvalRunResult:
-        ids = list(question_ids)
-        self.calls.append((space_id, ids, label))
-        return EvalRunResult(
+    def __call__(self) -> dict[str, Any]:
+        self.calls.append("full")
+        if self.raises is not None:
+            raise self.raises
+        out = _baseline_output(self.rows, failed=self.status != "DONE")
+        good = sum(1 for r in self.rows if r["assessment"] == "GOOD")
+        out.update(
             eval_run_id="eval-lift",
-            status=self.status,
-            num_correct=sum(1 for r in self.rows if r["assessment"] == "GOOD"),
-            num_done=len(self.rows),
-            num_needs_review=0,
-            num_questions=len(self.rows),
-            rows=self.rows,
-            wall_clock_seconds=1.0,
-            eval_scope=label,
-            requested_question_ids=tuple(ids),
+            eval_run_status=self.status,
+            overall_accuracy=(100.0 * good / len(self.rows)) if self.rows else 0.0,
         )
+        return out
 
 
 def _seed(
@@ -128,6 +142,8 @@ def _seed(
     full_name: str = MV_NAME,
     benchmark_questions: list[str] | None = AFFECTED,
     provenance: str | None = None,
+    dedup_fingerprint: str = "fp-1",
+    evidence: dict[str, Any] | None = None,
 ) -> None:
     """Seed consent, created-object and candidate rows through the real writers."""
     mv_state.upsert_mv_consent(
@@ -156,7 +172,7 @@ def _seed(
         status=status,
         provenance=provenance,
     )
-    if benchmark_questions is not None:
+    if evidence is not None or benchmark_questions is not None:
         mv_state.upsert_mv_candidate(
             spark,
             catalog=CATALOG,
@@ -164,9 +180,13 @@ def _seed(
             run_id=RUN_ID,
             target_space_id=SPACE_ID,
             suggestion_id=SUGGESTION_ID,
-            dedup_fingerprint="fp-1",
+            dedup_fingerprint=dedup_fingerprint,
             candidate_type="NEW_METRIC_VIEW",
-            evidence={"benchmark_questions": list(benchmark_questions)},
+            evidence=(
+                evidence
+                if evidence is not None
+                else {"benchmark_questions": list(benchmark_questions or [])}
+            ),
         )
 
 
@@ -196,7 +216,7 @@ def _run_phase(
         config=config,
         baseline_eval=baseline,
         w=None,
-        eval_runner=runner,
+        post_attach_eval=runner,
     )
 
 
@@ -443,17 +463,101 @@ def test_a_positive_lift_keeps_the_attach_and_persists_the_report() -> None:
     assert row["attach_patch_id"] == f"{RUN_ID}:0:2:0"
 
 
-def test_the_lift_eval_scores_the_affected_questions_not_the_suite() -> None:
+def test_the_verdict_scores_the_affected_subset_of_a_full_suite_eval() -> None:
+    """One full post-attach eval, the verdict on the affected subset (MV-D114 d3/d4)."""
     spark = FakeDeltaSpark()
     _seed(spark, benchmark_questions=["rev_002"])
     baseline = _baseline_output(
         [_row("rev_001", "GOOD"), _row("rev_002", "BAD"), _row("rev_003", "GOOD")]
     )
-    runner = _FakeRunner([_row("rev_002", "GOOD")])
+    runner = _FakeRunner(
+        [_row("rev_001", "BAD"), _row("rev_002", "GOOD"), _row("rev_003", "GOOD")]
+    )
 
-    _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
 
-    assert runner.calls == [(SPACE_ID, ["rev_002"], mv_attach.LIFT_EVAL_LABEL)]
+    assert runner.calls == ["full"]
+    assert outcome.delta_affected == pytest.approx(1.0)
+    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+    report = json.loads(_created_row(spark)["lift_report_json"])
+    assert report["graded_suite_count"] == 3
+
+
+def test_a_regression_outside_the_subset_does_not_detach_a_wash() -> None:
+    """d4: at delta_affected == 0, only a regression INSIDE the subset detaches."""
+    spark = FakeDeltaSpark()
+    _seed(spark, benchmark_questions=["rev_001"])
+    baseline = _baseline_output([_row("rev_001", "GOOD"), _row("rev_009", "GOOD")])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_009", "BAD")])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.delta_affected == pytest.approx(0.0)
+    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+    assert outcome.regressed_question_count == 0
+
+
+def test_zero_graded_affected_rows_reverts_and_leaves_the_object_created() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)  # AFFECTED = rev_001, rev_002
+    baseline = _baseline_output(
+        [_row("rev_001", "BAD"), _row("rev_002", "GOOD"), _row("rev_003", "GOOD")]
+    )
+    runner = _FakeRunner([
+        _row("rev_001", "NEEDS_REVIEW"),
+        _row("rev_002", "NEEDS_REVIEW"),
+        _row("rev_003", "GOOD"),
+    ])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.status == mv_attach.STATUS_SKIPPED
+    assert outcome.skip_reason == mv_attach.SKIP_LIFT_NOT_GRADED
+    assert outcome.graded_affected_count == 0
+    assert outcome.verdict is None
+    assert outcome.config["data_sources"]["metric_views"] == []
+    row = _created_row(spark)
+    assert row["status"] == "CREATED"
+    assert json.loads(row["lift_report_json"])["graded_affected_count"] == 0
+
+
+def test_a_kept_attach_hands_back_the_post_attach_eval_as_the_new_baseline() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    baseline = _baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.verdict == mv_attach.VERDICT_ATTACHED
+    assert outcome.post_attach_eval["eval_run_id"] == "eval-lift"
+    assert outcome.post_attach_accuracy == pytest.approx(100.0)
+    assert outcome.graded_affected_count == 2
+    assert "post_attach_eval" not in outcome.detail()  # no rows in a stage row
+    assert "post_attach_eval" not in repr(outcome)
+    assert outcome.detail()["post_attach_accuracy"] == pytest.approx(100.0)
+    assert outcome.detail()["graded_affected_count"] == 2
+
+
+@pytest.mark.parametrize("post_rows", [
+    [_row("rev_001", "BAD"), _row("rev_002", "GOOD")],  # regression → detached
+    [_row("rev_001", "NEEDS_REVIEW"), _row("rev_002", "NEEDS_REVIEW")],  # zero graded
+])
+def test_only_a_kept_attach_resets_the_baseline(post_rows) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    baseline = _baseline_output([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+    outcome = _run_phase(
+        spark, config=_config(), baseline=baseline, runner=_FakeRunner(post_rows),
+    )
+    assert outcome.post_attach_eval is None
+
+
+def test_the_phase_no_longer_calls_run_subset() -> None:
+    import inspect
+
+    assert "run_subset" not in inspect.getsource(mv_attach)
+    assert not hasattr(mv_attach, "LIFT_EVAL_LABEL")
 
 
 def test_lift_report_json_round_trips_to_dict_byte_identically() -> None:
@@ -468,7 +572,7 @@ def test_lift_report_json_round_trips_to_dict_byte_identically() -> None:
 
     expected = lift_report(
         mv_attach._eval_result_from_output(baseline),
-        runner.run_subset(SPACE_ID, AFFECTED, mv_attach.LIFT_EVAL_LABEL),
+        mv_attach._eval_result_from_output(_FakeRunner(post_rows)()),
         AFFECTED,
     ).to_dict()
     stored = _created_row(spark)["lift_report_json"]
@@ -535,6 +639,173 @@ def test_an_ungradeable_lift_eval_reverts_and_leaves_the_object_created() -> Non
     assert outcome.skip_reason == mv_attach.SKIP_LIFT_EVAL_UNUSABLE
     assert outcome.config["data_sources"]["metric_views"] == []
     assert _created_row(spark)["status"] == "CREATED"
+
+
+# ── The phase: a failure after the attach deployed reverts (MV-D114 d6) ──
+
+
+def _stage_statements(spark: FakeDeltaSpark, stage: str) -> list[str]:
+    """The exact INSERT ``state.write_stage`` emits, not its duration lookup."""
+    return [
+        s for s in spark.statements
+        if s.startswith(f"INSERT INTO {CATALOG}.{SCHEMA}.genie_opt_stages ")
+        and f"'{stage}'" in s
+    ]
+
+
+def _spy_rollback(monkeypatch, *, fail_times: int = 0) -> list[str]:
+    real = mv_attach.rollback
+    calls: list[str] = []
+
+    def spy(apply_log, w, space_id):
+        calls.append(space_id)
+        if len(calls) <= fail_times:
+            return {
+                "status": "error",
+                "errors": ["Failed to apply rollback via API"],
+                "restored_config": apply_log.get("pre_snapshot"),
+            }
+        return real(apply_log, w, space_id)
+
+    monkeypatch.setattr(mv_attach, "rollback", spy)
+    return calls
+
+
+def test_an_exception_after_the_attach_is_rolled_back_and_recorded(monkeypatch) -> None:
+    """M4 exit criterion: raise inside the lift after deploy."""
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    calls = _spy_rollback(monkeypatch)
+    runner = _FakeRunner([], raises=RuntimeError("eval service exploded"))
+
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=runner,
+    )
+
+    assert calls == [SPACE_ID]
+    assert outcome.status == mv_attach.STATUS_FAILED
+    assert "eval service exploded" in (outcome.error or "")
+    assert outcome.rollback_status == mv_attach.ROLLBACK_REVERTED
+    assert outcome.attached == ()
+    assert outcome.config["data_sources"]["metric_views"] == []
+    assert _created_row(spark)["status"] == "CREATED"
+    stage = _stage_statements(spark, "MV_ATTACH")
+    assert stage and "'FAILED'" in stage[-1]
+    assert '"rollback_status": "reverted"' in stage[-1]
+
+
+@pytest.mark.parametrize("where", ["lift_report", "update_iteration_observed_config"])
+def test_any_failure_after_deploy_reverts(monkeypatch, where: str) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    calls = _spy_rollback(monkeypatch)
+
+    def boom(*_a, **_k):
+        raise RuntimeError(f"{where} failed")
+
+    monkeypatch.setattr(mv_attach, where, boom)
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=_FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+    )
+
+    assert calls == [SPACE_ID]
+    assert outcome.status == mv_attach.STATUS_FAILED
+    assert outcome.config["data_sources"]["metric_views"] == []
+    # Even after the kept path wrote ATTACHED, the revert writes CREATED back.
+    assert _created_row(spark)["status"] == "CREATED"
+    assert outcome.post_attach_eval is None
+
+
+def test_an_interrupt_after_deploy_still_reverts_then_propagates(monkeypatch) -> None:
+    """The finally clause, not only the except: a BaseException also reverts."""
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    calls = _spy_rollback(monkeypatch)
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_phase(
+            spark, config=_config(),
+            baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+            runner=_FakeRunner([], raises=KeyboardInterrupt()),
+        )
+    assert calls == [SPACE_ID]
+
+
+def test_an_interrupt_after_the_attached_write_reverts_and_demotes_the_row(
+    monkeypatch,
+) -> None:
+    """An interrupt after the kept path wrote ATTACHED must not leave that claim."""
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    calls = _spy_rollback(monkeypatch)
+
+    def interrupt(*_a, **_k):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(mv_attach, "update_iteration_observed_config", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        _run_phase(
+            spark, config=_config(),
+            baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+            runner=_FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+        )
+    assert calls == [SPACE_ID]
+    assert _created_row(spark)["status"] == "CREATED"
+
+
+def test_a_revert_that_fails_once_is_retried(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    calls = _spy_rollback(monkeypatch, fail_times=1)
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),
+        runner=_FakeRunner([], raises=RuntimeError("boom")),
+    )
+    assert calls == [SPACE_ID, SPACE_ID]
+    assert outcome.rollback_status == mv_attach.ROLLBACK_REVERTED
+
+
+def test_a_revert_that_fails_twice_is_reported_never_recorded_detached(monkeypatch) -> None:
+    """d6: say the view may still be live; carry pre-attach; never write DETACHED."""
+    spark = FakeDeltaSpark()
+    _seed(spark)
+    calls = _spy_rollback(monkeypatch, fail_times=2)
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")]),
+        runner=_FakeRunner([_row("rev_001", "BAD"), _row("rev_002", "GOOD")]),  # regression
+    )
+    assert calls == [SPACE_ID, SPACE_ID]
+    assert outcome.status == mv_attach.STATUS_FAILED
+    assert outcome.verdict == mv_attach.VERDICT_DETACHED  # the lift's decision stands
+    assert outcome.detached == ()  # but nothing is claimed detached
+    assert outcome.rollback_status == mv_attach.ROLLBACK_FAILED
+    assert "Failed to apply rollback via API" in (outcome.rollback_error or "")
+    assert (outcome.error or "").startswith("ROLLBACK_FAILED")
+    assert outcome.config["data_sources"]["metric_views"] == []
+    assert _created_row(spark)["status"] == "CREATED"
+
+
+def test_a_failure_before_deploy_does_not_revert(monkeypatch) -> None:
+    spark = FakeDeltaSpark()
+    calls = _spy_rollback(monkeypatch)
+    monkeypatch.setattr(
+        mv_attach, "load_mv_consent",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("consent unreadable")),
+    )
+    outcome = _run_phase(
+        spark, config=_config(),
+        baseline=_baseline_output([_row("rev_001", "BAD")]),
+        runner=_FakeRunner([]),
+    )
+    assert calls == []
+    assert outcome.status == mv_attach.STATUS_FAILED
+    assert outcome.rollback_status is None
 
 
 # ── The phase: every verify-before-attach mismatch is a recorded skip ────
@@ -702,6 +973,159 @@ def test_parse_attach_views_ignores_a_malformed_parameter() -> None:
     assert mv_attach.parse_attach_views([MV_NAME, MV_NAME]) == [MV_NAME]
 
 
+# ── MV-D114 d1/d2: the lift measures live benchmark questions the view affects ──
+
+REVENUE_SQL = "SELECT SUM(amount) FROM main.sales.fact_orders"
+OTHER_SQL = "SELECT COUNT(DISTINCT customer_id) FROM main.sales.dim_customer"
+
+
+def _revenue_fingerprint() -> str:
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+
+    measures = extract_measures(REVENUE_SQL)
+    # Positive control: the fixture must actually extract a resolved measure,
+    # or every SQL-derived assertion below is vacuous.
+    assert measures and measures[0].canonical_expr
+    assert measures[0].source_tables == ("main.sales.fact_orders",)
+    return mv_state.mv_candidate_fingerprint(
+        SPACE_ID, measures[0].canonical_expr, measures[0].source_tables,
+    )
+
+
+def test_a_bundle_measures_every_member_not_just_the_anchor() -> None:
+    spark = FakeDeltaSpark()
+    _seed(
+        spark,
+        evidence={
+            "bundle": True,
+            "benchmark_questions": ["rev_001"],  # the anchor's, inherited
+            "benchmark_question_ids": ["rev_001", "rev_002"],  # the member union
+            "measures": [
+                {"dedup_fingerprint": "fp-a", "benchmark_question_ids": ["rev_001"]},
+                {"dedup_fingerprint": "fp-b", "benchmark_question_ids": ["rev_002"]},
+            ],
+        },
+    )
+    baseline = _baseline_output([_row("rev_001", "BAD"), _row("rev_002", "BAD")])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.affected_question_count == 2
+
+
+def test_recorded_ids_that_are_not_live_benchmark_questions_are_dropped() -> None:
+    spark = FakeDeltaSpark()
+    _seed(
+        spark,
+        benchmark_questions=[
+            "rev_001",
+            "trusted_asset:ta-1",
+            "sql_snippet:measures:s-1",
+            "gso_patch:0:2:0",
+            "rev_999",  # a benchmark question retired since the proposing run
+        ],
+    )
+    baseline = _baseline_output([_row("rev_001", "BAD"), _row("rev_002", "GOOD")])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.affected_question_count == 1
+    report = json.loads(_created_row(spark)["lift_report_json"])
+    assert report["question_subset"] == ["rev_001"]
+
+
+def test_a_curated_candidate_is_measured_on_baseline_rows_using_its_measure() -> None:
+    """An IQ-scan approval carries only curated provenance (mv_suggest.py:176)."""
+    spark = FakeDeltaSpark()
+    _seed(
+        spark,
+        dedup_fingerprint=_revenue_fingerprint(),
+        benchmark_questions=["sql_snippet:measures:s-1"],
+    )
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql=REVENUE_SQL),
+        _row("rev_002", "BAD", sql=OTHER_SQL),
+    ])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "BAD")])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.affected_question_count == 1
+    assert json.loads(_created_row(spark)["lift_report_json"])["question_subset"] == ["rev_001"]
+
+
+def test_expected_sql_selects_a_question_genie_answered_without_the_measure() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint=_revenue_fingerprint(), benchmark_questions=[])
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql=OTHER_SQL, expected=REVENUE_SQL),
+        _row("rev_002", "GOOD", sql=OTHER_SQL, expected=OTHER_SQL),
+    ])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.affected_question_count == 1
+    assert json.loads(_created_row(spark)["lift_report_json"])["question_subset"] == ["rev_001"]
+
+
+def test_a_bundle_member_fingerprint_selects_rows_too() -> None:
+    spark = FakeDeltaSpark()
+    _seed(
+        spark,
+        dedup_fingerprint="bundle-fp",
+        evidence={
+            "bundle": True,
+            "benchmark_question_ids": [],
+            "measures": [{"dedup_fingerprint": _revenue_fingerprint(), "benchmark_question_ids": []}],
+        },
+    )
+    baseline = _baseline_output([_row("rev_001", "BAD", sql=REVENUE_SQL), _row("rev_002", "GOOD")])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.affected_question_count == 1
+
+
+def test_no_live_or_matching_question_skips_before_anything_is_applied() -> None:
+    spark = FakeDeltaSpark()
+    _seed(
+        spark,
+        dedup_fingerprint=_revenue_fingerprint(),
+        benchmark_questions=["trusted_asset:ta-1"],
+    )
+    baseline = _baseline_output([_row("rev_002", "BAD", sql=OTHER_SQL)])
+    runner = _FakeRunner([])
+
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+
+    assert outcome.skip_reason == mv_attach.SKIP_NO_AFFECTED_QUESTIONS
+    assert runner.calls == []
+    assert outcome.config["data_sources"]["metric_views"] == []
+
+
+def test_the_stage_row_carries_ids_and_counts_never_sql() -> None:
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint=_revenue_fingerprint(), benchmark_questions=[])
+    baseline = _baseline_output([_row("rev_001", "BAD", sql=OTHER_SQL, expected=REVENUE_SQL)])
+    _run_phase(
+        spark, config=_config(), baseline=baseline,
+        runner=_FakeRunner([_row("rev_001", "GOOD")]),
+    )
+    # The exact INSERT ``state.write_stage`` emits; its duration-lookup SELECT
+    # also names the table and the stage, and is not the row.
+    stage = [
+        s for s in spark.statements
+        if s.startswith(f"INSERT INTO {CATALOG}.{SCHEMA}.genie_opt_stages ")
+        and "'MV_ATTACH'" in s
+    ]
+    assert stage
+    assert not [s for s in stage if "fact_orders" in s or "SUM(" in s.upper()]
+
+
 # ── Ordering: iteration-0 is pre-attach (MV-D16(b)) ──────────────────────
 
 
@@ -717,9 +1141,11 @@ def test_the_attach_phase_runs_after_iteration_zero_and_before_the_first_patch(
     events: list[str] = []
     baseline_config = _config()
     seen: dict[str, Any] = {}
+    eval_kwargs: list[dict[str, Any]] = []
 
-    def evaluate(*_args, **_kwargs):
+    def evaluate(*_args, **kwargs):
         events.append("baseline_eval")
+        eval_kwargs.append(kwargs)
         return {
             "overall_accuracy": 10.0,
             "total_questions": 2,
@@ -785,6 +1211,17 @@ def test_the_attach_phase_runs_after_iteration_zero_and_before_the_first_patch(
     assert seen["config"]["data_sources"]["metric_views"] == []
     assert seen["attach_views"] == f'["{MV_NAME}"]'
     assert seen["consent_probe_id"] == PROBE_ID
+    # MV-D114 d3: the phase gets a full-suite eval callable, not a runner. Invoking
+    # it runs the loop's own ``_native_eval`` (the OfficialBenchmarkRunner seam)
+    # at iteration 0, for this space.
+    assert "eval_runner" not in seen
+    post = seen["post_attach_eval"]
+    assert callable(post)
+    assert events.count("baseline_eval") == 1
+    post()
+    assert events.count("baseline_eval") == 2
+    assert eval_kwargs[-1]["iteration"] == 0
+    assert eval_kwargs[-1]["space_id"] == SPACE_ID
 
 
 def test_the_loop_carries_forward_the_config_the_phase_returned(monkeypatch) -> None:
@@ -883,14 +1320,44 @@ def _observed_config_updates(spark: FakeDeltaSpark) -> list[dict[str, Any]]:
     return out
 
 
+def _loop_eval(accuracy: float) -> dict[str, Any]:
+    """One full-suite eval output at ``accuracy``, in the shape the loop holds it.
+
+    Six questions, all moving the same way: enough for the loop's paired sign
+    test to reach significance, so an improvement is actually accepted rather
+    than rejected on insufficient evidence.
+    """
+    verdict = "GOOD" if accuracy > 50 else "BAD"
+    rows = [_row(f"rev_{n:03d}", verdict) for n in range(1, 7)]
+    return {
+        "overall_accuracy": accuracy,
+        "total_questions": len(rows),
+        "correct_count": sum(1 for r in rows if r["assessment"] == "GOOD"),
+        "scores": {},
+        "failures": [],
+        "remaining_failures": [],
+        "thresholds_met": False,
+        "rows": rows,
+        "eval_run_id": f"eval-{accuracy}",
+        "eval_run_status": "DONE",
+    }
+
+
 def _loop(
     monkeypatch, *, attach, accuracies, spark=None, raise_at=None, observed="live",
+    status_calls: list | None = None, proposed: list | None = None,
+    record: list | None = None,
 ):
     """Drive the loop with a fixed attach outcome and accuracy trajectory.
 
     ``accuracies[0]`` is the baseline; the rest are candidate attempts. The
     applier and rollback are the real ones — the whole question in cases 1 and 2
     is what the real ``pre_snapshot`` contract does to a post-attach config.
+
+    The optional lists capture what the loop did: ``status_calls`` the kwargs of
+    every ``update_run_status``, ``proposed`` the kwargs of every
+    ``propose_patches``, and ``record`` one ``eval:<accuracy>`` entry per
+    ``_native_eval`` the loop ran.
 
     ``observed`` models the per-iteration authoritative read-back at
     ``unified_loop.py:3382``, which the loop prefers over its own submitted
@@ -908,30 +1375,35 @@ def _loop(
     attached_config = copy.deepcopy(attach.config) if attach.config else pre_attach
     evals = iter(accuracies)
     stamped: dict[str, Any] = {}
-    calls: list[str] = []
+    calls: list[str] = record if record is not None else []
 
     def evaluate(*_args, **_kwargs):
         accuracy = next(evals)
         calls.append(f"eval:{accuracy}")
         if raise_at is not None and len(calls) >= raise_at:
             raise RuntimeError("optimize blew up mid-loop")
-        # Six questions, all moving the same way: enough for the loop's paired
-        # sign test to reach significance, so an improvement is actually accepted
-        # rather than rejected on insufficient evidence.
-        verdict = "GOOD" if accuracy > 50 else "BAD"
-        rows = [_row(f"rev_{n:03d}", verdict) for n in range(1, 7)]
-        return {
-            "overall_accuracy": accuracy,
-            "total_questions": len(rows),
-            "correct_count": sum(1 for r in rows if r["assessment"] == "GOOD"),
-            "scores": {},
-            "failures": [],
-            "remaining_failures": [],
-            "thresholds_met": False,
-            "rows": rows,
-            "eval_run_id": f"eval-{accuracy}",
-            "eval_run_status": "DONE",
-        }
+        return _loop_eval(accuracy)
+
+    def propose(*_args, **kwargs):
+        if proposed is not None:
+            proposed.append(kwargs)
+        return (
+            1,
+            "add a description",
+            [
+                {
+                    "type": "update_description",
+                    "target": "main.sales.fact_orders",
+                    "new_text": "Order facts.",
+                    "lever": 1,
+                }
+            ],
+            "{}",
+        )
+
+    def status(*_args, **kwargs):
+        if status_calls is not None:
+            status_calls.append(kwargs)
 
     monkeypatch.setattr(
         unified_loop,
@@ -950,25 +1422,9 @@ def _loop(
         "_read_observed_config_after_evaluation",
         lambda *_a, **_k: (copy.deepcopy(attached_config) if observed == "live" else None),
     )
-    monkeypatch.setattr(
-        unified_loop,
-        "propose_patches",
-        lambda *_a, **_k: (
-            1,
-            "add a description",
-            [
-                {
-                    "type": "update_description",
-                    "target": "main.sales.fact_orders",
-                    "new_text": "Order facts.",
-                    "lever": 1,
-                }
-            ],
-            "{}",
-        ),
-    )
+    monkeypatch.setattr(unified_loop, "propose_patches", propose)
     monkeypatch.setattr(unified_loop, "write_iteration", lambda *_a, **_k: None)
-    monkeypatch.setattr(unified_loop, "update_run_status", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "update_run_status", status)
     monkeypatch.setattr(unified_loop, "update_iteration_loop_state", lambda *_a, **_k: None)
     monkeypatch.setattr(unified_loop, "mark_patches_rolled_back", lambda *_a, **_k: None)
     monkeypatch.setattr(unified_loop, "mark_iteration_rolled_back", lambda *_a, **_k: None)
@@ -992,12 +1448,14 @@ def _loop(
     return out, stamped
 
 
-def _kept_attach() -> mv_attach.AttachOutcome:
+def _kept_attach(post_accuracy: float | None = None) -> mv_attach.AttachOutcome:
     return mv_attach.AttachOutcome(
         status=mv_attach.STATUS_COMPLETE,
         verdict=mv_attach.VERDICT_ATTACHED,
         attached=(MV_NAME,),
         config=_config([{"identifier": MV_NAME}]),
+        post_attach_eval=_loop_eval(post_accuracy) if post_accuracy is not None else None,
+        post_attach_accuracy=post_accuracy,
     )
 
 
@@ -1142,6 +1600,73 @@ def test_case_4_a_failed_lift_leaves_no_view_and_no_claim(monkeypatch) -> None:
 
     assert stamped["config"]["data_sources"]["metric_views"] == []
     assert _created_row(spark)["status"] == "DETACHED"
+
+
+# ── A kept attach re-baselines the loop (MV-D114 d7) ─────────────────────
+
+
+def test_a_lever_is_not_credited_with_the_views_gain(monkeypatch) -> None:
+    """M4 exit criterion (baseline-reset pin).
+
+    Baseline 10, post-attach 70, the lever lands at 60. Against the stale baseline
+    the lever "improves" by 50 and is accepted; against the post-attach baseline
+    it regresses and is rejected.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+    _out, stamped = _loop(
+        monkeypatch,
+        attach=_kept_attach(post_accuracy=70.0),
+        accuracies=[10.0, 60.0],
+        spark=spark,
+    )
+    assert stamped["iteration"] == 0
+    assert stamped["best_accuracy"] == pytest.approx(70.0)
+    assert stamped["config"]["data_sources"]["metric_views"] == [{"identifier": MV_NAME}]
+
+
+def test_levers_are_proposed_from_the_post_attach_failures(monkeypatch) -> None:
+    proposed: list[dict] = []
+    _loop(
+        monkeypatch, attach=_kept_attach(post_accuracy=70.0),
+        accuracies=[10.0, 60.0], proposed=proposed,
+    )
+    assert proposed and proposed[0]["eval_result"]["eval_run_id"] == "eval-70.0"
+
+
+def test_the_run_status_carries_the_post_attach_baseline(monkeypatch) -> None:
+    status_calls: list[dict] = []
+    _loop(
+        monkeypatch, attach=_kept_attach(post_accuracy=70.0),
+        accuracies=[10.0, 60.0], status_calls=status_calls,
+    )
+    resets = [c for c in status_calls if c.get("best_accuracy") == pytest.approx(70.0)]
+    assert resets and resets[0].get("best_iteration") == 0
+
+
+def test_a_post_attach_baseline_at_target_ends_the_run(monkeypatch) -> None:
+    record: list[str] = []
+    _out, stamped = _loop(
+        monkeypatch, attach=_kept_attach(post_accuracy=100.0),
+        accuracies=[10.0, 60.0], record=record,
+    )
+    assert stamped["reason"] == "TARGET_REACHED"
+    assert stamped["iteration"] == 0
+    assert stamped["best_accuracy"] == pytest.approx(100.0)
+    assert record == ["eval:10.0"]  # the baseline only: no lever eval ran
+
+
+def test_a_detached_attach_leaves_the_baseline_alone(monkeypatch) -> None:
+    """Control: without a kept attach the same lever IS accepted."""
+    detached = mv_attach.AttachOutcome(
+        status=mv_attach.STATUS_COMPLETE,
+        verdict=mv_attach.VERDICT_DETACHED,
+        detached=(MV_NAME,),
+        config=_config(),
+    )
+    _out, stamped = _loop(monkeypatch, attach=detached, accuracies=[10.0, 60.0])
+    assert stamped["iteration"] == 1
+    assert stamped["best_accuracy"] == pytest.approx(60.0)
 
 
 # ── Status truthfulness: end-of-run reconciliation ───────────────────────
@@ -1335,3 +1860,321 @@ def test_attached_identifiers_tolerates_a_shapeless_config() -> None:
     assert mv_attach.attached_identifiers(None) == set()
     assert mv_attach.attached_identifiers({}) == set()
     assert mv_attach.attached_identifiers({"data_sources": {"metric_views": ["x"]}}) == set()
+
+
+# ── Genie moves an attached view to data_sources.tables (M4 live run) ────
+#
+# The applier writes metric_views; Genie relocates the entry to tables on write and
+# exports it there (backend/services/mv_create.py records the same round trip). A
+# config read back from the space therefore carries the view under tables.
+
+
+def _config_with_view_under_tables() -> dict[str, Any]:
+    config = _config()
+    config["data_sources"]["tables"].append({"identifier": MV_NAME})
+    return config
+
+
+def test_attached_identifiers_counts_a_view_genie_moved_to_tables() -> None:
+    assert MV_NAME in mv_attach.attached_identifiers(_config_with_view_under_tables())
+
+
+def test_a_failed_revert_is_reported_when_the_live_space_lists_the_view_under_tables() -> None:
+    spark = FakeDeltaSpark()
+    _seed_created_with_patch(spark)
+
+    live = mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config(),
+        live_config=_config_with_view_under_tables,
+    )
+
+    assert live == [MV_NAME]
+    stage = _stage_statements(spark, mv_attach.UNMEASURED_PHASE_NAME.upper())
+    assert stage and MV_NAME in stage[-1]
+
+
+def test_reconciliation_does_not_demote_a_view_listed_under_tables() -> None:
+    """A restarted loop starts from the space's export, where the view is a table entry."""
+    spark = FakeDeltaSpark()
+    _seed(spark, status="ATTACHED")
+
+    result = mv_attach.reconcile_attached_objects(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config_with_view_under_tables(),
+    )
+
+    assert (result["verified"], result["demoted"]) == (1, 0)
+    assert _created_row(spark)["status"] == "ATTACHED"
+
+
+# ── The kept attach's re-baseline, read back for publish (MV-D114 d7) ────
+
+
+def _stages(*details: dict[str, Any], stage: str | None = None) -> pd.DataFrame:
+    name = stage or mv_attach.MV_ATTACH_PHASE_NAME.upper()
+    return pd.DataFrame([{"stage": name, "detail_json": json.dumps(d)} for d in details])
+
+
+BASELINE_EVAL_ID = "eval-baseline-1"
+
+
+def _kept_detail(accuracy: float | None = 90.0) -> dict[str, Any]:
+    return mv_attach.AttachOutcome(
+        status=mv_attach.STATUS_COMPLETE, verdict=mv_attach.VERDICT_ATTACHED,
+        baseline_eval_run_id=BASELINE_EVAL_ID, post_attach_accuracy=accuracy,
+    ).detail()
+
+
+def test_the_kept_attach_reset_is_read_from_the_stage_the_phase_writes() -> None:
+    with patch.object(mv_attach, "load_stages", return_value=_stages(_kept_detail())):
+        assert mv_attach.kept_attach_baseline_reset(
+            MagicMock(), RUN_ID, CATALOG, SCHEMA,
+        ) == BaselineReset(BASELINE_EVAL_ID, 90.0)
+
+
+_DETACHED = mv_attach.AttachOutcome(
+    status=mv_attach.STATUS_COMPLETE, verdict=mv_attach.VERDICT_DETACHED,
+    post_attach_accuracy=80.0,
+).detail()
+_SKIPPED = mv_attach.AttachOutcome(
+    status=mv_attach.STATUS_SKIPPED, skip_reason="NO_CREATED_OBJECT",
+).detail()
+
+
+@pytest.mark.parametrize("stages", [
+    _stages(_DETACHED),
+    _stages(_SKIPPED),
+    _stages(),
+    _stages(_kept_detail(), _SKIPPED),  # a restarted task whose phase skipped
+    _stages(_kept_detail(), stage="MV_ATTACH_RECONCILE"),
+    _stages(_kept_detail(None)),
+])
+def test_no_kept_attach_means_no_reset(stages) -> None:
+    with patch.object(mv_attach, "load_stages", return_value=stages):
+        assert mv_attach.kept_attach_baseline_reset(
+            MagicMock(), RUN_ID, CATALOG, SCHEMA,
+        ) is None
+
+
+def test_an_unreadable_stage_table_means_no_reset() -> None:
+    with patch.object(mv_attach, "load_stages", side_effect=RuntimeError("table gone")):
+        assert mv_attach.kept_attach_baseline_reset(
+            MagicMock(), RUN_ID, CATALOG, SCHEMA,
+        ) is None
+    with patch.object(mv_attach, "load_stages", return_value=None):
+        assert mv_attach.kept_attach_baseline_reset(
+            MagicMock(), RUN_ID, CATALOG, SCHEMA,
+        ) is None
+
+
+# ── End-of-run report of an unmeasured live view (MV-D114 d6) ────────────
+
+
+def _seed_created_with_patch(spark: FakeDeltaSpark) -> None:
+    _seed(spark)
+    mv_state.update_mv_created_object_status(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID,
+        suggestion_id=SUGGESTION_ID, status="CREATED",
+        attach_patch_id=f"{RUN_ID}:0:2:0",
+    )
+
+
+def test_a_created_view_still_on_the_final_config_is_reported() -> None:
+    spark = FakeDeltaSpark()
+    _seed_created_with_patch(spark)
+
+    live = mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config([{"identifier": MV_NAME}]),
+    )
+
+    assert live == [MV_NAME]
+    stage = _stage_statements(spark, mv_attach.UNMEASURED_PHASE_NAME.upper())
+    assert stage and MV_NAME in stage[-1]
+
+
+def test_the_unmeasured_report_never_writes_a_status() -> None:
+    spark = FakeDeltaSpark()
+    _seed_created_with_patch(spark)
+    before = len(spark.statements)
+    mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config([{"identifier": MV_NAME}]),
+    )
+    assert not [s for s in spark.statements[before:] if s.startswith("MERGE INTO")]
+    assert _created_row(spark)["status"] == "CREATED"
+
+
+@pytest.mark.parametrize("patched,config_views", [
+    (False, [{"identifier": MV_NAME}]),  # never attached by this run: not ours to flag
+    (True, []),  # reverted: nothing live
+])
+def test_the_unmeasured_report_is_silent_otherwise(patched, config_views) -> None:
+    spark = FakeDeltaSpark()
+    _seed_created_with_patch(spark) if patched else _seed(spark)
+    live = mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(config_views),
+    )
+    assert live == []
+    assert not _stage_statements(spark, mv_attach.UNMEASURED_PHASE_NAME.upper())
+
+
+def test_the_unmeasured_report_survives_an_unreadable_table() -> None:
+    assert mv_attach.report_unmeasured_attachments(
+        MagicMock(), run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
+    ) == []
+
+
+def test_the_unmeasured_report_survives_a_raising_read() -> None:
+    with patch.object(
+        mv_attach, "load_mv_created_objects", side_effect=RuntimeError("table gone"),
+    ):
+        assert mv_attach.report_unmeasured_attachments(
+            MagicMock(), run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+            config=_config([{"identifier": MV_NAME}]),
+        ) == []
+
+
+def test_loop_exit_reconciliation_runs_the_unmeasured_report(monkeypatch) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        unified_loop, "report_unmeasured_attachments",
+        lambda *_a, **_k: seen.append("reported") or [],
+    )
+    unified_loop._reconcile_mv_attachment(
+        MagicMock(), run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config(), emit=lambda *_a, **_k: None,
+    )
+    assert seen == ["reported"]
+
+
+# ── The report reads the live space, not the in-memory config (MV-D114 d6) ─
+#
+# A revert that fails twice hands the loop the PRE-attach config, so the
+# in-memory config never carries the view that may still be live. The report
+# therefore asks the space itself, and falls back to memory only when it cannot.
+
+
+def test_a_failed_revert_is_reported_from_the_live_config() -> None:
+    spark = FakeDeltaSpark()
+    _seed_created_with_patch(spark)
+
+    live = mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config(),
+        live_config=lambda: _config([{"identifier": MV_NAME}]),
+    )
+
+    assert live == [MV_NAME]
+    stage = _stage_statements(spark, mv_attach.UNMEASURED_PHASE_NAME.upper())
+    assert stage and MV_NAME in stage[-1]
+
+
+@pytest.mark.parametrize("memory_views", [[], [{"identifier": MV_NAME}]])
+def test_a_view_a_later_patch_dropped_is_not_reported(memory_views) -> None:
+    """The live read wins over memory in both directions."""
+    spark = FakeDeltaSpark()
+    _seed_created_with_patch(spark)
+
+    live = mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config(memory_views),
+        live_config=lambda: _config(),
+    )
+
+    assert live == []
+    assert not _stage_statements(spark, mv_attach.UNMEASURED_PHASE_NAME.upper())
+
+
+def _raise_live_read() -> dict[str, Any]:
+    raise RuntimeError("space read failed")
+
+
+@pytest.mark.parametrize("reader", [_raise_live_read, lambda: None])
+@pytest.mark.parametrize("memory_views,expected", [
+    ([{"identifier": MV_NAME}], [MV_NAME]),
+    ([], []),
+])
+def test_an_unreadable_live_config_falls_back_to_memory(
+    reader, memory_views, expected,
+) -> None:
+    spark = FakeDeltaSpark()
+    _seed_created_with_patch(spark)
+
+    live = mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config(memory_views), live_config=reader,
+    )
+
+    assert live == expected
+
+
+@pytest.mark.parametrize("seed", ["unpatched", "empty"])
+def test_the_live_config_is_not_read_without_a_patched_created_row(seed) -> None:
+    spark = FakeDeltaSpark()
+    if seed == "unpatched":
+        _seed(spark)
+    calls: list[str] = []
+
+    live = mv_attach.report_unmeasured_attachments(
+        spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config([{"identifier": MV_NAME}]),
+        live_config=lambda: calls.append("read") or _config([{"identifier": MV_NAME}]),
+    )
+
+    assert live == []
+    assert calls == []
+
+
+def test_loop_exit_passes_a_live_reader_and_emits_what_it_reports(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_report(*_a, **kwargs):
+        captured.update(kwargs)
+        return [MV_NAME]
+
+    monkeypatch.setattr(unified_loop, "report_unmeasured_attachments", fake_report)
+    fetched: list[tuple[Any, str]] = []
+    workspace = object()
+    monkeypatch.setattr(
+        unified_loop,
+        "fetch_space_config",
+        lambda w, sid: fetched.append((w, sid)) or {
+            "_parsed_space": _config([{"identifier": MV_NAME}]),
+        },
+    )
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    unified_loop._reconcile_mv_attachment(
+        MagicMock(), run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config(), emit=lambda event, **kw: emitted.append((event, kw)),
+        w=workspace, space_id="space-1",
+    )
+
+    reader = captured.get("live_config")
+    assert callable(reader)
+    assert reader() == _config([{"identifier": MV_NAME}])
+    assert fetched == [(workspace, "space-1")]
+    assert ("Metric view may still be attached", {"identifiers": [MV_NAME]}) in emitted
+
+
+def test_loop_exit_without_a_workspace_passes_no_live_reader(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        unified_loop, "report_unmeasured_attachments",
+        lambda *_a, **kwargs: captured.update(kwargs) or [],
+    )
+    unified_loop._reconcile_mv_attachment(
+        MagicMock(), run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA,
+        config=_config(), emit=lambda *_a, **_k: None,
+    )
+    assert captured.get("live_config") is None
+
+
+def test_the_loop_live_read_is_best_effort(monkeypatch) -> None:
+    def fail(_w, _sid):
+        raise RuntimeError("genie unavailable")
+
+    monkeypatch.setattr(unified_loop, "fetch_space_config", fail)
+    assert unified_loop._read_live_space_config(object(), "space-1", run_id=RUN_ID) is None

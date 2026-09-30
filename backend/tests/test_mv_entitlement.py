@@ -149,7 +149,7 @@ def obo_client(monkeypatch):
         mv_entitlement, "_observed_runtime", lambda ws, warehouse_id: ("DBR", "17.3"),
     )
     monkeypatch.setattr(
-        "genie_space_optimizer.common.genie_client.user_can_manage_space",
+        "genie_space_optimizer.common.genie_client.user_can_edit_space",
         lambda *a, **k: True,
     )
     try:
@@ -184,7 +184,7 @@ def test_all_granted_is_sufficient(obo_client):
     assert result.target == "finance.sales"
     assert all(row.status == "GRANTED" for row in result.privileges)
     assert result.results["CREATE TABLE on finance.sales"] == "GRANTED"
-    assert result.results["CAN MANAGE on Genie Agent 01ef_genie"] == "GRANTED"
+    assert result.results["CAN EDIT on Genie Agent 01ef_genie"] == "GRANTED"
 
 
 def test_effective_read_asks_for_the_signed_in_user(obo_client):
@@ -252,24 +252,72 @@ def test_single_missing_privilege_is_insufficient_and_remediable(
     assert expected_grant in (result.remediation_sql or "")
 
 
-def test_missing_space_manage_is_insufficient_without_grant_sql(obo_client, monkeypatch):
+def test_missing_space_edit_is_insufficient_without_grant_sql(obo_client, monkeypatch):
     """No GRANT closes a Genie ACL gap, so remediation SQL must not invent one."""
     monkeypatch.setattr(
-        "genie_space_optimizer.common.genie_client.user_can_manage_space",
+        "genie_space_optimizer.common.genie_client.user_can_edit_space",
         lambda *a, **k: False,
     )
 
     result = _probe()
 
     assert result.verdict == "INSUFFICIENT"
-    assert result.missing == ["CAN MANAGE on Genie Agent 01ef_genie"]
+    assert result.missing == ["CAN EDIT on Genie Agent 01ef_genie"]
     assert result.remediation_sql is None
+
+
+def test_space_row_asks_can_edit_and_never_can_manage(obo_client, monkeypatch):
+    """MV-D115: attaching is a space edit; the probe never asks the manage question."""
+
+    def manage_asked(*args, **kwargs):
+        raise AssertionError("the metric-view probe must not ask for CAN MANAGE")
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.user_can_manage_space", manage_asked,
+    )
+
+    result = _probe()
+
+    assert result.verdict == "SUFFICIENT"
+    space_rows = [row for row in result.privileges if row.securable == "01ef_genie"]
+    assert [(row.privilege, row.status) for row in space_rows] == [("CAN_EDIT", "GRANTED")]
+
+
+def test_space_row_is_granted_when_the_permissions_api_is_out_of_scope():
+    """The app's user token cannot call the permissions API; Can Edit must still pass.
+
+    The live regression MV-D115 fixes: a CAN MANAGE holder was DENIED because the
+    manage proof is a permissions read the forwarded token has no scope for.
+    """
+    from databricks.sdk.errors import PermissionDenied
+
+    class _Api:
+        def __init__(self):
+            self.paths: list[str] = []
+
+        def do(self, method, path, query=None, **kwargs):
+            self.paths.append(path)
+            if path.startswith("/api/2.0/permissions/"):
+                raise PermissionDenied("Invalid scope")
+            return {"space_id": "01ef_genie", "serialized_space": "{}"}
+
+    class _Client:
+        def __init__(self):
+            self.api_client = _Api()
+
+    client = _Client()
+
+    row = mv_entitlement._space_edit_row(client, "01ef_genie", "analyst@example.com")
+
+    assert row is not None
+    assert (row.privilege, row.status) == ("CAN_EDIT", "GRANTED")
+    assert not any(p.startswith("/api/2.0/permissions/") for p in client.api_client.paths)
 
 
 def test_space_check_is_skipped_when_no_space_is_given(obo_client):
     result = _probe(space_id="")
 
-    assert all(row.privilege != "CAN_MANAGE" for row in result.privileges)
+    assert all(row.privilege != "CAN_EDIT" for row in result.privileges)
     assert result.verdict == "SUFFICIENT"
 
 
@@ -703,11 +751,11 @@ def test_the_space_row_asks_genie_with_the_callers_client_only(obo_client, monke
     """MV-D109: no service-principal client reaches the space check."""
     seen: list = []
 
-    def can_manage(*args, **kwargs):
+    def can_edit(*args, **kwargs):
         seen.append((args, kwargs))
         return True
 
-    monkeypatch.setattr("genie_space_optimizer.common.genie_client.user_can_manage_space", can_manage)
+    monkeypatch.setattr("genie_space_optimizer.common.genie_client.user_can_edit_space", can_edit)
 
     _probe()
 

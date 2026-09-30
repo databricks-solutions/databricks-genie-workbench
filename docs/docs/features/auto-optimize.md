@@ -216,6 +216,20 @@ that combines columns from more than one table isn't proposed yet; when that's
 all the scan finds, the IQ scan says so. A proposal made before this change must
 be re-scanned before it can be approved or created at run time.
 
+When a run attaches an approved metric view, it re-runs the full benchmark suite
+with the view attached. The view is kept only if accuracy on the questions it
+affects doesn't fall. These are live benchmark questions whose recorded evidence
+or SQL uses one of the view's measures, so a view that no benchmark question
+exercises is not attached. If none of those questions can be graded, the view is
+detached and can be measured again in the next run. After a kept view, the
+optimizer judges every later change against the new accuracy, so no change is
+credited with the view's gain. Iteration 0 keeps its pre-attach score, while the
+run's best accuracy reflects the kept view. If anything fails after the view is
+attached, the run restores the Agent's previous configuration; if even that
+fails, the run reports it, and when the run ends it reads the Agent's live
+configuration and names any such view that is still attached. The metric view
+itself is never dropped.
+
 ## Evaluation and leakage safety
 
 Current runs use Genie's native benchmark Eval-Run API as the sole evaluation

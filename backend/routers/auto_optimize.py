@@ -251,7 +251,7 @@ class MvProbeRequest(BaseModel):
     """Body for ``POST /mv/probe`` — where a metric view would be created.
 
     ``space_id`` is the Genie Agent whose ``data_sources.metric_views`` would be
-    patched, so the probe can ask for CAN MANAGE on it. ``source_tables`` are the
+    patched, so the probe can ask for CAN EDIT on it. ``source_tables`` are the
     three-part names the view would read; the user needs SELECT on each.
     """
 
@@ -2691,8 +2691,8 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
     ``attached`` + ``grant_sql``), degraded (fresh probe below SUFFICIENT →
     [Approve for later] + remediation GRANT, nothing created), and a create-time
     failure with a reason. Missing OBO is a 401 (MV-D20) — a create never falls
-    back to the SP. Can Edit is asked at the route; Can Manage is the fresh
-    probe's row, which downgrades to Approve for later rather than refusing.
+    back to the SP. Can Edit is asked at the route and again in the fresh probe's
+    space row (MV-D115); the probe downgrades to Approve for later, not refuses.
     """
     await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():

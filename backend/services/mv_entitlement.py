@@ -412,7 +412,7 @@ def probe(
         for privilege, securable_type, full_name, owned in checks
     ]
 
-    space_row = _space_manage_row(ws, space_id, principal)
+    space_row = _space_edit_row(ws, space_id, principal)
     if space_row is not None:
         privileges.append(space_row)
 
@@ -451,24 +451,25 @@ def _default_warehouse_id() -> str:
     return os.environ.get("GSO_WAREHOUSE_ID") or os.environ.get("SQL_WAREHOUSE_ID", "")
 
 
-def _space_manage_row(ws: Any, space_id: str, principal: str) -> MvPrivilegeRow | None:
-    """Check CAN_MANAGE on the Genie Agent whose config would be patched.
+def _space_edit_row(ws: Any, space_id: str, principal: str) -> MvPrivilegeRow | None:
+    """Check CAN EDIT on the Genie Agent whose config would be patched (MV-D115).
 
-    CAN_EDIT is not enough: attaching the view rewrites
-    ``data_sources.metric_views``, which is a manage-level change.
+    Attaching the view rewrites ``data_sources.metric_views``, a space edit, and
+    Genie lets CAN EDIT and above edit a space. CAN MANAGE is not asked: its only
+    proof is the permissions API, which the app's user token cannot call.
     """
     space_id = (space_id or "").strip()
     if not space_id:
         return None
-    from genie_space_optimizer.common.genie_client import user_can_manage_space
+    from genie_space_optimizer.common.genie_client import user_can_edit_space
 
-    can_manage = user_can_manage_space(ws, space_id)
+    can_edit = user_can_edit_space(ws, space_id)
     return MvPrivilegeRow(
-        label=f"CAN MANAGE on Genie Agent {space_id}",
-        privilege="CAN_MANAGE",
+        label=f"CAN EDIT on Genie Agent {space_id}",
+        privilege="CAN_EDIT",
         securable=space_id,
-        status="GRANTED" if can_manage else "DENIED",
-        detail=None if can_manage else f"{principal} lacks CAN MANAGE on the Genie Agent",
+        status="GRANTED" if can_edit else "DENIED",
+        detail=None if can_edit else f"{principal} lacks CAN EDIT on the Genie Agent",
     )
 
 
@@ -503,7 +504,7 @@ def _remediation_sql(
     """
     statements: list[str] = []
     for row in privileges:
-        if row.status == "GRANTED" or row.privilege == "CAN_MANAGE":
+        if row.status == "GRANTED" or row.privilege == "CAN_EDIT":
             continue
         privilege = row.privilege.replace("_", " ")
         if row.securable == catalog:

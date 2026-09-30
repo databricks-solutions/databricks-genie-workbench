@@ -15,6 +15,15 @@ view would end up biasing the case for its own successor. With the attach here,
 baseline is pre-attach, the lift eval isolates what the attach alone did, and the
 levers then tune on whatever foundation survived the lift verdict.
 
+The eval shape (MV-D114 d3-d5)
+------------------------------
+The lift is one full-suite eval of the attached space, supplied by the caller as
+``post_attach_eval``. The verdict is scored on the affected subset only, and a
+regression counts only when it lands inside that subset. A subset with no
+question graded on both sides is no measurement, so the attach is reverted. A
+kept attach hands that full eval back, since it is the measurement of the space
+the levers then tune.
+
 What this phase never does
 --------------------------
 It issues no UC DDL. Under MV-D1 the backend creates the metric view under OBO
@@ -48,9 +57,11 @@ post-attach config on the kept path, and reconciliation at end of run demotes an
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
-from collections.abc import Mapping, Sequence
+import math
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -60,14 +71,23 @@ from genie_space_optimizer.common.config import (
 )
 
 from .applier import apply_patch_set, rollback
+from .champion import BaselineReset
 from .eval_runner import FULL, EvalRunResult, LiftReport, lift_report
+from .mv_advisor import _generated_sql_of
+from .mv_fingerprint import extract_measures
 from .mv_state import (
     load_mv_candidates,
     load_mv_consent,
     load_mv_created_objects,
+    mv_candidate_fingerprint,
     update_mv_created_object_status,
 )
-from .state import update_iteration_observed_config, write_patch, write_stage
+from .state import (
+    load_stages,
+    update_iteration_observed_config,
+    write_patch,
+    write_stage,
+)
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -113,15 +133,16 @@ SKIP_BASELINE_UNUSABLE = "BASELINE_UNUSABLE"
 lift *against*. Attaching anyway would ship an unmeasured structural change."""
 
 SKIP_NO_AFFECTED_QUESTIONS = "NO_AFFECTED_QUESTIONS"
-"""No proposal recorded the benchmark questions this view was meant to help.
+"""No live benchmark question is recorded on the proposal or uses one of its
+measures (MV-D114 d1/d2).
 
-The lift eval scores the affected subset, so an empty subset is not a smaller
+The lift verdict scores the affected subset, so an empty subset is not a smaller
 measurement — it is no measurement, and the attach does not proceed without one.
 """
 
 SKIP_NO_EVAL_RUNNER = "NO_EVAL_RUNNER"
-"""No eval seam was supplied. Same reasoning as an unusable baseline: the attach
-is only permitted where its effect can be measured."""
+"""No post-attach eval was supplied. Same reasoning as an unusable baseline: the
+attach is only permitted where its effect can be measured."""
 
 SKIP_ATTACH_NOT_APPLIED = "ATTACH_NOT_APPLIED"
 """``apply_patch_set`` deployed nothing — e.g. every identifier was already on
@@ -131,18 +152,28 @@ SKIP_LIFT_EVAL_UNUSABLE = "LIFT_EVAL_UNUSABLE"
 """The lift eval did not reach a gradeable state. The attach is reverted rather
 than left in place unmeasured, and the objects stay ``CREATED``."""
 
+SKIP_LIFT_NOT_GRADED = "LIFT_NOT_GRADED"
+"""The post-attach eval was usable, but no affected question was graded in both
+runs — each one was needs-review on a side or absent from one (MV-D114 d5).
+
+A delta over zero graded questions is 0.0 by construction, not a measured wash,
+so the attach is reverted like an unusable eval and the objects stay ``CREATED``.
+"""
+
 VERDICT_ATTACHED = "ATTACHED"
 VERDICT_DETACHED = "DETACHED"
+
+ROLLBACK_REVERTED = "reverted"
+ROLLBACK_FAILED = "failed"
+
+_REVERT_ATTEMPTS = 2
+"""A revert is retried once. A raised exception counts as an attempt, so a
+flaky PATCH gets a second chance without an unbounded loop inside the task."""
 
 CONSENT_VERDICT_SUFFICIENT = "SUFFICIENT"
 CREATED_STATUS = "CREATED"
 
 MV_ATTACH_PATCH_TYPE = "mv_attach_data_source"
-
-LIFT_EVAL_LABEL = "mv_lift"
-"""``eval_scope`` label on the lift eval run, so the isolated measurement is
-distinguishable from a lever attempt in ``genie_opt_iterations`` and in the
-workspace's own eval-run list."""
 
 _MV_LEVER = 2
 """Metric views are Lever 2. The attach is not an LLM lever (MV-D16) but it is
@@ -163,6 +194,12 @@ class AttachOutcome:
     post-attach config when the attach was kept, and the pre-attach config when it
     was skipped or reverted. It is deliberately excluded from ``detail()`` — a
     stage row is operator-facing and a full space config is not a status.
+
+    ``post_attach_eval`` is the full-suite eval output of a kept attach, handed
+    back so the caller can carry it as the new baseline; it is ``None`` on every
+    other path. It is excluded from ``detail()`` and from ``repr`` for the same
+    reason as ``config`` and one more: it carries per-question rows, SQL
+    included, and neither a stage row nor a log line may.
     """
 
     status: str
@@ -181,6 +218,11 @@ class AttachOutcome:
     delta_suite: float | None = None
     regressed_question_count: int = 0
     config: dict[str, Any] | None = field(default=None, repr=False)
+    graded_affected_count: int = 0
+    post_attach_accuracy: float | None = None
+    rollback_status: str | None = None
+    rollback_error: str | None = None
+    post_attach_eval: dict[str, Any] | None = field(default=None, repr=False)
 
     def detail(self) -> dict[str, Any]:
         """The ``genie_opt_stages.detail_json`` payload.
@@ -205,6 +247,10 @@ class AttachOutcome:
             "delta_affected": self.delta_affected,
             "delta_suite": self.delta_suite,
             "regressed_question_count": self.regressed_question_count,
+            "graded_affected_count": self.graded_affected_count,
+            "post_attach_accuracy": self.post_attach_accuracy,
+            "rollback_status": self.rollback_status,
+            "rollback_error": self.rollback_error,
         }
 
 
@@ -273,6 +319,22 @@ def _baseline_usable(eval_output: Mapping[str, Any]) -> bool:
     return bool(eval_output.get("rows"))
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _subset_regressions(report: LiftReport) -> list[str]:
+    """The regressed questions that are inside the affected subset, in report order."""
+    subset = set(report.question_subset)
+    return [qid for qid in report.regressed_question_ids if qid in subset]
+
+
 def is_regression(report: LiftReport) -> bool:
     """Whether the lift verdict requires a detach.
 
@@ -282,10 +344,69 @@ def is_regression(report: LiftReport) -> bool:
     a reason to keep a structural change. A positive delta stands even if one
     question moved the wrong way — that is the trade the measurement exists to
     quantify, and the report is persisted so a reviewer sees both halves.
+
+    MV-D114 d4: only a regression inside the affected subset counts. The post
+    run is the full suite, so its regressed list also carries questions the view
+    does not touch, and those are eval noise rather than evidence against the
+    view. When the post run covers only the subset, this is the same rule as
+    before.
     """
     if report.delta_affected < 0:
         return True
-    return report.delta_affected == 0 and bool(report.regressed_question_ids)
+    return report.delta_affected == 0 and bool(_subset_regressions(report))
+
+
+def _live_question_ids(baseline_eval: Mapping[str, Any]) -> list[str]:
+    """MV-D114 d1: the question ids iteration-0's own eval graded, in its order."""
+    out: list[str] = []
+    for row in baseline_eval.get("rows") or ():
+        if isinstance(row, Mapping):
+            qid = str(row.get("question_id") or "").strip()
+            if qid and qid not in out:
+                out.append(qid)
+    return out
+
+
+def _expected_sql_of(row: Mapping[str, Any]) -> str:
+    for key in ("expected_sql", "inputs/expected_response"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _measure_matched_ids(
+    rows: Sequence[Mapping[str, Any]], *, space_id: str, fingerprints: set[str],
+) -> set[str]:
+    """Baseline questions whose generated or expected SQL uses a member measure.
+
+    The fingerprint is the advisor's own (mv_advisor.py:1503-1505), so "uses this
+    measure" means exactly what it meant when the view was proposed. Expected SQL
+    is read here to choose ids and nothing else — no SQL leaves this function.
+    """
+    out: set[str] = set()
+    if not fingerprints:
+        return out
+    for row in rows:
+        qid = str(row.get("question_id") or "").strip()
+        if not qid:
+            continue
+        for sql in (_generated_sql_of(row), _expected_sql_of(row)):
+            if not sql:
+                continue
+            try:
+                measures = extract_measures(sql)
+            except Exception:  # noqa: BLE001, S112 - unlogged: the error may quote the SQL
+                continue
+            if any(
+                m.canonical_expr
+                and mv_candidate_fingerprint(space_id, m.canonical_expr, m.source_tables)
+                in fingerprints
+                for m in measures
+            ):
+                out.add(qid)
+                break
+    return out
 
 
 def _affected_question_ids(
@@ -295,12 +416,24 @@ def _affected_question_ids(
     catalog: str,
     schema: str,
     suggestion_ids: Sequence[str],
+    baseline_eval: Mapping[str, Any],
 ) -> list[str]:
-    """Benchmark question ids recorded on the proposals these objects came from.
+    """The live benchmark questions the proposals these objects came from affect.
 
     Candidates are space-scoped and outlive the run that proposed them (MV-D7),
     which is exactly why this reads by ``target_space_id``: under MV-D1 the
     proposal was written by an earlier run than the one attaching it.
+
+    MV-D114 d1: the subset is drawn only from the ids iteration-0's eval actually
+    graded. A recorded id that is not live — a curated-provenance handle such as
+    ``trusted_asset:…`` or ``sql_snippet:…``, or a question retired since the
+    proposing run — cannot be measured, so it is dropped rather than scored.
+
+    MV-D114 d2: a view is measured on every member it bundles, not the anchor
+    alone — the bundle's member-union ids and each member's own ids count — and
+    on any live question whose baseline generated or expected SQL uses one of
+    its measures. The measure match is what gives a curated (IQ-scan) candidate,
+    which records no benchmark question at all, a subset to be measured on.
     """
     wanted = {str(sid) for sid in suggestion_ids if str(sid)}
     if not wanted:
@@ -313,18 +446,30 @@ def _affected_question_ids(
         logger.warning("mv_attach: could not read candidates for %s", space_id, exc_info=True)
         return []
 
-    out: list[str] = []
+    recorded: set[str] = set()
+    fingerprints: set[str] = set()
     for candidate in candidates:
         if str(candidate.get("suggestion_id") or "") not in wanted:
             continue
+        fp = str(candidate.get("dedup_fingerprint") or "").strip()
+        if fp:
+            fingerprints.add(fp)
         evidence = candidate.get("evidence")
         if not isinstance(evidence, Mapping):
             continue
-        for qid in evidence.get("benchmark_questions") or ():
-            text = str(qid).strip()
-            if text and text not in out:
-                out.append(text)
-    return out
+        for key in ("benchmark_question_ids", "benchmark_questions"):
+            recorded.update(str(q).strip() for q in evidence.get(key) or () if str(q).strip())
+        for member in evidence.get("measures") or ():
+            if isinstance(member, Mapping):
+                member_fp = str(member.get("dedup_fingerprint") or "").strip()
+                if member_fp:
+                    fingerprints.add(member_fp)
+                recorded.update(
+                    str(q).strip() for q in member.get("benchmark_question_ids") or () if str(q).strip()
+                )
+    rows = [r for r in baseline_eval.get("rows") or () if isinstance(r, Mapping)]
+    matched = _measure_matched_ids(rows, space_id=space_id, fingerprints=fingerprints)
+    return [qid for qid in _live_question_ids(baseline_eval) if qid in recorded or qid in matched]
 
 
 def _attach_patches(identifiers: Sequence[str]) -> list[dict[str, Any]]:
@@ -369,17 +514,23 @@ def run_mv_attach_phase(
     config: dict[str, Any],
     baseline_eval: Mapping[str, Any],
     w: Any = None,
-    eval_runner: Any = None,
+    post_attach_eval: Callable[[], Mapping[str, Any]] | None = None,
     apply_mode: str = "genie_config",
     benchmark_corpus: Any = None,
 ) -> AttachOutcome:
     """Attach consented metric views, measure the lift, detach on regression.
 
-    **Never raises.** Total isolation is the contract: this is an addition to a
-    task whose job is optimization, so any failure of its own must cost its own
-    output and nothing else. The returned ``config`` is what the caller carries
-    forward, so a failed phase leaves the loop running against the configuration
-    it already had.
+    ``post_attach_eval`` runs one full-suite eval of the space as it stands and
+    returns the loop's eval-output dict (the shape ``baseline_eval`` has). It is
+    called once, after the attach is applied (MV-D114 d3).
+
+    **Never raises an Exception.** Total isolation is the contract: this is an
+    addition to a task whose job is optimization, so any failure of its own must
+    cost its own output and nothing else. The returned ``config`` is what the
+    caller carries forward, so a failed phase leaves the loop running against the
+    configuration it already had. A BaseException (interrupt, cancellation) after
+    the attach deployed is not swallowed: the attach is reverted and its objects
+    written back to ``CREATED`` first, then it propagates.
     """
     identifiers = parse_attach_views(attach_views)
     probe_id = str(consent_probe_id or "").strip()
@@ -409,10 +560,11 @@ def run_mv_attach_phase(
             config=config,
             baseline_eval=baseline_eval,
             w=w,
-            eval_runner=eval_runner,
+            post_attach_eval=post_attach_eval,
             apply_mode=apply_mode,
             benchmark_corpus=benchmark_corpus,
         )
+    # Pre-deploy failures only: _attach_and_measure reverts every post-deploy one.
     except Exception as exc:
         logger.warning(
             "mv_attach: phase failed; optimization is unaffected", exc_info=True,
@@ -439,7 +591,7 @@ def _attach_and_measure(
     config: dict[str, Any],
     baseline_eval: Mapping[str, Any],
     w: Any,
-    eval_runner: Any,
+    post_attach_eval: Callable[[], Mapping[str, Any]] | None,
     apply_mode: str,
     benchmark_corpus: Any,
 ) -> AttachOutcome:
@@ -508,7 +660,7 @@ def _attach_and_measure(
     # ── Measurability ────────────────────────────────────────────
     if not _baseline_usable(baseline_eval):
         return _skip(SKIP_BASELINE_UNUSABLE, suggestion_ids=suggestion_ids)
-    if eval_runner is None:
+    if post_attach_eval is None:
         return _skip(SKIP_NO_EVAL_RUNNER, suggestion_ids=suggestion_ids)
 
     affected = _affected_question_ids(
@@ -517,6 +669,7 @@ def _attach_and_measure(
         catalog=catalog,
         schema=schema,
         suggestion_ids=suggestion_ids,
+        baseline_eval=baseline_eval,
     )
     if not affected:
         return _skip(SKIP_NO_AFFECTED_QUESTIONS, suggestion_ids=suggestion_ids)
@@ -546,11 +699,116 @@ def _attach_and_measure(
             affected_question_count=len(affected),
         )
 
+    # MV-D114 d6: from here the view is live on the space, so every exit either
+    # settles through the lift verdict or reverts.
+    patch_reference = _attach_patch_reference(run_id, 0)
     attached_config = apply_log.get("post_snapshot") or config
+    settled = False
+    try:
+        outcome = _measure_attached(
+            spark,
+            run_id=run_id,
+            space_id=space_id,
+            catalog=catalog,
+            schema=schema,
+            config=config,
+            w=w,
+            post_attach_eval=post_attach_eval,
+            requested=requested,
+            suggestion_ids=suggestion_ids,
+            affected=affected,
+            baseline_run=baseline_run,
+            apply_log=apply_log,
+            applied=applied,
+            attached_config=attached_config,
+            patch_reference=patch_reference,
+        )
+        settled = True
+        return outcome
+    except Exception as exc:
+        logger.warning(
+            "mv_attach: failed after the attach deployed for run %s; reverting",
+            run_id, exc_info=True,
+        )
+        outcome = _detach(
+            spark,
+            apply_log=apply_log,
+            w=w,
+            space_id=space_id,
+            run_id=run_id,
+            catalog=catalog,
+            schema=schema,
+            config=config,
+            outcome=AttachOutcome(
+                status=STATUS_FAILED,
+                error=f"{type(exc).__name__}: {exc}",
+                requested=requested,
+                suggestion_ids=suggestion_ids,
+                attach_patch_id=patch_reference,
+                baseline_eval_run_id=baseline_eval_run_id,
+                affected_question_count=len(affected),
+            ),
+            suggestion_ids=suggestion_ids,
+            lift_report_json=None,
+            status=CREATED_STATUS,
+        )
+        settled = True
+        return outcome
+    finally:
+        if not settled:
+            # BaseException (interrupt, cancellation): revert best-effort, then let it
+            # propagate. The stage row is not written — the task is going down.
+            _revert(apply_log, w, space_id)
+            # The kept path may already have written ATTACHED, and end-of-run
+            # reconciliation never runs in a task going down. Reverted or not,
+            # the row goes back to CREATED: not attached, may still be live.
+            try:
+                for suggestion_id in suggestion_ids:
+                    _update_object(
+                        spark,
+                        run_id=run_id,
+                        suggestion_id=suggestion_id,
+                        catalog=catalog,
+                        schema=schema,
+                        status=CREATED_STATUS,
+                        attach_patch_id=patch_reference,
+                        baseline_eval_run_id=baseline_eval_run_id,
+                    )
+            except Exception:  # noqa: BLE001 - best-effort while the task goes down
+                logger.warning(
+                    "mv_attach: could not demote created objects to CREATED for run %s",
+                    run_id,
+                )
+
+
+def _measure_attached(
+    spark: SparkSession,
+    *,
+    run_id: str,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    config: dict[str, Any],
+    w: Any,
+    post_attach_eval: Callable[[], Mapping[str, Any]],
+    requested: tuple[str, ...],
+    suggestion_ids: tuple[str, ...],
+    affected: Sequence[str],
+    baseline_run: EvalRunResult,
+    apply_log: dict[str, Any],
+    applied: Sequence[Mapping[str, Any]],
+    attached_config: dict[str, Any],
+    patch_reference: str,
+) -> AttachOutcome:
+    """Record the attach, measure its lift, and keep or detach it.
+
+    Runs only once the attach has deployed, and only under
+    ``_attach_and_measure``'s guard: anything this raises is reverted there.
+    """
+    baseline_eval_run_id = baseline_run.eval_run_id
     attached = tuple(
         str(entry.get("action", {}).get("target") or "") for entry in applied
     )
-    patch_reference = _attach_patch_reference(run_id, 0)
     _write_attach_patch_rows(
         spark, applied, run_id=run_id, catalog=catalog, schema=schema,
     )
@@ -567,8 +825,10 @@ def _attach_and_measure(
         )
 
     # ── Lift ─────────────────────────────────────────────────────
-    lift_run = eval_runner.run_subset(space_id, affected, LIFT_EVAL_LABEL)
-    if not lift_run.succeeded:
+    # MV-D114 d3: one full-suite eval of the attached space. The verdict below
+    # reads the affected subset out of it (d4).
+    post_output = dict(post_attach_eval())
+    if not _baseline_usable(post_output):
         return _detach(
             spark,
             apply_log=apply_log,
@@ -585,7 +845,7 @@ def _attach_and_measure(
                 suggestion_ids=suggestion_ids,
                 attach_patch_id=patch_reference,
                 baseline_eval_run_id=baseline_eval_run_id,
-                lift_eval_run_id=lift_run.eval_run_id or None,
+                lift_eval_run_id=str(post_output.get("eval_run_id") or "") or None,
                 affected_question_count=len(affected),
             ),
             suggestion_ids=suggestion_ids,
@@ -593,8 +853,37 @@ def _attach_and_measure(
             status=CREATED_STATUS,
         )
 
+    lift_run = _eval_result_from_output(post_output)
     report = lift_report(baseline_run, lift_run, affected)
     report_json = json.dumps(report.to_dict(), default=str)
+
+    # MV-D114 d5: zero graded affected questions is no measurement at all.
+    if report.graded_affected_count == 0:
+        return _detach(
+            spark,
+            apply_log=apply_log,
+            w=w,
+            space_id=space_id,
+            run_id=run_id,
+            catalog=catalog,
+            schema=schema,
+            config=config,
+            outcome=AttachOutcome(
+                status=STATUS_SKIPPED,
+                skip_reason=SKIP_LIFT_NOT_GRADED,
+                requested=requested,
+                suggestion_ids=suggestion_ids,
+                attach_patch_id=patch_reference,
+                baseline_eval_run_id=baseline_eval_run_id,
+                lift_eval_run_id=lift_run.eval_run_id or None,
+                affected_question_count=len(affected),
+                graded_affected_count=0,
+            ),
+            suggestion_ids=suggestion_ids,
+            lift_report_json=report_json,
+            status=CREATED_STATUS,
+        )
+
     base = AttachOutcome(
         status=STATUS_COMPLETE,
         requested=requested,
@@ -605,7 +894,8 @@ def _attach_and_measure(
         affected_question_count=len(affected),
         delta_affected=report.delta_affected,
         delta_suite=report.delta_suite,
-        regressed_question_count=len(report.regressed_question_ids),
+        regressed_question_count=len(_subset_regressions(report)),
+        graded_affected_count=report.graded_affected_count,
     )
 
     if is_regression(report):
@@ -656,6 +946,8 @@ def _attach_and_measure(
         verdict=VERDICT_ATTACHED,
         attached=attached,
         config=attached_config,
+        post_attach_eval=post_output,
+        post_attach_accuracy=_as_float(post_output.get("overall_accuracy")),
     )
 
 
@@ -680,14 +972,52 @@ def _detach(
     primitive the loop's own accept/reject gate uses. ``integration/revert.py`` is
     a backend surface whose active-run guard rejects mid-run by design (MV-D16).
     The UC object is never dropped here, whatever the verdict.
+
+    A revert that fails every attempt is reported, not papered over (MV-D114
+    d6). The outcome is ``FAILED`` with ``rollback_status`` ``failed``, and
+    nothing is claimed detached. The object row is written ``CREATED`` whatever
+    status was asked for: under MV-D18 ``CREATED`` means "not attached by a kept
+    lift, may still be live", which is the true statement when the PATCH did not
+    land, whereas ``DETACHED`` would assert a removal that never happened. The
+    lift's verdict is kept, since the measurement stands even though acting on
+    it failed. The pre-attach config is still what the caller carries forward:
+    the view was rejected or never measured, so the loop must not tune on top of
+    it, and any later deploy of the carried config does not re-send it.
     """
-    result = rollback(apply_log, w, space_id)
-    if result.get("status") == "error":
-        logger.warning(
-            "mv_attach: detach failed for run %s — the metric view may still be "
-            "attached: %s", run_id, result.get("errors"),
+    reverted, errors = _revert(apply_log, w, space_id)
+    verdict = VERDICT_DETACHED if status == VERDICT_DETACHED else outcome.verdict
+    pre_attach = copy.deepcopy(apply_log.get("pre_snapshot") or config)
+
+    if not reverted:
+        logger.error(
+            "mv_attach: revert failed after %d attempts for run %s on space %s; "
+            "the metric view(s) %s may still be attached",
+            _REVERT_ATTEMPTS, run_id, space_id, ", ".join(outcome.requested),
         )
-    restored = result.get("restored_config") or apply_log.get("pre_snapshot") or config
+        for suggestion_id in suggestion_ids:
+            _update_object(
+                spark,
+                run_id=run_id,
+                suggestion_id=suggestion_id,
+                catalog=catalog,
+                schema=schema,
+                status=CREATED_STATUS,
+                attach_patch_id=outcome.attach_patch_id,
+                baseline_eval_run_id=outcome.baseline_eval_run_id,
+                post_attach_eval_run_id=outcome.lift_eval_run_id,
+                lift_report_json=lift_report_json,
+            )
+        return replace(
+            outcome,
+            status=STATUS_FAILED,
+            error=_rollback_error_text(outcome.error, errors),
+            verdict=verdict,
+            rollback_status=ROLLBACK_FAILED,
+            rollback_error="; ".join(errors),
+            attached=(),
+            detached=(),
+            config=pre_attach,
+        )
 
     for suggestion_id in suggestion_ids:
         _update_object(
@@ -706,10 +1036,40 @@ def _detach(
     return replace(
         outcome,
         verdict=VERDICT_DETACHED if status == VERDICT_DETACHED else None,
+        rollback_status=ROLLBACK_REVERTED,
         attached=(),
         detached=tuple(outcome.requested),
-        config=restored,
+        config=pre_attach,
     )
+
+
+def _revert(apply_log: dict[str, Any], w: Any, space_id: str) -> tuple[bool, list[str]]:
+    """Restore the pre-attach snapshot, up to ``_REVERT_ATTEMPTS`` times.
+
+    Returns ``(True, [])`` on the first attempt that does not report an error,
+    else ``(False, errors)``: the distinct error messages across every attempt.
+    ``applier.rollback`` reports fixed messages or API exception text, never the
+    config it tried to write.
+    """
+    errors: list[str] = []
+    for _attempt in range(_REVERT_ATTEMPTS):
+        try:
+            result = rollback(apply_log, w, space_id)
+        except Exception as exc:  # noqa: BLE001 - a raised revert is a failed attempt
+            messages = [f"{type(exc).__name__}: {exc}"]
+        else:
+            if result.get("status") != "error":
+                return True, []
+            messages = [str(e) for e in result.get("errors") or ()] or ["rollback reported an error"]
+        for message in messages:
+            if message not in errors:
+                errors.append(message)
+    return False, errors
+
+
+def _rollback_error_text(original: str | None, errors: Sequence[str]) -> str:
+    text = f"ROLLBACK_FAILED: {'; '.join(errors)}"
+    return f"{text} (after {original})" if original else text
 
 
 def _write_attach_patch_rows(
@@ -802,10 +1162,14 @@ RECONCILE_DEMOTION_REASON = "NOT_IN_FINAL_CONFIG"
 
 
 def attached_identifiers(config: Mapping[str, Any] | None) -> set[str]:
-    """The identifiers on ``data_sources.metric_views``, lowercased.
+    """The identifiers on ``data_sources.metric_views`` and ``data_sources.tables``, lowercased.
 
-    Reads the same shelf the applier writes (``applier._apply_action_to_config``'s
-    ``metric_views`` branch), so "is it attached" is answered by the config itself
+    The applier writes ``metric_views`` (``applier._apply_action_to_config``), but
+    Genie moves a metric view to ``tables`` on write and exports it there, so a
+    config read back from the space carries it under ``tables``. Both shelves count,
+    as in the backend's attach-at-approval (``backend/services/mv_create.py``). Callers
+    match only views they created, and a Unity Catalog name is one object, so a
+    ``tables`` match is that view. "Is it attached" is answered by the config itself
     rather than by a status column claiming to describe it.
     """
     if not isinstance(config, Mapping):
@@ -814,12 +1178,60 @@ def attached_identifiers(config: Mapping[str, Any] | None) -> set[str]:
     if not isinstance(sources, Mapping):
         return set()
     out: set[str] = set()
-    for entry in sources.get("metric_views") or ():
-        if isinstance(entry, Mapping):
-            identifier = str(entry.get("identifier") or "").strip().lower()
-            if identifier:
-                out.add(identifier)
+    for key in ("metric_views", "tables"):
+        for entry in sources.get(key) or ():
+            if isinstance(entry, Mapping):
+                identifier = str(entry.get("identifier") or "").strip().lower()
+                if identifier:
+                    out.add(identifier)
     return out
+
+
+def kept_attach_baseline_reset(
+    spark: SparkSession, run_id: str, catalog: str, schema: str,
+) -> BaselineReset | None:
+    """The re-baseline a kept attach gave the loop, or ``None``.
+
+    Read from the run's latest ``MV_ATTACH`` stage row, and only when its verdict
+    is ``ATTACHED`` (MV-D114 d7). Publish scores iteration 0 at its post-attach
+    accuracy, because the stored iteration-0 row keeps its pre-attach score
+    (MV-D18). The reset names the baseline eval it was measured against, so a
+    restarted task's own iteration-0 row, whose phase never ran or skipped, keeps
+    its score. Never raises.
+    """
+    try:
+        stages = load_stages(spark, run_id, catalog, schema)
+        records = stages.to_dict("records") if hasattr(stages, "to_dict") else []
+    except Exception as exc:  # noqa: BLE001 - publish falls back to the stored rows
+        logger.warning(
+            "mv_attach: could not read the attach stage for run %s (%s)",
+            run_id, type(exc).__name__,
+        )
+        return None
+    if not isinstance(records, list):
+        return None
+    stage_name = MV_ATTACH_PHASE_NAME.upper()
+    details: list[Mapping[str, Any]] = []
+    for row in records:
+        if not isinstance(row, Mapping) or str(row.get("stage") or "").upper() != stage_name:
+            continue
+        detail = row.get("detail_json")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except (TypeError, ValueError):
+                continue
+        if isinstance(detail, Mapping):
+            details.append(detail)
+    if not details:
+        return None
+    latest = details[-1]
+    if str(latest.get("verdict") or "").upper() != VERDICT_ATTACHED:
+        return None
+    accuracy = _as_float(latest.get("post_attach_accuracy"))
+    if accuracy is None:
+        return None
+    return BaselineReset(str(latest.get("baseline_eval_run_id") or ""), accuracy)
 
 
 def reconcile_attached_objects(
@@ -923,6 +1335,113 @@ def reconcile_attached_objects(
                 "mv_attach: could not write the reconciliation stage row", exc_info=True,
             )
     return result
+
+
+UNMEASURED_PHASE_NAME = f"{MV_ATTACH_PHASE_NAME}_unmeasured"
+
+UNMEASURED_REASON = "CREATED_BUT_LIVE"
+
+
+def report_unmeasured_attachments(
+    spark: SparkSession,
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    config: Mapping[str, Any] | None,
+    live_config: Callable[[], Mapping[str, Any] | None] | None = None,
+) -> list[str]:
+    """Name every view this run attached, never kept, and still leaves live.
+
+    A revert that fails twice (MV-D114 d6) records the object ``CREATED`` with
+    its ``attach_patch_id``, while the space may still carry the view. That row
+    is not a kept lift, so it is not ``ATTACHED``, and ``reconcile_attached_objects``
+    never looks at it. If the space still carries the identifier, the run ends
+    with an unmeasured view in the space, and this is where that is said.
+
+    The check is against the live space config, read through ``live_config``.
+    The in-memory ``config`` cannot answer it: after a failed revert the phase
+    hands the loop the pre-attach config, so memory never carries the view the
+    space may still hold. ``live_config`` is called only when a patched
+    ``CREATED`` row exists, and when it is absent, raises or returns nothing,
+    the report falls back to ``config``.
+
+    **Report only.** It never promotes the row (MV-D18 is demote-only:
+    ``ATTACHED`` is written by the attach phase alone) and never drops the UC
+    object (``DETACH_ONLY_NEVER_DROP``). It writes no status. It uses its own
+    stage name so ``reconcile_attached_objects``'s return shape and stage row
+    stay as they are. A ``CREATED`` row without an ``attach_patch_id`` was never
+    attached by this run, so a matching identifier is not this run's to flag.
+
+    Never raises. Returns the full names it reported.
+    """
+    try:
+        rows = load_mv_created_objects(
+            spark, run_id, catalog, schema, status=CREATED_STATUS,
+        )
+    except Exception:
+        logger.warning(
+            "mv_attach: could not read created objects to report unmeasured "
+            "attachments for run %s", run_id, exc_info=True,
+        )
+        return []
+
+    patched = [
+        row for row in rows
+        if str(row.get("status") or "").strip().upper() == CREATED_STATUS
+        and str(row.get("attach_patch_id") or "").strip()
+    ]
+    if not patched:
+        return []
+
+    observed: Mapping[str, Any] | None = None
+    if live_config is not None:
+        try:
+            observed = live_config()
+        except Exception as exc:  # noqa: BLE001 - the fallback is the in-memory config
+            logger.warning(
+                "mv_attach: could not read the live space config for run %s (%s); "
+                "reporting against the in-memory config",
+                run_id, type(exc).__name__,
+            )
+    on_config = attached_identifiers(
+        observed if isinstance(observed, Mapping) else config,
+    )
+    live: list[str] = []
+    for row in patched:
+        full_name = str(row.get("full_name") or "").strip()
+        if full_name and full_name.lower() in on_config:
+            live.append(full_name)
+
+    if not live:
+        return live
+
+    logger.warning(
+        "mv_attach: %s recorded CREATED after an unreverted attach and still on the "
+        "space config for run %s — the view may be live without a measured lift",
+        ", ".join(live), run_id,
+    )
+    try:
+        write_stage(
+            spark,
+            run_id,
+            UNMEASURED_PHASE_NAME.upper(),
+            STATUS_COMPLETE,
+            task_key="optimize",
+            catalog=catalog,
+            schema=schema,
+            detail={
+                "phase": UNMEASURED_PHASE_NAME,
+                "identifiers": live,
+                "reason": UNMEASURED_REASON,
+            },
+        )
+    except Exception:
+        logger.warning(
+            "mv_attach: could not write the unmeasured-attachment stage row",
+            exc_info=True,
+        )
+    return live
 
 
 def _record(

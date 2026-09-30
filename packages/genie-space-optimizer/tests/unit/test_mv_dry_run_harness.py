@@ -10,7 +10,7 @@ fails here.
 Two legs:
 
 * **In-job (Spark).** trigger-created object row -> attach phase (which runs the
-  ``mv_lift`` sub-step) -> advisor proposes the next candidate -> the row the
+  post-attach eval) -> advisor proposes the next candidate -> the row the
   *next* trigger reads (``approved_for_rerun`` + ``target_space_id``). This is the
   exact chain Prompt 13's create path walks: ``create_and_attach_for_run`` reads
   ``wh_load_mv_candidates(approved_for_rerun=True)``; here its Spark twin

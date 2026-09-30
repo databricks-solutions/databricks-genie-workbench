@@ -188,7 +188,7 @@ These are granted automatically by `scripts/grant_permissions.py` during deploym
 | Trigger optimization — permission check | OBO (user) | `backend/services/space_access.py` `require_space_access()` | Genie answers under the user's token; no SP fallback |
 | Auto-Optimize reads that expose configuration | OBO (user) | `routers/auto_optimize.py` `require_space_access` / `_require_run_space_access` | Can Edit (MV-D110): proposals, semantic graph, join advice, mv-ddl, mv-created, run detail |
 | Run status, run list, and active-run badge | OBO (user) | `routers/auto_optimize.py` | Can View on the run's agent |
-| Auto-Optimize writes and metric-view routes | OBO (user) | `routers/auto_optimize.py` | Can Edit; create-and-attach needs Can Manage through the probe, which downgrades |
+| Auto-Optimize writes and metric-view routes | OBO (user) | `routers/auto_optimize.py` | Can Edit; create-and-attach asks Can Edit again in the probe, which downgrades |
 | Run apply / discard / revert / history removal | OBO (user) | `routers/auto_optimize.py` `_require_run_space_access()` | Can Edit on the run's agent |
 | Space detail, history, and star | OBO (user) | `routers/spaces.py` | Can View; below Can Edit the stored scan drops quoted instruction text, column names, and row-level-security table names (`services/scanner.py` `redact_for_viewer()`); history carries score, maturity, accuracy, and time only |
 | IQ Scan | OBO for the space; SP for GSO run data | `routers/spaces.py` scan; `services/scanner.py` | Can Edit (the scan reads the export); the GSO run lookup (Lakebase, then Delta) runs as the SP |
