@@ -626,6 +626,9 @@ def _canonicalize_tree(tree: exp.Expression, *, strip_qualifiers: bool) -> exp.E
     _strip_output_aliases(tree)
     if strip_qualifiers:
         for column in tree.find_all(exp.Column):
+            if _is_source_struct_access(column):
+                column.set("db", None)
+                continue
             column.set("table", None)
             column.set("db", None)
             column.set("catalog", None)
@@ -722,13 +725,19 @@ def render_expr(expr: str | exp.Expression, *, strip_qualifiers: bool = True) ->
         _resolve_projection_refs(tree)
         _strip_output_aliases(tree)
         for column in tree.find_all(exp.Column):
-            if strip_qualifiers:
+            struct = _is_source_struct_access(column)
+            if strip_qualifiers and not struct:
                 column.set("table", None)
                 column.set("db", None)
                 column.set("catalog", None)
-            identifier = column.this
-            if isinstance(identifier, exp.Identifier):
-                identifier.set("quoted", True)
+            quoted = [column.this]
+            if struct:
+                if strip_qualifiers:
+                    column.set("db", exp.to_identifier(_SOURCE_RELATION))
+                quoted.append(column.args.get("table"))
+            for identifier in quoted:
+                if isinstance(identifier, exp.Identifier):
+                    identifier.set("quoted", True)
         return _render_source(tree)
     except Exception as exc:  # noqa: BLE001
         logger.debug("mv_fingerprint: expression render failed (%s)", type(exc).__name__)
@@ -825,10 +834,40 @@ def _relation_map(tree: exp.Expression) -> tuple[dict[str, str], tuple[str, ...]
     return by_alias, tuple(tables)
 
 
+_SOURCE_RELATION = "source"
+
+
+def _struct_access_relation(column: exp.Column, by_alias: Mapping[str, str]) -> str | None:
+    """The table a three-part ``alias.col.field`` reads, or None (MV-D117).
+
+    Spark reads ``a.b.c`` as column ``c`` of table ``b`` when ``b`` names a
+    relation; only when it does not, and ``a`` does, is it field ``c`` of struct
+    column ``b``. A two-part ``b.c`` stays ambiguous here: ``b`` may be a
+    subquery alias the relation map does not hold."""
+    if column.args.get("catalog") is not None or column.args.get("db") is None:
+        return None
+    if column.table.lower() in by_alias:
+        return None
+    return by_alias.get(column.db.lower())
+
+
+def _is_source_struct_access(column: exp.Column) -> bool:
+    """``source.<col>.<field>``: a struct field on the metric view's own relation."""
+    db = column.args.get("db")
+    return (
+        column.args.get("catalog") is None
+        and isinstance(db, exp.Identifier)
+        and db.name.lower() == _SOURCE_RELATION
+        and bool(column.table)
+    )
+
+
 def _attribute_columns(
     node: exp.Expression,
     by_alias: Mapping[str, str],
     tables: tuple[str, ...],
+    *,
+    struct_access: bool = False,
 ) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
     """Resolve a node's columns to ``(columns, tables, has_unresolved)``.
 
@@ -843,6 +882,12 @@ def _attribute_columns(
     unresolved = False
 
     for column in node.find_all(exp.Column):
+        if struct_access:
+            struct_table = _struct_access_relation(column, by_alias)
+            if struct_table:
+                columns.add(column.table.lower())
+                resolved.add(struct_table)
+                continue
         name = column.name.lower()
         if not name:
             continue
@@ -860,6 +905,25 @@ def _attribute_columns(
             unresolved = True
 
     return tuple(sorted(columns)), tuple(sorted(resolved)), unresolved
+
+
+def _normalize_qualifiers(
+    node: exp.Expression, by_alias: Mapping[str, str], *, struct_access: bool,
+) -> None:
+    """Clear every corpus column's ``db`` and ``catalog`` in place, so that only
+    a struct path can reach canonicalization with a ``db`` (MV-D117).
+
+    A struct path keeps one, set to ``source``, only when ``struct_access`` is
+    set. Every other extractor passes False: a raw ``source.<t>.<c>`` from a
+    schema named ``source`` would otherwise read as a struct there, and their
+    identity must not move.
+    """
+    for column in node.find_all(exp.Column):
+        if struct_access and _struct_access_relation(column, by_alias):
+            column.set("db", exp.to_identifier(_SOURCE_RELATION))
+        elif column.args.get("db") is not None:
+            column.set("db", None)
+            column.set("catalog", None)
 
 
 # ── Extraction ───────────────────────────────────────────────────────────
@@ -908,12 +972,21 @@ def extract_measures(sql: str) -> tuple[MeasureRef, ...]:
         node: exp.Expression = aggregate
         if isinstance(aggregate.parent, exp.Filter):
             node = aggregate.parent
+        node = node.copy()
+
+        columns, sources, unresolved = _attribute_columns(
+            node, by_alias, tables, struct_access=True,
+        )
+        if not columns and not sources and len(tables) == 1:
+            # A column-free aggregate counts the rows of the statement's only
+            # table, so that table is its source (MV-D117).
+            sources = (tables[0],)
+
+        _normalize_qualifiers(node, by_alias, struct_access=True)
 
         canonical = canonicalize_expr(node)
         if not canonical:
             continue
-
-        columns, sources, unresolved = _attribute_columns(node, by_alias, tables)
         measures.append(
             MeasureRef(
                 canonical_expr=canonical,
@@ -941,6 +1014,7 @@ def extract_dimensions(sql: str) -> tuple[DimensionRef, ...]:
     by_alias, tables = _relation_map(tree)
     resolved = tree.copy()
     _resolve_projection_refs(resolved)
+    _normalize_qualifiers(resolved, by_alias, struct_access=False)
 
     dimensions: list[DimensionRef] = []
     seen: set[str] = set()
@@ -1025,6 +1099,7 @@ def extract_filters(sql: str) -> tuple[FilterRef, ...]:
     by_alias, tables = _relation_map(tree)
     resolved = tree.copy()
     _resolve_projection_refs(resolved)
+    _normalize_qualifiers(resolved, by_alias, struct_access=False)
 
     filters: list[FilterRef] = []
     for clause_name, clause_type in (("where", exp.Where), ("having", exp.Having)):
@@ -1144,6 +1219,7 @@ def shapes_in_statement(sql: str) -> tuple[ShapeMatch, ...]:
     by_alias, tables = _relation_map(tree)
     resolved = tree.copy()
     _resolve_projection_refs(resolved)
+    _normalize_qualifiers(resolved, by_alias, struct_access=False)
 
     matches: list[ShapeMatch] = []
 

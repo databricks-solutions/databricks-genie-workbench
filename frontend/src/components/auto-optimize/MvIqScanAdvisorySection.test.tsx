@@ -87,7 +87,7 @@ describe("IQ Scan advisory — found (MV-D23 prop-driven payoff)", () => {
       yaml_text: "version: 0.1\n",
       ddl: "CREATE VIEW finance.sales.order_revenue\nWITH METRICS\nLANGUAGE YAML\nAS $$\nversion: 0.1\n$$",
       validation: null,
-      grant_sql: "GRANT SELECT ON VIEW finance.sales.order_revenue TO `analysts`;",
+      grant_sql: "GRANT SELECT ON VIEW `finance`.`sales`.`order_revenue` TO `analysts`;",
     }
     const html = render(<MvProposalCard proposal={proposal} ddl={ddl} defaultExpanded />)
     // Two SqlCodeBlock panels render — the CREATE VIEW wrapper and the GRANT.

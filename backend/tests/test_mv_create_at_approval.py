@@ -55,7 +55,7 @@ def _verification(effective_mode="create_and_attach", downgrade_reason=None, ver
 _CONSENT = {"target_catalog": "finance", "target_schema": "sales", "probe_id": "p1"}
 _ARTIFACT = {
     "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
-    "join_strategy": "nested",
+    "join_strategy": "direct",
     "proposed_object": "warehouse.raw.revenue_metrics",
     "render_version": MV_RENDER_VERSION,
 }
@@ -263,7 +263,7 @@ def test_candidate_yaml_text_is_the_fallback_when_no_artifact(approval_env, monk
             "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
             "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
             "proposed_object": "warehouse.raw.revenue_metrics",
-            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+            "evidence": {"join_strategy": "direct", "render_version": MV_RENDER_VERSION},
         }],
     )
     result = _create()
@@ -277,7 +277,7 @@ def test_approval_refuses_an_unstamped_body_with_rescan_reason(approval_env, mon
         mv_create, "_load_ddl_artifact",
         lambda *a, **k: {
             "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
-            "join_strategy": "nested",
+            "join_strategy": "direct",
             "proposed_object": "warehouse.raw.revenue_metrics",
         },
     )
@@ -295,7 +295,7 @@ def test_approval_refuses_an_unstamped_body_with_rescan_reason(approval_env, mon
 
     assert result.created is False
     assert result.degraded is False
-    assert result.reason == mv_create._STALE_BODY_REASON
+    assert result.reason == mv_create.STALE_BODY_REASON
     assert not any("CREATE VIEW" in s for s in executed)
     assert upserts == [] and advice_runs == []
 
@@ -313,7 +313,7 @@ def test_approval_refuses_a_stamped_row_whose_body_the_in_job_writer_cleared(
             "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
             "proposed_object": "warehouse.raw.revenue_metrics",
             "yaml_text": None,
-            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+            "evidence": {"join_strategy": "direct", "render_version": MV_RENDER_VERSION},
         }],
     )
 
@@ -333,7 +333,7 @@ def test_approval_uses_a_stamped_candidate_when_the_artifact_is_stale(
         mv_create, "_load_ddl_artifact",
         lambda *a, **k: {
             "yaml_text": "version: 0.1\nsource: stale.artifact.body\n",
-            "join_strategy": "nested",
+            "join_strategy": "direct",
             "proposed_object": "warehouse.raw.revenue_metrics",
         },
     )
@@ -343,7 +343,7 @@ def test_approval_uses_a_stamped_candidate_when_the_artifact_is_stale(
             "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
             "yaml_text": "version: 0.1\nsource: finance.sales.orders\n# candidate\n",
             "proposed_object": "warehouse.raw.revenue_metrics",
-            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+            "evidence": {"join_strategy": "direct", "render_version": MV_RENDER_VERSION},
         }],
     )
     seen_bodies: list[str] = []
@@ -432,6 +432,25 @@ def test_rung_below_refuses(approval_env, monkeypatch):
     result = _create()
     assert result.created is False
     assert not any("CREATE VIEW" in s for s in executed)
+
+
+@pytest.mark.parametrize("strategy", ["nested", "subquery_source", "denormalized"])
+def test_a_body_needing_an_unproven_join_is_not_created(approval_env, monkeypatch, strategy):
+    """MV-D117 (C-8): only a ``direct`` body is created until the join rungs are
+    proven in Unity Catalog."""
+    executed, upserts, advice_runs = approval_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: dict(_ARTIFACT, join_strategy=strategy),
+    )
+
+    result = _create()
+
+    assert result.created is False
+    assert result.degraded is False
+    assert result.reason == mv_create.UNPROVEN_RUNG_REASON
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []
 
 
 def test_existing_metric_view_is_attached_not_clobbered(approval_env, monkeypatch):
@@ -563,16 +582,25 @@ def test_missing_candidate_returns_a_reason(approval_env, monkeypatch):
 # ── The facts row (MV-D35): _mv_checks_from_row is gated on real proof ─────
 
 
+_CURRENT_EVIDENCE = {"render_version": MV_RENDER_VERSION}
+
+
 def test_checks_all_pass_for_a_servable_non_overlapping_row():
     checks = auto_optimize._mv_checks_from_row(
-        {"proposed_object": "finance.sales.revenue_metrics", "conflicts": []}
+        {
+            "proposed_object": "finance.sales.revenue_metrics", "conflicts": [],
+            "evidence": _CURRENT_EVIDENCE,
+        }
     )
     assert checks == {"validated": "PASS", "executable": "PASS", "no_overlap": "PASS"}
 
 
 def test_checks_omit_no_overlap_when_conflicts_present():
     checks = auto_optimize._mv_checks_from_row(
-        {"proposed_object": "finance.sales.revenue_metrics", "conflicts": [{"x": 1}]}
+        {
+            "proposed_object": "finance.sales.revenue_metrics", "conflicts": [{"x": 1}],
+            "evidence": _CURRENT_EVIDENCE,
+        }
     )
     # Validated/executable still prove out; no_overlap is NOT claimed.
     assert checks == {"validated": "PASS", "executable": "PASS"}
@@ -928,7 +956,7 @@ def test_create_route_returns_created_attached_and_grant(client, monkeypatch):
     assert body["provenance"] == "OBO_CREATED"
     assert body["run_id"] == "run-obo-1"
     assert body["already_existed"] is False
-    assert body["grant_sql"] and "GRANT SELECT ON VIEW finance.sales.revenue_metrics" in body["grant_sql"]
+    assert body["grant_sql"] and "GRANT SELECT ON VIEW `finance`.`sales`.`revenue_metrics`" in body["grant_sql"]
     # #2: the workspace host rides the create response so the terminal can link
     # the new view in Catalog Explorer without threading a host prop down.
     assert body["workspace_host"] == "https://example.databricks.com"
@@ -959,7 +987,7 @@ def test_create_route_reports_already_existed_and_still_grants(client, monkeypat
     assert body["created"] is True
     assert body["attached"] is True
     assert body["already_existed"] is True
-    assert body["grant_sql"] and "GRANT SELECT ON VIEW finance.sales.revenue_metrics" in body["grant_sql"]
+    assert body["grant_sql"] and "GRANT SELECT ON VIEW `finance`.`sales`.`revenue_metrics`" in body["grant_sql"]
 
 
 def test_create_route_reports_user_created_provenance(client, monkeypatch):

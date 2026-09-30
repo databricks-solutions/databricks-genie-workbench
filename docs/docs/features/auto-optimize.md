@@ -186,8 +186,9 @@ Metric view advice is available from two surfaces:
 Recommendations bundle compatible measures at one grain and show validation facts
 and evidence rather than presenting the ranking score as a probability. A measure
 is identified by its expression and the tables it reads, so the same aggregate over
-two tables is two suggestions, each in its own table's view. An aggregate that names
-no column, such as `COUNT(*)`, resolves no table and is never split. An older
+two tables is two suggestions, each in its own table's view. A row count such as
+`COUNT(*)` belongs to the one table its query reads, and joins that table's view;
+over a join it names no table and isn't proposed. An older
 rejection of the combined measure still hides both suggestions. A user can
 approve a recommendation from the card, choose the target schema, and complete a
 fresh entitlement check. Workbench then creates the metric view under that user's
@@ -217,8 +218,13 @@ Generated metric views keep the SQL as written in the Agent: text values keep
 their capitalization, and date functions keep their units. Every table and column
 name is quoted, so names with spaces or reserved words work. A recurring measure
 that combines columns from more than one table isn't proposed yet; when that's
-all the scan finds, the IQ scan says so. A proposal made before this change must
-be re-scanned before it can be approved or created at run time.
+all the scan finds, the IQ scan says so. A proposal made by an earlier version of
+the advisor can't be created as is: it shows a re-scan notice instead of its create
+action, isn't offered for a run, and doesn't show its DDL. Re-scan the Agent for a
+current suggestion. If the re-scan proposes the same view again, the older card
+goes away; if not, the older card stays, marked. When a run creates no metric
+view, the run output says why, including approved proposals that are no longer
+available.
 
 When a run attaches an approved metric view, it re-runs the full benchmark suite
 with the view attached. The view is kept only if accuracy on the questions it

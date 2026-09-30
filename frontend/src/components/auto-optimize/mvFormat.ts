@@ -228,6 +228,36 @@ export function evidenceSummary(proposal: MvProposal): EvidenceSummary {
   return { chips, rawIds: ids.sort() }
 }
 
+export const STALE_PROPOSAL_NOTICE =
+  "Found by an earlier version of the advisor, so it can't be created as is. Re-scan the Agent for a current suggestion."
+
+export function isStaleBody(proposal: MvProposal): boolean {
+  return proposal.stale_body === true
+}
+
+// MV-D35 + MV-D117: the LOW disclosure's header. A stale proposal is neither
+// validated nor executable, so that clause covers only the current ones.
+export function lowDisclosureHeader(low: MvProposal[], primaryEmpty: boolean): string {
+  const lead = primaryEmpty
+    ? `All ${low.length} ${low.length === 1 ? "suggestion is" : "suggestions are"} ranked lower by demand evidence`
+    : "Ranked lower by demand evidence"
+  const stale = low.filter(isStaleBody).length
+  if (stale === 0) return `${lead} — each is still validated and executable.`
+  const staleClause = `${stale} found by an earlier version of the advisor ${stale === 1 ? "needs" : "need"} a re-scan`
+  const current = low.length - stale
+  if (current === 0) return `${lead} — ${staleClause}.`
+  const currentClause = current === 1 ? "the current one is" : "each current one is"
+  return `${lead} — ${currentClause} still validated and executable; ${staleClause}.`
+}
+
+// MV-D35 + MV-D117: the ONE Recommended pick for both surfaces — the top-ranked
+// proposal, unless an orthogonality callout replaces the ranking or the top
+// proposal is stale (stale ones rank last, so a stale top means all are stale).
+export function recommendedIndex(ranked: MvProposal[], callout: string | null): number {
+  if (callout || ranked.length === 0 || isStaleBody(ranked[0])) return -1
+  return 0
+}
+
 // Prompt 15.6 finding 4 — deterministic ranking so one proposal can be
 // "Recommended" and the default list shows only the strongest few. Order:
 // tier (HIGH > MEDIUM > LOW/other), then measures governed (coverage), then
@@ -237,6 +267,8 @@ export function evidenceSummary(proposal: MvProposal): EvidenceSummary {
 // coverage held at LOW still orders among the strong candidates it belongs with.
 export function rankProposals(proposals: MvProposal[]): MvProposal[] {
   return [...proposals].sort((a, b) => {
+    const stale = Number(isStaleBody(a)) - Number(isStaleBody(b))
+    if (stale !== 0) return stale
     const tier = tierRank(effectiveTier(b)) - tierRank(effectiveTier(a))
     if (tier !== 0) return tier
     const cover = (b.measures?.length ?? 0) - (a.measures?.length ?? 0)
@@ -389,9 +421,12 @@ function measureIdentitySet(proposal: MvProposal): Set<string> {
 // plainly instead. Returns the callout string when 2+ proposals are pairwise
 // disjoint, else null (a single proposal, or any shared measure, keeps the
 // ranked Recommended pick). Pure set assembly — no LLM, no score.
+// MV-D117: a stale proposal cannot be created until a re-scan, so only the
+// current proposals count, and the wording says so when a stale one is present.
 export function orthogonalityCallout(proposals: MvProposal[]): string | null {
-  const sets = proposals.map(measureIdentitySet).filter((s) => s.size > 0)
-  if (sets.length < 2 || sets.length !== proposals.length) return null
+  const current = proposals.filter((p) => !isStaleBody(p))
+  const sets = current.map(measureIdentitySet).filter((s) => s.size > 0)
+  if (sets.length < 2 || sets.length !== current.length) return null
   const seen = new Set<string>()
   for (const s of sets) {
     for (const id of s) {
@@ -399,7 +434,9 @@ export function orthogonalityCallout(proposals: MvProposal[]): string | null {
       seen.add(id)
     }
   }
-  return `All ${proposals.length} are independent — any or all can be created.`
+  return current.length === proposals.length
+    ? `All ${current.length} are independent — any or all can be created.`
+    : `The ${current.length} current proposals are independent — any or all can be created.`
 }
 
 export interface ConfidenceDisplay {

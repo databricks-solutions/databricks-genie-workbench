@@ -595,6 +595,7 @@ def _load_candidate_ddl_fallback(run_id: str, suggestion_id: str | None) -> dict
         "target_space_id": row.get("target_space_id"),
         "proposed_object": proposed,
         "join_strategy": evidence.get("join_strategy"),
+        "render_version": evidence.get("render_version"),
         "yaml_text": yaml_text,
         "ddl": create_ddl(proposed, yaml_text) if proposed else None,
         # A preview: the artifact carries the real validation (echo-check +
@@ -1649,10 +1650,12 @@ def _mv_optimizer_grant_sql(proposed: str | None, sp_app_id: str) -> str | None:
             "-- Could not resolve the optimizer service principal. Grant SELECT on\n"
             f"-- {proposed} to the GSO service principal so optimization runs can read it."
         )
+    from genie_space_optimizer.optimization.mv_yaml import quote_fqn
+
     return (
         "-- The optimizer (GSO job) reads this view as its service principal;\n"
         "-- grant SELECT so create-and-attach optimization runs succeed.\n"
-        f"GRANT SELECT ON VIEW {proposed} TO `{sp_app_id}`;"
+        f"GRANT SELECT ON VIEW {quote_fqn(proposed)} TO `{sp_app_id}`;"
     )
 
 
@@ -1964,7 +1967,8 @@ def _mv_checks_from_row(row: dict) -> dict[str, str] | None:
       servable-body invariant's proof (Prompt 15.5 / MV-D8 / MV-D29): nothing
       surfaces without a rendered, validated, placeholder-free, executable body,
       so the identifier's presence is the gate having run and passed. A blank
-      row (dropped before surfacing) carries neither key.
+      row (dropped before surfacing) carries neither key. A stale body (MV-D117)
+      proves neither.
     - ``no_overlap``: the dedup gate (MV-D7) runs for every persisted candidate;
       a partial overlap with a governed measure is recorded in ``conflicts``, so
       an empty/absent ``conflicts`` is the gate having found no overlap. A row
@@ -1972,7 +1976,11 @@ def _mv_checks_from_row(row: dict) -> dict[str, str] | None:
     """
     checks: dict[str, str] = {}
     proposed = row.get("proposed_object")
-    if isinstance(proposed, str) and proposed.strip():
+    if (
+        isinstance(proposed, str)
+        and proposed.strip()
+        and not mv_create.proposal_body_is_stale(row)
+    ):
         checks["validated"] = "PASS"
         checks["executable"] = "PASS"
     conflicts = row.get("conflicts")
@@ -2022,6 +2030,7 @@ def _mv_proposal_from_row(row: dict) -> MvProposal:
         # that already used it — this one and ``tier_capped_by_coverage`` below
         # were the missed call sites).
         approved_for_rerun=_safe_bool(row.get("approved_for_rerun")),
+        stale_body=mv_create.proposal_body_is_stale(row),
         created_at=_mv_str(row.get("created_at")),
         updated_at=_mv_str(row.get("updated_at")),
     )
@@ -2197,6 +2206,28 @@ def _mv_mark_attached(proposals: list[MvProposal], space_config: Any) -> None:
             proposal.attached = True
 
 
+def _drop_stale_with_current_sibling(rows: list[dict]) -> list[dict]:
+    """Drop a stale row whose view a current row in the same result also names.
+
+    A re-scan refreshes a row in place only when its MV-D30 bundle key is
+    unchanged, so a moved key leaves the stale row beside its successor (MV-D117).
+    The current row is the live suggestion; the stale row's persisted decision is
+    left untouched in the table, even when it was approved."""
+    current = {
+        _norm_fqn(str(r.get("proposed_object") or ""))
+        for r in rows
+        if str(r.get("proposed_object") or "").strip()
+        and not mv_create.proposal_body_is_stale(r)
+    }
+    return [
+        r for r in rows
+        if not (
+            mv_create.proposal_body_is_stale(r)
+            and _norm_fqn(str(r.get("proposed_object") or "")) in current
+        )
+    ]
+
+
 @router.get("/runs/{run_id}/mv-proposals", response_model=MvProposalsResponse)
 async def list_mv_proposals(run_id: RunId):
     """List the metric view proposals the advisor recorded for this run (MV-D21)."""
@@ -2277,6 +2308,9 @@ async def list_space_mv_proposals(
     except Exception as exc:
         logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
         rows = []
+    rows = _drop_stale_with_current_sibling(rows)
+    if approved_for_rerun:
+        rows = [r for r in rows if not mv_create.proposal_body_is_stale(r)]
 
     proposals = [_mv_proposal_from_row(r) for r in rows]
 
@@ -2403,7 +2437,7 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
         logger.warning("mv/suggest: could not reload proposals for %s: %s", space_id, exc)
         rows = []
 
-    proposals = [_mv_proposal_from_row(r) for r in rows]
+    proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
     # Prompt 15.9 item (d): resolve provenance ids to labels from the config we
     # already fetched for this scan — no extra read on the on-demand path.
     if proposals:
@@ -2573,7 +2607,9 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
                         space_id, exc,
                     )
                     rows = []
-                proposals = [_mv_proposal_from_row(r) for r in rows]
+                proposals = [
+                    _mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)
+                ]
                 # Prompt 15.9 item (d): label provenance ids from the config this
                 # stream already read (applied_config), same as the blocking route.
                 if proposals:
@@ -3853,7 +3889,9 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
     fallback it selects that row, else the **best-wins** highest-confidence one.
     On that fallback path ``validation`` is ``None`` — it is a preview of an
     unexecuted body; the real validation (echo-check + capability rung) lives on
-    the artifact and is re-run by the create path before any write.
+    the artifact and is re-run by the create path before any write. A body
+    rendered before MV_RENDER_VERSION is refused with 409 (MV-D117): the app no
+    longer serves a body it would not create.
     """
     await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
@@ -3864,6 +3902,8 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
         payload = await _offload(_load_candidate_ddl_fallback, run_id, suggestion_id)
     if not payload:
         raise HTTPException(status_code=404, detail="No metric view DDL artifact for this run.")
+    if not mv_create.is_current_render(payload):
+        raise HTTPException(status_code=409, detail=mv_create.STALE_BODY_REASON)
 
     proposed = payload.get("proposed_object")
     # Deployed-review fix: the copy-ready GRANT names the GSO service principal —

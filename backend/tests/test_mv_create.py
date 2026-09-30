@@ -48,7 +48,7 @@ def _verification(effective_mode="create_and_attach", downgrade_reason=None, ver
 _CONSENT = {"target_catalog": "finance", "target_schema": "sales", "probe_id": "p1"}
 _ARTIFACT = {
     "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
-    "join_strategy": "nested",
+    "join_strategy": "direct",
     "proposed_object": "warehouse.raw.revenue_metrics",
     "render_version": MV_RENDER_VERSION,
 }
@@ -150,7 +150,7 @@ def test_candidate_yaml_text_is_the_fallback_when_no_artifact(create_env, monkey
             "dedup_fingerprint": "fp1",
             "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
             "proposed_object": "warehouse.raw.revenue_metrics",
-            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+            "evidence": {"join_strategy": "direct", "render_version": MV_RENDER_VERSION},
         }],
     )
     monkeypatch.setattr(
@@ -201,7 +201,7 @@ def test_run_hook_skips_an_unstamped_body(create_env, monkeypatch, caplog):
         if fingerprint == "fp1":
             return {
                 "yaml_text": "version: 0.1\nsource: finance.sales.orders\n",
-                "join_strategy": "nested",
+                "join_strategy": "direct",
                 "proposed_object": names[fingerprint],
                 # absent render_version — pre-M3 body
             }
@@ -216,7 +216,7 @@ def test_run_hook_skips_an_unstamped_body(create_env, monkeypatch, caplog):
     body0, reason0 = mv_create._replay_body(
         {"yaml_text": "x", "render_version": 0}, {},
     )
-    assert body0 is None and reason0 == mv_create._STALE_BODY_REASON
+    assert body0 is None and reason0 == mv_create.STALE_BODY_REASON
 
     with caplog.at_level("WARNING", logger="backend.services.mv_create"):
         handoff = _run_create_selecting(["sug1", "sug2"])
@@ -242,7 +242,7 @@ def test_run_hook_prefers_a_stamped_candidate_over_a_stale_artifact(
         mv_create, "_load_ddl_artifact",
         lambda *a, **k: {
             "yaml_text": "version: 0.1\nsource: stale.artifact.body\n",
-            "join_strategy": "nested",
+            "join_strategy": "direct",
             "proposed_object": "warehouse.raw.revenue_metrics",
         },
     )
@@ -253,7 +253,7 @@ def test_run_hook_prefers_a_stamped_candidate_over_a_stale_artifact(
             "dedup_fingerprint": "fp1",
             "yaml_text": "version: 0.1\nsource: finance.sales.orders\n# candidate\n",
             "proposed_object": "warehouse.raw.revenue_metrics",
-            "evidence": {"join_strategy": "nested", "render_version": MV_RENDER_VERSION},
+            "evidence": {"join_strategy": "direct", "render_version": MV_RENDER_VERSION},
         }],
     )
     seen_bodies: list[str] = []
@@ -397,10 +397,121 @@ def test_claim_still_matches_a_pre_m3_body(monkeypatch):
     assert ok is True and reason is None
 
 
+def _claim_fp(expr: str) -> str:
+    from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
+    from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+
+    return mv_candidate_fingerprint(
+        "space-1", canonicalize_expr(expr), ("main.sales.orders",),
+    )
+
+
+def _claim(monkeypatch, row: dict, measures: list[str]):
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{"suggestion_id": "sug1", **row}],
+    )
+    monkeypatch.setattr(mv_create, "get_service_principal_client", lambda: _SP_WS)
+    yaml_text = (
+        'version: "1.1"\n'
+        "source: '`main`.`sales`.`orders`'\n"
+        "measures:\n"
+        + "".join(
+            f"- name: m{i}\n  expr: {expr}\n" for i, expr in enumerate(measures)
+        )
+    )
+    return mv_create._claim_matches_view(
+        _SP_WS, "wh1",
+        catalog="main", schema="gso",
+        space_id="space-1", suggestion_id="sug1", yaml_text=yaml_text,
+    )
+
+
+def test_claim_matches_a_row_count(monkeypatch):
+    """COUNT(*) keys on the view's source table, as the corpus scan does (MV-D117)."""
+    ok, reason = _claim(
+        monkeypatch, {"dedup_fingerprint": _claim_fp("COUNT(*)")}, ["COUNT(*)"],
+    )
+    assert ok is True and reason is None
+
+
+def _bundle_row() -> dict:
+    return {
+        "dedup_fingerprint": "bundle_fp",
+        "evidence": {
+            "render_version": MV_RENDER_VERSION,
+            "measures": [
+                {"dedup_fingerprint": _claim_fp("SUM(amount)"), "role": "anchor"},
+                {"dedup_fingerprint": _claim_fp("COUNT(*)"), "role": "anchor"},
+                {"dedup_fingerprint": _claim_fp("MAX(amount)"), "role": "supporting"},
+            ],
+        },
+    }
+
+
+def test_claim_matches_a_bundle_by_its_anchors(monkeypatch):
+    """A bundle's key is not a measure fingerprint; its anchors are (MV-D30)."""
+    ok, reason = _claim(
+        monkeypatch, _bundle_row(), ["SUM(source.`amount`)", "COUNT(*)"],
+    )
+    assert ok is True and reason is None
+
+
+def test_claim_refuses_a_bundle_missing_an_anchor(monkeypatch):
+    ok, reason = _claim(monkeypatch, _bundle_row(), ["SUM(source.`amount`)"])
+    assert ok is False
+    assert "fingerprint mismatch" in (reason or "")
+
+
+def test_claim_refuses_a_stale_proposal(monkeypatch):
+    """A body older than the renderer is never claimed, even when it matches."""
+    ok, reason = _claim(
+        monkeypatch,
+        {
+            "dedup_fingerprint": _claim_fp("COUNT(*)"),
+            "proposed_object": "main.sales.orders_metrics",
+            "evidence": {},
+        },
+        ["COUNT(*)"],
+    )
+    assert ok is False
+    assert "earlier version" in (reason or "")
+    assert mv_create.STALE_BODY_REASON.split(";")[0] in (reason or "")
+
+
+def test_claim_matches_a_current_proposal(monkeypatch):
+    """A rendered proposal at the current render version is claimable."""
+    ok, reason = _claim(
+        monkeypatch,
+        {
+            "dedup_fingerprint": _claim_fp("SUM(amount)"),
+            "proposed_object": "main.sales.orders_metrics",
+            "evidence": {"render_version": MV_RENDER_VERSION},
+        },
+        ["SUM(source.`amount`)"],
+    )
+    assert ok is True and reason is None
+
+
+def test_claim_counts_a_bundle_member_without_a_role_as_an_anchor(monkeypatch):
+    row = _bundle_row()
+    for member in row["evidence"]["measures"]:
+        member.pop("role")
+
+    ok, reason = _claim(
+        monkeypatch, row, ["SUM(source.`amount`)", "COUNT(*)", "MAX(source.`amount`)"],
+    )
+    assert ok is True and reason is None
+
+    ok, reason = _claim(monkeypatch, row, ["SUM(source.`amount`)", "COUNT(*)"])
+    assert ok is False
+    assert "fingerprint mismatch" in (reason or "")
+
+
 def test_revalidation_downgrade_aborts_the_create(create_env, monkeypatch):
     """MV-D22: a rung below the stored one drops the suggestion, never creates."""
     executed, upserts = create_env
-    # Stored strategy is "nested"; a stricter probe forces "subquery_source".
+    # Stored strategy is "direct"; a stricter probe forces "subquery_source".
     monkeypatch.setattr(
         mv_yaml, "validate",
         lambda text, **kw: mv_yaml.ValidationReport(
@@ -413,6 +524,28 @@ def test_revalidation_downgrade_aborts_the_create(create_env, monkeypatch):
     assert handoff.action_mode == "suggest_only"
     assert handoff.attach_views == []
     assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == []
+
+
+@pytest.mark.parametrize("strategy", ["nested", "subquery_source", "denormalized"])
+def test_a_body_needing_an_unproven_join_is_not_created(create_env, monkeypatch, strategy):
+    """MV-D117 (C-8): only a ``direct`` body is created until the join rungs are
+    proven in Unity Catalog."""
+    executed, upserts = create_env
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: dict(_ARTIFACT, join_strategy=strategy),
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+
+    handoff = _run_create()
+
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert handoff.attach_views == []
+    assert handoff.action_mode == "suggest_only"
     assert upserts == []
 
 
@@ -657,6 +790,160 @@ def test_a_failed_cleanup_drop_is_logged_for_manual_removal(create_env, monkeypa
     )
 
 
+_UNSTAMPED_BODY = "version: 0.1\nsource: finance.sales.orders\n"
+
+
+def _stale_and_taken(monkeypatch, *, taken_exists: bool) -> list[dict]:
+    """``sug_old`` has only unstamped bodies; ``sug_taken`` is stamped, and its
+    name already exists when ``taken_exists``. Returns the captured consent stamps."""
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [
+            {
+                "suggestion_id": "sug_old", "dedup_fingerprint": "fp_old",
+                "yaml_text": _UNSTAMPED_BODY,
+                "proposed_object": "warehouse.raw.old_metrics",
+            },
+            {"suggestion_id": "sug_taken", "dedup_fingerprint": "fp_taken"},
+        ],
+    )
+    artifacts = {
+        "fp_old": {
+            "yaml_text": _UNSTAMPED_BODY, "join_strategy": "direct",
+            "proposed_object": "warehouse.raw.old_metrics",
+        },
+        "fp_taken": {**_ARTIFACT, "proposed_object": "warehouse.raw.taken_metrics"},
+    }
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, fingerprint, **k: dict(artifacts[fingerprint]),
+    )
+    monkeypatch.setattr(
+        mv_create, "_object_exists",
+        lambda ws, wh, full_name: taken_exists and full_name.endswith(".taken_metrics"),
+    )
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+    stamps: list[dict] = []
+    monkeypatch.setattr(
+        warehouse, "wh_mark_mv_consent_reverified",
+        lambda ws, warehouse_id, **kw: stamps.append(kw),
+    )
+    return stamps
+
+
+_STALE_AND_TAKEN_REASON = (
+    "no metric view could be created for the selected candidates: "
+    "rendered by an earlier version of the advisor, re-scan the Agent for a current "
+    "suggestion (1); already exists in the consented schema (1)"
+)
+
+
+def test_nothing_built_names_each_skip_reason(create_env, monkeypatch):
+    """MV-D117 (C-1): an empty create names why, as counts in a fixed order."""
+    executed, upserts = create_env
+    stamps = _stale_and_taken(monkeypatch, taken_exists=True)
+
+    handoff = _run_create_selecting(["sug_old", "sug_taken"])
+
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == _STALE_AND_TAKEN_REASON
+    assert len(stamps) == 1
+    assert stamps[0]["downgrade_reason"] == _STALE_AND_TAKEN_REASON
+    assert not any("CREATE VIEW" in s for s in executed) and upserts == []
+
+
+def test_an_approved_id_with_no_candidate_is_no_longer_available(create_env, monkeypatch):
+    """MV-D117: an id the loaded candidates no longer carry is counted, not lost."""
+    stamps: list[dict] = []
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(
+        warehouse, "wh_mark_mv_consent_reverified",
+        lambda ws, warehouse_id, **kw: stamps.append(kw),
+    )
+
+    handoff = _run_create_selecting(["sug1"])
+
+    reason = (
+        "no metric view could be created for the selected candidates: "
+        "no longer available (1)"
+    )
+    assert handoff.downgrade_reason == reason
+    assert stamps[0]["downgrade_reason"] == reason
+
+
+def test_unavailable_ids_lead_the_summary(create_env, monkeypatch):
+    _stale_and_taken(monkeypatch, taken_exists=True)
+
+    reason = _run_create_selecting(["sug_gone", "sug_old", "sug_taken"]).downgrade_reason
+
+    assert reason == (
+        "no metric view could be created for the selected candidates: "
+        "no longer available (1); "
+        "rendered by an earlier version of the advisor, re-scan the Agent for a current "
+        "suggestion (1); already exists in the consented schema (1)"
+    )
+
+
+def test_the_stale_reason_does_not_promise_a_refresh():
+    assert mv_create.STALE_BODY_REASON == (
+        "this proposal was rendered by an earlier version of the advisor; "
+        "re-scan the Agent for a current suggestion"
+    )
+
+
+@pytest.mark.parametrize(
+    "key,label",
+    [
+        ("unavailable", "no longer available"),
+        ("stale", "rendered by an earlier version of the advisor, re-scan the Agent for a current suggestion"),
+        ("no_body", "no rendered body"),
+        ("unproven_rung", "needs a join strategy not yet proven in Unity Catalog"),
+        ("invalid_name", "not a plain Unity Catalog name"),
+        ("revalidation", "failed re-validation"),
+        ("rung_below", "re-validation demands a lower join strategy"),
+        ("exists", "already exists in the consented schema"),
+        ("not_confirmed", "was not confirmed as a metric view after create"),
+        ("unrecorded", "could not be recorded, so it was dropped"),
+        ("error", "failed with an error"),
+    ],
+)
+def test_each_skip_key_names_its_label(key, label):
+    assert mv_create._nothing_built_reason({key: 2}) == (
+        f"no metric view could be created for the selected candidates: {label} (2)"
+    )
+
+
+def test_the_skip_labels_are_pinned_in_order():
+    assert [key for key, _ in mv_create._SKIP_ORDER] == [
+        "unavailable", "stale", "no_body", "unproven_rung", "invalid_name",
+        "revalidation", "rung_below", "exists", "not_confirmed", "unrecorded", "error",
+    ]
+
+
+def test_partial_success_stamps_no_reason(create_env, monkeypatch):
+    stamps = _stale_and_taken(monkeypatch, taken_exists=False)
+
+    handoff = _run_create_selecting(["sug_old", "sug_taken"])
+
+    assert handoff.action_mode == "create_and_attach"
+    assert handoff.attach_views == ["finance.sales.taken_metrics"]
+    assert handoff.downgrade_reason is None
+    assert len(stamps) == 1 and stamps[0].get("downgrade_reason") is None
+
+
+def test_the_summary_names_no_view_or_sql(create_env, monkeypatch):
+    _stale_and_taken(monkeypatch, taken_exists=True)
+
+    reason = _run_create_selecting(["sug_old", "sug_taken"]).downgrade_reason or ""
+
+    assert reason.startswith("no metric view could be created")
+    for leaked in ("old_metrics", "taken_metrics", "finance", "warehouse.raw", "SELECT"):
+        assert leaked not in reason
+
+
 @pytest.mark.parametrize(
     "downgrade_to,stored,expected",
     [
@@ -797,6 +1084,130 @@ def test_list_space_mv_proposals_rerun_gate_skips_last_scan(client, monkeypatch)
     assert read["called"] is False
 
 
+def _stale_and_current_rows() -> list[dict]:
+    base = {
+        "target_space_id": "space-1", "candidate_type": "NEW_METRIC_VIEW",
+        "approved_for_rerun": True, "conflicts": [],
+    }
+    return [
+        {
+            **base, "suggestion_id": "sug_stale", "dedup_fingerprint": "fp_stale",
+            "proposed_object": "finance.sales.old_metrics", "evidence": {},
+        },
+        {
+            **base, "suggestion_id": "sug_current", "dedup_fingerprint": "fp_current",
+            "proposed_object": "finance.sales.new_metrics",
+            "evidence": {"render_version": MV_RENDER_VERSION},
+        },
+    ]
+
+
+def test_a_stale_proposal_is_flagged_and_claims_no_body_checks(client, monkeypatch):
+    """MV-D117 (C-2): a body rendered before MV_RENDER_VERSION proves neither
+    validated nor executable, and the card is told it is stale."""
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: _stale_and_current_rows())
+    monkeypatch.setattr(auto_optimize, "_mv_fetch_space_config", lambda space_id: None)
+
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-proposals")
+
+    assert resp.status_code == 200
+    by_id = {p["suggestion_id"]: p for p in resp.json()["proposals"]}
+    stale, current = by_id["sug_stale"], by_id["sug_current"]
+    assert stale["stale_body"] is True
+    assert stale["checks"] == {"no_overlap": "PASS"}
+    assert current["stale_body"] is False
+    assert current["checks"] == {"validated": "PASS", "executable": "PASS", "no_overlap": "PASS"}
+
+
+def test_the_rerun_gate_excludes_a_stale_proposal(client, monkeypatch):
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: _stale_and_current_rows())
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals?approved_for_rerun=true")
+
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
+
+
+def test_the_unfiltered_space_list_keeps_a_stale_proposal(client, monkeypatch):
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: _stale_and_current_rows())
+    monkeypatch.setattr(warehouse, "wh_load_latest_advice_scan", lambda *a, **k: None)
+    monkeypatch.setattr(auto_optimize, "_mv_fetch_space_config", lambda space_id: None)
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+
+    assert resp.status_code == 200
+    flags = {p["suggestion_id"]: p["stale_body"] for p in resp.json()["proposals"]}
+    assert flags == {"sug_stale": True, "sug_current": False}
+
+
+def _stale_beside_its_successor(stale_object: str, **stale_extra) -> list[dict]:
+    """A re-scan moved the bundle key, so the stale row outlived its refresh."""
+    stale, current = _stale_and_current_rows()
+    return [{**stale, "proposed_object": stale_object, **stale_extra}, current]
+
+
+@pytest.mark.parametrize(
+    "stale_object", ["finance.sales.new_metrics", "`Finance`.`Sales`.`NEW_METRICS`"],
+)
+def test_a_stale_proposal_with_a_current_sibling_leaves_the_list(client, monkeypatch, stale_object):
+    """MV-D117: the current card of the same view is the live suggestion."""
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: _stale_beside_its_successor(stale_object),
+    )
+    monkeypatch.setattr(warehouse, "wh_load_latest_advice_scan", lambda *a, **k: None)
+    monkeypatch.setattr(auto_optimize, "_mv_fetch_space_config", lambda space_id: None)
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
+
+
+def test_an_approved_stale_proposal_with_a_current_sibling_leaves_the_list(client, monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: _stale_beside_its_successor(
+            "finance.sales.new_metrics", decision="approved",
+        ),
+    )
+    monkeypatch.setattr(warehouse, "wh_load_latest_advice_scan", lambda *a, **k: None)
+    monkeypatch.setattr(auto_optimize, "_mv_fetch_space_config", lambda space_id: None)
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
+
+
+def test_a_stale_proposal_with_a_current_sibling_leaves_the_gate(client, monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: _stale_beside_its_successor("finance.sales.new_metrics"),
+    )
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals?approved_for_rerun=true")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
+
+
+def test_the_sibling_rule_drops_only_a_stale_row_a_current_row_names():
+    current = {"proposed_object": "c.s.v", "evidence": {"render_version": MV_RENDER_VERSION}}
+    rows = [
+        {"suggestion_id": "stale_v", "proposed_object": "`C`.`S`.`V`", "evidence": {}},
+        {**current, "suggestion_id": "current_v1"},
+        {**current, "suggestion_id": "current_v2"},
+        {"suggestion_id": "stale_w1", "proposed_object": "c.s.w", "evidence": {}},
+        {"suggestion_id": "stale_w2", "proposed_object": "c.s.w", "evidence": {}},
+        {"suggestion_id": "blank", "proposed_object": None, "evidence": {}},
+    ]
+
+    kept = auto_optimize._drop_stale_with_current_sibling(rows)
+
+    assert [r["suggestion_id"] for r in kept] == [
+        "current_v1", "current_v2", "stale_w1", "stale_w2", "blank",
+    ]
+
+
 def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
     # Deployed-review fix: the card GRANT names the GSO service principal (the one
     # grant that matters functionally — the optimizer must read the view on a
@@ -815,6 +1226,7 @@ def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
             "yaml_text": "version: 0.1\n",
             "ddl": "CREATE VIEW finance.sales.revenue_metrics ...",
             "validation": {"ok": True},
+            "render_version": MV_RENDER_VERSION,
         },
     )
     resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
@@ -822,7 +1234,7 @@ def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
     data = resp.json()
     assert data["yaml_text"] == "version: 0.1\n"
     assert (
-        "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO "
+        "GRANT SELECT ON VIEW `finance`.`sales`.`revenue_metrics` TO "
         "`a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`;" in data["grant_sql"]
     )
     assert "<grantee>" not in data["grant_sql"]
@@ -852,6 +1264,7 @@ def test_get_mv_ddl_parses_source_tables_from_yaml(client, monkeypatch):
             ),
             "ddl": "CREATE VIEW finance.sales.revenue_metrics ...",
             "validation": {"ok": True},
+            "render_version": MV_RENDER_VERSION,
         },
     )
     resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
@@ -876,6 +1289,7 @@ def test_get_mv_ddl_grant_says_so_in_words_when_no_sp_resolves(client, monkeypat
             "yaml_text": "version: 0.1\n",
             "ddl": "CREATE VIEW finance.sales.revenue_metrics ...",
             "validation": {"ok": True},
+            "render_version": MV_RENDER_VERSION,
         },
     )
     resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
@@ -916,6 +1330,7 @@ def test_get_mv_ddl_pins_artifact_by_suggestion_id(client, monkeypatch):
             "target_space_id": "space-1", "proposed_object": obj,
             "join_strategy": "direct", "yaml_text": f"version: 0.1  # {sug}\n",
             "ddl": f"CREATE VIEW {obj} ...", "validation": {"ok": True},
+            "render_version": MV_RENDER_VERSION,
         }
 
     # Rows come back created_at DESC — sugB (franchises) is the LATEST artifact,
@@ -956,7 +1371,7 @@ def test_get_mv_ddl_falls_back_to_candidate_yaml_text(client, monkeypatch):
             "target_space_id": "space-1",
             "proposed_object": "finance.sales.revenue_metrics",
             "yaml_text": "version: 0.1\n",
-            "evidence": {"join_strategy": "subquery_source"},
+            "evidence": {"join_strategy": "subquery_source", "render_version": MV_RENDER_VERSION},
         }],
     )
     resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
@@ -967,10 +1382,54 @@ def test_get_mv_ddl_falls_back_to_candidate_yaml_text(client, monkeypatch):
     assert data["join_strategy"] == "subquery_source"
     assert "CREATE VIEW `finance`.`sales`.`revenue_metrics`" in data["ddl"]
     assert (
-        "GRANT SELECT ON VIEW finance.sales.revenue_metrics TO "
+        "GRANT SELECT ON VIEW `finance`.`sales`.`revenue_metrics` TO "
         "`a803ebc5-232f-44c0-9ed6-fb17d7c77f9e`;" in data["grant_sql"]
     )
     assert data["validation"] is None
+
+
+def test_mv_ddl_refuses_a_stale_artifact(client, monkeypatch):
+    """MV-D117 (C-2): the app no longer serves a body it would not create."""
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_latest_artifact",
+        lambda run_id, kind: {
+            "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "target_space_id": "space-1",
+            "proposed_object": "finance.sales.revenue_metrics",
+            "join_strategy": "direct", "yaml_text": "version: 0.1\n",
+            "ddl": "CREATE VIEW finance.sales.revenue_metrics ...",
+            "validation": {"ok": True},
+        },
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == mv_create.STALE_BODY_REASON
+
+
+def test_mv_ddl_refuses_a_stale_candidate_row(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda run_id, kind: None)
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [{
+            "suggestion_id": "sugA", "dedup_fingerprint": "fpA",
+            "target_space_id": "space-1",
+            "proposed_object": "finance.sales.revenue_metrics",
+            "yaml_text": "version: 0.1\n",
+            "evidence": {"join_strategy": "direct"},
+        }],
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == mv_create.STALE_BODY_REASON
+
+
+def test_the_grant_quotes_a_spaced_view_name():
+    grant = auto_optimize._mv_optimizer_grant_sql(
+        "main.sales.order revenue", "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e"
+    )
+    assert "`main`.`sales`.`order revenue`" in grant
 
 
 def test_decision_records_and_flips_rerun(client, monkeypatch):

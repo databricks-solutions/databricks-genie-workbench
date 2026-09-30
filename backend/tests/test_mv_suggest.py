@@ -428,6 +428,57 @@ def test_suggest_surfaces_measures_found_for_the_governance_ladder(client, monke
     assert body["proposals"] == []
 
 
+def _stale_beside_its_successor() -> list[dict]:
+    from genie_space_optimizer.common.config import MV_RENDER_VERSION
+
+    return [
+        {**_row("sug_stale"), "proposed_object": "`Finance`.`Sales`.`Revenue`", "evidence": {}},
+        {
+            **_row("sug_current"), "proposed_object": "finance.sales.revenue",
+            "evidence": {"render_version": MV_RENDER_VERSION},
+        },
+    ]
+
+
+def _stub_a_complete_scan(monkeypatch) -> None:
+    from genie_space_optimizer.common import genie_client
+
+    monkeypatch.setattr(
+        genie_client, "fetch_space_config",
+        lambda ws, space_id: {"_parsed_space": {"instructions": {}}},
+    )
+    monkeypatch.setattr(
+        mv_suggest, "suggest_for_space",
+        lambda **k: (
+            SimpleNamespace(status="COMPLETE", skip_reason=None, error=None, measures_found=2),
+            "run-adv-4",
+        ),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates", lambda *a, **k: _stale_beside_its_successor(),
+    )
+
+
+def test_the_suggest_reload_drops_a_stale_proposal_its_successor_replaces(client, monkeypatch):
+    """MV-D117: the post-scan reload reads through the same sibling rule as the list."""
+    _stub_a_complete_scan(monkeypatch)
+
+    resp = client.post("/api/auto-optimize/spaces/space-1/mv/suggest")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
+
+
+def test_the_stream_reload_drops_a_stale_proposal_its_successor_replaces(client, monkeypatch):
+    import json as _json
+
+    _stub_a_complete_scan(monkeypatch)
+
+    resp = client.post("/api/auto-optimize/spaces/space-1/mv/suggest/stream")
+
+    result = _json.loads(next(d for e, d in _parse_sse(resp.text) if e == "result"))
+    assert [p["suggestion_id"] for p in result["proposals"]] == ["sug_current"]
+
+
 # ── The staged-progress stream + OBO/SSE identity trap (MV-D31) ─────────────
 
 

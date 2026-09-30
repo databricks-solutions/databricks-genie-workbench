@@ -1349,6 +1349,21 @@ def test_generated_body_quotes_source_and_a_spaced_column() -> None:
     assert doc["measures"][0]["expr"] == "SUM(source.`Order Amount`)"
 
 
+def test_generated_body_keeps_a_struct_field_path() -> None:
+    """MV-D117 (C-7): a qualified struct column is left as rendered."""
+    measure = MeasureRequest(name="total_fee", expr="SUM(source.`payload`.`fee`)")
+    profiling = MvProfiling(
+        source_table="main.sales.orders",
+        table_columns={"main.sales.orders": _columns("payload", "status")},
+        measures=(measure,),
+        domain="sales",
+    )
+    rendered = generate(_candidate(measure_expr="SUM(source.`payload`.`fee`)"), profiling)
+    assert rendered.ok, rendered.rejections
+    doc = yaml.safe_load(rendered.yaml_text)
+    assert doc["measures"][0]["expr"] == "SUM(source.`payload`.`fee`)"
+
+
 def test_generated_evidence_carries_the_render_version() -> None:
     """MV-D113: every rendered body is stamped so Task 6 can refuse a pre-M3 replay."""
     rendered = generate(

@@ -139,7 +139,10 @@
      metric VIEW bundling the measures of one grain, never one card per measure;
      MEDIUM+ (and a curated, fact-passing LOW — MV-D100) surface by default,
      other LOW behind explicit disclosure, and a proposal
-     with no proposed_object never renders; no proposal surfaces without a
+     with no proposed_object never renders; a proposal whose body predates the
+     current renderer surfaces only as a labelled re-scan notice — never with
+     DDL, validated/executable facts, or a create or claim action (MV-D117);
+     no proposal surfaces without a
      servable DDL body (a render failure is loud in the run outcome, never a
      silent gate); every surfaced card carries its
      justification (measures, evidence counts, gain); EMPTY states are variant-
@@ -251,9 +254,9 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 1418 backend + 1733 GSO,
-     measured 2026-09-30 (this supersedes the prior 1418 + 1725 floor measured 2026-09-30). Historical
-     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). +50 GSO at M4 (MV-D114: the live-id and measure-matched affected subset with its bundle-union, curated, expected-SQL and no-SQL-in-stage pins; the full-suite post-attach eval with the subset-restricted verdict, zero-graded revert and kept-only baseline handoff; the finally-rollback with its exception, interrupt, retry, fail-twice and pre-deploy pins; the loop baseline-reset pin with its proposer, run-status, target and detached controls; and the end-of-run unmeasured-live report; the final-review fix wave's live-read unmeasured report with its revert-failed, dropped-by-a-later-PATCH, unreadable-live fallback, no-read-without-a-patched-row and loop-wiring pins, and the parse-log firewall pin, then the canonicalize/render log firewall pins). +2 backend at MV-D115 (the metric-view probe's space row asks Can Edit and never Can Manage, and a permissions API refused for scope still grants it). +20 GSO at the M4 live-run fixes (L1: publish scores iteration 0 at a kept attach's post-attach accuracy, read from the `MV_ATTACH` stage row and bound to its baseline eval id, with its no-reset, lever-beats-reset, restart-row, other-eval and promote-stamp pins; L2: `attached_identifiers` reads `tables` too, with the live report and reconcile pins). +42 GSO at M6a (MV-D116: the table-split corpus scan with its spelling, table-less-remainder and ranking pins; the table-leaf helpers; demand scoped to the candidate's tables; the table-aware governed match, seed exclusion and trusted-asset conflict with their query-source controls; the merged-key suppression read; and the identity baseline captured at 9d972e46; the final-review fix wave's cap-boundary pin that only membership moves, the governed-excluded half the merged key still hides, and the definition-table pins for non-list joins, a source-less join, a query join at top level and nested, and a table named twice). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 1461 backend + 1773 GSO,
+     measured 2026-09-30 (this supersedes the prior 1440 + 1769 floor measured 2026-09-30). Historical
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). +50 GSO at M4 (MV-D114: the live-id and measure-matched affected subset with its bundle-union, curated, expected-SQL and no-SQL-in-stage pins; the full-suite post-attach eval with the subset-restricted verdict, zero-graded revert and kept-only baseline handoff; the finally-rollback with its exception, interrupt, retry, fail-twice and pre-deploy pins; the loop baseline-reset pin with its proposer, run-status, target and detached controls; and the end-of-run unmeasured-live report; the final-review fix wave's live-read unmeasured report with its revert-failed, dropped-by-a-later-PATCH, unreadable-live fallback, no-read-without-a-patched-row and loop-wiring pins, and the parse-log firewall pin, then the canonicalize/render log firewall pins). +2 backend at MV-D115 (the metric-view probe's space row asks Can Edit and never Can Manage, and a permissions API refused for scope still grants it). +20 GSO at the M4 live-run fixes (L1: publish scores iteration 0 at a kept attach's post-attach accuracy, read from the `MV_ATTACH` stage row and bound to its baseline eval id, with its no-reset, lever-beats-reset, restart-row, other-eval and promote-stamp pins; L2: `attached_identifiers` reads `tables` too, with the live report and reconcile pins). +42 GSO at M6a (MV-D116: the table-split corpus scan with its spelling, table-less-remainder and ranking pins; the table-leaf helpers; demand scoped to the candidate's tables; the table-aware governed match, seed exclusion and trusted-asset conflict with their query-source controls; the merged-key suppression read; and the identity baseline captured at 9d972e46; the final-review fix wave's cap-boundary pin that only membership moves, the governed-excluded half the merged key still hides, and the definition-table pins for non-list joins, a source-less join, a query join at top level and nested, and a table named twice). +22 backend / +36 GSO at M6b (MV-D117: the identity baseline captured at 43b01544 with its row-count and struct pins; row counts on their only table and their per-table split; struct fields on an alias with the table-qualified, two-part and source-headed controls; the fix wave's source-schema neutral-clear pins (dimension, filter, grain, RATIO, CONDITIONAL_COUNT and measure path) with the four-part and source-aliased controls; the firewall's two-sided quote fold; the unreachable-rung pin and the create-time rung refusal on both paths; the row-count, bundle and stale claim, with the claim success and role-less-anchor pins; the nothing-built skip summary; the stale flag, facts row, re-run gate and 409 DDL refusal; and the quoted GRANT. The frontend callout exclusion is a vitest pin, not counted in this floor). +21 backend / +4 GSO at the M6b final-review fix wave (MV-D117: the firewall's text-field probes, quoted prose, bare prose against a quoted benchmark, the bare/bare control and a SQL probe echoing a quoted question; the stale-beside-its-successor drop on the list with its case- and backtick-insensitive match, the approved stale row, the gate, the suggest and stream reloads and the helper's keep controls; the approved id with no candidate, its lead position, the stale reason that promises no refresh, and the per-key and ordered skip labels). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -668,7 +671,7 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D35 — Proven facts lead; the score ranks; a percent is never displayed as "confidence" (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8; supersedes MV-D32(1)'s caption-as-fix IN PART).** The reviewer's challenge, third smoke run: "if a metric view is syntactically accurate, executable, and orthogonal to existing metric views, why is our confidence low? Would you, as a user, accept a low-confidence suggestion?" The challenge is correct and the display was a category error, twice band-aided (MV-D32(1)'s caption, 15.7b's badge) instead of replaced. The facts: **quality is binary and already gated** — nothing surfaces without a rendered, validated, placeholder-free, executable body (MV-D8, MV-D29, 15.5's servable-body invariant), and dedup guarantees non-overlap with existing governed measures; the LYDS score measures **demand evidence**, a RANKING signal, not doubt about correctness. Displaying it as "NN% confidence / LOW" told users their strongest candidate might be broken — false, and corrosive. The replacement: (1) cards LEAD with proven facts as explicit checks — "✓ validated · ✓ executable · ✓ no overlap with existing metric views" — each check backed by the gate that proved it, never decorative; (2) evidence renders as a human sentence ("18 curated queries · usage history"); the numeric score is used ONLY for ordering plus ONE Recommended pick — or, when all surfaced proposals are mutually orthogonal (disjoint measure sets), the panel says so plainly ("all N are independent — any or all can be created") instead of forcing a ranking that does not exist; (3) the raw blend, weights, and coverage stay in `score_components` for the debugging user; (4) the COMPUTED≠SUPPORTIVE defect is fixed — `confidenceDisplay` captions "Backed by usage history and lineage" whenever L/D *ran*, even at near-zero values (`mvFormat.ts:313-315`); basis captions must reflect signal CONTRIBUTION, not signal execution. MV-D30's tier gating survives as the ordering/disclosure mechanism; what dies is the naked percent and the word "confidence" anywhere a user reads it. This applies to EVERY surface that renders a proposal — the IQ panel AND the run-output panels — through shared components, so the post-GSO surface inherits it by construction.
 
-> **MV-D36–MV-D97 — reserved for the ontology line; NOT decided on this base branch.** These numbers belong to the longer-running `ontology` branch, which descends from this base. This base branch's own register runs MV-D1–MV-D35, then MV-D98–MV-D100 (Plan A1 and its two follow-ups), then MV-D109 onward (the PR #332 review); the gaps are deliberate, not dropped decisions. *Numbering collision, corrected at PR #332 M0 (owner decision, 2026-09-29):* Plan A1 was recorded as MV-D98 because that was then the next number above the ontology line, but `origin/ontology` went on to assign MV-D98–MV-D108 itself. Its MV-D98/D99 (a governed `Domain/Sub` taxonomy must survive ER as distinct tags, `537b2093`) and its MV-D100 (an applied governed-tag membership is reversible under OBO, `c653ea3a`) collide with this branch's MV-D98, MV-D99 and MV-D100 below, which were assigned first (`f83db05c`, `897603b1`, `60388a8e`); neither line inherited the other's, since the fork point carries none of the three. **This branch keeps MV-D98–MV-D100. `ontology` renumbers its two colliding entries when it rebases onto this branch after PR #332 merges**, to numbers free on both lines at that time — MV-D117 and up as of this note, since this branch uses MV-D109–MV-D116 and `ontology` uses nothing above MV-D108. Its MV-D101–MV-D108 do not collide and keep their numbers. Until that rebase, an MV-D98, MV-D99 or MV-D100 cited on `ontology` means the ontology decision. A new entry on either line takes the next number free on both.
+> **MV-D36–MV-D97 — reserved for the ontology line; NOT decided on this base branch.** These numbers belong to the longer-running `ontology` branch, which descends from this base. This base branch's own register runs MV-D1–MV-D35, then MV-D98–MV-D100 (Plan A1 and its two follow-ups), then MV-D109 onward (the PR #332 review); the gaps are deliberate, not dropped decisions. *Numbering collision, corrected at PR #332 M0 (owner decision, 2026-09-29):* Plan A1 was recorded as MV-D98 because that was then the next number above the ontology line, but `origin/ontology` went on to assign MV-D98–MV-D108 itself. Its MV-D98/D99 (a governed `Domain/Sub` taxonomy must survive ER as distinct tags, `537b2093`) and its MV-D100 (an applied governed-tag membership is reversible under OBO, `c653ea3a`) collide with this branch's MV-D98, MV-D99 and MV-D100 below, which were assigned first (`f83db05c`, `897603b1`, `60388a8e`); neither line inherited the other's, since the fork point carries none of the three. **This branch keeps MV-D98–MV-D100. `ontology` renumbers its two colliding entries when it rebases onto this branch after PR #332 merges**, to numbers free on both lines at that time — MV-D118 and up as of this note, since this branch uses MV-D109–MV-D117 and `ontology` uses nothing above MV-D108. Its MV-D101–MV-D108 do not collide and keep their numbers. Until that rebase, an MV-D98, MV-D99 or MV-D100 cited on `ontology` means the ontology decision. A new entry on either line takes the next number free on both.
 
 **MV-D98 — Supporting-measure carve-out: a sub-floor recurring measure may enrich an anchored grain bundle, never surface alone (DECIDED — authorized to unblock Plan A1; residual of MV-D30 surfaced by the first deployed human review's `control_metrics` one-measure card; qualifies POV Part 3's `suppress < 25` floor without loosening it for standalone proposals).** MV-D30 bundles the measures of one grain into one view, but only `VERDICT_PROPOSE` members (tier ≥ Low) reach a bundle: a measure that recurred yet blended under 25 collapses to `VERDICT_SUPPRESSED` (`mv_scoring.py:1425`), is dropped as non-persistable (`PERSISTABLE_VERDICTS = {PROPOSE, CONFLICT}`, `mv_scoring.py:126`) at the Pass-1 `is_persistable` gate (`mv_advisor.py:1481`), and never enrolls in `bundles` (`mv_advisor.py:1486`). So a grain whose queries repeat one strong measure and several weak-but-real ones still ships a one-measure view — the exact thin-card outcome MV-D30 exists to prevent, re-entering one grain at a time. The POV floor `High ≥ 75, Medium 50–74, Low 25–49, suppress < 25` (Part 3) was written to keep a low-value **standalone proposal** off a reviewer's screen; it was never a statement that a sub-floor measure may not corroborate a view the reviewer is already being shown. **What this decides:** a `VERDICT_SUPPRESSED` candidate that is otherwise a clean PROPOSE — leakage-gate-clean (`mv_advisor.py:1449`), not fingerprint-suppressed (`mv_advisor.py:1426`), dedup verdict PROPOSE (not BLOCKED/CONFLICT) — MAY be folded into a bundle as a `role:"supporting"` member when, and only when, that grain already has at least one **anchor whose SCORE earns MEDIUM+** — the gate keys on `uncapped_tier` (the score-earned tier), NOT the coverage-capped display tier, because the coverage cap measures how many signal producers the workspace has, not the strength of the measure, and gating on it would starve exactly the partial-signal workspaces this carve-out helps; it is capped at `MV_ADVISOR_MAX_BUNDLE_RIDERS` (default 4) and rendered as an ordinary additive `MeasureRequest` inside the single `mv_yaml.generate`. **Constraints not open:** the standalone floor is UNCHANGED — a sub-25 measure still never becomes its own card, and riders NEVER constitute a bundle alone (a grain whose anchor earns only LOW, or has no PROPOSE anchor at all, produces no rider fold); confidence and both tiers continue to come from the strongest anchor only (`mv_advisor.py:1145`), so a supporting member can never lift a view's score, its displayed tier, or its MEDIUM+/LOW-disclosed surfacing gate; the per-measure fingerprint stays the identity and suppression grain (MV-D30/MV-D10), so a rejected rider stays rejected inside any future bundle (`genie_opt_mv_suppressions`) and the bundle fingerprint simply reflects its membership; and every supporting measure still clears the MV-D29 leakage oracle on its representative expression before it can render. **Verification:** ride-along inclusion, no-anchor-no-view, the low-scoring-anchor exclusion, the rider cap, and confidence/tier-invariance are pinned in `test_mv_advisor.py` (the carve-out is entirely in `mv_advisor`; `mv_scoring`'s VERDICT_SUPPRESSED path is unchanged) in the same commit as the code; STOP before deploy.
 
@@ -749,7 +752,9 @@ display text now shows quoted author-case exprs (Semantic Blueprint /
 proposal cards); cross-table name-collision split (finding 11); bundle
 `dedup_fingerprint` vs per-measure `_claim_matches_view` (pre-existing);
 displayed (never executed) `GRANT … ON VIEW {name}` remediation text stays
-unquoted.
+unquoted. *Status: the bundle claim and the GRANT text are resolved by MV-D117
+(C-3, C-5), and the cross-table split by MV-D116. The pre-M3 textual mismatch
+stays by design.*
 
 **Fix wave (final review).** The in-job candidate writer now puts `yaml_text`
 in the same MERGE as the stamped evidence, `None` included, so an older body
@@ -765,24 +770,29 @@ render. The playbook's rules fence closes at its opening indent again, and
 
 **Carried to M6 (final review).**
 - C-1 — pre-M3 app-created views are refused on re-approve (`mv_create.py:146`,
-  `:187-188`); at run time the skip is only a log line.
+  `:187-188`); at run time the skip is only a log line. *Resolved by MV-D117: a
+  run that creates nothing lists its skip reasons as counts in `downgrade_reason`.*
 - C-2 — `/runs/{run_id}/mv-ddl` (`auto_optimize.py:3837`, via `:524` / `:550`)
-  still serves unstamped bodies; label or refuse them.
+  still serves unstamped bodies; label or refuse them. *Resolved by MV-D117:
+  refused with 409, and flagged `stale_body` on both surfaces.*
 - C-3 — claim matching falls back to the quoted `source:` string
-  (`mv_create.py:747`); normalize with `split_fqn`, with C-4.
+  (`mv_create.py:747`); normalize with `split_fqn`, with C-4. *Resolved by
+  MV-D117: a row count matches by its table, a bundle by every anchor.*
 - C-4 — attribute `COUNT(*)` to its statement's single FROM table for the
   bundle key only, never the MV-D7 fingerprint (`_bundle_grain`,
-  `mv_advisor.py:841`).
+  `mv_advisor.py:841`). *Resolved by MV-D117, which, by owner ruling, changes the
+  MV-D7 key for column-free aggregates rather than the bundle key only.*
 - C-5 — quote the displayed GRANT text (`auto_optimize.py:1655`, built by
-  `_mv_optimizer_grant_sql` at `:1634`).
+  `_mv_optimizer_grant_sql` at `:1634`). *Resolved by MV-D117.*
 - C-6 — fold identifier quoting symmetrically in `leakage._strip_sql`
   (`leakage.py:69`) rather than one-sided in `_leakage_view`
-  (`mv_advisor.py:1675`).
+  (`mv_advisor.py:1675`). *Resolved by MV-D117; `_leakage_view` is gone.*
 - C-7 — struct field access (`o.payload.amount`) renders as the leaf column;
-  predates M3.
+  predates M3. *Resolved by MV-D117 for measures.*
 - C-8 — prove the join and subquery rungs in Unity Catalog before enabling
   them; unreachable today because `profiling_for` (`mv_advisor.py:933`)
-  supplies no join hops or attributes.
+  supplies no join hops or attributes. *Resolved by MV-D117 as a structural pin
+  and a create-time refusal; the live UC proof stays a residual.*
 
 ### MV-D114 — Attach and lift integrity in the job (DECIDED 2026-09-29 — PR #332 M4)
 
@@ -1097,7 +1107,7 @@ state changed.
   still pending.
 - `COUNT(*)` names no column, so it resolves no table and never splits.
   Attributing it to its statement's table is item C-4 of MV-D113's "Carried to
-  M6 (final review)" list.
+  M6 (final review)" list. Resolved by MV-D117.
 - A history row that resolves no table counts toward the demand of both halves:
   `same_tables` treats an unknown side as matching (`mv_fingerprint.py:783`).
 - On the per-measure CONFLICT path the two halves can propose the same object
@@ -1105,9 +1115,131 @@ state changed.
   class.
 - Once C-8 makes multi-table measures servable, a measure whose own table set
   equals the old union shares the merged key, so the dual read hides it too. For
-  M6b to weigh.
+  M6b to weigh. Not applicable while MV-D117 keeps multi-table measures unservable.
 - The semantic graph still merges curated measures by expression.
 - `_partial_alternatives`, and dimension, filter and join-key buckets, are unchanged.
+
+### MV-D117 — The M3 carry-overs: stale bodies, row counts, struct paths, the firewall's quoting, and the unproven rungs (DECIDED 2026-09-30 — PR #332 M6b, owner)
+
+**Problem (MV-D113, "Carried to M6 (final review)", C-1 to C-8).**
+- Every proposal persisted before M3 has an unstamped body that the create paths
+  refuse. The proposals routes still called it validated and executable, the
+  re-run gate still counted it approved, and `/mv-ddl` still served it (C-2).
+- A run that built nothing said only that (C-1).
+- `COUNT(*)` named no table, so it never joined a view (C-4).
+- `o.payload.amount` lost its struct path (C-7).
+- The leakage probe folded backticks on its side only (C-6).
+- The GRANT text was unquoted (C-5).
+- A claim could not match a row count or a bundle (C-3).
+- The nested and subquery-source rungs are unproven in Unity Catalog, and
+  unreachable only by accident (C-8).
+
+**Decision.**
+1. A proposal whose body predates `MV_RENDER_VERSION` is stale:
+   - `stale_body` is set on the proposal;
+   - its facts row omits validated and executable;
+   - the re-run gate excludes it, and `/mv-ddl` refuses it with 409;
+   - a claim on it is refused, and the refusal reads "this proposal was rendered
+     by an earlier version of the advisor; re-scan the Agent for a current
+     suggestion";
+   - the shared accept flow shows "Found by an earlier version of the advisor,
+     so it can't be created as is. Re-scan the Agent for a current suggestion."
+     in place of its create and claim actions. The wording promises a current
+     suggestion, not that this card refreshes: a re-scan refreshes a row in place
+     only when its MV-D30 bundle key is unchanged;
+   - it is dropped from the space's proposal list, the re-run gate and both scan
+     reloads (`/mv/suggest` and its stream) when a current row in the same result
+     names the same view. Names compare case-insensitively without backticks
+     (`_norm_fqn`, `auto_optimize.py:2877`), through one helper,
+     `_drop_stale_with_current_sibling` (`auto_optimize.py:2209`). An approved
+     stale row is dropped too; its persisted decision stays in the table;
+   - it ranks last and is never Recommended, in the IQ panel's lower-ranked
+     disclosure as well as the default list;
+   - that disclosure's header says "validated and executable" of the current
+     proposals only and counts the stale ones: "… — the current one is still
+     validated and executable; 1 found by an earlier version of the advisor needs
+     a re-scan." Its wording is unchanged when none is stale;
+   - the shared independence callout counts only current proposals. With fewer
+     than two current proposals there is no callout. When a stale proposal is
+     present it reads "The N current proposals are independent — any or all can
+     be created."; otherwise its wording is unchanged.
+
+   Attached and created terminals are unchanged.
+2. When a run creates nothing, the consent's `downgrade_reason` lists the skip
+   reasons as counts in a fixed order, never a name or SQL. Partial success
+   stamps no reason, as before. An approved id that matches no loaded candidate
+   counts first, as "no longer available".
+3. A column-free aggregate in a single-table statement takes that table as its
+   source. It splits per table (MV-D116) and joins that table's view. The
+   MV-D7 key changes for column-free aggregates only. A corpus whose only
+   recurring measure is `COUNT(*)` over one table now yields one LOW proposal,
+   anchored by that row count.
+4. `alias.col.field`, where `alias` is a relation and `col` is not, is field
+   `field` of struct column `col`. It is rewritten to `source.col.field`, the
+   metric view's own head, so the canonical form (`sum(col.field)`) and the
+   render agree. A table-qualified column and a two-part name read as before.
+   Only measures read a `source.`-headed three-part path as a struct.
+   Corpus dimensions, filters, grain and shapes clear schema and catalog
+   qualifiers only, so their identity is unchanged — including for a schema
+   literally named `source`. `source.`-headed text canonicalized on its own
+   (a governed view's dimensions, a curated snippet measure) reads the struct
+   path.
+5. The firewall folds identifier quoting inside the oracle, on both sides;
+   `mv_advisor._leakage_view` is gone. Every probe compared with the SQL
+   shingles folds, a text field's included; every probe compared with the
+   question shingles stays raw, as the corpus questions do.
+6. The GRANT text quotes the view name.
+7. A claim matches a row count by its table, and a bundle when every anchor
+   member is implemented.
+8. The create paths refuse a body whose join strategy is not `direct`, and a
+   structural pin fails if a production caller starts passing join hops or
+   attributes. The rungs stay unreachable until a live UC proof.
+
+**Surface contract amended.** A proposal whose body predates the current
+renderer surfaces only as a labelled re-scan notice — never with DDL,
+validated/executable facts, or a create or claim action.
+
+**Unchanged.** The MV-D7 and MV-D30 key formulas, `suggestion_id_for`, every
+table, route and job parameter. `test_mv_count_struct_identity_baseline.py` pins
+that only row counts and struct-field measures move, against a baseline captured
+at `43b01544`; the MV-D113 and MV-D116 baselines are untouched.
+
+**Residuals (not fixed here).**
+- The live UC proof of the join rungs — its own milestone, with a workspace and
+  profile approval.
+- Struct access through a two-part name, or on a subquery alias, stays unresolved.
+- A governed view referencing `source.<join>.<col>` (non-standard) reads as a struct.
+- Struct paths in dimensions, filters and shapes keep today's reading: a ratio
+  over a struct measure renders its component without the path.
+- The Model tab's proposal ghost nodes do not mark stale proposals.
+- The stale IQ-scan card still offers "View in graph" (navigation only).
+- The stale run-output card still shows its config preview and "Lift not
+  measured", and the run-output summary still counts a stale proposal.
+- The stale notice is one text line where the button row was 32px — an accepted
+  density deviation from the approved frames.
+- A partial create-time skip is still log-only.
+- The unreachable-rung pin inspects keyword arguments only; a positional join hop
+  or attribute would slip past it.
+- `quote_fqn` raises on an empty name part, so a corrupt stored `proposed_object`
+  would fail the GRANT assembly with a 500.
+- The struct render's live acceptance is unproven; the first live run is the proof.
+- A stale row with no current row of the same view name stays, flagged, until
+  the user acts.
+- A governed dimension `source.payload.region` now canonicalizes to
+  `payload.region` (before: `region`) while the corpus dimension stays `region`.
+  A curated snippet measure fed straight to `canonicalize_expr`
+  (`auto_optimize.py:3350`) stays `sum(fee)` while the corpus reads
+  `sum(payload.fee)`.
+- A derived-table `COUNT(*)` (`FROM (SELECT DISTINCT … FROM orders) sub`) is
+  attributed to the inner table.
+- Pre-existing: in `FROM orders o JOIN payload p`, `o.payload.fee` resolves to
+  column `fee` of table `payload`, because `_relation_map` registers an aliased
+  table's name too.
+- `/mv-ddl` refuses a stale artifact without trying a current candidate-row
+  fallback. Both are run-keyed, so this is rare.
+- Pre-existing: `canonicalize_sql` folds a backticked alias (`AS \`x\``) to
+  `_alias` but leaves a bare alias, so the two fingerprints differ. The shingles
+  still match them.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

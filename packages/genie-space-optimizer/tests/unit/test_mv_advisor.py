@@ -1680,6 +1680,20 @@ def _advise_from_corpus_directly(*, persist_proposal, write_ddl_artifact, **over
     return mv_advisor.advise_from_corpus(**kwargs)
 
 
+def test_a_row_count_joins_its_tables_bundle() -> None:
+    """MV-D117 (C-4): COUNT(*) over one table rides in that table's view."""
+    quantity = f"SELECT SUM(l_quantity) AS q, l_shipmode FROM {LINEITEM} GROUP BY l_shipmode"
+    rows = f"SELECT COUNT(*) AS n, l_shipmode FROM {LINEITEM} GROUP BY l_shipmode"
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=[(quantity, f"q{i}") for i in range(8)]
+        + [(rows, f"n{i}") for i in range(8)],
+    )
+    (bundle,) = [p for p in outcome.proposals if p.evidence["source_tables"] == [LINEITEM]]
+    assert "COUNT(*)" in [m["expr"] for m in bundle.evidence["measures"]]
+
+
 def test_the_demand_read_is_scoped_to_the_measures_tables(monkeypatch) -> None:
     seen: list[tuple[str, ...]] = []
 
@@ -2115,8 +2129,9 @@ ROW_COUNT_SQL = "SELECT COUNT(*) FROM main.sales.orders o"
 
 
 def test_a_row_count_alone_is_not_an_unservable_measure() -> None:
-    """A column-free aggregate names no table and no column, so it is neither
-    multi-table nor unresolved; it flows on as it did before MV-D113."""
+    """A column-free aggregate names no column and only its statement's one table
+    (MV-D117), so it is neither multi-table nor unresolved: it is servable and
+    proposes a view over that table."""
     outcome = _advise_from_corpus_directly(
         persist_proposal=_noop_persist,
         write_ddl_artifact=_noop_persist,
@@ -2125,7 +2140,9 @@ def test_a_row_count_alone_is_not_an_unservable_measure() -> None:
     assert outcome.skip_reason != "NO_SERVABLE_MEASURES"
     assert outcome.candidates_dropped_unresolved == 0
     assert outcome.status == "COMPLETE"
-    assert outcome.proposals == ()
+    (proposal,) = outcome.proposals
+    assert proposal.evidence["source_tables"] == ["main.sales.orders"]
+    assert [m["expr"] for m in proposal.evidence["measures"]] == ["COUNT(*)"]
 
 
 def test_a_row_count_beside_a_sum_is_not_counted_as_dropped() -> None:
@@ -2170,7 +2187,7 @@ def test_the_unresolved_drop_logs_ids_and_codes_only(caplog) -> None:
     assert "price" not in text and "SUM" not in text
 
 
-# ── MV-D113: render_version stamp + backtick-free leakage view ───────────
+# ── MV-D113: render_version stamp; MV-D117: quote-folding leakage gate ───
 
 
 def test_bundle_evidence_carries_the_render_version() -> None:
@@ -2236,7 +2253,9 @@ class _SpyOracle:
         return False
 
 
-def test_the_leakage_gate_never_sees_a_backtick(monkeypatch) -> None:
+def test_the_leakage_gate_hands_the_oracle_the_rendered_text(monkeypatch) -> None:
+    """MV-D117 (C-6): the oracle folds identifier quoting on both sides, so the
+    gate passes the quoted render through rather than stripping one side."""
     spy = _SpyOracle()
     monkeypatch.setattr(mv_advisor, "LeakageOracle", lambda corpus: spy)
     _advise_from_corpus_directly(
@@ -2248,12 +2267,13 @@ def test_the_leakage_gate_never_sees_a_backtick(monkeypatch) -> None:
         write_ddl_artifact=_noop_persist,
     )
     assert spy.seen
-    assert not any("`" in text for text in spy.seen)
+    assert any("`Order Amount`" in text for text in spy.seen)
 
 
 def test_a_quoted_representative_echoing_a_benchmark_is_still_dropped() -> None:
-    """Backticks break character-3-gram Jaccard below the oracle threshold; the
-    gate must still drop after stripping them (MV-D29 + MV-D113).
+    """Backticks break character-3-gram Jaccard below the oracle threshold, so
+    the gate still drops only because the oracle folds identifier quoting on both
+    sides (MV-D29 + MV-D117).
 
     The brief's long ``Paid in full`` CASE stays above threshold even when
     quoted (Jaccard ≈0.69), so it cannot prove RED. Used instead a short
@@ -2264,9 +2284,30 @@ def test_a_quoted_representative_echoing_a_benchmark_is_still_dropped() -> None:
         "SELECT SUM(CASE WHEN o.status = 'X' THEN o.amt END) "
         "FROM main.sales.orders o"
     )
-    # Bare representative form — what ``_leakage_view`` produces from the
-    # render_expr output ``SUM(CASE WHEN \`status\` = 'X' THEN \`amt\` END)``.
+    # Bare form of the render_expr output
+    # ``SUM(CASE WHEN \`status\` = 'X' THEN \`amt\` END)``; the oracle folds
+    # identifier quoting on both sides, so the quoted render still matches it.
     bench_sql = "SUM(CASE WHEN status = 'X' THEN amt END)"
+    outcome = _advise_from_corpus_directly(
+        corpus_entries=[(sql, f"q{i}") for i in range(8)],
+        benchmarks=[
+            {"id": "b1", "question": "paid status revenue", "expected_sql": bench_sql}
+        ],
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+    )
+    assert outcome.candidates_dropped_for_leakage >= 1
+    assert not outcome.proposals
+
+
+def test_a_representative_echoing_a_quoted_benchmark_is_still_dropped() -> None:
+    """MV-D117 (C-6): the benchmark side folds quoting too, so a benchmark that
+    spells its identifiers quoted still catches the representative."""
+    sql = (
+        "SELECT SUM(CASE WHEN o.status = 'X' THEN o.amt END) "
+        "FROM main.sales.orders o"
+    )
+    bench_sql = "SUM(CASE WHEN `status` = 'X' THEN `amt` END)"
     outcome = _advise_from_corpus_directly(
         corpus_entries=[(sql, f"q{i}") for i in range(8)],
         benchmarks=[

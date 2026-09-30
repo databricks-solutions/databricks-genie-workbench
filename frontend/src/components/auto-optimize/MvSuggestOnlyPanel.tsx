@@ -19,6 +19,7 @@ import {
   LIFT_NOT_MEASURED,
   orthogonalityCallout,
   rankProposals,
+  recommendedIndex,
   recommendedReason,
 } from "@/components/auto-optimize/mvFormat"
 import type { MvDdlArtifact, MvProposal } from "@/types"
@@ -63,6 +64,7 @@ export function MvSuggestOnlyPanel({
   // ranking. The first card opens (fix #2); the rest collapse.
   const ranked = rankProposals(proposals)
   const callout = orthogonalityCallout(ranked)
+  const recommendedAt = recommendedIndex(ranked, callout)
 
   return (
     <div className="space-y-4">
@@ -88,8 +90,8 @@ export function MvSuggestOnlyPanel({
             <MvProposalCard
               proposal={proposal}
               ddl={proposalDdl}
-              recommended={!callout && i === 0}
-              recommendedReason={!callout && i === 0 ? recommendedReason(proposal) : undefined}
+              recommended={i === recommendedAt}
+              recommendedReason={i === recommendedAt ? recommendedReason(proposal) : undefined}
               defaultExpanded={i === 0}
               liftLabel={<LiftNotMeasuredLabel />}
               actions={

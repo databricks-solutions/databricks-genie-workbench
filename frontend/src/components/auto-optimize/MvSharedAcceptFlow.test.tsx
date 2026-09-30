@@ -13,9 +13,12 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { MvSuggestOnlyPanel } from "./MvSuggestOnlyPanel"
 import { ScanProposalCard } from "./MvIqScanAdvisorySection"
 import { MvAcceptFlow } from "./MvAcceptFlow"
+import { STALE_PROPOSAL_NOTICE } from "./mvFormat"
 import type { MvProposal } from "@/types"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
+// renderToStaticMarkup escapes the notice's apostrophe.
+const NOTICE_MARKUP = STALE_PROPOSAL_NOTICE.replace(/'/g, "&#x27;")
 
 const proposal: MvProposal = {
   suggestion_id: "sug1",
@@ -142,5 +145,42 @@ describe("MvAcceptFlow — the shared flow's resting affordance (MV-D34)", () =>
     const html = render(<MvAcceptFlow proposal={attached} claimAffordance={claim} />)
     expect(html).toContain("Attached to your Agent")
     expect(html).not.toContain("I created this myself")
+  })
+})
+
+// MV-D117: a body rendered by an earlier advisor version is not servable, so the
+// flow replaces every create/claim action with a re-scan notice — but the
+// earned terminals (approved's "Approved", attached) still reflect the user's
+// own recorded action.
+describe("MvAcceptFlow — a stale proposal (MV-D117)", () => {
+  const stale = { ...proposal, stale_body: true }
+  const claim = <span>I created this myself</span>
+
+  it("an idle stale proposal renders the re-scan notice, not the create action or the claim", () => {
+    const html = render(<MvAcceptFlow proposal={stale} claimAffordance={claim} />)
+    expect(html).toContain(NOTICE_MARKUP)
+    expect(html).not.toContain("Create this metric view")
+    expect(html).not.toContain("I created this myself")
+  })
+
+  it("an approved stale proposal keeps 'Approved' with the notice, and drops the promise and actions", () => {
+    const approved = { ...stale, decision: "approved", approved_for_rerun: true }
+    const html = render(<MvAcceptFlow proposal={approved} claimAffordance={claim} />)
+    expect(html).toContain("Approved")
+    expect(html).toContain(NOTICE_MARKUP)
+    expect(html).not.toContain("Create it now")
+    expect(html).not.toContain("Approved for the next run")
+  })
+
+  it("an attached stale proposal still renders the attached terminal", () => {
+    const html = render(<MvAcceptFlow proposal={{ ...stale, attached: true }} />)
+    expect(html).toContain("Attached to your Agent")
+    expect(html).not.toContain(NOTICE_MARKUP)
+  })
+
+  it("a fresh idle proposal still renders [Create this metric view]", () => {
+    const html = render(<MvAcceptFlow proposal={{ ...proposal, stale_body: false }} />)
+    expect(html).toContain("Create this metric view")
+    expect(html).not.toContain(NOTICE_MARKUP)
   })
 })

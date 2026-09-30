@@ -1028,6 +1028,9 @@ export interface MvProposal {
   // the source of truth). The card badges "Attached" instead of re-offering
   // [Create this metric view]. Absent/false on run-scoped and suggest responses.
   attached?: boolean
+  // MV-D117: the body predates the current renderer — the accept flow shows a
+  // re-scan notice instead of a create action; never ranked first or Recommended.
+  stale_body?: boolean
   created_at: string | null
   updated_at: string | null
 }

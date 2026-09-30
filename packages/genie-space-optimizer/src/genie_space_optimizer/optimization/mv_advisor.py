@@ -1303,9 +1303,9 @@ def _unservable_reason(
 ) -> str | None:
     """Why a measure cannot be served by a view over one source table, or None.
 
-    A profiled source proves the columns exist; an unprofiled one is accepted on
-    the structural checks alone (MV-D113 d3). A column-free aggregate such as
-    ``COUNT(*)`` names no table, so it is neither multi-table nor unresolved."""
+    A profiled source proves the columns exist; an unprofiled one is accepted on the structural
+    checks alone (MV-D113 d3). A column-free aggregate names its statement's table when there is
+    exactly one (MV-D117); over a join it names none, and is neither multi-table nor unresolved."""
     if not measure.source_tables and not measure.source_columns:
         return None
     if len(measure.source_tables) != 1:
@@ -1485,7 +1485,7 @@ def advise_from_corpus(
         fragments = [frag for _, frag in shape.render_components] or [
             frag for _, frag in shape.components
         ]
-        if any(oracle.contains_sql(_leakage_view(frag)) for frag in fragments):
+        if any(oracle.contains_sql(frag) for frag in fragments):
             shape_leak += 1
             logger.info(
                 "mv_advisor: dropped recurring shape %s — a render component "
@@ -1549,7 +1549,7 @@ def advise_from_corpus(
         # representative must clear the SAME leakage oracle the comment echo check
         # uses before it can be scored, rendered, or persisted. A match DROPS the
         # candidate — it never ships masked and never ships leaked.
-        if candidate.measure_expr and oracle.contains_sql(_leakage_view(candidate.measure_expr)):
+        if candidate.measure_expr and oracle.contains_sql(candidate.measure_expr):
             dropped_for_leakage += 1
             logger.info(
                 "mv_advisor: dropped candidate %s — representative measure "
@@ -1670,11 +1670,6 @@ def advise_from_corpus(
         render_failures=tuple(render_failures),
         proposals=tuple(proposals),
     )
-
-
-def _leakage_view(text: str) -> str:
-    """The oracle shingles characters; identifier quoting must not break a match."""
-    return text.replace("`", "")
 
 
 def _with_generation_evidence(proposal: ScoredProposal, rendered: Any) -> ScoredProposal:

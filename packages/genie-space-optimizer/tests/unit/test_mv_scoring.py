@@ -1096,6 +1096,16 @@ def test_metric_view_fields_carry_the_source_and_join_tables():
     )
 
 
+def test_a_governed_struct_field_measure_keeps_its_path():
+    """MV-D117 (C-7): a governed ``source.col.field`` reads as ``col.field``."""
+    fields = metric_view_fields({"finance.sales.order_metrics": {
+        "source": "samples.tpch.orders",
+        "measures": [{"name": "total_fee", "expr": "SUM(source.payload.fee)"}],
+    }})
+    assert fields[0].canonical_expr == "sum(payload.fee)"
+    assert fields[0].source_tables == ("samples.tpch.orders",)
+
+
 def test_a_governed_measure_over_another_table_does_not_block():
     fields = metric_view_fields(governed_amount_yaml())
     outcome = dedup_gate(amount_candidate(("main.sales.refunds",)), mv_fields=fields)

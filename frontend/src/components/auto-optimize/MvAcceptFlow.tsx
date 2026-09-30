@@ -40,6 +40,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { STALE_PROPOSAL_NOTICE } from "@/components/auto-optimize/mvFormat"
 import { createMvAtApproval, decideMvProposal, probeMvEntitlement } from "@/lib/api"
 import type { MvProbeResult, MvProposal } from "@/types"
 
@@ -133,6 +134,7 @@ export function MvAcceptFlow({
   // stronger, later state) and over the action state.
   const alreadyAttached = proposal.attached === true
   const alreadyApproved = proposal.decision === "approved"
+  const stale = proposal.stale_body === true
   const [status, setStatus] = useState<FlowStatus>(
     alreadyAttached ? "attached" : alreadyApproved ? "approved" : "idle",
   )
@@ -371,6 +373,17 @@ export function MvAcceptFlow({
   // [Create it now] — it runs the same probe → consent → create flow, which
   // moves status off "approved" and renders the live action/consent UI below.
   if (status === "approved") {
+    if (stale) {
+      return (
+        <div className="space-y-2">
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Approved
+          </span>
+          <p className="text-xs text-amber-700 dark:text-amber-300">{STALE_PROPOSAL_NOTICE}</p>
+        </div>
+      )
+    }
     return (
       <div className="space-y-2">
         <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
@@ -386,6 +399,8 @@ export function MvAcceptFlow({
       </div>
     )
   }
+
+  if (stale) return <p className="text-xs text-amber-700 dark:text-amber-300">{STALE_PROPOSAL_NOTICE}</p>
 
   return (
     <div className="w-full min-w-0 space-y-2">

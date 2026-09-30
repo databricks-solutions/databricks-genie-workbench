@@ -61,7 +61,7 @@ const ddl: MvDdlArtifact = {
   yaml_text: "version: 0.1\n",
   ddl: "CREATE VIEW finance.sales.order_revenue WITH METRICS LANGUAGE YAML AS $$ ... $$",
   validation: { ok: true },
-  grant_sql: "GRANT SELECT ON VIEW finance.sales.order_revenue TO `analysts`;",
+  grant_sql: "GRANT SELECT ON VIEW `finance`.`sales`.`order_revenue` TO `analysts`;",
 }
 
 const lift: MvLiftReport = {

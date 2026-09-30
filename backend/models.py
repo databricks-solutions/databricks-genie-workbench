@@ -377,6 +377,9 @@ class MvProposal(BaseModel):
     # attached out-of-band is still recognized. Lets the list badge an
     # already-created proposal instead of re-offering [Create this metric view].
     attached: bool = False
+    # MV-D117: the rendered body predates the current renderer (MV-D113). The
+    # card shows a re-scan notice instead of DDL, facts, or a create action.
+    stale_body: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 

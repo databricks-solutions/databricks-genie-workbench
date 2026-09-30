@@ -70,6 +70,7 @@ import {
   SelectionTwoSchemasSuggestOnlyFrame,
 } from "./MvSelectionFidelityFrames"
 import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
+import { IqScanApprovedStaleFrame, IqScanLowStaleFrame, IqScanStaleFrame, RunOutputCurrentCalloutFrame, RunOutputStaleFrame } from "./MvStaleBodyFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -164,4 +165,11 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m2-d-attached-not-created", title: "M2-d · Run output — attached at approval, not created by the app (USER_CREATED)", element: <AttachedNotCreatedFrame /> },
   { id: "m2-e-selection-two-schemas-suggest-only", title: "M2-e · Run setup — Suggest only, the default selection spans two schemas", element: <SelectionTwoSchemasSuggestOnlyFrame /> },
   { id: "m3-a-iqscan-empty-unservable", title: "M3-a · IQ scan — recurring measures, none single-table (NO_SERVABLE_MEASURES)", element: <IqScanUnservableFrame /> },
+  // PR #332 M6b — a proposal whose body predates the M3 render (MV-D117): the REAL cards
+  // rank it last, drop its create actions and show the re-scan notice.
+  { id: "m6b-a-iqscan-stale", title: "M6b-a · IQ scan — a pre-M3 proposal ranks last with a re-scan notice (MV-D117)", element: <IqScanStaleFrame /> },
+  { id: "m6b-b-run-output-stale", title: "M6b-b · Run output — the same, suggest-only panel", element: <RunOutputStaleFrame /> },
+  { id: "m6b-c-approved-stale", title: "M6b-c · IQ scan — approved before M3, re-scan to create", element: <IqScanApprovedStaleFrame /> },
+  { id: "m6b-d-run-output-current-callout", title: "M6b-d · Run output — two independent current proposals beside a stale one", element: <RunOutputCurrentCalloutFrame /> },
+  { id: "m6b-e-iqscan-low-stale", title: "M6b-e · IQ scan — the lower-ranked disclosure, one current and one stale proposal", element: <IqScanLowStaleFrame /> },
 ]

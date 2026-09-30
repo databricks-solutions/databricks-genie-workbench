@@ -21,7 +21,7 @@
  * the one `MvRegisterResponse` shape renders verified (USER_CREATED, NO drop
  * action — invariant 1) or refused (the reason, nothing recorded — invariant 2).
  */
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronUp, Circle, Link2, Loader2, Network, RefreshCw, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -29,9 +29,11 @@ import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
 import { MvProposalsSummary } from "@/components/auto-optimize/MvProposalsSummary"
 import { MvAcceptFlow } from "@/components/auto-optimize/MvAcceptFlow"
 import {
+  lowDisclosureHeader,
   MV_DEFAULT_VISIBLE,
   orthogonalityCallout,
   rankProposals,
+  recommendedIndex,
   recommendedReason,
   splitProposalsByConfidence,
   stageProgressFraction,
@@ -478,6 +480,7 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate, onProposalsCh
               // mark none Recommended. The first card still opens (fix #2).
               const ranked = rankProposals(primary)
               const callout = orthogonalityCallout(ranked)
+              const recommendedAt = recommendedIndex(ranked, callout)
               const visible = showAllPrimary ? ranked : ranked.slice(0, MV_DEFAULT_VISIBLE)
               const hidden = ranked.length - visible.length
               return (
@@ -501,8 +504,8 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate, onProposalsCh
                           onClaim={claimFromCard}
                           onLocate={onLocateInGraph}
                           onCreated={onCreated}
-                          recommended={!callout && i === 0}
-                          recommendedReason={!callout && i === 0 ? recommendedReason(proposal) : undefined}
+                          recommended={i === recommendedAt}
+                          recommendedReason={i === recommendedAt ? recommendedReason(proposal) : undefined}
                           defaultExpanded={isHi || i === 0}
                         />
                       </div>
@@ -521,63 +524,33 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate, onProposalsCh
               )
             })()}
 
-            {low.length > 0 && (
-              <div className="space-y-4">
-                {!showLow ? (
-                  <button
-                    onClick={() => setShowLow(true)}
-                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-default px-3 py-2 text-xs text-muted transition-colors hover:text-accent"
+            <LowProposalsDisclosure
+              low={low}
+              primaryEmpty={primary.length === 0}
+              open={showLow}
+              onToggle={setShowLow}
+              renderCard={(proposal) => {
+                const isHi = highlightSuggestionId === proposal.suggestion_id
+                return (
+                  <div
+                    key={proposal.suggestion_id}
+                    ref={(el) => { cardRefs.current[proposal.suggestion_id] = el }}
+                    className={isHi ? "rounded-xl ring-2 ring-accent ring-offset-2 ring-offset-surface transition-shadow" : undefined}
                   >
-                    <ChevronDown className="h-3.5 w-3.5" />
-                    {/* MV-D35 sweep (Prompt 15.9 item b): the disclosure describes
-                        EVIDENCE, not doubt. Every proposal below is validated,
-                        executable and non-overlapping — the split orders by demand
-                        evidence, it does not warn. Never "low-confidence". */}
-                    {primary.length === 0
-                      ? `Show ${low.length} ${low.length === 1 ? "suggestion" : "suggestions"} ranked lower by evidence`
-                      : `Show ${low.length} more, ranked lower by evidence`}
-                  </button>
-                ) : (
-                  <>
-                    {/* The disclosure is a toggle, not a one-way door: the same
-                        row that describes the split (MV-D35 evidence-not-doubt copy,
-                        preserved verbatim) collapses it back with a ChevronUp. */}
-                    <button
-                      onClick={() => setShowLow(false)}
-                      className="flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-default px-3 py-2 text-left text-xs text-muted transition-colors hover:text-accent"
-                    >
-                      <span>
-                        {primary.length === 0
-                          ? `All ${low.length} ${low.length === 1 ? "suggestion is" : "suggestions are"} ranked lower by demand evidence — each is still validated and executable.`
-                          : "Ranked lower by demand evidence — each is still validated and executable."}
-                      </span>
-                      <ChevronUp className="h-3.5 w-3.5 shrink-0" />
-                    </button>
-                    {low.map((proposal) => {
-                      const isHi = highlightSuggestionId === proposal.suggestion_id
-                      return (
-                        <div
-                          key={proposal.suggestion_id}
-                          ref={(el) => { cardRefs.current[proposal.suggestion_id] = el }}
-                          className={isHi ? "rounded-xl ring-2 ring-accent ring-offset-2 ring-offset-surface transition-shadow" : undefined}
-                        >
-                          <ScanProposalCard
-                            key={isHi ? "hi" : "base"}
-                            proposal={proposal}
-                            ddl={ddlById[proposal.suggestion_id]}
-                            onReviewCreate={onReviewCreate}
-                            onClaim={claimFromCard}
-                            onLocate={onLocateInGraph}
-                            onCreated={onCreated}
-                            defaultExpanded={isHi}
-                          />
-                        </div>
-                      )
-                    })}
-                  </>
-                )}
-              </div>
-            )}
+                    <ScanProposalCard
+                      key={isHi ? "hi" : "base"}
+                      proposal={proposal}
+                      ddl={ddlById[proposal.suggestion_id]}
+                      onReviewCreate={onReviewCreate}
+                      onClaim={claimFromCard}
+                      onLocate={onLocateInGraph}
+                      onCreated={onCreated}
+                      defaultExpanded={isHi}
+                    />
+                  </div>
+                )
+              }}
+            />
             {/* Views already on the Agent config, confirmed (not re-offered). */}
             <MvAttachedSummary proposals={attachedProposals} />
           </div>
@@ -607,6 +580,56 @@ export function MvIqScanAdvisorySection({ spaceId, onReviewCreate, onProposalsCh
         ) : (
           <MvRegisterRefused result={registerResult} />
         )
+      )}
+    </div>
+  )
+}
+
+// The lower-ranked proposals behind their disclosure, ranked like the primary list
+// so a stale card sorts last here too (MV-D117). Exported so a fidelity frame
+// renders this chrome rather than a copy of it.
+export function LowProposalsDisclosure({
+  low,
+  primaryEmpty,
+  open,
+  onToggle,
+  renderCard,
+}: {
+  low: MvProposal[]
+  primaryEmpty: boolean
+  open: boolean
+  onToggle: (open: boolean) => void
+  renderCard: (proposal: MvProposal) => ReactNode
+}) {
+  if (low.length === 0) return null
+  return (
+    <div className="space-y-4">
+      {!open ? (
+        <button
+          onClick={() => onToggle(true)}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-default px-3 py-2 text-xs text-muted transition-colors hover:text-accent"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          {/* MV-D35 sweep (Prompt 15.9 item b): the disclosure describes
+              EVIDENCE, not doubt — the split orders by demand evidence, it does
+              not warn. Never "low-confidence". */}
+          {primaryEmpty
+            ? `Show ${low.length} ${low.length === 1 ? "suggestion" : "suggestions"} ranked lower by evidence`
+            : `Show ${low.length} more, ranked lower by evidence`}
+        </button>
+      ) : (
+        <>
+          {/* The disclosure is a toggle, not a one-way door: the same row that
+              describes the split collapses it back with a ChevronUp. */}
+          <button
+            onClick={() => onToggle(false)}
+            className="flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-default px-3 py-2 text-left text-xs text-muted transition-colors hover:text-accent"
+          >
+            <span>{lowDisclosureHeader(low, primaryEmpty)}</span>
+            <ChevronUp className="h-3.5 w-3.5 shrink-0" />
+          </button>
+          {rankProposals(low).map(renderCard)}
+        </>
       )}
     </div>
   )

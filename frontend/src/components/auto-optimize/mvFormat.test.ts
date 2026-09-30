@@ -15,14 +15,18 @@ import {
   isCappedStrong,
   isCuratedFactPassing,
   isLowConfidence,
+  isStaleBody,
+  lowDisclosureHeader,
   MV_CAPPED_STRONG_LABEL,
   MV_DEFAULT_VISIBLE,
   orthogonalityCallout,
   proposalGainSentence,
   rankProposals,
+  recommendedIndex,
   recommendedReason,
   splitProposalsByConfidence,
   stageProgressFraction,
+  STALE_PROPOSAL_NOTICE,
 } from "./mvFormat"
 import type { MvProposal } from "@/types"
 
@@ -409,6 +413,103 @@ describe("orthogonalityCallout (MV-D35 — callout instead of a forced ranking)"
 
   it("stays null for a single proposal (nothing to be independent of)", () => {
     expect(orthogonalityCallout([withMeasures("a", ["m1"])])).toBeNull()
+  })
+
+  it("MV-D117: a stale proposal does not count — fresh + stale disjoint is null, and the fresh top is Recommended", () => {
+    const fresh = { ...withMeasures("fresh", ["m1"]), tier: "MEDIUM" }
+    const stale = { ...withMeasures("stale", ["m2"]), tier: "HIGH", stale_body: true }
+    const ranked = rankProposals([stale, fresh])
+    const callout = orthogonalityCallout(ranked)
+    expect(callout).toBeNull()
+    expect(recommendedIndex(ranked, callout)).toBe(0)
+    expect(ranked[0].suggestion_id).toBe("fresh")
+  })
+
+  it("MV-D117: with a stale proposal present, the callout names the current proposals only", () => {
+    const a = withMeasures("a", ["m1"])
+    const b = withMeasures("b", ["m2"])
+    const stale = { ...withMeasures("stale", ["m3"]), stale_body: true }
+    expect(orthogonalityCallout([a, b, stale])).toBe(
+      "The 2 current proposals are independent — any or all can be created.",
+    )
+  })
+})
+
+describe("stale proposals (MV-D117 — ranked last, never Recommended)", () => {
+  it("rankProposals puts a stale HIGH proposal after a fresh MEDIUM one", () => {
+    const staleHigh = mk({ suggestion_id: "staleHigh", tier: "HIGH", stale_body: true })
+    const freshMed = mk({ suggestion_id: "freshMed", tier: "MEDIUM" })
+    expect(rankProposals([staleHigh, freshMed]).map((p) => p.suggestion_id)).toEqual([
+      "freshMed",
+      "staleHigh",
+    ])
+  })
+
+  it("recommendedIndex is 0 when the top-ranked proposal is fresh", () => {
+    const ranked = rankProposals([
+      mk({ suggestion_id: "staleHigh", tier: "HIGH", stale_body: true }),
+      mk({ suggestion_id: "freshMed", tier: "MEDIUM" }),
+    ])
+    expect(recommendedIndex(ranked, null)).toBe(0)
+  })
+
+  it("recommendedIndex is -1 when every proposal is stale", () => {
+    const ranked = rankProposals([
+      mk({ suggestion_id: "a", tier: "HIGH", stale_body: true }),
+      mk({ suggestion_id: "b", tier: "MEDIUM", stale_body: true }),
+    ])
+    expect(recommendedIndex(ranked, null)).toBe(-1)
+  })
+
+  it("recommendedIndex is -1 when an orthogonality callout is present", () => {
+    const ranked = rankProposals([mk({ suggestion_id: "a", tier: "HIGH" })])
+    expect(recommendedIndex(ranked, "All 2 are independent — any or all can be created.")).toBe(-1)
+  })
+
+  it("isStaleBody is false for a proposal with no stale_body", () => {
+    expect(isStaleBody(mk({}))).toBe(false)
+  })
+
+  it("the notice does not promise the re-scan refreshes this card", () => {
+    expect(STALE_PROPOSAL_NOTICE).toBe(
+      "Found by an earlier version of the advisor, so it can't be created as is. Re-scan the Agent for a current suggestion.",
+    )
+  })
+})
+
+describe("lowDisclosureHeader (MV-D117 — validated and executable covers current proposals only)", () => {
+  const current = (id: string) => mk({ suggestion_id: id, tier: "LOW" })
+  const stale = (id: string) => mk({ suggestion_id: id, tier: "LOW", stale_body: true })
+
+  it("keeps today's wording when nothing is stale", () => {
+    expect(lowDisclosureHeader([current("a"), current("b")], false)).toBe(
+      "Ranked lower by demand evidence — each is still validated and executable.",
+    )
+    expect(lowDisclosureHeader([current("a")], true)).toBe(
+      "All 1 suggestion is ranked lower by demand evidence — each is still validated and executable.",
+    )
+    expect(lowDisclosureHeader([current("a"), current("b")], true)).toBe(
+      "All 2 suggestions are ranked lower by demand evidence — each is still validated and executable.",
+    )
+  })
+
+  it("claims validated and executable for the current ones and names the stale count", () => {
+    expect(lowDisclosureHeader([stale("s"), current("a")], true)).toBe(
+      "All 2 suggestions are ranked lower by demand evidence — the current one is still validated and executable; 1 found by an earlier version of the advisor needs a re-scan.",
+    )
+    expect(
+      lowDisclosureHeader([stale("s1"), current("a"), stale("s2"), current("b"), current("c")], false),
+    ).toBe(
+      "Ranked lower by demand evidence — each current one is still validated and executable; 2 found by an earlier version of the advisor need a re-scan.",
+    )
+  })
+
+  it("claims nothing validated when every disclosed proposal is stale", () => {
+    const header = lowDisclosureHeader([stale("s")], false)
+    expect(header).toBe(
+      "Ranked lower by demand evidence — 1 found by an earlier version of the advisor needs a re-scan.",
+    )
+    expect(header).not.toMatch(/validated|executable/)
   })
 })
 

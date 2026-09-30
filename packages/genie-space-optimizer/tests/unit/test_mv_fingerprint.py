@@ -366,6 +366,139 @@ def test_count_star_and_count_one_are_one_measure() -> None:
     assert star.fingerprint == one.fingerprint
 
 
+def test_a_row_count_takes_its_statements_only_table():
+    """MV-D117 (C-4): COUNT(*) counts the rows of the statement's one table."""
+    for sql in (f"SELECT COUNT(*) FROM {ORDERS}", f"SELECT COUNT(1) AS n FROM {ORDERS} o"):
+        (m,) = extract_measures(sql)
+        assert m.source_tables == (ORDERS,)
+        assert m.source_columns == ()
+        assert m.has_unresolved_columns is False
+
+
+def test_a_row_count_over_a_join_names_no_table():
+    (m,) = extract_measures(
+        f"SELECT COUNT(*) FROM {ORDERS} o JOIN {LINEITEM} l ON o.o_orderkey = l.l_orderkey"
+    )
+    assert m.source_tables == ()
+
+
+def test_row_counts_over_two_tables_split_into_two_keys():
+    scan = corpus_scan([
+        (f"SELECT COUNT(*) FROM {ORDERS}", "q1"),
+        (f"SELECT COUNT(*) FROM {LINEITEM}", "q2"),
+    ])
+    rows = [m for m in scan.measures if m.canonical_expr == "count(?n)"]
+    assert sorted(r.source_tables for r in rows) == sorted([(ORDERS,), (LINEITEM,)])
+    keys = {mv_candidate_fingerprint("s", r.canonical_expr, r.source_tables) for r in rows}
+    assert len(keys) == 2
+
+
+def test_a_struct_field_on_an_alias_keeps_its_path():
+    """MV-D117 (C-7): o.payload.fee is field fee of struct column payload on o."""
+    (m,) = extract_measures(f"SELECT SUM(o.payload.fee) FROM {ORDERS} o")
+    assert m.canonical_expr == "sum(payload.fee)"
+    assert m.source_tables == (ORDERS,)
+    assert m.source_columns == ("payload",)
+    assert m.has_unresolved_columns is False
+    assert m.representative_expr == "SUM(source.`payload`.`fee`)"
+    assert canonicalize_expr(m.representative_expr) == m.canonical_expr
+
+
+def test_a_struct_field_does_not_collide_with_a_plain_column():
+    (struct,) = extract_measures(f"SELECT SUM(o.payload.fee) FROM {ORDERS} o")
+    (plain,) = extract_measures(f"SELECT SUM(o.fee) FROM {ORDERS} o")
+    assert struct.fingerprint != plain.fingerprint
+
+
+def test_a_table_qualified_column_keeps_todays_reading():
+    (m,) = extract_measures(f"SELECT SUM(sales.orders.o_totalprice) FROM {ORDERS}")
+    (bare,) = extract_measures(f"SELECT SUM(o_totalprice) FROM {ORDERS}")
+    assert m.canonical_expr == bare.canonical_expr == "sum(o_totalprice)"
+    assert m.source_tables == bare.source_tables
+
+
+def test_a_two_part_struct_reference_stays_unresolved():
+    (m,) = extract_measures(f"SELECT SUM(payload.fee) FROM {ORDERS}")
+    assert m.has_unresolved_columns is True
+    assert m.canonical_expr == "sum(fee)"
+
+
+def test_a_source_headed_struct_round_trips_standalone():
+    expr = "SUM(source.`payload`.`fee`)"
+    assert canonicalize_expr(expr) == "sum(payload.fee)"
+    assert render_expr(expr) == expr
+    assert canonicalize_expr(render_expr(expr)) == canonicalize_expr(expr)
+
+
+def test_a_four_part_column_measure_reads_as_its_table():
+    (m,) = extract_measures("SELECT SUM(main.sales.orders.amt) FROM main.sales.orders")
+    assert m.canonical_expr == "sum(amt)"
+    assert m.representative_expr == "SUM(`amt`)"
+    assert m.source_tables == ("main.sales.orders",)
+    assert m.has_unresolved_columns is False
+
+
+def test_a_relation_aliased_source_reads_its_struct_field():
+    (m,) = extract_measures(f"SELECT SUM(source.payload.fee) FROM {ORDERS} source")
+    assert m.canonical_expr == "sum(payload.fee)"
+    assert m.representative_expr == "SUM(source.`payload`.`fee`)"
+    assert m.source_tables == (ORDERS,)
+    assert m.has_unresolved_columns is False
+
+
+SOURCE_SCHEMA = "main.source.orders"
+
+
+def test_a_source_schema_column_in_a_measure_is_not_a_struct():
+    (m,) = extract_measures(f"SELECT SUM(source.orders.amt) FROM {SOURCE_SCHEMA}")
+    assert m.canonical_expr == "sum(amt)"
+    assert m.representative_expr == "SUM(`amt`)"
+    assert m.source_tables == (SOURCE_SCHEMA,)
+
+
+def test_a_source_schema_column_in_a_dimension_is_not_a_struct():
+    dims = extract_dimensions(
+        f"SELECT source.orders.region, SUM(amt) FROM {SOURCE_SCHEMA} GROUP BY source.orders.region"
+    )
+    assert [d.canonical_expr for d in dims] == ["region"]
+
+
+def test_a_source_schema_column_in_a_filter_is_not_a_struct():
+    filters = extract_filters(f"SELECT SUM(amt) FROM {SOURCE_SCHEMA} WHERE source.orders.status = 1")
+    assert [f.canonical_expr for f in filters] == ["status = ?n"]
+
+
+def test_a_source_schema_column_keeps_the_grain():
+    assert statement_grain(
+        f"SELECT SUM(amt) FROM {SOURCE_SCHEMA} GROUP BY source.orders.region"
+    ) == statement_grain(f"SELECT SUM(amt) FROM {SOURCE_SCHEMA} GROUP BY region")
+
+
+def test_a_source_schema_column_in_a_ratio_renders_bare():
+    (ratio,) = [
+        s for s in shapes_in_statement(
+            f"SELECT SUM(source.orders.amt) / SUM(source.orders.qty) FROM {SOURCE_SCHEMA}"
+        )
+        if s.kind == SHAPE_RATIO
+    ]
+    assert dict(ratio.render_components) == {
+        "numerator": "SUM(`amt`)", "denominator": "SUM(`qty`)",
+    }
+
+
+def test_a_source_schema_column_in_a_conditional_count_renders_bare():
+    (count,) = [
+        s for s in shapes_in_statement(
+            f"SELECT SUM(CASE WHEN source.orders.status = 1 THEN 1 ELSE 0 END) FROM {SOURCE_SCHEMA}"
+        )
+        if s.kind == SHAPE_CONDITIONAL_COUNT
+    ]
+    assert dict(count.render_components) == {
+        "condition": "`status` = 1",
+        "rewrite": "count(1) filter (where `status` = 1)",
+    }
+
+
 def test_select_star_is_not_erased() -> None:
     assert canonicalize_sql_ast(f"SELECT * FROM {LINEITEM}") == f"select * from {LINEITEM} as t1"
 

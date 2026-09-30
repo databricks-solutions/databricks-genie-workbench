@@ -61,8 +61,18 @@ import {
   SelectionTwoSchemasSuggestOnlyFrame,
 } from "./MvSelectionFidelityFrames"
 import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
+import {
+  IqScanApprovedStaleFrame,
+  IqScanLowStaleFrame,
+  IqScanStaleFrame,
+  RunOutputCurrentCalloutFrame,
+  RunOutputStaleFrame,
+} from "./MvStaleBodyFidelityFrames"
+import { STALE_PROPOSAL_NOTICE } from "../mvFormat"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
+// renderToStaticMarkup escapes the notice's apostrophe.
+const NOTICE_MARKUP = STALE_PROPOSAL_NOTICE.replace(/'/g, "&#x27;")
 
 describe("MV mockups — smoke", () => {
   it("every registered frame renders to static markup", () => {
@@ -423,6 +433,106 @@ describe("M3 — IQ scan unservable empty (MV-D113 d4)", () => {
   it("m3-a renders the unservable empty state through the real component", () => {
     const html = render(<IqScanUnservableFrame />)
     expect(html).toContain("none can be proposed yet")
+  })
+})
+
+describe("M6b — a stale proposal ranks last with a re-scan notice (MV-D117)", () => {
+  const FRESH = "finance.sales.order_revenue"
+  const STALE = "finance.sales.gross_margin"
+  const iq = render(<IqScanStaleFrame />)
+  const run = render(<RunOutputStaleFrame />)
+  const approved = render(<IqScanApprovedStaleFrame />)
+
+  it("every frame carries the re-scan notice", () => {
+    for (const html of [iq, run, approved]) expect(html).toContain(NOTICE_MARKUP)
+  })
+
+  it.each([["m6b-a", iq], ["m6b-b", run]])("%s: one Recommended, the fresh card first, the stale card inert", (_id, html) => {
+    expect(html.match(/Recommended/g)?.length).toBe(1)
+    expect(html.indexOf(FRESH)).toBeGreaterThan(-1)
+    expect(html.indexOf(STALE)).toBeGreaterThan(html.indexOf(FRESH))
+    const staleSegment = html.slice(html.indexOf(STALE))
+    expect(html.indexOf("Recommended")).toBeLessThan(html.indexOf(STALE))
+    expect(staleSegment).not.toMatch(/validated/i)
+    expect(staleSegment).not.toMatch(/executable/i)
+    expect(staleSegment).not.toContain("Create this metric view")
+    expect(staleSegment).not.toContain("I created this myself")
+    expect(staleSegment).toContain(NOTICE_MARKUP)
+  })
+
+  it("m6b-b: the header counts are unchanged", () => {
+    expect(run).toContain("2 proposed · none created")
+  })
+
+  it("m6b-c: approved, but not for the next run — the notice replaces the buttons", () => {
+    expect(approved).toContain("Approved")
+    expect(approved).not.toContain("Approved for the next run")
+    expect(approved).not.toContain("Create it now")
+  })
+
+  it("m6b-a/b: fresh + stale is not an independence callout on either surface", () => {
+    for (const html of [iq, run]) expect(html).not.toContain("are independent")
+  })
+
+  it("m6b-d: the callout names the current proposals only; the stale card ranks last, none Recommended", () => {
+    const html = render(<RunOutputCurrentCalloutFrame />)
+    expect(html).toContain("The 2 current proposals are independent — any or all can be created.")
+    expect(html).not.toContain("All 3 are independent")
+    expect(html).not.toContain("Recommended")
+    expect(html).toContain("3 proposed · none created")
+    const staleAt = html.indexOf("finance.sales.avg_order_value")
+    expect(staleAt).toBeGreaterThan(html.indexOf(FRESH))
+    expect(staleAt).toBeGreaterThan(html.indexOf(STALE))
+    expect(html.slice(staleAt)).toContain(NOTICE_MARKUP)
+  })
+
+  it("no frame shows a percent or the word confidence (MV-D35)", () => {
+    for (const html of [iq, run, approved, render(<RunOutputCurrentCalloutFrame />)]) {
+      // Raw markup, so aria-labels and titles are covered too.
+      expect(html.toLowerCase()).not.toContain("confidence")
+      // Visible text only: the DDL block's syntax highlighter emits hsl(…%) styles.
+      expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\d+%/)
+    }
+  })
+})
+
+describe("M6b-e — the IQ LOW disclosure with a stale proposal (MV-D117)", () => {
+  const CURRENT = "finance.sales.refund_rate"
+  const STALE = "finance.sales.discount_depth"
+  const html = render(<IqScanLowStaleFrame />)
+
+  it("the header claims validated and executable for the current proposal only", () => {
+    expect(html).toContain(
+      "All 2 suggestions are ranked lower by demand evidence — the current one is still validated and executable; 1 found by an earlier version of the advisor needs a re-scan.",
+    )
+    expect(html).not.toContain("each is still validated and executable")
+  })
+
+  it("the current card leads with its facts; the stale card ranks last, inert, with the notice", () => {
+    const currentAt = html.indexOf(CURRENT)
+    const staleAt = html.indexOf(STALE)
+    expect(currentAt).toBeGreaterThan(-1)
+    expect(staleAt).toBeGreaterThan(currentAt)
+    const currentSegment = html.slice(currentAt, staleAt)
+    expect(currentSegment).toMatch(/validated/)
+    expect(currentSegment).toMatch(/executable/)
+    const staleSegment = html.slice(staleAt)
+    expect(staleSegment).not.toMatch(/validated/i)
+    expect(staleSegment).not.toMatch(/executable/i)
+    expect(staleSegment).not.toContain("Create this metric view")
+    expect(staleSegment).not.toContain("I created this myself")
+    expect(staleSegment).toContain(NOTICE_MARKUP)
+  })
+
+  it("no Recommended, no percent, no confidence (MV-D35)", () => {
+    expect(html).not.toContain("Recommended")
+    expect(html.toLowerCase()).not.toContain("confidence")
+    expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\d+%/)
+  })
+
+  it("is registered after the other M6b frames", () => {
+    const ids = MOCKUP_FRAMES.map((f) => f.id)
+    expect(ids.indexOf("m6b-e-iqscan-low-stale")).toBe(ids.indexOf("m6b-d-run-output-current-callout") + 1)
   })
 })
 

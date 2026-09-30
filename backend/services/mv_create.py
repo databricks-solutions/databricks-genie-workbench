@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -45,6 +46,7 @@ from backend.services.auth import (
 )
 from backend.services import mv_entitlement
 from genie_space_optimizer.common.config import (
+    MV_JOIN_STRATEGY_DIRECT,
     MV_PROVENANCE_OBO_CREATED,
     MV_PROVENANCE_USER_CREATED,
     MV_RENDER_VERSION,
@@ -143,10 +145,20 @@ def _load_ddl_artifact(
 
 
 _NO_BODY_REASON = "this proposal has no rendered body to create; re-scan and retry"
-_STALE_BODY_REASON = (
+STALE_BODY_REASON = (
     "this proposal was rendered by an earlier version of the advisor; "
-    "re-scan the Agent and approve it again"
+    "re-scan the Agent for a current suggestion"
 )
+UNPROVEN_RUNG_REASON = (
+    "this proposal needs a join strategy that is not yet proven in Unity Catalog; "
+    "it cannot be created yet"
+)
+
+
+def _unproven_rung(stored_strategy: str | None) -> bool:
+    """Only single-source (``direct``) bodies are created until the join rungs are
+    proven in Unity Catalog (MV-D117)."""
+    return (stored_strategy or MV_JOIN_STRATEGY_DIRECT) != MV_JOIN_STRATEGY_DIRECT
 
 
 class _ReplayBody(NamedTuple):
@@ -155,11 +167,23 @@ class _ReplayBody(NamedTuple):
     proposed_object: str
 
 
-def _stamped(record: dict) -> bool:
+def is_current_render(record: dict) -> bool:
     try:
         return int(record.get("render_version") or 0) >= MV_RENDER_VERSION
     except (TypeError, ValueError):
         return False
+
+
+def proposal_body_is_stale(row: dict) -> bool:
+    """A proposal whose body predates the current renderer (MV-D113, MV-D117).
+
+    Every rendered proposal carries ``evidence.render_version``; one without a
+    ``proposed_object`` never renders, so it is not stale, just empty."""
+    proposed = row.get("proposed_object")
+    if not (isinstance(proposed, str) and proposed.strip()):
+        return False
+    evidence = row.get("evidence")
+    return not is_current_render(evidence if isinstance(evidence, dict) else {})
 
 
 def _replay_body(
@@ -172,20 +196,20 @@ def _replay_body(
     evidence = candidate.get("evidence") or {}
     if not isinstance(evidence, dict):
         evidence = {}
-    if artifact and artifact.get("yaml_text") and _stamped(artifact):
+    if artifact and artifact.get("yaml_text") and is_current_render(artifact):
         return _ReplayBody(
             str(artifact["yaml_text"]),
             artifact.get("join_strategy"),
             str(artifact.get("proposed_object") or ""),
         ), None
-    if candidate.get("yaml_text") and _stamped(evidence):
+    if candidate.get("yaml_text") and is_current_render(evidence):
         return _ReplayBody(
             str(candidate["yaml_text"]),
             evidence.get("join_strategy"),
             str(candidate.get("proposed_object") or ""),
         ), None
     if (artifact and artifact.get("yaml_text")) or candidate.get("yaml_text"):
-        return None, _STALE_BODY_REASON
+        return None, STALE_BODY_REASON
     return None, _NO_BODY_REASON
 
 
@@ -261,6 +285,28 @@ def verify_consent(
         warehouse_id=warehouse_id,
     )
     return mv_entitlement.verify(consent, fresh), consent
+
+
+_SKIP_ORDER = (
+    ("unavailable", "no longer available"),
+    ("stale", "rendered by an earlier version of the advisor, re-scan the Agent for a current suggestion"),
+    ("no_body", "no rendered body"),
+    ("unproven_rung", "needs a join strategy not yet proven in Unity Catalog"),
+    ("invalid_name", "not a plain Unity Catalog name"),
+    ("revalidation", "failed re-validation"),
+    ("rung_below", "re-validation demands a lower join strategy"),
+    ("exists", "already exists in the consented schema"),
+    ("not_confirmed", "was not confirmed as a metric view after create"),
+    ("unrecorded", "could not be recorded, so it was dropped"),
+    ("error", "failed with an error"),
+)
+_NOTHING_BUILT = "no metric view could be created for the selected candidates"
+
+
+def _nothing_built_reason(skips: Mapping[str, int]) -> str:
+    """Counts by reason, in a fixed order; never a view name or SQL (MV-D117)."""
+    parts = [f"{label} ({skips[key]})" for key, label in _SKIP_ORDER if skips.get(key)]
+    return f"{_NOTHING_BUILT}: {'; '.join(parts)}" if parts else _NOTHING_BUILT
 
 
 def create_and_attach_for_run(
@@ -371,11 +417,16 @@ def create_and_attach_for_run(
 
     attach_views: list[str] = []
     created: list[MvCreatedObject] = []
+    skips: dict[str, int] = {}
+    unavailable = len(approved - {c.get("suggestion_id") for c in candidates})
+    if unavailable:
+        skips["unavailable"] = unavailable
 
     for candidate in candidates:
         suggestion_id = str(candidate.get("suggestion_id") or "")
         fingerprint = str(candidate.get("dedup_fingerprint") or "")
         if not suggestion_id or not fingerprint:
+            skips["no_body"] = skips.get("no_body", 0) + 1
             continue
         try:
             # MV-D22 replay body. Two sources, one shape: an in-job run writes a
@@ -395,8 +446,16 @@ def create_and_attach_for_run(
                 logger.warning(
                     "Not creating suggestion %s: %s", suggestion_id, refusal
                 )
+                key = "stale" if refusal == STALE_BODY_REASON else "no_body"
+                skips[key] = skips.get(key, 0) + 1
                 continue
             yaml_text, stored_strategy, proposed_object = body
+            if _unproven_rung(stored_strategy):
+                logger.warning(
+                    "Not creating suggestion %s: %s", suggestion_id, UNPROVEN_RUNG_REASON
+                )
+                skips["unproven_rung"] = skips.get("unproven_rung", 0) + 1
+                continue
 
             full_name = _consented_full_name(consent, proposed_object)
             if not _valid_uc_identifier(full_name):
@@ -404,6 +463,7 @@ def create_and_attach_for_run(
                     "Not creating suggestion %s: %s is not a plain three-part name",
                     suggestion_id, full_name,
                 )
+                skips["invalid_name"] = skips.get("invalid_name", 0) + 1
                 continue
 
             # MV-D22 replay-with-revalidation. NOT_COMPARED (no oracle at trigger
@@ -415,6 +475,7 @@ def create_and_attach_for_run(
                     "Revalidation of suggestion %s failed (%s); dropping",
                     suggestion_id, "; ".join(report.errors) or "no detail",
                 )
+                skips["revalidation"] = skips.get("revalidation", 0) + 1
                 continue
             if _rung_below(report.downgrade_to, stored_strategy):
                 logger.warning(
@@ -422,6 +483,7 @@ def create_and_attach_for_run(
                     "aborting create (MV-D22)",
                     suggestion_id, report.downgrade_to, stored_strategy,
                 )
+                skips["rung_below"] = skips.get("rung_below", 0) + 1
                 continue
 
             if _object_exists(obo_ws, warehouse_id, full_name):
@@ -429,6 +491,7 @@ def create_and_attach_for_run(
                     "%s already exists; refusing to clobber it for suggestion %s",
                     full_name, suggestion_id,
                 )
+                skips["exists"] = skips.get("exists", 0) + 1
                 continue
 
             from genie_space_optimizer.common.warehouse import sql_warehouse_execute
@@ -445,6 +508,7 @@ def create_and_attach_for_run(
                     )
                 except Exception:
                     logger.warning("Could not clean up %s after a failed create", full_name)
+                skips["not_confirmed"] = skips.get("not_confirmed", 0) + 1
                 continue
 
             try:
@@ -472,6 +536,7 @@ def create_and_attach_for_run(
                         "Could not drop unrecorded metric view %s; it must be dropped by hand",
                         full_name, exc_info=True,
                     )
+                skips["unrecorded"] = skips.get("unrecorded", 0) + 1
                 continue
             attach_views.append(full_name)
             created.append(MvCreatedObject(
@@ -486,6 +551,7 @@ def create_and_attach_for_run(
                 "Create failed for suggestion %s; dropping it from the run",
                 suggestion_id, exc_info=True,
             )
+            skips["error"] = skips.get("error", 0) + 1
             continue
 
     if not attach_views:
@@ -493,7 +559,7 @@ def create_and_attach_for_run(
         # collisions). The verdict stays SUFFICIENT — this is a create-time
         # outcome, not a consent downgrade — but the run and its reason are still
         # stamped so /mv-created can explain the empty result.
-        downgrade_reason = "no metric view could be created for the selected candidates"
+        downgrade_reason = _nothing_built_reason(skips)
         _stamp_consent(verdict=verification.verdict, downgrade_reason=downgrade_reason)
         return MvAttachHandoff(
             action_mode="suggest_only",
@@ -703,8 +769,9 @@ def _claim_matches_view(
 
     The claim is *checked, not trusted*: each of the view's measures is
     fingerprinted through the same extractor + ``mv_candidate_fingerprint`` the
-    corpus scan uses, and the claimed candidate's ``dedup_fingerprint`` must be
-    among them. A mismatch refuses the claim (the user can register without it).
+    corpus scan uses, and the claimed candidate's ``dedup_fingerprint`` — or, for
+    a bundle (MV-D30), every anchor's — must be among them. A mismatch or a stale
+    proposal refuses the claim (the user can register without it).
     """
     import yaml as _yaml
 
@@ -721,6 +788,8 @@ def _claim_matches_view(
     )
     if claimed is None:
         return False, f"no proposal {suggestion_id} exists for this space to claim"
+    if proposal_body_is_stale(claimed):
+        return False, STALE_BODY_REASON
     target_fp = str(claimed.get("dedup_fingerprint") or "")
     if not target_fp:
         return False, f"proposal {suggestion_id} has no fingerprint to compare against"
@@ -744,12 +813,19 @@ def _claim_matches_view(
         except Exception:
             continue
         for ref in refs:
-            sources = ref.source_tables or (source,)
+            sources = ref.source_tables
             fingerprints.add(
                 mv_candidate_fingerprint(space_id, ref.canonical_expr, sources)
             )
 
-    if target_fp in fingerprints:
+    evidence = claimed.get("evidence") if isinstance(claimed.get("evidence"), dict) else {}
+    anchors = [
+        str(m.get("dedup_fingerprint") or "")
+        for m in evidence.get("measures") or []
+        if isinstance(m, dict) and m.get("role", "anchor") == "anchor"
+    ]
+    required = [fp for fp in anchors if fp] or [target_fp]
+    if all(fp in fingerprints for fp in required):
         return True, None
     return (
         False,
@@ -1092,6 +1168,11 @@ def create_at_approval(
             reason=refusal,
         )
     yaml_text, stored_strategy, proposed_object = body
+    if _unproven_rung(stored_strategy):
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason=UNPROVEN_RUNG_REASON,
+        )
 
     full_name = _consented_full_name(consent, proposed_object)
     if not _valid_uc_identifier(full_name):
@@ -1198,11 +1279,15 @@ def create_at_approval(
 
 
 __all__ = [
+    "STALE_BODY_REASON",
+    "UNPROVEN_RUNG_REASON",
     "MvAttachHandoff",
     "MvCreateAtApprovalResult",
     "MvRegisterResult",
     "create_and_attach_for_run",
     "create_at_approval",
+    "is_current_render",
+    "proposal_body_is_stale",
     "register_user_created_view",
     "verify_consent",
 ]

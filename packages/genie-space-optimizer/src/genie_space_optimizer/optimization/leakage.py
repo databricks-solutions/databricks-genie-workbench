@@ -66,6 +66,11 @@ _TRAILING_SEMI_RE = re.compile(r";+\s*$")
 _QUOTED_ALIAS_RE = re.compile(r"\bAS\s+`[^`]+`", re.IGNORECASE)
 
 
+def _fold_identifier_quotes(text: str) -> str:
+    """Identifier quoting is cosmetic to the firewall; fold it on both sides."""
+    return text.replace("`", "")
+
+
 def _strip_sql(sql: str) -> str:
     """Remove comments, normalize whitespace, lower-case. Preserves
     identifiers (they're compared case-insensitively against the canonical
@@ -76,6 +81,7 @@ def _strip_sql(sql: str) -> str:
     s = _LINE_COMMENT_RE.sub(" ", s)
     s = _TRAILING_SEMI_RE.sub("", s)
     s = _QUOTED_ALIAS_RE.sub("AS _alias", s)
+    s = _fold_identifier_quotes(s)
     s = _WHITESPACE_RE.sub(" ", s).strip().lower()
     return s
 
@@ -83,8 +89,8 @@ def _strip_sql(sql: str) -> str:
 def canonicalize_sql(sql: str) -> str:
     """Return a stable SHA-256 fingerprint for ``sql``.
 
-    Two SQL strings that differ only in whitespace, comments, case, or
-    quoted-alias syntax produce the same fingerprint. Identifier-level
+    Two SQL strings that differ only in whitespace, comments, case,
+    quoted-alias syntax, or identifier quoting produce the same fingerprint. Identifier-level
     differences (different column names, different tables) produce
     different fingerprints — those are legitimately different queries.
 
@@ -109,6 +115,10 @@ def _tokenize(text: str, n: int = 3) -> set[str]:
     if len(t) < n:
         return set()
     return {t[i : i + n] for i in range(len(t) - n + 1)}
+
+
+def _sql_shingles(text: str) -> set[str]:
+    return _tokenize(_fold_identifier_quotes(text)) if isinstance(text, str) else set()
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -158,7 +168,7 @@ class BenchmarkCorpus:
             corpus.expected_sqls.append(sql)
             corpus.question_ids.append(qid)
             corpus.question_shingles.append(_tokenize(q))
-            corpus.sql_shingles.append(_tokenize(sql))
+            corpus.sql_shingles.append(_sql_shingles(sql))
             fp = canonicalize_sql(sql)
             if fp:
                 corpus.sql_fingerprints.add(fp)
@@ -344,33 +354,25 @@ def _check_string_against_corpus(
         if fp and fp in corpus.sql_fingerprints:
             return True, "sql_fingerprint_match", 1.0
 
-    shingles = _tokenize(text)
-    if not shingles:
+    # Each probe is normalized the way its corpus side was, whatever the field:
+    # SQL shingles fold identifier quotes, question shingles stay raw.
+    sql_pass = (_sql_shingles(text), corpus.sql_shingles, "sql")
+    question_pass = (_tokenize(text), corpus.question_shingles, "question")
+    if not sql_pass[0] and not question_pass[0]:
         return False, "", 0.0
-
-    comparison_sets = (
-        corpus.sql_shingles if is_sql else corpus.question_shingles
-    )
-    other_sets = (
-        corpus.question_shingles if is_sql else corpus.sql_shingles
-    )
 
     best_score = 0.0
     best_idx = -1
     best_src = ""
-    for idx, sh in enumerate(comparison_sets):
-        score = _jaccard(shingles, sh)
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-            best_src = "sql" if is_sql else "question"
-
-    for idx, sh in enumerate(other_sets):
-        score = _jaccard(shingles, sh)
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-            best_src = "question" if is_sql else "sql"
+    for shingles, comparison_sets, src in (
+        (sql_pass, question_pass) if is_sql else (question_pass, sql_pass)
+    ):
+        for idx, sh in enumerate(comparison_sets):
+            score = _jaccard(shingles, sh)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+                best_src = src
 
     if best_score >= NGRAM_SIMILARITY_THRESHOLD:
         return (
@@ -827,7 +829,7 @@ class LeakageOracle:
                     _question_token_set_jaccard(question, benchmark_q),
                 )
 
-            sql_shingles = _tokenize(sql)
+            sql_shingles = _sql_shingles(sql)
             if sql_shingles:
                 for shingles in corpus.sql_shingles:
                     best_sql_score = max(
