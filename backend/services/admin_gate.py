@@ -4,8 +4,8 @@ Moved from ``backend/watch/_auth.py`` (which re-exports it) so every admin-only
 surface uses one predicate. The signal is the same one ``/api/auth/me`` uses to
 drive the frontend ``isAdmin``:
 
-1. ``X-Forwarded-Groups`` contains ``admins``, or a local dev mode applies
-   (:func:`is_admin_request`, pure over headers + env);
+1. off Apps only, ``X-Forwarded-Groups`` lists ``admins``; or a local dev mode
+   applies (:func:`is_admin_request`, pure over headers + env);
 2. otherwise the caller's OBO identity (``current_user.me()``) is in the
    ``admins`` group. Databricks Apps forwards ``X-Forwarded-User`` but NOT
    ``X-Forwarded-Groups``, so on a deployed app step 2 is the one that admits a
@@ -27,7 +27,10 @@ import time
 
 from fastapi import HTTPException, Request
 
-from backend.services.auth import require_obo_workspace_client
+from backend.services.auth import (
+    is_running_on_databricks_apps,
+    require_obo_workspace_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,22 +43,23 @@ _cache_lock = threading.Lock()
 def is_admin_request(request: Request) -> bool:
     """Whether the request headers alone prove workspace admin.
 
-    ``X-Forwarded-Groups`` contains ``admins``. Falls back to the local dev
+    Off Databricks Apps: ``X-Forwarded-Groups`` lists ``admins`` (exact group
+    name). On Apps the header is ignored: the Apps proxy never sets it, so any
+    value it carries was supplied by the caller. Falls back to the local dev
     modes (``DEV_ADMIN=true``, or ``DEV_USER_EMAIL`` set with no OBO headers)
     so non-Apps deployments behave the same as ``/api/auth/me``.
     """
-    groups = (request.headers.get("X-Forwarded-Groups") or "").lower()
-    if "admins" in groups:
-        return True
+    if not is_running_on_databricks_apps():
+        header = request.headers.get("X-Forwarded-Groups") or ""
+        if groups_include_admins([g.strip() for g in header.split(",")]):
+            return True
     if os.environ.get("DEV_ADMIN", "").lower() == "true":
         return True
     has_obo_user = bool(
         request.headers.get("X-Forwarded-User")
         or request.headers.get("X-Forwarded-Email")
     )
-    if not has_obo_user and os.environ.get("DEV_USER_EMAIL"):
-        return True
-    return False
+    return not has_obo_user and bool(os.environ.get("DEV_USER_EMAIL"))
 
 
 def obo_groups() -> list[str]:

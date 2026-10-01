@@ -1254,10 +1254,12 @@ weakens a named journey.
     (CUJ-01). Every ontology router now carries one router-level gate,
     `dependencies=[Depends(require_admin)]` (`require_admin`
     `backend/services/admin_gate.py`), so a non-admin who calls
-    `/api/ontology/*` directly gets 403. The gate admits an admin by the
-    `X-Forwarded-Groups` header or, since Databricks Apps does not forward it,
-    by the caller's OBO groups (`resolve_is_admin`
+    `/api/ontology/*` directly gets 403. On Databricks Apps the gate admits
+    an admin only by the caller's OBO groups (`resolve_is_admin`
     `backend/services/admin_gate.py`), the same signal `/api/auth/me` uses.
+    The `X-Forwarded-Groups` header is ignored there: the Apps proxy never
+    sets it, so any value is caller-supplied. Off Apps the header counts as
+    an exact `admins` group match.
 27. **The grant copy disagrees about who needs the grant** (CUJ-02, CUJ-03).
     - The blocked-state card asks for an SP grant (`SELECT on system.tags.governed_tags` `frontend/src/ontology/OntologyPage.tsx:72-74`).
     - The access banner says no SP grant is needed to view (`no service-principal grant is` `frontend/src/ontology/components/PermissionBanner.tsx:223-225`).

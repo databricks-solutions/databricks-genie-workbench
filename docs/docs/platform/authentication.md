@@ -55,8 +55,10 @@ Every `/api/ontology/*` route and `POST /api/watch/admin/refresh-rollup` return 
 
 The gate uses the same admin signal as `GET /api/auth/me`:
 
-1. `X-Forwarded-Groups` contains `admins`, or a local dev mode applies (`DEV_ADMIN=true`, or `DEV_USER_EMAIL` with no forwarded user headers).
-2. Otherwise, the caller's own groups from `current_user.me()` on the **OBO** client. Databricks Apps forwards the user's email but not their groups, so on a deployed app this step admits a real admin.
+1. A local dev mode applies (`DEV_ADMIN=true`, or `DEV_USER_EMAIL` with no forwarded user headers), or, **off Databricks Apps only**, `X-Forwarded-Groups` lists the exact group `admins`.
+2. Otherwise, the caller's own groups from `current_user.me()` on the **OBO** client. Databricks Apps forwards the user's email but not their groups, so on a deployed app this step is the one that admits a real admin.
+
+On Databricks Apps the `X-Forwarded-Groups` header is ignored. The Apps proxy never sets it, so any value it carries was supplied by the caller and cannot prove anything.
 
 The gate never uses the service principal's identity. It fails closed: a request with no OBO context, or a failed SDK call, gets 403. The answer is cached per access token for five minutes.
 

@@ -45,6 +45,11 @@
   commit e11655ad), so the header-only `is_admin_request` would 403 every real admin on deploy. The
   shared gate is re-exported for GenieWatch, so `watch/routers/admin.py:18` now admits real admins as
   well (it refused them on Apps before); `/api/auth/me` reuses the same `obo_groups` helper.
+- **P1 hardening (pre-deploy review, 2026-09-30):** on Databricks Apps the gate IGNORES
+  `X-Forwarded-Groups`. The Apps proxy never sets it, so any value is caller-supplied; trusting it
+  let anyone pass the gate by sending `X-Forwarded-Groups: admins`. Off Apps (tests, local) the
+  header still counts, matched as the exact group `admins` (no substring: `data-admins` is not
+  admin). `/api/auth/me` uses the same `is_admin_request` predicate.
 
 ## Why now
 The Ontology tab reads as finished but six gaps change what a customer experiences: the nightly scan
@@ -284,7 +289,8 @@ run` green; `git status -- uv.lock frontend/package-lock.json` clean. Then STOP.
 
 ## Deploy-verify gate (human, after each phase's offline-green)
 `./scripts/deploy.sh --update` (profile from `.env.deploy`, today 6t92c3).
-- **P1:** as admin, the tab works; `curl` an ontology route with a non-admin token → 403.
+- **P1:** as admin, the tab works; `curl` an ontology route with a non-admin token → 403; the same
+  non-admin call with `X-Forwarded-Groups: admins` added → still 403.
 - **P2:** break the job id (or use a workspace without it) → Overview shows the message, not
   "Scanning…"; the access panel copy is truthful; Map "Open in Review" lands on the card; Estate
   "Better proposal" lands on its card.

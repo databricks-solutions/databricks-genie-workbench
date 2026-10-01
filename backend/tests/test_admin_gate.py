@@ -45,6 +45,7 @@ _NON_ADMIN_HEADERS = {
 def _clean_gate(monkeypatch):
     monkeypatch.delenv("DEV_ADMIN", raising=False)
     monkeypatch.delenv("DEV_USER_EMAIL", raising=False)
+    monkeypatch.delenv("DATABRICKS_APP_PORT", raising=False)
     admin_gate._cache.clear()
     yield
     admin_gate._cache.clear()
@@ -100,6 +101,37 @@ def test_admin_header_passes_the_gate(monkeypatch):
     resp = admin_client(_app()).get("/api/ontology/health")
     assert resp.status_code == 200
     assert calls == []  # the header proved admin; no SDK call
+
+
+def test_groups_header_is_ignored_on_databricks_apps(monkeypatch):
+    """The Apps proxy never sets X-Forwarded-Groups, so on Apps a caller-supplied
+    ``admins`` value must not pass; only the OBO identity's groups decide."""
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8000")
+    calls = _groups(monkeypatch, ["users"])
+    spoofed = {**_NON_ADMIN_HEADERS, "X-Forwarded-Groups": "users,admins"}
+    resp = TestClient(_app()).get("/api/ontology/health", headers=spoofed)
+    assert resp.status_code == 403
+    assert calls == [1]
+
+
+def test_groups_header_needs_the_exact_admins_group(monkeypatch):
+    _groups(monkeypatch, ["users"])
+    near_miss = {**_NON_ADMIN_HEADERS, "X-Forwarded-Groups": "users,data-admins"}
+    assert TestClient(_app()).get("/api/ontology/health", headers=near_miss).status_code == 403
+
+
+def test_auth_me_ignores_a_spoofed_groups_header_on_apps(monkeypatch):
+    from backend.routers import auth as auth_router
+
+    monkeypatch.setenv("DATABRICKS_APP_PORT", "8000")
+    monkeypatch.setattr(auth_router, "obo_groups", lambda: ["users"])
+    app = FastAPI()
+    app.include_router(auth_router.router)
+    me = TestClient(app).get(
+        "/api/auth/me", headers={"X-Forwarded-Email": "a@b.c", "X-Forwarded-Groups": "admins"},
+    ).json()
+    assert me["is_admin"] is False
+    assert me["groups"] == ["users"]
 
 
 def test_obo_admins_group_passes_without_the_groups_header(monkeypatch):
