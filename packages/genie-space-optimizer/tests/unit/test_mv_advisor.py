@@ -32,6 +32,7 @@ from genie_space_optimizer.optimization.mv_scoring import (
     LineageOverlap,
     coverage_ceiling,
     metric_view_fields,
+    suggestion_id_for,
 )
 from genie_space_optimizer.optimization.mv_signals import SignalResult
 from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
@@ -115,6 +116,10 @@ def patch_writes(monkeypatch):
             upserts.append({"proposal": proposal, **kw}) or proposal.dedup_fingerprint
         ),
     )
+    # MV-D122: the kept-names reads are strict, and FakeSpark refuses every call,
+    # so an unstubbed read would skip the CONFLICT pass. No kept rows by default.
+    monkeypatch.setattr(mv_advisor, "load_mv_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(mv_advisor, "created_suggestion_ids", lambda *a, **k: set())
     return stages, artifacts, upserts
 
 
@@ -1032,6 +1037,440 @@ def test_a_proposal_contradicting_a_curated_answer_reaches_conflict(monkeypatch)
     assert not conflicted[0].is_suggestion
 
 
+# ── CONFLICT view names (MV-D122) ────────────────────────────────────────
+
+ORDERS = "main.sales.orders"
+REFUNDS = "main.sales.refunds"
+AMOUNT_BASE = "main.sales.measure_amount_metrics"
+
+
+def _amount_sql(table):
+    return f"SELECT SUM(amount) AS total, region FROM {table} GROUP BY region"
+
+
+def _amount_conflict_config(*tables):
+    """One curated answer per table that defines ``SUM(amount)`` differently."""
+    return {
+        "instructions": {
+            "example_question_sqls": [
+                {"id": f"eq_{i}", "sql": f"SELECT SUM(amount * 2) AS total FROM {table}"}
+                for i, table in enumerate(tables)
+            ]
+        }
+    }
+
+
+def _amount_key(table):
+    return mv_candidate_fingerprint(SPACE_ID, "sum(amount)", (table,))
+
+
+def _advise_amount_conflicts(*tables, **overrides):
+    persisted: list = []
+    corpus = [(_amount_sql(t), f"{t}_{i}") for t in tables for i in range(8)]
+    kwargs = {
+        "space_id": SPACE_ID,
+        "run_id": "run_backend",
+        "corpus_entries": corpus,
+        "applied_config": _amount_conflict_config(*tables),
+        "benchmarks": (),
+        "wide_schema_inventory": None,
+        "metric_view_reader": lambda tables: [],
+        "embedding_client": None,
+        "signal_reader": None,
+        "intent_texts": (),
+        "domain": "",
+        "max_candidates": None,
+        "persist_proposal": lambda proposal, rendered: persisted.append(proposal) or True,
+        "write_ddl_artifact": lambda proposal, rendered: True,
+        "read_suppressed_fingerprints": None,
+    }
+    kwargs.update(overrides)
+    outcome = mv_advisor.advise_from_corpus(**kwargs)
+    return outcome, persisted
+
+
+def _conflict_names(proposals):
+    return {
+        p.dedup_fingerprint: p.proposed_object for p in proposals if p.verdict == "CONFLICT"
+    }
+
+
+def test_colliding_conflict_proposals_are_named_by_table(monkeypatch) -> None:
+    _stages, artifacts, upserts = patch_writes(monkeypatch)
+    monkeypatch.setattr(mv_advisor, "load_mv_candidates", lambda *a, **k: [])
+    rows = [eval_row(_amount_sql(t), f"{t}_{i}") for t in (ORDERS, REFUNDS) for i in range(8)]
+    outcome = advise(
+        monkeypatch,
+        _with_config([iteration(rows)], _amount_conflict_config(ORDERS, REFUNDS)),
+    )
+
+    expected = {
+        _amount_key(ORDERS): "main.sales.measure_amount_orders_metrics",
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+    assert _conflict_names(outcome.proposals) == expected
+    assert _conflict_names(u["proposal"] for u in upserts) == expected
+    ddl_by_key = {
+        a["payload"]["dedup_fingerprint"]: a["payload"] for a in artifacts
+        if a["kind"] == "mv_candidate_ddl"
+    }
+    for key, name in expected.items():
+        payload = ddl_by_key[key]
+        assert payload["proposed_object"] == name
+        assert mv_advisor.create_ddl(name, payload["yaml_text"]) == payload["ddl"]
+
+
+def test_the_table_names_do_not_depend_on_the_scan_order() -> None:
+    forward, _ = _advise_amount_conflicts(ORDERS, REFUNDS)
+    backward, _ = _advise_amount_conflicts(REFUNDS, ORDERS)
+    assert _conflict_names(forward.proposals) == _conflict_names(backward.proposals)
+
+
+def test_a_conflict_proposal_that_does_not_collide_keeps_its_name() -> None:
+    outcome, persisted = _advise_amount_conflicts(ORDERS)
+    assert _conflict_names(outcome.proposals) == {_amount_key(ORDERS): AMOUNT_BASE}
+    assert _conflict_names(persisted) == {_amount_key(ORDERS): AMOUNT_BASE}
+
+
+def test_a_kept_name_is_kept_by_its_own_row() -> None:
+    outcome, persisted = _advise_amount_conflicts(
+        ORDERS, REFUNDS,
+        read_kept_names=lambda: {_amount_key(ORDERS): AMOUNT_BASE},
+    )
+    expected = {
+        _amount_key(ORDERS): AMOUNT_BASE,
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+    assert _conflict_names(outcome.proposals) == expected
+    assert _conflict_names(persisted) == expected
+
+
+def test_a_kept_name_is_never_taken_by_another_proposal() -> None:
+    outcome, _ = _advise_amount_conflicts(
+        ORDERS, REFUNDS, read_kept_names=lambda: {"f" * 32: AMOUNT_BASE},
+    )
+    names = _conflict_names(outcome.proposals)
+    assert names == {
+        _amount_key(ORDERS): "main.sales.measure_amount_orders_metrics",
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+    assert AMOUNT_BASE not in names.values()
+
+
+def test_a_kept_name_held_alone_is_never_taken() -> None:
+    outcome, _ = _advise_amount_conflicts(
+        REFUNDS, read_kept_names=lambda: {_amount_key(ORDERS): AMOUNT_BASE},
+    )
+    assert _conflict_names(outcome.proposals) == {
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+
+
+def test_a_kept_table_name_stays_when_its_partner_leaves() -> None:
+    """Ruling 3's cost: a half returns to its base name only while it is not kept."""
+    held = "main.sales.measure_amount_orders_metrics"
+    outcome, _ = _advise_amount_conflicts(
+        ORDERS, read_kept_names=lambda: {_amount_key(ORDERS): held},
+    )
+    assert _conflict_names(outcome.proposals) == {_amount_key(ORDERS): held}
+
+
+def test_a_kept_table_name_advances_the_ordinal() -> None:
+    outcome, _ = _advise_amount_conflicts(
+        ORDERS, REFUNDS,
+        read_kept_names=lambda: {"f" * 32: "main.sales.measure_amount_orders_metrics"},
+    )
+    assert _conflict_names(outcome.proposals) == {
+        _amount_key(ORDERS): "main.sales.measure_amount_orders_2_metrics",
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+
+
+def test_a_kept_name_is_compared_without_case_or_backticks() -> None:
+    outcome, _ = _advise_amount_conflicts(
+        ORDERS, read_kept_names=lambda: {"f" * 32: "`MAIN`.sales.Measure_Amount_Metrics"},
+    )
+    assert _conflict_names(outcome.proposals) == {
+        _amount_key(ORDERS): "main.sales.measure_amount_orders_metrics",
+    }
+
+
+def test_a_kept_name_keeps_its_stored_spelling() -> None:
+    """F4: a stored name that differs from the base by case or backticks is not respelled."""
+    stored = "`main`.sales.Measure_Amount_Metrics"
+    outcome, persisted = _advise_amount_conflicts(
+        ORDERS, REFUNDS, read_kept_names=lambda: {_amount_key(ORDERS): stored},
+    )
+    expected = {
+        _amount_key(ORDERS): stored,
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+    assert _conflict_names(outcome.proposals) == expected
+    assert _conflict_names(persisted) == expected
+
+
+def test_two_kept_rows_sharing_a_name_both_keep_it() -> None:
+    """F2: duplicate legacy names stay; a third proposal colliding with them is table-named."""
+    returns = "main.sales.returns"
+    outcome, persisted = _advise_amount_conflicts(
+        ORDERS, REFUNDS, returns,
+        read_kept_names=lambda: {
+            _amount_key(ORDERS): AMOUNT_BASE,
+            _amount_key(REFUNDS): AMOUNT_BASE,
+        },
+    )
+    expected = {
+        _amount_key(ORDERS): AMOUNT_BASE,
+        _amount_key(REFUNDS): AMOUNT_BASE,
+        _amount_key(returns): "main.sales.measure_amount_returns_metrics",
+    }
+    assert _conflict_names(outcome.proposals) == expected
+    assert _conflict_names(persisted) == expected
+
+
+def _undecided_row(table, name=AMOUNT_BASE):
+    key = _amount_key(table)
+    return {
+        "proposed_object": name, "dedup_fingerprint": key,
+        "suggestion_id": suggestion_id_for(key), "decision": None,
+    }
+
+
+def test_a_created_undecided_conflict_row_keeps_its_name() -> None:
+    """F1: create-at-approval and the claim record no decision; the ledger keeps the row."""
+    rows = [_undecided_row(ORDERS)]
+    asked: list = []
+
+    def _created(ids):
+        asked.append(sorted(ids))
+        return set(ids)
+
+    outcome, persisted = _advise_amount_conflicts(
+        ORDERS, REFUNDS,
+        read_kept_names=lambda: mv_advisor.kept_view_names(rows, created_lookup=_created),
+    )
+    expected = {
+        _amount_key(ORDERS): AMOUNT_BASE,
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+    assert _conflict_names(outcome.proposals) == expected
+    assert _conflict_names(persisted) == expected
+    assert asked == [[suggestion_id_for(_amount_key(ORDERS))]]
+
+
+def test_an_undecided_row_the_ledger_does_not_hold_is_renamed() -> None:
+    rows = [_undecided_row(ORDERS)]
+    outcome, _ = _advise_amount_conflicts(
+        ORDERS, REFUNDS,
+        read_kept_names=lambda: mv_advisor.kept_view_names(rows, created_lookup=lambda ids: set()),
+    )
+    assert _conflict_names(outcome.proposals) == {
+        _amount_key(ORDERS): "main.sales.measure_amount_orders_metrics",
+        _amount_key(REFUNDS): "main.sales.measure_amount_refunds_metrics",
+    }
+
+
+@pytest.mark.parametrize("failing", ["candidates", "ledger"])
+def test_a_failed_kept_names_read_persists_no_conflict_proposal(caplog, failing) -> None:
+    """F1: never rewrite a stored row's name on uncertainty; the next scan retries."""
+    def _boom(*_a):
+        raise RuntimeError("secret_literal")
+
+    def _reader():
+        if failing == "candidates":
+            _boom()
+        return mv_advisor.kept_view_names([_undecided_row(ORDERS)], created_lookup=_boom)
+
+    artifacts: list = []
+    caplog.set_level("DEBUG")
+    outcome, persisted = _advise_amount_conflicts(
+        ORDERS, REFUNDS,
+        read_kept_names=_reader,
+        write_ddl_artifact=lambda proposal, rendered: artifacts.append(proposal) or True,
+    )
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert _conflict_names(outcome.proposals) == {}
+    assert persisted == []
+    assert artifacts == []
+    assert outcome.proposals_persisted == 0
+    assert sorted(outcome.render_failures) == sorted(
+        (suggestion_id_for(_amount_key(t)), mv_advisor.CONFLICT_NAMES_UNREAD)
+        for t in (ORDERS, REFUNDS)
+    )
+    assert any("RuntimeError" in r.getMessage() for r in caplog.records)
+    assert all("secret_literal" not in r.getMessage() for r in caplog.records)
+    assert all(not r.exc_info for r in caplog.records)
+
+
+def test_a_failed_kept_names_read_leaves_the_bundles_alone() -> None:
+    def _boom():
+        raise RuntimeError("secret_literal")
+
+    corpus = [(_amount_sql(t), f"{t}_{i}") for t in (ORDERS, REFUNDS) for i in range(8)]
+    corpus += [(COUNT_SQL, f"count_{i}") for i in range(8)]
+    outcome, persisted = _advise_amount_conflicts(
+        ORDERS, REFUNDS, corpus_entries=corpus, read_kept_names=_boom,
+    )
+
+    assert _conflict_names(outcome.proposals) == {}
+    bundles = [p for p in persisted if p.evidence.get("bundle")]
+    assert bundles, [p.verdict for p in outcome.proposals]
+    assert all(p.verdict != "CONFLICT" for p in persisted)
+
+
+def test_leaves_that_sanitize_alike_take_an_ordinal() -> None:
+    """Two tables whose leaves give one name take ordinals in ``dedup_fingerprint`` order."""
+    dashed = "main.sales.`order-s`"
+    plain = "main.sales.order_s"
+    forward, _ = _advise_amount_conflicts(plain, dashed)
+    backward, _ = _advise_amount_conflicts(dashed, plain)
+
+    first, second = sorted(_conflict_names(forward.proposals))
+    assert _conflict_names(forward.proposals) == {
+        first: "main.sales.measure_amount_order_s_metrics",
+        second: "main.sales.measure_amount_order_s_2_metrics",
+    }
+    assert _conflict_names(backward.proposals) == _conflict_names(forward.proposals)
+
+
+def test_an_undecided_or_null_cell_keeps_no_name() -> None:
+    nan = float("nan")
+    rows = [
+        {"proposed_object": "main.sales.a_metrics", "dedup_fingerprint": "fpA", "decision": nan},
+        {"proposed_object": "main.sales.b_metrics", "dedup_fingerprint": "fpB", "decision": ""},
+        {"proposed_object": nan, "dedup_fingerprint": "fpC", "decision": "approved"},
+        {"proposed_object": "main.sales.d_metrics", "dedup_fingerprint": nan, "decision": "approved"},
+        {"proposed_object": "main.sales.e_metrics", "dedup_fingerprint": "fpE", "decision": "rejected"},
+    ]
+    assert mv_advisor.kept_view_names(rows, created_lookup=lambda ids: set()) == {
+        "fpE": "main.sales.e_metrics",
+    }
+
+
+def test_kept_view_names_reads_decided_and_created_rows() -> None:
+    sug = {k: f"sug_{k * 12}" for k in "abcd"}
+    rows = [
+        {"proposed_object": "`M`.s.Decided", "dedup_fingerprint": "fpA",
+         "suggestion_id": sug["a"], "decision": "approved"},
+        {"proposed_object": "m.s.created", "dedup_fingerprint": "fpB",
+         "suggestion_id": sug["b"], "decision": None},
+        {"proposed_object": "m.s.open", "dedup_fingerprint": "fpC",
+         "suggestion_id": sug["c"], "decision": float("nan")},
+        {"proposed_object": "m.s.unchecked", "dedup_fingerprint": "fpD",
+         "suggestion_id": "not-an-id", "decision": None},
+        {"proposed_object": None, "dedup_fingerprint": "fpE",
+         "suggestion_id": sug["d"], "decision": None},
+    ]
+    asked: list = []
+
+    def _created(ids):
+        asked.append(sorted(ids))
+        return {sug["b"]}
+
+    kept = mv_advisor.kept_view_names(rows, created_lookup=_created)
+
+    # An id the ledger cannot be asked about is kept, never guessed "not created".
+    assert kept == {"fpA": "`M`.s.Decided", "fpB": "m.s.created", "fpD": "m.s.unchecked"}
+    assert asked == [[sug["b"], sug["c"]]]
+
+
+def test_kept_view_names_asks_no_ledger_when_every_row_is_decided() -> None:
+    def _explode(ids):
+        raise AssertionError("the ledger was asked")
+
+    rows = [{"proposed_object": "m.s.v", "dedup_fingerprint": "fpA",
+             "suggestion_id": "sug_" + "a" * 12, "decision": "approved"}]
+    assert mv_advisor.kept_view_names(rows, created_lookup=_explode) == {"fpA": "m.s.v"}
+
+
+def test_kept_view_names_raises_a_failed_ledger_read() -> None:
+    def _boom(ids):
+        raise RuntimeError("ledger down")
+
+    with pytest.raises(RuntimeError):
+        mv_advisor.kept_view_names([_undecided_row(ORDERS)], created_lookup=_boom)
+
+
+def test_the_in_job_advisor_injects_the_kept_names_reader(monkeypatch) -> None:
+    captured: dict = {}
+    reads: list[dict] = []
+    asked: list = []
+
+    def fake_advise(**kwargs):
+        captured.update(kwargs)
+        return AdvisorOutcome(status=mv_advisor.STATUS_COMPLETE)
+
+    def fake_load(spark, catalog, schema, **kwargs):
+        reads.append({"catalog": catalog, "schema": schema, **kwargs})
+        return [
+            {"proposed_object": "`Main`.sales.Kept_Metrics", "dedup_fingerprint": "a" * 32,
+             "suggestion_id": "sug_" + "a" * 12, "decision": "approved"},
+            {"proposed_object": "main.sales.open_metrics", "dedup_fingerprint": "b" * 32,
+             "suggestion_id": "sug_" + "b" * 12, "decision": None},
+            {"proposed_object": "main.sales.made_metrics", "dedup_fingerprint": "d" * 32,
+             "suggestion_id": "sug_" + "d" * 12, "decision": None},
+            {"proposed_object": None, "dedup_fingerprint": "c" * 32, "decision": "rejected"},
+        ]
+
+    def fake_created(spark, catalog, schema, suggestion_ids):
+        asked.append((catalog, schema, sorted(suggestion_ids)))
+        return {"sug_" + "d" * 12}
+
+    patch_writes(monkeypatch)
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", fake_advise)
+    monkeypatch.setattr(mv_advisor, "load_mv_candidates", fake_load)
+    monkeypatch.setattr(mv_advisor, "created_suggestion_ids", fake_created)
+    advise(monkeypatch, [iteration(recurring())])
+
+    assert captured["read_kept_names"]() == {
+        "a" * 32: "`Main`.sales.Kept_Metrics",
+        "d" * 32: "main.sales.made_metrics",
+    }
+    assert reads == [
+        {"catalog": "main", "schema": "genie_space_optimizer", "target_space_id": SPACE_ID,
+         "include_superseded": True, "strict": True}
+    ]
+    assert asked == [
+        ("main", "genie_space_optimizer", ["sug_" + "b" * 12, "sug_" + "d" * 12]),
+    ]
+
+
+@pytest.mark.parametrize("failing", ["candidates", "ledger"])
+def test_the_in_job_phase_persists_no_conflict_when_a_kept_read_fails(
+    monkeypatch, caplog, failing,
+) -> None:
+    stages, artifacts, upserts = patch_writes(monkeypatch)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("secret_literal")
+
+    if failing == "candidates":
+        monkeypatch.setattr(mv_advisor, "load_mv_candidates", _boom)
+    else:
+        monkeypatch.setattr(
+            mv_advisor, "load_mv_candidates", lambda *a, **k: [_undecided_row(ORDERS)],
+        )
+        monkeypatch.setattr(mv_advisor, "created_suggestion_ids", _boom)
+    rows = [eval_row(_amount_sql(t), f"{t}_{i}") for t in (ORDERS, REFUNDS) for i in range(8)]
+    caplog.set_level("DEBUG")
+    outcome = advise(
+        monkeypatch,
+        _with_config([iteration(rows)], _amount_conflict_config(ORDERS, REFUNDS)),
+    )
+
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
+    assert not [u for u in upserts if u["proposal"].verdict == "CONFLICT"]
+    detail = stages[-1]["detail"]
+    assert {f["verdict"] for f in detail["render_failures"]} == {mv_advisor.CONFLICT_NAMES_UNREAD}
+    held_back = {suggestion_id_for(_amount_key(t)) for t in (ORDERS, REFUNDS)}
+    assert {f["suggestion_id"] for f in detail["render_failures"]} == held_back
+    assert not [a for a in artifacts if a["payload"].get("suggestion_id") in held_back]
+    assert any("RuntimeError" in r.getMessage() for r in caplog.records)
+    assert all("secret_literal" not in r.getMessage() for r in caplog.records)
+    assert all(not r.exc_info for r in caplog.records)
+
+
 def test_an_agreeing_curated_answer_leaves_the_proposal_alone(monkeypatch) -> None:
     patch_writes(monkeypatch)
     outcome = advise(
@@ -1691,7 +2130,24 @@ def test_a_row_count_joins_its_tables_bundle() -> None:
         + [(rows, f"n{i}") for i in range(8)],
     )
     (bundle,) = [p for p in outcome.proposals if p.evidence["source_tables"] == [LINEITEM]]
-    assert "COUNT(*)" in [m["expr"] for m in bundle.evidence["measures"]]
+    members = [m["expr"] for m in bundle.evidence["measures"]]
+    assert "COUNT(*)" in members
+    assert "SUM(`l_quantity`)" in members
+
+
+def test_a_governed_view_with_a_numeric_joins_does_not_fail_the_scan() -> None:
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        metric_view_reader=lambda tables: metric_view_fields(
+            {"finance.sales.order_metrics": {
+                "source": "main.sales.orders",
+                "joins": 3,
+                "measures": [{"name": "total_amount", "expr": "SUM(amount)"}],
+            }}
+        ),
+    )
+    assert outcome.status == mv_advisor.STATUS_COMPLETE
 
 
 def test_the_demand_read_is_scoped_to_the_measures_tables(monkeypatch) -> None:

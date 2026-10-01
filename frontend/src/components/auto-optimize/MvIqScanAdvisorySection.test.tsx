@@ -20,6 +20,7 @@ import {
   ScanProposalCard,
 } from "./MvIqScanAdvisorySection"
 import { MvProposalCard } from "./MvProposalCard"
+import { STALE_PROPOSAL_NOTICE } from "./mvFormat"
 import type { MvProposal, MvRegisterResponse, MvDdlArtifact } from "@/types"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
@@ -379,6 +380,18 @@ describe("Model-tab sync — 'View in graph' affordance", () => {
       />,
     )
     expect(html).not.toContain("View in graph")
+  })
+
+  it("omits 'View in graph' for a stale proposal, which draws no ghost, and keeps its notice (MV-D122)", () => {
+    const stale = render(
+      <ScanProposalCard proposal={{ ...proposal, stale_body: true }} ddl={undefined} onClaim={() => {}} onLocate={() => {}} />,
+    )
+    expect(stale).not.toContain("View in graph")
+    expect(stale).toContain(STALE_PROPOSAL_NOTICE.replace(/'/g, "&#x27;"))
+    const current = render(
+      <ScanProposalCard proposal={{ ...proposal, stale_body: false }} ddl={undefined} onClaim={() => {}} onLocate={() => {}} />,
+    )
+    expect(current).toContain("View in graph")
   })
 })
 

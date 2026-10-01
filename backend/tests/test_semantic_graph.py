@@ -894,6 +894,38 @@ def test_semantic_graph_drops_a_stale_proposal_beside_its_successor(client, monk
     assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug_current"]
 
 
+def test_semantic_graph_drops_the_older_undecided_sibling(client, monkeypatch):
+    """MV-D122: a reshaped bundle's older undecided row leaves the graph too."""
+    old, new = "sug_" + "a" * 12, "sug_" + "b" * 12
+    base = {"target_space_id": "space-1", "candidate_type": "NEW_METRIC_VIEW",
+            "approved_for_rerun": False, "conflicts": [], "decision": None,
+            "proposed_object": "finance.sales.new_metrics",
+            "evidence": {"render_version": MV_RENDER_VERSION}}
+    monkeypatch.setattr(auto_optimize, "get_serialized_space", lambda space_id: dict(_SPACE))
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [
+            {**base, "suggestion_id": old, "dedup_fingerprint": "a" * 64,
+             "updated_at": "2026-10-01T10:00:00"},
+            {**base, "suggestion_id": new, "dedup_fingerprint": "b" * 64,
+             "updated_at": "2026-10-01T11:00:00"},
+        ],
+    )
+    asked: list = []
+
+    def _created(ws, warehouse_id, *, catalog, schema, suggestion_ids):
+        asked.append(sorted(suggestion_ids))
+        return set()
+
+    monkeypatch.setattr(warehouse, "wh_created_suggestion_ids", _created)
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/semantic-graph")
+
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [new]
+    assert asked == [[old, new]]
+
+
 def test_semantic_graph_carries_proposals_and_ungoverned_overlay(client, monkeypatch):
     captured: dict = {}
 

@@ -834,8 +834,10 @@ def wh_load_mv_consent(
             f"SELECT * FROM {catalog}.{schema}.{TABLE_MV_CONSENTS} "
             f"WHERE probe_id = '{escaped}'",
         )
-    except Exception:
-        logger.debug("wh_load_mv_consent: could not read %s", probe_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - logged by type only
+        logger.debug(
+            "wh_load_mv_consent: could not read %s (%s)", probe_id, type(exc).__name__
+        )
         return None
     if getattr(df, "empty", True):
         return None
@@ -899,13 +901,15 @@ def wh_load_mv_candidates(
     run_id: str | None = None,
     approved_for_rerun: bool | None = None,
     include_superseded: bool = False,
+    strict: bool = False,
 ) -> list[dict]:
     """Read advisor proposals via SQL warehouse — the twin of ``mv_state.load_mv_candidates``.
 
     Same ordering (confidence DESC, then created_at DESC) and the same JSON-column
     decode, so the backend sees the shape the Spark reader exposes. At least one
     of ``target_space_id`` / ``run_id`` is required so a caller cannot scan every
-    space.
+    space. A failed read returns ``[]``; with ``strict`` it raises instead
+    (MV-D122).
 
     ``include_superseded`` defaults to ``False`` (MV-D30 as-implemented, Prompt
     15.6): proposal reads never surface a legacy per-measure row a view-grained
@@ -932,8 +936,13 @@ def wh_load_mv_candidates(
     )
     try:
         df = sql_warehouse_query(ws, warehouse_id, query)
-    except Exception:
-        logger.debug("wh_load_mv_candidates: no rows for %s", where, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - logged by type only
+        if strict:
+            raise
+        logger.debug(
+            "wh_load_mv_candidates: no rows for space %s run %s (%s)",
+            target_space_id, run_id, type(exc).__name__,
+        )
         return []
     if getattr(df, "empty", True):
         return []
@@ -988,10 +997,10 @@ def wh_supersede_legacy_mv_candidates(
     )
     try:
         sql_warehouse_execute(ws, warehouse_id, sql)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - logged by type only
         logger.debug(
-            "wh_supersede_legacy_mv_candidates: update skipped for %s", target_space_id,
-            exc_info=True,
+            "wh_supersede_legacy_mv_candidates: update skipped for %s (%s)",
+            target_space_id, type(exc).__name__,
         )
         return []
     logger.info(
@@ -1163,8 +1172,11 @@ def wh_load_mv_suppressed_fingerprints(
         )
         if not getattr(df, "empty", True):
             suppressed.update(str(v) for v in df["measure_fingerprint"] if v)
-    except Exception:
-        logger.debug("wh_load_mv_suppressed_fingerprints: no suppressions table", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - logged by type only
+        logger.debug(
+            "wh_load_mv_suppressed_fingerprints: no suppressions table (%s)",
+            type(exc).__name__,
+        )
 
     try:
         df = sql_warehouse_query(
@@ -1175,8 +1187,11 @@ def wh_load_mv_suppressed_fingerprints(
         )
         if not getattr(df, "empty", True):
             suppressed.update(str(v) for v in df["dedup_fingerprint"] if v)
-    except Exception:
-        logger.debug("wh_load_mv_suppressed_fingerprints: no candidates table", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - logged by type only
+        logger.debug(
+            "wh_load_mv_suppressed_fingerprints: no candidates table (%s)",
+            type(exc).__name__,
+        )
 
     return suppressed
 
@@ -1446,10 +1461,10 @@ def wh_load_mv_created_object(
             f"AND suggestion_id = {_wh_literal(suggestion_id)} "
             "ORDER BY updated_at DESC LIMIT 1",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - logged by type only
         logger.debug(
-            "wh_load_mv_created_object: could not read %s/%s",
-            run_id, suggestion_id, exc_info=True,
+            "wh_load_mv_created_object: could not read %s/%s (%s)",
+            run_id, suggestion_id, type(exc).__name__,
         )
         return None
     if getattr(df, "empty", True):
@@ -1483,9 +1498,10 @@ def wh_load_mv_created_objects(
             f"SELECT * FROM {fqn} WHERE run_id = {_wh_literal(run_id)} "
             "ORDER BY updated_at DESC",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - logged by type only
         logger.debug(
-            "wh_load_mv_created_objects: could not read run %s", run_id, exc_info=True
+            "wh_load_mv_created_objects: could not read run %s (%s)",
+            run_id, type(exc).__name__,
         )
         return []
     if getattr(df, "empty", True):
@@ -1494,6 +1510,48 @@ def wh_load_mv_created_objects(
         _wh_decode_json_columns(dict(record), ("lift_report_json",))
         for record in df.to_dict(orient="records")
     ]
+
+
+_SUGGESTION_ID_RE = re.compile(r"sug_[0-9a-f]{12}")
+
+
+def wh_created_suggestion_ids(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    suggestion_ids: Iterable[str],
+) -> set[str]:
+    """Return the given suggestion ids that hold a created-objects ledger row (MV-D122).
+
+    The ledger is keyed by ``run_id``, and create-at-approval and the claim each
+    write under a fresh sentinel advice run, so a space's rows cannot be found
+    by run. This asks by ``suggestion_id`` instead, for any provenance.
+
+    Every id must be ``sug_`` plus 12 lowercase hex characters (the
+    ``suggestion_id_for`` shape); one that is not refuses the whole call with a
+    ``ValueError`` before any SQL is built, so the caller cannot mistake a
+    partial answer for the ledger's. A failed read raises: unlike
+    ``wh_load_mv_created_objects``, an unreadable ledger is never "none created".
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CREATED_OBJECTS
+
+    ids = sorted({value if isinstance(value, str) else repr(value) for value in suggestion_ids})
+    if not ids:
+        return set()
+    if not all(_SUGGESTION_ID_RE.fullmatch(value) for value in ids):
+        raise ValueError("suggestion ids must be sug_ followed by 12 lowercase hex characters")
+    in_list = ", ".join(_wh_literal(value) for value in ids)
+    df = sql_warehouse_query(
+        ws,
+        warehouse_id,
+        f"SELECT DISTINCT suggestion_id FROM {catalog}.{schema}.{TABLE_MV_CREATED_OBJECTS} "
+        f"WHERE suggestion_id IN ({in_list})",
+    )
+    if getattr(df, "empty", True):
+        return set()
+    return {str(value) for value in df["suggestion_id"]}
 
 
 def wh_load_mv_consent_by_run(
@@ -1523,9 +1581,10 @@ def wh_load_mv_consent_by_run(
             f"SELECT * FROM {fqn} WHERE run_id = {_wh_literal(run_id)} "
             "ORDER BY updated_at DESC LIMIT 1",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - logged by type only
         logger.debug(
-            "wh_load_mv_consent_by_run: could not read run %s", run_id, exc_info=True
+            "wh_load_mv_consent_by_run: could not read run %s (%s)",
+            run_id, type(exc).__name__,
         )
         return None
     if getattr(df, "empty", True):
@@ -1616,8 +1675,10 @@ def wh_read_join_advice(
             f"AND artifact_kind = {_wh_literal(JOIN_ADVICE_ARTIFACT_KIND)} "
             "ORDER BY created_at DESC LIMIT 1",
         )
-    except Exception:
-        logger.debug("wh_read_join_advice: could not read run %s", run_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - logged by type only
+        logger.debug(
+            "wh_read_join_advice: could not read run %s (%s)", run_id, type(exc).__name__
+        )
         return []
     if getattr(df, "empty", True):
         return []

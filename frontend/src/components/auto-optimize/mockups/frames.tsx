@@ -75,6 +75,7 @@ import { BaselineRetainedFrame, KeptAttachRunningFrame, KeptAttachTerminalFrame,
 import { DeepLinkLoadFailedFrame, DeepLinkNoAccessFrame, ScoreViewerAllowlistFrame } from "./SpaceAccessM7bFrames"
 import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
 import { EnrichmentWinTerminalFrame } from "./MvM7dFidelityFrames"
+import { IqScanReshapedListFrame, ModelTabStaleGhostFrame, RunOutputStaleNoPreviewFrame } from "./MvM7e1FidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -194,4 +195,10 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   // PR #332 M7d — the run headline for an iteration-0 enrichment win (MV-D121): the REAL
   // ScoreSummary and convergence-reason copy.
   { id: "m7d-a-enrichment-win-terminal", title: "M7d-a · Run headline — an iteration-0 enrichment win is the improvement (MV-D121)", element: <EnrichmentWinTerminalFrame /> },
+  // PR #332 M7e-1 — the reshaped list and the stale-proposal gaps (MV-D122): the REAL
+  // IQ cards and summary, the suggest-only panel, and withOverlay through SemanticGraph.
+  { id: "m7e1-a-iqscan-reshaped-list", title: "M7e1-a · IQ scan — after a reshape, one card for the view (MV-D122)", element: <IqScanReshapedListFrame /> },
+  { id: "m7e1-b-run-output-stale-no-preview", title: "M7e1-b · Run output — the stale card has no config preview or Lift label; the summary counts current proposals", element: <RunOutputStaleNoPreviewFrame /> },
+  // m7e1-c renders withOverlay through SemanticGraph, which the deployed Model tab does not mount today.
+  { id: "m7e1-c-model-stale-no-ghost", title: "M7e1-c · Model tab — overlay ON, only the current proposal draws a ghost (path not mounted in the deployed tab today)", element: <ModelTabStaleGhostFrame /> },
 ]

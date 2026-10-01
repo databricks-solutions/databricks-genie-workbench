@@ -81,7 +81,8 @@ import {
 } from "./SpaceAccessM7bFrames"
 import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
 import { EnrichmentWinTerminalFrame } from "./MvM7dFidelityFrames"
-import { STALE_PROPOSAL_NOTICE } from "../mvFormat"
+import { IqScanReshapedListFrame, ModelTabStaleGhostFrame, RunOutputStaleNoPreviewFrame } from "./MvM7e1FidelityFrames"
+import { LIFT_NOT_MEASURED, STALE_PROPOSAL_NOTICE, staleRescanSentence } from "../mvFormat"
 import { RETURN_TO_AGENTS, SPACE_NO_ACCESS_TITLE } from "@/lib/space-access"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
@@ -478,6 +479,13 @@ describe("M6b — a stale proposal ranks last with a re-scan notice (MV-D117)", 
     expect(run).toContain("2 proposed · none created")
   })
 
+  // MV-D122 Ruling 8: the stale card shows no config preview and no Lift label.
+  it("m6b-b: the stale card has no config preview and no Lift label", () => {
+    const staleSegment = run.slice(run.indexOf(`title="${STALE}"`))
+    expect(staleSegment).not.toContain("With this metric view attached")
+    expect(staleSegment).not.toContain(LIFT_NOT_MEASURED)
+  })
+
   it("m6b-c: approved, but not for the next run — the notice replaces the buttons", () => {
     expect(approved).toContain("Approved")
     expect(approved).not.toContain("Approved for the next run")
@@ -498,6 +506,12 @@ describe("M6b — a stale proposal ranks last with a re-scan notice (MV-D117)", 
     expect(staleAt).toBeGreaterThan(html.indexOf(FRESH))
     expect(staleAt).toBeGreaterThan(html.indexOf(STALE))
     expect(html.slice(staleAt)).toContain(NOTICE_MARKUP)
+  })
+
+  // MV-D122 Ruling 9: the summary counts current proposals and their measures, and the stale one apart.
+  it("m6b-d: the summary counts the two current proposals and states the re-scan", () => {
+    const text = render(<RunOutputCurrentCalloutFrame />).replace(/<!-- -->/g, "").replace(/<[^>]*>/g, "")
+    expect(text).toContain(`Suggesting 2 metric views to govern 3 recurring measures · ${staleRescanSentence(1)}`)
   })
 
   it("no frame shows a percent or the word confidence (MV-D35)", () => {
@@ -698,6 +712,81 @@ describe("M7d — an iteration-0 enrichment win is the improvement (MV-D121)", (
     expect(ids.indexOf("m7d-a-enrichment-win-terminal")).toBe(
       ids.indexOf("m7c-b-attached-someone-elses-view") + 1,
     )
+  })
+})
+
+describe("M7e-1 — the reshaped list and the stale-proposal gaps (MV-D122)", () => {
+  const ORDERS = "finance.sales.orders_metrics"
+  const STALE = "finance.sales.gross_margin"
+  const list = render(<IqScanReshapedListFrame />)
+  const run = render(<RunOutputStaleNoPreviewFrame />)
+  const model = render(<ModelTabStaleGhostFrame />)
+  const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]*>/g, "")
+  // A card's header carries the full name as both its title and its text; the summary carries the short name.
+  const cardsNaming = (html: string, fqn: string) =>
+    html.split(`title="${fqn}">${fqn}</p>`).length - 1
+
+  // A layout/visual-contract pin for the post-drop list: the fixture is what the server
+  // returns, so this cannot fail on a regressed drop. The drop is guarded by
+  // backend/tests/test_mv_create.py::test_the_older_undecided_row_of_a_view_leaves_the_list
+  // and ::test_the_newest_undecided_drop_applies_at_every_list_site.
+  it("m7e1-a: exactly one card names orders_metrics, beside the unrelated proposal", () => {
+    expect(cardsNaming(list, ORDERS)).toBe(1)
+    expect(cardsNaming(list, "finance.sales.refunds_metrics")).toBe(1)
+    expect(list.split(`title="orders_metrics"`).length - 1).toBe(1)
+    expect(text(list)).toContain("Suggesting 2 metric views to govern 5 recurring measures")
+    // Both cards are current, so both can be located in the graph. No live surface passes
+    // onLocateInGraph today, so this guards the contract for when one does.
+    expect(list.split("View in graph").length - 1).toBe(2)
+  })
+
+  it("m7e1-b: the stale card has no config preview and no Lift label; the current card keeps both", () => {
+    const currentAt = run.indexOf(`title="${ORDERS}"`)
+    const staleAt = run.indexOf(`title="${STALE}"`)
+    expect(currentAt).toBeGreaterThan(-1)
+    expect(staleAt).toBeGreaterThan(currentAt)
+    const currentSegment = run.slice(currentAt, staleAt)
+    expect(currentSegment).toContain("With this metric view attached")
+    expect(currentSegment).toContain(LIFT_NOT_MEASURED)
+    const staleSegment = run.slice(staleAt)
+    expect(staleSegment).not.toContain("With this metric view attached")
+    expect(staleSegment).not.toContain(LIFT_NOT_MEASURED)
+    expect(staleSegment).toContain(NOTICE_MARKUP)
+  })
+
+  it("m7e1-b: the summary counts the current proposal and states the re-scan; the header counts the cards", () => {
+    expect(text(run)).toContain(`Suggesting 1 metric view to govern 3 recurring measures · ${staleRescanSentence(1)}`)
+    expect(run).not.toContain(`title="gross_margin"`)
+    expect(run).toContain("2 proposed · none created")
+  })
+
+  // The deployed Model tab does not mount withOverlay or SemanticGraph today (SemanticBlueprint
+  // folds with `proposals: []`, SemanticBlueprint.tsx:1026), so this guards the contract for when it is.
+  it("m7e1-c: one dashed ghost node, for the current proposal only", () => {
+    const ghosts = model.match(/<title>([^<]*) — proposed metric view<\/title><rect[^>]*stroke-dasharray="5 3"/g) ?? []
+    expect(ghosts).toHaveLength(1)
+    expect(ghosts[0]).toContain("<title>refunds_metrics — proposed metric view</title>")
+    expect(model.split("— proposed metric view</title>").length - 1).toBe(1)
+    expect(model).not.toContain("gross_margin — proposed metric view")
+    // The stale proposal's loose measure stays chipped in Space config.
+    expect(model).toContain("<title>gross_margin — Ungoverned")
+  })
+
+  it("no percent and no confidence (MV-D35)", () => {
+    for (const html of [list, run, model]) expect(html.toLowerCase()).not.toContain("confidence")
+    // Visible text only: the SQL block's highlighter emits hsl(…%) styles. m7e1-c is left out:
+    // its only percent is SemanticGraph's zoom level, not a score.
+    for (const html of [list, run]) expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\d+%/)
+  })
+
+  it("is registered after the M7d frame, in order", () => {
+    const ids = MOCKUP_FRAMES.map((f) => f.id)
+    const at = ids.indexOf("m7d-a-enrichment-win-terminal")
+    expect(ids.slice(at + 1, at + 4)).toEqual([
+      "m7e1-a-iqscan-reshaped-list",
+      "m7e1-b-run-output-stale-no-preview",
+      "m7e1-c-model-stale-no-ghost",
+    ])
   })
 })
 

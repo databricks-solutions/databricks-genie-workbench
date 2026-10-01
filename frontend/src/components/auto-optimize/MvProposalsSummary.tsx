@@ -7,8 +7,13 @@
  * LLM, no new fetch. Renders nothing when no proposal carries a name (a set the
  * cards themselves would drop), so it never asserts a summary that isn't backed
  * by a card below it.
+ *
+ * MV-D122: only current proposals are suggested, and a member measure two of
+ * them share counts once. Stale proposals (MV-D117) are counted apart, as the
+ * number that needs a re-scan.
  */
 import { Sparkles } from "lucide-react"
+import { isStaleBody, measureIdentitySet, staleRescanSentence } from "@/components/auto-optimize/mvFormat"
 import type { MvProposal } from "@/types"
 
 function shortName(obj: string | null | undefined): string | null {
@@ -24,13 +29,26 @@ function measureCountOf(p: MvProposal): number {
 }
 
 export function MvProposalsSummary({ proposals }: { proposals: MvProposal[] }) {
-  const named = proposals
-    .map((p) => ({ name: shortName(p.proposed_object), measures: measureCountOf(p) }))
-    .filter((x): x is { name: string; measures: number } => Boolean(x.name))
-  if (named.length === 0) return null
+  const withName = proposals.filter((p) => shortName(p.proposed_object))
+  const current = withName.filter((p) => !isStaleBody(p))
+  const staleCount = withName.length - current.length
+  if (withName.length === 0) return null
 
+  if (current.length === 0) {
+    return (
+      <div className="rounded-xl border border-accent/30 bg-accent/5 px-4 py-3">
+        <p className="text-sm font-medium text-primary">{staleRescanSentence(staleCount)}</p>
+      </div>
+    )
+  }
+
+  const named = current.map((p) => ({
+    id: p.suggestion_id,
+    name: shortName(p.proposed_object) as string,
+    measures: measureCountOf(p),
+  }))
   const viewCount = named.length
-  const measureTotal = named.reduce((sum, x) => sum + x.measures, 0)
+  const measureTotal = new Set(current.flatMap((p) => [...measureIdentitySet(p)])).size
 
   return (
     <div className="rounded-xl border border-accent/30 bg-accent/5 px-4 py-3">
@@ -39,10 +57,11 @@ export function MvProposalsSummary({ proposals }: { proposals: MvProposal[] }) {
         Suggesting {viewCount} metric {viewCount === 1 ? "view" : "views"}
         {measureTotal > 0 &&
           ` to govern ${measureTotal} recurring ${measureTotal === 1 ? "measure" : "measures"}`}
+        {staleCount > 0 && ` · ${staleRescanSentence(staleCount)}`}
       </p>
       <ul className="mt-2 space-y-1">
         {named.map((x) => (
-          <li key={x.name} className="flex items-baseline justify-between gap-3 text-xs">
+          <li key={x.id} className="flex items-baseline justify-between gap-3 text-xs">
             <span className="truncate font-mono text-secondary" title={x.name}>
               {x.name}
             </span>

@@ -198,6 +198,17 @@ describe("proposal overlay — synthesized client-side", () => {
     // With neither argument nor graph proposals, nothing is added.
     expect(withOverlay(ATTACHED_MV).nodes.some((n) => n.proposed)).toBe(false)
   })
+
+  it("withOverlay draws no ghost for a stale proposal, only for the current one (MV-D122)", () => {
+    const stale = proposal({
+      suggestion_id: "sug2",
+      dedup_fingerprint: "fp2",
+      proposed_object: "finance.sales.gross_margin",
+      stale_body: true,
+    })
+    const ghosts = withOverlay(ATTACHED_MV, [stale, proposal()]).nodes.filter((n) => n.proposed)
+    expect(ghosts.map((n) => n.id)).toEqual(["proposed:finance.sales.order_revenue"])
+  })
 })
 
 describe("SemanticGraph — selection reveals the full ON predicate", () => {

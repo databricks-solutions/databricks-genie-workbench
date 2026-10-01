@@ -151,6 +151,137 @@ def test_service_injects_the_suppression_reader(monkeypatch):
     assert callable(reader), "backend caller must inject the suppression reader"
 
 
+_SUG = {k: f"sug_{k * 12}" for k in "abd"}
+
+
+def test_suggest_injects_the_kept_names_reader(monkeypatch):
+    """MV-D122: the IQ Scan caller keeps a decided or created row's view name the
+    same way the in-job advisor does, through a strict ``wh_load_mv_candidates``
+    read and ``wh_created_suggestion_ids`` over the undecided rows."""
+    captured: dict = {}
+    reads: list[dict] = []
+    asked: list[dict] = []
+
+    monkeypatch.setattr(warehouse, "wh_ensure_optimization_tables", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_create_advice_run", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_write_stage", lambda *a, **k: None)
+    monkeypatch.setattr(mv_advisor, "space_corpus_entries", lambda cfg: ())
+    monkeypatch.setattr(mv_advisor, "estate_metric_view_yamls", lambda *a, **k: {})
+
+    def _load(ws, warehouse_id, catalog, schema, **kwargs):
+        reads.append({"warehouse_id": warehouse_id, "catalog": catalog, "schema": schema, **kwargs})
+        return [
+            {"proposed_object": "main.sales.Kept_Metrics", "dedup_fingerprint": "fpA",
+             "suggestion_id": _SUG["a"], "decision": "approved"},
+            {"proposed_object": "main.sales.open_metrics", "dedup_fingerprint": "fpB",
+             "suggestion_id": _SUG["b"], "decision": None},
+            {"proposed_object": "main.sales.made_metrics", "dedup_fingerprint": "fpD",
+             "suggestion_id": _SUG["d"], "decision": None},
+        ]
+
+    def _created(ws, warehouse_id, **kwargs):
+        asked.append({"warehouse_id": warehouse_id, **kwargs})
+        return {_SUG["d"]}
+
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", _load)
+    monkeypatch.setattr(warehouse, "wh_created_suggestion_ids", _created)
+
+    def _capture(**k):
+        captured.update(k)
+        return SimpleNamespace(
+            status="SKIPPED", skip_reason="no_candidates", error=None,
+            detail=lambda: {"status": "SKIPPED", "skip_reason": "no_candidates"},
+        )
+
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", _capture)
+
+    mv_suggest.suggest_for_space(
+        sp_ws=MagicMock(), catalog="main", schema="gso", warehouse_id="wh1",
+        llm_model="m", space_id="space-1", applied_config={"instructions": {}},
+        triggered_by="analyst@example.com",
+    )
+
+    assert captured["read_kept_names"]() == {
+        "fpA": "main.sales.Kept_Metrics", "fpD": "main.sales.made_metrics",
+    }
+    assert reads == [
+        {"warehouse_id": "wh1", "catalog": "main", "schema": "gso", "target_space_id": "space-1",
+         "include_superseded": True, "strict": True}
+    ]
+    assert [sorted(a.pop("suggestion_ids")) for a in asked] == [[_SUG["b"], _SUG["d"]]]
+    assert asked == [{"warehouse_id": "wh1", "catalog": "main", "schema": "gso"}]
+
+
+_ORDERS, _REFUNDS = "main.sales.orders", "main.sales.refunds"
+
+
+@pytest.mark.parametrize("failing", ["candidates", "ledger"])
+def test_a_failed_kept_names_read_persists_no_conflict_on_the_iq_scan(
+    monkeypatch, caplog, failing,
+):
+    """F1/F5: the real advisor over two colliding CONFLICT halves; a kept-names read
+    that fails persists no CONFLICT proposal, and the warning names the type only."""
+    upserts: list[dict] = []
+    stages: list[dict] = []
+    corpus = [
+        (f"SELECT SUM(amount) AS total, region FROM {t} GROUP BY region", f"{t}_{i}")
+        for t in (_ORDERS, _REFUNDS) for i in range(8)
+    ]
+    config = {"instructions": {"example_question_sqls": [
+        {"id": f"eq_{i}", "sql": f"SELECT SUM(amount * 2) AS total FROM {t}"}
+        for i, t in enumerate((_ORDERS, _REFUNDS))
+    ]}}
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("secret_literal")
+
+    def _load(ws, warehouse_id, catalog, schema, **kwargs):
+        if failing == "candidates" and kwargs.get("strict"):
+            _boom()
+        return [{"proposed_object": "main.sales.measure_amount_metrics",
+                 "dedup_fingerprint": "f" * 32, "suggestion_id": _SUG["a"], "decision": None}]
+
+    from genie_space_optimizer.optimization import mv_scoring, mv_signals
+
+    monkeypatch.setattr(warehouse, "wh_ensure_optimization_tables", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_create_advice_run", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_write_stage", lambda ws, wh, **k: stages.append(k))
+    monkeypatch.setattr(warehouse, "wh_upsert_mv_candidate", lambda ws, wh, **k: upserts.append(k))
+    monkeypatch.setattr(warehouse, "wh_load_mv_suppressed_fingerprints", lambda *a, **k: set())
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", _load)
+    monkeypatch.setattr(
+        warehouse, "wh_created_suggestion_ids",
+        _boom if failing == "ledger" else (lambda *a, **k: set()),
+    )
+    monkeypatch.setattr(mv_advisor, "space_corpus_entries", lambda cfg: corpus)
+    monkeypatch.setattr(mv_advisor, "estate_metric_view_yamls", lambda *a, **k: {})
+    monkeypatch.setattr(
+        mv_scoring, "FoundationModelEmbeddingClient",
+        lambda ws: SimpleNamespace(embed=lambda texts: [[] for _ in texts]),
+    )
+    monkeypatch.setattr(mv_signals, "warehouse_reader", lambda *a, **k: None)
+
+    caplog.set_level("DEBUG")
+    outcome, _run_id = mv_suggest.suggest_for_space(
+        sp_ws=MagicMock(), catalog="main", schema="gso", warehouse_id="wh1",
+        llm_model="m", space_id="space-1", applied_config=config,
+        triggered_by="analyst@example.com",
+    )
+
+    assert outcome.status == "COMPLETE"
+    # The corpus holds only the two CONFLICT halves, so nothing may persist.
+    assert upserts == []
+    assert {f["verdict"] for f in stages[-1]["detail"]["render_failures"]} == {
+        mv_advisor.CONFLICT_NAMES_UNREAD,
+    }
+    assert any(
+        r.name.endswith("mv_advisor") and "RuntimeError" in r.getMessage()
+        for r in caplog.records
+    )
+    assert all("secret_literal" not in r.getMessage() for r in caplog.records)
+    assert all(not r.exc_info for r in caplog.records)
+
+
 def test_persist_bundle_fans_out_supersession_to_legacy_members(monkeypatch):
     """MV-D30 as-implemented (Prompt 15.6): when the injected persist callback
     writes a view-grained bundle, it retires any legacy per-measure candidate the
@@ -477,6 +608,56 @@ def test_the_stream_reload_drops_a_stale_proposal_its_successor_replaces(client,
 
     result = _json.loads(next(d for e, d in _parse_sse(resp.text) if e == "result"))
     assert [p["suggestion_id"] for p in result["proposals"]] == ["sug_current"]
+
+
+_SUG_OLD = "sug_" + "a" * 12
+_SUG_NEW = "sug_" + "b" * 12
+
+
+def _stub_a_reshaped_scan(monkeypatch) -> list:
+    """MV-D122: a re-scan reshaped the bundle, so two undecided current rows name
+    one view; returns the recorded created-ledger lookups."""
+    from genie_space_optimizer.common.config import MV_RENDER_VERSION
+
+    _stub_a_complete_scan(monkeypatch)
+    current = {"proposed_object": "finance.sales.revenue_metrics",
+               "evidence": {"render_version": MV_RENDER_VERSION}, "decision": None}
+    rows = [
+        {**_row(_SUG_OLD), **current, "dedup_fingerprint": "a" * 64,
+         "updated_at": "2026-10-01T10:00:00"},
+        {**_row(_SUG_NEW), **current, "dedup_fingerprint": "b" * 64,
+         "updated_at": "2026-10-01T11:00:00"},
+    ]
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: rows)
+    asked: list = []
+
+    def _created(ws, warehouse_id, *, catalog, schema, suggestion_ids):
+        asked.append(sorted(suggestion_ids))
+        return set()
+
+    monkeypatch.setattr(warehouse, "wh_created_suggestion_ids", _created)
+    return asked
+
+
+def test_the_suggest_reload_drops_the_older_undecided_sibling(client, monkeypatch):
+    asked = _stub_a_reshaped_scan(monkeypatch)
+
+    resp = client.post("/api/auto-optimize/spaces/space-1/mv/suggest")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [_SUG_NEW]
+    assert asked == [[_SUG_OLD, _SUG_NEW]]
+
+
+def test_the_stream_reload_drops_the_older_undecided_sibling(client, monkeypatch):
+    import json as _json
+
+    asked = _stub_a_reshaped_scan(monkeypatch)
+
+    resp = client.post("/api/auto-optimize/spaces/space-1/mv/suggest/stream")
+
+    result = _json.loads(next(d for e, d in _parse_sse(resp.text) if e == "result"))
+    assert [p["suggestion_id"] for p in result["proposals"]] == [_SUG_NEW]
+    assert asked == [[_SUG_OLD, _SUG_NEW]]
 
 
 # ── The staged-progress stream + OBO/SSE identity trap (MV-D31) ─────────────

@@ -232,9 +232,13 @@ all the scan finds, the IQ scan says so. A proposal made by an earlier version o
 the advisor can't be created as is: it shows a re-scan notice instead of its create
 action, isn't offered for a run, and doesn't show its DDL. Re-scan the Agent for a
 current suggestion. If the re-scan proposes the same view again, the older card
-goes away; if not, the older card stays, marked. When a run creates no metric
-view, the run output says why, including approved proposals that are no longer
-available.
+goes away; if not, the older card stays, marked. A proposal found by an earlier
+version of the advisor shows only its re-scan notice: no graph node, no
+configuration preview and no lift label. When a re-scan reshapes a view, only the
+newest undecided proposal for it is listed. A proposal whose view was created or
+registered stays listed even when a newer proposal names the same view. When a
+run creates no metric view, the run output says why, including approved
+proposals that are no longer available.
 
 When a run attaches an approved metric view, it re-runs the full benchmark suite
 with the view attached. The view is kept only if accuracy on the questions it

@@ -13,7 +13,7 @@ import { MvSuggestOnlyPanel } from "./MvSuggestOnlyPanel"
 import { MvCreateAttachPanel } from "./MvCreateAttachPanel"
 import { MvSpaceConfigDiff } from "./MvSpaceConfigDiff"
 import { MvProposalCard } from "./MvProposalCard"
-import { joinStrategyLabel, LIFT_NOT_MEASURED } from "./mvFormat"
+import { joinStrategyLabel, LIFT_NOT_MEASURED, STALE_PROPOSAL_NOTICE } from "./mvFormat"
 import type { MvCreatedObject, MvDdlArtifact, MvLiftReport, MvProposal } from "@/types"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
@@ -124,6 +124,58 @@ describe("suggest-only panel (frame 4)", () => {
     // The diff synthesizes the proposed side client-side (§7.5).
     expect(html).toContain("With this metric view attached")
     expect(html).toContain("none created")
+  })
+})
+
+describe("suggest-only panel — a stale proposal (MV-D122)", () => {
+  const STALE = "finance.sales.gross_margin"
+  const stale: MvProposal = {
+    ...proposal,
+    suggestion_id: "sug2",
+    dedup_fingerprint: "fp2",
+    proposed_object: STALE,
+    checks: { no_overlap: "PASS" },
+    stale_body: true,
+  }
+  const NOTICE_MARKUP = STALE_PROPOSAL_NOTICE.replace(/'/g, "&#x27;")
+  const html = render(
+    <MvSuggestOnlyPanel
+      runId="run-1"
+      proposals={[stale, proposal]}
+      ddlBySuggestion={{ [proposal.suggestion_id]: ddl }}
+      currentIdentifiers={[]}
+      onRerun={() => {}}
+    />,
+  )
+  const currentAt = html.indexOf(proposal.proposed_object!)
+  const staleAt = html.indexOf(STALE)
+
+  it("the stale card ranks after the current one", () => {
+    expect(currentAt).toBeGreaterThan(-1)
+    expect(staleAt).toBeGreaterThan(currentAt)
+  })
+
+  it("the current card keeps its Lift label and config preview", () => {
+    const current = html.slice(currentAt, staleAt)
+    expect(current).toContain(LIFT_NOT_MEASURED)
+    expect(current).toContain("With this metric view attached")
+  })
+
+  it("the stale card has no config preview and no Lift label, and keeps its re-scan notice", () => {
+    const staleCard = html.slice(staleAt)
+    expect(staleCard).not.toContain("With this metric view attached")
+    expect(staleCard).not.toContain(LIFT_NOT_MEASURED)
+    expect(staleCard).toContain(NOTICE_MARKUP)
+  })
+
+  it("a panel of one stale proposal shows neither anywhere", () => {
+    const only = render(
+      <MvSuggestOnlyPanel runId="run-1" proposals={[stale]} ddlBySuggestion={{}} currentIdentifiers={[]} onRerun={() => {}} />,
+    )
+    expect(only).not.toContain("With this metric view attached")
+    expect(only).not.toContain(LIFT_NOT_MEASURED)
+    expect(only).toContain(NOTICE_MARKUP)
+    expect(only).toContain("1 proposed · none created")
   })
 })
 

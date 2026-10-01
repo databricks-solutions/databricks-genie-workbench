@@ -117,7 +117,9 @@ def suggest_for_space(
     """
     from genie_space_optimizer.common.warehouse import (
         wh_create_advice_run,
+        wh_created_suggestion_ids,
         wh_ensure_optimization_tables,
+        wh_load_mv_candidates,
         wh_load_mv_suppressed_fingerprints,
         wh_supersede_legacy_mv_candidates,
         wh_upsert_mv_candidate,
@@ -128,6 +130,7 @@ def suggest_for_space(
         STAGE_READING,
         advise_from_corpus,
         estate_metric_view_yamls,
+        kept_view_names,
         space_corpus_entries,
     )
     from genie_space_optimizer.optimization.mv_scoring import (
@@ -272,6 +275,18 @@ def suggest_for_space(
             read_suppressed_fingerprints=lambda: wh_load_mv_suppressed_fingerprints(
                 sp_ws, warehouse_id, catalog=catalog, schema=schema,
                 target_space_id=space_id,
+            ),
+            # MV-D122: the kept rows' view names (decided or created), read
+            # strictly, as the in-job advisor reads them.
+            read_kept_names=lambda: kept_view_names(
+                wh_load_mv_candidates(
+                    sp_ws, warehouse_id, catalog, schema,
+                    target_space_id=space_id, include_superseded=True, strict=True,
+                ),
+                created_lookup=lambda ids: wh_created_suggestion_ids(
+                    sp_ws, warehouse_id, catalog=catalog, schema=schema,
+                    suggestion_ids=ids,
+                ),
             ),
             on_stage=emit_stage,
         )

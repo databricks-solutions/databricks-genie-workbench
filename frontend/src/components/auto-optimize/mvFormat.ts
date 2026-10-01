@@ -235,6 +235,12 @@ export function isStaleBody(proposal: MvProposal): boolean {
   return proposal.stale_body === true
 }
 
+// MV-D117's count of stale proposals, shared by the LOW disclosure header and
+// the proposal summary (MV-D122).
+export function staleRescanSentence(n: number): string {
+  return `${n} found by an earlier version of the advisor ${n === 1 ? "needs" : "need"} a re-scan`
+}
+
 // MV-D35 + MV-D117: the LOW disclosure's header. A stale proposal is neither
 // validated nor executable, so that clause covers only the current ones.
 export function lowDisclosureHeader(low: MvProposal[], primaryEmpty: boolean): string {
@@ -243,7 +249,7 @@ export function lowDisclosureHeader(low: MvProposal[], primaryEmpty: boolean): s
     : "Ranked lower by demand evidence"
   const stale = low.filter(isStaleBody).length
   if (stale === 0) return `${lead} — each is still validated and executable.`
-  const staleClause = `${stale} found by an earlier version of the advisor ${stale === 1 ? "needs" : "need"} a re-scan`
+  const staleClause = staleRescanSentence(stale)
   const current = low.length - stale
   if (current === 0) return `${lead} — ${staleClause}.`
   const currentClause = current === 1 ? "the current one is" : "each current one is"
@@ -406,7 +412,7 @@ export function factsChecks(proposal: MvProposal): { key: string; label: string 
 
 // The set of member-measure identities a proposal governs — its dedup
 // fingerprints, falling back to the measure expr so a legacy row still compares.
-function measureIdentitySet(proposal: MvProposal): Set<string> {
+export function measureIdentitySet(proposal: MvProposal): Set<string> {
   const ids = new Set<string>()
   for (const m of proposal.measures ?? []) {
     const id = (m.dedup_fingerprint && m.dedup_fingerprint.trim())

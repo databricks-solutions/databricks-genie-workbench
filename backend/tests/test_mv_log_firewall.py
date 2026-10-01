@@ -29,6 +29,7 @@ _MV_ROUTE_FUNCTIONS = (
     "_load_candidate_ddl_fallback",
     "_space_audience_grantees",
     "_gso_sp_application_id",
+    "_mv_optimizer_grant_sql",
     "probe_mv_entitlement",
     "_mv_fetch_space_config",
     "list_mv_proposals",
@@ -45,6 +46,8 @@ _MV_ROUTE_FUNCTIONS = (
     "drop_mv_created",
     "_mv_lift_from_row",
     "list_mv_created",
+    "_live_proposal_rows",
+    "_drop_older_undecided_sibling",
 )
 
 

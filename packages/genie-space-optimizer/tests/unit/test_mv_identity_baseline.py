@@ -11,8 +11,6 @@ from pathlib import Path
 
 import pytest
 import sqlglot
-
-from genie_space_optimizer.optimization import mv_advisor
 from genie_space_optimizer.optimization.mv_fingerprint import (
     canonicalize_sql_ast,
     corpus_scan,
@@ -23,6 +21,8 @@ from genie_space_optimizer.optimization.mv_fingerprint import (
     shapes_in_statement,
 )
 from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+
+from genie_space_optimizer.optimization import mv_advisor
 
 BASELINE_PATH = Path(__file__).parent / "data" / "mv_identity_baseline_ab2e68cf.json"
 

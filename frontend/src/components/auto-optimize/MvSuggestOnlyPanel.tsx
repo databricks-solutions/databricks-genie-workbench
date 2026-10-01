@@ -16,6 +16,7 @@ import { MvProposalsSummary } from "@/components/auto-optimize/MvProposalsSummar
 import { MvAcceptFlow } from "@/components/auto-optimize/MvAcceptFlow"
 import { MvSpaceConfigDiff } from "@/components/auto-optimize/MvSpaceConfigDiff"
 import {
+  isStaleBody,
   LIFT_NOT_MEASURED,
   orthogonalityCallout,
   rankProposals,
@@ -85,6 +86,10 @@ export function MvSuggestOnlyPanel({
 
       {ranked.map((proposal, i) => {
         const proposalDdl = ddlBySuggestion[proposal.suggestion_id] ?? null
+        // MV-D122: a stale proposal can't be created or attached as is, so it
+        // shows neither the Lift label nor the config preview; its re-scan
+        // notice (MV-D117) remains.
+        const stale = isStaleBody(proposal)
         return (
           <div key={proposal.suggestion_id} className="space-y-2">
             <MvProposalCard
@@ -93,7 +98,7 @@ export function MvSuggestOnlyPanel({
               recommended={i === recommendedAt}
               recommendedReason={i === recommendedAt ? recommendedReason(proposal) : undefined}
               defaultExpanded={i === 0}
-              liftLabel={<LiftNotMeasuredLabel />}
+              liftLabel={stale ? undefined : <LiftNotMeasuredLabel />}
               actions={
                 <MvAcceptFlow
                   proposal={proposal}
@@ -106,7 +111,7 @@ export function MvSuggestOnlyPanel({
                 />
               }
             />
-            {proposal.proposed_object && (
+            {proposal.proposed_object && !stale && (
               <MvSpaceConfigDiff
                 currentIdentifiers={currentIdentifiers}
                 proposedObject={proposal.proposed_object}

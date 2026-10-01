@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 import sqlglot
-
-from genie_space_optimizer.optimization import mv_advisor
 from genie_space_optimizer.optimization.mv_fingerprint import corpus_scan
 from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+
+from genie_space_optimizer.optimization import mv_advisor
 
 BASE = "43b01544"
 BASELINE_PATH = Path(__file__).parent / "data" / f"mv_identity_baseline_{BASE}.json"

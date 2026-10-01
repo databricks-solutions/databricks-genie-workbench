@@ -421,6 +421,23 @@ def test_load_candidates_returns_empty_on_read_failure(monkeypatch):
     ) == []
 
 
+def test_a_strict_candidates_read_raises_and_logs_nothing(monkeypatch, caplog):
+    """MV-D122: the kept-names reader must tell an unreadable table from no rows."""
+    def _boom(ws, warehouse_id, sql):
+        raise RuntimeError("zq_candidates_sentinel")
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", _boom)
+    with (
+        caplog.at_level("DEBUG"),
+        pytest.raises(RuntimeError, match="zq_candidates_sentinel"),
+    ):
+        warehouse.wh_load_mv_candidates(
+            _FakeWorkspaceClient(), "wh1", "main", "gso",
+            target_space_id="space-1", strict=True,
+        )
+    assert caplog.records == []
+
+
 # ── Supersession — the mixed-grain fixture surfaces the bundle only (15.6) ──
 
 
@@ -620,6 +637,114 @@ def test_load_created_objects_escapes_the_run_key(monkeypatch):
         run_id="r1' OR '1'='1",
     )
     assert "run_id = 'r1'' OR ''1''=''1'" in seen[0]
+
+
+# ── Created ledger: which suggestions hold a created view (MV-D122) ────────
+
+_SUG_A = "sug_" + "a" * 12
+_SUG_B = "sug_" + "0123456789ab"
+
+
+def test_created_suggestion_ids_quotes_every_value_through_the_literal_helper(monkeypatch):
+    seen: list[str] = []
+    quoted: list[object] = []
+    real_literal = warehouse._wh_literal
+
+    def _spy_literal(value, **kwargs):
+        quoted.append(value)
+        return real_literal(value, **kwargs)
+
+    monkeypatch.setattr(warehouse, "_wh_literal", _spy_literal)
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (
+            seen.append(sql), pd.DataFrame({"suggestion_id": [_SUG_B]})
+        )[1],
+    )
+
+    found = warehouse.wh_created_suggestion_ids(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        suggestion_ids=[_SUG_B, _SUG_A, _SUG_B],
+    )
+
+    assert found == {_SUG_B}
+    assert sorted(quoted) == sorted([_SUG_A, _SUG_B])
+    assert seen == [
+        (
+            f"SELECT DISTINCT suggestion_id FROM main.gso.{TABLE_MV_CREATED_OBJECTS} "
+            f"WHERE suggestion_id IN ('{_SUG_B}', '{_SUG_A}')"
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        f"{_SUG_A}' OR '1'='1",
+        "sug_" + "A" * 12,
+        "sug_" + "a" * 11,
+        f"{_SUG_A}\n",
+        "user_" + "a" * 32,
+        None,
+    ],
+)
+def test_created_suggestion_ids_refuses_an_invalid_id_before_any_sql(monkeypatch, bad):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (seen.append(sql), pd.DataFrame())[1],
+    )
+
+    with pytest.raises(ValueError) as raised:
+        warehouse.wh_created_suggestion_ids(
+            _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+            suggestion_ids=[_SUG_A, bad],
+        )
+
+    assert seen == []
+    assert "OR" not in str(raised.value)
+
+
+def test_created_suggestion_ids_issues_no_query_for_no_ids(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (seen.append(sql), pd.DataFrame())[1],
+    )
+
+    assert warehouse.wh_created_suggestion_ids(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso", suggestion_ids=[],
+    ) == set()
+    assert seen == []
+
+
+def test_created_suggestion_ids_raises_a_failed_read_and_logs_nothing(monkeypatch, caplog):
+    def _boom(ws, warehouse_id, sql):
+        raise RuntimeError("zq_ledger_sentinel")
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", _boom)
+
+    with (
+        caplog.at_level("DEBUG"),
+        pytest.raises(RuntimeError, match="zq_ledger_sentinel"),
+    ):
+        warehouse.wh_created_suggestion_ids(
+            _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+            suggestion_ids=[_SUG_A],
+        )
+
+    assert caplog.records == []
+
+
+def test_created_suggestion_ids_is_empty_when_none_is_in_the_ledger(monkeypatch):
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query", lambda ws, warehouse_id, sql: pd.DataFrame(),
+    )
+
+    assert warehouse.wh_created_suggestion_ids(
+        _FakeWorkspaceClient(), "wh1", catalog="main", schema="gso",
+        suggestion_ids=[_SUG_A],
+    ) == set()
 
 
 # ── Consent: read by run (downgrade_reason for the results screen) ─────────

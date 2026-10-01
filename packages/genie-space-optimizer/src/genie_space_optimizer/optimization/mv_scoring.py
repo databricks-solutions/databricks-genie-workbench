@@ -875,13 +875,19 @@ def _definition_tables(definition: Mapping[str, Any]) -> tuple[str, ...]:
 
     A query as the ``source`` or as any join's source makes the whole set unknown
     (``()``), which the governed match treats as matching any table, so a view over
-    a subquery blocks as before MV-D116. A join with no ``source`` adds no table.
+    a subquery blocks as before MV-D116. A join with no ``source`` adds no table, and
+    neither does a ``joins`` value that is not a list.
     """
+
+    def joins_of(node: Mapping[str, Any]) -> Sequence[Any]:
+        value = node.get("joins")
+        return value if isinstance(value, (list, tuple)) else ()
+
     source = source_table_name(definition.get("source"))
     if not source:
         return ()
     tables = [source]
-    pending = list(definition.get("joins") or ())
+    pending = list(joins_of(definition))
     while pending:
         join = pending.pop(0)
         if not isinstance(join, Mapping):
@@ -892,7 +898,7 @@ def _definition_tables(definition: Mapping[str, Any]) -> tuple[str, ...]:
                 return ()
             if name not in tables:
                 tables.append(name)
-        pending.extend(join.get("joins") or ())
+        pending.extend(joins_of(join))
     return tuple(tables)
 
 

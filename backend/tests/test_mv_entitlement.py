@@ -429,6 +429,10 @@ def test_non_three_part_source_table_is_rejected(obo_client):
         _probe(source_tables=["sales.orders"])
 
 
+# `_split_table`'s name cases are shared with `mv_create._uc_name_parts` in
+# test_mv_name_split_parity.py (MV-D122).
+
+
 # ── Capability rows (MV-D8) ──────────────────────────────────────────────
 
 

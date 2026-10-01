@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge"
 import { fetchJoinAdvice, fetchJoinCandidates, fetchSemanticGraph, saveJoinAdvice } from "@/lib/api"
 import type { JoinCandidate, MvGovernance, MvProposal, SemanticGraphEdge, SemanticGraphNode, SemanticGraphResponse } from "@/types"
 import { MvIqScanAdvisorySection } from "@/components/auto-optimize/MvIqScanAdvisorySection"
+import { isStaleBody } from "@/components/auto-optimize/mvFormat"
 import { GOVERNANCE, LADDER_ORDER, countGovernance, isDisplayableMeasureLabel, relationshipGlyph } from "./SemanticGraph"
 import { SemanticBlueprint } from "./SemanticBlueprint"
 
@@ -44,6 +45,8 @@ function shortName(identifier: string): string {
 // `proposals` defaults to the graph's own set, but the Model tab passes the
 // advisory's live-scanned proposals so freshly-scanned suggestions ghost onto
 // the canvas without waiting for a graph refetch (single source of truth).
+// MV-D122: a stale proposal (MV-D117) cannot be created as is, so it draws no
+// ghost.
 export function withOverlay(
   graph: SemanticGraphResponse,
   proposals: MvProposal[] = graph.proposals,
@@ -51,7 +54,7 @@ export function withOverlay(
   const nodes: SemanticGraphNode[] = [...graph.nodes]
   const edges: SemanticGraphEdge[] = [...graph.edges]
   const mvRows = graph.nodes.filter((n) => n.kind === "metric_view").length
-  proposals.forEach((p, i) => {
+  proposals.filter((p) => !isStaleBody(p)).forEach((p, i) => {
     if (!p.proposed_object) return
     const ghostId = `proposed:${p.proposed_object}`
     if (nodes.some((n) => n.id === ghostId)) return

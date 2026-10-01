@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -339,12 +340,14 @@ def load_mv_candidates(
     run_id: str | None = None,
     approved_for_rerun: bool | None = None,
     include_superseded: bool = False,
+    strict: bool = False,
 ) -> list[dict[str, Any]]:
     """Read candidates, newest first, with JSON columns decoded.
 
     At least one of ``target_space_id`` or ``run_id`` must be given so a caller
     cannot accidentally scan every space. Returns ``[]`` when the table is
-    absent or nothing matches.
+    absent or nothing matches; with ``strict`` a failed read raises instead, for
+    a caller that must not mistake an unreadable table for no rows (MV-D122).
 
     ``include_superseded`` defaults to ``False`` so proposal-serving reads
     (hydration, suggest, the create path) never surface a legacy per-measure row
@@ -372,6 +375,8 @@ def load_mv_candidates(
     try:
         df = run_query(spark, query)
     except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        if strict:
+            raise
         logger.debug("load_mv_candidates: no rows for %s (%s)", where, type(exc).__name__)
         return []
     if df.empty:
@@ -832,6 +837,41 @@ def load_mv_created_objects(
     return df.to_dict(orient="records")
 
 
+_SUGGESTION_ID_RE = re.compile(r"sug_[0-9a-f]{12}")
+
+
+def created_suggestion_ids(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    suggestion_ids: Iterable[str],
+) -> set[str]:
+    """Return the given suggestion ids that hold a created-objects ledger row (MV-D122).
+
+    The Spark twin of ``warehouse.wh_created_suggestion_ids``. The ledger is
+    keyed by ``run_id``, and create-at-approval and the claim each write under a
+    fresh advice run, so a space's rows are asked for by ``suggestion_id``.
+
+    Every id must be ``sug_`` plus 12 lowercase hex characters; one that is not
+    refuses the whole call with a ``ValueError`` before any SQL is built. A
+    failed read raises: an unreadable ledger is never "none created".
+    """
+    ids = sorted({value if isinstance(value, str) else repr(value) for value in suggestion_ids})
+    if not ids:
+        return set()
+    if not all(_SUGGESTION_ID_RE.fullmatch(value) for value in ids):
+        raise ValueError("suggestion ids must be sug_ followed by 12 lowercase hex characters")
+    in_list = ", ".join("'" + value.replace("'", "''") + "'" for value in ids)
+    fqn = _fqn(catalog, schema, TABLE_MV_CREATED_OBJECTS)
+    df = run_query(
+        spark,
+        f"SELECT DISTINCT suggestion_id FROM {fqn} WHERE suggestion_id IN ({in_list})",
+    )
+    if df.empty:
+        return set()
+    return {str(value) for value in df["suggestion_id"]}
+
+
 def load_mv_created_object_by_name(
     spark: SparkSession,
     full_name: str,
@@ -867,6 +907,7 @@ __all__ = [
     "MV_CONSENT_VERDICTS",
     "MV_CREATED_OBJECT_STATUSES",
     "MV_ON_REGRESSION_ACTIONS",
+    "created_suggestion_ids",
     "load_mv_candidates",
     "load_mv_consent",
     "load_mv_created_object_by_name",

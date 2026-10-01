@@ -9,6 +9,8 @@ import logging
 import os
 import re
 import time
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Annotated, Any, Callable, Literal, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -1648,20 +1650,29 @@ def _mv_optimizer_grant_sql(proposed: str | None, sp_app_id: str) -> str | None:
     (which listed built-in groups and even a self-grant, the noise the reviewer
     flagged). The app never executes it; the owner copies it after creating the
     view. With no resolvable SP it says so in words rather than emitting a
-    placeholder that cannot run."""
+    placeholder that cannot run. A stored name ``quote_fqn`` refuses offers no
+    GRANT text on either branch (MV-D122)."""
     if not proposed:
+        return None
+    from genie_space_optimizer.optimization.mv_yaml import quote_fqn
+
+    try:
+        quoted = quote_fqn(proposed)
+    except ValueError as exc:
+        logger.warning(
+            "No GRANT offered: the stored view name is not a qualified name (%s)",
+            type(exc).__name__,
+        )
         return None
     if not sp_app_id:
         return (
             "-- Could not resolve the optimizer service principal. Grant SELECT on\n"
-            f"-- {proposed} to the GSO service principal so optimization runs can read it."
+            f"-- {quoted} to the GSO service principal so optimization runs can read it."
         )
-    from genie_space_optimizer.optimization.mv_yaml import quote_fqn
-
     return (
         "-- The optimizer (GSO job) reads this view as its service principal;\n"
         "-- grant SELECT so create-and-attach optimization runs succeed.\n"
-        f"GRANT SELECT ON VIEW {quote_fqn(proposed)} TO `{sp_app_id}`;"
+        f"GRANT SELECT ON VIEW {quoted} TO `{sp_app_id}`;"
     )
 
 
@@ -2241,6 +2252,106 @@ def _drop_stale_with_current_sibling(rows: list[dict]) -> list[dict]:
     ]
 
 
+_OLDEST_INSTANT = datetime.min.replace(tzinfo=UTC)
+
+
+def _proposal_instant(value: Any) -> datetime:
+    """A candidate row's ``updated_at`` as an aware UTC instant (MV-D122).
+
+    Reads a ``datetime`` or an ISO-8601 string; a naive value is UTC (MV-D119).
+    Anything else, or a string that does not parse, sorts oldest."""
+    import pandas as pd
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return _OLDEST_INSTANT
+    if not isinstance(value, datetime) or value is pd.NaT:
+        return _OLDEST_INSTANT
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _drop_older_undecided_sibling(
+    rows: list[dict], *, created_lookup: Callable[[Sequence[str]], set[str]],
+) -> list[dict]:
+    """Among undecided rows naming one view, keep only the newest (MV-D122).
+
+    A re-scan that changes a bundle's membership moves its MV-D30 key, so the
+    older row stays current and undecided beside its successor. Only current,
+    undecided rows with a ``proposed_object`` take part, grouped by
+    ``_norm_fqn``; the newest ``updated_at`` wins, ties going to the greater
+    ``dedup_fingerprint``. A decided row, or one the created-objects ledger
+    holds (create-at-approval and the claim record no decision), is kept and
+    hides nothing. ``created_lookup`` is asked once, and only about rows in a
+    group of two or more; if it raises, no undecided row is dropped. Stale rows
+    are ``_drop_stale_with_current_sibling``'s."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        name = _norm_fqn(str(row.get("proposed_object") or ""))
+        if (
+            name
+            and not (_mv_str(row.get("decision")) or "").strip()
+            and not mv_create.proposal_body_is_stale(row)
+        ):
+            groups.setdefault(name, []).append(row)
+    contested = [group for group in groups.values() if len(group) > 1]
+    if not contested:
+        return rows
+    try:
+        created = created_lookup(
+            [str(row.get("suggestion_id") or "") for group in contested for row in group]
+        )
+    except Exception as exc:  # noqa: BLE001 - fail open to the full listing
+        logger.warning(
+            "Could not read the created metric-view ledger (%s); listing every "
+            "undecided proposal", type(exc).__name__,
+        )
+        return rows
+    dropped: set[int] = set()
+    for group in contested:
+        open_rows = [r for r in group if str(r.get("suggestion_id") or "") not in created]
+        if len(open_rows) < 2:
+            continue
+        newest = max(
+            open_rows,
+            key=lambda r: (
+                _proposal_instant(r.get("updated_at")), str(r.get("dedup_fingerprint") or ""),
+            ),
+        )
+        dropped.update(id(r) for r in open_rows if r is not newest)
+    return [r for r in rows if id(r) not in dropped]
+
+
+def _live_proposal_rows(
+    rows: list[dict], *, created_lookup: Callable[[Sequence[str]], set[str]],
+) -> list[dict]:
+    """The candidate rows a proposal list shows (MV-D117, MV-D122).
+
+    Drops a stale row beside a current one, then an older undecided row beside
+    its successor. Every list reads through this one helper."""
+    return _drop_older_undecided_sibling(
+        _drop_stale_with_current_sibling(rows), created_lookup=created_lookup,
+    )
+
+
+def _created_lookup(ws, config) -> Callable[[Sequence[str]], set[str]]:
+    """Ask the created-objects ledger about suggestion ids, as ``ws`` (the SP)."""
+
+    def _lookup(suggestion_ids: Sequence[str]) -> set[str]:
+        from genie_space_optimizer.common.warehouse import wh_created_suggestion_ids
+
+        return wh_created_suggestion_ids(
+            ws, config.warehouse_id,
+            catalog=config.catalog, schema=config.schema_name,
+            suggestion_ids=suggestion_ids,
+        )
+
+    return _lookup
+
+
 @router.get("/runs/{run_id}/mv-proposals", response_model=MvProposalsResponse)
 async def list_mv_proposals(run_id: RunId):
     """List the metric view proposals the advisor recorded for this run (MV-D21)."""
@@ -2253,10 +2364,12 @@ async def list_mv_proposals(run_id: RunId):
 
     from genie_space_optimizer.common.warehouse import wh_load_mv_candidates
 
+    sp_ws = None
     try:
+        sp_ws = get_service_principal_client()
         rows = await _offload(
             wh_load_mv_candidates,
-            get_service_principal_client(),
+            sp_ws,
             config.warehouse_id,
             config.catalog,
             config.schema_name,
@@ -2267,7 +2380,14 @@ async def list_mv_proposals(run_id: RunId):
             "Could not load MV proposals for run %s (%s)", run_id, type(exc).__name__,
         )
         rows = []
-    proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
+    live = (
+        await _offload(
+            _live_proposal_rows, rows, created_lookup=_created_lookup(sp_ws, config),
+        )
+        if rows
+        else []
+    )
+    proposals = [_mv_proposal_from_row(r) for r in live]
     # Prompt 15.9 item (d): resolve provenance ids to human labels from the space
     # config (run rows carry target_space_id). One config read for the whole list.
     space_id = next((str(r.get("target_space_id") or "") for r in rows if r.get("target_space_id")), "")
@@ -2325,7 +2445,9 @@ async def list_space_mv_proposals(
             "Could not load MV proposals for space %s (%s)", space_id, type(exc).__name__,
         )
         rows = []
-    rows = _drop_stale_with_current_sibling(rows)
+    rows = await _offload(
+        _live_proposal_rows, rows, created_lookup=_created_lookup(sp_ws, config),
+    )
     if approved_for_rerun:
         rows = [r for r in rows if not mv_create.proposal_body_is_stale(r)]
 
@@ -2460,7 +2582,10 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
         )
         rows = []
 
-    proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
+    live = await _offload(
+        _live_proposal_rows, rows, created_lookup=_created_lookup(sp_ws, config),
+    )
+    proposals = [_mv_proposal_from_row(r) for r in live]
     # Prompt 15.9 item (d): resolve provenance ids to labels from the config we
     # already fetched for this scan — no extra read on the on-demand path.
     if proposals:
@@ -2633,9 +2758,10 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
                         space_id, type(exc).__name__,
                     )
                     rows = []
-                proposals = [
-                    _mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)
-                ]
+                live = await _offload(
+                    _live_proposal_rows, rows, created_lookup=_created_lookup(sp_ws, config),
+                )
+                proposals = [_mv_proposal_from_row(r) for r in live]
                 # Prompt 15.9 item (d): label provenance ids from the config this
                 # stream already read (applied_config), same as the blocking route.
                 if proposals:
@@ -3600,7 +3726,11 @@ async def get_space_semantic_graph(space_id: SpaceId):
                     config.schema_name,
                     target_space_id=space_id,
                 )
-                proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
+                live = await _offload(
+                    _live_proposal_rows, rows,
+                    created_lookup=_created_lookup(get_service_principal_client(), config),
+                )
+                proposals = [_mv_proposal_from_row(r) for r in live]
             except Exception as exc:
                 logger.warning(
                     "Could not load MV proposals for space %s (%s)",

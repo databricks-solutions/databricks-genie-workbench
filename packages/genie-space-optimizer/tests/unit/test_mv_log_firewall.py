@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from genie_space_optimizer.common import warehouse
 from genie_space_optimizer.optimization import applier, mv_advisor, mv_attach, mv_signals
 
 _SENTINEL = "secret_literal"
@@ -22,6 +23,17 @@ _SENTINEL = "secret_literal"
 _OPTIMIZATION = Path(mv_attach.__file__).resolve().parent
 _MV_MODULES = sorted(_OPTIMIZATION.glob("mv_*.py"))
 _APPLIER_FUNCTIONS = ("apply_patch_set", "rollback")
+_WAREHOUSE = Path(warehouse.__file__).resolve()
+_WAREHOUSE_MV_FUNCTIONS = (
+    "wh_load_mv_consent",
+    "wh_load_mv_candidates",
+    "wh_supersede_legacy_mv_candidates",
+    "wh_load_mv_suppressed_fingerprints",
+    "wh_load_mv_created_object",
+    "wh_load_mv_created_objects",
+    "wh_load_mv_consent_by_run",
+    "wh_read_join_advice",
+)
 
 
 def find_log_firewall_violations(
@@ -117,10 +129,17 @@ def find_log_firewall_violations(
     return violations
 
 
-_TARGETS = [pytest.param(path, None, id=path.name) for path in _MV_MODULES] + [
-    pytest.param(_OPTIMIZATION / "applier.py", (name,), id=f"applier.py::{name}")
-    for name in _APPLIER_FUNCTIONS
-]
+_TARGETS = (
+    [pytest.param(path, None, id=path.name) for path in _MV_MODULES]
+    + [
+        pytest.param(_OPTIMIZATION / "applier.py", (name,), id=f"applier.py::{name}")
+        for name in _APPLIER_FUNCTIONS
+    ]
+    + [
+        pytest.param(_WAREHOUSE, (name,), id=f"warehouse.py::{name}")
+        for name in _WAREHOUSE_MV_FUNCTIONS
+    ]
+)
 
 
 def test_the_glob_finds_the_metric_view_modules() -> None:
@@ -192,6 +211,17 @@ def test_the_checker_reads_only_the_named_functions_and_names_a_missing_one() ->
     assert find_log_firewall_violations(source, "seed.py", ("kept", "gone")) == [
         "seed.py: function 'gone' not found",
         "seed.py:2: logger.exception",
+    ]
+
+
+@pytest.mark.parametrize("name", _WAREHOUSE_MV_FUNCTIONS)
+def test_the_warehouse_pin_fails_on_an_exc_info_call(name: str) -> None:
+    seeded = (
+        f"def {name}(ws):\n    try:\n        pass\n    except Exception:\n"
+        "        logger.debug('could not read', exc_info=True)\n"
+    )
+    assert find_log_firewall_violations(seeded, "warehouse.py", (name,)) == [
+        "warehouse.py:5: exc_info"
     ]
 
 
@@ -304,3 +334,71 @@ def test_a_failed_signal_read_logs_the_reason_code_and_type_only(read: str, capl
     assert [r.getMessage() for r in caplog.records] == [
         f"mv_signals: {read} read unavailable ({mv_signals.REASON_READ_FAILED}, RuntimeError)"
     ]
+
+
+_LOCATION = {"catalog": "main", "schema": "gso"}
+
+_WAREHOUSE_READS = {
+    "wh_load_mv_consent": (
+        lambda: warehouse.wh_load_mv_consent(MagicMock(), "wh", "p1", "main", "gso"), None,
+    ),
+    "wh_load_mv_candidates": (
+        lambda: warehouse.wh_load_mv_candidates(
+            MagicMock(), "wh", "main", "gso", target_space_id="space-1",
+        ),
+        [],
+    ),
+    "wh_supersede_legacy_mv_candidates": (
+        lambda: warehouse.wh_supersede_legacy_mv_candidates(
+            MagicMock(), "wh", **_LOCATION, target_space_id="space-1",
+            member_fingerprints=["fp-1"], superseded_by="fp-bundle",
+        ),
+        [],
+    ),
+    "wh_load_mv_suppressed_fingerprints": (
+        lambda: warehouse.wh_load_mv_suppressed_fingerprints(
+            MagicMock(), "wh", **_LOCATION, target_space_id="space-1",
+        ),
+        set(),
+    ),
+    "wh_load_mv_created_object": (
+        lambda: warehouse.wh_load_mv_created_object(
+            MagicMock(), "wh", **_LOCATION, run_id="r1", suggestion_id="sug_1",
+        ),
+        None,
+    ),
+    "wh_load_mv_created_objects": (
+        lambda: warehouse.wh_load_mv_created_objects(
+            MagicMock(), "wh", **_LOCATION, run_id="r1",
+        ),
+        [],
+    ),
+    "wh_load_mv_consent_by_run": (
+        lambda: warehouse.wh_load_mv_consent_by_run(
+            MagicMock(), "wh", **_LOCATION, run_id="r1",
+        ),
+        None,
+    ),
+    "wh_read_join_advice": (
+        lambda: warehouse.wh_read_join_advice(MagicMock(), "wh", run_id="r1", **_LOCATION),
+        [],
+    ),
+}
+
+
+def test_every_pinned_warehouse_function_has_a_behaviour_pin() -> None:
+    assert sorted(_WAREHOUSE_READS) == sorted(_WAREHOUSE_MV_FUNCTIONS)
+
+
+@pytest.mark.parametrize("name", sorted(_WAREHOUSE_READS))
+def test_a_failed_warehouse_read_logs_the_type_only(name: str, monkeypatch, caplog) -> None:
+    def raising(*_a, **_k):
+        raise RuntimeError(_SENTINEL)
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", raising)
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute", raising)
+    call, expected = _WAREHOUSE_READS[name]
+    with caplog.at_level("DEBUG", logger=warehouse.logger.name):
+        assert call() == expected
+    _assert_type_only(caplog)
+    assert all("RuntimeError" in r.getMessage() for r in caplog.records)

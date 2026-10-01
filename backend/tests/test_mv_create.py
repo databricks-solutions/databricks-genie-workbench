@@ -15,6 +15,8 @@ Two things matter and are tested at the seam, not end to end (no Databricks):
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -1675,6 +1677,326 @@ def test_the_sibling_rule_drops_only_a_stale_row_a_current_row_names():
     ]
 
 
+# ── MV-D122: a reshaped bundle is not listed beside its successor ──────────
+
+_RESHAPED_VIEW = "main.sales.orders_metrics"
+_SUG_OLD = "sug_" + "a" * 12
+_SUG_NEW = "sug_" + "b" * 12
+_SUG_MID = "sug_" + "c" * 12
+
+
+def _reshaped_row(suggestion_id: str, fingerprint: str, updated_at, **extra) -> dict:
+    return {
+        "target_space_id": "space-1", "candidate_type": "NEW_METRIC_VIEW",
+        "approved_for_rerun": False, "conflicts": [],
+        "suggestion_id": suggestion_id, "dedup_fingerprint": fingerprint,
+        "proposed_object": _RESHAPED_VIEW, "decision": None, "updated_at": updated_at,
+        "evidence": {"render_version": MV_RENDER_VERSION},
+        **extra,
+    }
+
+
+def _reshaped_pair(old_at="2026-10-01T10:00:00", new_at="2026-10-01T11:00:00", **old_extra):
+    return [
+        _reshaped_row(_SUG_OLD, "a" * 64, old_at, **old_extra),
+        _reshaped_row(_SUG_NEW, "b" * 64, new_at),
+    ]
+
+
+def _none_created(suggestion_ids) -> set[str]:
+    return set()
+
+
+class _RecordingLookup:
+    def __init__(self, created=()):
+        self.created = set(created)
+        self.calls: list[list[str]] = []
+
+    def __call__(self, suggestion_ids):
+        self.calls.append(list(suggestion_ids))
+        return set(self.created)
+
+
+def _ids(rows) -> list[str]:
+    return [r["suggestion_id"] for r in rows]
+
+
+def _stub_space_list(monkeypatch, rows) -> None:
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: rows)
+    monkeypatch.setattr(warehouse, "wh_load_latest_advice_scan", lambda *a, **k: None)
+    monkeypatch.setattr(auto_optimize, "_mv_fetch_space_config", lambda space_id: None)
+
+
+def _ledger_query(ledger: dict[str, str]):
+    """A fake warehouse read over a created-objects ledger of id -> provenance."""
+
+    def _query(ws, warehouse_id, sql):
+        import re as _re
+
+        assert "genie_opt_mv_created_objects" in sql
+        asked = set(_re.findall(r"'(sug_[0-9a-f]{12})'", sql))
+        return pd.DataFrame({"suggestion_id": sorted(asked & set(ledger))})
+
+    return _query
+
+
+def test_the_older_undecided_row_of_a_view_leaves_the_list(client, monkeypatch):
+    _stub_space_list(monkeypatch, _reshaped_pair())
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", _ledger_query({}))
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [_SUG_NEW]
+
+
+def test_an_approved_row_stays_beside_a_newer_undecided_one():
+    kept = auto_optimize._live_proposal_rows(
+        _reshaped_pair(decision="approved"), created_lookup=_none_created,
+    )
+    assert _ids(kept) == [_SUG_OLD, _SUG_NEW]
+
+
+def test_a_rejected_row_stays_beside_a_newer_undecided_one():
+    kept = auto_optimize._live_proposal_rows(
+        _reshaped_pair(decision="rejected"), created_lookup=_none_created,
+    )
+    assert _ids(kept) == [_SUG_OLD, _SUG_NEW]
+
+
+def test_a_created_row_stays_beside_a_newer_undecided_one(client, monkeypatch):
+    """Create-at-approval records no decision (Ruling 7 amendment); the
+    created-objects ledger is what keeps the row."""
+    _stub_space_list(monkeypatch, _reshaped_pair())
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query", _ledger_query({_SUG_OLD: "OBO_CREATED"}),
+    )
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [_SUG_OLD, _SUG_NEW]
+
+
+def test_a_claimed_row_stays_beside_a_newer_undecided_one(client, monkeypatch):
+    _stub_space_list(monkeypatch, _reshaped_pair())
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query", _ledger_query({_SUG_OLD: "USER_CREATED"}),
+    )
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [_SUG_OLD, _SUG_NEW]
+
+
+def test_a_created_row_hides_no_other_row():
+    rows = [
+        _reshaped_row(_SUG_OLD, "a" * 64, "2026-10-01T12:00:00"),
+        _reshaped_row(_SUG_MID, "c" * 64, "2026-10-01T10:00:00"),
+        _reshaped_row(_SUG_NEW, "b" * 64, "2026-10-01T11:00:00"),
+    ]
+
+    kept = auto_optimize._live_proposal_rows(
+        rows, created_lookup=_RecordingLookup(created={_SUG_OLD}),
+    )
+
+    assert _ids(kept) == [_SUG_OLD, _SUG_NEW]
+
+
+def test_the_newest_wins_across_timestamp_types():
+    later_naive = datetime(2026, 10, 1, 12, 0)  # noqa: DTZ001 - a naive cell
+    rows = _reshaped_pair(old_at=later_naive, new_at="2026-10-01T11:30:00Z")
+    assert _ids(auto_optimize._live_proposal_rows(rows, created_lookup=_none_created)) == [
+        _SUG_OLD
+    ]
+
+    earlier_aware = datetime(2026, 10, 1, 11, 0, tzinfo=UTC)
+    rows = _reshaped_pair(old_at=earlier_aware, new_at="2026-10-01 11:30:00")
+    assert _ids(auto_optimize._live_proposal_rows(rows, created_lookup=_none_created)) == [
+        _SUG_NEW
+    ]
+
+
+def test_equal_timestamps_keep_the_greater_fingerprint():
+    same = "2026-10-01T11:00:00"
+    rows = [
+        _reshaped_row(_SUG_NEW, "b" * 64, same),
+        _reshaped_row(_SUG_OLD, "a" * 64, same),
+    ]
+    assert _ids(auto_optimize._live_proposal_rows(rows, created_lookup=_none_created)) == [
+        _SUG_NEW
+    ]
+    assert _ids(
+        auto_optimize._live_proposal_rows(list(reversed(rows)), created_lookup=_none_created)
+    ) == [_SUG_NEW]
+
+
+def test_names_compare_case_and_backtick_insensitively():
+    rows = _reshaped_pair(proposed_object="`Main`.sales.ORDERS_metrics")
+
+    assert _ids(auto_optimize._live_proposal_rows(rows, created_lookup=_none_created)) == [
+        _SUG_NEW
+    ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-proposals",
+        "/api/auto-optimize/spaces/space-1/mv-proposals",
+    ],
+    ids=["run-list", "space-list"],
+)
+def test_the_newest_undecided_drop_applies_at_every_list_site(client, monkeypatch, url):
+    """The run and space lists; the suggest and stream reloads are pinned in
+    ``test_mv_suggest.py`` and the semantic graph in ``test_semantic_graph.py``."""
+    _stub_space_list(monkeypatch, _reshaped_pair())
+    lookup_ws: list = []
+
+    def _created(ws, warehouse_id, *, catalog, schema, suggestion_ids):
+        lookup_ws.append((warehouse_id, catalog, schema, sorted(suggestion_ids)))
+        return set()
+
+    monkeypatch.setattr(warehouse, "wh_created_suggestion_ids", _created)
+
+    resp = client.get(url)
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [_SUG_NEW]
+    assert lookup_ws == [("wh-test", "main", "gso_test", [_SUG_OLD, _SUG_NEW])]
+
+
+def test_the_rerun_gate_is_unchanged(client, monkeypatch):
+    rows = _reshaped_pair(decision="approved", approved_for_rerun=True)
+    rows[1].update(decision="approved", approved_for_rerun=True)
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: rows)
+    lookup = _RecordingLookup()
+    monkeypatch.setattr(
+        warehouse, "wh_created_suggestion_ids", lambda *a, **k: lookup(k["suggestion_ids"]),
+    )
+
+    resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals?approved_for_rerun=true")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [_SUG_OLD, _SUG_NEW]
+    assert lookup.calls == []
+
+
+def test_the_lookup_is_not_called_when_no_view_has_two_undecided_rows():
+    rows = [
+        _reshaped_row(_SUG_OLD, "a" * 64, "2026-10-01T10:00:00", decision="approved"),
+        _reshaped_row(_SUG_NEW, "b" * 64, "2026-10-01T11:00:00"),
+        _reshaped_row(
+            _SUG_MID, "c" * 64, "2026-10-01T12:00:00",
+            proposed_object="main.sales.returns_metrics",
+        ),
+        _reshaped_row(
+            "sug_" + "d" * 12, "d" * 64, "2026-10-01T09:00:00",
+            proposed_object="main.sales.returns_metrics", evidence={},
+        ),
+    ]
+    lookup = _RecordingLookup()
+
+    kept = auto_optimize._live_proposal_rows(rows, created_lookup=lookup)
+
+    assert lookup.calls == []
+    assert _ids(kept) == [_SUG_OLD, _SUG_NEW, _SUG_MID]
+
+
+def test_the_lookup_is_asked_once_and_only_about_contested_rows():
+    rows = [
+        _reshaped_row(_SUG_OLD, "a" * 64, "2026-10-01T10:00:00"),
+        _reshaped_row(_SUG_NEW, "b" * 64, "2026-10-01T11:00:00"),
+        _reshaped_row("sug_" + "e" * 12, "e" * 64, "2026-10-01T09:00:00", decision="approved"),
+        _reshaped_row(
+            _SUG_MID, "c" * 64, "2026-10-01T12:00:00",
+            proposed_object="main.sales.returns_metrics",
+        ),
+        _reshaped_row(
+            "sug_" + "f" * 12, "f" * 64, "2026-10-01T13:00:00",
+            proposed_object="main.sales.refunds_metrics",
+        ),
+        _reshaped_row(
+            "sug_" + "9" * 12, "9" * 64, "2026-10-01T14:00:00",
+            proposed_object="main.sales.refunds_metrics",
+        ),
+    ]
+    lookup = _RecordingLookup()
+
+    kept = auto_optimize._live_proposal_rows(rows, created_lookup=lookup)
+
+    assert [sorted(call) for call in lookup.calls] == [
+        sorted([_SUG_OLD, _SUG_NEW, "sug_" + "f" * 12, "sug_" + "9" * 12])
+    ]
+    assert _ids(kept) == [_SUG_NEW, "sug_" + "e" * 12, _SUG_MID, "sug_" + "9" * 12]
+
+
+def test_a_failed_ledger_read_drops_no_undecided_row_and_logs_its_type_only(
+    client, monkeypatch, caplog,
+):
+    _stub_space_list(monkeypatch, _reshaped_pair())
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("zq_ledger_sentinel")
+
+    monkeypatch.setattr(warehouse, "wh_created_suggestion_ids", _boom)
+
+    with caplog.at_level(logging.DEBUG):
+        resp = client.get("/api/auto-optimize/spaces/space-1/mv-proposals")
+
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [_SUG_OLD, _SUG_NEW]
+    assert not any("zq_ledger_sentinel" in r.getMessage() for r in caplog.records)
+    assert all(not r.exc_info for r in caplog.records)
+    assert any("RuntimeError" in r.getMessage() for r in caplog.records)
+
+
+def test_a_failed_ledger_read_still_drops_a_stale_sibling():
+    stale = _reshaped_row(_SUG_MID, "c" * 64, "2026-10-01T09:00:00", evidence={})
+
+    def _boom(suggestion_ids):
+        raise RuntimeError("zq_ledger_sentinel")
+
+    kept = auto_optimize._live_proposal_rows([stale, *_reshaped_pair()], created_lookup=_boom)
+
+    assert _ids(kept) == [_SUG_OLD, _SUG_NEW]
+
+
+def test_live_proposal_rows_requires_an_explicit_lookup():
+    with pytest.raises(TypeError):
+        auto_optimize._live_proposal_rows(_reshaped_pair())
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-10-01T11:00:00Z", (2026, 10, 1, 11, 0)),
+        ("2026-10-01T11:00:00+00:00", (2026, 10, 1, 11, 0)),
+        ("2026-10-01T06:00:00-05:00", (2026, 10, 1, 11, 0)),
+        ("2026-10-01T11:00:00", (2026, 10, 1, 11, 0)),
+        ("2026-10-01 11:00:00.123", (2026, 10, 1, 11, 0)),
+    ],
+)
+def test_the_proposal_instant_reads_an_iso_string_naive_as_utc(value, expected):
+    instant = auto_optimize._proposal_instant(value)
+
+    assert instant.tzinfo is not None
+    assert instant.astimezone(UTC).timetuple()[:5] == expected
+
+
+def test_the_proposal_instant_reads_a_datetime_naive_as_utc():
+    naive = auto_optimize._proposal_instant(datetime(2026, 10, 1, 11, 0))  # noqa: DTZ001
+    aware = auto_optimize._proposal_instant(
+        datetime(2026, 10, 1, 6, 0, tzinfo=timezone(timedelta(hours=-5)))
+    )
+
+    assert naive == aware == datetime(2026, 10, 1, 11, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("value", [None, "", "not a time", float("nan"), 17, object()])
+def test_an_unparsable_instant_sorts_oldest(value):
+    oldest = auto_optimize._proposal_instant(value)
+
+    assert oldest < auto_optimize._proposal_instant(datetime(1970, 1, 1, tzinfo=UTC))
+    assert oldest == auto_optimize._proposal_instant(None)
+
+
 def test_get_mv_ddl_surfaces_yaml_and_grant(client, monkeypatch):
     # Deployed-review fix: the card GRANT names the GSO service principal (the one
     # grant that matters functionally — the optimizer must read the view on a
@@ -2012,6 +2334,121 @@ def test_the_grant_quotes_a_spaced_view_name():
         "main.sales.order revenue", "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e"
     )
     assert "`main`.`sales`.`order revenue`" in grant
+
+
+_CORRUPT_NAME = "main..orders_metrics"
+
+
+def _assert_no_name_and_no_traceback(records) -> None:
+    assert all(_CORRUPT_NAME not in r.getMessage() for r in records)
+    assert all(not r.exc_info for r in records)
+
+
+def test_the_grant_helper_returns_none_for_a_refused_name(caplog):
+    """MV-D122: a name ``quote_fqn`` refuses offers no GRANT rather than raising."""
+    with caplog.at_level("DEBUG", logger="backend.routers.auto_optimize"):
+        grant = auto_optimize._mv_optimizer_grant_sql(
+            _CORRUPT_NAME, "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e"
+        )
+    assert grant is None
+    assert caplog.records
+    assert "ValueError" in caplog.text
+    _assert_no_name_and_no_traceback(caplog.records)
+
+
+def test_a_corrupt_stored_name_yields_no_grant_on_mv_ddl(client, monkeypatch, caplog):
+    monkeypatch.setattr(
+        auto_optimize, "_gso_sp_application_id",
+        lambda: "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e",
+    )
+    monkeypatch.setattr(
+        auto_optimize, "_load_candidate_ddl_artifact",
+        lambda *a: _ddl_payload(
+            proposed_object=_CORRUPT_NAME, render_version=MV_RENDER_VERSION
+        ),
+    )
+    with caplog.at_level("DEBUG"):
+        resp = client.get(
+            "/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl"
+        )
+    assert resp.status_code == 200
+    assert resp.json()["grant_sql"] is None
+    _assert_no_name_and_no_traceback(caplog.records)
+
+
+def test_the_grant_helper_offers_no_text_for_a_refused_name_with_no_sp(caplog):
+    """F8: the no-SP branch's copyable comment never echoes a name ``quote_fqn`` refuses."""
+    with caplog.at_level("DEBUG", logger="backend.routers.auto_optimize"):
+        grant = auto_optimize._mv_optimizer_grant_sql(_CORRUPT_NAME, "")
+    assert grant is None
+    assert "ValueError" in caplog.text
+    _assert_no_name_and_no_traceback(caplog.records)
+
+
+def test_a_corrupt_stored_name_yields_no_grant_on_mv_ddl_with_no_sp(client, monkeypatch, caplog):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_candidate_ddl_artifact",
+        lambda *a: _ddl_payload(
+            proposed_object=_CORRUPT_NAME, render_version=MV_RENDER_VERSION
+        ),
+    )
+    with caplog.at_level("DEBUG"):
+        resp = client.get(
+            "/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl"
+        )
+    assert resp.status_code == 200
+    assert resp.json()["grant_sql"] is None
+    _assert_no_name_and_no_traceback(caplog.records)
+
+
+def test_the_no_sp_grant_text_names_the_quoted_view():
+    grant = auto_optimize._mv_optimizer_grant_sql("main.sales.order revenue", "")
+    assert "`main`.`sales`.`order revenue`" in grant
+    assert not any(
+        line.strip() and not line.strip().startswith("--") for line in grant.splitlines()
+    )
+
+
+def test_the_run_list_returns_empty_when_the_sp_client_cannot_be_built(client, monkeypatch):
+    """F6: as before M7e-1, a client that cannot be built lists nothing; it never 500s."""
+    def _no_client():
+        raise RuntimeError("no service principal")
+
+    loads: list = []
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", _no_client)
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: loads.append(a) or [])
+
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-proposals")
+
+    assert resp.status_code == 200
+    assert resp.json()["proposals"] == []
+    assert loads == []
+
+
+def test_the_run_list_builds_one_sp_client(client, monkeypatch):
+    clients: list = []
+
+    def _client():
+        clients.append(MagicMock())
+        return clients[-1]
+
+    seen: list = []
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", _client)
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda ws, *a, **k: seen.append(ws) or [{
+            "suggestion_id": "sug1", "dedup_fingerprint": "fp1",
+            "target_space_id": "space-1", "candidate_type": "NEW_METRIC_VIEW",
+        }],
+    )
+
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-proposals")
+
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == ["sug1"]
+    assert len(clients) == 1
+    assert seen == clients
 
 
 def test_decision_records_and_flips_rerun(client, monkeypatch):

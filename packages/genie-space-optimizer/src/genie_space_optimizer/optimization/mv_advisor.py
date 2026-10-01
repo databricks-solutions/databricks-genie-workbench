@@ -101,6 +101,8 @@ from .mv_scoring import (
     trusted_asset_definitions,
 )
 from .mv_state import (
+    created_suggestion_ids,
+    load_mv_candidates,
     load_mv_suppressed_fingerprints,
     mv_bundle_fingerprint,
     mv_candidate_fingerprint,
@@ -157,6 +159,11 @@ the space's queries do not repeat a measure."""
 SKIP_NO_SERVABLE_MEASURES = "NO_SERVABLE_MEASURES"
 """Recurring ungoverned measures exist, but none reads a single table whose
 columns it resolves to, so no single-table view can serve them (MV-D113)."""
+
+CONFLICT_NAMES_UNREAD = "CONFLICT_NAMES_UNREAD"
+"""The ``render_failures`` verdict for a CONFLICT proposal not persisted because
+the kept view names could not be read (MV-D122). A stored row's name is never
+rewritten on uncertainty; the next scan retries."""
 
 
 # ── Progress stages (MV-D31) ─────────────────────────────────────────────
@@ -231,7 +238,9 @@ class AdvisorOutcome:
     implies a servable body), and the drop rides the run outcome as a count plus
     an operator-facing ``(suggestion_id, verdict)`` pair rather than vanishing
     into a bodyless card that 404s at ``/mv-ddl``. The pair is ids/codes only, so
-    the stage row stays a non-exemption.
+    the stage row stays a non-exemption. A CONFLICT proposal held back because
+    the kept view names were unreadable rides ``render_failures`` with the
+    ``CONFLICT_NAMES_UNREAD`` verdict and is not counted as a render failure.
     """
 
     status: str
@@ -838,6 +847,111 @@ def _proposed_object(measure: FingerprintRecurrence, concept: str) -> str | None
     return f"{catalog}.{schema}.{concept}_metrics"
 
 
+def _norm_view_name(name: str | None) -> str:
+    """A view name compared case-insensitively with backticks removed (``_norm_fqn``'s rule)."""
+    return (name or "").replace("`", "").strip().lower()
+
+
+_SUGGESTION_ID_RE = re.compile(r"sug_[0-9a-f]{12}")
+
+
+def kept_view_names(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    created_lookup: Callable[[list[str]], Iterable[str]],
+) -> dict[str, str]:
+    """``{dedup_fingerprint: stored proposed_object}`` for the rows whose name is kept (MV-D122).
+
+    A row is kept when it has a decision, or when the created-objects ledger
+    holds its ``suggestion_id``: create-at-approval and the claim build a view
+    without recording a decision. The undecided rows' ids are asked about in one
+    ``created_lookup`` call, and a failed lookup raises. An undecided row with no
+    ``suggestion_id`` cannot have been created; one whose id the ledger cannot be
+    asked about is kept, never guessed "not created". The stored spelling is
+    returned as is. A warehouse read can return NaN for a NULL cell, so only
+    string cells count.
+    """
+    kept: dict[str, str] = {}
+    undecided: dict[str, list[tuple[str, str]]] = {}
+    for row in rows:
+        name, fingerprint, decision, suggestion_id = (
+            row.get(key)
+            for key in ("proposed_object", "dedup_fingerprint", "decision", "suggestion_id")
+        )
+        if not all(isinstance(value, str) and value.strip() for value in (name, fingerprint)):
+            continue
+        fingerprint = fingerprint.strip()
+        if isinstance(decision, str) and decision.strip():
+            kept.setdefault(fingerprint, name)
+        elif not isinstance(suggestion_id, str) or not suggestion_id.strip():
+            continue
+        elif _SUGGESTION_ID_RE.fullmatch(suggestion_id.strip()):
+            undecided.setdefault(suggestion_id.strip(), []).append((fingerprint, name))
+        else:
+            kept.setdefault(fingerprint, name)
+    if undecided:
+        created = set(created_lookup(sorted(undecided)))
+        for suggestion_id in sorted(created & set(undecided)):
+            for fingerprint, name in undecided[suggestion_id]:
+                kept.setdefault(fingerprint, name)
+    return kept
+
+
+def _conflict_view_names(
+    conflicts: Sequence[tuple[ScoredProposal, MetricViewCandidate]],
+    kept: Mapping[str, str],
+) -> dict[str, str]:
+    """The view name each CONFLICT proposal persists under, by ``dedup_fingerprint`` (MV-D122).
+
+    A proposal whose row is kept persists under exactly its stored name. A base
+    name shared by two other proposals, or matching any kept name, becomes
+    ``{concept}_{table}_metrics`` for every proposal that has it; one still
+    taken takes ``_2``, ``_3``, … in ``dedup_fingerprint`` order. Every other
+    base name stays.
+    """
+    kept = {fp: name for fp, name in kept.items() if fp and name}
+    reserved = {_norm_view_name(name) for name in kept.values()}
+    entries = [
+        (proposal, candidate)
+        for proposal, candidate in conflicts
+        if proposal.proposed_object and proposal.dedup_fingerprint not in kept
+    ]
+    base_counts: dict[str, int] = {}
+    for proposal, _candidate in entries:
+        key = _norm_view_name(proposal.proposed_object)
+        base_counts[key] = base_counts.get(key, 0) + 1
+
+    names: dict[str, str] = {
+        proposal.dedup_fingerprint: kept[proposal.dedup_fingerprint]
+        for proposal, _candidate in conflicts
+        if proposal.dedup_fingerprint in kept
+    }
+    renamed: list[tuple[ScoredProposal, MetricViewCandidate]] = []
+    for proposal, candidate in entries:
+        key = _norm_view_name(proposal.proposed_object)
+        if base_counts[key] > 1 or key in reserved:
+            renamed.append((proposal, candidate))
+        else:
+            names[proposal.dedup_fingerprint] = proposal.proposed_object or ""
+
+    taken = reserved | {_norm_view_name(name) for name in names.values()}
+    for proposal, candidate in sorted(renamed, key=lambda e: e[0].dedup_fingerprint):
+        refs = _refs_from_tables(candidate.source_tables)
+        if not refs:
+            names[proposal.dedup_fingerprint] = proposal.proposed_object or ""
+            continue
+        catalog, schema, table = refs[0]
+        stem = f"{catalog}.{schema}.{candidate.concept}_{_plain_name(table) or 'source'}"
+        name = f"{stem}_metrics"
+        ordinal = 2
+        while _norm_view_name(name) in taken:
+            name = f"{stem}_{ordinal}_metrics"
+            ordinal += 1
+        taken.add(_norm_view_name(name))
+        names[proposal.dedup_fingerprint] = name
+    return names
+
+
 def _bundle_grain(source_tables: Sequence[str]) -> tuple[str | None, str]:
     """Where a view-grained bundle would live, and its concept name (MV-D30).
 
@@ -1137,6 +1251,16 @@ def _advise(
         read_suppressed_fingerprints=lambda: load_mv_suppressed_fingerprints(
             spark, catalog, schema, target_space_id=space_id
         ),
+        # MV-D122: a kept row (decided or created) keeps its stored name. A
+        # superseded row keeps its key, so a CONFLICT upsert can still land on it.
+        # Both reads are strict: an unreadable table is never "nothing kept".
+        read_kept_names=lambda: kept_view_names(
+            load_mv_candidates(
+                spark, catalog, schema, target_space_id=space_id,
+                include_superseded=True, strict=True,
+            ),
+            created_lookup=lambda ids: created_suggestion_ids(spark, catalog, schema, ids),
+        ),
     )
 
 
@@ -1339,6 +1463,7 @@ def advise_from_corpus(
     persist_proposal: Callable[[ScoredProposal, Any], bool],
     write_ddl_artifact: Callable[[ScoredProposal, Any], bool],
     read_suppressed_fingerprints: Callable[[], set[str]] | None = None,
+    read_kept_names: Callable[[], Mapping[str, str]] | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> AdvisorOutcome:
     """Corpus-agnostic advisor orchestration (MV-D23 scope item 2).
@@ -1359,6 +1484,15 @@ def advise_from_corpus(
     The MV-D16(b) contamination rule is unweakened — nothing this produces
     re-enters the corpus as recurrence evidence; the corpus is the caller's
     input and is never appended to here.
+
+    ``read_kept_names`` (MV-D122) returns ``{dedup_fingerprint: stored
+    proposed_object}`` (:func:`kept_view_names`) for the space's rows with a
+    decision or a created-objects ledger row. It is read once, only when a
+    CONFLICT proposal is named: a kept proposal persists under exactly its stored
+    name, and no other proposal takes it. Both callers inject it beside
+    ``read_suppressed_fingerprints``; ``None`` opts out (tests). A failed read
+    persists no CONFLICT proposal this scan and records each one in
+    ``render_failures`` as ``CONFLICT_NAMES_UNREAD``; the bundles are unaffected.
 
     ``on_stage`` is the MV-D31 progress seam — an optional callback, injected
     exactly like ``persist_proposal`` / ``metric_view_reader`` / the signal
@@ -1516,6 +1650,7 @@ def advise_from_corpus(
     # MEDIUM+ anchor. A grain that appears here but never in `bundles` produces no
     # view — riders never stand alone.
     bundle_riders: dict[tuple[str, ...], list[tuple[ScoredProposal, MetricViewCandidate]]] = {}
+    conflicts: list[tuple[ScoredProposal, MetricViewCandidate]] = []
 
     # ── Pass 1: per-measure scoring (identity/leakage/dedup grain unchanged) ──
     emit_stage(STAGE_SCORING)
@@ -1595,7 +1730,31 @@ def advise_from_corpus(
             bundles.setdefault(key, []).append((proposal, candidate))
             continue
 
-        # Non-PROPOSE persistable (e.g. CONFLICT): keep the per-measure path.
+        # Non-PROPOSE persistable (e.g. CONFLICT): keep the per-measure path,
+        # rendered once every CONFLICT name is known.
+        conflicts.append((proposal, candidate))
+
+    # MV-D122: two CONFLICT proposals never share a view name, and a kept row
+    # (decided or created) keeps its stored name. When the kept names cannot be
+    # read, no CONFLICT proposal is persisted this scan.
+    kept: Mapping[str, str] = {}
+    if conflicts and read_kept_names is not None:
+        try:
+            kept = read_kept_names() or {}
+        except Exception as exc:  # noqa: BLE001 - logged by type only
+            logger.warning(
+                "mv_advisor: could not read the kept view names; no CONFLICT proposal "
+                "is persisted this scan (%s)", type(exc).__name__,
+            )
+            render_failures.extend(
+                (proposal.suggestion_id, CONFLICT_NAMES_UNREAD) for proposal, _ in conflicts
+            )
+            conflicts = []
+    conflict_names = _conflict_view_names(conflicts, kept)
+    for proposal, candidate in conflicts:
+        name = conflict_names.get(proposal.dedup_fingerprint, proposal.proposed_object)
+        candidate = replace(candidate, proposed_object=name)
+        proposal = replace(proposal, proposed_object=name)
         rendered = generate(
             candidate,
             profiling_for(candidate, table_columns=table_columns, domain=domain),
@@ -1783,6 +1942,7 @@ def _write_ddl_artifact(
 
 
 __all__ = [
+    "CONFLICT_NAMES_UNREAD",
     "SKIP_DISABLED",
     "SKIP_EMPTY_ROWS_JSON",
     "SKIP_NO_CANDIDATES",
@@ -1801,6 +1961,7 @@ __all__ = [
     "candidate_from_measure",
     "column_facts_from_inventory",
     "estate_metric_view_yamls",
+    "kept_view_names",
     "load_iteration_zero_corpus",
     "profiling_for",
     "run_mv_advisor_phase",

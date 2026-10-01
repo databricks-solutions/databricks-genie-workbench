@@ -1139,6 +1139,14 @@ def test_a_joins_value_that_is_not_a_list_adds_no_table(joins):
     assert _tables_of({"source": "main.sales.orders", "joins": joins}) == ("main.sales.orders",)
 
 
+@pytest.mark.parametrize("nested", [False, True], ids=["top_level", "nested"])
+@pytest.mark.parametrize("joins", [3, 3.5, True, None])
+def test_a_scalar_joins_value_adds_no_table(joins, nested):
+    if nested:
+        joins = [{"name": "c", "on": "source.cid = c.id", "joins": joins}]
+    assert _tables_of({"source": "main.sales.orders", "joins": joins}) == ("main.sales.orders",)
+
+
 def test_a_join_without_a_source_is_skipped_and_the_set_stays_known():
     assert _tables_of({
         "source": "main.sales.orders",

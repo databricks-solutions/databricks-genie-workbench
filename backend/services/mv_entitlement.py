@@ -93,7 +93,19 @@ def _require_identifier(value: str, label: str) -> str:
 
 
 def _split_table(fqn: str) -> tuple[str, str, str]:
-    parts = [p.strip().strip("`") for p in (fqn or "").split(".")]
+    """Split backtick-aware, so `` `a.b`.c `` is two parts, not three (MV-D122).
+
+    The same unquoting as ``mv_create._uc_name_parts``, which this module cannot
+    import (``mv_create`` imports it).
+    """
+    from genie_space_optimizer.optimization.mv_yaml import _split_name
+
+    parts = []
+    for raw in _split_name(str(fqn or "")):
+        part = raw.strip()
+        if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
+            part = part[1:-1].replace("``", "`")
+        parts.append(part)
     if len(parts) != 3:
         raise MvProbeError(f"source table must be a three-part name, got {fqn!r}")
     return (

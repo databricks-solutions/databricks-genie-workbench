@@ -29,6 +29,7 @@ import { MvProposalCard } from "@/components/auto-optimize/MvProposalCard"
 import { MvProposalsSummary } from "@/components/auto-optimize/MvProposalsSummary"
 import { MvAcceptFlow } from "@/components/auto-optimize/MvAcceptFlow"
 import {
+  isStaleBody,
   lowDisclosureHeader,
   MV_DEFAULT_VISIBLE,
   orthogonalityCallout,
@@ -691,8 +692,9 @@ export function ScanProposalCard({
             }
           />
           {/* Model-tab sync: only a proposal that is drawn as a ghost node (it
-              has a proposed_object) can be located in the graph. */}
-          {onLocate && proposal.proposed_object && (
+              has a proposed_object and a current body, MV-D122) can be located
+              in the graph. */}
+          {onLocate && proposal.proposed_object && !isStaleBody(proposal) && (
             <Button size="sm" variant="ghost" onClick={() => onLocate(proposal)}>
               <Network className="mr-1 h-3.5 w-3.5" />
               View in graph
