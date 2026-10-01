@@ -472,3 +472,52 @@ def test_a_reset_for_another_baseline_changes_nothing() -> None:
     scores = compute_run_scores([dict(_ZERO)], baseline_reset=BaselineReset("eval-x", 90.0))
     assert (scores.best_iteration, scores.best_eval_scope) == (0, "full")
     assert scores.optimized == scores.baseline
+
+
+# MV-D121 — the attach's own score is reported whenever its reset applies.
+
+
+def test_an_attach_tied_with_the_baseline_keeps_the_baseline() -> None:
+    scores = compute_run_scores([dict(_ZERO)], baseline_reset=BaselineReset("eval-b", 86.67))
+    assert scores.best_iteration == 0
+    assert scores.best_eval_scope == "full"
+    assert scores.optimized == scores.baseline
+    assert scores.attach_accuracy == pytest.approx(86.67)
+
+
+def test_a_reset_with_no_eval_run_id_applies_to_the_baseline() -> None:
+    scores = compute_run_scores([dict(_ZERO)], baseline_reset=BaselineReset("", 90.0))
+    assert scores.best_eval_scope == METRIC_VIEW_SCOPE
+    assert scores.optimized == 90.0
+
+
+def test_an_attach_tied_with_enrichment_wins_the_tie() -> None:
+    enrichment = {**_ZERO, "eval_scope": "enrichment", "eval_run_id": "eval-e",
+                  "correct_count": 9, "evaluated_count": 10, "overall_accuracy": 90.0,
+                  "timestamp": "2026-09-29T10:30:00"}
+    scores = compute_run_scores(
+        [dict(_ZERO), enrichment], baseline_reset=BaselineReset("eval-b", 90.0),
+    )
+    assert scores.best_eval_scope == METRIC_VIEW_SCOPE
+
+
+def test_the_attach_score_is_reported_when_a_later_lever_wins() -> None:
+    lever = {**_ZERO, "iteration": 1, "eval_run_id": "eval-1", "correct_count": 19,
+             "evaluated_count": 20, "overall_accuracy": 95.0,
+             "timestamp": "2026-09-29T11:00:00"}
+    scores = compute_run_scores(
+        [dict(_ZERO), lever], baseline_reset=BaselineReset("eval-b", 90.0),
+    )
+    assert (scores.best_iteration, scores.best_eval_scope) == (1, "full")
+    assert scores.attach_accuracy == 90.0
+
+
+def test_no_attach_score_for_another_baseline() -> None:
+    scores = compute_run_scores(
+        [dict(_ZERO)], baseline_reset=BaselineReset("eval-other", 90.0),
+    )
+    assert scores.attach_accuracy is None
+
+
+def test_no_attach_score_without_a_reset() -> None:
+    assert compute_run_scores([dict(_ZERO)]).attach_accuracy is None

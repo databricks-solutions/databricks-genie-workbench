@@ -1862,25 +1862,71 @@ def test_a_detached_attach_leaves_the_baseline_alone(monkeypatch) -> None:
 
 
 def test_a_kept_attach_re_plans_wide_schema_on_its_own_failures(monkeypatch) -> None:
+    """The plan the post-attach re-plan returns is the one the loop carries on.
+
+    ``_adapt_wide_schema_for_failures`` is a closure inside the loop, so the
+    post-attach call is steered to the marker plan through the module seams it
+    calls: its failure SQL names an omitted column, and ``revise_plan_for_column``
+    activates it into the marker. Every other call runs the real code. The loop's
+    next reader of the plan is the re-plan after an accepted lever, so the run
+    carries one lever that wins, against post-attach rows that fail.
+    """
+    marker = {
+        "profiling_budget": {}, "marker": "post-attach", "plan_hash": "plan-post-attach", "revision": 2,
+    }
+    marker_sql = "SELECT marker_col FROM main.sales.fact_orders"
+    marker_key = ("main", "sales", "fact_orders", "marker_col")
     seen: list[str] = []
-    real = unified_loop._failure_rows
+    plans_seen: list[tuple[str, Any]] = []
+    real_failure_rows = unified_loop._failure_rows
+    real_evidence = unified_loop.sql_column_evidence
+    real_revise = unified_loop.revise_plan_for_column
 
     def spy(eval_result, *a, **k):
         seen.append(str(eval_result.get("eval_run_id")))
-        return real(eval_result, *a, **k)
+        return real_failure_rows(eval_result, *a, **k)
 
+    def evidence(sql, inventory):
+        if sql == marker_sql:
+            return [{"column_key": list(marker_key)}]
+        return real_evidence(sql, inventory)
+
+    def revise(plan, inventory, column_key, **kwargs):
+        if tuple(column_key) == marker_key:
+            return marker
+        return real_revise(plan, inventory, column_key, **kwargs)
+
+    def active(plan):
+        plans_seen.append((seen[-1], plan))
+        return set()
+
+    monkeypatch.setenv("GSO_WIDE_SCHEMA_PLAN_HASH", "")
     monkeypatch.setattr(unified_loop, "_failure_rows", spy)
+    monkeypatch.setattr(unified_loop, "sql_column_evidence", evidence)
+    monkeypatch.setattr(unified_loop, "revise_plan_for_column", revise)
+    monkeypatch.setattr(unified_loop, "active_column_keys", active)
+    monkeypatch.setattr(
+        unified_loop, "write_required_artifact", lambda *_a, **_k: {"artifact_id": "art-post-attach"},
+    )
+    monkeypatch.setattr(unified_loop, "write_artifact", lambda *_a, **_k: None)
+    monkeypatch.setattr(unified_loop, "project_active_inventory", lambda *_a, **_k: [])
     monkeypatch.setattr(unified_loop, "validate_inventory", lambda *_a, **_k: None)
     monkeypatch.setattr(unified_loop, "validate_selection_plan", lambda *_a, **_k: None)
-    monkeypatch.setattr(unified_loop, "active_column_keys", lambda *_a, **_k: set())
-    _loop(
-        monkeypatch, attach=_kept_attach(90.0), accuracies=[10.0],
+    failing_rows = [_row(f"rev_{n:03d}", "BAD", expected=marker_sql) for n in range(1, 7)]
+    kept = replace(
+        _kept_attach(90.0), post_attach_eval={**_loop_eval(90.0), "rows": failing_rows},
+    )
+    _out, stamped = _loop(
+        monkeypatch, attach=kept, accuracies=[10.0, 95.0],
         wide_schema_inventory={"inventory_hash": "h"},
         wide_schema_plan={"profiling_budget": {}},
         wide_schema_profile_budget={},
     )
     assert "eval-10.0" in seen and "eval-90.0" in seen
     assert seen.index("eval-10.0") < seen.index("eval-90.0")
+    assert stamped["iteration"] == 1
+    assert [eval_id for eval_id, _plan in plans_seen] == ["eval-10.0", "eval-90.0", "eval-95.0"]
+    assert plans_seen[-1] == ("eval-95.0", marker)
 
 
 def test_a_detached_attach_does_not_re_plan(monkeypatch) -> None:
@@ -1901,7 +1947,7 @@ def test_a_detached_attach_does_not_re_plan(monkeypatch) -> None:
         wide_schema_plan={"profiling_budget": {}},
         wide_schema_profile_budget={},
     )
-    assert seen.count("eval-10.0") >= 1 and "eval-90.0" not in seen
+    assert seen.count("eval-10.0") == 1 and "eval-90.0" not in seen
 
 
 # ── MV-D118 (d4 = net_suite): a suite loss is a regression ───────────────
@@ -2708,6 +2754,14 @@ def _run_unconfirmed(monkeypatch, *, live, apply_log=None, rollback_ok=True, w=N
     return spark, outcome, reverts, reads
 
 
+def _patch_statements(spark: FakeDeltaSpark) -> list[str]:
+    """The ``genie_opt_patches`` INSERTs ``state.write_patch`` emits."""
+    return [
+        s for s in spark.statements
+        if s.startswith(f"INSERT INTO {CATALOG}.{SCHEMA}.genie_opt_patches ")
+    ]
+
+
 @pytest.mark.parametrize("shelf", ["metric_views", "tables"])
 def test_a_landed_unconfirmed_patch_is_reverted(monkeypatch, shelf) -> None:
     live = _config()
@@ -2720,6 +2774,7 @@ def test_a_landed_unconfirmed_patch_is_reverted(monkeypatch, shelf) -> None:
     assert outcome.error == "TimeoutError"
     assert outcome.config["data_sources"]["metric_views"] == []
     assert not [s for s in spark.statements if _SENTINEL in s]
+    assert _patch_statements(spark) == []
 
 
 def test_an_unlanded_unconfirmed_patch_is_not_reverted(monkeypatch) -> None:
@@ -2743,11 +2798,72 @@ def test_a_failed_revert_of_an_unconfirmed_patch_is_reported(monkeypatch) -> Non
     assert outcome.rollback_status == mv_attach.ROLLBACK_FAILED
     assert (outcome.error or "").startswith("ROLLBACK_FAILED")
     assert "PATCH_UNCONFIRMED: TimeoutError" in outcome.error
-    assert _created_row(spark)["attach_patch_id"]
+    patch_rows = _patch_statements(spark)
+    assert len(patch_rows) == 1
+    assert f"VALUES ('{RUN_ID}', 0, 2, 0, " in patch_rows[0]
+    assert f"'{MV_NAME}'" in patch_rows[0]
+    assert _created_row(spark)["status"] == "CREATED"
+    assert _created_row(spark)["attach_patch_id"] == f"{RUN_ID}:0:2:0"
     assert mv_attach.report_unmeasured_attachments(
         spark, run_id=RUN_ID, catalog=CATALOG, schema=SCHEMA, config=_config(),
         live_config=lambda: live,
     ) == [MV_NAME]
+
+
+def test_the_failed_revert_log_names_only_the_applied_view(monkeypatch, caplog) -> None:
+    """MV_NAME was on the space before the run; only MV_ORDERS rode the PATCH."""
+    spark = FakeDeltaSpark()
+    _seed_mixed(spark)
+    log = _unconfirmed_apply_log(
+        applied=[{"action": {"target": MV_ORDERS}, "patch": {"type": "mv_attach_data_source"}}],
+        pre_snapshot=_config([{"identifier": MV_NAME}]),
+    )
+    monkeypatch.setattr(mv_attach, "apply_patch_set", lambda *_a, **_k: log)
+    monkeypatch.setattr(
+        mv_attach, "rollback",
+        lambda *_a, **_k: {"status": "error", "errors": ["Failed to apply rollback via API"]},
+    )
+    live = _config([{"identifier": MV_NAME}, {"identifier": MV_ORDERS}])
+    with caplog.at_level("DEBUG"):
+        outcome = mv_attach.run_mv_attach_phase(
+            spark, run_id=RUN_ID, space_id=SPACE_ID, catalog=CATALOG, schema=SCHEMA,
+            attach_views=json.dumps([MV_NAME, MV_ORDERS]), consent_probe_id=PROBE_ID,
+            config=_config([{"identifier": MV_NAME}]),
+            baseline_eval=_baseline_output(
+                [_row("rev_001", "GOOD"), _row("rev_002", "BAD"), _row("rev_003", "BAD")],
+            ),
+            w=MagicMock(), post_attach_eval=_FakeRunner([]), live_config=lambda: live,
+        )
+    assert outcome.rollback_status == mv_attach.ROLLBACK_FAILED
+    errors = [
+        r.getMessage() for r in caplog.records
+        if r.levelname == "ERROR" and "revert failed" in r.getMessage()
+    ]
+    assert len(errors) == 1
+    assert MV_ORDERS in errors[0] and MV_NAME not in errors[0]
+    patch_rows = _patch_statements(spark)
+    assert len(patch_rows) == 1
+    assert f"'{MV_ORDERS}'" in patch_rows[0] and MV_NAME not in patch_rows[0]
+    assert _SENTINEL not in caplog.text
+    assert not [r for r in caplog.records if r.exc_info]
+
+
+def test_a_raised_patch_with_no_message_is_read_back(monkeypatch) -> None:
+    log = _unconfirmed_apply_log(patch_error="", patch_error_type="TimeoutError")
+    _, outcome, _, reads = _run_unconfirmed(
+        monkeypatch, live=_config([{"identifier": MV_NAME}]), apply_log=log,
+    )
+    assert reads == ["read"]
+    assert outcome.skip_reason == mv_attach.SKIP_PATCH_UNCONFIRMED
+
+
+def test_a_log_with_no_error_type_is_not_unconfirmed(monkeypatch) -> None:
+    log = _unconfirmed_apply_log(patch_error="boom", patch_error_type="", validation_errors=[])
+    _, outcome, reverts, reads = _run_unconfirmed(
+        monkeypatch, live=_config([{"identifier": MV_NAME}]), apply_log=log,
+    )
+    assert reads == [] and reverts == []
+    assert outcome.skip_reason == mv_attach.SKIP_ATTACH_NOT_APPLIED
 
 
 def test_a_validation_failure_is_not_an_unconfirmed_patch(monkeypatch) -> None:

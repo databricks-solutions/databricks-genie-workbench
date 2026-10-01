@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import { GSO_PIPELINE_STEPS, GSO_TOTAL_STEPS, type GSOAttempt } from "@/types"
 import {
+  attemptModeLabel,
   buildLadderModel,
   buildLedgerModel,
   buildTaskRail,
@@ -55,6 +56,13 @@ describe("accuracy scale helpers", () => {
     expect(targetToPct(1)).toBeCloseTo(100)
     expect(targetToPct(90)).toBe(90) // defensive: already 0–100
     expect(targetToPct(null)).toBeNull()
+  })
+})
+
+describe("attemptModeLabel", () => {
+  it("labels the metric-view attach mode in either case", () => {
+    expect(attemptModeLabel("metric_view_attach")).toBe("Metric view attach")
+    expect(attemptModeLabel("METRIC_VIEW_ATTACH")).toBe("Metric view attach")
   })
 })
 

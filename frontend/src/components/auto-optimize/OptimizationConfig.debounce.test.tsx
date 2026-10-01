@@ -204,6 +204,28 @@ it("an older probe's answer that lands while a newer timer is pending is discard
   expect(api.triggerAutoOptimize.mock.calls[0][0].mv_consent.probe_id).toBe("probe_new")
 })
 
+it("a stale probe that rejects after the latest answer leaves the latest answer", async () => {
+  const pending: Array<{ resolve: (r: MvProbeResult) => void; reject: (e: Error) => void }> = []
+  api.probeMvEntitlement.mockImplementation(
+    () => new Promise<MvProbeResult>((resolve, reject) => pending.push({ resolve, reject })),
+  )
+  await mount()
+  await advance(MV_PROBE_DEBOUNCE_MS)
+  expect(api.probeMvEntitlement).toHaveBeenCalledTimes(1)
+  await toggle("finance.sales.region_margin")
+  await advance(MV_PROBE_DEBOUNCE_MS)
+  expect(api.probeMvEntitlement).toHaveBeenCalledTimes(2)
+  await act(async () => pending[1].resolve(probe("probe_b")))
+  expect(startButton().disabled).toBe(false)
+  await act(async () => pending[0].reject(new Error("stale probe A failed")))
+  await advance(MV_PROBE_DEBOUNCE_MS * 5)
+  expect(host.textContent).not.toContain("stale probe A failed")
+  expect(startButton().disabled).toBe(false)
+  expect(api.probeMvEntitlement).toHaveBeenCalledTimes(2)
+  await act(async () => startButton().click())
+  expect(api.triggerAutoOptimize.mock.calls[0][0].mv_consent.probe_id).toBe("probe_b")
+})
+
 it("Start stays disabled until the debounced answer lands", async () => {
   const pending: Array<(r: MvProbeResult) => void> = []
   api.probeMvEntitlement.mockImplementation(() => new Promise<MvProbeResult>((resolve) => pending.push(resolve)))

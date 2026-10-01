@@ -165,8 +165,10 @@ def _opt_json(value: Any) -> str | None:
         return value
     try:
         return json.dumps(value, default=str, sort_keys=True)
-    except (TypeError, ValueError):
-        logger.warning("Dropping non-JSON-serializable metric view payload", exc_info=True)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "Dropping non-JSON-serializable metric view payload (%s)", type(exc).__name__,
+        )
         return None
 
 
@@ -369,8 +371,8 @@ def load_mv_candidates(
     )
     try:
         df = run_query(spark, query)
-    except Exception:
-        logger.debug("load_mv_candidates: no rows for %s", where, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.debug("load_mv_candidates: no rows for %s (%s)", where, type(exc).__name__)
         return []
     if df.empty:
         return []
@@ -428,10 +430,10 @@ def supersede_legacy_mv_candidates(
             f"AND dedup_fingerprint IN ({in_list}) "
             "AND superseded_by IS NULL",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.debug(
-            "supersede_legacy_mv_candidates: update skipped for %s (%d members)",
-            target_space_id, len(members), exc_info=True,
+            "supersede_legacy_mv_candidates: update skipped for %s (%d members) (%s)",
+            target_space_id, len(members), type(exc).__name__,
         )
         return []
     logger.info(
@@ -533,8 +535,10 @@ def load_mv_suppressed_fingerprints(
         )
         if not df.empty:
             suppressed.update(str(v) for v in df["measure_fingerprint"] if v)
-    except Exception:
-        logger.debug("load_mv_suppressed_fingerprints: no suppressions table", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.debug(
+            "load_mv_suppressed_fingerprints: no suppressions table (%s)", type(exc).__name__,
+        )
 
     cand_fqn = _fqn(catalog, schema, TABLE_MV_CANDIDATES)
     try:
@@ -545,8 +549,10 @@ def load_mv_suppressed_fingerprints(
         )
         if not df.empty:
             suppressed.update(str(v) for v in df["dedup_fingerprint"] if v)
-    except Exception:
-        logger.debug("load_mv_suppressed_fingerprints: no candidates table", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.debug(
+            "load_mv_suppressed_fingerprints: no candidates table (%s)", type(exc).__name__,
+        )
 
     return suppressed
 
@@ -666,8 +672,8 @@ def load_mv_consent(
         df = read_table(
             spark, catalog, schema, TABLE_MV_CONSENTS, filters={"probe_id": probe_id},
         )
-    except Exception:
-        logger.debug("load_mv_consent: could not read %s", probe_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.debug("load_mv_consent: could not read %s (%s)", probe_id, type(exc).__name__)
         return None
     if df.empty:
         return None
@@ -816,9 +822,9 @@ def load_mv_created_objects(
             spark,
             f"SELECT * FROM {fqn} WHERE {' AND '.join(where)} ORDER BY created_at DESC",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.debug(
-            "load_mv_created_objects: no rows for run %s", run_id, exc_info=True,
+            "load_mv_created_objects: no rows for run %s (%s)", run_id, type(exc).__name__,
         )
         return []
     if df.empty:
@@ -844,9 +850,10 @@ def load_mv_created_object_by_name(
             f"SELECT * FROM {fqn} WHERE full_name = '{full_name}' "
             "ORDER BY updated_at DESC",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.debug(
-            "load_mv_created_object_by_name: could not read %s", full_name, exc_info=True,
+            "load_mv_created_object_by_name: could not read %s (%s)",
+            full_name, type(exc).__name__,
         )
         return None
     if df.empty:

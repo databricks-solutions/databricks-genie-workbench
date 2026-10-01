@@ -247,12 +247,15 @@ judges every later change against the new accuracy, so no change is credited
 with the view's gain. Iteration 0 keeps its pre-attach score as the baseline, and
 the kept view is its own step after it: the run headline shows the view's gain as
 the improvement over that baseline, and the run's audit trajectory lists the
-step. If attaching the view fails in a way that leaves it unclear whether Genie
-applied the change, the run reads the Agent's live configuration and removes the
-view if it landed. If anything fails after the view is attached, the run restores
-the Agent's previous configuration; if even that fails, the run reports it, and
-when the run ends it reads the Agent's live configuration and names any such view
-that is still attached. The metric view itself is never dropped.
+step. A kept metric view or an enrichment pass that beats the baseline before
+the first lever counts as the improvement, both on the live card and when the
+run finishes. If attaching the view fails in a way that leaves it unclear
+whether Genie applied the change, the run reads the Agent's live configuration
+and removes the view if it landed. If anything fails after the view is
+attached, the run restores the Agent's previous configuration; if even that
+fails, the run reports it, and when the run ends it reads the Agent's live
+configuration and names any such view that is still attached. The metric view
+itself is never dropped.
 
 ## Evaluation and leakage safety
 

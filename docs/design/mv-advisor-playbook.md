@@ -254,9 +254,9 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 1540 backend + 1842 GSO,
-     measured 2026-10-01 (this supersedes the prior 1531 + 1842 floor, also measured 2026-10-01). Historical
-     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). +50 GSO at M4 (MV-D114: the live-id and measure-matched affected subset with its bundle-union, curated, expected-SQL and no-SQL-in-stage pins; the full-suite post-attach eval with the subset-restricted verdict, zero-graded revert and kept-only baseline handoff; the finally-rollback with its exception, interrupt, retry, fail-twice and pre-deploy pins; the loop baseline-reset pin with its proposer, run-status, target and detached controls; and the end-of-run unmeasured-live report; the final-review fix wave's live-read unmeasured report with its revert-failed, dropped-by-a-later-PATCH, unreadable-live fallback, no-read-without-a-patched-row and loop-wiring pins, and the parse-log firewall pin, then the canonicalize/render log firewall pins). +2 backend at MV-D115 (the metric-view probe's space row asks Can Edit and never Can Manage, and a permissions API refused for scope still grants it). +20 GSO at the M4 live-run fixes (L1: publish scores iteration 0 at a kept attach's post-attach accuracy, read from the `MV_ATTACH` stage row and bound to its baseline eval id, with its no-reset, lever-beats-reset, restart-row, other-eval and promote-stamp pins; L2: `attached_identifiers` reads `tables` too, with the live report and reconcile pins). +42 GSO at M6a (MV-D116: the table-split corpus scan with its spelling, table-less-remainder and ranking pins; the table-leaf helpers; demand scoped to the candidate's tables; the table-aware governed match, seed exclusion and trusted-asset conflict with their query-source controls; the merged-key suppression read; and the identity baseline captured at 9d972e46; the final-review fix wave's cap-boundary pin that only membership moves, the governed-excluded half the merged key still hides, and the definition-table pins for non-list joins, a source-less join, a query join at top level and nested, and a table named twice). +22 backend / +36 GSO at M6b (MV-D117: the identity baseline captured at 43b01544 with its row-count and struct pins; row counts on their only table and their per-table split; struct fields on an alias with the table-qualified, two-part and source-headed controls; the fix wave's source-schema neutral-clear pins (dimension, filter, grain, RATIO, CONDITIONAL_COUNT and measure path) with the four-part and source-aliased controls; the firewall's two-sided quote fold; the unreachable-rung pin and the create-time rung refusal on both paths; the row-count, bundle and stale claim, with the claim success and role-less-anchor pins; the nothing-built skip summary; the stale flag, facts row, re-run gate and 409 DDL refusal; and the quoted GRANT. The frontend callout exclusion is a vitest pin, not counted in this floor). +21 backend / +4 GSO at the M6b final-review fix wave (MV-D117: the firewall's text-field probes, quoted prose, bare prose against a quoted benchmark, the bare/bare control and a SQL probe echoing a quoted question; the stale-beside-its-successor drop on the list with its case- and backtick-insensitive match, the approved stale row, the gate, the suggest and stream reloads and the helper's keep controls; the approved id with no candidate, its lead position, the stale reason that promises no refresh, and the per-key and ordered skip labels). +16 backend / +57 GSO at M6c (MV-D118: the exception type only in the rollback compensation error and the pre-deploy, post-deploy and revert outcomes, with the measured fields kept after the measurement; the net-suite detach, the even-suite keep, the `delta_suite` diagnostic and the flipped outside-the-subset wash; the widened matcher's unqualified-SQL, other-table and no-candidate-tables pins and its per-key selection; either shelf blocking a second add, `pre_attached` on the stage row with its restart survival, loop hand-off and unmeasured-report skip, and the bring-your-own view with no candidate; the unconfirmed PATCH reverted on either shelf when it landed and left when it did not, an unreadable space counted as landed, a failed revert reported, a validation failure not unconfirmed, the real applier's raised PATCH read back and the loop's live reader; the baseline-reset parser, the remaining-failures count, the restart lookup, the attach trajectory step with its champion flag, and the residual count and audit context; the wide-schema re-plan after a kept attach and none after a detach; the status and run-detail headline, the attach stage read while the Jobs API answers, and the run-scores contract; the serialized `run` and the seam with no subset method, three `run_subset` tests removed; the uncovered-table refusal at run hook and approval with its name match, named skip and unreadable body; the drop's plain-name refusal and the level ladder that never asks MANAGE, net zero; and the stale-sibling drop on the run-keyed list and the semantic graph with the `/mv-ddl` current-row fallback. Vitest grew +13 to 685 — the score display, the m6c-a to m6c-d frames, the singular measure sentence and the latest probe answer — and is not counted in this floor). +6 GSO at the M6c final-review fix wave (MV-D118: a mixed kept attach and a mixed detach write only the applied view's row and name only it, and the affected subset drops the pre-attached view's own questions; the even-suite wash whose only regression is outside the subset; the bare no-FROM expression through the fallback; and `run` forwarding its ids and scope label. Vitest grew +1 to 686 — the m6c-d SQL block — and is not counted in this floor). +22 backend / +6 GSO at M7b (MV-D119: the scorer's viewer-safe forms with their every-emitted-string, no-dead-form, quoted-content, kept-count, outside-the-forms and literal next-step and check-label pins; the viewer scan's blank-in-place finding and warning that keep their remediation, the viewer-safe check details with labels kept, and the blank pre-rename wording; each admin route's listing under the caller's token, its 503 on a listing failure and 500 on a summary failure with no exception text, the count-only `top_finding` that skips text with no form, and the space the caller cannot list left uncounted; the detail route's concurrent reads after the View check; and the UTC stamps on a scan, an optimization run, join advice and the watch writes, with the no-`utcnow` source pin. Pytest warnings fell from 10 to 4. Vitest grew +21 to 707 — the single 404 retry after a create, the deep-link no-access state, the admin card's scope and the scope-neutral page subtitle, the m7b-a to m7b-c frames and the centred Return — then +2 to 709 at the M7b final-review fix wave — the App deep-link status pins (a 403 is the no-access state, a 500 is not) — and is not counted in this floor). +32 backend at M7c (MV-D120: the definition match's UC owner and an owner-less view that is not the caller's, and the existing-view helper's non-metric-view refusal and pass-through; the run hook's adoption of an owned matching view and refusal of someone else's, the failed CREATE recorded when its view exists and an `error` skip when it doesn't or its lookup raises, the landed ledger write kept, the proven absence dropped and the unreadable ledger kept, and neither an adopted view nor one found after a failed CREATE dropped when its record fails, with `unrecorded_kept` added to the existing skip-order pin and the CREATE, re-read, DROP order to the existing drop pin; approval's failed CREATE attached when its view exists, owned or not, and a reason when it doesn't, the post-create ledger failure a reason that keeps the view for each write, the fresh create with no owner, the warehouse `RuntimeError` a 500 and not a 401, and `grant_sql` for the owner only. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +30 to 739 — the confirm re-probe with no materialize flag, the owner named with no GRANT, the created terminal's copy, the debounced permission check, the prefill consume, the m7c-a and m7c-b frames, and the card detail's owner-gated GRANT on both surfaces — and is not counted in this floor). +9 backend at the M7c final-review fix wave (MV-D120 Ruling 21: a fresh view whose ledger write failed is kept and not attached when the re-read finds no row, with no DROP, CREATE on the OBO client and the ledger on the SP, where the two drop pins stood, and the `unrecorded` skip label is gone; the strict ledger re-read's present, empty, raising and `_wh_literal`-quoted pins; a view found after a failed CREATE that isn't the caller's is an `exists` skip, and a lookup that raises is logged by type only; approval's not-found reason for an absent view and a raising lookup, a refused view's own reason, the "found" wording on a ledger failure, and the existing-view helper's not-found answer. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +8 to 747 — the space in the probe key, an older probe's answer discarded while a newer timer waits, and the card GRANT after a degraded or refused create and beside a sibling's `USER_CREATED` create — and is not counted in this floor). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 1588 backend + 1880 GSO,
+     measured 2026-10-01 (this supersedes the prior 1581 + 1878 floor, also measured 2026-10-01). Historical
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). +50 GSO at M4 (MV-D114: the live-id and measure-matched affected subset with its bundle-union, curated, expected-SQL and no-SQL-in-stage pins; the full-suite post-attach eval with the subset-restricted verdict, zero-graded revert and kept-only baseline handoff; the finally-rollback with its exception, interrupt, retry, fail-twice and pre-deploy pins; the loop baseline-reset pin with its proposer, run-status, target and detached controls; and the end-of-run unmeasured-live report; the final-review fix wave's live-read unmeasured report with its revert-failed, dropped-by-a-later-PATCH, unreadable-live fallback, no-read-without-a-patched-row and loop-wiring pins, and the parse-log firewall pin, then the canonicalize/render log firewall pins). +2 backend at MV-D115 (the metric-view probe's space row asks Can Edit and never Can Manage, and a permissions API refused for scope still grants it). +20 GSO at the M4 live-run fixes (L1: publish scores iteration 0 at a kept attach's post-attach accuracy, read from the `MV_ATTACH` stage row and bound to its baseline eval id, with its no-reset, lever-beats-reset, restart-row, other-eval and promote-stamp pins; L2: `attached_identifiers` reads `tables` too, with the live report and reconcile pins). +42 GSO at M6a (MV-D116: the table-split corpus scan with its spelling, table-less-remainder and ranking pins; the table-leaf helpers; demand scoped to the candidate's tables; the table-aware governed match, seed exclusion and trusted-asset conflict with their query-source controls; the merged-key suppression read; and the identity baseline captured at 9d972e46; the final-review fix wave's cap-boundary pin that only membership moves, the governed-excluded half the merged key still hides, and the definition-table pins for non-list joins, a source-less join, a query join at top level and nested, and a table named twice). +22 backend / +36 GSO at M6b (MV-D117: the identity baseline captured at 43b01544 with its row-count and struct pins; row counts on their only table and their per-table split; struct fields on an alias with the table-qualified, two-part and source-headed controls; the fix wave's source-schema neutral-clear pins (dimension, filter, grain, RATIO, CONDITIONAL_COUNT and measure path) with the four-part and source-aliased controls; the firewall's two-sided quote fold; the unreachable-rung pin and the create-time rung refusal on both paths; the row-count, bundle and stale claim, with the claim success and role-less-anchor pins; the nothing-built skip summary; the stale flag, facts row, re-run gate and 409 DDL refusal; and the quoted GRANT. The frontend callout exclusion is a vitest pin, not counted in this floor). +21 backend / +4 GSO at the M6b final-review fix wave (MV-D117: the firewall's text-field probes, quoted prose, bare prose against a quoted benchmark, the bare/bare control and a SQL probe echoing a quoted question; the stale-beside-its-successor drop on the list with its case- and backtick-insensitive match, the approved stale row, the gate, the suggest and stream reloads and the helper's keep controls; the approved id with no candidate, its lead position, the stale reason that promises no refresh, and the per-key and ordered skip labels). +16 backend / +57 GSO at M6c (MV-D118: the exception type only in the rollback compensation error and the pre-deploy, post-deploy and revert outcomes, with the measured fields kept after the measurement; the net-suite detach, the even-suite keep, the `delta_suite` diagnostic and the flipped outside-the-subset wash; the widened matcher's unqualified-SQL, other-table and no-candidate-tables pins and its per-key selection; either shelf blocking a second add, `pre_attached` on the stage row with its restart survival, loop hand-off and unmeasured-report skip, and the bring-your-own view with no candidate; the unconfirmed PATCH reverted on either shelf when it landed and left when it did not, an unreadable space counted as landed, a failed revert reported, a validation failure not unconfirmed, the real applier's raised PATCH read back and the loop's live reader; the baseline-reset parser, the remaining-failures count, the restart lookup, the attach trajectory step with its champion flag, and the residual count and audit context; the wide-schema re-plan after a kept attach and none after a detach; the status and run-detail headline, the attach stage read while the Jobs API answers, and the run-scores contract; the serialized `run` and the seam with no subset method, three `run_subset` tests removed; the uncovered-table refusal at run hook and approval with its name match, named skip and unreadable body; the drop's plain-name refusal and the level ladder that never asks MANAGE, net zero; and the stale-sibling drop on the run-keyed list and the semantic graph with the `/mv-ddl` current-row fallback. Vitest grew +13 to 685 — the score display, the m6c-a to m6c-d frames, the singular measure sentence and the latest probe answer — and is not counted in this floor). +6 GSO at the M6c final-review fix wave (MV-D118: a mixed kept attach and a mixed detach write only the applied view's row and name only it, and the affected subset drops the pre-attached view's own questions; the even-suite wash whose only regression is outside the subset; the bare no-FROM expression through the fallback; and `run` forwarding its ids and scope label. Vitest grew +1 to 686 — the m6c-d SQL block — and is not counted in this floor). +22 backend / +6 GSO at M7b (MV-D119: the scorer's viewer-safe forms with their every-emitted-string, no-dead-form, quoted-content, kept-count, outside-the-forms and literal next-step and check-label pins; the viewer scan's blank-in-place finding and warning that keep their remediation, the viewer-safe check details with labels kept, and the blank pre-rename wording; each admin route's listing under the caller's token, its 503 on a listing failure and 500 on a summary failure with no exception text, the count-only `top_finding` that skips text with no form, and the space the caller cannot list left uncounted; the detail route's concurrent reads after the View check; and the UTC stamps on a scan, an optimization run, join advice and the watch writes, with the no-`utcnow` source pin. Pytest warnings fell from 10 to 4. Vitest grew +21 to 707 — the single 404 retry after a create, the deep-link no-access state, the admin card's scope and the scope-neutral page subtitle, the m7b-a to m7b-c frames and the centred Return — then +2 to 709 at the M7b final-review fix wave — the App deep-link status pins (a 403 is the no-access state, a 500 is not) — and is not counted in this floor). +32 backend at M7c (MV-D120: the definition match's UC owner and an owner-less view that is not the caller's, and the existing-view helper's non-metric-view refusal and pass-through; the run hook's adoption of an owned matching view and refusal of someone else's, the failed CREATE recorded when its view exists and an `error` skip when it doesn't or its lookup raises, the landed ledger write kept, the proven absence dropped and the unreadable ledger kept, and neither an adopted view nor one found after a failed CREATE dropped when its record fails, with `unrecorded_kept` added to the existing skip-order pin and the CREATE, re-read, DROP order to the existing drop pin; approval's failed CREATE attached when its view exists, owned or not, and a reason when it doesn't, the post-create ledger failure a reason that keeps the view for each write, the fresh create with no owner, the warehouse `RuntimeError` a 500 and not a 401, and `grant_sql` for the owner only. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +30 to 739 — the confirm re-probe with no materialize flag, the owner named with no GRANT, the created terminal's copy, the debounced permission check, the prefill consume, the m7c-a and m7c-b frames, and the card detail's owner-gated GRANT on both surfaces — and is not counted in this floor). +9 backend at the M7c final-review fix wave (MV-D120 Ruling 21: a fresh view whose ledger write failed is kept and not attached when the re-read finds no row, with no DROP, CREATE on the OBO client and the ledger on the SP, where the two drop pins stood, and the `unrecorded` skip label is gone; the strict ledger re-read's present, empty, raising and `_wh_literal`-quoted pins; a view found after a failed CREATE that isn't the caller's is an `exists` skip, and a lookup that raises is logged by type only; approval's not-found reason for an absent view and a raising lookup, a refused view's own reason, the "found" wording on a ledger failure, and the existing-view helper's not-found answer. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +8 to 747 — the space in the probe key, an older probe's answer discarded while a newer timer waits, and the card GRANT after a degraded or refused create and beside a sibling's `USER_CREATED` create — and is not counted in this floor). +41 backend / +36 GSO at M7d (MV-D121: the run-scores contract's attach score when a lever wins, tied with the baseline, absent for another baseline or without a reset, with an empty reset `eval_run_id` and tied with enrichment, and the run list's stored champion accuracy; the status poll's attach stage read from Delta when Lakebase is off, none before a baseline and one when the Jobs API is down, and the run detail's attach score with its no-attach control; the failed revert's audit row, the applied-only settle log, a raised PATCH with an empty message read back, no error type not unconfirmed and the validation return's empty error type; `remove` in any case, from `tables`, and absent; the two log-firewall source pins over the metric-view modules, the applier's `apply_patch_set` and `rollback`, the metric-view services and routes, each with its glob control, seeded self-tests, type-only control and named-function check, and the type-only failed patch, rollback, advisor phase, hook, probe user and privileges row; the route source pin, the lift-row pin, the probe and register 500s and the probe's up-front OBO check; the unpinned `/mv-ddl` that falls back to its own proposal only; and the backtick-aware name split in the drop, coverage, a quoted consent securable, `_valid_uc_identifier` and register, with the hook's CREATE asserted and the re-plan's result checked. Pytest warnings stayed at 4. Vitest grew +14 to 761 — the full-scope-only baseline rule and the enrichment gain, the "Metric view attach" label, the chart's attach point after the baseline, the m7d-a frame and a stale probe that rejects after the latest answer — and is not counted in this floor). +7 backend / +2 GSO at the M7d final-review fix wave (MV-D121: a failed lineage or demand read logs its reason code and exception type only; the route pin lists `/mv/create`, `/mv-ddl` and the two DDL loaders, with a tripwire over every metric-view router path; the backend checker's drift guard against its GSO twin; and the dotted quoted names that are not three parts. Pytest warnings stayed at 4. Vitest stayed at 761 — `METRIC_VIEW_SCOPE` was removed with no importer — and is not counted in this floor). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -671,7 +671,7 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 **MV-D35 — Proven facts lead; the score ranks; a percent is never displayed as "confidence" (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8; supersedes MV-D32(1)'s caption-as-fix IN PART).** The reviewer's challenge, third smoke run: "if a metric view is syntactically accurate, executable, and orthogonal to existing metric views, why is our confidence low? Would you, as a user, accept a low-confidence suggestion?" The challenge is correct and the display was a category error, twice band-aided (MV-D32(1)'s caption, 15.7b's badge) instead of replaced. The facts: **quality is binary and already gated** — nothing surfaces without a rendered, validated, placeholder-free, executable body (MV-D8, MV-D29, 15.5's servable-body invariant), and dedup guarantees non-overlap with existing governed measures; the LYDS score measures **demand evidence**, a RANKING signal, not doubt about correctness. Displaying it as "NN% confidence / LOW" told users their strongest candidate might be broken — false, and corrosive. The replacement: (1) cards LEAD with proven facts as explicit checks — "✓ validated · ✓ executable · ✓ no overlap with existing metric views" — each check backed by the gate that proved it, never decorative; (2) evidence renders as a human sentence ("18 curated queries · usage history"); the numeric score is used ONLY for ordering plus ONE Recommended pick — or, when all surfaced proposals are mutually orthogonal (disjoint measure sets), the panel says so plainly ("all N are independent — any or all can be created") instead of forcing a ranking that does not exist; (3) the raw blend, weights, and coverage stay in `score_components` for the debugging user; (4) the COMPUTED≠SUPPORTIVE defect is fixed — `confidenceDisplay` captions "Backed by usage history and lineage" whenever L/D *ran*, even at near-zero values (`mvFormat.ts:313-315`); basis captions must reflect signal CONTRIBUTION, not signal execution. MV-D30's tier gating survives as the ordering/disclosure mechanism; what dies is the naked percent and the word "confidence" anywhere a user reads it. This applies to EVERY surface that renders a proposal — the IQ panel AND the run-output panels — through shared components, so the post-GSO surface inherits it by construction.
 
-> **MV-D36–MV-D97 — reserved for the ontology line; NOT decided on this base branch.** These numbers belong to the longer-running `ontology` branch, which descends from this base. This base branch's own register runs MV-D1–MV-D35, then MV-D98–MV-D100 (Plan A1 and its two follow-ups), then MV-D109 onward (the PR #332 review); the gaps are deliberate, not dropped decisions. *Numbering collision, corrected at PR #332 M0 (owner decision, 2026-09-29):* Plan A1 was recorded as MV-D98 because that was then the next number above the ontology line, but `origin/ontology` went on to assign MV-D98–MV-D108 itself. Its MV-D98/D99 (a governed `Domain/Sub` taxonomy must survive ER as distinct tags, `537b2093`) and its MV-D100 (an applied governed-tag membership is reversible under OBO, `c653ea3a`) collide with this branch's MV-D98, MV-D99 and MV-D100 below, which were assigned first (`f83db05c`, `897603b1`, `60388a8e`); neither line inherited the other's, since the fork point carries none of the three. **This branch keeps MV-D98–MV-D100. `ontology` renumbers its two colliding entries when it rebases onto this branch after PR #332 merges**, to numbers free on both lines at that time — MV-D121 and up as of this note, since this branch uses MV-D109–MV-D120 and `ontology` uses nothing above MV-D109. Its MV-D101–MV-D108 do not collide and keep their numbers. Until that rebase, an MV-D98, MV-D99 or MV-D100 cited on `ontology` means the ontology decision. A new entry on either line takes the next number free on both.
+> **MV-D36–MV-D97 — reserved for the ontology line; NOT decided on this base branch.** These numbers belong to the longer-running `ontology` branch, which descends from this base. This base branch's own register runs MV-D1–MV-D35, then MV-D98–MV-D100 (Plan A1 and its two follow-ups), then MV-D109 onward (the PR #332 review); the gaps are deliberate, not dropped decisions. *Numbering collision, corrected at PR #332 M0 (owner decision, 2026-09-29):* Plan A1 was recorded as MV-D98 because that was then the next number above the ontology line, but `origin/ontology` went on to assign MV-D98–MV-D108 itself. Its MV-D98/D99 (a governed `Domain/Sub` taxonomy must survive ER as distinct tags, `537b2093`) and its MV-D100 (an applied governed-tag membership is reversible under OBO, `c653ea3a`) collide with this branch's MV-D98, MV-D99 and MV-D100 below, which were assigned first (`f83db05c`, `897603b1`, `60388a8e`); neither line inherited the other's, since the fork point carries none of the three. **This branch keeps MV-D98–MV-D100. `ontology` renumbers its two colliding entries when it rebases onto this branch after PR #332 merges**, to numbers free on both lines at that time — MV-D122 and up as of this note, since this branch uses MV-D109–MV-D121 and `ontology` uses nothing above MV-D109. Its MV-D101–MV-D108 do not collide and keep their numbers. Until that rebase, an MV-D98, MV-D99 or MV-D100 cited on `ontology` means the ontology decision. A new entry on either line takes the next number free on both.
 
 **MV-D98 — Supporting-measure carve-out: a sub-floor recurring measure may enrich an anchored grain bundle, never surface alone (DECIDED — authorized to unblock Plan A1; residual of MV-D30 surfaced by the first deployed human review's `control_metrics` one-measure card; qualifies POV Part 3's `suppress < 25` floor without loosening it for standalone proposals).** MV-D30 bundles the measures of one grain into one view, but only `VERDICT_PROPOSE` members (tier ≥ Low) reach a bundle: a measure that recurred yet blended under 25 collapses to `VERDICT_SUPPRESSED` (`mv_scoring.py:1425`), is dropped as non-persistable (`PERSISTABLE_VERDICTS = {PROPOSE, CONFLICT}`, `mv_scoring.py:126`) at the Pass-1 `is_persistable` gate (`mv_advisor.py:1481`), and never enrolls in `bundles` (`mv_advisor.py:1486`). So a grain whose queries repeat one strong measure and several weak-but-real ones still ships a one-measure view — the exact thin-card outcome MV-D30 exists to prevent, re-entering one grain at a time. The POV floor `High ≥ 75, Medium 50–74, Low 25–49, suppress < 25` (Part 3) was written to keep a low-value **standalone proposal** off a reviewer's screen; it was never a statement that a sub-floor measure may not corroborate a view the reviewer is already being shown. **What this decides:** a `VERDICT_SUPPRESSED` candidate that is otherwise a clean PROPOSE — leakage-gate-clean (`mv_advisor.py:1449`), not fingerprint-suppressed (`mv_advisor.py:1426`), dedup verdict PROPOSE (not BLOCKED/CONFLICT) — MAY be folded into a bundle as a `role:"supporting"` member when, and only when, that grain already has at least one **anchor whose SCORE earns MEDIUM+** — the gate keys on `uncapped_tier` (the score-earned tier), NOT the coverage-capped display tier, because the coverage cap measures how many signal producers the workspace has, not the strength of the measure, and gating on it would starve exactly the partial-signal workspaces this carve-out helps; it is capped at `MV_ADVISOR_MAX_BUNDLE_RIDERS` (default 4) and rendered as an ordinary additive `MeasureRequest` inside the single `mv_yaml.generate`. **Constraints not open:** the standalone floor is UNCHANGED — a sub-25 measure still never becomes its own card, and riders NEVER constitute a bundle alone (a grain whose anchor earns only LOW, or has no PROPOSE anchor at all, produces no rider fold); confidence and both tiers continue to come from the strongest anchor only (`mv_advisor.py:1145`), so a supporting member can never lift a view's score, its displayed tier, or its MEDIUM+/LOW-disclosed surfacing gate; the per-measure fingerprint stays the identity and suppression grain (MV-D30/MV-D10), so a rejected rider stays rejected inside any future bundle (`genie_opt_mv_suppressions`) and the bundle fingerprint simply reflects its membership; and every supporting measure still clears the MV-D29 leakage oracle on its representative expression before it can render. **Verification:** ride-along inclusion, no-anchor-no-view, the low-scoring-anchor exclusion, the rider cap, and confidence/tier-invariance are pinned in `test_mv_advisor.py` (the carve-out is entirely in `mv_advisor`; `mv_scoring`'s VERDICT_SUPPRESSED path is unchanged) in the same commit as the code; STOP before deploy.
 
@@ -1324,7 +1324,9 @@ at `43b01544`; the MV-D113 and MV-D116 baselines are untouched.
    outcome is `ATTACH_NOT_APPLIED` with the exception type as `error`.
 2. An unreadable live space counts as landed, and the view is reverted.
 3. A failed revert of an unconfirmed PATCH is stamped `CREATED` with its
-   `attach_patch_id`. No patch audit row is written.
+   `attach_patch_id`. No patch audit row is written. *Amended by MV-D121: the
+   failed revert also writes the patch audit row, so `attach_patch_id`
+   resolves.*
 4. The apply log gains `patch_error_type`; the phase never reads `patch_error`.
 5. The net-suite guard is strict `< 0` on `LiftReport`'s fraction deltas.
 6. The matcher fallback tries the full table set and each single table, gated
@@ -1339,9 +1341,15 @@ at `43b01544`; the MV-D113 and MV-D116 baselines are untouched.
    `mv_attach.VERDICT_ATTACHED`.
 9. The headline treats a `metric_view` scope alone as an iteration-0
    improvement. An `enrichment` win at iteration 0 keeps "Baseline retained".
+   *Superseded by MV-D121: only a full-scope iteration 0 holds the baseline; an
+   `enrichment` win there is a gain.*
 10. The hot status poll reads stage rows from Lakebase only and, without
     Lakebase, falls back to the stored rows; `get_run` uses the Delta fallback.
+    *Superseded by MV-D121: Lakebase stage reads are off, so the poll reads the
+    attach stage from Delta once a baseline exists.*
 11. The audit trajectory gains the step; the run-detail iteration chart does not.
+    *Superseded by MV-D121: the chart's data plots the attach after the
+    baseline; the chart has no live mount (see MV-D121).*
 12. A create whose body tables are unknown is refused like an uncovered one. At
     approval that is `created=False, degraded=False`, with no remediation SQL.
 13. The drop route answers 409 for an unsafe recorded name.
@@ -1359,6 +1367,9 @@ Made during execution:
 - When a reset applies, the champion flag moves from the iteration-0 entry to
   the inserted `metric_view_attach` trajectory step.
 - The run-list endpoints (`compute_run_scores_by_run_id`) do not apply the reset.
+  *Corrected by MV-D121: the lists show the stored `best_accuracy`, which the
+  loop and publish stamp at the post-attach score (`promote_best_model`); the
+  unused helper is deleted.*
 - `_joins_are_mappings` (`mv_create.py:186`) treats a `joins` that is not a
   list of mappings as unknown tables, so the create is refused.
 
@@ -1425,22 +1436,30 @@ holds: nothing new writes `ATTACHED`, and the unconfirmed-PATCH path writes only
 **Residuals (not fixed here).**
 - The applier's `logger.exception` tracebacks on PATCH and rollback failures,
   and the pre-existing `exc_info=True` in `mv_attach` `_update_object`,
-  `_write_attach_patch_rows` and `_record`.
+  `_write_attach_patch_rows` and `_record`. *Closed by MV-D121.*
 - An iteration-0 `enrichment` win still reads "Baseline retained" (Ruling 9).
-- The run-detail iteration chart has no attach step (Ruling 11).
-- The hot poll without Lakebase reads the stored rows (Ruling 10).
-- No patch audit row on an unconfirmed PATCH (Ruling 3).
+  *Closed by MV-D121.*
+- The run-detail iteration chart has no attach step (Ruling 11). *Superseded by
+  MV-D121: the chart's data plots the attach after the baseline; the chart has
+  no live mount (see MV-D121).*
+- The hot poll without Lakebase reads the stored rows (Ruling 10). *Closed by
+  MV-D121.*
+- No patch audit row on an unconfirmed PATCH (Ruling 3). *Closed by MV-D121.*
 - Run lists show optimized equal to baseline for a run whose only gain is a
-  kept attach.
+  kept attach. *Corrected by MV-D121: the lists show the stored
+  `best_accuracy`, which the loop and publish stamp at the post-attach score
+  (`promote_best_model`); the unused helper is deleted.*
 - The matcher fallback does not reach legacy bundle rows (before
   `source_tables`) or CONFLICT per-measure rows, and same-leaf tables in two
   catalogs match under `same_tables`.
 - An unpinned `/mv-ddl` (no `suggestion_id`) may pair a stale artifact with
-  another candidate's current row. Pre-existing; cards always pin.
+  another candidate's current row. Pre-existing; cards always pin. *Closed by
+  MV-D121.*
 - The consent-probe key omits `spaceId` (pre-existing).
-- The applier's `remove` stays case-sensitive.
+- The applier's `remove` stays case-sensitive. *Closed by MV-D121.*
 - `metric_view_attach` has no frontend mode label (no surface renders the
-  trajectory).
+  trajectory). *Closed by MV-D121: the label exists, and still no mounted
+  surface renders the trajectory.*
 - The M6b per-task deferred minors (Ruling 15).
 
 ### MV-D119 — The M1 follow-ups: allowlist redaction, admin summaries under the caller's token, parallel detail reads, the post-create retry, the deep-link no-access state, and timezone-aware times (DECIDED 2026-09-30 — PR #332 M7b, owner)
@@ -1979,6 +1998,289 @@ the caller.
   (`mv_create.py:685-689`, M7d). So do `_confirm_metric_view` (`:309`, `:318`)
   and `_describe_metric_view` (`:777`), which `_adopt_existing_view` now
   reaches on every existing-name path and every failed-CREATE lookup (M7d).
+  *Closed by MV-D121.*
+
+### MV-D121 — The MV-D118 follow-ups: the attach on the live headline, an enrichment gain, the failed revert's audit row, `remove` on either shelf, the metric-view log firewall, the probe and register 401s, the unpinned `/mv-ddl`, and dotted quoted names (DECIDED 2026-10-01 — PR #332 M7d, owner)
+
+**Problem (the M7d line of the PR #332 tracking issue: MV-D118's residuals, the
+M6c deferred minors, and three defects found while planning).**
+- The live headline never saw a kept attach. When the Jobs API answered, the
+  status poll scored from `gso_lakebase.load_gso_stages`, which always returns
+  `[]` (`_SYNCED_TABLES_ENABLED = False`, `backend/services/gso_lakebase.py:24`).
+  A running run showed "—" and a finished one "Baseline retained", while
+  `get_run` read Delta and showed the gain. The router test stubbed the
+  Lakebase read, so it never saw this.
+- An iteration-0 `enrichment` win read "Baseline retained" beside a higher
+  Optimized number, by MV-D118 Ruling 9.
+- The run-list residual was misdescribed. The lists show the stored
+  `genie_opt_runs.best_accuracy`, which the loop and publish already stamp at
+  the post-attach score (`promote_best_model`,
+  `packages/genie-space-optimizer/src/genie_space_optimizer/optimization/models.py:40`).
+  `compute_run_scores_by_run_id` had no caller, and its docstring claimed the
+  list endpoints used it.
+- The run-detail chart had no attach step: the attach writes no iteration row.
+- A failed revert of an unconfirmed PATCH stamped an `attach_patch_id` that no
+  `genie_opt_patches` row backed. Its log named every requested view, including
+  views on the space before the run. A raised PATCH with an empty message read
+  as never sent, because the predicate tested `patch_error`, which is
+  `str(exc)`.
+- The applier's `remove` was case-sensitive and checked `metric_views` only,
+  while the add treats a view on either shelf, in any case, as attached.
+- The metric-view path logged tracebacks (`exc_info=True`,
+  `logger.exception`) across `mv_attach`, `mv_advisor`, `mv_scoring`,
+  `mv_state`, the applier's `apply_patch_set` and `rollback`, `mv_create`,
+  `mv_suggest`, `mv_entitlement` and the metric-view routes.
+- An unpinned `/mv-ddl` whose artifact was stale fell back to the run's
+  best-ranked candidate of any proposal.
+- `_norm_table` stripped backticks and `_valid_uc_identifier` split on every
+  dot, so `` `finance.sales`.orders `` (two parts) read as the covered
+  three-part `finance.sales.orders`.
+- Found while planning (1): `/mv/probe` had no up-front OBO check, and its
+  `except RuntimeError` turned every `RuntimeError` raised inside
+  `mv_entitlement.probe` into a 401 carrying its text. `/mv/register`'s second
+  `except RuntimeError` did the same for the warehouse.
+- Found while planning (2): the advisor phase's outcome `error` carried
+  `f"{type(exc).__name__}: {exc}"` into its stage row.
+- Found while planning (3): the probe's privilege-read failure put `str(exc)`
+  in the row detail the user sees, and `MvProbeError` embedded the exception.
+
+**Decisions (owner rulings at planning, 2026-10-01).**
+- **Hot poll = delta_narrow.** The poll reads only the attach stage row from
+  Delta (one small query) (Ruling 2).
+- **Enrichment headline = show_gain.** An iteration-0 enrichment win counts
+  like a metric-view win (Ruling 4; supersedes MV-D118 Ruling 9).
+- **Audit row = write.** An unconfirmed PATCH whose revert failed writes the
+  patch audit row (Ruling 7; amends MV-D118 Ruling 3).
+- **Firewall scope = mv_wide.** The attach path, the applier's PATCH and
+  rollback, `mv_create` and every metric-view route (Ruling 11).
+- **Chart = add_step.** The run detail returns the attach's accuracy and the
+  chart's data carries a "Metric view" point after the baseline (Ruling 5). As
+  executed, the chart has no live mount (Ruling 22), so no user sees it.
+
+**Rulings (planning).**
+1. No batched run-list read. `compute_run_scores_by_run_id` and its `__all__`
+   entry are deleted, and a backend pin shows `/spaces/{id}/runs` returns the
+   stored `best_accuracy` as it is
+   (`test_the_run_list_shows_the_stored_champion_accuracy`,
+   `backend/tests/test_auto_optimize_router.py:1906`). Cost if wrong: a future
+   list endpoint that wants derived scores re-adds a grouped helper, and it
+   must take the reset.
+2. When the Jobs API answered and Lakebase returned no stages, the poll reads
+   `SELECT stage, detail_json … WHERE run_id = '…' AND stage = 'MV_ATTACH'`,
+   and only when iteration rows exist (`backend/routers/auto_optimize.py:4854-4862`).
+   The literal is `_MV_ATTACH_STAGE = MV_ATTACH_PHASE_NAME.upper()` (`:4344`;
+   `common/config.py:2509`). There is no cache: a cached "no attach" would hide
+   one that lands mid-run. Cost if wrong: one small warehouse statement per
+   open tab per 5-second poll.
+3. `RunScores.attach_accuracy` is the attach's score whenever the reset applies
+   to this run's baseline, won or not — the same condition that admits it as a
+   candidate (`packages/genie-space-optimizer/src/genie_space_optimizer/common/accuracy.py:326-332`;
+   field at `:174`). `get_run` returns it as `metricViewAttachAccuracy`
+   (`auto_optimize.py:4778`; mirror `frontend/src/types/index.ts:528`); the
+   status poll does not.
+4. Only a full-scope iteration 0 holds the baseline: `holdsBaseline` is
+   `bestIteration === 0 && (bestEvalScope ?? "full") === "full"`
+   (`frontend/src/lib/score-display.ts:97-100`). A missing scope still holds,
+   for older payloads. Cost if wrong: a re-entered Optimize task's later
+   iteration-0 row is credited as a gain, which the backend already reports as
+   `optimized`.
+5. The chart's attach point sits after the baseline, labelled "Metric view",
+   keyed `"0-mv"` on a categorical x-axis, with the tooltip lever "Metric view
+   attach", and is never drawn without a baseline point
+   (`frontend/src/components/auto-optimize/IterationChart.tsx:19`, `:73-84`,
+   `:102`). Supersedes MV-D118 Ruling 11 in the chart's data only (Ruling 22).
+6. `ResponsiveContainer` gets `initialDimension={{ width: 480, height: 280 }}`
+   (`IterationChart.tsx:133`), for a server-side render with no layout.
+7. The failed-revert branch writes the patch audit row with
+   `_write_attach_patch_rows` before the `CREATED` stamps
+   (`packages/genie-space-optimizer/src/genie_space_optimizer/optimization/mv_attach.py:968-970`;
+   defined at `:1297`). A reverted PATCH writes no row.
+8. `_patch_outcome_unknown` keys on `patch_error_type`
+   (`mv_attach.py:895-909`), and the applier's validation-fail return carries
+   `"patch_error_type": ""` (`optimization/applier.py:4509`). The
+   `validation_errors` guard stays. A raised PATCH with an empty message is read
+   back.
+9. The settle log names only the views this run's PATCH carried
+   (`applied_views`, `mv_attach.py:938-940`, logged at `:963-967`).
+10. `remove` mirrors `add`: it matches case-insensitively on `metric_views`,
+    then `tables`, and removes the first match (`applier.py:3948-3959`). Cost if
+    wrong: none; a view and a table can't share a name in one schema.
+11. Firewall scope. In: every `optimization/mv_*.py` and
+    `backend/services/mv_*.py`; the applier's `apply_patch_set` and `rollback`;
+    the metric-view routes in `auto_optimize.py`, the helpers they call and the
+    semantic graph's metric-view reads. Out, as residuals: `_delta_query` and the
+    other router handlers; the applier's other lever sites; `apply_log["patch_error"]`;
+    `mv_yaml`'s parse and rejection messages. Cost if wrong: an operator loses a
+    traceback on these paths; the message and the exception type remain.
+12. Source pins enforce the scope:
+    `packages/genie-space-optimizer/tests/unit/test_mv_log_firewall.py` and
+    `backend/tests/test_mv_log_firewall.py` parse the in-scope code with `ast` and
+    fail on an `exc_info` that is not the constant `False`, a `logger.exception`,
+    or a logging argument that carries a name bound by an enclosing
+    `except … as name` (directly, in an f-string, or through `%`/`.format`).
+    `type(name).__name__` is allowed. Each carries seeded-violation self-tests.
+13. `/mv/probe` and `/mv/register` have one 401 each, the up-front OBO check
+    (`auto_optimize.py:1684-1687`, `:2699-2702`). Any other failure is a 500
+    with the fixed detail, logged by type only (`:1701-1703`, `:2716-2721`).
+    `MvProbeError` stays a 422, and its text is ours (Ruling 16).
+14. An unpinned `/mv-ddl` falls back only to the stale artifact's own proposal:
+    `fallback_id = suggestion_id or (payload or {}).get("suggestion_id")`, and
+    with no artifact at all the best-ranked row stays
+    (`auto_optimize.py:3943-3956`). Cost if wrong: an unpinned caller whose
+    stale artifact has no id gets a 409 instead of another proposal's body.
+15. Names split backtick-aware. `_uc_name_parts` (`backend/services/mv_create.py:225-240`)
+    uses `mv_yaml._split_name` and unquotes each part, returning three parts only
+    when there are exactly three, none empty and none containing `.`.
+    `_norm_table` returns `None` for any other name (`:243-245`), and
+    `_uncovered_tables` counts `None` as uncovered (`:188-193`).
+    `_valid_uc_identifier` also applies `_UC_IDENT_PART` to each part
+    (`:790-798`); `_norm_table` does not, so a backticked hyphenated name a
+    consent covers stays covered.
+16. The probe's read failure is type-only: `_read_failure_detail` returns
+    `could not read privileges on {full_name} ({type(exc).__name__})`
+    (`backend/services/mv_entitlement.py:188-195`), with the not-found branch
+    kept, and `MvProbeError` reads `could not resolve the signed-in user
+    ({type(exc).__name__})` (`:361`). Cost if wrong: a row loses the SDK's
+    free-text hint; the typed errors still say what happened.
+17. Frames: m7d-a, the run headline for a finished run whose iteration-0
+    enrichment won, showing the gain and no "Baseline retained"
+    (`frontend/src/components/auto-optimize/mockups/MvM7dFidelityFrames.tsx:33`;
+    registered at `mockups/frames.tsx:196`). Its reference is m6c-a, and m6c-c
+    stays the control. m7d-b was not built (Ruling 22).
+
+**Rulings made during execution** (each with its cost if wrong):
+18. Two copies of the AST checker, one in the GSO tests and one in the backend
+    tests, each docstring naming its twin: backend tests can't import GSO's test
+    modules, and test helpers don't belong in the shipped package. Cost if
+    wrong: the two checkers can drift; a reviewer flags the duplication.
+19. A task whose code changes a counted file's line count regenerates the gap
+    report's generated block (`scripts/gap_report_counts.py --write`) in the
+    same task, so every task commit keeps the suite green; prose anchors wait
+    for the record. Cost if wrong: none; the block is mechanical.
+20. The applier site Ruling 11 listed as out of scope (`applier.py:4309` at
+    `c77347dd`) is inside `apply_patch_set`, so the function-level scope wins
+    and it logs the type (now `applier.py:4278-4283`). Cost if wrong: none.
+21. `_uncovered_tables` compares the body's `source` names as written
+    (`_source_names`, `mv_create.py:209-222`), not `_definition_tables`' reading,
+    because sqlglot strips the backticks there and left
+    `` `finance.sales`.orders `` covered. The walk runs only once
+    `_definition_tables` has read tables, so query sources are unchanged, and it
+    fails closed. Cost if wrong: a hand-written alias or ANSI-quoted source the
+    renderer never emits is refused at create.
+22. The score chart has no live mount. `IterationChart`'s only parent,
+    `PipelineDetailsModal` (`PipelineDetailsModal.tsx:300`), is rendered nowhere
+    in `frontend/src` since `ae8c4367` (#315), and `RunDetailView` renders no
+    chart. Ruling 5's code stays (correct, tested, ready if remounted); m7d-b is
+    not built, and no chart is mounted, because the owner approved a step on an
+    existing chart, not a new surface. The live surface that shows a kept
+    attach is the headline. The attempt ladder and ledger are built from
+    iteration rows (`_build_attempt`, `auto_optimize.py:5926`), which the attach
+    doesn't write, and no mounted surface renders the publish trajectory, so
+    "Metric view attach" (`cockpit.ts:61`) appears on no live surface. Cost if
+    wrong: the owner expected the chart step in the deployed app, and a
+    follow-up mounts the chart on `RunDetailView` with a graph error boundary.
+    *Amended before the squash: the owner accepted the headline as the only
+    live surface for M7d; the unmounted chart stays a residual.*
+23. `METRIC_VIEW_SCOPE` (`score-display.ts:98`) has no importer after Ruling 4,
+    against the plan's note that frames and tests import it. It is kept, and
+    the final review decides whether to drop it. Cost if wrong: one dead export.
+    *Amended at the final-review fix wave: it was removed, and nothing named it.*
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten): MV-D118 Rulings 3, 9, 10 and 11; MV-D118's
+"Made during execution" run-list bullet; MV-D118's residuals for the
+tracebacks, the enrichment headline, the chart, the hot poll, the audit row,
+the run lists, the unpinned `/mv-ddl`, the case-sensitive `remove` and the
+mode label; MV-D120's residual for the hook's outer `except`; the MV-D36–MV-D97
+numbering note (the next free number on both lines).
+
+**Unchanged.** No new route, table, column, job task or job parameter. One
+response field (`get_run`'s `metricViewAttachAccuracy`) and its TypeScript
+mirror; one dataclass field (`RunScores.attach_accuracy`). No create, drop or
+consent path is added, and the four create invariants hold. Demote-only holds:
+nothing new writes `ATTACHED`, and the failed-revert path still stamps
+`CREATED`.
+
+**Tests** (+41 backend, +36 GSO, +14 vitest).
+- The run-scores contract: the attach score when a lever wins, tied with the
+  baseline, absent for another baseline and without a reset, with an empty
+  reset `eval_run_id`, and tied with enrichment; the run list's stored
+  champion accuracy (+6 GSO, +1 backend).
+- The status poll reads the attach stage from Delta when Lakebase is off, not
+  before a baseline, and once when the Jobs API is down; the run detail
+  returns the attach score, with a no-attach control (+5 backend).
+- The headline's full-scope-only rule and the enrichment gain, and the
+  "Metric view attach" label (+5 vitest); the chart's attach point after the
+  baseline (+5 vitest); the m7d-a frame (+3 vitest).
+- The failed revert writes the audit row; the settle log names applied views
+  only; a raised PATCH with an empty message is read back, and one with no
+  error type is not unconfirmed; the validation return's empty error type;
+  `remove` in any case, from `tables`, and absent (+7 GSO).
+- The GSO firewall pin: the glob control, each module and both applier
+  functions, the seeded self-tests, the type-only control and the
+  named-function check; a failed patch, rollback and advisor phase log the type
+  only (+23 GSO).
+- The backend firewall pin, with the same shape over the services and the
+  metric-view routes; the hook's outer `except` and the probe's user error log
+  the type only; the privileges row rewritten (+16 backend).
+- The route source pin; the lift-row pin; register and probe 500s; the probe's
+  up-front OBO check (+5 backend).
+- The unpinned `/mv-ddl` falls back to its own proposal only (+4 backend).
+- The backtick-aware split: the drop's backticked positive control, three
+  not-three-parts cases, a quoted consent securable, four
+  `_valid_uc_identifier` cases and register's dotted part; the hook test now
+  asserts its CREATE ran, and the re-plan tests check the re-plan's result
+  (+10 backend, +0 GSO); a stale probe that rejects after the latest answer
+  (+1 vitest).
+
+**Final-review fix wave.** It closed the review's two Important findings
+(`mv_signals` logged a read failure's exception text; the backend route pin
+skipped `/mv/create` and `/mv-ddl`) and its minors M1–M5: the five converted
+blind `except`s carry `# noqa: BLE001`, `METRIC_VIEW_SCOPE` is removed, the
+dotted quoted names are pinned, the two checkers carry a drift guard, and the
+docs-site paragraph is rewrapped. No access-level check, route, model, table,
+job parameter or job task changed.
+
+**Tests at the final-review fix wave** (+7 backend, +2 GSO, +0 vitest).
+- A failed lineage or demand read logs the reason code and the exception type
+  only, with no `exc_info`, and its `SignalResult` reason still records the
+  text (+2 GSO).
+- The route pin lists `create_space_mv_at_approval`, `get_mv_ddl` and the two
+  `/mv-ddl` loaders, and a tripwire fails when a router path containing `/mv`,
+  `mv-` or `semantic-graph` has an endpoint the pin doesn't list (+1 backend).
+- The backend checker's body is `ast`-equal to its GSO twin, docstrings
+  aside (+1 backend).
+- `` `a.b`.c.d `` and `` `finance.sales.orders` `` are not three parts and not a
+  valid identifier, with a quoted three-part control (+5 backend).
+
+**Residuals (not fixed here).**
+- `_delta_query` (`auto_optimize.py:310`) and the other router handlers still
+  log exception text and tracebacks.
+- The applier's other lever sites still log tracebacks (`applier.py:1298`,
+  `:3501`, `:3569`, `:4084`).
+- `apply_log["patch_error"]` still carries exception text into a lever's
+  reflection (`unified_loop.py:2367`, `:3530`), and `apply_patch_set` still
+  puts `str(_render_err)` in `drop_detail` and the decision `error`
+  (`applier.py:4288`, `:4295`).
+- `mv_yaml`'s parse and rejection messages echo the body (`mv_yaml.py:1363`,
+  `:1401`, `:1650`, `:1737`, `:1859`).
+- `mv_signals._classify_read_failure` puts the exception's first line in a
+  reason string (`mv_signals.py:208`).
+  *Amended at the final-review fix wave: the `SignalResult` reason still carries it, but no log does.*
+- The `wh_*mv*` readers still log `exc_info=True` at DEBUG on the metric-view routes' read path (`common/warehouse.py:838`, `:936`, `:992`, `:1167`, `:1179`, `:1450`, `:1487`, `:1527`).
+- The hot poll multiplies `_delta_query`'s traceback log: a stage read that keeps failing logs one traceback per open tab per 5 s (Ruling 2).
+- `mv_create.py:595-598` logs `"; ".join(report.errors)`, which can carry `mv_yaml`'s parse text.
+- The AST checker does not see laundered text (`msg = str(exc)`), receivers
+  other than `logging`, `log` and `*logger`, `stack_info`, or exception text in
+  a `raise` or `return`.
+- One stage read per open tab per poll (Ruling 2).
+- An unpinned `/mv-ddl` whose stale artifact has no id is a 409 (Ruling 14),
+  and a literal `{}` artifact is a 404, not a 409.
+- `mv_entitlement._split_table` (`mv_entitlement.py:95`) still splits on every
+  dot.
+- `IterationChart` has no mount; mounting it on `RunDetailView` needs a graph
+  error boundary (Ruling 22). Until then no live surface shows the attach as a
+  step.
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

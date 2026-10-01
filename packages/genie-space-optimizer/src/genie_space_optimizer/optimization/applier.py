@@ -3946,11 +3946,16 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             sort_genie_config(config)
             return True
         if op == "remove":
-            identifier = cmd.get("identifier", "")
-            for i, mv in enumerate(metric_views):
-                if mv.get("identifier") == identifier:
-                    metric_views.pop(i)
-                    return True
+            wanted = str(cmd.get("identifier") or "").strip().lower()
+            if not wanted:
+                return False
+            # Either shelf, any case: the add treats both as attached (MV-D121).
+            for key in ("metric_views", "tables"):
+                shelf = config.get("data_sources", {}).get(key) or []
+                for i, entry in enumerate(shelf):
+                    if isinstance(entry, dict) and str(entry.get("identifier") or "").strip().lower() == wanted:
+                        shelf.pop(i)
+                        return True
             return False
 
     # ── Default Filters ───────────────────────────────────────────
@@ -4271,10 +4276,10 @@ def apply_patch_set(
             # continue applying the rest of the patch set rather than
             # aborting the whole AG.
             logger.warning(
-                "Refusing patch at idx=%d (type=%s, target=%s): %s",
+                "Refusing patch at idx=%d (type=%s, target=%s) (%s)",
                 idx, patch.get("type", "?"),
                 patch.get("target_table") or patch.get("target", "?"),
-                _render_err,
+                type(_render_err).__name__,
             )
             early_dropped_patches.append({
                 "index": idx,
@@ -4305,8 +4310,11 @@ def apply_patch_set(
                         w, space_id, str(cmd.get("new_text") or ""),
                     )
                 ok = True
-            except Exception:
-                logger.exception("Genie Agent metadata action failed for %s", patch_type)
+            except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+                logger.error(
+                    "Genie Agent metadata action failed for %s (%s)",
+                    patch_type, type(exc).__name__,
+                )
                 ok = False
         else:
             if scope in ("genie_config", "both"):
@@ -4498,6 +4506,7 @@ def apply_patch_set(
             "validation_errors": validation_errors,
             "patch_deployed": False,
             "patch_error": f"Validation failed: {validation_errors}",
+            "patch_error_type": "",
             # Surface the last-mile Bug #4 drops even on the validation-fail
             # path so the dropped set is never silently lost.
             "dropped_patches": early_dropped_patches + leak_dropped_patches,
@@ -4512,12 +4521,13 @@ def apply_patch_set(
         try:
             patch_space_config(w, space_id, config)
             patch_deployed = True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             patch_error = str(exc)
             patch_error_type = type(exc).__name__
-            logger.exception(
+            logger.error(
                 "Failed to PATCH Genie Agent config after retries — "
-                "patches were NOT deployed remotely",
+                "patches were NOT deployed remotely (%s)",
+                patch_error_type,
             )
 
             join_spec_entries = [
@@ -4561,10 +4571,12 @@ def apply_patch_set(
                             "%d patches deployed",
                             len(join_spec_entries), len(applied_retry),
                         )
-                    except Exception as exc2:
+                    except Exception as exc2:  # noqa: BLE001 - best-effort; logged by type only
                         patch_error = str(exc2)
                         patch_error_type = type(exc2).__name__
-                        logger.exception("Retry without join specs also failed")
+                        logger.error(
+                            "Retry without join specs also failed (%s)", patch_error_type,
+                        )
     elif applied:
         patch_deployed = True
 
@@ -4588,17 +4600,17 @@ def apply_patch_set(
                 if w is not None and patch_deployed:
                     try:
                         patch_space_config(w, space_id, config)
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
                         logger.warning(
                             "Failed to push canonicalized instructions "
                             "to Genie API — local snapshot is correct, "
-                            "but next read may regress",
-                            exc_info=True,
+                            "but next read may regress (%s)",
+                            type(exc).__name__,
                         )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
-                "Canonicalize-and-dedup pass failed (non-fatal)",
-                exc_info=True,
+                "Canonicalize-and-dedup pass failed (non-fatal) (%s)",
+                type(exc).__name__,
             )
 
     return {
@@ -4655,8 +4667,10 @@ def rollback(
         if has_description:
             try:
                 live_snapshot = fetch_space_config(w, space_id)
-            except Exception:
-                logger.exception("Failed to capture live state before rollback")
+            except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+                logger.error(
+                    "Failed to capture live state before rollback (%s)", type(exc).__name__,
+                )
                 return {
                     "status": "error",
                     "executed_count": 0,
@@ -4666,8 +4680,8 @@ def rollback(
 
         try:
             patch_space_config(w, space_id, restored)
-        except Exception:
-            logger.exception("Failed to PATCH rollback config")
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+            logger.error("Failed to PATCH rollback config (%s)", type(exc).__name__)
             return {
                 "status": "error",
                 "executed_count": 0,
@@ -4685,9 +4699,10 @@ def rollback(
                 target_description = "" if target_description is None else str(target_description)
             try:
                 update_space_description(w, space_id, target_description)
-            except Exception:
-                logger.exception(
-                    "Failed to PATCH rollback description; compensating live state"
+            except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+                logger.error(
+                    "Failed to PATCH rollback description; compensating live state (%s)",
+                    type(exc).__name__,
                 )
                 compensation_errors: list[str] = []
                 if live_snapshot is not None:

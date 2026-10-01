@@ -74,6 +74,7 @@ from genie_space_optimizer.common.accuracy import (
     derived_accuracy as _canonical_derived_accuracy,
 )
 from genie_space_optimizer.common.config import (
+    MV_ATTACH_PHASE_NAME,
     MV_PROVENANCE_OBO_CREATED,
     MV_PROVENANCE_USER_CREATED,
 )
@@ -1610,8 +1611,10 @@ def _space_audience_grantees(space_id: str) -> list[str]:
             if levels & audience_levels and principal not in grantees:
                 grantees.append(str(principal))
         return grantees
-    except Exception:
-        logger.warning("Could not read ACL for space %s grantees", space_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "Could not read ACL for space %s grantees (%s)", space_id, type(exc).__name__,
+        )
         return []
 
 
@@ -1627,8 +1630,10 @@ def _gso_sp_application_id() -> str:
     if not sp_app_id:
         try:
             sp_app_id = getattr(sp_ws.current_user.me(), "application_id", "") or ""
-        except Exception:
-            logger.info("Could not resolve GSO SP application_id for grant", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+            logger.info(
+                "Could not resolve GSO SP application_id for grant (%s)", type(exc).__name__,
+            )
             sp_app_id = ""
     return sp_app_id if re.match(r"^[a-f0-9-]{36}$", sp_app_id or "") else ""
 
@@ -1674,6 +1679,13 @@ async def probe_mv_entitlement(body: MvProbeRequest):
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
+    # MV-D20: the probe reads as the signed-in user and never falls back to the
+    # SP. Refuse up front when no OBO token reached us.
+    try:
+        require_obo_workspace_client()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
     try:
         # `asyncio.to_thread` copies the current context, so the OBO ContextVar
         # the middleware set is still visible on the worker thread.
@@ -1686,11 +1698,8 @@ async def probe_mv_entitlement(body: MvProbeRequest):
         )
     except MvProbeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    except RuntimeError as exc:
-        # `require_obo_workspace_client` raises this when no user token reached us.
-        raise HTTPException(status_code=401, detail=str(exc))
-    except Exception as exc:
-        logger.exception("Metric view entitlement probe failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.error("Metric view entitlement probe failed (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="Entitlement probe failed.")
 
     result.materialize_consented = body.materialize_consented
@@ -2166,8 +2175,11 @@ def _mv_fetch_space_config(space_id: str) -> Any:
         from genie_space_optimizer.common.genie_client import fetch_space_config
 
         return fetch_space_config(require_obo_workspace_client(), space_id)
-    except Exception:
-        logger.info("Could not fetch config for %s provenance labels", space_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.info(
+            "Could not fetch config for %s provenance labels (%s)",
+            space_id, type(exc).__name__,
+        )
         return None
 
 
@@ -2251,7 +2263,9 @@ async def list_mv_proposals(run_id: RunId):
             run_id=run_id,
         )
     except Exception as exc:
-        logger.warning("Could not load MV proposals for run %s: %s", run_id, exc)
+        logger.warning(
+            "Could not load MV proposals for run %s (%s)", run_id, type(exc).__name__,
+        )
         rows = []
     proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
     # Prompt 15.9 item (d): resolve provenance ids to human labels from the space
@@ -2307,7 +2321,9 @@ async def list_space_mv_proposals(
             approved_for_rerun=approved_for_rerun,
         )
     except Exception as exc:
-        logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
+        logger.warning(
+            "Could not load MV proposals for space %s (%s)", space_id, type(exc).__name__,
+        )
         rows = []
     rows = _drop_stale_with_current_sibling(rows)
     if approved_for_rerun:
@@ -2343,7 +2359,9 @@ async def list_space_mv_proposals(
                 space_id=space_id,
             )
         except Exception as exc:
-            logger.warning("Could not load last MV scan for space %s: %s", space_id, exc)
+            logger.warning(
+                "Could not load last MV scan for space %s (%s)", space_id, type(exc).__name__,
+            )
             summary = None
         if summary is not None:
             last_scan = MvLastScan(
@@ -2395,7 +2413,9 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
     try:
         raw = await _offload(fetch_space_config, obo_ws, space_id)
     except Exception as exc:
-        logger.warning("mv/suggest: could not fetch space %s config: %s", space_id, exc)
+        logger.warning(
+            "mv/suggest: could not fetch space %s config (%s)", space_id, type(exc).__name__,
+        )
         raise HTTPException(
             status_code=502, detail="Could not read the Agent configuration."
         )
@@ -2417,8 +2437,8 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
             applied_config=applied_config,
             triggered_by=user_email,
         )
-    except Exception:
-        logger.exception("mv/suggest failed for space %s", space_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.error("mv/suggest failed for space %s (%s)", space_id, type(exc).__name__)
         raise HTTPException(status_code=500, detail="Metric-view advice failed.")
 
     # Read the persisted proposals back through the same space-scoped accessor
@@ -2435,7 +2455,9 @@ async def suggest_space_mv(space_id: SpaceId, request: Request):
             target_space_id=space_id,
         )
     except Exception as exc:
-        logger.warning("mv/suggest: could not reload proposals for %s: %s", space_id, exc)
+        logger.warning(
+            "mv/suggest: could not reload proposals for %s (%s)", space_id, type(exc).__name__,
+        )
         rows = []
 
     proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
@@ -2534,8 +2556,8 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
                 raw = await _offload(fetch_space_config, obo_ws, space_id)
             except Exception as exc:
                 logger.warning(
-                    "mv/suggest/stream: could not fetch space %s config: %s",
-                    space_id, exc,
+                    "mv/suggest/stream: could not fetch space %s config (%s)",
+                    space_id, type(exc).__name__,
                 )
                 yield _mv_sse_event(
                     "error", {"detail": "Could not read the Agent configuration."}
@@ -2567,7 +2589,10 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
                     )
                     _emit("done", (outcome, run_id))
                 except Exception as exc:  # noqa: BLE001 — relayed as an SSE error
-                    logger.exception("mv/suggest/stream failed for space %s", space_id)
+                    logger.error(
+                        "mv/suggest/stream failed for space %s (%s)",
+                        space_id, type(exc).__name__,
+                    )
                     _emit("error", exc)
 
             loop.run_in_executor(None, _run)
@@ -2604,8 +2629,8 @@ async def stream_space_mv_suggest(space_id: SpaceId, request: Request):
                     )
                 except Exception as exc:
                     logger.warning(
-                        "mv/suggest/stream: could not reload proposals for %s: %s",
-                        space_id, exc,
+                        "mv/suggest/stream: could not reload proposals for %s (%s)",
+                        space_id, type(exc).__name__,
                     )
                     rows = []
                 proposals = [
@@ -2688,10 +2713,8 @@ async def register_space_mv(space_id: SpaceId, body: MvRegisterRequest):
             schema=config.schema_name,
             warehouse_id=config.warehouse_id,
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
-    except Exception:
-        logger.exception("mv/register failed for space %s", space_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.error("mv/register failed for space %s (%s)", space_id, type(exc).__name__)
         raise HTTPException(
             status_code=500,
             detail="Registration failed after verification; please retry.",
@@ -3556,7 +3579,9 @@ async def get_space_semantic_graph(space_id: SpaceId):
     try:
         space_data = await _offload(get_serialized_space, space_id)
     except Exception as exc:
-        logger.warning("Could not fetch serialized_space for space %s: %s", space_id, exc)
+        logger.warning(
+            "Could not fetch serialized_space for space %s (%s)", space_id, type(exc).__name__,
+        )
         raise HTTPException(status_code=502, detail="Unable to read this Agent's configuration.")
 
     graph_data = space_data if isinstance(space_data, dict) else {}
@@ -3577,7 +3602,10 @@ async def get_space_semantic_graph(space_id: SpaceId):
                 )
                 proposals = [_mv_proposal_from_row(r) for r in _drop_stale_with_current_sibling(rows)]
             except Exception as exc:
-                logger.warning("Could not load MV proposals for space %s: %s", space_id, exc)
+                logger.warning(
+                    "Could not load MV proposals for space %s (%s)",
+                    space_id, type(exc).__name__,
+                )
 
     # Prompt 12e / MV-D33 cache posture: ONE batched estate read per tab load.
     # ``_read_metric_view_yamls`` issues the single ``DESCRIBE … AS JSON`` batch;
@@ -3722,7 +3750,7 @@ def _read_metric_view_yamls(space_data: dict) -> dict[str, dict]:
             None, identifiers, w=get_workspace_client(), warehouse_id=config.warehouse_id
         )
     except Exception as exc:
-        logger.warning("Could not read metric-view YAMLs for graph: %s", exc)
+        logger.warning("Could not read metric-view YAMLs for graph (%s)", type(exc).__name__)
         return {}
 
 
@@ -3741,7 +3769,9 @@ def _governed_measures_from_yamls(yamls: dict[str, dict]) -> list[Any]:
 
         return [f for f in metric_view_fields(yamls) if f.kind == FIELD_MEASURE]
     except Exception as exc:
-        logger.warning("Could not flatten governed MV measures for graph: %s", exc)
+        logger.warning(
+            "Could not flatten governed MV measures for graph (%s)", type(exc).__name__,
+        )
         return []
 
 
@@ -3903,7 +3933,8 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
     unexecuted body; the real validation (echo-check + capability rung) lives on
     the artifact and is re-run by the create path before any write. A stale
     artifact falls back to a current candidate row; when neither is current the
-    body is refused with 409 (MV-D117, MV-D118).
+    body is refused with 409 (MV-D117, MV-D118). Unpinned, a stale artifact falls
+    back only to its own proposal's row.
     """
     await _require_run_space_access(run_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
@@ -3913,9 +3944,12 @@ async def get_mv_ddl(run_id: RunId, suggestion_id: str | None = Query(default=No
     if not (payload and mv_create.is_current_render(payload)):
         # MV-D118: the create path replays the candidate row when the artifact is
         # stale (``mv_create._replay_body``), so the preview serves the same body.
-        fallback = await _offload(_load_candidate_ddl_fallback, run_id, suggestion_id)
-        if fallback and (not payload or mv_create.is_current_render(fallback)):
-            payload = fallback
+        # Unpinned, a stale artifact falls back only to its own proposal (MV-D121).
+        fallback_id = suggestion_id or (payload or {}).get("suggestion_id")
+        if payload is None or fallback_id:
+            fallback = await _offload(_load_candidate_ddl_fallback, run_id, fallback_id)
+            if fallback and (not payload or mv_create.is_current_render(fallback)):
+                payload = fallback
     if not payload:
         raise HTTPException(status_code=404, detail="No metric view DDL artifact for this run.")
     if not mv_create.is_current_render(payload):
@@ -4026,8 +4060,10 @@ async def decide_mv_proposal(
                 )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:
-        logger.exception("Failed to record MV decision for %s: %s", suggestion_id, exc)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.error(
+            "Failed to record MV decision for %s (%s)", suggestion_id, type(exc).__name__,
+        )
         raise HTTPException(status_code=500, detail="Failed to record the decision.")
 
     return MvProposalDecisionResponse(
@@ -4129,8 +4165,8 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
             config.warehouse_id,
             f"DROP VIEW IF EXISTS {quote_fqn(full_name)}",
         )
-    except Exception as exc:
-        logger.exception("OBO drop of %s failed: %s", full_name, exc)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.error("OBO drop of %s failed (%s)", full_name, type(exc).__name__)
         raise HTTPException(status_code=500, detail="Failed to drop the metric view.")
 
     try:
@@ -4144,8 +4180,11 @@ async def drop_mv_created(suggestion_id: str, body: MvDropRequest):
             suggestion_id=suggestion_id,
             status="DROPPED",
         )
-    except Exception:
-        logger.warning("Dropped %s but could not record DROPPED status", full_name, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "Dropped %s but could not record DROPPED status (%s)",
+            full_name, type(exc).__name__,
+        )
 
     return MvDropResponse(
         suggestion_id=suggestion_id, full_name=full_name, status="DROPPED", dropped=True,
@@ -4178,8 +4217,11 @@ def _mv_lift_from_row(value: Any) -> MvLiftReport | None:
             graded_affected_count=safe_int(value.get("graded_affected_count")) or 0,
             graded_suite_count=safe_int(value.get("graded_suite_count")) or 0,
         )
-    except Exception:
-        logger.debug("Could not coerce lift_report row: %r", value, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.debug(
+            "Could not coerce lift_report row (%s, %s)",
+            type(value).__name__, type(exc).__name__,
+        )
         return None
 
 
@@ -4244,7 +4286,9 @@ async def list_mv_created(run_id: RunId):
             run_id=run_id,
         )
     except Exception as exc:
-        logger.warning("Could not load MV created objects for run %s: %s", run_id, exc)
+        logger.warning(
+            "Could not load MV created objects for run %s (%s)", run_id, type(exc).__name__,
+        )
         rows = []
 
     downgrade_reason: str | None = None
@@ -4259,7 +4303,9 @@ async def list_mv_created(run_id: RunId):
         )
         downgrade_reason = _mv_str((consent or {}).get("downgrade_reason"))
     except Exception as exc:
-        logger.warning("Could not load MV consent for run %s: %s", run_id, exc)
+        logger.warning(
+            "Could not load MV consent for run %s (%s)", run_id, type(exc).__name__,
+        )
 
     return MvCreatedObjectsResponse(
         run_id=run_id,
@@ -4295,6 +4341,7 @@ _STEP_DEFINITIONS = [
 ]
 
 _TOTAL_STEPS = len(_STEP_DEFINITIONS)  # 4-task DAG
+_MV_ATTACH_STAGE = MV_ATTACH_PHASE_NAME.upper()
 
 # Databricks Job task_key → 4-task rail step. The job's `databricks.yml` tasks
 # map 1:1 to the rail (intake → QC → optimize → publish), so the Jobs API's
@@ -4728,6 +4775,7 @@ async def get_run(run_id: RunId):
         "baselineIteration": baseline_iteration,
         "bestIteration": best_iteration,
         "bestEvalScope": run_scores.best_eval_scope,
+        "metricViewAttachAccuracy": run_scores.attach_accuracy,
         "steps": steps,
         "stages": stage_events,
         "levers": levers,
@@ -4800,9 +4848,18 @@ async def get_run_status(run_id: RunId):
     # and rolled-back iterations were not filtered. The canonical helper
     # closes both: full-scope only, exclude rolled-back, floor-at-baseline.
     #
-    # The attach stage row carries a kept attach's score (MV-D118). The hot poll
-    # reads it from Lakebase only; without Lakebase the stored rows answer alone.
-    score_stages = stages if stages is not None else await gso_lakebase.load_gso_stages(run_id)
+    # A kept attach's score lives on its stage row (MV-D118). Lakebase stage reads
+    # are off, so when the Jobs API answered, the poll reads that one stage from
+    # Delta, and only once there is a baseline to score it against (MV-D121).
+    score_stages = stages
+    if score_stages is None:
+        score_stages = await gso_lakebase.load_gso_stages(run_id)
+        if not score_stages and iterations and _is_configured():
+            score_stages = await _delta_query_async(
+                f"SELECT stage, detail_json FROM {_delta_table('genie_opt_stages')} "
+                f"WHERE run_id = '{run_id}' AND stage = '{_MV_ATTACH_STAGE}' "
+                f"ORDER BY started_at ASC"
+            )
     run_scores = compute_run_scores(
         iterations, run_id=run_id, logger=logger,
         baseline_reset=baseline_reset_from_stage_rows(score_stages or []),

@@ -80,6 +80,7 @@ import {
   ScoreViewerAllowlistFrame,
 } from "./SpaceAccessM7bFrames"
 import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
+import { EnrichmentWinTerminalFrame } from "./MvM7dFidelityFrames"
 import { STALE_PROPOSAL_NOTICE } from "../mvFormat"
 import { RETURN_TO_AGENTS, SPACE_NO_ACCESS_TITLE } from "@/lib/space-access"
 
@@ -558,8 +559,10 @@ describe("M6c — the run headline counts a kept metric-view attach (MV-D118)", 
 
   it("m6c-b: mid-run shows the post-attach score, not the in-progress dash", () => {
     const html = render(<KeptAttachRunningFrame />)
-    expect(html).toContain("90.0%")
-    expect(html).not.toContain("—")
+    const optimized = html.match(/<p class="text-2xl font-bold text-blue-600 dark:text-blue-400">([^<]*)<\/p>/)
+    expect(optimized).not.toBeNull()
+    expect(optimized![1]).not.toBe("—")
+    expect(optimized![1]).toBe("90.0%")
   })
 
   it("m6c-c: a full-scope iteration 0 still reads Baseline retained", () => {
@@ -675,6 +678,26 @@ describe("M7c — the created terminal names the owner and offers the GRANT to o
       "m7c-a-created-terminal-owner",
       "m7c-b-attached-someone-elses-view",
     ])
+  })
+})
+
+describe("M7d — an iteration-0 enrichment win is the improvement (MV-D121)", () => {
+  const html = render(<EnrichmentWinTerminalFrame />)
+
+  it("m7d-a: shows the enrichment score as the gain, not a retained baseline", () => {
+    expect(html).toContain("90.0%")
+    expect(html).not.toContain("Baseline retained")
+  })
+
+  it("no confidence (MV-D35)", () => {
+    expect(html.toLowerCase()).not.toContain("confidence")
+  })
+
+  it("is registered after the M7c frames", () => {
+    const ids = MOCKUP_FRAMES.map((f) => f.id)
+    expect(ids.indexOf("m7d-a-enrichment-win-terminal")).toBe(
+      ids.indexOf("m7c-b-attached-someone-elses-view") + 1,
+    )
   })
 })
 

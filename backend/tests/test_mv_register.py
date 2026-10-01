@@ -129,6 +129,17 @@ def test_register_refuses_an_invalid_identifier(register_env):
     assert "three-part" in (result.reason or "")
 
 
+def test_register_refuses_a_dotted_quoted_part(register_env):
+    calls, _ = register_env
+    result = mv_create.register_user_created_view(
+        space_id="space-1", full_name="`main.sales`.revenue_metrics",
+        catalog="main", schema="gso", warehouse_id="wh1",
+    )
+    assert result.registered is False
+    assert "three-part" in (result.reason or "")
+    assert calls == []
+
+
 def test_register_refuses_yaml_that_fails_the_safety_lint(register_env, monkeypatch):
     calls, _ = register_env
     # A metric view whose YAML has no source — the safety lint blocks it.
@@ -228,6 +239,31 @@ def test_register_route_requires_obo(client, monkeypatch):
         json={"full_name": "main.sales.revenue_metrics"},
     )
     assert resp.status_code == 401
+
+
+def test_a_warehouse_runtime_error_is_a_500_not_a_401(client, monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+
+    def _raise(**k):
+        raise RuntimeError("zq_secret")
+
+    monkeypatch.setattr(mv_create, "register_user_created_view", _raise)
+    resp = client.post(
+        "/api/auto-optimize/spaces/space-1/mv/register",
+        json={"full_name": "main.sales.revenue_metrics"},
+    )
+    assert resp.status_code == 500
+    assert resp.json() == {
+        "detail": "Registration failed after verification; please retry."
+    }
+    assert "zq_secret" not in resp.text
+    assert any(
+        "mv/register failed for space space-1 (RuntimeError)" == r.getMessage()
+        for r in caplog.records
+    )
+    for record in caplog.records:
+        assert "zq_secret" not in record.getMessage()
+        assert record.exc_info is None
 
 
 _DROP_RUN = "33333333-3333-4333-8333-333333333333"

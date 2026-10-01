@@ -841,6 +841,34 @@ def test_a_raising_lookup_after_a_failed_create_is_an_error_skip(create_env, mon
     )
 
 
+def test_an_unexpected_failure_in_the_hook_logs_the_type_only(create_env, monkeypatch, caplog):
+    """MV-D121: a per-suggestion step that raises outside the CREATE is the
+    ``error`` skip, and the hook's catch-all logs the exception type only."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+
+    def confirm(*a, **k):
+        raise RuntimeError("zq_secret")
+
+    monkeypatch.setattr(mv_create, "_confirm_metric_view", confirm)
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert upserts == []
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.attach_views == []
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "failed with an error (1)"
+    )
+    _assert_type_only_logs(caplog.records, "RuntimeError")
+    assert any(
+        "Create failed for suggestion sug1; dropping it from the run (RuntimeError)"
+        in r.getMessage() for r in caplog.records
+    )
+
+
 @pytest.mark.parametrize(
     "existing",
     [
@@ -1905,6 +1933,80 @@ def test_mv_ddl_does_not_read_the_fallback_for_a_current_artifact(client, monkey
     assert client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl").status_code == 200
 
 
+def _ddl_candidate(sug: str, *, current: bool = True) -> dict:
+    evidence = {"join_strategy": "direct"}
+    if current:
+        evidence["render_version"] = MV_RENDER_VERSION
+    return {
+        "suggestion_id": sug, "dedup_fingerprint": f"fp_{sug}", "target_space_id": "space-1",
+        "proposed_object": f"finance.sales.{sug}_metrics",
+        "yaml_text": f"version: '1.1'  # {sug}\n", "evidence": evidence,
+    }
+
+
+def test_an_unpinned_stale_artifact_falls_back_to_its_own_proposal(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_latest_artifact",
+        lambda run_id, kind: _ddl_payload(suggestion_id="sug_a"),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [_ddl_candidate("sug_b"), _ddl_candidate("sug_a")],
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 200
+    assert resp.json()["suggestion_id"] == "sug_a"
+    assert resp.json()["yaml_text"] == "version: '1.1'  # sug_a\n"
+
+
+def test_an_unpinned_stale_artifact_whose_proposal_is_stale_is_refused(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_latest_artifact",
+        lambda run_id, kind: _ddl_payload(suggestion_id="sug_a"),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [_ddl_candidate("sug_b"), _ddl_candidate("sug_a", current=False)],
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == mv_create.STALE_BODY_REASON
+    assert "sug_b" not in resp.text
+
+
+def test_an_unpinned_stale_artifact_with_no_suggestion_id_is_refused(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(
+        auto_optimize, "_load_latest_artifact",
+        lambda run_id, kind: _ddl_payload(suggestion_id=None),
+    )
+    calls = []
+
+    def fallback(run_id, suggestion_id):
+        calls.append(suggestion_id)
+        return _ddl_payload(suggestion_id="sug_b", render_version=MV_RENDER_VERSION)
+
+    monkeypatch.setattr(auto_optimize, "_load_candidate_ddl_fallback", fallback)
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == mv_create.STALE_BODY_REASON
+    assert calls == []
+
+
+def test_an_unpinned_run_with_no_artifact_serves_the_best_row(client, monkeypatch):
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(auto_optimize, "_load_latest_artifact", lambda run_id, kind: None)
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates",
+        lambda *a, **k: [_ddl_candidate("sug_b"), _ddl_candidate("sug_a")],
+    )
+    resp = client.get("/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl")
+    assert resp.status_code == 200
+    assert resp.json()["suggestion_id"] == "sug_b"
+
+
 def test_the_grant_quotes_a_spaced_view_name():
     grant = auto_optimize._mv_optimizer_grant_sql(
         "main.sales.order revenue", "a803ebc5-232f-44c0-9ed6-fb17d7c77f9e"
@@ -2056,6 +2158,24 @@ def test_drop_happy_path(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["dropped"] is True
     assert any("DROP VIEW IF EXISTS `finance`.`sales`.`revenue_metrics`" in s for s in executed)
+
+
+def test_drop_accepts_a_backticked_three_part_name(client, monkeypatch):
+    executed: list[str] = []
+    monkeypatch.setattr(auto_optimize, "require_obo_workspace_client",
+                        lambda: _obo_as("analyst@example.com"))
+    monkeypatch.setattr(warehouse, "wh_load_mv_created_object",
+                        lambda *a, **k: {**_created_row(), "full_name": "`main`.`sales`.`revenue_metrics`"})
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute",
+                        lambda ws, warehouse_id, sql: executed.append(sql))
+    monkeypatch.setattr(warehouse, "wh_update_mv_created_object_status",
+                        lambda *a, **k: None)
+    resp = client.post(
+        "/api/auto-optimize/mv/created/sug1/drop", json={"run_id": _DROP_RUN, "confirm": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["dropped"] is True
+    assert executed == ["DROP VIEW IF EXISTS `main`.`sales`.`revenue_metrics`"]
 
 
 @pytest.mark.parametrize(
@@ -2364,8 +2484,10 @@ def test_run_hook_matches_covered_tables_by_normalized_name(create_env, monkeypa
     monkeypatch.setattr(
         mv_yaml, "validate", lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
     )
+    executed, _upserts = create_env
     handoff = _run_create()
     assert handoff.action_mode == "create_and_attach"
+    assert any("CREATE VIEW" in s for s in executed)
 
 
 def test_the_uncovered_skip_is_named_when_nothing_builds(create_env, monkeypatch):
@@ -2399,3 +2521,57 @@ def test_uncovered_tables_reads_joins_and_refuses_an_unreadable_body():
     )
     assert mv_create._uncovered_tables(nested_list, consent) is None
     assert mv_create._uncovered_tables("version: 0.1\nsource: SELECT 1\n", consent) is None
+
+
+def _consent_covering(*securables):
+    return {
+        **_CONSENT,
+        "probe_results": {"privileges": [{"privilege": "SELECT", "securable": s} for s in securables]},
+    }
+
+
+@pytest.mark.parametrize(
+    "source, read_as", [
+        ("'`finance.sales`.orders'", "`finance.sales`.orders"),
+        ("sales.orders", "sales.orders"),
+        ("orders", "orders"),
+    ],
+)
+def test_a_name_that_is_not_three_parts_is_uncovered(source, read_as):
+    body = f"version: 0.1\nsource: {source}\n"
+    assert mv_create._uncovered_tables(body, _consent_covering("finance.sales.orders")) == [read_as]
+
+
+def test_a_quoted_consent_securable_covers_by_its_parts():
+    body = "version: 0.1\nsource: finance.sales.orders\n"
+    assert mv_create._uncovered_tables(body, _consent_covering("`finance`.`sales`.`orders`")) == []
+    assert mv_create._uncovered_tables(body, _consent_covering("`finance.sales`.orders")) == [
+        "finance.sales.orders"
+    ]
+    hyphenated = "version: 0.1\nsource: '`finance`.`sales-eu`.`orders`'\n"
+    assert mv_create._uncovered_tables(hyphenated, _consent_covering("finance.sales-eu.orders")) == []
+
+
+@pytest.mark.parametrize(
+    "full_name, valid", [
+        ("`finance.sales`.orders", False),
+        ("`a.b`.c.d", False),
+        ("`finance.sales.orders`", False),
+        ("`main`.`sales`.`revenue_metrics`", True),
+        ("`main`.`sales-eu`.`revenue_metrics`", False),
+        ("main.sales.revenue_metrics", True),
+    ],
+)
+def test_valid_uc_identifier_splits_backtick_aware(full_name, valid):
+    assert mv_create._valid_uc_identifier(full_name) is valid
+
+
+@pytest.mark.parametrize(
+    "name, parts", [
+        ("`a.b`.c.d", None),
+        ("`finance.sales.orders`", None),
+        ("`finance`.`sales`.`orders`", ("finance", "sales", "orders")),
+    ],
+)
+def test_uc_name_parts_refuses_a_dot_inside_a_quoted_part(name, parts):
+    assert mv_create._uc_name_parts(name) == parts

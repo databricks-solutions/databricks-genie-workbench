@@ -222,3 +222,40 @@ describe("a kept metric-view attach (MV-D118)", () => {
     expect(presentOptimizedScore({ ...base, status: "RUNNING" }).text).toBe("—")
   })
 })
+
+describe("an iteration-0 enrichment win (MV-D121)", () => {
+  const base = { baselineScore: 86.67, optimizedScore: 90.0, bestIteration: 0 }
+
+  it("an iteration-0 enrichment win shows the optimized number on a finished run", () => {
+    const p = presentOptimizedScore({ ...base, status: "CONVERGED", bestEvalScope: "enrichment" })
+    expect(p.text).toBe("90.0%")
+    expect(p.pct).toBe(90.0)
+  })
+
+  it("an iteration-0 enrichment win shows the number mid-run, not the dash", () => {
+    const p = presentOptimizedScore({ ...base, status: "RUNNING", bestEvalScope: "enrichment" })
+    expect(p.text).not.toBe("—")
+    expect(p.text).toBe("90.0%")
+    expect(p.tooltip).toBeNull()
+  })
+
+  it("an iteration-0 enrichment win reads its convergence reason, not Baseline retained", () => {
+    expect(
+      convergenceReasonText({
+        ...base,
+        status: "CONVERGED",
+        bestEvalScope: "enrichment",
+        convergenceReason: "TARGET_REACHED",
+      }),
+    ).toBe("TARGET_REACHED")
+    expect(
+      convergenceReasonText({ ...base, status: "CONVERGED", bestEvalScope: "enrichment", convergenceReason: null }),
+    ).toBeNull()
+  })
+
+  it("a missing scope at iteration 0 still holds the baseline", () => {
+    expect(
+      convergenceReasonText({ ...base, status: "CONVERGED", bestEvalScope: undefined, convergenceReason: null }),
+    ).toBe(BASELINE_RETAINED_LABEL)
+  })
+})

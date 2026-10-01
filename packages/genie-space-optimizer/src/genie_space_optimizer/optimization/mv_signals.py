@@ -301,7 +301,7 @@ def lineage_signal(
         rows = run_query(sql)
     except Exception as exc:  # noqa: BLE001 - a read failure is a status, not a crash
         reason = _classify_read_failure(exc, _COLUMN_LINEAGE_TABLE)
-        logger.info("mv_signals: lineage read unavailable (%s)", reason)
+        logger.info("mv_signals: lineage read unavailable (%s, %s)", reason.partition(":")[0], type(exc).__name__)
         return SignalResult(
             LineageOverlap(candidate, frozenset(), reference_kind, tables),
             MV_SIGNAL_UNAVAILABLE,
@@ -410,7 +410,7 @@ def demand_signal(
         rows = run_query(sql)
     except Exception as exc:  # noqa: BLE001 - a read failure is a status, not a crash
         reason = _classify_read_failure(exc, _QUERY_HISTORY_TABLE)
-        logger.info("mv_signals: demand read unavailable (%s)", reason)
+        logger.info("mv_signals: demand read unavailable (%s, %s)", reason.partition(":")[0], type(exc).__name__)
         return SignalResult(DemandSignal(), MV_SIGNAL_UNAVAILABLE, reason)
 
     rows = list(rows)

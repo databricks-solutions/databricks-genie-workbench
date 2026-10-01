@@ -76,10 +76,10 @@ class _TimeoutEmbeddingClient:
             )
             pool.shutdown(wait=False, cancel_futures=True)
             return [[] for _ in texts]
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
                 "mv_suggest: embedding endpoint failed; S degrades to "
-                "unavailable for this request", exc_info=True,
+                "unavailable for this request (%s)", type(exc).__name__,
             )
             pool.shutdown(wait=False, cancel_futures=True)
             return [[] for _ in texts]

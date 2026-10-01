@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from unittest.mock import MagicMock
 
 import pytest
@@ -64,3 +65,55 @@ def test_a_new_view_is_added_to_metric_views() -> None:
     config = {"data_sources": {"tables": [{"identifier": "main.sales.fact_orders"}], "metric_views": []}}
     assert _apply_action_to_config(config, _attach(_VIEW)) is True
     assert config["data_sources"]["metric_views"] == [{"identifier": _VIEW}]
+
+
+def _remove(identifier: str) -> dict:
+    return {"command": _attach(identifier)["rollback_command"]}
+
+
+def test_remove_finds_the_view_in_any_case() -> None:
+    config = {"data_sources": {"tables": [], "metric_views": [{"identifier": _VIEW.upper()}]}}
+    assert _apply_action_to_config(config, _remove(_VIEW)) is True
+    assert config["data_sources"]["metric_views"] == []
+
+
+def test_remove_finds_a_view_genie_moved_to_tables() -> None:
+    config = {
+        "data_sources": {
+            "tables": [{"identifier": "main.sales.fact_orders"}, {"identifier": _VIEW}],
+            "metric_views": [],
+        },
+    }
+    assert _apply_action_to_config(config, _remove(_VIEW)) is True
+    assert config["data_sources"]["tables"] == [{"identifier": "main.sales.fact_orders"}]
+    assert config["data_sources"]["metric_views"] == []
+
+
+def test_remove_of_an_absent_view_changes_nothing() -> None:
+    config = {
+        "data_sources": {
+            "tables": [{"identifier": "main.sales.fact_orders"}],
+            "metric_views": [{"identifier": "main.sales.mv_other"}],
+        },
+    }
+    before = copy.deepcopy(config)
+    assert _apply_action_to_config(config, _remove(_VIEW)) is False
+    assert config == before
+
+
+def test_a_validation_failure_carries_an_empty_error_type(monkeypatch) -> None:
+    """The validation-fail log has the PATCH-raised log's shape: it sent no PATCH."""
+    from genie_space_optimizer.common import genie_schema
+
+    monkeypatch.setattr(
+        genie_schema, "validate_serialized_space", lambda *_a, **_k: (False, ["bad"]),
+    )
+    w = MagicMock()
+    log = applier.apply_patch_set(
+        w, "space-1", mv_attach._attach_patches([_VIEW]),
+        {"data_sources": {"tables": [], "metric_views": []}},
+        force_apply=True,
+    )
+    assert log["validation_errors"] == ["bad"]
+    assert log["patch_deployed"] is False
+    assert log["patch_error_type"] == ""

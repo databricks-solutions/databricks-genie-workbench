@@ -556,10 +556,10 @@ def semantic_score(
 
     try:
         vectors = client.embed([*intents, *[ref.text for ref in targets]])
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
-            "mv_scoring: embedding call failed; S is UNAVAILABLE and leaves the blend",
-            exc_info=True,
+            "mv_scoring: embedding call failed; S is UNAVAILABLE and leaves the blend (%s)",
+            type(exc).__name__,
         )
         return SemanticMatch(status=MV_SEMANTIC_STATUS_NO_CLIENT)
 
@@ -1008,10 +1008,10 @@ def trusted_asset_definitions(
         source = f"{TRUSTED_ASSET_SOURCE_PREFIX}:{identifier}"
         try:
             measures = extract_measures(sql)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
                 "mv_scoring: could not parse trusted asset %s for conflict "
-                "detection", source, exc_info=True,
+                "detection (%s)", source, type(exc).__name__,
             )
             continue
         for measure in measures:

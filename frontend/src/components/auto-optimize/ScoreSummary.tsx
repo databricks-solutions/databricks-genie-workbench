@@ -17,8 +17,8 @@ interface ScoreSummaryProps {
    */
   bestIteration?: number | null
   /**
-   * Scope of the winning candidate. ``"metric_view"`` with ``bestIteration == 0``
-   * is a kept metric-view attach — an improvement, not a retained baseline.
+   * Scope of the winning candidate. ``"metric_view"`` or ``"enrichment"`` with
+   * ``bestIteration == 0`` is an improvement, not a retained baseline.
    */
   bestEvalScope?: string | null
   /**

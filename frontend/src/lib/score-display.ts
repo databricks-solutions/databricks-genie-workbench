@@ -94,11 +94,9 @@ export interface OptimizedScoreInputs {
   bestEvalScope?: string | null
 }
 
-/** A kept metric-view attach improves the run at iteration 0 (MV-D118). */
-export const METRIC_VIEW_SCOPE = "metric_view"
-
+/** Only a full-scope iteration 0 is the retained baseline; a metric-view or enrichment win there is an improvement (MV-D121). */
 function holdsBaseline(inputs: OptimizedScoreInputs): boolean {
-  return inputs.bestIteration === 0 && inputs.bestEvalScope !== METRIC_VIEW_SCOPE
+  return inputs.bestIteration === 0 && (inputs.bestEvalScope ?? "full") === "full"
 }
 
 /**
@@ -119,8 +117,8 @@ function holdsBaseline(inputs: OptimizedScoreInputs): boolean {
  *   4. ``bestIteration > 0`` → render the optimized number. Floor-at-baseline
  *      is enforced server-side, so we just trust the value.
  *
- * ``bestIteration == 0`` with a ``metric_view`` scope is an improvement, not a
- * retained baseline.
+ * ``bestIteration == 0`` with a ``metric_view`` or ``enrichment`` scope is an
+ * improvement, not a retained baseline.
  */
 export function presentOptimizedScore(
   inputs: OptimizedScoreInputs,
@@ -183,8 +181,8 @@ export function presentBaselineScore(
  *     with its own tooltip; we don't need a second copy).
  *   - Otherwise → the convergence reason as-is, or null when absent.
  *
- * ``bestIteration == 0`` with a ``metric_view`` scope is an improvement, not a
- * retained baseline.
+ * ``bestIteration == 0`` with a ``metric_view`` or ``enrichment`` scope is an
+ * improvement, not a retained baseline.
  */
 export function convergenceReasonText(
   inputs: OptimizedScoreInputs & { convergenceReason: string | null },

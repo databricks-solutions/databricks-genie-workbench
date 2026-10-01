@@ -487,8 +487,10 @@ def _affected_question_ids(
         candidates = load_mv_candidates(
             spark, catalog, schema, target_space_id=space_id,
         )
-    except Exception:
-        logger.warning("mv_attach: could not read candidates for %s", space_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "mv_attach: could not read candidates for %s (%s)", space_id, type(exc).__name__,
+        )
         return []
 
     recorded: set[str] = set()
@@ -895,14 +897,14 @@ def _patch_outcome_unknown(
 ) -> bool:
     """Whether the attach PATCH was sent and raised, so it may have landed.
 
-    A validation failure never sent one: its apply log carries non-empty
-    ``validation_errors``, where a sent PATCH's log carries an empty list.
+    A sent PATCH that raised carries its exception type; a validation failure
+    never sent one and carries non-empty ``validation_errors``.
     """
     return (
         w is not None
         and bool(applied)
         and not apply_log.get("patch_deployed")
-        and bool(apply_log.get("patch_error"))
+        and bool(apply_log.get("patch_error_type"))
         and not apply_log.get("validation_errors")
     )
 
@@ -925,13 +927,17 @@ def _settle_unconfirmed_patch(
 
     A view left live by a PATCH the client saw fail is unmeasured. Reverting an
     attach that never landed restores the snapshot the space already has, so an
-    unanswered read reverts. A revert that fails is reported the d6 way, and the
-    rows carry the attach reference so the end-of-run live read names the view.
+    unanswered read reverts. A revert that fails is reported the d6 way: the patch
+    audit row is written and the rows carry its reference, so the end-of-run live
+    read names the view (MV-D121).
     """
     targets = {
         str((entry.get("action") or {}).get("target") or "").strip().lower()
         for entry in applied
     } - {""}
+    applied_views = tuple(
+        str((entry.get("action") or {}).get("target") or "") for entry in applied
+    )
     live: Mapping[str, Any] | None = None
     if live_config is not None:
         try:
@@ -957,7 +963,10 @@ def _settle_unconfirmed_patch(
     logger.error(
         "mv_attach: revert failed after %d attempts for run %s on space %s; "
         "the metric view(s) %s may still be attached",
-        _REVERT_ATTEMPTS, run_id, space_id, ", ".join(skipped.requested),
+        _REVERT_ATTEMPTS, run_id, space_id, ", ".join(applied_views),
+    )
+    _write_attach_patch_rows(
+        spark, applied, run_id=run_id, catalog=catalog, schema=schema,
     )
     for suggestion_id in skipped.suggestion_ids:
         _update_object(
@@ -1324,10 +1333,10 @@ def _write_attach_patch_rows(
                 catalog,
                 schema,
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
-                "mv_attach: could not write the patch audit row for %s",
-                action.get("target", "?"), exc_info=True,
+                "mv_attach: could not write the patch audit row for %s (%s)",
+                action.get("target", "?"), type(exc).__name__,
             )
 
 
@@ -1359,10 +1368,10 @@ def _update_object(
             post_attach_eval_run_id=post_attach_eval_run_id,
             lift_report_json=lift_report_json,
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
-            "mv_attach: could not record status %s for suggestion %s",
-            status, suggestion_id, exc_info=True,
+            "mv_attach: could not record status %s for suggestion %s (%s)",
+            status, suggestion_id, type(exc).__name__,
         )
 
 
@@ -1488,10 +1497,10 @@ def reconcile_attached_objects(
         rows = load_mv_created_objects(
             spark, run_id, catalog, schema, status=VERDICT_ATTACHED,
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
-            "mv_attach: could not read created objects to reconcile run %s",
-            run_id, exc_info=True,
+            "mv_attach: could not read created objects to reconcile run %s (%s)",
+            run_id, type(exc).__name__,
         )
         return result
 
@@ -1543,9 +1552,10 @@ def reconcile_attached_objects(
                     "reason": RECONCILE_DEMOTION_REASON if demoted else None,
                 },
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
-                "mv_attach: could not write the reconciliation stage row", exc_info=True,
+                "mv_attach: could not write the reconciliation stage row (%s)",
+                type(exc).__name__,
             )
     return result
 
@@ -1595,10 +1605,10 @@ def report_unmeasured_attachments(
         rows = load_mv_created_objects(
             spark, run_id, catalog, schema, status=CREATED_STATUS,
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
             "mv_attach: could not read created objects to report unmeasured "
-            "attachments for run %s", run_id, exc_info=True,
+            "attachments for run %s (%s)", run_id, type(exc).__name__,
         )
         return []
 
@@ -1661,10 +1671,10 @@ def report_unmeasured_attachments(
                 "reason": UNMEASURED_REASON,
             },
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
-            "mv_attach: could not write the unmeasured-attachment stage row",
-            exc_info=True,
+            "mv_attach: could not write the unmeasured-attachment stage row (%s)",
+            type(exc).__name__,
         )
     return live
 
@@ -1689,6 +1699,8 @@ def _record(
             detail=outcome.detail(),
             error_message=outcome.error,
         )
-    except Exception:
-        logger.warning("mv_attach: could not write the phase stage row", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "mv_attach: could not write the phase stage row (%s)", type(exc).__name__,
+        )
     return outcome

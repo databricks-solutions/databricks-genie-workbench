@@ -524,6 +524,8 @@ export interface GSOPipelineRun {
   baselineIteration: number | null
   bestIteration: number | null
   bestEvalScope?: string | null
+  // A kept metric-view attach's post-attach score (MV-D121); null when there was none.
+  metricViewAttachAccuracy?: number | null
   steps: GSOPipelineStep[]
   stages: GSOStageEvent[]
   levers: GSOLeverStatus[]

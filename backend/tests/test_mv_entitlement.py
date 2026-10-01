@@ -10,12 +10,16 @@ writes — a fake WorkspaceClient here raises on any DDL-capable surface.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from genie_space_optimizer.optimization.mv_yaml import CapabilityRow, _capability_map
 
 from backend.models import MvCapabilityRow
+from backend.routers import auto_optimize
 from backend.services import auth, mv_entitlement
 from backend.services.mv_entitlement import MvProbeError
 
@@ -347,20 +351,45 @@ def test_schema_not_found_is_unknown_not_denied(obo_client):
     assert "not found or not visible" in (detail or "")
 
 
-def test_unreadable_privileges_are_unknown_with_the_error_text(obo_client):
+def _assert_type_only_logs(records) -> None:
+    assert all("zq_secret" not in r.getMessage() for r in records)
+    assert all(not r.exc_info for r in records)
+
+
+def test_unreadable_privileges_are_unknown_with_the_error_type(obo_client, caplog):
+    """MV-D121 Ruling 16: the row names the exception type, never its text."""
     def _boom(securable_type, full_name, principal=None):
-        raise RuntimeError("upstream unavailable")
+        raise RuntimeError("zq_secret")
 
     obo_client.grants.get_effective = _boom
 
-    result = _probe()
+    with caplog.at_level("DEBUG", logger="backend.services.mv_entitlement"):
+        result = _probe()
 
     assert result.verdict == "UNKNOWN"
     catalog_row = next(
         row for row in result.privileges if row.privilege == "USE_CATALOG"
     )
     assert catalog_row.status == "UNKNOWN"
-    assert "upstream unavailable" in (catalog_row.detail or "")
+    assert catalog_row.detail == "could not read privileges on finance (RuntimeError)"
+    assert "zq_secret" not in result.model_dump_json()
+    assert caplog.records
+    _assert_type_only_logs(caplog.records)
+
+
+def test_an_unresolvable_signed_in_user_names_the_error_type(obo_client, caplog):
+    """MV-D121 Ruling 16: the probe error is ours, with the exception type only."""
+    def _boom():
+        raise RuntimeError("zq_secret")
+
+    obo_client.current_user.me = _boom
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_entitlement"):
+        with pytest.raises(MvProbeError) as raised:
+            _probe()
+
+    assert str(raised.value) == "could not resolve the signed-in user (RuntimeError)"
+    _assert_type_only_logs(caplog.records)
 
 
 def test_schema_owner_is_sufficient_without_any_grant_read(obo_client):
@@ -637,19 +666,25 @@ def test_record_consent_writes_the_probe_and_defaults_materialize_off(
     ]
 
 
-def test_record_consent_failure_does_not_lose_the_probe(obo_client, monkeypatch):
+def test_record_consent_failure_does_not_lose_the_probe(obo_client, monkeypatch, caplog):
     monkeypatch.setenv("GSO_CATALOG", "main")
     monkeypatch.setenv("GSO_SCHEMA", "genie_space_optimizer")
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh1")
 
     def _boom(*a, **k):
-        raise RuntimeError("warehouse asleep")
+        raise RuntimeError("zq_secret")
 
     monkeypatch.setattr(
         "genie_space_optimizer.common.warehouse.wh_upsert_mv_consent", _boom,
     )
 
-    assert mv_entitlement.record_consent(_probe()) is False
+    with caplog.at_level("DEBUG", logger="backend.services.mv_entitlement"):
+        assert mv_entitlement.record_consent(_probe()) is False
+    assert any(
+        "Could not persist metric view consent (RuntimeError)" in r.getMessage()
+        for r in caplog.records
+    )
+    _assert_type_only_logs(caplog.records)
 
 
 def test_record_consent_is_skipped_when_storage_is_unconfigured(obo_client, monkeypatch):
@@ -760,3 +795,56 @@ def test_the_space_row_asks_genie_with_the_callers_client_only(obo_client, monke
     _probe()
 
     assert seen == [((obo_client, "01ef_genie"), {})]
+
+
+# ── Route: POST /mv/probe ────────────────────────────────────────────────
+
+_PROBE_BODY = {"catalog": "finance", "schema": "sales", "space_id": "01ef_genie"}
+
+
+@pytest.fixture
+def probe_client(monkeypatch) -> TestClient:
+    monkeypatch.setenv("GSO_CATALOG", "main")
+    monkeypatch.setenv("GSO_SCHEMA", "gso_test")
+    monkeypatch.setenv("GSO_JOB_ID", "12345")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "wh-test")
+    monkeypatch.setattr(auto_optimize, "get_service_principal_client", lambda: MagicMock())
+    monkeypatch.setattr(
+        auto_optimize, "require_obo_workspace_client",
+        lambda: SimpleNamespace(current_user=MagicMock()),
+    )
+    app = FastAPI()
+    app.include_router(auto_optimize.router)
+    return TestClient(app)
+
+
+def test_a_probe_failure_is_a_500_not_a_401(probe_client, monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+
+    def _raise(**kwargs):
+        raise RuntimeError("zq_secret")
+
+    monkeypatch.setattr(mv_entitlement, "probe", _raise)
+    resp = probe_client.post("/api/auto-optimize/mv/probe", json=_PROBE_BODY)
+
+    assert resp.status_code == 500
+    assert resp.json() == {"detail": "Entitlement probe failed."}
+    assert "zq_secret" not in resp.text
+    assert any(
+        r.getMessage() == "Metric view entitlement probe failed (RuntimeError)"
+        for r in caplog.records
+    )
+    _assert_type_only_logs(caplog.records)
+
+
+def test_the_probe_requires_obo_up_front(probe_client, monkeypatch):
+    def _no_obo():
+        raise RuntimeError("This operation requires user authorization")
+
+    calls: list = []
+    monkeypatch.setattr(auto_optimize, "require_obo_workspace_client", _no_obo)
+    monkeypatch.setattr(mv_entitlement, "probe", lambda **kwargs: calls.append(kwargs))
+    resp = probe_client.post("/api/auto-optimize/mv/probe", json=_PROBE_BODY)
+
+    assert resp.status_code == 401
+    assert calls == []

@@ -74,6 +74,7 @@ import { IqScanApprovedStaleFrame, IqScanLowStaleFrame, IqScanStaleFrame, RunOut
 import { BaselineRetainedFrame, KeptAttachRunningFrame, KeptAttachTerminalFrame, SingularGainCardFrame } from "./MvM6cFidelityFrames"
 import { DeepLinkLoadFailedFrame, DeepLinkNoAccessFrame, ScoreViewerAllowlistFrame } from "./SpaceAccessM7bFrames"
 import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
+import { EnrichmentWinTerminalFrame } from "./MvM7dFidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -190,4 +191,7 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   // MvCreatedTerminal in the IQ card, for the caller's own view and someone else's.
   { id: "m7c-a-created-terminal-owner", title: "M7c-a · IQ scan — created and attached, the GRANT for its owner", element: <CreatedTerminalOwnerFrame /> },
   { id: "m7c-b-attached-someone-elses-view", title: "M7c-b · IQ scan — an existing view someone else owns, attached; no GRANT offered", element: <AttachedSomeoneElsesViewFrame /> },
+  // PR #332 M7d — the run headline for an iteration-0 enrichment win (MV-D121): the REAL
+  // ScoreSummary and convergence-reason copy.
+  { id: "m7d-a-enrichment-win-terminal", title: "M7d-a · Run headline — an iteration-0 enrichment win is the improvement (MV-D121)", element: <EnrichmentWinTerminalFrame /> },
 ]

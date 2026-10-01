@@ -552,10 +552,10 @@ def _patch_corpus_entries(
     """
     try:
         rows = load_patches(spark, run_id, catalog, schema)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
             "mv_advisor: could not read genie_opt_patches; curated patch harvest "
-            "skipped", exc_info=True,
+            "skipped (%s)", type(exc).__name__,
         )
         return []
     entries: list[tuple[str, dict[str, str]]] = []
@@ -673,10 +673,10 @@ def estate_metric_view_yamls(
             spark, refs, w=w, warehouse_id=warehouse_id
         )
         return dict(yamls or {})
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
             "mv_advisor: estate metric view scan failed; dedup runs without a "
-            "reference set", exc_info=True,
+            "reference set (%s)", type(exc).__name__,
         )
         return {}
 
@@ -1011,11 +1011,11 @@ def run_mv_advisor_phase(
             domain=domain,
             max_candidates=max_candidates,
         )
-    except Exception as exc:
-        logger.warning("mv_advisor: phase failed; optimization is unaffected", exc_info=True)
-        outcome = AdvisorOutcome(
-            status=STATUS_FAILED, error=f"{type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "mv_advisor: phase failed; optimization is unaffected (%s)", type(exc).__name__,
         )
+        outcome = AdvisorOutcome(status=STATUS_FAILED, error=type(exc).__name__)
 
     _record(spark, outcome, run_id=run_id, catalog=catalog, schema=schema)
     return outcome
@@ -1041,8 +1041,10 @@ def _record(
             detail=outcome.detail(),
             error_message=outcome.error,
         )
-    except Exception:
-        logger.warning("mv_advisor: could not write the phase stage row", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "mv_advisor: could not write the phase stage row (%s)", type(exc).__name__,
+        )
 
 
 def _advise(

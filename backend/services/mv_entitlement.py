@@ -186,11 +186,13 @@ def _privilege_row(
 
 
 def _read_failure_detail(exc: BaseException, securable_type: str, full_name: str) -> str:
-    message = str(exc) or exc.__class__.__name__
-    if "does not exist" in message.lower() or "not_found" in message.lower():
+    message = str(exc).lower()
+    if "does not exist" in message or "not_found" in message:
         return f"{securable_type.lower()} {full_name} not found or not visible to you"
-    logger.warning("Effective-privilege read failed for %s: %s", full_name, message)
-    return f"could not read privileges on {full_name}: {message}"
+    logger.warning(
+        "Effective-privilege read failed for %s (%s)", full_name, type(exc).__name__,
+    )
+    return f"could not read privileges on {full_name} ({type(exc).__name__})"
 
 
 def _securable_owner(
@@ -214,8 +216,11 @@ def _securable_owner(
             owner = getattr(ws.schemas.get(full_name), "owner", None)
         elif securable_type == SecurableType.TABLE.value:
             owner = getattr(ws.tables.get(full_name), "owner", None)
-    except Exception:  # noqa: BLE001 - owner is one signal; absence just means "no ownership proof"
-        logger.info("Could not read owner of %s %s", securable_type, full_name, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - owner is one signal; absence just means "no ownership proof"
+        logger.info(
+            "Could not read owner of %s %s (%s)", securable_type, full_name,
+            type(exc).__name__,
+        )
         owner = None
     owner_cache[full_name] = owner
     return owner
@@ -256,7 +261,7 @@ def _observed_runtime(ws: Any, warehouse_id: str) -> tuple[str, str | None]:
             "current_version().dbsql_version AS dbsql",
         )
     except Exception as exc:  # noqa: BLE001 - degrades to UNKNOWN rows
-        logger.warning("Could not read current_version(): %s", exc)
+        logger.warning("Could not read current_version() (%s)", type(exc).__name__)
         return ("UNAVAILABLE", None)
     if getattr(df, "empty", True):
         return ("UNAVAILABLE", None)
@@ -352,7 +357,9 @@ def probe(
         principal = (me.user_name or "").strip()
         user_groups = {g.display.lower() for g in (me.groups or []) if g.display}
     except Exception as exc:  # noqa: BLE001
-        raise MvProbeError(f"could not resolve the signed-in user: {exc}") from exc
+        raise MvProbeError(
+            f"could not resolve the signed-in user ({type(exc).__name__})"
+        ) from exc
     if not principal:
         raise MvProbeError("could not resolve the signed-in user")
 
@@ -562,7 +569,7 @@ def record_consent(
         )
         return True
     except Exception as exc:  # noqa: BLE001 - a probe is still useful unpersisted
-        logger.warning("Could not persist metric view consent: %s", exc, exc_info=True)
+        logger.warning("Could not persist metric view consent (%s)", type(exc).__name__)
         return False
 
 

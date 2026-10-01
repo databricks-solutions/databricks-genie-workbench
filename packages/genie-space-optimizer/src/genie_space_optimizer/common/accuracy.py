@@ -31,7 +31,6 @@ __all__ = [
     "METRIC_VIEW_SCOPE",
     "RunScores",
     "compute_run_scores",
-    "compute_run_scores_by_run_id",
     "derived_accuracy",
 ]
 
@@ -159,6 +158,9 @@ class RunScores:
       - ``"full"`` and ``best_iteration > 0`` → lever-loop iteration N drove
         the improvement.
       Defaults to ``"full"`` so existing callers stay compatible.
+    * ``attach_accuracy`` is a kept metric-view attach's post-attach score
+      whenever the reset applied to this baseline, whether or not it won
+      (MV-D121); ``None`` otherwise.
 
     Wire format: callers MUST send floats on the 0–100 scale. Pydantic
     validators in ``backend/models.py`` enforce this (PR 2).
@@ -169,6 +171,7 @@ class RunScores:
     baseline_iteration: int | None
     best_iteration: int | None
     best_eval_scope: str = "full"
+    attach_accuracy: float | None = None
 
 
 def _is_rolled_back(row: dict[str, Any]) -> bool:
@@ -320,11 +323,13 @@ def compute_run_scores(
 
     # MV-D118: a kept metric-view attach is scored as its own iteration-0 step. The
     # reset names the baseline eval it was measured against (MV-D114 d7).
+    attach_accuracy: float | None = None
     if baseline_reset is not None and (
         not baseline_reset.eval_run_id
         or str(iter_zero.get("eval_run_id") or "") == baseline_reset.eval_run_id
     ):
-        candidates.append((0, float(baseline_reset.accuracy), METRIC_VIEW_SCOPE))
+        attach_accuracy = float(baseline_reset.accuracy)
+        candidates.append((0, attach_accuracy, METRIC_VIEW_SCOPE))
 
     if not candidates:
         # Mid-run: Baseline Evaluation finished but no candidate has been
@@ -338,6 +343,7 @@ def compute_run_scores(
             baseline_iteration=0,
             best_iteration=0,
             best_eval_scope="full",
+            attach_accuracy=attach_accuracy,
         )
 
     # Pick the highest accuracy; tie-break on lowest iteration number, then
@@ -357,6 +363,7 @@ def compute_run_scores(
             baseline_iteration=0,
             best_iteration=best_it,
             best_eval_scope=best_scope,
+            attach_accuracy=attach_accuracy,
         )
 
     # Best candidate didn't exceed baseline — baseline retained.
@@ -366,34 +373,5 @@ def compute_run_scores(
         baseline_iteration=0,
         best_iteration=0,
         best_eval_scope="full",
+        attach_accuracy=attach_accuracy,
     )
-
-
-def compute_run_scores_by_run_id(
-    iter_rows: list[dict[str, Any]] | None,
-    *,
-    logger: logging.Logger | None = None,
-) -> dict[str, RunScores]:
-    """Group ``iter_rows`` by ``run_id`` and compute :class:`RunScores` per group.
-
-    Built for the list endpoints (``/activity``, ``/spaces/{id}`` history,
-    ``/runs/recent``) so they make ONE Delta query for N runs and still get
-    the canonical floor-at-baseline semantics. Pre-fix those endpoints read
-    a stored ``best_accuracy`` column that drifted from the per-iteration
-    derivation, especially for runs with rolled-back iterations.
-
-    Missing ``run_id`` rows are silently skipped (defensive — should never
-    happen but no reason to blow up a list endpoint over one bad row).
-    """
-    if not iter_rows:
-        return {}
-    by_run: dict[str, list[dict[str, Any]]] = {}
-    for row in iter_rows:
-        run_id = row.get("run_id")
-        if not run_id:
-            continue
-        by_run.setdefault(str(run_id), []).append(row)
-    return {
-        rid: compute_run_scores(rows, run_id=rid, logger=logger)
-        for rid, rows in by_run.items()
-    }

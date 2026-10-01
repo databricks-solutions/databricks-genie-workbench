@@ -777,7 +777,7 @@ def test_an_advisor_exception_does_not_propagate(monkeypatch) -> None:
     )
 
     assert outcome.status == mv_advisor.STATUS_FAILED
-    assert "corpus load blew up" in (outcome.error or "")
+    assert outcome.error == "RuntimeError"
     assert stages[0]["status"] == mv_advisor.STATUS_FAILED
     assert stages[0]["error_message"] == outcome.error
 

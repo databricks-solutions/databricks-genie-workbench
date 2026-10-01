@@ -133,9 +133,10 @@ def _load_ddl_artifact(
             f"WHERE artifact_kind = 'mv_candidate_ddl' AND content_hash = '{escaped}' "
             "ORDER BY created_at DESC LIMIT 1",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
-            "Could not read mv_candidate_ddl artifact for %s", fingerprint, exc_info=True
+            "Could not read mv_candidate_ddl artifact for %s (%s)",
+            fingerprint, type(exc).__name__,
         )
         return None
     if getattr(df, "empty", True):
@@ -166,6 +167,11 @@ def _uncovered_tables(yaml_text: str, consent: dict) -> list[str] | None:
     (``_source_tables_from_consent``), so a table outside them was never checked
     for this user. A join entry that is not a mapping is unreadable too, because
     ``_definition_tables`` skips it rather than reading any table under it.
+
+    Coverage compares the names as the body spells them, not as
+    ``_definition_tables`` reads them: it drops the quoting, so
+    `` `finance.sales`.orders `` would read as the three-part
+    ``finance.sales.orders``.
     """
     import yaml
     from genie_space_optimizer.optimization.mv_scoring import _definition_tables
@@ -174,13 +180,18 @@ def _uncovered_tables(yaml_text: str, consent: dict) -> list[str] | None:
         definition = yaml.safe_load(yaml_text)
         if not isinstance(definition, dict) or not _joins_are_mappings(definition):
             return None
-        tables = _definition_tables(definition)
+        if not _definition_tables(definition):
+            return None
+        tables = _source_names(definition)
     except Exception:  # noqa: BLE001 - an unreadable body is refused, not raised
         return None
-    if not tables:
-        return None
-    covered = {_norm_table(t) for t in _source_tables_from_consent(consent)}
-    return [t for t in tables if _norm_table(t) not in covered]
+    covered = {n for n in (_norm_table(t) for t in _source_tables_from_consent(consent)) if n}
+    uncovered = []
+    for table in tables:
+        normalized = _norm_table(table)
+        if normalized is None or normalized not in covered:
+            uncovered.append(table)
+    return uncovered
 
 
 def _joins_are_mappings(definition: Mapping) -> bool:
@@ -195,8 +206,43 @@ def _joins_are_mappings(definition: Mapping) -> bool:
     return True
 
 
-def _norm_table(name: str) -> str:
-    return str(name or "").replace("`", "").strip().lower()
+def _source_names(definition: Mapping) -> list[str]:
+    """Every ``source`` the body names, as written, nested joins included.
+
+    Only called once ``_joins_are_mappings`` holds.
+    """
+    names: list[str] = []
+    pending = [definition]
+    while pending:
+        node = pending.pop(0)
+        source = str(node.get("source") or "").strip()
+        if source and source not in names:
+            names.append(source)
+        pending.extend(node.get("joins") or ())
+    return names
+
+
+def _uc_name_parts(name: str) -> tuple[str, str, str] | None:
+    """The three unquoted parts of a catalog.schema.name, or None (MV-D121).
+
+    Split backtick-aware, so `` `a.b`.c `` is two parts, not three.
+    """
+    from genie_space_optimizer.optimization.mv_yaml import _split_name
+
+    parts = []
+    for raw in _split_name(str(name or "")):
+        part = raw.strip()
+        if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
+            part = part[1:-1].replace("``", "`")
+        parts.append(part)
+    if len(parts) != 3 or any(not p or "." in p for p in parts):
+        return None
+    return parts[0], parts[1], parts[2]
+
+
+def _norm_table(name: str) -> str | None:
+    parts = _uc_name_parts(name)
+    return ".".join(p.lower() for p in parts) if parts else None
 
 
 def _unproven_rung(stored_strategy: str | None) -> bool:
@@ -305,8 +351,10 @@ def _confirm_metric_view(obo_ws, warehouse_id: str, full_name: str) -> bool:
         df = sql_warehouse_query(
             obo_ws, warehouse_id, f"DESCRIBE EXTENDED {quoted}"
         )
-    except Exception:
-        logger.warning("DESCRIBE EXTENDED failed for %s", full_name, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "DESCRIBE EXTENDED failed for %s (%s)", full_name, type(exc).__name__,
+        )
         return False
     text = " ".join(str(v) for v in df.to_numpy().ravel()) if not getattr(df, "empty", True) else ""
     if "METRIC_VIEW" not in text.upper():
@@ -314,8 +362,10 @@ def _confirm_metric_view(obo_ws, warehouse_id: str, full_name: str) -> bool:
         return False
     try:
         sql_warehouse_query(obo_ws, warehouse_id, f"SELECT 1 FROM {quoted} LIMIT 0")
-    except Exception:
-        logger.warning("Created metric view %s is not queryable", full_name, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "Created metric view %s is not queryable (%s)", full_name, type(exc).__name__,
+        )
         return False
     return True
 
@@ -444,10 +494,10 @@ def create_and_attach_for_run(
                 catalog=catalog, schema=schema, probe_id=probe_id,
                 run_id=run_id, verdict=verdict, downgrade_reason=downgrade_reason,
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
-                "Could not stamp consent %s for run %s", probe_id, run_id,
-                exc_info=True,
+                "Could not stamp consent %s for run %s (%s)", probe_id, run_id,
+                type(exc).__name__,
             )
 
     if verification.effective_mode != "create_and_attach":
@@ -682,10 +732,10 @@ def create_and_attach_for_run(
                 logger.info("Adopted existing metric view %s for run %s", full_name, run_id)
             else:
                 logger.info("Created metric view %s for run %s", full_name, run_id)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
             logger.warning(
-                "Create failed for suggestion %s; dropping it from the run",
-                suggestion_id, exc_info=True,
+                "Create failed for suggestion %s; dropping it from the run (%s)",
+                suggestion_id, type(exc).__name__,
             )
             skips["error"] = skips.get("error", 0) + 1
             continue
@@ -744,8 +794,8 @@ def _valid_uc_identifier(full_name: str) -> bool:
     other rows, ``DROP VIEW`` — so it is constrained to unquoted identifier
     characters and refused otherwise rather than trusted or best-effort escaped.
     """
-    parts = [p.strip().strip("`") for p in (full_name or "").split(".")]
-    return len(parts) == 3 and all(bool(_UC_IDENT_PART.match(p)) for p in parts)
+    parts = _uc_name_parts(full_name)
+    return parts is not None and all(bool(_UC_IDENT_PART.match(p)) for p in parts)
 
 
 def _obo_identity(obo_ws) -> str:
@@ -773,8 +823,10 @@ def _describe_metric_view(
         df = sql_warehouse_query(
             obo_ws, warehouse_id, f"DESCRIBE TABLE EXTENDED {fq} AS JSON"
         )
-    except Exception:
-        logger.warning("DESCRIBE ... AS JSON failed for %s", full_name, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "DESCRIBE ... AS JSON failed for %s (%s)", full_name, type(exc).__name__,
+        )
         return (
             None,
             f"{full_name} could not be described — it may not exist, or you may "
@@ -1244,10 +1296,10 @@ def _attach_metric_view_to_space(obo_ws, *, space_id: str, full_name: str) -> bo
         patch_space_config(obo_ws, space_id, space)
         logger.info("attach-at-approval: shelved %s on space %s", full_name, space_id)
         return True
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
         logger.warning(
             "attach-at-approval: could not attach %s to space %s; left "
-            "created-not-attached", full_name, space_id, exc_info=True,
+            "created-not-attached (%s)", full_name, space_id, type(exc).__name__,
         )
         return False
 
