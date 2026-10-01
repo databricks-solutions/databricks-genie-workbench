@@ -1061,6 +1061,9 @@ export interface MvCreateAtApprovalResponse {
   run_id: string | null
   suggestion_id: string | null
   provenance: string
+  // MV-D120: the view's UC owner when it already existed; null for a view this
+  // call created. grant_sql is returned only when the caller owns the view.
+  owner: string | null
   verdict: string | null
   remediation_sql: string | null
   // Copy-ready GRANT SELECT … TO <optimizer SP>, resolved from the create

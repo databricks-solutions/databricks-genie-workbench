@@ -19,6 +19,8 @@
  *                 needs to read it + Catalog Explorer + [Start an optimization
  *                 run]. If the config PATCH failed (no CAN EDIT), it degrades to
  *                 "Created — not yet attached" with how to attach it in Genie.
+ *                 A view someone else owns (USER_CREATED) names the owner and
+ *                 offers no grant: only the owner can run it (MV-D120).
  *   - attached  → opened this way from the list for a proposal already on the
  *                 config; states it plainly and offers the grant.
  *   - degraded  → the fresh probe fell below SUFFICIENT; the button becomes
@@ -26,7 +28,7 @@
  *                 remediation GRANT shown copy-ready.
  *   - approved  → the classic approve-for-rerun decision was recorded.
  */
-import { useState } from "react"
+import { useContext, useState } from "react"
 import { CheckCircle2, ExternalLink, Link2, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { SqlCodeBlock } from "@/components/SqlCodeBlock"
@@ -41,6 +43,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { STALE_PROPOSAL_NOTICE } from "@/components/auto-optimize/mvFormat"
+import { MvCardCreateResultContext } from "@/components/auto-optimize/mvCardContext"
 import { createMvAtApproval, decideMvProposal, probeMvEntitlement } from "@/lib/api"
 import type { MvProbeResult, MvProposal } from "@/types"
 
@@ -109,6 +112,121 @@ function catalogExplorerUrl(host: string | null | undefined, fullName: string): 
   return `${base}/explore/data/${path}`
 }
 
+export interface MvCreatedTerminalProps {
+  /** The create call also shelved the view on the Agent config. */
+  attached: boolean
+  /** The view was already there and this call only (re)attached it. */
+  alreadyExisted: boolean
+  /** The create response's provenance. USER_CREATED: someone else owns the view. */
+  provenance: string | null
+  /** The view's UC owner when it already existed; null for a fresh create. */
+  owner: string | null
+  /** The optimizer GRANT. Ignored for USER_CREATED: only the owner can run it. */
+  grantSql: string | null
+  catalogUrl: string | null
+  onStartRun?: () => void
+}
+
+// The created terminal. Exported so a fidelity frame can render it: in the flow
+// it is reached only by clicking (MV-D120).
+export function MvCreatedTerminal({
+  attached,
+  alreadyExisted,
+  provenance,
+  owner,
+  grantSql,
+  catalogUrl,
+  onStartRun,
+}: MvCreatedTerminalProps) {
+  const ownedElsewhere = provenance === "USER_CREATED"
+  // Template literals keep each sentence one text node, so static markup reads
+  // as the sentence with no React separators inside it.
+  return (
+    // w-full min-w-0 so this terminal fills the card's flex `actions` row and
+    // the long GRANT scrolls WITHIN the SQL block instead of forcing the card
+    // to overflow (a flex item's default min-width:auto refused to shrink).
+    <div className="w-full min-w-0 space-y-2.5">
+      {attached ? (
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          {alreadyExisted
+            ? "Attached to your Agent (view already existed)"
+            : "Created \u0026 attached to your Agent"}
+        </span>
+      ) : (
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          {alreadyExisted ? "View exists — not yet attached" : "Created — not yet attached"}
+        </span>
+      )}
+      <div className="rounded-lg border border-default bg-elevated px-3 py-2.5 space-y-2">
+        {ownedElsewhere && (
+          <p className="text-xs text-secondary">
+            {`Owned by ${owner ?? "another user"}, so only they can change it or grant the optimizer access to it.`}
+          </p>
+        )}
+        {attached ? (
+          ownedElsewhere ? (
+            <p className="text-xs text-secondary">
+              It&rsquo;s on your Agent&rsquo;s metric views now, so the semantic model and these
+              suggestions already reflect it.{" "}
+              <span className="font-medium text-primary">One step left:</span>
+              {` the optimizer runs as a separate service principal, so ask ${owner ?? "its owner"} to grant it`}
+              <span className="font-mono"> SELECT</span> to let an optimization run read and measure it.
+            </p>
+          ) : (
+            <p className="text-xs text-secondary">
+              It&rsquo;s on your Agent&rsquo;s metric views now, so the semantic model and these
+              suggestions already reflect it.{" "}
+              <span className="font-medium text-primary">One step left:</span> the optimizer runs as a
+              separate service principal, so grant it
+              <span className="font-mono"> SELECT</span> to let an optimization run read and measure it.
+            </p>
+          )
+        ) : ownedElsewhere ? (
+          <p className="text-xs text-secondary">
+            <span className="font-medium text-primary">The view exists, but couldn&rsquo;t be
+            added to the Agent automatically</span> — you may not have edit access. Add it to the
+            Agent&rsquo;s metric views in Genie (or ask an editor), then ask the owner to grant the optimizer
+            <span className="font-mono"> SELECT</span> so a run can read it.
+          </p>
+        ) : (
+          <p className="text-xs text-secondary">
+            <span className="font-medium text-primary">The view exists, but couldn&rsquo;t be
+            added to the Agent automatically</span> — you may not have edit access. Add it to the
+            Agent&rsquo;s metric views in Genie (or ask an editor), then grant the optimizer
+            <span className="font-mono"> SELECT</span> so a run can read it.
+          </p>
+        )}
+        {ownedElsewhere ? null : grantSql ? (
+          <SqlCodeBlock code={grantSql} />
+        ) : (
+          <p className="text-[11px] text-muted">
+            The copy-ready <span className="font-mono">GRANT</span> statement is on the proposal
+            card under &ldquo;Show detail&rdquo;. The app never runs it.
+          </p>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {catalogUrl && (
+          <a
+            href={catalogUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+          >
+            View in Catalog Explorer
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+        <Button size="sm" onClick={() => onStartRun?.()}>
+          Start an optimization run
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export function MvAcceptFlow({
   proposal,
   runId,
@@ -150,6 +268,11 @@ export function MvAcceptFlow({
   // claiming a fresh create.
   const [alreadyExisted, setAlreadyExisted] = useState<boolean>(false)
   const [createdGrantSql, setCreatedGrantSql] = useState<string | null>(null)
+  // MV-D120: a USER_CREATED view belongs to someone else, so the terminal names
+  // its owner and offers no GRANT the caller couldn't run.
+  const [createdProvenance, setCreatedProvenance] = useState<string | null>(null)
+  const [createdOwner, setCreatedOwner] = useState<string | null>(null)
+  const reportCreateResult = useContext(MvCardCreateResultContext)
   // Workspace URL the create response resolved, so the created terminal can
   // deep-link the new view in Catalog Explorer even when no `databricksHost`
   // prop was threaded down to this surface (the common case on the IQ scan).
@@ -185,8 +308,8 @@ export function MvAcceptFlow({
     }
   }
 
-  // Explicit consent confirm → re-probe with materialize_consented (records the
-  // consent, MV-D16), then create under OBO through the mv_create seam.
+  // Explicit consent confirm → re-probe (records the consent the create
+  // re-verifies, MV-D34), then create under OBO through the mv_create seam.
   async function handleConfirmCreate() {
     if (!target) return
     setStatus("creating")
@@ -197,7 +320,6 @@ export function MvAcceptFlow({
         schema: target.schema,
         space_id: proposal.target_space_id,
         source_tables: sourceTablesOf(proposal),
-        materialize_consented: true,
       })
       if (consented.verdict !== "SUFFICIENT") {
         setProbe(consented)
@@ -213,7 +335,10 @@ export function MvAcceptFlow({
         setAttached(res.attached)
         setAlreadyExisted(res.already_existed)
         setCreatedGrantSql(res.grant_sql)
+        setCreatedProvenance(res.provenance)
+        setCreatedOwner(res.owner)
         setCreatedWorkspaceHost(res.workspace_host)
+        reportCreateResult?.(res.provenance)
         setStatus("created")
         onCreated?.(proposal)
       } else if (res.degraded) {
@@ -268,69 +393,18 @@ export function MvAcceptFlow({
   // not-attached (PATCH failed, e.g. no CAN EDIT): the view exists but is not on
   // the Agent, so the copy says so honestly and points to adding it in Genie.
   if (status === "created") {
-    // Prefer the host the create response resolved; fall back to the prop.
-    const url = catalogExplorerUrl(createdWorkspaceHost ?? databricksHost, createdName ?? fullName)
+    const name = createdName ?? fullName
     return (
-      // w-full min-w-0 so this terminal fills the card's flex `actions` row and
-      // the long GRANT scrolls WITHIN the SQL block instead of forcing the card
-      // to overflow (a flex item's default min-width:auto refused to shrink).
-      <div className="w-full min-w-0 space-y-2.5">
-        {attached ? (
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            {alreadyExisted
-              ? "Attached to your Agent (view already existed)"
-              : "Created \u0026 attached to your Agent"}
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            {alreadyExisted ? "View exists — not yet attached" : "Created — not yet attached"}
-          </span>
-        )}
-        <div className="rounded-lg border border-default bg-elevated px-3 py-2.5 space-y-2">
-          {attached ? (
-            <p className="text-xs text-secondary">
-              It&rsquo;s on your Agent&rsquo;s metric views now, so the semantic model and these
-              suggestions already reflect it.{" "}
-              <span className="font-medium text-primary">One step left:</span> the optimizer runs as a
-              separate service principal, so grant it
-              <span className="font-mono"> SELECT</span> to let an optimization run read and measure it.
-            </p>
-          ) : (
-            <p className="text-xs text-secondary">
-              <span className="font-medium text-primary">The view exists, but couldn&rsquo;t be
-              added to the Agent automatically</span> — you may not have edit access. Add it to the
-              Agent&rsquo;s metric views in Genie (or ask an editor), then grant the optimizer
-              <span className="font-mono"> SELECT</span> so a run can read it.
-            </p>
-          )}
-          {effectiveGrantSql ? (
-            <SqlCodeBlock code={effectiveGrantSql} />
-          ) : (
-            <p className="text-[11px] text-muted">
-              The copy-ready <span className="font-mono">GRANT</span> statement is on the proposal
-              card under &ldquo;Show detail&rdquo;. The app never runs it.
-            </p>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {url && (
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
-            >
-              View in Catalog Explorer
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-          <Button size="sm" onClick={() => onStartRun?.(proposal)}>
-            Start an optimization run
-          </Button>
-        </div>
-      </div>
+      <MvCreatedTerminal
+        attached={attached}
+        alreadyExisted={alreadyExisted}
+        provenance={createdProvenance}
+        owner={createdOwner}
+        grantSql={createdProvenance === "USER_CREATED" ? null : (effectiveGrantSql ?? null)}
+        // Prefer the host the create response resolved; fall back to the prop.
+        catalogUrl={catalogExplorerUrl(createdWorkspaceHost ?? databricksHost, name)}
+        onStartRun={() => onStartRun?.(proposal)}
+      />
     )
   }
 

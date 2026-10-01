@@ -270,6 +270,27 @@ def _object_exists(obo_ws, warehouse_id: str, full_name: str) -> bool:
         return False
 
 
+def _ledger_row_exists(
+    sp_ws, warehouse_id: str, *, catalog: str, schema: str, run_id: str, suggestion_id: str
+) -> bool:
+    """Whether the created-object ledger holds this run's row for the suggestion.
+
+    Unlike ``wh_load_mv_created_object``, which reads a failure as no row, a read
+    failure raises here, so the caller can tell an absent row from an unreadable
+    one (MV-D120).
+    """
+    from genie_space_optimizer.common.config import TABLE_MV_CREATED_OBJECTS
+    from genie_space_optimizer.common.warehouse import _wh_literal, sql_warehouse_query
+
+    df = sql_warehouse_query(
+        sp_ws, warehouse_id,
+        f"SELECT 1 FROM {catalog}.{schema}.{TABLE_MV_CREATED_OBJECTS} "
+        f"WHERE run_id = {_wh_literal(run_id)} "
+        f"AND suggestion_id = {_wh_literal(suggestion_id)} LIMIT 1",
+    )
+    return not getattr(df, "empty", True)
+
+
 def _confirm_metric_view(obo_ws, warehouse_id: str, full_name: str) -> bool:
     """Confirm the created object is a metric view and is queryable.
 
@@ -342,7 +363,7 @@ _SKIP_ORDER = (
     ("rung_below", "re-validation demands a lower join strategy"),
     ("exists", "already exists in the consented schema"),
     ("not_confirmed", "was not confirmed as a metric view after create"),
-    ("unrecorded", "could not be recorded, so it was dropped"),
+    ("unrecorded_kept", "could not be recorded; left in place for the next run to adopt"),
     ("error", "failed with an error"),
 )
 _NOTHING_BUILT = "no metric view could be created for the selected candidates"
@@ -537,20 +558,63 @@ def create_and_attach_for_run(
                 skips["rung_below"] = skips.get("rung_below", 0) + 1
                 continue
 
+            # MV-D120: a view at the consented name that is this proposal and the
+            # caller's own (a CREATE that committed after its wait) is adopted.
+            adopted = False
             if _object_exists(obo_ws, warehouse_id, full_name):
-                logger.warning(
-                    "%s already exists; refusing to clobber it for suggestion %s",
-                    full_name, suggestion_id,
+                existing = _adopt_existing_view(
+                    obo_ws, warehouse_id, full_name=full_name,
+                    yaml_text=yaml_text, caller=fresh_probe.checked_as,
                 )
-                skips["exists"] = skips.get("exists", 0) + 1
-                continue
+                if not (existing.matches and existing.owned_by_caller):
+                    logger.warning(
+                        "%s already exists and is not this caller's copy of suggestion %s; "
+                        "refusing it", full_name, suggestion_id,
+                    )
+                    skips["exists"] = skips.get("exists", 0) + 1
+                    continue
+                adopted = True
 
             from genie_space_optimizer.common.warehouse import sql_warehouse_execute
 
-            sql_warehouse_execute(
-                obo_ws, warehouse_id, create_ddl(full_name, yaml_text)
-            )
-            if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
+            if not adopted:
+                try:
+                    sql_warehouse_execute(
+                        obo_ws, warehouse_id, create_ddl(full_name, yaml_text)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "CREATE of %s for suggestion %s did not complete (%s); looking it up",
+                        full_name, suggestion_id, type(exc).__name__,
+                    )
+                    try:
+                        found: ExistingView | None = _adopt_existing_view(
+                            obo_ws, warehouse_id, full_name=full_name,
+                            yaml_text=yaml_text, caller=fresh_probe.checked_as,
+                        )
+                    except Exception as lookup_exc:
+                        logger.warning(
+                            "Could not look up %s after a failed create (%s)",
+                            full_name, type(lookup_exc).__name__,
+                        )
+                        found = None
+                    if found is not None and found.matches and found.owned_by_caller:
+                        adopted = True
+                    elif found is not None and found.exists:
+                        logger.warning(
+                            "%s exists after a failed create but is not this caller's copy "
+                            "of suggestion %s; refusing it", full_name, suggestion_id,
+                        )
+                        skips["exists"] = skips.get("exists", 0) + 1
+                        continue
+                    else:
+                        logger.warning(
+                            "%s was not found after a failed create; the next run adopts "
+                            "it if the create commits", full_name,
+                        )
+                        skips["error"] = skips.get("error", 0) + 1
+                        continue
+            if not adopted and not _confirm_metric_view(obo_ws, warehouse_id, full_name):
                 # The create statement ran but the object is not a usable metric
                 # view; drop the half-made object so nothing is left behind.
                 try:
@@ -571,24 +635,42 @@ def create_and_attach_for_run(
                     status="CREATED",
                     provenance=MV_PROVENANCE_OBO_CREATED,
                 )
-            except Exception:
-                # An unrecorded view is invisible to the drop route and makes the
-                # next run refuse its name, so it cannot be left behind.
+            except Exception as exc:
+                # A failed ledger write never drops the view (MV-D120): a MERGE that
+                # outlived its wait is invisible to a SELECT until it commits, so an
+                # absent row proves nothing. A kept view is adopted by the next run.
+                if adopted:
+                    logger.error(
+                        "Could not record adopted metric view %s for suggestion %s (%s); "
+                        "leaving it for the next run to adopt",
+                        full_name, suggestion_id, type(exc).__name__,
+                    )
+                    skips["unrecorded_kept"] = skips.get("unrecorded_kept", 0) + 1
+                    continue
                 logger.error(
-                    "Created %s for suggestion %s but could not record it; dropping it",
-                    full_name, suggestion_id, exc_info=True,
+                    "Could not record %s for suggestion %s (%s); re-reading the ledger",
+                    full_name, suggestion_id, type(exc).__name__,
                 )
                 try:
-                    sql_warehouse_execute(
-                        obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {quote_fqn(full_name)}"
+                    recorded = _ledger_row_exists(
+                        sp_ws, warehouse_id, catalog=catalog, schema=schema,
+                        run_id=run_id, suggestion_id=suggestion_id,
                     )
-                except Exception:
+                except Exception as read_exc:
                     logger.error(
-                        "Could not drop unrecorded metric view %s; it must be dropped by hand",
-                        full_name, exc_info=True,
+                        "Could not record or re-read %s for suggestion %s (%s, %s); "
+                        "leaving it for the next run to adopt",
+                        full_name, suggestion_id, type(exc).__name__, type(read_exc).__name__,
                     )
-                skips["unrecorded"] = skips.get("unrecorded", 0) + 1
-                continue
+                    skips["unrecorded_kept"] = skips.get("unrecorded_kept", 0) + 1
+                    continue
+                if not recorded:
+                    logger.error(
+                        "%s for suggestion %s has no ledger row yet; leaving it for the "
+                        "next run to adopt", full_name, suggestion_id,
+                    )
+                    skips["unrecorded_kept"] = skips.get("unrecorded_kept", 0) + 1
+                    continue
             attach_views.append(full_name)
             created.append(MvCreatedObject(
                 run_id=run_id, suggestion_id=suggestion_id, full_name=full_name,
@@ -596,7 +678,10 @@ def create_and_attach_for_run(
                 provenance=MV_PROVENANCE_OBO_CREATED,
                 on_regression_action="DETACH_ONLY_NEVER_DROP",
             ))
-            logger.info("Created metric view %s for run %s", full_name, run_id)
+            if adopted:
+                logger.info("Adopted existing metric view %s for run %s", full_name, run_id)
+            else:
+                logger.info("Created metric view %s for run %s", full_name, run_id)
         except Exception:
             logger.warning(
                 "Create failed for suggestion %s; dropping it from the run",
@@ -767,26 +852,28 @@ def _canonical_definition(value):
 
 def _existing_view_matches(
     obo_ws, warehouse_id: str, *, full_name: str, yaml_text: str, caller: str
-) -> tuple[bool, bool, str | None]:
+) -> tuple[bool, bool, str, str | None]:
     """Whether the metric view already at ``full_name`` IS this proposal (MV-D112).
 
-    Returns ``(matches, owned_by_caller, reason)``; ``reason`` explains a refusal.
-    Ownership is the view's UC ``owner`` against the caller, so a view someone
-    else wrote is never recorded as one the app created.
+    Returns ``(matches, owned_by_caller, owner, reason)``: ``owner`` is the view's
+    UC owner, stripped and lowercased, on a match (``""`` when UC reports none) and
+    ``""`` on a refusal; ``reason`` explains a refusal. Ownership is that owner
+    against the caller, so a view someone else wrote is never recorded as one the
+    app created.
     """
     import yaml as _yaml
 
     envelope, why = _describe_metric_view(obo_ws, warehouse_id, full_name)
     if envelope is None:
         return (
-            False, False,
+            False, False, "",
             f"{full_name} already exists but could not be checked against this "
             f"proposal ({why}); refusing to attach it",
         )
     view_text = _view_text_of(envelope)
     if not view_text.strip():
         return (
-            False, False,
+            False, False, "",
             f"{full_name} already exists, but its definition is not visible to you, "
             "so it can't be checked against this proposal; refusing to attach it",
         )
@@ -797,19 +884,65 @@ def _existing_view_matches(
         proposed = _canonical_definition(_yaml.load(yaml_text, Loader=_yaml.BaseLoader))
     except Exception:
         return (
-            False, False,
+            False, False, "",
             f"{full_name} already exists, but its definition could not be read; "
             "refusing to attach it",
         )
     if existing != proposed:
         return (
-            False, False,
+            False, False, "",
             f"{full_name} already exists with a different definition than this "
             "proposal; refusing to attach it. Rename or drop the existing view and "
             "approve again.",
         )
     owner = str(envelope.get("owner") or "").strip().lower()
-    return True, bool(owner) and owner == (caller or "").strip().lower(), None
+    return True, bool(owner) and owner == (caller or "").strip().lower(), owner, None
+
+
+@dataclass(frozen=True)
+class ExistingView:
+    """What the existing-view check found at a consented name.
+
+    ``matches``: the object is a metric view whose definition is this proposal.
+    ``owned_by_caller``: its UC owner is the caller. ``owner``: that owner on a
+    match (``""`` when UC reports none, and on every refusal). ``reason``:
+    why it was refused; ``None`` only on a match. ``exists``: ``False`` only
+    when the object is not a confirmed metric view and ``_object_exists`` did
+    not find it either, which includes a lookup that failed, so it never
+    proves the name is free.
+    """
+
+    matches: bool
+    owned_by_caller: bool
+    owner: str
+    reason: str | None
+    exists: bool = True
+
+
+def _adopt_existing_view(
+    obo_ws, warehouse_id: str, *, full_name: str, yaml_text: str, caller: str
+) -> ExistingView:
+    """Whether the object at ``full_name`` is a metric view that IS this proposal.
+
+    Both create paths ask this before a CREATE and after a CREATE that failed:
+    a CREATE that outlived its wait may still have committed (MV-D120).
+    """
+    if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
+        if not _object_exists(obo_ws, warehouse_id, full_name):
+            return ExistingView(
+                False, False, "",
+                f"{full_name} could not be found or read as a metric view; "
+                "refusing to attach it",
+                exists=False,
+            )
+        return ExistingView(
+            False, False, "",
+            f"{full_name} already exists and is not a metric view; refusing to clobber it",
+        )
+    matches, owned, owner, reason = _existing_view_matches(
+        obo_ws, warehouse_id, full_name=full_name, yaml_text=yaml_text, caller=caller,
+    )
+    return ExistingView(matches, owned, owner, reason)
 
 
 def _claim_matches_view(
@@ -1012,7 +1145,8 @@ class MvCreateAtApprovalResult:
     caller does not own), picked up and measured on the next run. ``degraded`` true: the
     fresh probe re-verified below SUFFICIENT, so nothing was created and the card
     falls back to [Approve for later] with ``remediation_sql``. Both false: a
-    create-time failure (revalidation drop, collision) with ``reason``.
+    create-time failure (revalidation drop, collision, a CREATE not confirmed, or
+    a view made but not recorded) with ``reason``.
     """
 
     created: bool
@@ -1036,6 +1170,9 @@ class MvCreateAtApprovalResult:
     verdict: str | None = None
     remediation_sql: str | None = None
     reason: str | None = None
+    # MV-D120: the view's UC owner when it already existed; None for a view this
+    # call created, which belongs to the caller.
+    owner: str | None = None
 
 
 def _attach_metric_view_to_space(obo_ws, *, space_id: str, full_name: str) -> bool:
@@ -1156,6 +1293,10 @@ def create_at_approval(
     ``already_existed`` reports which happened so the card can say "attached an
     existing view" rather than claim a fresh create.
 
+    A CREATE that raises is looked up the same way, because it may have committed
+    after its wait (MV-D120); a failure once the view exists is returned as a
+    reason and the view is kept, so approving again records it.
+
     Identity is the hard-fail seam: ``require_obo_workspace_client`` raises if no
     user token reached us, so a create/attach can never silently run as the SP.
     """
@@ -1255,28 +1396,52 @@ def create_at_approval(
     # same-named view would put a definition the user never reviewed on their
     # Agent, recorded as one the app created.
     already_existed = _object_exists(obo_ws, warehouse_id, full_name)
-    provenance = MV_PROVENANCE_OBO_CREATED
+    existing: ExistingView | None = None
     if already_existed:
-        if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
-            return MvCreateAtApprovalResult(
-                created=False, degraded=False, suggestion_id=suggestion_id,
-                reason=f"{full_name} already exists and is not a metric view; "
-                "refusing to clobber it",
-            )
-        matches, owned_by_caller, mismatch = _existing_view_matches(
+        existing = _adopt_existing_view(
             obo_ws, warehouse_id,
             full_name=full_name, yaml_text=yaml_text, caller=fresh_probe.checked_as,
         )
-        if not matches:
+        if not existing.matches:
             return MvCreateAtApprovalResult(
                 created=False, degraded=False, suggestion_id=suggestion_id,
-                reason=mismatch,
+                reason=existing.reason,
             )
-        if not owned_by_caller:
-            provenance = MV_PROVENANCE_USER_CREATED
     else:
-        sql_warehouse_execute(obo_ws, warehouse_id, create_ddl(full_name, yaml_text))
-        if not _confirm_metric_view(obo_ws, warehouse_id, full_name):
+        try:
+            sql_warehouse_execute(obo_ws, warehouse_id, create_ddl(full_name, yaml_text))
+        except Exception as exc:
+            # MV-D120: a CREATE that outlived its wait may still have committed, so
+            # a matching view found now is treated as the one that already existed.
+            logger.warning(
+                "CREATE of %s at approval did not complete (%s); looking it up",
+                full_name, type(exc).__name__,
+            )
+            try:
+                existing = _adopt_existing_view(
+                    obo_ws, warehouse_id,
+                    full_name=full_name, yaml_text=yaml_text, caller=fresh_probe.checked_as,
+                )
+            except Exception as lookup_exc:
+                logger.warning(
+                    "Could not look up %s after a failed create (%s)",
+                    full_name, type(lookup_exc).__name__,
+                )
+                existing = None
+            if existing is not None and existing.exists and not existing.matches:
+                return MvCreateAtApprovalResult(
+                    created=False, degraded=False, suggestion_id=suggestion_id,
+                    reason=existing.reason,
+                )
+            if existing is None or not existing.matches:
+                return MvCreateAtApprovalResult(
+                    created=False, degraded=False, suggestion_id=suggestion_id,
+                    reason=f"The create of {full_name} didn't complete and the view "
+                    "wasn't found. If the warehouse was slow, approving again will "
+                    "attach it; if this repeats, approve it for the next run instead.",
+                )
+            already_existed = True
+        if existing is None and not _confirm_metric_view(obo_ws, warehouse_id, full_name):
             try:
                 sql_warehouse_execute(
                     obo_ws, warehouse_id, f"DROP VIEW IF EXISTS {quote_fqn(full_name)}"
@@ -1288,6 +1453,12 @@ def create_at_approval(
                 reason=f"{full_name} was created but is not a usable metric view; "
                 "it was removed",
             )
+    provenance = (
+        MV_PROVENANCE_USER_CREATED
+        if existing is not None and not existing.owned_by_caller
+        else MV_PROVENANCE_OBO_CREATED
+    )
+    owner = (existing.owner or None) if existing is not None else None
 
     # MV-D34 attach-at-approval: the view exists and the user approved putting it
     # on their Agent, so shelve it on the config NOW under their identity. The
@@ -1303,23 +1474,40 @@ def create_at_approval(
     # last fallible steps. The ledger status mirrors the attach outcome so the
     # run-output ledger view (/runs/{run_id}/mv-created) shows ATTACHED for a
     # view now on the config and CREATED for one still awaiting a manual attach.
+    # A failure here leaves the view in place (and attached, if the PATCH landed):
+    # approval never drops, and approving again records it through the
+    # existing-view path (MV-D120).
     created_by = fresh_probe.checked_as
-    wh_ensure_optimization_tables(sp_ws, warehouse_id, catalog, schema)
-    run_id = str(uuid.uuid4())
-    wh_create_advice_run(
-        sp_ws, warehouse_id,
-        run_id=run_id, space_id=space_id, domain="",
-        catalog=catalog, schema=schema,
-        triggered_by=created_by, llm_model="",
-    )
-    wh_upsert_mv_created_object(
-        sp_ws, warehouse_id,
-        catalog=catalog, schema=schema,
-        run_id=run_id, suggestion_id=suggestion_id,
-        full_name=full_name, created_by=created_by,
-        status="ATTACHED" if attached else "CREATED",
-        provenance=provenance,
-    )
+    try:
+        wh_ensure_optimization_tables(sp_ws, warehouse_id, catalog, schema)
+        run_id = str(uuid.uuid4())
+        wh_create_advice_run(
+            sp_ws, warehouse_id,
+            run_id=run_id, space_id=space_id, domain="",
+            catalog=catalog, schema=schema,
+            triggered_by=created_by, llm_model="",
+        )
+        wh_upsert_mv_created_object(
+            sp_ws, warehouse_id,
+            catalog=catalog, schema=schema,
+            run_id=run_id, suggestion_id=suggestion_id,
+            full_name=full_name, created_by=created_by,
+            status="ATTACHED" if attached else "CREATED",
+            provenance=provenance,
+        )
+    except Exception as exc:
+        logger.error(
+            "%s %s at approval but could not record it (%s)",
+            "Found" if already_existed else "Created", full_name, type(exc).__name__,
+        )
+        done = "found" if already_existed else "created"
+        if attached:
+            done += " and attached"
+        return MvCreateAtApprovalResult(
+            created=False, degraded=False, suggestion_id=suggestion_id,
+            reason=f"{full_name} was {done} but couldn't be recorded. "
+            "Approve again to record it.",
+        )
     logger.info(
         "%s %s metric view %s for space %s at approval "
         "(run %s, attached=%s)",
@@ -1330,7 +1518,7 @@ def create_at_approval(
         created=True, attached=attached, already_existed=already_existed,
         full_name=full_name, run_id=run_id,
         suggestion_id=suggestion_id, verdict=verification.verdict,
-        provenance=provenance,
+        provenance=provenance, owner=owner,
     )
 
 

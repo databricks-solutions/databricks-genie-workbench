@@ -525,7 +525,10 @@ class MvCreateAtApprovalResponse(BaseModel):
     MV-D1/MV-D34), so nothing was created and the card falls back to [Approve for
     later] with ``remediation_sql`` shown copy-ready. ``created`` false with
     ``degraded`` false: a create-time failure (revalidation drop, collision)
-    with ``reason``, never a silent empty."""
+    with ``reason``, never a silent empty. ``owner`` names the view's Unity
+    Catalog owner when it already existed, and ``grant_sql`` is returned only
+    when the caller owns the view (``OBO_CREATED``), since only the owner can
+    run it (MV-D120)."""
 
     created: bool
     degraded: bool = False
@@ -538,6 +541,9 @@ class MvCreateAtApprovalResponse(BaseModel):
     run_id: str | None = None
     suggestion_id: str | None = None
     provenance: str = "OBO_CREATED"
+    # The view's Unity Catalog owner when it already existed (MV-D120); None for a
+    # view this call created. grant_sql is returned only when the caller owns it.
+    owner: str | None = None
     verdict: str | None = None
     remediation_sql: str | None = None
     grant_sql: str | None = None

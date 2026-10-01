@@ -199,12 +199,22 @@ Workbench attaches it only when its definition matches the recommendation
 (Unity Catalog's reformatting of the stored YAML is ignored). A different or
 unreadable definition is refused, and the existing view is left untouched. An
 existing view you don't own is recorded as user-created, and Workbench never drops it.
+The approval result names the view's owner, and offers the copy-ready GRANT for
+the optimizer only when you own the view, because only the owner can run it. Once
+an approval shows that someone else owns the view, the card's detail stops
+offering the GRANT too, until you leave the page. A run's create-and-attach
+results and a card already marked attached still show the GRANT whoever owns the
+view. If a create or its record times out, approving again finds the view and
+finishes the job.
 
 In run setup, **Create and attach** creates only the recommendations you select,
 and they must share one target schema. The permission check covers exactly the
 selected recommendations. Start stays disabled while nothing is selected, while
 the selection spans schemas, and while the check runs. If the check does not
-pass, the run continues in suggest-only mode.
+pass, the run continues in suggest-only mode. The permission check runs once the
+selection has settled. If a run's create times out, or its record can't be
+written, the run leaves the view in place and never drops it, and a later run
+finishes the job: it adopts a matching view you own.
 
 This Genie v2 deployment round-trips attached metric views under
 `data_sources.tables`. Workbench normalizes UC-confirmed metric views on read, so

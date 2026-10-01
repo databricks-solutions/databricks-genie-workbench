@@ -12,7 +12,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock("@/lib/api", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/api")>()), ...api }))
 
-import { OptimizationConfig } from "./OptimizationConfig"
+import { MV_PROBE_DEBOUNCE_MS, OptimizationConfig } from "./OptimizationConfig"
 
 function proposal(suggestion_id: string, proposed_object: string, source_tables: string[]): MvProposal {
   return {
@@ -50,13 +50,20 @@ let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  vi.useFakeTimers()
   vi.clearAllMocks()
   api.fetchSpaceMvProposals.mockResolvedValue({ space_id: "space-1", proposals: PROPOSALS })
   api.triggerAutoOptimize.mockResolvedValue({ runId: "run-1", jobRunId: "j-1", jobUrl: null, status: "PENDING" })
   host = document.createElement("div")
   root = createRoot(host)
 })
-afterEach(async () => { await act(async () => root.unmount()) })
+afterEach(async () => {
+  try {
+    await act(async () => root.unmount())
+  } finally {
+    vi.useRealTimers()
+  }
+})
 
 async function mount() {
   await act(async () => root.render(
@@ -78,6 +85,7 @@ async function mountSuggestOnly() {
 }
 const createRadioReason = () =>
   [...host.querySelectorAll("label")].find((l) => l.textContent?.includes("Create and attach, then optimize"))?.textContent ?? ""
+const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
 const text = () => host.textContent ?? ""
 const startButton = () =>
   [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Start Optimization")) as HTMLButtonElement
@@ -88,6 +96,7 @@ async function toggle(object: string) {
 
 it("a selection spanning two schemas is not probed and blocks Start with the reason", async () => {
   await mount()
+  await advance(MV_PROBE_DEBOUNCE_MS)
   expect(api.probeMvEntitlement).not.toHaveBeenCalled()
   expect(text()).toContain("2 schemas (finance.sales, finance.marketing)")
   expect(startButton().disabled).toBe(true)
@@ -99,11 +108,13 @@ it("narrowing the selection re-probes its tables and starts with only its ids", 
   api.probeMvEntitlement.mockImplementation(async () => probe(`probe_${++n}`))
   await mount()
   await toggle("finance.marketing.campaign_roi")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   expect(api.probeMvEntitlement).toHaveBeenLastCalledWith({
     catalog: "finance", schema: "sales", space_id: "space-1",
     source_tables: ["finance.sales.customers", "finance.sales.order_items", "finance.sales.orders"],
   })
   await toggle("finance.sales.customer_ltv")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   expect(api.probeMvEntitlement).toHaveBeenCalledTimes(2)
   expect(api.probeMvEntitlement).toHaveBeenLastCalledWith({
     catalog: "finance", schema: "sales", space_id: "space-1",
@@ -130,6 +141,7 @@ it("unticking every view blocks Start and says to select one", async () => {
 
 it("suggest-only says the default selection spans two schemas, and the radio gives that reason", async () => {
   await mountSuggestOnly()
+  await advance(MV_PROBE_DEBOUNCE_MS)
   expect(api.probeMvEntitlement).not.toHaveBeenCalled()
   expect(text()).toContain("2 schemas (finance.sales, finance.marketing)")
   expect(text()).not.toContain("choose Suggest only")
@@ -154,6 +166,8 @@ it("a denied permission check keeps the permission reason on the radio", async (
   }))
   await mountSuggestOnly()
   await toggle("finance.marketing.campaign_roi")
+  await advance(MV_PROBE_DEBOUNCE_MS)
+  expect(api.probeMvEntitlement).toHaveBeenCalledTimes(1)
   expect(createRadioReason()).toContain("Available once you have permission to create metric views in the target schema.")
 })
 
@@ -162,7 +176,9 @@ it("an answer for an earlier selection never unlocks Start for the current one",
   api.probeMvEntitlement.mockImplementation(() => new Promise<MvProbeResult>((resolve) => pending.push(resolve)))
   await mount()
   await toggle("finance.marketing.campaign_roi")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   await toggle("finance.sales.customer_ltv")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   expect(api.probeMvEntitlement).toHaveBeenCalledTimes(2)
   await act(async () => pending[0](probe("probe_1")))
   expect(startButton().disabled).toBe(true)
@@ -178,8 +194,11 @@ it("an earlier answer for the same selection never replaces the latest request's
   api.probeMvEntitlement.mockImplementation(() => new Promise<MvProbeResult>((resolve) => pending.push(resolve)))
   await mount()
   await toggle("finance.marketing.campaign_roi")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   await toggle("finance.sales.customer_ltv")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   await toggle("finance.sales.customer_ltv")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   expect(api.probeMvEntitlement).toHaveBeenCalledTimes(3)
   await act(async () => pending[0](probe("probe_1")))
   expect(startButton().disabled).toBe(true)
@@ -194,6 +213,7 @@ it("turning the section off and on during a probe keeps that probe's answer", as
   api.probeMvEntitlement.mockImplementation(() => new Promise<MvProbeResult>((resolve) => pending.push(resolve)))
   await mount()
   await toggle("finance.marketing.campaign_roi")
+  await advance(MV_PROBE_DEBOUNCE_MS)
   const section = () =>
     [...host.querySelectorAll("label")].find((l) => l.textContent?.includes("Suggest metric views"))!
       .querySelector("button, input") as HTMLElement

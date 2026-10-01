@@ -13,7 +13,7 @@
  * human counts+labels, with the raw provenance ids behind a "details"
  * disclosure (finding 3). An optional Recommended badge marks the ranked pick.
  */
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { Check, ChevronDown, ChevronRight, ChevronUp, FlaskConical, GitBranch, Link2, Star, TrendingUp } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { SqlCodeBlock } from "@/components/SqlCodeBlock"
@@ -26,6 +26,7 @@ import {
   joinStrategyLabel,
   proposalGainSentence,
 } from "@/components/auto-optimize/mvFormat"
+import { MvCardCreateResultContext } from "@/components/auto-optimize/mvCardContext"
 import type { MvDdlArtifact, MvProposal } from "@/types"
 
 export interface MvProposalCardProps {
@@ -266,6 +267,13 @@ export function MvProposalCard({
   // this only names the provenance so a curated proposal promoted into the
   // default list (MV-D100) reads as curated, not as a demand-proven MEDIUM+.
   const curated = isCuratedFactPassing(proposal)
+  // MV-D120: set only from the create result the accept flow in `actions` got
+  // back. A view someone else owns gets no GRANT here; only its owner can run it.
+  const [ownedElsewhere, setOwnedElsewhere] = useState(false)
+  const reportCreateResult = useCallback(
+    (provenance: string | null) => setOwnedElsewhere(provenance === "USER_CREATED"),
+    [],
+  )
 
   return (
     <div
@@ -397,7 +405,7 @@ export function MvProposalCard({
               {/* Copy must yield an executable statement (POV §7.5): the CREATE
                   VIEW wrapper, not the bare YAML body. */}
               <SqlCodeBlock code={ddl.ddl} />
-              {ddl.grant_sql && <SqlCodeBlock code={ddl.grant_sql} />}
+              {ddl.grant_sql && !ownedElsewhere && <SqlCodeBlock code={ddl.grant_sql} />}
             </div>
           )}
           {/* Deployed review #4b: the top toggle scrolls out of reach once the
@@ -416,7 +424,13 @@ export function MvProposalCard({
 
       {liftLabel}
 
-      {actions && <div className="flex flex-wrap items-center gap-2 pt-1">{actions}</div>}
+      {actions && (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <MvCardCreateResultContext.Provider value={reportCreateResult}>
+            {actions}
+          </MvCardCreateResultContext.Provider>
+        </div>
+      )}
     </div>
   )
 }

@@ -18,6 +18,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -105,6 +106,18 @@ def create_env(monkeypatch):
         warehouse, "wh_upsert_mv_created_object",
         lambda ws, warehouse_id, **kw: (upserts.on.append(ws), upserts.append(kw))
         and kw["full_name"],
+    )
+    # The real _ledger_row_exists re-read after a failed write: no row, a proven
+    # absence. Records (client, SQL).
+    upserts.reads = []
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda ws, warehouse_id, sql: (upserts.reads.append((ws, sql)), pd.DataFrame())[1],
+    )
+    # An existing object at the name is someone else's unless a test says so.
+    monkeypatch.setattr(
+        mv_create, "_adopt_existing_view",
+        lambda *a, **k: mv_create.ExistingView(False, False, "", "differs"),
     )
     return executed, upserts
 
@@ -656,11 +669,352 @@ def test_existing_object_is_not_clobbered(create_env, monkeypatch):
         lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
     )
     monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+    monkeypatch.setattr(
+        mv_create, "_adopt_existing_view",
+        lambda *a, **k: mv_create.ExistingView(False, False, "", "differs"),
+    )
 
     handoff = _run_create()
 
     assert handoff.action_mode == "suggest_only"
     assert not any("CREATE VIEW" in s for s in executed)
+
+
+def _ok_validate(monkeypatch):
+    monkeypatch.setattr(
+        mv_yaml, "validate",
+        lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+
+
+def _adopt_returns(monkeypatch, existing):
+    """Stub the existing-view check; returns the captured (client, kwargs) calls."""
+    calls: list = []
+    monkeypatch.setattr(
+        mv_create, "_adopt_existing_view",
+        lambda ws, warehouse_id, **kw: (calls.append((ws, kw)), existing)[1],
+    )
+    return calls
+
+
+def _create_raises(monkeypatch, executed, exc):
+    """The CREATE raises ``exc``; every other statement is captured."""
+    def execute(ws, warehouse_id, sql):
+        executed.on.append(ws)
+        executed.append(sql)
+        if sql.startswith("CREATE VIEW"):
+            raise exc
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute", execute)
+
+
+def _assert_type_only_logs(records, type_name):
+    assert any(type_name in r.getMessage() for r in records)
+    assert all("zq_secret" not in r.getMessage() for r in records)
+    assert all(not r.exc_info for r in records)
+
+
+def test_an_owned_matching_view_at_the_name_is_adopted(create_env, monkeypatch, caplog):
+    """MV-D120: a view at the consented name that is this proposal and the
+    caller's own is recorded and attached, never re-created."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+    adopt = _adopt_returns(
+        monkeypatch, mv_create.ExistingView(True, True, "analyst@example.com", None),
+    )
+
+    with caplog.at_level("INFO", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert not any("DROP VIEW" in s for s in executed)
+    assert [ws for ws, _ in adopt] == [_OBO_WS]
+    assert adopt[0][1]["full_name"] == "finance.sales.revenue_metrics"
+    assert adopt[0][1]["caller"] == "analyst@example.com"
+    assert upserts.on == [_SP_WS]
+    assert upserts[0]["status"] == "CREATED"
+    assert upserts[0]["provenance"] == mv_create.MV_PROVENANCE_OBO_CREATED
+    assert handoff.action_mode == "create_and_attach"
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert handoff.created[0].provenance == "OBO_CREATED"
+    assert any(
+        "Adopted existing metric view finance.sales.revenue_metrics for run run-1"
+        in r.getMessage() for r in caplog.records
+    )
+
+
+def test_a_matching_view_someone_else_owns_is_refused(create_env, monkeypatch):
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+    _adopt_returns(
+        monkeypatch, mv_create.ExistingView(True, False, "other@example.com", None),
+    )
+
+    handoff = _run_create()
+
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "already exists in the consented schema (1)"
+    )
+    assert not any(s.startswith(("CREATE VIEW", "DROP VIEW")) for s in executed)
+    assert upserts == [] and upserts.on == []
+
+
+def test_a_failed_create_whose_view_exists_is_recorded(create_env, monkeypatch, caplog):
+    """MV-D120: a CREATE that raised may still have committed; the view is looked
+    up, and the caller's own matching view is recorded and attached."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _create_raises(monkeypatch, executed, RuntimeError("zq_secret"))
+    adopt = _adopt_returns(
+        monkeypatch, mv_create.ExistingView(True, True, "analyst@example.com", None),
+    )
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    view_ddl = [s for s in executed if s.startswith(("CREATE VIEW", "DROP VIEW"))]
+    assert len(view_ddl) == 1 and view_ddl[0].startswith("CREATE VIEW")
+    assert [ws for ws, _ in adopt] == [_OBO_WS]
+    # Only the _object_exists DESCRIBE: the helper confirmed it, no second confirm.
+    assert executed.described_on == [_OBO_WS]
+    assert upserts.on == [_SP_WS] and upserts[0]["status"] == "CREATED"
+    assert upserts[0]["provenance"] == mv_create.MV_PROVENANCE_OBO_CREATED
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert handoff.created[0].provenance == "OBO_CREATED"
+    _assert_type_only_logs(caplog.records, "RuntimeError")
+
+
+def test_a_failed_create_with_no_view_is_an_error_skip(create_env, monkeypatch, caplog):
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _create_raises(monkeypatch, executed, RuntimeError("zq_secret"))
+    _adopt_returns(
+        monkeypatch, mv_create.ExistingView(False, False, "", "absent", exists=False),
+    )
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert not any("DROP VIEW" in s for s in executed)
+    assert upserts == [] and upserts.on == []
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "failed with an error (1)"
+    )
+    _assert_type_only_logs(caplog.records, "RuntimeError")
+    assert any(
+        "was not found after a failed create" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_a_raising_lookup_after_a_failed_create_is_an_error_skip(create_env, monkeypatch, caplog):
+    """The lookup raising inside the CREATE ``except`` reads as not found: the
+    ``error`` skip, logged by type only, and nothing is dropped or recorded."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _create_raises(monkeypatch, executed, RuntimeError("zq_secret"))
+
+    def adopt(*a, **k):
+        raise ValueError("zq_secret")
+
+    monkeypatch.setattr(mv_create, "_adopt_existing_view", adopt)
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert not any("DROP VIEW" in s for s in executed)
+    assert upserts == [] and upserts.on == []
+    assert handoff.attach_views == []
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "failed with an error (1)"
+    )
+    _assert_type_only_logs(caplog.records, "ValueError")
+    assert any(
+        "Could not look up finance.sales.revenue_metrics after a failed create (ValueError)"
+        in r.getMessage() for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        mv_create.ExistingView(True, False, "other@example.com", None),
+        mv_create.ExistingView(False, False, "", "differs"),
+    ],
+    ids=["someone_elses", "different"],
+)
+def test_a_view_found_after_a_failed_create_that_is_not_the_callers_is_an_exists_skip(
+    create_env, monkeypatch, caplog, existing,
+):
+    """MV-D120: the lookup found an object at the name that the run won't adopt.
+    It exists, so it is the ``exists`` skip, not an ``error``."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _create_raises(monkeypatch, executed, RuntimeError("zq_secret"))
+    _adopt_returns(monkeypatch, existing)
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert not any("DROP VIEW" in s for s in executed)
+    assert upserts == [] and upserts.on == []
+    assert handoff.attach_views == []
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "already exists in the consented schema (1)"
+    )
+    _assert_type_only_logs(caplog.records, "RuntimeError")
+
+
+def _upsert_raises(monkeypatch, upserts, exc):
+    def upsert(ws, warehouse_id, **kw):
+        upserts.on.append(ws)
+        raise exc
+
+    monkeypatch.setattr(warehouse, "wh_upsert_mv_created_object", upsert)
+
+
+def _ledger_query_returns(monkeypatch, result):
+    """Stub the SELECT the real ``_ledger_row_exists`` runs; ``result`` is a
+    DataFrame or an exception to raise. Returns the captured (client, SQL)."""
+    reads: list = []
+
+    def query(ws, warehouse_id, sql):
+        reads.append((ws, sql))
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", query)
+    return reads
+
+
+def _assert_ledger_read(reads):
+    assert len(reads) == 1 and reads[0][0] is _SP_WS
+    sql = reads[0][1]
+    assert sql.startswith("SELECT 1 FROM main.gso.genie_opt_mv_created_objects")
+    assert "run_id = 'run-1'" in sql and "suggestion_id = 'sug1'" in sql
+
+
+def test_a_ledger_write_that_landed_is_kept(create_env, monkeypatch, caplog):
+    """MV-D120: a MERGE that raised but committed leaves a row; the re-read sees
+    it, so the view is kept and attached as recorded."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _upsert_raises(monkeypatch, upserts, RuntimeError("zq_secret"))
+    reads = _ledger_query_returns(monkeypatch, pd.DataFrame([{"1": 1}]))
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert not any("DROP VIEW" in s for s in executed)
+    _assert_ledger_read(reads)
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert [c.suggestion_id for c in handoff.created] == ["sug1"]
+    _assert_type_only_logs(caplog.records, "RuntimeError")
+
+
+def test_a_ledger_proven_absent_keeps_the_fresh_view(create_env, monkeypatch, caplog):
+    """MV-D120 (owner ruling): an absent re-read doesn't prove the MERGE won't
+    commit, so the view is kept and left for the next run to adopt."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _upsert_raises(monkeypatch, upserts, RuntimeError("zq_secret"))
+    reads = _ledger_query_returns(monkeypatch, pd.DataFrame())
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    _assert_ledger_read(reads)
+    assert not any("DROP VIEW" in s for s in executed)
+    assert _view_ddl_clients(executed) == [_OBO_WS]
+    assert upserts.on == [_SP_WS]
+    assert handoff.attach_views == [] and handoff.created == []
+    assert handoff.downgrade_reason == _UNRECORDED_KEPT_REASON
+    _assert_type_only_logs(caplog.records, "RuntimeError")
+    assert any(
+        "finance.sales.revenue_metrics" in r.getMessage()
+        and "leaving it for the next run to adopt" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_an_unreadable_ledger_keeps_the_view(create_env, monkeypatch, caplog):
+    """The real reader lets a read failure raise, so it is never a proven absence."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _upsert_raises(monkeypatch, upserts, ValueError("zq_secret"))
+    reads = _ledger_query_returns(monkeypatch, RuntimeError("zq_secret"))
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    _assert_ledger_read(reads)
+    assert not any("DROP VIEW" in s for s in executed)
+    assert handoff.attach_views == [] and handoff.created == []
+    assert handoff.downgrade_reason == _UNRECORDED_KEPT_REASON
+    assert any(
+        "finance.sales.revenue_metrics" in r.getMessage()
+        and "ValueError" in r.getMessage() and "RuntimeError" in r.getMessage()
+        for r in caplog.records
+    )
+    assert all("zq_secret" not in r.getMessage() for r in caplog.records)
+    assert all(not r.exc_info for r in caplog.records)
+
+
+_UNRECORDED_KEPT_REASON = (
+    "no metric view could be created for the selected candidates: "
+    "could not be recorded; left in place for the next run to adopt (1)"
+)
+
+
+def test_an_adopted_view_whose_record_fails_is_never_dropped(create_env, monkeypatch, caplog):
+    """MV-D120: the cleanup DROP is only for a view this run freshly created; an
+    adopted view may be the caller's own, so it is kept even on a proven absence."""
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+    _adopt_returns(
+        monkeypatch, mv_create.ExistingView(True, True, "analyst@example.com", None),
+    )
+    _upsert_raises(monkeypatch, upserts, RuntimeError("zq_secret"))
+    _ledger_query_returns(monkeypatch, pd.DataFrame())
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert not any(s.startswith(("CREATE VIEW", "DROP VIEW")) for s in executed)
+    assert upserts.on == [_SP_WS]
+    assert handoff.attach_views == [] and handoff.created == []
+    assert handoff.downgrade_reason == _UNRECORDED_KEPT_REASON
+    _assert_type_only_logs(caplog.records, "RuntimeError")
+
+
+def test_a_view_found_after_a_failed_create_whose_record_fails_is_kept(
+    create_env, monkeypatch, caplog,
+):
+    executed, upserts = create_env
+    _ok_validate(monkeypatch)
+    _create_raises(monkeypatch, executed, RuntimeError("zq_secret"))
+    _adopt_returns(
+        monkeypatch, mv_create.ExistingView(True, True, "analyst@example.com", None),
+    )
+    _upsert_raises(monkeypatch, upserts, RuntimeError("zq_secret"))
+    _ledger_query_returns(monkeypatch, pd.DataFrame())
+
+    with caplog.at_level("DEBUG", logger="backend.services.mv_create"):
+        handoff = _run_create()
+
+    assert not any("DROP VIEW" in s for s in executed)
+    assert handoff.attach_views == [] and handoff.created == []
+    assert handoff.downgrade_reason == _UNRECORDED_KEPT_REASON
+    _assert_type_only_logs(caplog.records, "RuntimeError")
 
 
 def _run_create_selecting(ids):
@@ -734,9 +1088,9 @@ def test_only_the_selected_candidates_are_created(create_env, monkeypatch):
     assert [kw["suggestion_id"] for kw in upserts] == ["sug2"] and upserts.on == [_SP_WS]
 
 
-def test_an_unrecorded_create_is_dropped_and_the_run_moves_on(create_env, monkeypatch):
-    """MV-D112: a view whose ledger row cannot be written is dropped at once.
-    Left in place, the next run refuses its name and no drop route can see it."""
+def test_an_unrecorded_create_is_kept_and_the_run_moves_on(create_env, monkeypatch):
+    """MV-D120 (owner ruling, amending MV-D112 (3)): a view whose ledger row cannot
+    be written is never dropped; the run re-reads the ledger and moves on."""
     executed, upserts = create_env
     _two_candidates(monkeypatch)
 
@@ -747,27 +1101,45 @@ def test_an_unrecorded_create_is_dropped_and_the_run_moves_on(create_env, monkey
         upserts.append(kw)
 
     monkeypatch.setattr(warehouse, "wh_upsert_mv_created_object", upsert)
+    events: list = []
+    real_execute = warehouse.sql_warehouse_execute
+
+    def execute(ws, warehouse_id, sql):
+        events.append(sql.split(" ")[0])
+        real_execute(ws, warehouse_id, sql)
+
+    def read(ws, warehouse_id, sql):
+        events.append("READ")
+        upserts.reads.append((ws, sql))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute", execute)
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", read)
 
     handoff = _run_create_selecting(["sug1", "sug2"])
 
-    assert "DROP VIEW IF EXISTS `finance`.`sales`.`revenue_metrics`" in executed
-    assert _view_ddl_clients(executed) == [_OBO_WS] * 3
+    # The re-read follows sug1's failed write; sug2's CREATE follows with no DROP.
+    assert events[:3] == ["CREATE", "READ", "CREATE"]
+    assert "DROP" not in events
+    assert len(upserts.reads) == 1 and upserts.reads[0][0] is _SP_WS
+    assert "suggestion_id = 'sug1'" in upserts.reads[0][1]
+    assert not any("DROP VIEW" in s for s in executed)
+    assert _view_ddl_clients(executed) == [_OBO_WS] * 2
     assert upserts.on == [_SP_WS, _SP_WS]
     assert handoff.action_mode == "create_and_attach"
     assert handoff.attach_views == ["finance.sales.order_counts"]
     assert [c.suggestion_id for c in handoff.created] == ["sug2"]
 
 
-def test_a_failed_cleanup_drop_is_logged_for_manual_removal(create_env, monkeypatch, caplog):
-    executed, _ = create_env
+def test_a_failed_confirm_cleanup_drop_is_logged(create_env, monkeypatch, caplog):
+    """The only hook DROP left is the cleanup of a fresh create that is not a usable
+    metric view; a failed cleanup is logged naming the view."""
+    executed, upserts = create_env
     monkeypatch.setattr(
         mv_yaml, "validate",
         lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
     )
-    monkeypatch.setattr(
-        warehouse, "wh_upsert_mv_created_object",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("delta write failed")),
-    )
+    monkeypatch.setattr(mv_create, "_confirm_metric_view", lambda *a, **k: False)
 
     drops_on: list = []
 
@@ -780,15 +1152,19 @@ def test_a_failed_cleanup_drop_is_logged_for_manual_removal(create_env, monkeypa
 
     monkeypatch.setattr(warehouse, "sql_warehouse_execute", execute)
 
-    with caplog.at_level("ERROR", logger="backend.services.mv_create"):
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
         handoff = _run_create_selecting(["sug1"])
 
     assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "was not confirmed as a metric view after create (1)"
+    )
     assert _view_ddl_clients(executed) == [_OBO_WS] and drops_on == [_OBO_WS]
+    assert upserts == []
     assert any(
-        r.levelname == "ERROR"
-        and "finance.sales.revenue_metrics" in r.getMessage()
-        and "must be dropped by hand" in r.getMessage()
+        r.levelname == "WARNING"
+        and "Could not clean up finance.sales.revenue_metrics" in r.getMessage()
         for r in caplog.records
     )
 
@@ -910,7 +1286,7 @@ def test_the_stale_reason_does_not_promise_a_refresh():
         ("rung_below", "re-validation demands a lower join strategy"),
         ("exists", "already exists in the consented schema"),
         ("not_confirmed", "was not confirmed as a metric view after create"),
-        ("unrecorded", "could not be recorded, so it was dropped"),
+        ("unrecorded_kept", "could not be recorded; left in place for the next run to adopt"),
         ("error", "failed with an error"),
     ],
 )
@@ -923,8 +1299,56 @@ def test_each_skip_key_names_its_label(key, label):
 def test_the_skip_labels_are_pinned_in_order():
     assert [key for key, _ in mv_create._SKIP_ORDER] == [
         "unavailable", "stale", "no_body", "unproven_rung", "invalid_name", "uncovered",
-        "revalidation", "rung_below", "exists", "not_confirmed", "unrecorded", "error",
+        "revalidation", "rung_below", "exists", "not_confirmed", "unrecorded_kept", "error",
     ]
+
+
+# ── _ledger_row_exists: the strict re-read after a failed ledger write ──────
+
+
+def _ledger_row_exists(run_id="run-1", suggestion_id="sug1"):
+    return mv_create._ledger_row_exists(
+        _SP_WS, "wh1", catalog="main", schema="gso",
+        run_id=run_id, suggestion_id=suggestion_id,
+    )
+
+
+@pytest.mark.parametrize(
+    "frame,expected",
+    [(pd.DataFrame([{"1": 1}]), True), (pd.DataFrame(), False)],
+    ids=["present", "empty"],
+)
+def test_ledger_row_exists_reads_the_row_on_the_sp(monkeypatch, frame, expected):
+    reads = _ledger_query_returns(monkeypatch, frame)
+
+    assert _ledger_row_exists() is expected
+    _assert_ledger_read(reads)
+    assert reads[0][1].endswith("LIMIT 1")
+
+
+def test_ledger_row_exists_lets_a_read_failure_raise(monkeypatch):
+    _ledger_query_returns(monkeypatch, RuntimeError("zq_secret"))
+
+    with pytest.raises(RuntimeError):
+        _ledger_row_exists()
+
+
+def test_ledger_row_exists_quotes_its_ids_through_wh_literal(monkeypatch):
+    reads = _ledger_query_returns(monkeypatch, pd.DataFrame())
+    quoted: list = []
+    real_literal = warehouse._wh_literal
+    monkeypatch.setattr(
+        warehouse, "_wh_literal", lambda v, **k: (quoted.append(v), real_literal(v, **k))[1],
+    )
+    run_id, suggestion_id = "run' OR '1'='1", "sug\\1"
+
+    _ledger_row_exists(run_id=run_id, suggestion_id=suggestion_id)
+
+    sql = reads[0][1]
+    assert quoted == [run_id, suggestion_id]
+    assert f"run_id = {real_literal(run_id)} " in sql
+    assert sql.endswith(f"suggestion_id = {real_literal(suggestion_id)} LIMIT 1")
+    assert f"'{run_id}'" not in sql and f"'{suggestion_id}'" not in sql
 
 
 def test_partial_success_stamps_no_reason(create_env, monkeypatch):

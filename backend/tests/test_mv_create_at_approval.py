@@ -124,7 +124,10 @@ def approval_env(monkeypatch):
     monkeypatch.setattr(
         mv_create, "_attach_metric_view_to_space", lambda *a, **k: True
     )
-    monkeypatch.setattr(mv_create, "_existing_view_matches", lambda *a, **k: (True, True, None))
+    monkeypatch.setattr(
+        mv_create, "_existing_view_matches",
+        lambda *a, **k: (True, True, "analyst@example.com", None),
+    )
     return executed, upserts, advice_runs
 
 
@@ -506,7 +509,7 @@ def test_a_squatted_name_with_a_different_definition_is_refused(approval_env, mo
     monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
     monkeypatch.setattr(
         mv_create, "_existing_view_matches",
-        lambda *a, **k: (False, False, "finance.sales.revenue_metrics already exists with a different definition than this proposal; refusing to attach it."),
+        lambda *a, **k: (False, False, "", "finance.sales.revenue_metrics already exists with a different definition than this proposal; refusing to attach it."),
     )
     monkeypatch.setattr(
         mv_create, "_attach_metric_view_to_space",
@@ -527,13 +530,17 @@ def test_a_squatted_name_with_a_different_definition_is_refused(approval_env, mo
 def test_a_matching_view_the_caller_does_not_own_is_attached_as_user_created(approval_env, monkeypatch):
     executed, upserts, _ = approval_env
     monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
-    monkeypatch.setattr(mv_create, "_existing_view_matches", lambda *a, **k: (True, False, None))
+    monkeypatch.setattr(
+        mv_create, "_existing_view_matches",
+        lambda *a, **k: (True, False, "other@example.com", None),
+    )
 
     result = _create()
 
     assert result.created is True
     assert result.already_existed is True
     assert result.provenance == mv_create.MV_PROVENANCE_USER_CREATED
+    assert result.owner == "other@example.com"
     assert upserts[0]["provenance"] == mv_create.MV_PROVENANCE_USER_CREATED
     assert upserts.on == [_SP_WS]
     assert not any("CREATE VIEW" in s for s in executed)
@@ -544,7 +551,9 @@ def test_the_existing_view_is_checked_against_the_replayed_body_as_the_caller(ap
     monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
     monkeypatch.setattr(
         mv_create, "_existing_view_matches",
-        lambda ws, warehouse_id, **k: (calls.append({"ws": ws, **k}) or (True, True, None)),
+        lambda ws, warehouse_id, **k: (
+            calls.append({"ws": ws, **k}) or (True, True, "analyst@example.com", None)
+        ),
     )
 
     _create()
@@ -561,7 +570,7 @@ def test_a_fresh_create_does_not_run_the_existing_view_check(approval_env, monke
     calls: list[dict] = []
     monkeypatch.setattr(
         mv_create, "_existing_view_matches",
-        lambda *a, **k: (calls.append(k) or (True, True, None)),
+        lambda *a, **k: (calls.append(k) or (True, True, "analyst@example.com", None)),
     )
 
     executed, upserts, _ = approval_env
@@ -572,6 +581,219 @@ def test_a_fresh_create_does_not_run_the_existing_view_check(approval_env, monke
     assert calls == []
     assert [ws for ws, sql in zip(executed.on, executed) if "CREATE VIEW" in sql] == [_OBO_WS]
     assert upserts.on == [_SP_WS]
+
+
+# ── MV-D120: a CREATE that failed, and a record that could not be written ───
+
+
+def _create_raises(monkeypatch, executed):
+    def _execute(ws, warehouse_id, sql):
+        executed.on.append(ws)
+        executed.append(sql)
+        if "CREATE VIEW" in sql:
+            raise RuntimeError("zq_secret")
+
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute", _execute)
+
+
+def _stub_adopt(monkeypatch, outcome):
+    calls: list[dict] = []
+
+    def _adopt(ws, warehouse_id, **kw):
+        calls.append({"ws": ws, **kw})
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(mv_create, "_adopt_existing_view", _adopt)
+    return calls
+
+
+def _assert_no_secret(caplog):
+    for record in caplog.records:
+        assert "zq_secret" not in record.getMessage()
+        assert record.exc_info is None
+
+
+@pytest.mark.parametrize(
+    "existing, provenance, owner",
+    [
+        (
+            mv_create.ExistingView(True, True, "analyst@example.com", None),
+            mv_create.MV_PROVENANCE_OBO_CREATED, "analyst@example.com",
+        ),
+        (
+            mv_create.ExistingView(True, False, "other@example.com", None),
+            mv_create.MV_PROVENANCE_USER_CREATED, "other@example.com",
+        ),
+    ],
+    ids=["owned", "someone_elses"],
+)
+def test_a_failed_create_whose_view_exists_is_attached_at_approval(
+    approval_env, monkeypatch, caplog, existing, provenance, owner
+):
+    caplog.set_level("DEBUG")
+    executed, upserts, advice_runs = approval_env
+    _create_raises(monkeypatch, executed)
+    lookups = _stub_adopt(monkeypatch, existing)
+
+    result = _create()
+
+    assert result.created is True
+    assert result.attached is True
+    assert result.already_existed is True
+    assert result.provenance == provenance
+    assert result.owner == owner
+    assert lookups == [{
+        "ws": _OBO_WS, "full_name": "finance.sales.revenue_metrics",
+        "yaml_text": _ARTIFACT["yaml_text"], "caller": "analyst@example.com",
+    }]
+    assert upserts[0]["provenance"] == provenance
+    assert upserts.on == [_SP_WS]
+    assert len(advice_runs) == 1
+    assert not any("DROP VIEW" in s for s in executed)
+    assert any("RuntimeError" in r.getMessage() for r in caplog.records)
+    _assert_no_secret(caplog)
+
+
+def _refused_after_a_failed_create(approval_env, monkeypatch, caplog, lookup):
+    caplog.set_level("DEBUG")
+    executed, upserts, advice_runs = approval_env
+    _create_raises(monkeypatch, executed)
+    _stub_adopt(monkeypatch, lookup)
+    attaches: list[dict] = []
+    monkeypatch.setattr(
+        mv_create, "_attach_metric_view_to_space",
+        lambda *a, **k: (attaches.append(k) or True),
+    )
+
+    result = _create()
+
+    assert result.created is False
+    assert result.degraded is False
+    assert attaches == []
+    assert upserts == [] and advice_runs == []
+    assert not any("DROP VIEW" in s for s in executed)
+    assert "zq_secret" not in repr(result)
+    _assert_no_secret(caplog)
+    return result
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        mv_create.ExistingView(
+            False, False, "", "finance.sales.revenue_metrics was not found", exists=False,
+        ),
+        RuntimeError("zq_secret"),
+    ],
+    ids=["absent", "lookup_raises"],
+)
+def test_a_failed_create_whose_view_is_not_found_returns_both_causes(
+    approval_env, monkeypatch, caplog, lookup
+):
+    """MV-D120: not found covers a slow warehouse and a create that failed, and
+    an unknown lookup reads as not found; the reason promises no attach."""
+    result = _refused_after_a_failed_create(approval_env, monkeypatch, caplog, lookup)
+
+    assert result.reason == (
+        "The create of finance.sales.revenue_metrics didn't complete and the view "
+        "wasn't found. If the warehouse was slow, approving again will attach it; "
+        "if this repeats, approve it for the next run instead."
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "finance.sales.revenue_metrics already exists and is not a metric view; refusing to clobber it",
+        "finance.sales.revenue_metrics already exists with a different definition",
+    ],
+    ids=["not_a_metric_view", "different"],
+)
+def test_a_failed_create_whose_view_exists_but_is_refused_returns_its_reason(
+    approval_env, monkeypatch, caplog, reason
+):
+    """MV-D120: a view that is there but isn't this proposal says why, rather than
+    asking for an approval that would refuse it again."""
+    lookup = mv_create.ExistingView(False, False, "", reason)
+
+    result = _refused_after_a_failed_create(approval_env, monkeypatch, caplog, lookup)
+
+    assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "failing", ["wh_ensure_optimization_tables", "wh_create_advice_run", "wh_upsert_mv_created_object"]
+)
+@pytest.mark.parametrize("attached", [True, False], ids=["attached", "not_attached"])
+def test_a_ledger_failure_after_create_is_a_reason_and_keeps_the_view(
+    approval_env, monkeypatch, caplog, failing, attached
+):
+    caplog.set_level("DEBUG")
+    executed, _, _ = approval_env
+
+    def _raise(*a, **k):
+        raise RuntimeError("zq_secret")
+
+    monkeypatch.setattr(warehouse, failing, _raise)
+    monkeypatch.setattr(mv_create, "_attach_metric_view_to_space", lambda *a, **k: attached)
+
+    result = _create()
+
+    assert result.created is False
+    assert result.degraded is False
+    done = "created and attached" if attached else "created"
+    assert result.reason == (
+        f"finance.sales.revenue_metrics was {done} but couldn't be recorded. "
+        "Approve again to record it."
+    )
+    assert any("CREATE VIEW" in s for s in executed)
+    assert not any("DROP VIEW" in s for s in executed)
+    assert "zq_secret" not in repr(result)
+    assert any(
+        "could not record it" in r.getMessage() and "RuntimeError" in r.getMessage()
+        for r in caplog.records
+    )
+    _assert_no_secret(caplog)
+
+
+@pytest.mark.parametrize("attached", [True, False], ids=["attached", "not_attached"])
+def test_a_ledger_failure_after_finding_the_view_says_found(
+    approval_env, monkeypatch, caplog, attached
+):
+    """MV-D120: a view this call found, not created, is reported as found."""
+    caplog.set_level("DEBUG")
+    executed, _, _ = approval_env
+    monkeypatch.setattr(mv_create, "_object_exists", lambda *a, **k: True)
+
+    def _raise(*a, **k):
+        raise RuntimeError("zq_secret")
+
+    monkeypatch.setattr(warehouse, "wh_upsert_mv_created_object", _raise)
+    monkeypatch.setattr(mv_create, "_attach_metric_view_to_space", lambda *a, **k: attached)
+
+    result = _create()
+
+    assert result.created is False
+    done = "found and attached" if attached else "found"
+    assert result.reason == (
+        f"finance.sales.revenue_metrics was {done} but couldn't be recorded. "
+        "Approve again to record it."
+    )
+    assert not any(s.startswith(("CREATE VIEW", "DROP VIEW")) for s in executed)
+    assert any(
+        "could not record it" in r.getMessage() and "RuntimeError" in r.getMessage()
+        for r in caplog.records
+    )
+    _assert_no_secret(caplog)
+
+
+def test_a_fresh_create_has_no_owner(approval_env):
+    result = _create()
+
+    assert result.created is True and result.already_existed is False
+    assert result.owner is None
 
 
 def test_missing_candidate_returns_a_reason(approval_env, monkeypatch):
@@ -826,7 +1048,7 @@ def _match(yaml_text=_PROPOSAL_YAML, caller="analyst@example.com"):
 def test_uc_rewritten_definition_matches_its_proposal(monkeypatch):
     seen = _describe_returns(monkeypatch, _envelope())
 
-    assert _match() == (True, True, None)
+    assert _match() == (True, True, "analyst@example.com", None)
     assert seen == ["DESCRIBE TABLE EXTENDED `finance`.`sales`.`revenue_metrics` AS JSON"]
     assert seen.on == [_OBO_WS]
 
@@ -835,9 +1057,9 @@ def test_a_changed_literal_is_a_different_definition(monkeypatch):
     squatted = _UC_VIEW_TEXT.replace("'paid'", "'refunded'")
     _describe_returns(monkeypatch, _envelope(view_text=squatted))
 
-    matches, owned, reason = _match()
+    matches, owned, owner, reason = _match()
 
-    assert (matches, owned) == (False, False)
+    assert (matches, owned, owner) == (False, False, "")
     assert "different definition" in reason
 
 
@@ -848,7 +1070,24 @@ def test_a_changed_literal_is_a_different_definition(monkeypatch):
 def test_ownership_is_the_describe_owner_against_the_caller(monkeypatch, owner, expected):
     _describe_returns(monkeypatch, _envelope(owner=owner))
 
-    assert _match() == (True, expected, None)
+    assert _match() == (True, expected, owner.lower(), None)
+
+
+def test_existing_view_match_returns_the_uc_owner(monkeypatch):
+    """M7c: the UC owner comes back, lowercased and stripped, so approval can name it."""
+    _describe_returns(monkeypatch, _envelope(owner=" Owner@Example.com "))
+    assert _match(caller="analyst@example.com") == (True, False, "owner@example.com", None)
+
+    _describe_returns(monkeypatch, _envelope(owner="Analyst@Example.COM"))
+    assert _match(caller="analyst@example.com") == (True, True, "analyst@example.com", None)
+
+
+def test_existing_view_match_with_no_owner_is_not_the_callers(monkeypatch):
+    envelope = _envelope()
+    del envelope["owner"]
+    _describe_returns(monkeypatch, envelope)
+
+    assert _match() == (True, False, "", None)
 
 
 @pytest.mark.parametrize("scalar", ["true", "007", "0.10", "1:30"])
@@ -856,53 +1095,139 @@ def test_a_quoted_scalar_matches_its_unquoted_uc_form(monkeypatch, scalar):
     proposal = _PROPOSAL_YAML.replace("['2', revenue]", f"['{scalar}', revenue]")
     _describe_returns(monkeypatch, _envelope(view_text=_UC_VIEW_TEXT.replace("  - 2\n", f"  - {scalar}\n")))
 
-    assert _match(yaml_text=proposal) == (True, True, None)
+    assert _match(yaml_text=proposal) == (True, True, "analyst@example.com", None)
 
 
 def test_a_bare_yaml_boolean_is_not_its_quoted_word(monkeypatch):
     proposal = _PROPOSAL_YAML.replace("['2', revenue]", "['True', revenue]")
     _describe_returns(monkeypatch, _envelope(view_text=_UC_VIEW_TEXT.replace("  - 2\n", "  - on\n")))
 
-    matches, _, reason = _match(yaml_text=proposal)
+    matches, _, owner, reason = _match(yaml_text=proposal)
 
-    assert matches is False
+    assert matches is False and owner == ""
     assert "different definition" in reason
 
 
 def test_an_unparsable_definition_is_refused(monkeypatch):
     _describe_returns(monkeypatch, _envelope(view_text="measures: [unclosed\n"))
 
-    matches, owned, reason = _match()
+    matches, owned, owner, reason = _match()
 
-    assert (matches, owned) == (False, False)
+    assert (matches, owned, owner) == (False, False, "")
     assert "could not be read" in reason
 
 
 def test_a_self_referencing_alias_is_refused_not_raised(monkeypatch):
     _describe_returns(monkeypatch, _envelope(view_text="measures: &loop\n- *loop\n"))
 
-    matches, owned, reason = _match()
+    matches, owned, owner, reason = _match()
 
-    assert (matches, owned) == (False, False)
+    assert (matches, owned, owner) == (False, False, "")
     assert "could not be read" in reason
 
 
 def test_a_hidden_definition_is_refused(monkeypatch):
     _describe_returns(monkeypatch, _envelope(view_text=""))
 
-    matches, _, reason = _match()
+    matches, _, owner, reason = _match()
 
-    assert matches is False
+    assert matches is False and owner == ""
     assert "not visible to you" in reason
 
 
 def test_an_object_that_is_not_a_metric_view_is_refused(monkeypatch):
     _describe_returns(monkeypatch, _envelope(type_="VIEW"))
 
-    matches, _, reason = _match()
+    matches, _, owner, reason = _match()
 
-    assert matches is False
+    assert matches is False and owner == ""
     assert "could not be checked" in reason
+
+
+def _adopt():
+    return mv_create._adopt_existing_view(
+        _OBO_WS, "wh1",
+        full_name="finance.sales.revenue_metrics", yaml_text=_PROPOSAL_YAML,
+        caller="analyst@example.com",
+    )
+
+
+def _not_a_confirmed_metric_view(monkeypatch, *, found: bool):
+    """``_confirm_metric_view`` says no; ``_object_exists`` answers ``found``.
+    Returns the captured confirm calls, existence calls and matcher calls."""
+    confirms: list = []
+    lookups: list = []
+    matches: list = []
+    monkeypatch.setattr(
+        mv_create, "_confirm_metric_view",
+        lambda ws, warehouse_id, full_name: (confirms.append((ws, warehouse_id, full_name)) or False),
+    )
+    monkeypatch.setattr(
+        mv_create, "_object_exists",
+        lambda ws, warehouse_id, full_name: (lookups.append((ws, warehouse_id, full_name)) or found),
+    )
+    monkeypatch.setattr(
+        mv_create, "_existing_view_matches",
+        lambda *a, **k: (matches.append(k) or (True, True, "analyst@example.com", None)),
+    )
+    return confirms, lookups, matches
+
+
+def test_adopt_existing_view_refuses_a_non_metric_view(monkeypatch):
+    confirms, lookups, matches = _not_a_confirmed_metric_view(monkeypatch, found=True)
+
+    existing = _adopt()
+
+    assert existing == mv_create.ExistingView(
+        matches=False, owned_by_caller=False, owner="",
+        reason="finance.sales.revenue_metrics already exists and is not a metric view; "
+        "refusing to clobber it",
+        exists=True,
+    )
+    assert confirms == [(_OBO_WS, "wh1", "finance.sales.revenue_metrics")]
+    assert lookups == [(_OBO_WS, "wh1", "finance.sales.revenue_metrics")]
+    assert matches == []
+
+
+def test_adopt_existing_view_reports_an_object_it_cannot_find(monkeypatch):
+    """MV-D120: after a failed CREATE the name may be empty; the check says it found
+    nothing rather than claiming an object that is not a metric view."""
+    _, lookups, matches = _not_a_confirmed_metric_view(monkeypatch, found=False)
+
+    existing = _adopt()
+
+    assert existing.exists is False
+    assert existing.matches is False and existing.owned_by_caller is False
+    assert "already exists" not in (existing.reason or "")
+    assert lookups == [(_OBO_WS, "wh1", "finance.sales.revenue_metrics")]
+    assert matches == []
+
+
+@pytest.mark.parametrize(
+    "stub",
+    [
+        (True, True, "analyst@example.com", None),
+        (True, False, "other@example.com", None),
+        (False, False, "", "finance.sales.revenue_metrics already exists with a different definition"),
+    ],
+)
+def test_adopt_existing_view_passes_the_match_through(monkeypatch, stub):
+    calls: list = []
+    monkeypatch.setattr(mv_create, "_confirm_metric_view", lambda *a, **k: True)
+    monkeypatch.setattr(
+        mv_create, "_existing_view_matches",
+        lambda ws, warehouse_id, **k: (calls.append({"ws": ws, "wh": warehouse_id, **k}) or stub),
+    )
+
+    existing = _adopt()
+
+    assert existing == mv_create.ExistingView(*stub)
+    assert calls == [{
+        "ws": _OBO_WS, "wh": "wh1",
+        "full_name": "finance.sales.revenue_metrics",
+        "yaml_text": _PROPOSAL_YAML,
+        "caller": "analyst@example.com",
+    }]
 
 
 # ── Route: POST /spaces/{space_id}/mv/create ────────────────────────────────
@@ -1046,6 +1371,67 @@ def test_create_route_requires_obo(client, monkeypatch):
         json={"suggestion_id": "sug1", "probe_id": "p1"},
     )
     assert resp.status_code == 401
+
+
+def test_a_warehouse_runtime_error_is_a_500_not_a_401(client, monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+
+    def _raise(**k):
+        raise RuntimeError("zq_secret")
+
+    monkeypatch.setattr(mv_create, "create_at_approval", _raise)
+    resp = client.post(
+        "/api/auto-optimize/spaces/space-1/mv/create",
+        json={"suggestion_id": "sug1", "probe_id": "p1"},
+    )
+    assert resp.status_code == 500
+    assert resp.json() == {
+        "detail": "Create failed; please retry or approve for the next run."
+    }
+    assert "zq_secret" not in resp.text
+    assert any(
+        "mv/create (at approval) failed for space space-1 (RuntimeError)" == r.getMessage()
+        for r in caplog.records
+    )
+    for record in caplog.records:
+        assert "zq_secret" not in record.getMessage()
+        assert record.exc_info is None
+
+
+@pytest.mark.parametrize(
+    "provenance, owner, grant_expected",
+    [
+        ("USER_CREATED", "other@example.com", False),
+        ("OBO_CREATED", None, True),
+    ],
+)
+def test_grant_sql_only_for_the_owner(client, monkeypatch, provenance, owner, grant_expected):
+    monkeypatch.setattr(
+        mv_create, "create_at_approval",
+        lambda **k: mv_create.MvCreateAtApprovalResult(
+            created=True, attached=True, already_existed=owner is not None,
+            full_name="finance.sales.revenue_metrics", run_id="run-obo-3",
+            suggestion_id="sug1", verdict="SUFFICIENT",
+            provenance=provenance, owner=owner,
+        ),
+    )
+    monkeypatch.setattr(
+        auto_optimize, "_gso_sp_application_id",
+        lambda: "abcdef01-2345-6789-abcd-ef0123456789",
+    )
+    resp = client.post(
+        "/api/auto-optimize/spaces/space-1/mv/create",
+        json={"suggestion_id": "sug1", "probe_id": "p1"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["provenance"] == provenance
+    assert body["owner"] == owner
+    if grant_expected:
+        assert "GRANT SELECT ON VIEW `finance`.`sales`.`revenue_metrics`" in body["grant_sql"]
+    else:
+        assert body["grant_sql"] is None
+    assert body["workspace_host"] == "https://example.databricks.com"
 
 
 def test_approval_refuses_a_body_reading_a_table_the_consent_did_not_cover(approval_env, monkeypatch):

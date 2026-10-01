@@ -2725,11 +2725,14 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
     end (``already_existed`` reports which happened).
 
     Three outcomes, all normal 200s the card renders from one shape: created (with
-    ``attached`` + ``grant_sql``), degraded (fresh probe below SUFFICIENT →
+    ``attached``, ``owner`` when the view already existed, and ``grant_sql`` only
+    when the caller owns the view), degraded (fresh probe below SUFFICIENT →
     [Approve for later] + remediation GRANT, nothing created), and a create-time
-    failure with a reason. Missing OBO is a 401 (MV-D20) — a create never falls
-    back to the SP. Can Edit is asked at the route and again in the fresh probe's
-    space row (MV-D115); the probe downgrades to Approve for later, not refuses.
+    failure with a reason (including a view made but not recorded, MV-D120).
+    Missing OBO is the only 401 (MV-D20) — a create never falls back to the SP;
+    any error the service raises is a 500. Can Edit is asked at the route and
+    again in the fresh probe's space row (MV-D115); the probe downgrades to
+    Approve for later, not refuses.
     """
     await require_space_access(space_id, SpaceAccessLevel.EDIT)
     if not _is_configured():
@@ -2757,10 +2760,11 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
             schema=config.schema_name,
             warehouse_id=config.warehouse_id,
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
-    except Exception:
-        logger.exception("mv/create (at approval) failed for space %s", space_id)
+    except Exception as exc:
+        logger.error(
+            "mv/create (at approval) failed for space %s (%s)",
+            space_id, type(exc).__name__,
+        )
         raise HTTPException(
             status_code=500,
             detail="Create failed; please retry or approve for the next run.",
@@ -2769,12 +2773,18 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
     # Option A grant: the copy-ready SELECT the created view needs so a later
     # optimization run (the GSO SP, a different principal) can read it. Resolved
     # from the create response so the card no longer depends on the proposal's
-    # best-effort DDL fetch having landed. Only meaningful once a view exists.
+    # best-effort DDL fetch having landed. Only the view's owner can run it, so a
+    # USER_CREATED view someone else owns gets none (MV-D120).
     grant_sql: str | None = None
     workspace_host: str | None = None
-    if result.created and result.full_name:
+    if (
+        result.created
+        and result.full_name
+        and result.provenance == MV_PROVENANCE_OBO_CREATED
+    ):
         sp_app_id = await _offload(_gso_sp_application_id)
         grant_sql = _mv_optimizer_grant_sql(result.full_name, sp_app_id)
+    if result.created:
         # #2 (post-create link): the workspace URL so the created terminal can
         # deep-link the new view in Catalog Explorer. Best-effort — a missing
         # host just omits the link, it never fails an otherwise-good create.
@@ -2792,6 +2802,7 @@ async def create_space_mv_at_approval(space_id: SpaceId, body: MvCreateAtApprova
         run_id=result.run_id,
         suggestion_id=result.suggestion_id,
         provenance=result.provenance,
+        owner=result.owner,
         verdict=result.verdict,
         remediation_sql=result.remediation_sql,
         grant_sql=grant_sql,

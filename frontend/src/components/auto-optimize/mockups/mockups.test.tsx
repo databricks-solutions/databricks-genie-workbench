@@ -79,6 +79,7 @@ import {
   DeepLinkNoAccessFrame,
   ScoreViewerAllowlistFrame,
 } from "./SpaceAccessM7bFrames"
+import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
 import { STALE_PROPOSAL_NOTICE } from "../mvFormat"
 import { RETURN_TO_AGENTS, SPACE_NO_ACCESS_TITLE } from "@/lib/space-access"
 
@@ -642,6 +643,41 @@ describe("M7b — the viewer score with blanked text, and the deep-link states (
   })
 })
 
+describe("M7c — the created terminal names the owner and offers the GRANT to owners only (MV-D120)", () => {
+  const ownerHtml = render(<CreatedTerminalOwnerFrame />)
+  const elsewhereHtml = render(<AttachedSomeoneElsesViewFrame />)
+
+  it("m7c-a: created and attached, with the GRANT for its owner", () => {
+    expect(ownerHtml).toContain("Created &amp; attached to your Agent")
+    // SqlCodeBlock highlights the GRANT into spans, so read the tag-stripped text.
+    expect(ownerHtml.replace(/<[^>]*>/g, "")).toContain("GRANT SELECT")
+  })
+
+  it("m7c-b: names the owner, asks them to grant, and offers no GRANT", () => {
+    expect(elsewhereHtml).toContain("Owned by data.owner@example.com")
+    expect(elsewhereHtml).toContain("ask data.owner@example.com to grant")
+    // Holds because the frame's card is collapsed: its detail, which carries the DDL's GRANT, isn't rendered.
+    expect(elsewhereHtml).not.toContain("GRANT")
+  })
+
+  it("no percent, no confidence (MV-D35)", () => {
+    for (const html of [ownerHtml, elsewhereHtml]) {
+      expect(html.toLowerCase()).not.toContain("confidence")
+      // Visible text only: the SQL block's syntax highlighter emits hsl(…%) styles.
+      expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\d+%/)
+    }
+  })
+
+  it("is registered after the M7b frames, in order", () => {
+    const ids = MOCKUP_FRAMES.map((f) => f.id)
+    const at = ids.indexOf("m7b-c-deep-link-load-failed")
+    expect(ids.slice(at + 1, at + 3)).toEqual([
+      "m7c-a-created-terminal-owner",
+      "m7c-b-attached-someone-elses-view",
+    ])
+  })
+})
+
 describe("M2 — the selection decides the create target", () => {
   it("names the selection's schema, or says why there is none", () => {
     const subset = render(<SelectionSubsetFrame />)
@@ -662,6 +698,7 @@ describe("M2 — the selection decides the create target", () => {
   })
   it("the attached-not-created panel is USER_CREATED with no drop", () => {
     const html = render(<AttachedNotCreatedFrame />)
+    expect(html).toContain("Verified under OBO by analyst@example.com")
     expect(html).toContain("it already existed when it was approved")
     expect(html).toContain("dropping this one stays with its owner")
     expect(html).not.toContain("you registered this view")

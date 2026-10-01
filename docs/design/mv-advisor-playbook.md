@@ -254,9 +254,9 @@
      every VERIFY section.
 
    - RUN THE SUITES WITH `./scripts/test.sh`. It runs both suites through
-     `uv run --frozen --extra dev`. Expected baseline: 1499 backend + 1842 GSO,
-     measured 2026-10-01 (this supersedes the prior 1477 + 1836 floor measured 2026-09-30). Historical
-     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). +50 GSO at M4 (MV-D114: the live-id and measure-matched affected subset with its bundle-union, curated, expected-SQL and no-SQL-in-stage pins; the full-suite post-attach eval with the subset-restricted verdict, zero-graded revert and kept-only baseline handoff; the finally-rollback with its exception, interrupt, retry, fail-twice and pre-deploy pins; the loop baseline-reset pin with its proposer, run-status, target and detached controls; and the end-of-run unmeasured-live report; the final-review fix wave's live-read unmeasured report with its revert-failed, dropped-by-a-later-PATCH, unreadable-live fallback, no-read-without-a-patched-row and loop-wiring pins, and the parse-log firewall pin, then the canonicalize/render log firewall pins). +2 backend at MV-D115 (the metric-view probe's space row asks Can Edit and never Can Manage, and a permissions API refused for scope still grants it). +20 GSO at the M4 live-run fixes (L1: publish scores iteration 0 at a kept attach's post-attach accuracy, read from the `MV_ATTACH` stage row and bound to its baseline eval id, with its no-reset, lever-beats-reset, restart-row, other-eval and promote-stamp pins; L2: `attached_identifiers` reads `tables` too, with the live report and reconcile pins). +42 GSO at M6a (MV-D116: the table-split corpus scan with its spelling, table-less-remainder and ranking pins; the table-leaf helpers; demand scoped to the candidate's tables; the table-aware governed match, seed exclusion and trusted-asset conflict with their query-source controls; the merged-key suppression read; and the identity baseline captured at 9d972e46; the final-review fix wave's cap-boundary pin that only membership moves, the governed-excluded half the merged key still hides, and the definition-table pins for non-list joins, a source-less join, a query join at top level and nested, and a table named twice). +22 backend / +36 GSO at M6b (MV-D117: the identity baseline captured at 43b01544 with its row-count and struct pins; row counts on their only table and their per-table split; struct fields on an alias with the table-qualified, two-part and source-headed controls; the fix wave's source-schema neutral-clear pins (dimension, filter, grain, RATIO, CONDITIONAL_COUNT and measure path) with the four-part and source-aliased controls; the firewall's two-sided quote fold; the unreachable-rung pin and the create-time rung refusal on both paths; the row-count, bundle and stale claim, with the claim success and role-less-anchor pins; the nothing-built skip summary; the stale flag, facts row, re-run gate and 409 DDL refusal; and the quoted GRANT. The frontend callout exclusion is a vitest pin, not counted in this floor). +21 backend / +4 GSO at the M6b final-review fix wave (MV-D117: the firewall's text-field probes, quoted prose, bare prose against a quoted benchmark, the bare/bare control and a SQL probe echoing a quoted question; the stale-beside-its-successor drop on the list with its case- and backtick-insensitive match, the approved stale row, the gate, the suggest and stream reloads and the helper's keep controls; the approved id with no candidate, its lead position, the stale reason that promises no refresh, and the per-key and ordered skip labels). +16 backend / +57 GSO at M6c (MV-D118: the exception type only in the rollback compensation error and the pre-deploy, post-deploy and revert outcomes, with the measured fields kept after the measurement; the net-suite detach, the even-suite keep, the `delta_suite` diagnostic and the flipped outside-the-subset wash; the widened matcher's unqualified-SQL, other-table and no-candidate-tables pins and its per-key selection; either shelf blocking a second add, `pre_attached` on the stage row with its restart survival, loop hand-off and unmeasured-report skip, and the bring-your-own view with no candidate; the unconfirmed PATCH reverted on either shelf when it landed and left when it did not, an unreadable space counted as landed, a failed revert reported, a validation failure not unconfirmed, the real applier's raised PATCH read back and the loop's live reader; the baseline-reset parser, the remaining-failures count, the restart lookup, the attach trajectory step with its champion flag, and the residual count and audit context; the wide-schema re-plan after a kept attach and none after a detach; the status and run-detail headline, the attach stage read while the Jobs API answers, and the run-scores contract; the serialized `run` and the seam with no subset method, three `run_subset` tests removed; the uncovered-table refusal at run hook and approval with its name match, named skip and unreadable body; the drop's plain-name refusal and the level ladder that never asks MANAGE, net zero; and the stale-sibling drop on the run-keyed list and the semantic graph with the `/mv-ddl` current-row fallback. Vitest grew +13 to 685 — the score display, the m6c-a to m6c-d frames, the singular measure sentence and the latest probe answer — and is not counted in this floor). +6 GSO at the M6c final-review fix wave (MV-D118: a mixed kept attach and a mixed detach write only the applied view's row and name only it, and the affected subset drops the pre-attached view's own questions; the even-suite wash whose only regression is outside the subset; the bare no-FROM expression through the fallback; and `run` forwarding its ids and scope label. Vitest grew +1 to 686 — the m6c-d SQL block — and is not counted in this floor). +22 backend / +6 GSO at M7b (MV-D119: the scorer's viewer-safe forms with their every-emitted-string, no-dead-form, quoted-content, kept-count, outside-the-forms and literal next-step and check-label pins; the viewer scan's blank-in-place finding and warning that keep their remediation, the viewer-safe check details with labels kept, and the blank pre-rename wording; each admin route's listing under the caller's token, its 503 on a listing failure and 500 on a summary failure with no exception text, the count-only `top_finding` that skips text with no form, and the space the caller cannot list left uncounted; the detail route's concurrent reads after the View check; and the UTC stamps on a scan, an optimization run, join advice and the watch writes, with the no-`utcnow` source pin. Pytest warnings fell from 10 to 4. Vitest grew +21 to 707 — the single 404 retry after a create, the deep-link no-access state, the admin card's scope and the scope-neutral page subtitle, the m7b-a to m7b-c frames and the centred Return — then +2 to 709 at the M7b final-review fix wave — the App deep-link status pins (a 403 is the no-access state, a 500 is not) — and is not counted in this floor). A count BELOW this is a regression — investigate. A
+     `uv run --frozen --extra dev`. Expected baseline: 1540 backend + 1842 GSO,
+     measured 2026-10-01 (this supersedes the prior 1531 + 1842 floor, also measured 2026-10-01). Historical
+     ledger: measured 2026-08-24 as 636 + 1452, +8 GSO at Prompt 14 (the write-to-read exposure-matrix pin and the advice-run dry-run harness), +9 GSO at Prompt 15.2 (MV-D29: `representative_expr` literal-preserving render source, the leakage-gate drop, the `?n`/`?s` placeholder guard in `mv_yaml.validate`, and literal-bearing fixtures incl. the POV golden case), +8 backend at Prompt 12b (the semantic-graph debts and coverage lens: DESCRIBE-enumerated governed chips, curated-from-SQL concepts, expr-identity merge, cold-spot coverage, and lens-free compatibility), +1 backend at Prompt 14.1 (route 10 `mv-created` returns `provenance`), +1 backend at Prompt 15.1 (route 7 `mv-ddl` candidate-row DDL fallback). Prompts 15.3–12e then grew the suites +19 backend / +51 GSO without a ledger bump (scan lifecycle, view-grained bundles, coverage-capped-strong surfacing, and the 12c–12e semantic-graph work), corrected into the floor here; +16 backend at Prompt 15.8 (create-at-approval service+route, gated facts-row, ACL-derived grantees); +8 backend at Prompt 12f (the MV-YAML reader extension: filter / materialization posture / dimensions-with-binding, and the loose-measure name-collision flag); +5 GSO at MV-D98 (A1 supporting-measure carve-out — the ride-along, no-anchor-no-view, low-scoring-anchor, rider-cap, and confidence/tier-invariance pins), with interim undocumented growth (+70 backend / +19 GSO since the 2026-08-25 floor) corrected into the measurement here. +5 GSO at MV-D99 (curated measures not penalized by empty usage: the `advisor_statuses` EMPTY→UNAVAILABLE fold for a curated candidate, the COMPUTED/UNAVAILABLE/non-curated pass-throughs, and the advise-level curated-surfaces vs generated-suppressed pair). +483 backend arrived with the version-control merges (`c910f21a`, `b40a1458`) without a ledger bump, corrected into the floor here; those merges also carried `941f28ac`'s retirement of the three doc guards (GSO fell to 1536), which M5 restores (+5 GSO); +19 backend at M5 (PR #332 review findings 16–20b: the notebook-build input guard, the advice-run exclusion and its legacy fallback on `/current-version`, run_as retry/degrade over a bounded Jobs read and the `/trigger` identity gate (which also refuses an unconfigured Job id), the async post-run poller and its task retention, and the create/trigger offloads). +26 backend / +14 GSO at Prompt 15.11 (MV-D109: the package's Genie-asked space access checks, the backend resolver and its cache, the /trigger and run-mutation gates, the metric-view space row, and the M5 carry-over pins on the identity gate, string-level coercion, and the cached-view-never-satisfies-edit pin). +26 backend / +1 GSO at M1b (VC-D-authz1/authz2: the version-control route levels on the space-keyed and binding-keyed gates, the strict OBO live reads, the unmounted binding observe, the access-level route, the resolver's sync entry, its scope/entitlement split and its proven-level ladder, and Genie's 400 read as not-found). +66 backend at M1c-1 (MV-D109 as implemented: the default-grant fixture and the route-table enforcement test with its tripwire deny harness; the bounded resolver client; identity-gate failure coalescing; the run-gate envelope pins; strict Genie reads; the create-chat pre-seed gate; the drop run_id validation and envelope-literal pins, the swallowed-tripwire harness self-test, the create-agent strict-write pin). +11 backend at M1c-2 (MV-D110 viewer redaction: the scan redaction helper with its positive controls and space-content sweep, the fail-closed held check, the space-detail viewer/editor pair, the history projection in memory mode and its viewer route pin, and the row-level-security warning). +24 backend at M2 (MV-D112: the existing-view definition match with its UC-rewrite, literal, ownership, hidden-definition and non-metric-view pins; the squatted-name refusal and ownership provenance at approval with its route pin; the empty selection that creates nothing; the selected-only create; the drop of an unrecorded create with its manual-removal log; and the final-review fix wave's string-typed definition compare — quoted and bare scalars match, `on` is not `'True'`, and an unparsable or self-referencing definition is refused, not raised). +15 GSO at M3 Task 1 (the MV identity baseline captured at ab2e68cf: twelve statements, the corpus scan and the bundle keys). +50 GSO / +10 backend at M3 (MV-D113: render goldens for literal case and inner whitespace, DATE_TRUNC, 2- and 3-argument DATEDIFF, spaced and reserved columns and the render→canonical round trip; quote_fqn/quote_identifier and quoted create_ddl, source and on; plain view names; the finding-9 gate with its unresolved flag, profiled-missing-column and unprofiled-pass pins and its skip reason; the render_version stamp and the backtick-free leakage view; the stamped replay body at approval and run time, quoted view names, the create-time name refusal and the quoted/unquoted claim match; the fix wave's stamp-and-body single write, column-free aggregates past the servable gate, the unqualified-source render failure, the `unresolved_column` code and the rules-fence indent pin). +50 GSO at M4 (MV-D114: the live-id and measure-matched affected subset with its bundle-union, curated, expected-SQL and no-SQL-in-stage pins; the full-suite post-attach eval with the subset-restricted verdict, zero-graded revert and kept-only baseline handoff; the finally-rollback with its exception, interrupt, retry, fail-twice and pre-deploy pins; the loop baseline-reset pin with its proposer, run-status, target and detached controls; and the end-of-run unmeasured-live report; the final-review fix wave's live-read unmeasured report with its revert-failed, dropped-by-a-later-PATCH, unreadable-live fallback, no-read-without-a-patched-row and loop-wiring pins, and the parse-log firewall pin, then the canonicalize/render log firewall pins). +2 backend at MV-D115 (the metric-view probe's space row asks Can Edit and never Can Manage, and a permissions API refused for scope still grants it). +20 GSO at the M4 live-run fixes (L1: publish scores iteration 0 at a kept attach's post-attach accuracy, read from the `MV_ATTACH` stage row and bound to its baseline eval id, with its no-reset, lever-beats-reset, restart-row, other-eval and promote-stamp pins; L2: `attached_identifiers` reads `tables` too, with the live report and reconcile pins). +42 GSO at M6a (MV-D116: the table-split corpus scan with its spelling, table-less-remainder and ranking pins; the table-leaf helpers; demand scoped to the candidate's tables; the table-aware governed match, seed exclusion and trusted-asset conflict with their query-source controls; the merged-key suppression read; and the identity baseline captured at 9d972e46; the final-review fix wave's cap-boundary pin that only membership moves, the governed-excluded half the merged key still hides, and the definition-table pins for non-list joins, a source-less join, a query join at top level and nested, and a table named twice). +22 backend / +36 GSO at M6b (MV-D117: the identity baseline captured at 43b01544 with its row-count and struct pins; row counts on their only table and their per-table split; struct fields on an alias with the table-qualified, two-part and source-headed controls; the fix wave's source-schema neutral-clear pins (dimension, filter, grain, RATIO, CONDITIONAL_COUNT and measure path) with the four-part and source-aliased controls; the firewall's two-sided quote fold; the unreachable-rung pin and the create-time rung refusal on both paths; the row-count, bundle and stale claim, with the claim success and role-less-anchor pins; the nothing-built skip summary; the stale flag, facts row, re-run gate and 409 DDL refusal; and the quoted GRANT. The frontend callout exclusion is a vitest pin, not counted in this floor). +21 backend / +4 GSO at the M6b final-review fix wave (MV-D117: the firewall's text-field probes, quoted prose, bare prose against a quoted benchmark, the bare/bare control and a SQL probe echoing a quoted question; the stale-beside-its-successor drop on the list with its case- and backtick-insensitive match, the approved stale row, the gate, the suggest and stream reloads and the helper's keep controls; the approved id with no candidate, its lead position, the stale reason that promises no refresh, and the per-key and ordered skip labels). +16 backend / +57 GSO at M6c (MV-D118: the exception type only in the rollback compensation error and the pre-deploy, post-deploy and revert outcomes, with the measured fields kept after the measurement; the net-suite detach, the even-suite keep, the `delta_suite` diagnostic and the flipped outside-the-subset wash; the widened matcher's unqualified-SQL, other-table and no-candidate-tables pins and its per-key selection; either shelf blocking a second add, `pre_attached` on the stage row with its restart survival, loop hand-off and unmeasured-report skip, and the bring-your-own view with no candidate; the unconfirmed PATCH reverted on either shelf when it landed and left when it did not, an unreadable space counted as landed, a failed revert reported, a validation failure not unconfirmed, the real applier's raised PATCH read back and the loop's live reader; the baseline-reset parser, the remaining-failures count, the restart lookup, the attach trajectory step with its champion flag, and the residual count and audit context; the wide-schema re-plan after a kept attach and none after a detach; the status and run-detail headline, the attach stage read while the Jobs API answers, and the run-scores contract; the serialized `run` and the seam with no subset method, three `run_subset` tests removed; the uncovered-table refusal at run hook and approval with its name match, named skip and unreadable body; the drop's plain-name refusal and the level ladder that never asks MANAGE, net zero; and the stale-sibling drop on the run-keyed list and the semantic graph with the `/mv-ddl` current-row fallback. Vitest grew +13 to 685 — the score display, the m6c-a to m6c-d frames, the singular measure sentence and the latest probe answer — and is not counted in this floor). +6 GSO at the M6c final-review fix wave (MV-D118: a mixed kept attach and a mixed detach write only the applied view's row and name only it, and the affected subset drops the pre-attached view's own questions; the even-suite wash whose only regression is outside the subset; the bare no-FROM expression through the fallback; and `run` forwarding its ids and scope label. Vitest grew +1 to 686 — the m6c-d SQL block — and is not counted in this floor). +22 backend / +6 GSO at M7b (MV-D119: the scorer's viewer-safe forms with their every-emitted-string, no-dead-form, quoted-content, kept-count, outside-the-forms and literal next-step and check-label pins; the viewer scan's blank-in-place finding and warning that keep their remediation, the viewer-safe check details with labels kept, and the blank pre-rename wording; each admin route's listing under the caller's token, its 503 on a listing failure and 500 on a summary failure with no exception text, the count-only `top_finding` that skips text with no form, and the space the caller cannot list left uncounted; the detail route's concurrent reads after the View check; and the UTC stamps on a scan, an optimization run, join advice and the watch writes, with the no-`utcnow` source pin. Pytest warnings fell from 10 to 4. Vitest grew +21 to 707 — the single 404 retry after a create, the deep-link no-access state, the admin card's scope and the scope-neutral page subtitle, the m7b-a to m7b-c frames and the centred Return — then +2 to 709 at the M7b final-review fix wave — the App deep-link status pins (a 403 is the no-access state, a 500 is not) — and is not counted in this floor). +32 backend at M7c (MV-D120: the definition match's UC owner and an owner-less view that is not the caller's, and the existing-view helper's non-metric-view refusal and pass-through; the run hook's adoption of an owned matching view and refusal of someone else's, the failed CREATE recorded when its view exists and an `error` skip when it doesn't or its lookup raises, the landed ledger write kept, the proven absence dropped and the unreadable ledger kept, and neither an adopted view nor one found after a failed CREATE dropped when its record fails, with `unrecorded_kept` added to the existing skip-order pin and the CREATE, re-read, DROP order to the existing drop pin; approval's failed CREATE attached when its view exists, owned or not, and a reason when it doesn't, the post-create ledger failure a reason that keeps the view for each write, the fresh create with no owner, the warehouse `RuntimeError` a 500 and not a 401, and `grant_sql` for the owner only. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +30 to 739 — the confirm re-probe with no materialize flag, the owner named with no GRANT, the created terminal's copy, the debounced permission check, the prefill consume, the m7c-a and m7c-b frames, and the card detail's owner-gated GRANT on both surfaces — and is not counted in this floor). +9 backend at the M7c final-review fix wave (MV-D120 Ruling 21: a fresh view whose ledger write failed is kept and not attached when the re-read finds no row, with no DROP, CREATE on the OBO client and the ledger on the SP, where the two drop pins stood, and the `unrecorded` skip label is gone; the strict ledger re-read's present, empty, raising and `_wh_literal`-quoted pins; a view found after a failed CREATE that isn't the caller's is an `exists` skip, and a lookup that raises is logged by type only; approval's not-found reason for an absent view and a raising lookup, a refused view's own reason, the "found" wording on a ledger failure, and the existing-view helper's not-found answer. The GSO count did not move, and pytest warnings stayed at 4. Vitest grew +8 to 747 — the space in the probe key, an older probe's answer discarded while a newer timer waits, and the card GRANT after a degraded or refused create and beside a sibling's `USER_CREATED` create — and is not counted in this floor). A count BELOW this is a regression — investigate. A
      count ABOVE it is normal growth: update this line and the playbook's copy in
      the same commit that adds the tests (test_rules_parity.py enforces the two
      copies match, so you cannot update one).
@@ -667,11 +667,11 @@ Both halves of that were demonstrated by reintroducing the defect rather than ar
 
 > *DECISION (Prompt 12e, reviewer-approved).* The three v3-note checkpoint questions are settled as: **(1)** shared-dim at-rest cue is on-demand boundaries + measure boxes/arrows (optional membership dots), NOT persistent hulls (the v6 overlapping-set clutter finding); **(2)** the Euler-aware contiguity pass is prototyped against 3/10/30-table fixtures before the boundary rectangle is committed, falling back to a member-hull outline if contiguity cannot be guaranteed for pathological membership overlaps; **(3)** user drag is session-only, "Reset layout" restores home, and layout is NOT persisted (keeps the model and the diff clean). Governance stays the headline (MV-D8/12b spirit): the per-box and panel-level governed/curated/ungoverned roll-up renders even when detail is collapsed.
 
-**MV-D34 — Create-at-approval: accepting a suggestion on the IQ surface may create the metric view inline, under the same four invariants as create-at-trigger (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8).** The third smoke run proved the acceptance CUJ was structurally dead: the IQ card offered only [Review in run setup] and [I created this myself] — **no Approve action exists on the surface where the user meets the suggestion** (`MvIqScanAdvisorySection.tsx:500-505`; the decision endpoint has existed since Prompt 9 and nothing on the panel calls it) — so run setup forever found zero approved proposals and "Create and attach" could never enable from this path. The two-run consent model (MV-D1) was designed for proposals *discovered by a run the user is not watching*; on the IQ surface the user is PRESENT, their OBO token is live, and every piece of the create machinery already runs interactively for BYO registration. So: **accepting a suggestion offers to create it now** — probe (`mv_entitlement.probe`, fresh, at click) → consent captured in the modal (`record_consent`) → `CREATE VIEW … WITH METRICS` under OBO through the `mv_create` seam (never a fork, never the SP) → ledger row `OBO_CREATED` with `created_by`, written under the space's advice run — **the BYO-register rails exactly** (MV-D24 built create-outside-a-run persistence and the attach-on-next-run pickup; this decision reuses those rails with `OBO_CREATED` provenance rather than inventing parallel ones). Attach and lift measurement remain the next run's job, unchanged (MV-D16's isolation intact). MV-D1's four invariants transpose verbatim: identity = `require_obo_workspace_client` (hard-fail); a recorded, fresh consent; downgrade-never-upgrade — an insufficient probe degrades the button to [Approve for later] (`approved_for_rerun`, the classic path, which REMAINS the alternative on both surfaces) with the missing GRANT shown, never a dead end; and the target is the consented schema and nowhere else. MV-D1 is NOT superseded: create-at-trigger remains the path for run-output proposals approved asynchronously; create-at-approval is the path for a user standing in front of the suggestion. Both write the same ledger; both feed the same next-run attach.
+**MV-D34 — Create-at-approval: accepting a suggestion on the IQ surface may create the metric view inline, under the same four invariants as create-at-trigger (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8).** The third smoke run proved the acceptance CUJ was structurally dead: the IQ card offered only [Review in run setup] and [I created this myself] — **no Approve action exists on the surface where the user meets the suggestion** (`MvIqScanAdvisorySection.tsx:500-505`; the decision endpoint has existed since Prompt 9 and nothing on the panel calls it) — so run setup forever found zero approved proposals and "Create and attach" could never enable from this path. The two-run consent model (MV-D1) was designed for proposals *discovered by a run the user is not watching*; on the IQ surface the user is PRESENT, their OBO token is live, and every piece of the create machinery already runs interactively for BYO registration. So: **accepting a suggestion offers to create it now** — probe (`mv_entitlement.probe`, fresh, at click) → consent captured in the modal (`record_consent`) → `CREATE VIEW … WITH METRICS` under OBO through the `mv_create` seam (never a fork, never the SP) → ledger row `OBO_CREATED` with `created_by`, written under the space's advice run — **the BYO-register rails exactly** (MV-D24 built create-outside-a-run persistence and the attach-on-next-run pickup; this decision reuses those rails with `OBO_CREATED` provenance rather than inventing parallel ones). Attach and lift measurement remain the next run's job, unchanged (MV-D16's isolation intact). MV-D1's four invariants transpose verbatim: identity = `require_obo_workspace_client` (hard-fail); a recorded, fresh consent; downgrade-never-upgrade — an insufficient probe degrades the button to [Approve for later] (`approved_for_rerun`, the classic path, which REMAINS the alternative on both surfaces) with the missing GRANT shown, never a dead end; and the target is the consented schema and nowhere else. MV-D1 is NOT superseded: create-at-trigger remains the path for run-output proposals approved asynchronously; create-at-approval is the path for a user standing in front of the suggestion. Both write the same ledger; both feed the same next-run attach. *Amended by MV-D120: the confirm step records no materialization consent; a create-time failure after the view exists is a reason, not an error; `grant_sql` is returned only to the view's owner, and a `USER_CREATED` result names the owner.*
 
 **MV-D35 — Proven facts lead; the score ranks; a percent is never displayed as "confidence" (DECIDED — reviewer-approved at the third smoke review; implemented at Prompt 15.8; supersedes MV-D32(1)'s caption-as-fix IN PART).** The reviewer's challenge, third smoke run: "if a metric view is syntactically accurate, executable, and orthogonal to existing metric views, why is our confidence low? Would you, as a user, accept a low-confidence suggestion?" The challenge is correct and the display was a category error, twice band-aided (MV-D32(1)'s caption, 15.7b's badge) instead of replaced. The facts: **quality is binary and already gated** — nothing surfaces without a rendered, validated, placeholder-free, executable body (MV-D8, MV-D29, 15.5's servable-body invariant), and dedup guarantees non-overlap with existing governed measures; the LYDS score measures **demand evidence**, a RANKING signal, not doubt about correctness. Displaying it as "NN% confidence / LOW" told users their strongest candidate might be broken — false, and corrosive. The replacement: (1) cards LEAD with proven facts as explicit checks — "✓ validated · ✓ executable · ✓ no overlap with existing metric views" — each check backed by the gate that proved it, never decorative; (2) evidence renders as a human sentence ("18 curated queries · usage history"); the numeric score is used ONLY for ordering plus ONE Recommended pick — or, when all surfaced proposals are mutually orthogonal (disjoint measure sets), the panel says so plainly ("all N are independent — any or all can be created") instead of forcing a ranking that does not exist; (3) the raw blend, weights, and coverage stay in `score_components` for the debugging user; (4) the COMPUTED≠SUPPORTIVE defect is fixed — `confidenceDisplay` captions "Backed by usage history and lineage" whenever L/D *ran*, even at near-zero values (`mvFormat.ts:313-315`); basis captions must reflect signal CONTRIBUTION, not signal execution. MV-D30's tier gating survives as the ordering/disclosure mechanism; what dies is the naked percent and the word "confidence" anywhere a user reads it. This applies to EVERY surface that renders a proposal — the IQ panel AND the run-output panels — through shared components, so the post-GSO surface inherits it by construction.
 
-> **MV-D36–MV-D97 — reserved for the ontology line; NOT decided on this base branch.** These numbers belong to the longer-running `ontology` branch, which descends from this base. This base branch's own register runs MV-D1–MV-D35, then MV-D98–MV-D100 (Plan A1 and its two follow-ups), then MV-D109 onward (the PR #332 review); the gaps are deliberate, not dropped decisions. *Numbering collision, corrected at PR #332 M0 (owner decision, 2026-09-29):* Plan A1 was recorded as MV-D98 because that was then the next number above the ontology line, but `origin/ontology` went on to assign MV-D98–MV-D108 itself. Its MV-D98/D99 (a governed `Domain/Sub` taxonomy must survive ER as distinct tags, `537b2093`) and its MV-D100 (an applied governed-tag membership is reversible under OBO, `c653ea3a`) collide with this branch's MV-D98, MV-D99 and MV-D100 below, which were assigned first (`f83db05c`, `897603b1`, `60388a8e`); neither line inherited the other's, since the fork point carries none of the three. **This branch keeps MV-D98–MV-D100. `ontology` renumbers its two colliding entries when it rebases onto this branch after PR #332 merges**, to numbers free on both lines at that time — MV-D120 and up as of this note, since this branch uses MV-D109–MV-D119 and `ontology` uses nothing above MV-D109. Its MV-D101–MV-D108 do not collide and keep their numbers. Until that rebase, an MV-D98, MV-D99 or MV-D100 cited on `ontology` means the ontology decision. A new entry on either line takes the next number free on both.
+> **MV-D36–MV-D97 — reserved for the ontology line; NOT decided on this base branch.** These numbers belong to the longer-running `ontology` branch, which descends from this base. This base branch's own register runs MV-D1–MV-D35, then MV-D98–MV-D100 (Plan A1 and its two follow-ups), then MV-D109 onward (the PR #332 review); the gaps are deliberate, not dropped decisions. *Numbering collision, corrected at PR #332 M0 (owner decision, 2026-09-29):* Plan A1 was recorded as MV-D98 because that was then the next number above the ontology line, but `origin/ontology` went on to assign MV-D98–MV-D108 itself. Its MV-D98/D99 (a governed `Domain/Sub` taxonomy must survive ER as distinct tags, `537b2093`) and its MV-D100 (an applied governed-tag membership is reversible under OBO, `c653ea3a`) collide with this branch's MV-D98, MV-D99 and MV-D100 below, which were assigned first (`f83db05c`, `897603b1`, `60388a8e`); neither line inherited the other's, since the fork point carries none of the three. **This branch keeps MV-D98–MV-D100. `ontology` renumbers its two colliding entries when it rebases onto this branch after PR #332 merges**, to numbers free on both lines at that time — MV-D121 and up as of this note, since this branch uses MV-D109–MV-D120 and `ontology` uses nothing above MV-D109. Its MV-D101–MV-D108 do not collide and keep their numbers. Until that rebase, an MV-D98, MV-D99 or MV-D100 cited on `ontology` means the ontology decision. A new entry on either line takes the next number free on both.
 
 **MV-D98 — Supporting-measure carve-out: a sub-floor recurring measure may enrich an anchored grain bundle, never surface alone (DECIDED — authorized to unblock Plan A1; residual of MV-D30 surfaced by the first deployed human review's `control_metrics` one-measure card; qualifies POV Part 3's `suppress < 25` floor without loosening it for standalone proposals).** MV-D30 bundles the measures of one grain into one view, but only `VERDICT_PROPOSE` members (tier ≥ Low) reach a bundle: a measure that recurred yet blended under 25 collapses to `VERDICT_SUPPRESSED` (`mv_scoring.py:1425`), is dropped as non-persistable (`PERSISTABLE_VERDICTS = {PROPOSE, CONFLICT}`, `mv_scoring.py:126`) at the Pass-1 `is_persistable` gate (`mv_advisor.py:1481`), and never enrolls in `bundles` (`mv_advisor.py:1486`). So a grain whose queries repeat one strong measure and several weak-but-real ones still ships a one-measure view — the exact thin-card outcome MV-D30 exists to prevent, re-entering one grain at a time. The POV floor `High ≥ 75, Medium 50–74, Low 25–49, suppress < 25` (Part 3) was written to keep a low-value **standalone proposal** off a reviewer's screen; it was never a statement that a sub-floor measure may not corroborate a view the reviewer is already being shown. **What this decides:** a `VERDICT_SUPPRESSED` candidate that is otherwise a clean PROPOSE — leakage-gate-clean (`mv_advisor.py:1449`), not fingerprint-suppressed (`mv_advisor.py:1426`), dedup verdict PROPOSE (not BLOCKED/CONFLICT) — MAY be folded into a bundle as a `role:"supporting"` member when, and only when, that grain already has at least one **anchor whose SCORE earns MEDIUM+** — the gate keys on `uncapped_tier` (the score-earned tier), NOT the coverage-capped display tier, because the coverage cap measures how many signal producers the workspace has, not the strength of the measure, and gating on it would starve exactly the partial-signal workspaces this carve-out helps; it is capped at `MV_ADVISOR_MAX_BUNDLE_RIDERS` (default 4) and rendered as an ordinary additive `MeasureRequest` inside the single `mv_yaml.generate`. **Constraints not open:** the standalone floor is UNCHANGED — a sub-25 measure still never becomes its own card, and riders NEVER constitute a bundle alone (a grain whose anchor earns only LOW, or has no PROPOSE anchor at all, produces no rider fold); confidence and both tiers continue to come from the strongest anchor only (`mv_advisor.py:1145`), so a supporting member can never lift a view's score, its displayed tier, or its MEDIUM+/LOW-disclosed surfacing gate; the per-measure fingerprint stays the identity and suppression grain (MV-D30/MV-D10), so a rejected rider stays rejected inside any future bundle (`genie_opt_mv_suppressions`) and the bundle fingerprint simply reflects its membership; and every supporting measure still clears the MV-D29 leakage oracle on its representative expression before it can render. **Verification:** ride-along inclusion, no-anchor-no-view, the low-scoring-anchor exclusion, the rider cap, and confidence/tier-invariance are pinned in `test_mv_advisor.py` (the carve-out is entirely in `mv_advisor`; `mv_scoring`'s VERDICT_SUPPRESSED path is unchanged) in the same commit as the code; STOP before deploy.
 
@@ -694,7 +694,7 @@ The service principal never answers the question. There is no group matching, be
 
 **MV-D111 — Run-keyed read routes come under the control plane in this PR (DECIDED 2026-09-28 — PR #332 review M0, option A).** The run-keyed reads (`GET /runs/{run_id}`, `/status`, `/revert-options`, `/iterations`, `/loop-state`, `/publish`, `/debug-data`, `/eval-results`, `/question-results`, `/patches`, `/benchmark-changes`) and the space-keyed `current-version`, `active-run`, and `runs` were ungated on `main` and expose patch text, SQL, and evaluation detail for any space whose run ID a caller knows. Option A includes them in M1: resolve `run_id` to `space_id` from `genie_opt_runs`, then content-bearing reads require EDIT (MV-D110) and status/list reads require VIEW. The MV-D109 route-table test enforces this with no allowlist. Option B (defer with a named allowlist) was rejected so the gap cannot grow silently. A denied run read is a 403, never an empty 200.
 
-**MV-D112 — Metric-view object and consent integrity (DECIDED 2026-09-29 — PR #332 review M2, option A on each).** Five decisions. (1) Create-at-approval re-attaches an existing metric view only when its definition is the proposal's: both YAML bodies are parsed and compared after removing what Unity Catalog rewrites on store (scalar quoting, dropped empty lists, block-scalar chomping, key order), so any content change — an expression, a literal, a filter, a join, the comment, a synonym — refuses, as do a definition the caller cannot see and one that cannot be read. This amends MV-D34's idempotent re-approval, which accepted any metric view at the consented name and recorded it `OBO_CREATED`. Evidence: M2 check V4 on an app-created view — its `view_text` differs from the body the app sent, byte for byte and after parsing (`version: '1.1'` returns as `1.1`, `dimensions: []` is dropped), yet is equal after normalization; the register path's measure fingerprint was rejected because `canonical_expr` erases literals. (2) The re-attached view's ledger row is `OBO_CREATED` only when its UC `owner` (the same `DESCRIBE TABLE EXTENDED … AS JSON`) is the caller; otherwise `USER_CREATED`, which the drop route refuses (MV-D24 invariant 1). (3) When the run-time hook has created a view but cannot write its ledger row, it drops that view under OBO — the same cleanup it already does for a view that fails the post-create check — and a failed drop is logged as an error naming the view. (4) In `create_and_attach`, an empty `mv_approved_suggestion_ids` creates nothing: the run proceeds `suggest_only` with the stamped reason "no metric views were selected for this run", and run setup keeps Start disabled until a view is selected. (5) Run setup derives the consent target and the probe's source tables from the selected proposals only, re-probes when the selection changes, and blocks Start when the selection spans more than one schema; the backend's retargeting to the consented schema (MV-D22) is unchanged.
+**MV-D112 — Metric-view object and consent integrity (DECIDED 2026-09-29 — PR #332 review M2, option A on each).** Five decisions. (1) Create-at-approval re-attaches an existing metric view only when its definition is the proposal's: both YAML bodies are parsed and compared after removing what Unity Catalog rewrites on store (scalar quoting, dropped empty lists, block-scalar chomping, key order), so any content change — an expression, a literal, a filter, a join, the comment, a synonym — refuses, as do a definition the caller cannot see and one that cannot be read. This amends MV-D34's idempotent re-approval, which accepted any metric view at the consented name and recorded it `OBO_CREATED`. Evidence: M2 check V4 on an app-created view — its `view_text` differs from the body the app sent, byte for byte and after parsing (`version: '1.1'` returns as `1.1`, `dimensions: []` is dropped), yet is equal after normalization; the register path's measure fingerprint was rejected because `canonical_expr` erases literals. (2) The re-attached view's ledger row is `OBO_CREATED` only when its UC `owner` (the same `DESCRIBE TABLE EXTENDED … AS JSON`) is the caller; otherwise `USER_CREATED`, which the drop route refuses (MV-D24 invariant 1). (3) When the run-time hook has created a view but cannot write its ledger row, it drops that view under OBO — the same cleanup it already does for a view that fails the post-create check — and a failed drop is logged as an error naming the view. *Amended by MV-D120: after a failed ledger write the hook never drops the view; it attaches when a re-read finds the record and otherwise leaves the view for the next run, which adopts a matching view the caller owns.* (4) In `create_and_attach`, an empty `mv_approved_suggestion_ids` creates nothing: the run proceeds `suggest_only` with the stamped reason "no metric views were selected for this run", and run setup keeps Start disabled until a view is selected. (5) Run setup derives the consent target and the probe's source tables from the selected proposals only, re-probes when the selection changes, and blocks Start when the selection spans more than one schema; the backend's retargeting to the consented schema (MV-D22) is unchanged.
 
 ### MV-D113 — Correct SQL for generated metric views (DECIDED 2026-09-29 — PR #332 M3)
 
@@ -1641,6 +1641,344 @@ mounted route stays Gated or Exempt.
   `backend/models.py:68` (a docstring) still say "Org-wide".
 - An unexpected admin 500 logs no traceback (made during execution).
 - The M7b per-task deferred minors carry forward.
+
+### MV-D120 — The M2 follow-ups: an unsettled create or ledger write, the debounced permission check, the owner on attach-at-approval, and the prefill and m2-d pins (DECIDED 2026-09-30 — PR #332 M7c, owner)
+
+**Problem (the M7c line of the PR #332 tracking issue: the M2 follow-ups, and
+two defects found while planning).**
+- A statement that outlives its wait is reported as a failure.
+  `sql_warehouse_execute` submits with `wait_timeout="50s"` and never polls
+  (`packages/genie-space-optimizer/src/genie_space_optimizer/common/warehouse.py:68`,
+  `:80`), so a statement still running at 50 s raises (`:87`) though it may
+  still commit. The CREATE (under OBO) and the ledger MERGE
+  (`wh_upsert_mv_created_object`, SP, `:1292`) both go through it.
+- The run-time hook refused any object at the consented name. A CREATE that
+  committed after its wait was never attached or recorded, blocked its own name
+  on every later run, and was invisible to the drop route.
+- After a failed ledger write, the hook dropped the view without re-reading
+  the ledger. A MERGE that committed after its wait therefore left a `CREATED`
+  row for a dropped view.
+- At approval, a failed CREATE raised to the route, and so did a failure in the
+  advice-run or ledger writes after the view existed (and was perhaps attached).
+- The run-setup permission check probed on every selection change, and every
+  `/mv/probe` call records a consent row (`probe_id=uuid.uuid4().hex`,
+  `backend/services/mv_entitlement.py:437`).
+- Attach-at-approval computed the view's UC owner and threw it away. The route
+  returned `grant_sql` for every created result, and the created terminal fell
+  back to the proposal's `/mv-ddl` grant, so a caller who doesn't own the view
+  was offered a GRANT only its owner can run.
+- No test pinned `AutoOptimizeTab`'s two prefill-consume call sites or the m2-d
+  panel's "Verified under OBO by …" line.
+- Found while planning (1): the accept flow's confirm re-probe sent
+  `materialize_consented: true`. Every create-at-approval recorded a
+  materialization consent the user never gave, against "Materialization is a
+  separate consent (mv_materialize); never bundled". Nothing read the flag to
+  materialize, so the harm was a false consent record, not an action. The
+  comment cited MV-D16, which is the attach-ordering decision.
+- Found while planning (2): `POST /spaces/{id}/mv/create` mapped any
+  `RuntimeError` from the service to a 401 carrying its text.
+  `sql_warehouse_execute` raises `RuntimeError` for a failed or timed-out
+  statement, so a warehouse timeout reached the user as "unauthorized" and its
+  message crossed the firewall.
+
+**Decisions (owner rulings).**
+- **Consent write = debounce, record at check time** (2026-09-30). The probe
+  waits for the selection to settle, and each probe still records its consent
+  row when it runs.
+- **Run-hook adoption = owned only** (plan approval, 2026-09-30). The hook
+  adopts an existing matching view only when the caller owns it, and refuses
+  any other as before (Ruling 2).
+- **Non-owner GRANT = name the owner, show no SQL** (plan approval). The
+  result names the owner and asks them to grant (Ruling 8).
+- **Bundled materialize consent = fix it in M7c** (plan approval, Ruling 12).
+- **After a failed ledger write = never drop** (final review, 2026-10-01). The
+  run keeps the view whatever the re-read says (Ruling 21).
+
+**Rulings (planning).**
+1. No settle-and-poll helper. A poll-to-terminal wrapper would be a second
+   execution path beside `sql_warehouse_execute`, and it still couldn't close
+   the window in which a cancelled statement commits anyway. Instead, every
+   create path treats a view at the consented name that matches the proposal
+   and is the caller's as its own, so a late commit is adopted by the next run
+   or the next click. `common/warehouse.py` is unchanged. Cost if wrong: a
+   CREATE that commits late in a run is picked up one run later.
+2. The run-time hook adopts an existing object only when it is a metric view,
+   its definition is the proposal's (MV-D112) and its UC owner is the caller
+   (`backend/services/mv_create.py:561-576`). It is recorded `CREATED` /
+   `OBO_CREATED` and attached like a fresh create (`:615-623`, `:673-681`).
+   Anything else is still the `exists` skip. The hook doesn't take approval's
+   `USER_CREATED` branch: attaching someone else's view is a choice the user
+   makes on the card, not one a run makes for them. Cost if wrong: a caller's
+   own hand-made view with the identical definition is recorded `OBO_CREATED`,
+   which has been approval's rule since MV-D112.
+3. After a failed CREATE, both paths look the view up with
+   `_adopt_existing_view` (`mv_create.py:922`), which returns an
+   `ExistingView` (`:903`) carrying the owner from `_existing_view_matches`
+   (`:853`, `:898`). *As built (final-review fix wave):* when the object is
+   not a confirmed metric view, the helper asks `_object_exists` (`:931`), and
+   `ExistingView.exists` is `False` only when that finds nothing either
+   (`:932-937`). A failed lookup also reads as not found, so `exists=False`
+   never proves the name is free.
+   - Run hook (`:580-616`): an owned match goes on to the ledger write. A view
+     that exists but is someone else's, or isn't this proposal, is the
+     `exists` skip (`:603-609`), as before the CREATE (`:564-575`). Anything
+     else is the `error` skip, with the note that the next run adopts the view
+     if the create commits (`:610-616`). The lookup is guarded, so one that
+     raises reads as not found, logged by exception type only (`:590-600`).
+   - Approval (`:1410-1443`): a match takes the existing-view branch with
+     `already_existed=True`, because this call never saw its CREATE succeed.
+     A view that exists but is refused returns that refusal's reason
+     (`:1431-1435`). A view that wasn't found returns "The create of {name}
+     didn't complete and the view wasn't found. If the warehouse was slow,
+     approving again will attach it; if this repeats, approve it for the next
+     run instead." (`:1436-1442`). The lookup is guarded the same way
+     (`:1420-1430`).
+   - An adopted view skips the post-create confirm and cleanup, which only a
+     fresh create runs (`:617`, `:1444`): the helper has already confirmed it.
+4. The cleanup drop runs only on a proven absence (superseded by Ruling 21:
+   no drop at all). *As built (Task 2, fix round 1; Rulings 16 and 17):*
+   `wh_load_mv_created_object` swallows every error and returns `None`
+   (`common/warehouse.py:1449-1454`), so it can't tell "absent" from
+   "unreadable" and would fail open. The re-read is therefore the strict
+   `_ledger_row_exists` (`mv_create.py:273-291`): a `SELECT 1` through
+   `sql_warehouse_query` on the SP client with no `try`, quoting with
+   `_wh_literal` as `backend/routers/auto_optimize.py:5594` does. After a fresh
+   create's failed ledger write (`mv_create.py:638-673`):
+   - the row is present: the MERGE committed, so the view is kept and attached
+     as recorded;
+   - the row is absent, or the re-read raises: the view is kept, not attached,
+     and counted `unrecorded_kept` ("could not be recorded; left in place for
+     the next run to adopt", `:366`), which Ruling 2 makes safe (`:654-673`).
+
+   An adopted view, whether already at the name or found after a failed CREATE,
+   goes to `unrecorded_kept` without a re-read (`:642-649`), because this run's
+   CREATE is not known to have made it. No DROP follows a failed ledger write on
+   any path; the only DROPs left are the post-create confirm cleanups
+   (`:617-627`, `:1444-1455`). Cost if wrong: a fresh view whose record failed
+   waits for a later run to adopt it (Ruling 21).
+5. At approval, a failure after the view exists is a reason, not a raise
+   (`mv_create.py:1473-1510`). If ensuring the tables, the advice run or the
+   ledger write fails, the view is kept, and stays attached if the PATCH
+   landed. The call returns `created=False, degraded=False` and the reason
+   "{name} was created[ and attached] but couldn't be recorded. Approve again
+   to record it." *As built (final-review fix wave):* a view this call found
+   rather than created reads "was found[ and attached]" (`:1503-1505`).
+   Approving again records it through the existing-view path.
+   The terminal success state isn't shown, because the record is the user's
+   evidence and it doesn't exist yet. Cost if wrong: one extra click.
+6. The route's only 401 is the up-front OBO check
+   (`backend/routers/auto_optimize.py:2748-2751`). Any failure from the service
+   is a 500 with the fixed text "Create failed; please retry or approve for the
+   next run.", logged by exception type only (`:2763-2771`). After Rulings 3
+   and 5, an exception that reaches the route comes from before any write, so
+   the text is true.
+7. `owner` is the view's UC owner when the existing-view path ran, else `None`
+   (`mv_create.py:1461`; `MvCreateAtApprovalResponse.owner`,
+   `backend/models.py:546`; its mirror, `frontend/src/types/index.ts:1066`). A
+   fresh create belongs to the caller. `grant_sql` is returned only when
+   `provenance == "OBO_CREATED"` (`auto_optimize.py:2780-2786`), which under
+   MV-D112 means the caller owns the view.
+8. A caller who doesn't own the view is offered no GRANT from either source.
+   For `USER_CREATED`, `MvCreatedTerminal` (`MvAcceptFlow.tsx:132`) says "Owned
+   by {owner}, so only they can change it or grant the optimizer access to it."
+   ("another user" when the owner is unknown, `:165`), asks the owner to grant
+   SELECT (`:174`), and renders no SQL block and no "Show detail" fallback
+   (`:201`). The flow also passes it no grant (`:403`). Cost if wrong: a
+   non-owner has no copy-ready SQL to forward, which they couldn't run anyway.
+9. Out of scope: `MvCreateAttachPanel` (`MvCreateAttachPanel.tsx:168-170`) and
+   the list's "already attached" terminal (`MvAcceptFlow.tsx:428`) keep showing
+   `/mv-ddl`'s grant (`auto_optimize.py:3931`). Their rows carry no owner, and a
+   registered (`USER_CREATED`) view is usually the caller's own, so hiding the
+   grant there would hide it from owners. *Narrowed during execution:* the
+   proposal card's "Show detail" is owner-gated (Ruling 19).
+10. The debounce is 400 ms (`MV_PROBE_DEBOUNCE_MS`,
+    `frontend/src/components/auto-optimize/OptimizationConfig.tsx:68`, matching
+    `SEARCH_DEBOUNCE_MS` at `frontend/src/components/TableBrowserDrawer.tsx:6`).
+    The selection reads as loading at once (`OptimizationConfig.tsx:211`), so
+    Start is blocked from the first change, and the probe runs after the delay
+    (`:212-236`). `mvProbeSeq` still guards the answer. The accept flow's probes
+    are click-driven and stay immediate (`MvAcceptFlow.tsx:296`, `:318`).
+    *As built (final-review fix wave):* the probe key carries the space id
+    (`OptimizationConfig.tsx:137`), so a space change before the delay probes
+    the new space, not the old one.
+11. The timer lives in a ref (`OptimizationConfig.tsx:126`) and is cleared by
+    the cancel rule (Ruling 18) and on unmount (`:239-243`), never in the probe
+    effect's cleanup. That effect re-runs on the very render that schedules the
+    timer, so a cleanup-cleared timer would cancel itself and no probe would
+    ever fire. *As built (final-review fix wave):* unmount also nulls the timer
+    ref and the in-flight key, so a remount (StrictMode's in development)
+    starts clean.
+12. `materialize_consented` is dropped from the confirm re-probe, not set to
+    `false` (`MvAcceptFlow.tsx:311-323`). The request type keeps the optional
+    field (`types/index.ts:947`), and the backend default is `false`
+    (`auto_optimize.py:267`). The comment now says the re-probe records the
+    consent the create re-verifies (MV-D34). Rows recorded before M7c keep
+    their `true`.
+13. `MvCreatedTerminal` is extracted (`MvAcceptFlow.tsx:115`, `:132`) so a
+    frame can render the created terminal, which the flow reaches only by
+    clicking. `MvAcceptFlow` renders it with the same values as before, and
+    every `OBO_CREATED` render is byte-identical to the old markup. *As built:*
+    the props are `attached`, `alreadyExisted`, `provenance`, `owner`,
+    `grantSql`, `catalogUrl` and `onStartRun`. There is no `fullName` prop: the
+    markup never showed the name (`catalogUrl` links it), and rendering it
+    would have broken the byte-identical `OBO_CREATED` markup, so Task 7
+    removed it as unused.
+14. Frames: m7c-a (created and attached, `OBO_CREATED`, the GRANT shown — the
+    control) and m7c-b (an existing view someone else owns, attached,
+    `USER_CREATED`, the owner named and no GRANT)
+    (`mockups/MvAttachOwnerM7cFrames.tsx:62`, `:82`; registered at
+    `mockups/frames.tsx:191-192`). The reference is 15.10's attached terminal.
+    The created terminal had no approved frame before; m7c-a is its first. The
+    frames render the card collapsed: 15.10 is expanded, and an expanded
+    static frame would show the card detail's GRANT, which only a click-driven
+    create can hide (Ruling 19).
+
+**Rulings made during execution** (each with its cost if wrong):
+15. Task 1 keeps the owner on an `existing: ExistingView | None` local, not a
+    bare `owner` local, because an unread local trips ruff F841 until Task 3
+    reads it. Cost if wrong: none; Task 3 reads `existing.owner`.
+16. The strict ledger existence check lives in `mv_create.py`, not in the GSO
+    package, so M7c leaves `packages/` untouched (Ruling 4). Cost if wrong: a
+    second reader of the ledger table beside `wh_load_mv_created_object`.
+17. An adopted view is never dropped after a failed ledger write; it goes to
+    `unrecorded_kept`, because this run's CREATE is not known to have made it
+    (Ruling 4). Cost if wrong: an unrecorded adopted view lingers until the
+    next run adopts it.
+18. The debounce cancels a pending timer whenever its key is no longer wanted
+    — a new key, a key that becomes `null` (nothing ticked, or a selection
+    across two schemas), or the section turning off — and clears the loading
+    state with it (`OptimizationConfig.tsx:197-205`). The brief reset the timer
+    only when the section turned off, which left "Checking…" stuck after
+    turning it back on and still probed a selection the user had left. A probe
+    already sent has no pending timer, so turning the section off and on keeps
+    its answer, as before. Cost if wrong: none observed; the sent-probe test
+    passes unchanged.
+19. The proposal card's "Show detail" omits the GRANT once its own accept flow
+    returns `USER_CREATED`. `MvProposalCard` provides
+    `MvCardCreateResultContext` (`mvCardContext.ts:9`) around its actions slot
+    (`MvProposalCard.tsx:429-431`). The flow reports the provenance only from a
+    create result it got back (`MvAcceptFlow.tsx:341`), and the detail renders
+    `ddl.grant_sql && !ownedElsewhere` (`MvProposalCard.tsx:408`). The state
+    starts `false` (`:272`), so the detail is unchanged until the user's own
+    create says someone else owns the view. Because the context sits on the
+    shared card, it covers both the IQ scan (`ScanProposalCard`) and the
+    run-output (`MvSuggestOnlyPanel`) surfaces with no wiring at either call
+    site. The owner chose "hide", and Ruling 9 had excluded only the panel and
+    the list terminal. Cost if wrong: one more piece of plumbing between the
+    flow and the card, and a reviewer may read it as scope creep.
+20. The card-detail gate ran as its own task (7b) before this record, not in
+    the fix wave, so the docs describe the final behaviour. Cost if wrong: none
+    beyond the ordering.
+21. After a failed ledger write, the run never drops the view (owner ruling at
+    the final review). A MERGE that outlived its wait is invisible to a
+    `SELECT` until it commits, so an absent row doesn't prove the write
+    failed, and a drop after it could leave a `CREATED` row for a view that is
+    gone. The fresh create re-reads with `_ledger_row_exists`: a present row
+    attaches the view, and an absent row or a failed re-read keeps it
+    unattached as `unrecorded_kept` (`mv_create.py:654-673`). The `unrecorded`
+    outcome, its DROP and its skip label are gone (`_SKIP_ORDER`, `:355-368`).
+    The next run adopts a matching view the caller owns (Ruling 2). Cost if
+    wrong: an unrecorded view stays in the consented schema until a later run
+    adopts it, or indefinitely if none runs; it is the caller's own object,
+    visible in Unity Catalog.
+
+**Amendments to recorded decisions** (each carries a one-sentence note at its
+site; none is rewritten): MV-D112 point (3) (the run-time hook's drop of an
+unrecorded view); MV-D34 (create-at-approval); the MV-D36–MV-D97 numbering
+note (the next free number on both lines).
+
+**Unchanged.** No new route, table, column, job task or job parameter. One
+model field, `MvCreateAtApprovalResponse.owner`, and its TypeScript mirror. No
+GSO file changed: `common/warehouse.py` and `sql_warehouse_execute` are as they
+were. CREATE, DESCRIBE and DROP stay on `require_obo_workspace_client`, and every
+ledger read and write stays on the SP client. Consent is re-verified fresh, a
+mismatch downgrades and never upgrades, only the consented schema is
+targeted, and adoption never makes a view `OBO_CREATED` unless its UC owner is
+the caller.
+
+**Tests** (+32 backend, +0 GSO, +30 vitest).
+- The owner from the definition match, case-insensitive; no owner is not the
+  caller's; `_adopt_existing_view` refuses a non-metric view and passes a match
+  through (+6 backend).
+- The run hook: an owned matching view at the name is adopted with no CREATE,
+  and someone else's is refused; a failed CREATE whose view exists is recorded
+  and attached, one with no view and one whose lookup raises is an `error`
+  skip; a ledger write that landed is kept, a proven absence drops the fresh
+  view, an unreadable ledger keeps it; an adopted view, pre-existing or found
+  after a failed CREATE, is never dropped; `unrecorded_kept` in the skip-order
+  pins; and the existing drop test now asserts CREATE, re-read, DROP in order
+  (+11 backend). The final-review fix wave flips the two drop pins (below).
+- Approval: a failed CREATE whose view exists is attached, owned and someone
+  else's; a failed CREATE with no view, a different one or a raising lookup is
+  a reason; a ledger failure after the create, for each of the three writes and
+  attached or not, is a reason that keeps the view; a fresh create has no
+  owner; a warehouse `RuntimeError` is a 500, not a 401, with no exception
+  text; and `grant_sql` only for the owner (+15 backend).
+- The accept flow: neither probe sends `materialize_consented`; a
+  `USER_CREATED` result names the owner and shows no GRANT, not even the
+  card's; and `MvCreatedTerminal`'s copy for each provenance and attach outcome
+  (+11 vitest).
+- The debounce: one probe after the delay, three quick toggles probe once,
+  unmounting, turning the section off or unticking every view before the delay
+  sends nothing, and Start stays disabled until the answer lands (+6 vitest).
+  The selection tests moved to fake timers with no assertion weakened, and the
+  denied-permission test gained a call count.
+- Starting a run or opening one from history consumes the prefill, and
+  rendering alone does not (+3 vitest); the m2-d frame's "Verified under OBO
+  by" line (an assertion added).
+- The m7c-a and m7c-b frames and their registration order (+4 vitest).
+- The card detail's GRANT on both surfaces: hidden after a `USER_CREATED`
+  create, shown after an `OBO_CREATED` one and before any create (+6 vitest).
+
+**Tests at the final-review fix wave** (+9 backend, +0 GSO, +8 vitest).
+- The run hook: a proven-absent ledger row keeps the fresh view unattached
+  and drops nothing, and the unrecorded create is kept with CREATE, re-read,
+  CREATE in order and no DROP, both with CREATE on the OBO client and the
+  ledger on the SP (flipped); a view found after a failed CREATE that is
+  someone else's or isn't this proposal is the `exists` skip (+2); the lookup
+  that raises logs its exception type only; the confirm-cleanup DROP failure
+  is logged (retargeted); the `unrecorded` skip label is gone (−1).
+- `_ledger_row_exists`: a present row and an empty result on the SP, a read
+  failure that raises, and both ids quoted through `_wh_literal` (+4).
+- Approval: a failed CREATE whose view isn't found, absent or with a lookup
+  that raises, returns the not-found reason, and one whose view exists but is
+  refused returns its reason (three cases became four, +1); a ledger failure
+  after finding the view says "found", attached or not (+2);
+  `_adopt_existing_view` reports an object it can't find with `exists=False`,
+  and a non-metric view it does find with `exists=True` (+1).
+- The debounce: a space change before the delay probes the new space only,
+  and an older probe's answer that lands while a newer timer is pending is
+  discarded (+2 vitest). Both suites restore real timers in a `finally`.
+- The card detail's GRANT stays after a degraded or refused create, and a
+  sibling card's survives the other card's `USER_CREATED` create, on both
+  surfaces (+6 vitest). The prefill's zero-calls test asserts the active-run
+  read ran.
+
+**Residuals (not fixed here).**
+- A view whose ledger write failed, a fresh create or an adopted one, stays
+  unrecorded until a later run adopts it (Rulings 17 and 21). Until then it is
+  not attached by the run and is invisible to the drop route and
+  `/mv-created`.
+- Each failed approval record leaves an orphan advice-run row: the advice run
+  is written before the ledger row (`mv_create.py:1484-1497`), and approving
+  again writes another.
+- A view kept after a failed approval record stays on the Agent's config, if
+  the PATCH landed, with no ledger row, so the drop route and `/mv-created`
+  don't see it until the user approves again (Ruling 5).
+- An adopted view's row is `OBO_CREATED`, so `MvCreateAttachPanel`'s "the app
+  created this view, so the app can drop it" (`MvCreateAttachPanel.tsx:113-114`)
+  overstates what the app did. The
+  caller owns it, and MV-D118's `pre_attached` keeps the run from detaching it.
+- A CREATE that commits late in a run is adopted one run later (Ruling 1).
+- `MvCreateAttachPanel` and the list's "already attached" terminal still show
+  `/mv-ddl`'s grant to any caller (Ruling 9; the card detail is gated, Ruling
+  19).
+- Consent rows recorded at approval before M7c say
+  `materialize_consented = true` (Ruling 12).
+- The outer per-suggestion `except` in the hook still logs a traceback
+  (`mv_create.py:685-689`, M7d). So do `_confirm_metric_view` (`:309`, `:318`)
+  and `_describe_metric_view` (`:777`), which `_adopt_existing_view` now
+  reaches on every existing-name path and every failed-CREATE lookup (M7d).
 
 ### Prompt 0.5 — Amend the design docs (run before Phase 1)
 

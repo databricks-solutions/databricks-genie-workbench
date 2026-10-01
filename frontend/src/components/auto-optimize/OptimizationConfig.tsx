@@ -63,6 +63,9 @@ const LEVERS = [
 const DEFAULT_TARGET_PERCENT = "90"
 const DEFAULT_MAX_ATTEMPTS = "3"
 const MAX_WORKLOAD_WAREHOUSES = 20
+// Each permission check records a consent row (/mv/probe), so the check waits
+// for the selection to settle instead of firing on every toggle.
+export const MV_PROBE_DEBOUNCE_MS = 400
 
 // Shared section header for the two configuration columns and their subsections.
 function PillarHeader({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
@@ -120,6 +123,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [mvProbeState, setMvProbeState] = useState<MvProbeState | null>(null)
   const mvProbeInFlight = useRef<string | null>(null)
   const mvProbeSeq = useRef(0)
+  const mvProbeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const hasHealthIssues = (healthIssues?.length ?? 0) > 0
   const targetAccuracy = parseTargetAccuracy(targetPercent)
@@ -130,7 +134,7 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const mvSelected = useMemo(() => selectedMvProposals(mvProposals, mvSelectedIds), [mvProposals, mvSelectedIds])
   const mvTarget = useMemo(() => deriveMvTarget(mvSelected), [mvSelected])
   const mvSourceTables = useMemo(() => collectMvSourceTables(mvSelected), [mvSelected])
-  const mvProbeKey = mvTarget ? `${mvTarget.catalog}.${mvTarget.schema}|${mvSourceTables.join(",")}` : null
+  const mvProbeKey = mvTarget ? `${spaceId}|${mvTarget.catalog}.${mvTarget.schema}|${mvSourceTables.join(",")}` : null
   const mvProbeCurrent = mvProbeState && mvProbeState.key === mvProbeKey ? mvProbeState : null
   const mvProbe = mvProbeCurrent?.probe ?? null
   const mvProbeLoading = mvProbeKey !== null && (mvProbeCurrent === null || mvProbeCurrent.loading)
@@ -184,37 +188,59 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   }, [mvEnabled, mvProposalsLoaded, spaceId, prefillSuggestionId])
 
   // Probe entitlement for the selection's target and source tables (re-run).
-  // A changed selection re-probes; only the latest request's answer is kept.
+  // A changed selection re-probes once it settles; only the latest request's
+  // answer is kept. The selection reads as loading at once, so Start is blocked
+  // while the timer runs. The timer lives in a ref, not in this effect's cleanup:
+  // setting the loading state re-runs the effect, and the cleanup would cancel
+  // the timer it had just scheduled.
   useEffect(() => {
+    const wanted = mvEnabled && mvProposalsLoaded && mvTarget ? mvProbeKey : null
+    if (mvProbeTimer.current && mvProbeInFlight.current !== wanted) {
+      // A probe not yet sent for a selection that is no longer current is never
+      // sent, and its loading state goes with it so the selection can re-probe.
+      clearTimeout(mvProbeTimer.current)
+      mvProbeTimer.current = null
+      mvProbeInFlight.current = null
+      setMvProbeState(null)
+    }
     if (!mvEnabled || !mvProposalsLoaded || !mvTarget || !mvProbeKey) return
     if (mvProbeState?.key === mvProbeKey || mvProbeInFlight.current === mvProbeKey) return
     const key = mvProbeKey
     const token = ++mvProbeSeq.current
     mvProbeInFlight.current = key
     setMvProbeState({ key, probe: null, error: null, loading: true })
-    probeMvEntitlement({
-      catalog: mvTarget.catalog,
-      schema: mvTarget.schema,
-      space_id: spaceId,
-      source_tables: mvSourceTables,
-    })
-      .then((res) => {
-        if (mvProbeSeq.current === token) setMvProbeState({ key, probe: res, error: null, loading: false })
+    mvProbeTimer.current = setTimeout(() => {
+      mvProbeTimer.current = null
+      probeMvEntitlement({
+        catalog: mvTarget.catalog,
+        schema: mvTarget.schema,
+        space_id: spaceId,
+        source_tables: mvSourceTables,
       })
-      .catch((e) => {
-        if (mvProbeSeq.current === token) {
-          setMvProbeState({
-            key,
-            probe: null,
-            error: e instanceof Error ? e.message : "Entitlement probe failed.",
-            loading: false,
-          })
-        }
-      })
-      .finally(() => {
-        if (mvProbeSeq.current === token) mvProbeInFlight.current = null
-      })
+        .then((res) => {
+          if (mvProbeSeq.current === token) setMvProbeState({ key, probe: res, error: null, loading: false })
+        })
+        .catch((e) => {
+          if (mvProbeSeq.current === token) {
+            setMvProbeState({
+              key,
+              probe: null,
+              error: e instanceof Error ? e.message : "Entitlement probe failed.",
+              loading: false,
+            })
+          }
+        })
+        .finally(() => {
+          if (mvProbeSeq.current === token) mvProbeInFlight.current = null
+        })
+    }, MV_PROBE_DEBOUNCE_MS)
   }, [mvEnabled, mvProposalsLoaded, mvTarget, mvProbeKey, mvProbeState?.key, mvSourceTables, spaceId])
+
+  useEffect(() => () => {
+    if (mvProbeTimer.current) clearTimeout(mvProbeTimer.current)
+    mvProbeTimer.current = null
+    mvProbeInFlight.current = null
+  }, [])
 
   function toggleLever(id: number) {
     setSelectedLevers((prev) => {

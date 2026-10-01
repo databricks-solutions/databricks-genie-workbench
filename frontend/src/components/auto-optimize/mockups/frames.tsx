@@ -73,6 +73,7 @@ import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
 import { IqScanApprovedStaleFrame, IqScanLowStaleFrame, IqScanStaleFrame, RunOutputCurrentCalloutFrame, RunOutputStaleFrame } from "./MvStaleBodyFidelityFrames"
 import { BaselineRetainedFrame, KeptAttachRunningFrame, KeptAttachTerminalFrame, SingularGainCardFrame } from "./MvM6cFidelityFrames"
 import { DeepLinkLoadFailedFrame, DeepLinkNoAccessFrame, ScoreViewerAllowlistFrame } from "./SpaceAccessM7bFrames"
+import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -185,4 +186,8 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m7b-a-score-viewer-allowlist", title: "M7b-a · Score — Can View, a finding with no viewer-safe form (remediation kept)", element: <ScoreViewerAllowlistFrame /> },
   { id: "m7b-b-deep-link-no-access", title: "M7b-b · Deep link — no access (no agent name; Return to Agents)", element: <DeepLinkNoAccessFrame /> },
   { id: "m7b-c-deep-link-load-failed", title: "M7b-c · Deep link — load failed (not an access answer)", element: <DeepLinkLoadFailedFrame /> },
+  // PR #332 M7c — the created terminal after attach-at-approval (MV-D120): the REAL
+  // MvCreatedTerminal in the IQ card, for the caller's own view and someone else's.
+  { id: "m7c-a-created-terminal-owner", title: "M7c-a · IQ scan — created and attached, the GRANT for its owner", element: <CreatedTerminalOwnerFrame /> },
+  { id: "m7c-b-attached-someone-elses-view", title: "M7c-b · IQ scan — an existing view someone else owns, attached; no GRANT offered", element: <AttachedSomeoneElsesViewFrame /> },
 ]
