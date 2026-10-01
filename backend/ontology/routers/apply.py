@@ -13,15 +13,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from backend.ontology import models
 from backend.ontology.services import apply as apply_service
 from backend.ontology.services import ont_settings
+from backend.services.admin_gate import require_admin
 from backend.services.auth import get_workspace_client
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ontology")
+router = APIRouter(prefix="/api/ontology", dependencies=[Depends(require_admin)])
 
 
 def _obo_email(request: Request) -> str:

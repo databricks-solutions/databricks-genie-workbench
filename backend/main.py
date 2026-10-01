@@ -237,7 +237,8 @@ app.include_router(watch_resources_router)
 app.include_router(watch_settings_router)
 app.include_router(watch_admin_router)
 
-# Ontology (read-only estate surface) — all routes under /api/ontology/*
+# Ontology (read-only estate surface) — all routes under /api/ontology/*, each
+# router workspace-admin gated (require_admin, backend/services/admin_gate.py).
 app.include_router(ontology_preflight_router)
 app.include_router(ontology_inventory_router)
 app.include_router(ontology_taxonomy_router)

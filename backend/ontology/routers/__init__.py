@@ -1,7 +1,11 @@
 """Ontology routers (read-only surface; the only writes are settings PUT, the
 refresh POST (job trigger), the Phase-3d decision POST (app-state ledger, OBO),
 and — once Phase 5 lands — the human-gated apply POST (the Phase-5 governed-tag
-write-back). No governed-tag / UC write anywhere except the Phase-5 apply lane."""
+write-back). No governed-tag / UC write anywhere except the Phase-5 apply lane.
+
+Every router is workspace-admin gated at router level
+(``dependencies=[Depends(require_admin)]``, MV-D109 P1); a new router module must
+carry the same gate — ``backend/tests/test_admin_gate.py`` pins it."""
 
 from backend.ontology.routers.apply import router as ontology_apply_router
 from backend.ontology.routers.drafts import router as ontology_drafts_router

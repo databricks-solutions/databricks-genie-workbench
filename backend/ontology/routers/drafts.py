@@ -19,7 +19,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
 from backend.ontology.models import (
     BulkDraftStart,
@@ -32,10 +32,11 @@ from backend.ontology.models import (
     PageDraft,
 )
 from backend.ontology.services import decisions, draft_body, mirror, ont_settings, refresh
+from backend.services.admin_gate import require_admin
 from backend.services.auth import get_workspace_client
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ontology")
+router = APIRouter(prefix="/api/ontology", dependencies=[Depends(require_admin)])
 
 
 def _now() -> str:

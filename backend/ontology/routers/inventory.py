@@ -13,15 +13,16 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from backend.ontology.models import OntologyInventory
 from backend.ontology.services import inventory, ont_settings
+from backend.services.admin_gate import require_admin
 from backend.services import genie_client
 from backend.services.auth import get_workspace_client
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ontology")
+router = APIRouter(prefix="/api/ontology", dependencies=[Depends(require_admin)])
 
 
 def _safe(fn, *args, **kwargs):

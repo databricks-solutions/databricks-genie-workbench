@@ -21,6 +21,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology.routers import graph as graph_router
 
 
@@ -106,7 +107,7 @@ def _client(monkeypatch, snap) -> TestClient:
     monkeypatch.setattr(graph_router.mirror, "read_graph_snapshot", _read)
     app = FastAPI()
     app.include_router(graph_router.router)
-    return TestClient(app)
+    return admin_client(app)
 
 
 def _snap(blob=_BLOB, as_of=_AS_OF):
@@ -281,7 +282,7 @@ def test_graph_degrades_to_cold_on_read_error(monkeypatch):
     monkeypatch.setattr(graph_router.mirror, "read_graph_snapshot", _boom)
     app = FastAPI()
     app.include_router(graph_router.router)
-    client = TestClient(app)
+    client = admin_client(app)
     assert client.get("/api/ontology/graph").json()["state"] == "cold"
     # And expand degrades to empty children, not a 500.
     resp = client.get("/api/ontology/graph/expand?node=mv:x")

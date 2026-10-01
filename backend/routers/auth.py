@@ -5,6 +5,7 @@ import os
 
 from fastapi import APIRouter, Request
 
+from backend.services.admin_gate import groups_include_admins, obo_groups
 from backend.services.auth import get_workspace_client, is_running_on_databricks_apps
 
 logger = logging.getLogger(__name__)
@@ -29,13 +30,13 @@ async def get_current_user(request: Request) -> dict:
         # membership via X-Forwarded-Groups, so the header alone can never establish
         # workspace-admin. Resolve it via the OBO SDK identity (current_user.me()
         # returns the caller's groups) when the header did not already prove admin.
+        # Same resolution as the server-side gate (backend/services/admin_gate.py).
         if not is_admin:
             try:
-                me = get_workspace_client().current_user.me()
-                sdk_groups = [g.display for g in (me.groups or []) if g.display]
+                sdk_groups = obo_groups()
                 if sdk_groups:
                     resolved_groups = sdk_groups
-                    is_admin = any(g.lower() == "admins" for g in sdk_groups)
+                    is_admin = groups_include_admins(sdk_groups)
             except Exception as e:
                 logger.warning(f"Admin resolution via SDK failed: {e}")
         return {

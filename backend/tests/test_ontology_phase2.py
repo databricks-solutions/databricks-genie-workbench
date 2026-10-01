@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology import models
 from backend.ontology.models import OntologySettings
 from backend.ontology.routers import tags as tags_router
@@ -134,7 +135,7 @@ def test_status_skipped_without_prior_success_points_to_settings():
 def _client_refresh() -> TestClient:
     app = FastAPI()
     app.include_router(refresh_router)
-    return TestClient(app)
+    return admin_client(app)
 
 
 def test_trigger_while_running_does_not_launch_duplicate(monkeypatch):
@@ -263,7 +264,7 @@ def test_taxonomy_serves_mirror_when_fresh(monkeypatch):
     # If the live path were taken this would blow up — proving the mirror served.
     monkeypatch.setattr(taxonomy_router.tag_graph, "build_graph", lambda a, *_a, **_k: (_ for _ in ()).throw(AssertionError("live path used")))
 
-    data = TestClient(_taxonomy_client()).get("/api/ontology/taxonomy").json()
+    data = admin_client(_taxonomy_client()).get("/api/ontology/taxonomy").json()
     assert [d["tag_key"] for d in data["domains"]] == ["Finance"]
     assert data["as_of"] == "2026-08-30T09:00:00+00:00"  # mirror materialization time
 
@@ -287,7 +288,7 @@ def test_taxonomy_falls_back_to_live_when_cold(monkeypatch):
     monkeypatch.setattr(taxonomy_router.inventory, "metric_view_fqns", lambda c, a: ["finance.rep.mv"])
     monkeypatch.setattr(taxonomy_router.genie_client, "list_genie_spaces", lambda: [])
 
-    data = TestClient(_taxonomy_client()).get("/api/ontology/taxonomy").json()
+    data = admin_client(_taxonomy_client()).get("/api/ontology/taxonomy").json()
     assert [d["tag_key"] for d in data["domains"]] == ["Finance"]
     assert {m["fqn"] for m in data["ungrouped"]["metric_views"]} == {"finance.rep.mv"}
 
@@ -309,7 +310,7 @@ def test_tags_serves_mirror_graph_when_fresh(monkeypatch):
     monkeypatch.setattr(tags_router.tag_graph, "build_graph",
                         lambda a, *_a, **_k: (_ for _ in ()).throw(AssertionError("live path used")))
 
-    data = TestClient(_tags_client()).get("/api/ontology/tags").json()
+    data = admin_client(_tags_client()).get("/api/ontology/tags").json()
     by_key = {t["tag_key"]: t for t in data["tags"]}
     assert by_key["Finance"]["acts_as_domain"] is True
     assert by_key["Finance/Tax"]["acts_as_subdomain"] is True
@@ -327,7 +328,7 @@ def test_tags_falls_back_to_live_when_cold(monkeypatch):
                         lambda a, *_a, **_k: {"tags": [{"tag_key": "finance", "allowed_values": [], "assignment_count": 0, "members": []}],
                                    "as_of": "2026-08-30T12:00:00+00:00"})
 
-    data = TestClient(_tags_client()).get("/api/ontology/tags").json()
+    data = admin_client(_tags_client()).get("/api/ontology/tags").json()
     assert [t["tag_key"] for t in data["tags"]] == ["finance"]
     # orphan (0 assignments) surfaces in cleanup via the live path.
     assert any(c["flag"] == "orphan" for c in data["cleanup"])

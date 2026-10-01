@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from backend.ontology.models import OntologySettings
 from backend.ontology.services import ont_settings
+from backend.services.admin_gate import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ontology")
+router = APIRouter(prefix="/api/ontology", dependencies=[Depends(require_admin)])
 
 
 @router.get("/settings")

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from backend.ontology.models import (
     OntologyGraph,
@@ -22,10 +22,11 @@ from backend.ontology.models import (
     OntologyGraphNode,
 )
 from backend.ontology.services import mirror, ont_settings
+from backend.services.admin_gate import require_admin
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/ontology")
+router = APIRouter(prefix="/api/ontology", dependencies=[Depends(require_admin)])
 
 # Applied-vs-Proposed provenance (MV-D74); default "applied" (governed current state).
 _ORIGINS = ("applied", "proposed")

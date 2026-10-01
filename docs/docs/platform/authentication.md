@@ -49,6 +49,17 @@ Some reads expose data that the app's SP could see but the signed-in user must n
 |-------|-------------|--------|
 | `GET /api/watch/spaces/{space_id}/traffic-gaps` | OBO only, user needs `CAN_MANAGE` on the Agent | Reads production conversation traffic. The Genie [list conversations API](https://docs.databricks.com/api/azure/workspace/genie/listconversations) requires `CAN_MANAGE`, so SP fallback would let a non-manager read other users' questions. |
 
+### Workspace-admin routes
+
+Every `/api/ontology/*` route and `POST /api/watch/admin/refresh-rollup` return **403** unless the caller is a workspace admin. One dependency, `require_admin` in `backend/services/admin_gate.py`, enforces this. It applies at router level for the Ontology routers, so no Ontology route can skip it. The frontend also hides these surfaces from non-admins, but the server check is the one that refuses a direct API call.
+
+The gate uses the same admin signal as `GET /api/auth/me`:
+
+1. `X-Forwarded-Groups` contains `admins`, or a local dev mode applies (`DEV_ADMIN=true`, or `DEV_USER_EMAIL` with no forwarded user headers).
+2. Otherwise, the caller's own groups from `current_user.me()` on the **OBO** client. Databricks Apps forwards the user's email but not their groups, so on a deployed app this step admits a real admin.
+
+The gate never uses the service principal's identity. It fails closed: a request with no OBO context, or a failed SDK call, gets 403. The answer is cached per access token for five minutes.
+
 ### What OBO protects
 
 Users can only interact with resources they have permission to access:

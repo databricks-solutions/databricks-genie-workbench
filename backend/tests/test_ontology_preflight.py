@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology.models import OntologySettings
 from backend.ontology.routers import preflight as preflight_mod
 from backend.ontology.routers.preflight import router as preflight_router
@@ -21,7 +22,7 @@ from backend.watch.services import system_tables
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(preflight_router)
-    return TestClient(app)
+    return admin_client(app)
 
 
 def _patch_settings(monkeypatch, allowlist, read_identity="obo"):

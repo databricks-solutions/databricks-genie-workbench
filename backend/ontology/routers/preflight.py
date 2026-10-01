@@ -16,10 +16,11 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from backend.ontology.models import ExternalContext, OntologyPreflight, PermissionTier, SourceStatus
 from backend.ontology.services import context_sources, grants, inventory, ont_settings, tag_graph
+from backend.services.admin_gate import require_admin
 from backend.services import lakebase
 from backend.services.auth import (
     get_databricks_host,
@@ -29,7 +30,7 @@ from backend.services.auth import (
 from backend.watch.services import system_tables
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ontology")
+router = APIRouter(prefix="/api/ontology", dependencies=[Depends(require_admin)])
 
 # Copy-ready grant / entitlement lines surfaced by the banner (frame 17.0a).
 _SIGNALS_GRANTS = [

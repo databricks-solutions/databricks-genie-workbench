@@ -22,8 +22,8 @@ import types
 import pytest
 from databricks.sdk.service.sql import StatementState
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology import models
 from backend.ontology.routers.apply import router as apply_router
 from backend.ontology.services import apply as apply_service
@@ -195,7 +195,7 @@ def client(monkeypatch):
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
     app = FastAPI()
     app.include_router(apply_router)
-    return TestClient(app)
+    return admin_client(app)
 
 
 def test_execute_requires_confirm(client):

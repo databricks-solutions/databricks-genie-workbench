@@ -16,15 +16,16 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from genie_space_optimizer.ontology import transforms
 
 from backend.ontology.models import GovernedTag, TagLens
 from backend.ontology.services import dedupe, mirror, ont_settings, refresh, tag_graph
+from backend.services.admin_gate import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ontology")
+router = APIRouter(prefix="/api/ontology", dependencies=[Depends(require_admin)])
 
 
 @router.get("/tags")

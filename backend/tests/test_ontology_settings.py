@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology.models import OntologySettings
 from backend.ontology.routers.settings import router as settings_router
 from backend.ontology.services import ont_settings
@@ -206,7 +206,7 @@ def test_settings_router_wire_shape(monkeypatch):
 
     app = FastAPI()
     app.include_router(settings_router)
-    client = TestClient(app)
+    client = admin_client(app)
 
     got = client.get("/api/ontology/settings").json()
     # The Phase-1 keys are unchanged; Stage 3 adds the curation-policy keys additively.

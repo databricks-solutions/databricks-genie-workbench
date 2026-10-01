@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology.models import ExternalContext, OntologySettings
 from backend.ontology.routers import preflight as preflight_mod
 from backend.ontology.routers.preflight import router as preflight_router
@@ -148,7 +149,7 @@ def test_probe_never_raises_on_a_broken_client():
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(preflight_router)
-    return TestClient(app)
+    return admin_client(app)
 
 
 def _patch_common(monkeypatch):

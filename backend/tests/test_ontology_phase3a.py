@@ -7,9 +7,9 @@ from __future__ import annotations
 import inspect
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from backend.tests._admin import admin_client
 from backend.ontology import models
 from backend.ontology.models import OntologySettings
 from backend.ontology.routers import tags as tags_router
@@ -171,7 +171,7 @@ def test_mirror_surfaces_embedding_backed_collisions_through_frozen_shape(monkey
     monkeypatch.setattr(tags_router.tag_graph, "build_graph",
                         lambda a, *_a, **_k: (_ for _ in ()).throw(AssertionError("live path used")))
 
-    data = TestClient(_tags_app()).get("/api/ontology/tags").json()
+    data = admin_client(_tags_app()).get("/api/ontology/tags").json()
 
     # Embedding-backed collision surfaced (deduped to one group), frozen shape intact.
     assert len(data["collisions"]) == 1
@@ -199,6 +199,6 @@ def test_cold_path_still_uses_string_collisions(monkeypatch):
             {"tag_key": "Finance", "allowed_values": [], "assignment_count": 1, "members": []},
         ], "as_of": "2026-08-30T12:00:00+00:00"},
     )
-    data = TestClient(_tags_app()).get("/api/ontology/tags").json()
+    data = admin_client(_tags_app()).get("/api/ontology/tags").json()
     # finance ~ Finance collapses via the string (case) signal.
     assert any(set(c["members"]) == {"Finance", "finance"} for c in data["collisions"])

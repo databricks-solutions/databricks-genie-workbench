@@ -5,8 +5,8 @@ everything."""
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology.models import OntologySettings
 from backend.ontology.routers.preflight import router as preflight_router
 from backend.ontology.services import inventory, ont_settings, tag_graph, taxonomy
@@ -47,7 +47,7 @@ def test_preflight_hints_to_choose_catalogs_when_empty(monkeypatch):
 
     app = FastAPI()
     app.include_router(preflight_router)
-    data = TestClient(app).get("/api/ontology/preflight").json()
+    data = admin_client(app).get("/api/ontology/preflight").json()
 
     assert data["catalog_allowlist"] == []
     tiers = {t["id"]: t for t in data["tiers"]}

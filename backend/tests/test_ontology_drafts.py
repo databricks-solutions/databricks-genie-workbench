@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
+from backend.tests._admin import admin_client
 from backend.ontology.routers.drafts import router as drafts_router
 from backend.ontology.services import decisions, mirror, ont_settings, refresh
 
@@ -25,7 +25,7 @@ def client(monkeypatch):
     monkeypatch.setattr(ont_settings, "_workspace_id", lambda: "ws1")
     app = FastAPI()
     app.include_router(drafts_router)
-    return TestClient(app)
+    return admin_client(app)
 
 
 # ── record_decision: the ledger MERGE (service level) ───────────────────────
