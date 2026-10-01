@@ -139,6 +139,48 @@ def test_space_detail_serves_the_stored_scan_verbatim_to_an_editor(monkeypatch):
     assert any("etl_batch_id" in f for f in body["scan_result"]["findings"])
 
 
+def test_space_detail_reads_concurrently_after_the_view_check(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    barrier = threading.Barrier(2, timeout=5)
+    order: list[str] = []
+
+    async def allow(_space_id, level):
+        order.append(f"view:{level.name}")
+
+    def held(_space_id, _level):
+        order.append("edit")
+        barrier.wait()
+        return True
+
+    def do(**_):
+        order.append("genie")
+        barrier.wait()
+        return {"space_id": _SPACE}
+
+    async def latest(_space_id):
+        return _stored_scan()
+
+    async def starred(_space_id):
+        return True
+
+    monkeypatch.setattr(spaces, "require_space_access", allow)
+    monkeypatch.setattr(spaces, "space_access_held", held)
+    monkeypatch.setattr(spaces, "require_obo_workspace_client",
+                        lambda: SimpleNamespace(api_client=SimpleNamespace(do=do)))
+    monkeypatch.setattr(spaces, "get_latest_score", latest)
+    monkeypatch.setattr(spaces, "is_space_starred", starred)
+    app = FastAPI()
+    app.include_router(spaces.router)
+
+    response = TestClient(app).get(f"/api/spaces/{_SPACE}")
+
+    assert response.status_code == 200
+    assert order[0] == "view:VIEW" and set(order[1:]) == {"edit", "genie"}
+    assert response.json()["is_starred"] is True
+
+
 def test_history_in_memory_mode_carries_no_scan_content_to_a_viewer(monkeypatch):
     import asyncio
 

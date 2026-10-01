@@ -9,7 +9,11 @@ export interface SpaceAccessAnswer {
   spaceId: string
   access: SpaceAccessState
   reason: string | null
+  notFound?: boolean
 }
+
+// A just-created agent can 404 until Genie has propagated it.
+export const NOT_FOUND_RETRY_MS = 5_000
 
 export function accessFromLevel(level: SpaceAccessLevel | null): SpaceAccessState {
   return level ?? 'none'
@@ -29,7 +33,7 @@ export async function resolveSpaceAccess(
     // 403 and 404 are Genie's answer, possibly naming a missing scope or entitlement.
     // Anything else means the question went unanswered, which never grants a write.
     if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
-      return { spaceId, access: 'none', reason: err.message }
+      return { spaceId, access: 'none', reason: err.message, notFound: err.status === 404 }
     }
     return { spaceId, access: 'unknown', reason: err instanceof Error ? err.message : null }
   }
@@ -51,6 +55,7 @@ export const SPACE_UNKNOWN_NOTICE =
   'Your access to this agent could not be confirmed, so this page is read-only for now. Reload to try again.'
 export const SPACE_NO_ACCESS_TITLE = 'You can’t open this agent'
 export const SPACE_NO_ACCESS_FALLBACK = 'You need Can View permission on this Genie Agent.'
+export const RETURN_TO_AGENTS = 'Return to Agents'
 export const CONFIG_NEEDS_EDIT = 'Viewing this agent’s configuration needs Can Edit permission.'
 export const MODEL_NEEDS_EDIT = 'The semantic model and metric-view suggestions need Can Edit permission on this agent.'
 export const SCAN_VIEWER_EMPTY = 'This agent has not been scanned yet. Running an IQ scan needs Can Edit permission.'

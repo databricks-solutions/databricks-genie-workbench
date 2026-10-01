@@ -72,6 +72,7 @@ import {
 import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
 import { IqScanApprovedStaleFrame, IqScanLowStaleFrame, IqScanStaleFrame, RunOutputCurrentCalloutFrame, RunOutputStaleFrame } from "./MvStaleBodyFidelityFrames"
 import { BaselineRetainedFrame, KeptAttachRunningFrame, KeptAttachTerminalFrame, SingularGainCardFrame } from "./MvM6cFidelityFrames"
+import { DeepLinkLoadFailedFrame, DeepLinkNoAccessFrame, ScoreViewerAllowlistFrame } from "./SpaceAccessM7bFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -179,4 +180,9 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m6c-b-kept-attach-running", title: "M6c-b · Run headline — the same, mid-run", element: <KeptAttachRunningFrame /> },
   { id: "m6c-c-baseline-retained", title: "M6c-c · Run headline — control: a full-scope iteration 0 still reads Baseline retained", element: <BaselineRetainedFrame /> },
   { id: "m6c-d-singular-gain-card", title: "M6c-d · IQ scan — a one-measure proposal reads in the singular", element: <SingularGainCardFrame /> },
+  // PR #332 M7b — the viewer Score tab through the scorer's allowlist, and the deep-link
+  // states (MV-D119): the REAL IQScoreTab and SpaceDetailLoadError.
+  { id: "m7b-a-score-viewer-allowlist", title: "M7b-a · Score — Can View, a finding with no viewer-safe form (remediation kept)", element: <ScoreViewerAllowlistFrame /> },
+  { id: "m7b-b-deep-link-no-access", title: "M7b-b · Deep link — no access (no agent name; Return to Agents)", element: <DeepLinkNoAccessFrame /> },
+  { id: "m7b-c-deep-link-load-failed", title: "M7b-c · Deep link — load failed (not an access answer)", element: <DeepLinkLoadFailedFrame /> },
 ]

@@ -11,7 +11,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -432,7 +432,7 @@ async def close_pool():
 
 async def save_scan_result(space_id: str, scan_result: dict) -> None:
     """Save a scan result to Lakebase (or in-memory fallback)."""
-    scan_result["scanned_at"] = scan_result.get("scanned_at", datetime.utcnow().isoformat())
+    scan_result["scanned_at"] = scan_result.get("scanned_at", datetime.now(UTC).isoformat())
 
     if not _lakebase_available or _pool is None:
         _memory_store["scans"][space_id] = scan_result
@@ -662,7 +662,7 @@ async def save_optimization_run(space_id: str, benchmark_total: int, benchmark_c
         "benchmark_total": benchmark_total,
         "benchmark_correct": benchmark_correct,
         "accuracy": accuracy,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
 
     if not _lakebase_available or _pool is None:
@@ -781,7 +781,7 @@ async def save_join_advice(
     into ``serialized_space``. Returns the stored record. Mirrors the write posture
     of ``save_optimization_run`` (best-effort; falls back to the in-memory store).
     """
-    updated_at = datetime.utcnow().isoformat()
+    updated_at = datetime.now(UTC).isoformat()
     record = {"seeds": seeds, "seeded_by": seeded_by, "updated_at": updated_at}
 
     if not _lakebase_available or _pool is None:
@@ -859,7 +859,7 @@ async def watch_upsert_space(space: dict) -> None:
     if not is_available():
         _memory_store["watch_space_cache"][space_id] = {
             **space,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         return
     async with _pool.acquire() as conn:
@@ -1007,7 +1007,7 @@ async def watch_set_watermark(resource: str, status: str, error: str | None = No
     if not is_available():
         _memory_store["watch_sync_watermark"][resource] = {
             "resource": resource,
-            "last_synced_at": datetime.utcnow().isoformat(),
+            "last_synced_at": datetime.now(UTC).isoformat(),
             "status": status,
             "error": error,
         }

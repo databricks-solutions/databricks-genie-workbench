@@ -53,10 +53,49 @@ def test_the_row_level_security_table_names_are_dropped_and_the_warning_kept():
 
 
 def test_no_space_content_survives_anywhere_in_the_redacted_scan():
-    redacted = json.dumps(redact_for_viewer(_scan()))
+    scan = _scan()
+    details = [c["detail"] for c in scan["checks"]]
+    assert "6/20 visible columns look internal/noisy (30%)" in details  # positive control
+
+    redacted = json.dumps(redact_for_viewer(scan))
     for literal in [*_NOISY, "zq_orders", "AMER", "zq_fact_table"]:
         assert literal not in redacted, literal
     assert redact_for_viewer(None) is None
+
+
+def test_a_finding_with_no_viewer_safe_form_is_blank_and_keeps_its_remediation():
+    scan = _scan()
+    scan = {**scan, "findings": ["Legacy text naming zq_secret", *scan["findings"][1:]]}
+    redacted = redact_for_viewer(scan)
+    assert redacted["findings"][0] == ""
+    assert redacted["next_steps"] == scan["next_steps"]
+    assert len(redacted["findings"]) == len(scan["findings"])
+
+
+def test_a_warning_with_no_viewer_safe_form_is_blank_in_place():
+    scan = _scan()
+    scan = {**scan, "warnings": ["zq_secret advisory", *scan["warnings"]],
+            "warning_next_steps": ["a step", *scan["warning_next_steps"]]}
+    redacted = redact_for_viewer(scan)
+    assert redacted["warnings"][0] == ""
+    assert redacted["warning_next_steps"] == scan["warning_next_steps"]
+
+
+def test_check_details_are_viewer_safe_and_labels_kept():
+    scan = _scan()
+    checks = [*scan["checks"], {"label": "Agent description", "passed": False,
+                                "detail": "zq_secret detail", "severity": "fail"}]
+    redacted = redact_for_viewer({**scan, "checks": checks})
+    assert [c["label"] for c in redacted["checks"]] == [c["label"] for c in checks]
+    assert redacted["checks"][-1]["detail"] is None
+    assert any(c["detail"] for c in redacted["checks"])  # positive control: safe details kept
+    assert "zq_secret" not in json.dumps(redacted)
+
+
+def test_an_older_scorer_s_wording_is_blank_not_shown():
+    scan = {**_scan(), "findings": ["Missing or placeholder space description"],
+            "next_steps": ["Add a space description"]}
+    assert redact_for_viewer(scan)["findings"] == [""]
 
 
 async def test_memory_mode_history_rows_carry_only_score_maturity_accuracy_and_time(monkeypatch):

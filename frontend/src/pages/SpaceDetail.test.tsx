@@ -34,6 +34,7 @@ vi.mock('@/components/MaturityCurve', () => ({ MaturityCurve: () => <div>maturit
 
 import { SpaceDetail } from './SpaceDetail'
 import type { SpaceTab } from '@/lib/navigation'
+import { NOT_FOUND_RETRY_MS, SPACE_NO_ACCESS_TITLE } from '@/lib/space-access'
 
 let host: HTMLDivElement
 let root: Root
@@ -44,7 +45,10 @@ beforeEach(() => {
   host = document.createElement('div')
   root = createRoot(host)
 })
-afterEach(async () => { await act(async () => root.unmount()) })
+afterEach(async () => {
+  await act(async () => root.unmount())
+  vi.useRealTimers()
+})
 
 async function mount(level: 'view' | 'edit' | 'manage' | Error, activeTab: SpaceTab = 'score', autoScan = true) {
   api.getSpaceAccess.mockImplementation(async (spaceId: string) => {
@@ -125,6 +129,39 @@ it('before the answer, nothing write-capable renders', async () => {
   // Agent Configuration is earned: neither the editor block nor the LockedSection.
   expect(text()).not.toContain('Agent Configuration')
   expect(text()).not.toContain('configuration needs Can Edit')
+})
+
+const notYetVisible = () => new ApiError('Genie Agent not found, or you cannot see it.', 404)
+
+it('a just-created agent that 404s retries the access check once, then auto-scans', async () => {
+  vi.useFakeTimers()
+  // A default after the one 404, so no queued answer outlives the test.
+  api.getSpaceAccess
+    .mockImplementation(async (spaceId: string) => ({ space_id: spaceId, level: 'edit' }))
+    .mockImplementationOnce(async () => { throw notYetVisible() })
+  await act(async () => root.render(
+    <SpaceDetail spaceId="s1" displayName="Sales" activeTab="score" autoScan onBack={() => {}} onNavigate={() => {}} />,
+  ))
+  expect(text()).not.toContain(SPACE_NO_ACCESS_TITLE)
+  expect(api.scanSpace).not.toHaveBeenCalled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(NOT_FOUND_RETRY_MS) })
+  expect(api.getSpaceAccess).toHaveBeenCalledTimes(2)
+  expect(api.scanSpace).toHaveBeenCalledTimes(1)
+  expect(text()).toContain('Re-scan')
+})
+
+it('without autoScan, a 404 is the no-access state at once', async () => {
+  vi.useFakeTimers()
+  api.getSpaceAccess
+    .mockImplementation(async (spaceId: string) => ({ space_id: spaceId, level: 'edit' }))
+    .mockImplementationOnce(async () => { throw notYetVisible() })
+  await act(async () => root.render(
+    <SpaceDetail spaceId="s1" displayName="Sales" activeTab="score" autoScan={false} onBack={() => {}} onNavigate={() => {}} />,
+  ))
+  expect(text()).toContain(SPACE_NO_ACCESS_TITLE)
+  await act(async () => { await vi.advanceTimersByTimeAsync(NOT_FOUND_RETRY_MS) })
+  expect(api.getSpaceAccess).toHaveBeenCalledTimes(1)
+  expect(text()).toContain(SPACE_NO_ACCESS_TITLE)
 })
 
 it('a space switch clears the previous edit answer until the new one arrives', async () => {

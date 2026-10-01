@@ -12,7 +12,6 @@ IO: UC metadata enrichment, Lakebase persistence, and the async
 import asyncio
 import logging
 import os
-import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
@@ -28,39 +27,31 @@ from genie_space_optimizer.iq_scan.scoring import (  # noqa: F401
     _check,
     calculate_score,
     get_maturity_label,
+    viewer_safe_text,
 )
 
 logger = logging.getLogger(__name__)
 
-# The three scan strings that quote space content (scoring.py's SQL-in-prose
-# warning, noisy-column finding, and row-level-security warning). Persisted
-# scans predate any change to the scorer, so these match the stored text rather
-# than a structured field.
-_INSTRUCTION_EXCERPT = re.compile(r"\s*First offender: .*\Z", re.DOTALL)
-_COLUMN_SAMPLE = re.compile(r"\A(\d+/\d+ visible columns look internal/noisy) \(.*\)\Z", re.DOTALL)
-_RLS_TABLES = re.compile(
-    r"\A(Tables with row-level security) \(.*\)( — entity matching is silently disabled for these)\Z", re.DOTALL
-)
 
-
-def _scrub_text(text: str) -> str:
-    text = _INSTRUCTION_EXCERPT.sub("", text)
-    text = _COLUMN_SAMPLE.sub(r"\1", text)
-    return _RLS_TABLES.sub(r"\1\2", text)
-
-
-def _scrub(items: list | None) -> list:
-    return [_scrub_text(item) if isinstance(item, str) else item for item in items or []]
+def _viewer_texts(items: list | None) -> list[str]:
+    # Blank, not dropped: findings[i] pairs with next_steps[i] in the UI.
+    return [viewer_safe_text(item) or "" for item in items or []]
 
 
 def redact_for_viewer(scan_result: dict | None) -> dict | None:
-    """The stored scan for a caller below Can Edit: counts kept, quoted space content dropped."""
+    """The stored scan for a caller below Can Edit: findings, warnings and check
+    details only in the scorer's viewer-safe forms (MV-D119)."""
     if not scan_result:
         return scan_result
     return {
         **scan_result,
-        "findings": _scrub(scan_result.get("findings")),
-        "warnings": _scrub(scan_result.get("warnings")),
+        "findings": _viewer_texts(scan_result.get("findings")),
+        "warnings": _viewer_texts(scan_result.get("warnings")),
+        "checks": [
+            {**check, "detail": viewer_safe_text(check.get("detail"))}
+            for check in scan_result.get("checks") or []
+            if isinstance(check, dict)
+        ],
     }
 
 

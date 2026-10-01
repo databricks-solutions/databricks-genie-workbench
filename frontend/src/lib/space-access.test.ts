@@ -30,9 +30,17 @@ describe('space access', () => {
   it('reads 403 and 404 as none with Genie reason', async () => {
     const denied = refusal(403, 'space_access_entitlement_missing', 'Your account is missing a workspace entitlement')
     await expect(resolveSpaceAccess('s', async () => { throw denied }))
-      .resolves.toEqual({ spaceId: 's', access: 'none', reason: denied.message })
+      .resolves.toMatchObject({ spaceId: 's', access: 'none', reason: denied.message })
     const missing = refusal(404, 'space_not_found', 'Genie Agent not found, or you cannot see it.')
     expect((await resolveSpaceAccess('s', async () => { throw missing })).access).toBe('none')
+  })
+
+  it('marks only a 404 as not found, which a just-created agent may retry', async () => {
+    const missing = refusal(404, 'space_not_found', 'Genie Agent not found, or you cannot see it.')
+    expect((await resolveSpaceAccess('s', async () => { throw missing })).notFound).toBe(true)
+    const denied = refusal(403, 'space_access_denied', 'You need Can View permission on this Genie Agent.')
+    expect((await resolveSpaceAccess('s', async () => { throw denied })).notFound).toBeFalsy()
+    expect((await resolveSpaceAccess('s', async () => ({ space_id: 's', level: 'edit' }))).notFound).toBeFalsy()
   })
 
   it('reads any other failure as unknown, which grants no write', async () => {

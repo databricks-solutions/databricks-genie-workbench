@@ -27,7 +27,7 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| <span className="badge badge--success">GET</span> | `/api/spaces` | <span className="badge badge--info">OBO → SP</span> | List Genie Agents with IQ scores, starred sort, filters |
+| <span className="badge badge--success">GET</span> | `/api/spaces` | <span className="badge badge--primary">OBO</span> | List Genie Agents with IQ scores, starred sort, filters |
 | <span className="badge badge--success">GET</span> | `/api/spaces/{space_id}` | <span className="badge badge--primary">OBO</span> | Space metadata + latest scan + star status |
 | <span className="badge badge--info">POST</span> | `/api/spaces/{space_id}/scan` | <span className="badge badge--primary">OBO</span> | Run IQ scan and persist result to Lakebase |
 | <span className="badge badge--success">GET</span> | `/api/spaces/{space_id}/history` | <span className="badge badge--primary">OBO</span> | Scan + auto-optimize run history for a space |
@@ -37,9 +37,9 @@ All API endpoints are prefixed with `/api` and served by FastAPI routers. This r
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| <span className="badge badge--success">GET</span> | `/api/admin/dashboard` | <span className="badge badge--primary">OBO</span> | Org-wide stats: space count, scan count, avg score, maturity distribution |
+| <span className="badge badge--success">GET</span> | `/api/admin/dashboard` | <span className="badge badge--primary">OBO</span> | Stats over the agents the caller can see: space count, scan count, avg score, maturity distribution |
 | <span className="badge badge--success">GET</span> | `/api/admin/leaderboard` | <span className="badge badge--primary">OBO</span> | Top/bottom spaces by IQ score (`top_n` param) |
-| <span className="badge badge--success">GET</span> | `/api/admin/alerts` | <span className="badge badge--primary">OBO</span> | Spaces with "Not Ready" maturity (max 20) |
+| <span className="badge badge--success">GET</span> | `/api/admin/alerts` | <span className="badge badge--primary">OBO</span> | Spaces with "Not Ready" maturity (max 20); `top_finding` is the first finding in a viewer-safe form |
 
 ## Auth Router (`/api/auth`)
 

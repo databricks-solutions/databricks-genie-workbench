@@ -77,7 +77,7 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 |--------|--------|---------|
 | `analysis.py` | `/api` | Space fetch/parse, app settings, debug auth |
 | `spaces.py` | `/api` | Space listing, scanning, history, starring |
-| `admin.py` | `/api/admin` | Org-wide dashboard, leaderboard, alerts |
+| `admin.py` | `/api/admin` | Dashboard, leaderboard, and alerts over the agents the caller can see |
 | `auth.py` | `/api/auth` | Current user info, health check |
 | `create.py` | `/api/create` | Create agent chat, UC discovery, wizard, session management |
 | `auto_optimize.py` | `/api/auto-optimize` | GSO trigger, run management, results, patches, and benchmark changes |
@@ -139,7 +139,7 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 |------|-----------|-------------|
 | `list` | `SpaceList` | Browse and search Genie Agents with IQ scores |
 | `detail` | `SpaceDetail` | Space detail with tabs: Score, Model, Optimize, History |
-| `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts, plus lazy-loaded GenieWatch sub-tabs |
+| `admin` | `AdminDashboard` | Genie Agent health & observability: an overview (stats, leaderboard, alerts) over the agents the caller can see, plus lazy-loaded GenieWatch sub-tabs. Cost and Resources stay workspace-wide (system tables read as the service principal); Feedback reads the same tables but keeps only the agents GenieWatch lists; the Agents sub-tab lists OBO-first |
 | `create` | `CreateAgentChat` | Conversational agent for building new Genie Agents |
 | `how-it-works` | `HowItWorks` | In-app explanation of the Workbench workflow |
 

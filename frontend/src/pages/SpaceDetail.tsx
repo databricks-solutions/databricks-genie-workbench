@@ -77,7 +77,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, activeTab, runId, 
   // with an empty dep array (see useAnalysis), so its identity is stable.
   const { handleFetchSpace } = actions
 
-  const { access, reason: accessReason } = useSpaceAccess(spaceId)
+  const { access, reason: accessReason } = useSpaceAccess(spaceId, { retryNotFound: Boolean(autoScan) })
   // Every write affordance and every Edit-level read waits for this answer.
   const canEdit = canEditSpace(access)
 

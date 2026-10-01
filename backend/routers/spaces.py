@@ -1,4 +1,4 @@
-"""Spaces router - org-wide Genie Agent listing with IQ scoring."""
+"""Spaces router - the caller's Genie Agent listing with IQ scoring."""
 
 import asyncio
 import logging
@@ -129,21 +129,15 @@ async def list_spaces(
 async def get_space_detail(space_id: SpaceId) -> dict:
     """Get space details with latest scan result."""
     await require_space_access(space_id, SpaceAccessLevel.VIEW)
-    # Quoted instruction text and column names are configuration (MV-D110).
-    can_edit = await asyncio.to_thread(space_access_held, space_id, SpaceAccessLevel.EDIT)
     try:
         client = require_obo_workspace_client()
-        space = client.api_client.do(
-            method="GET",
-            path=f"/api/2.0/genie/spaces/{space_id}",
-        )
-
-        # Get latest score and star status concurrently
-        score_data, starred = await asyncio.gather(
+        can_edit, space, score_data, starred = await asyncio.gather(
+            # Quoted instruction text and column names are configuration (MV-D110).
+            asyncio.to_thread(space_access_held, space_id, SpaceAccessLevel.EDIT),
+            asyncio.to_thread(client.api_client.do, method="GET", path=f"/api/2.0/genie/spaces/{space_id}"),
             get_latest_score(space_id),
             is_space_starred(space_id),
         )
-
         return {
             "space": space,
             "scan_result": score_data if can_edit else redact_for_viewer(score_data),

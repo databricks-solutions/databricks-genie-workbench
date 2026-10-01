@@ -74,7 +74,13 @@ import {
   KeptAttachTerminalFrame,
   SingularGainCardFrame,
 } from "./MvM6cFidelityFrames"
+import {
+  DeepLinkLoadFailedFrame,
+  DeepLinkNoAccessFrame,
+  ScoreViewerAllowlistFrame,
+} from "./SpaceAccessM7bFrames"
 import { STALE_PROPOSAL_NOTICE } from "../mvFormat"
+import { RETURN_TO_AGENTS, SPACE_NO_ACCESS_TITLE } from "@/lib/space-access"
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el)
 // renderToStaticMarkup escapes the notice's apostrophe.
@@ -590,6 +596,49 @@ describe("M6c-d — a one-measure proposal reads in the singular (MV-D118)", () 
     expect(html).not.toContain(NOTICE_MARKUP)
     expect(html.toLowerCase()).not.toContain("confidence")
     expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/\d+%/)
+  })
+})
+
+describe("M7b — the viewer score with blanked text, and the deep-link states (MV-D119)", () => {
+  const text = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/&#x27;/g, "'")
+
+  it("m7b-a keeps the remediation of a finding with no viewer-safe form", () => {
+    const html = render(<ScoreViewerAllowlistFrame />)
+    expect(text(html)).toContain("Add text instructions to explain business context and terminology")
+    expect(text(html)).toContain("Hide noisy internal, audit, raw, ingestion, and opaque technical columns")
+    expect(text(html)).toContain("Restructure text instructions for optimal LLM context usage")
+    expect(text(html)).toContain("Entity matching won't work on tables with row filters or column masks")
+    expect(html.match(/bg-red-500\/15 border border-red-500\/30/g)).toHaveLength(2)
+    expect(html).toMatch(
+      />2<\/span><div><p class="text-sm font-medium text-primary">6\/20 visible columns look internal\/noisy<\/p><p class="text-sm text-muted">Hide noisy internal/,
+    )
+    expect(html).not.toContain("First offender")
+    for (const label of ["Re-scan", "Run IQ Scan", "Run Optimization", "Run a new IQ Scan"]) {
+      expect(html).not.toContain(label)
+    }
+  })
+
+  it("m7b-b is the no-access state with the way back", () => {
+    const html = text(render(<DeepLinkNoAccessFrame />))
+    expect(html).toContain(SPACE_NO_ACCESS_TITLE)
+    expect(html).toContain(RETURN_TO_AGENTS)
+  })
+
+  it("m7b-c is a failed load, not an access answer", () => {
+    const html = text(render(<DeepLinkLoadFailedFrame />))
+    expect(html).toContain(RETURN_TO_AGENTS)
+    expect(html).toContain("Failed to get agent detail")
+    expect(html).not.toContain(SPACE_NO_ACCESS_TITLE)
+  })
+
+  it("is registered after the M6c frames, in order", () => {
+    const ids = MOCKUP_FRAMES.map((f) => f.id)
+    const at = ids.indexOf("m6c-d-singular-gain-card")
+    expect(ids.slice(at + 1, at + 4)).toEqual([
+      "m7b-a-score-viewer-allowlist",
+      "m7b-b-deep-link-no-access",
+      "m7b-c-deep-link-load-failed",
+    ])
   })
 })
 

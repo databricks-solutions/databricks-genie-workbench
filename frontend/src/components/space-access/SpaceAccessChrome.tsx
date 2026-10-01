@@ -1,7 +1,7 @@
 import { Lock, RefreshCw } from 'lucide-react'
 import {
-  CHECKING_ACCESS, SPACE_NO_ACCESS_FALLBACK, SPACE_NO_ACCESS_TITLE, SPACE_UNKNOWN_NOTICE, SPACE_VIEW_NOTICE,
-  type SpaceAccessState,
+  CHECKING_ACCESS, RETURN_TO_AGENTS, SPACE_NO_ACCESS_FALLBACK, SPACE_NO_ACCESS_TITLE, SPACE_UNKNOWN_NOTICE,
+  SPACE_VIEW_NOTICE, type SpaceAccessState,
 } from '@/lib/space-access'
 
 export function SpaceAccessNotice({ access, reason }: { access: SpaceAccessState; reason: string | null }) {
@@ -24,6 +24,22 @@ export function SpaceNoAccessState({ reason }: { reason: string | null }) {
       <Lock className="w-8 h-8 mb-3 text-muted opacity-60" />
       <p className="text-secondary font-medium">{SPACE_NO_ACCESS_TITLE}</p>
       <p className="text-sm text-muted mt-1 max-w-md">{reason || SPACE_NO_ACCESS_FALLBACK}</p>
+    </div>
+  )
+}
+
+export function SpaceDetailLoadError({ status, message, onBack }: { status?: number; message: string; onBack: () => void }) {
+  const back = (
+    <button onClick={onBack} className="mt-3 text-sm text-accent hover:underline">{RETURN_TO_AGENTS}</button>
+  )
+  // 403 and 404 are Genie's answer about access; anything else is a failed load.
+  if (status === 403 || status === 404) {
+    return <div className="text-center"><SpaceNoAccessState reason={message} />{back}</div>
+  }
+  return (
+    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-5 text-red-400">
+      <p>{message}</p>
+      {back}
     </div>
   )
 }
