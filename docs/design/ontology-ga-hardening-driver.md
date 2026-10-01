@@ -18,7 +18,7 @@
 | **P2** | #6 messages | Scan/Refresh failures surfaced; access-panel + grant copy corrected; Map Approve → "Open in Review" (deep link) | ⬜ |
 | **P3** | #4 cards reappear | Drafts read consults the consent + suppression ledgers; approved cards render "Approved, ready to apply" | ⬜ |
 | **P4** | #2 context switch | Forward `external_context_*` to on-demand runs; HIPAA control in Settings | ⬜ |
-| **P5** | #1 nightly no-op | Settings mirrored to a Delta row the nightly run reads when its allowlist is empty | ⬜ |
+| **P5** | #1 nightly no-op | Settings mirrored to a Delta row the nightly run reads when its allowlist is empty. **Pulled ahead of P2–P4 (human, 2026-09-30); executes from `ontology-nightly-settings-mirror-driver.md`, which refines the P5 spec below** | ✅ offline-green (deploy-verify pending) |
 | **P6** | #3 Page leak | Design record (accepted): Pages cannot leak benchmarks by construction + a guard test | ⬜ |
 | **P7** | — | Append-only `page_count` on `OntologyScanStats` | ⬜ |
 | **P8** | — | "How it works" tab (MV-D108 P2) per PRD Part C | ⬜ |
@@ -241,7 +241,11 @@ P4 — Company context reaches the scan.
 3. Tests: `_launch` job_parameters carry the three keys for on/off/HIPAA; default settings forward
    `false` / `{}` / `false` (byte-identical estate-only run).
 
-P5 — Nightly scan honours Settings.
+P5 — Nightly scan honours Settings. **Built from `ontology-nightly-settings-mirror-driver.md`, which
+supersedes the text below where they differ:** the table is `genie_ont_settings_mirror` (MD-1, not
+`genie_ont_settings`, the Lakebase name), keyed on `workspace_id` alone with `metastore_id` as provenance
+(MD-2), and the gate is all-or-nothing rather than "explicit widgets win" (MD-3); nightly maps exactly
+the 16 keys `_launch` forwards, so external context stays off nightly until P4 (MD-4).
 1. New Delta table `genie_ont_settings` (DDL in `ontology/ddl.py`, registered in `_ONT_ALL_DDL`),
    one row per `(metastore_id, workspace_id)`: the full `OntologySettings` as JSON + `updated_at` +
    `updated_by` (OBO email). Written by the app as SP after every successful Lakebase save

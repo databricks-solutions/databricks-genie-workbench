@@ -567,13 +567,13 @@ was traced through the current UI and API code, not taken from design docs.
 | CUJ-02 | Understand what access I have | Access | Partial | Part D; route 1 | 27, 28 |
 | CUJ-03 | Fix a missing permission | Access | Partial | Part D; route 1 | 27, 51 |
 | CUJ-04 | Choose what to scan (first run) | Scope and settings | Supported | in.scope; routes 6–7 | 32 |
-| CUJ-05 | Tune how areas are formed | Scope and settings | Partial | B.1 widgets; route 7 | 2, 31, 32 |
+| CUJ-05 | Tune how areas are formed | Scope and settings | Partial | B.1 widgets; route 7 | 2 (resolved), 31, 32 |
 | CUJ-06 | Align to an industry model | Scope and settings | Supported | in.industry; step 25 | — |
 | CUJ-07 | Add company and web context | Scope and settings | Blocked | in.web; route 7 | 3, 29, 30 |
 | CUJ-08 | Run a scan from Overview | Scanning | Partial | Part C; routes 8–9 | 33 |
 | CUJ-09 | Refresh and watch progress | Scanning | Partial | out.publish; routes 8–9 | 34 |
 | CUJ-10 | Recover from a scan that produced nothing | Scanning | Partial | proc.guard; route 8 | 1, 33, 36 |
-| CUJ-11 | Keep the ontology fresh without clicking | Scanning | Blocked | B.2.1 schedule | 1, 2 |
+| CUJ-11 | Keep the ontology fresh without clicking | Scanning | Shipped (deploy-verify pending) | B.2.1 schedule | 1, 2 (resolved) |
 | CUJ-12 | Review domain and sub-domain suggestions | Review | Partial | out.review; routes 11–12 | 37, 38, 41 |
 | CUJ-13 | Resolve a tag reassignment | Review | Partial | proc.group; route 12 | 37, 38 |
 | CUJ-14 | Dismiss a suggestion for good | Review | Partial | in.decisions; route 12 | 37, 38 |
@@ -704,7 +704,8 @@ The totals are 3 Supported, 17 Partial and 2 Blocked.
   domains.
 - **Maps to.** B.1 (notebook widgets); proc.group; route 7 (settings).
 - **Status.** Partial.
-  - Only on-demand runs use these values; the nightly run uses defaults (D-2).
+  - On-demand and nightly runs both use these values: the nightly run reads them from the
+    settings mirror the app writes on Save (D-2, resolved by MV-D109 P5; deploy-verify pending).
   - Page auto-draft limits are forwarded to runs but have no control here (D-31).
   - There is no input validation (D-32).
 
@@ -808,12 +809,15 @@ The totals are 3 Supported, 17 Partial and 2 Blocked.
 
 - **Persona and goal.** The admin expects the nightly job to keep
   suggestions current.
-- **What happens.** The nightly run passes no allowlist and records
-  `skipped` (`catalog_allowlist` `databricks.yml:277`). Review goes cold
-  24 h after the last manual scan (`mirror_is_fresh`
+- **What happens.** The 07:00 UTC run passes no allowlist, so it reads the
+  Settings the admin last saved from the Delta settings mirror and scans those
+  catalogs with the same knobs an on-demand scan uses (`resolve_nightly_settings`
+  `ontology/settings_mirror.py:163`). If no Settings were ever saved, or the row
+  cannot be read, it records `skipped` as before and the log says why. Review
+  stays fresh as long as the nightly run succeeds (`mirror_is_fresh`
   `backend/ontology/services/refresh.py:192`).
-- **Maps to.** B.2.1 (schedule); MV-D41.
-- **Status.** Blocked (D-1, D-2).
+- **Maps to.** B.2.1 (schedule); MV-D41; MV-D109 P5.
+- **Status.** Shipped, pending deploy-verify (D-1, D-2 resolved).
 
 ### G.5 Reviewing suggestions
 
@@ -1154,18 +1158,29 @@ PRD relies on:
 
 ## Appendix D — Open discrepancies (code wins)
 
-1. **The nightly schedule does no work by default.** The job's
-   `catalog_allowlist` defaults to `"[]"` (`catalog_allowlist`
-   `databricks.yml:277`), so the scheduled run records `skipped`
-   (`skipped` `ontology/materialize.py:661-677`). Freshness counts only
-   succeeded runs (`mirror_is_fresh`
-   `backend/ontology/services/refresh.py:192`), so Review goes cold 24 h
-   after the last on-demand scan. MV-D41 and the architecture doc ("Refresh"
-   section) say nightly keeps the ontology fresh.
-2. **Scheduled runs ignore Settings.** Only 8 job parameters are declared.
-   On-demand runs forward the Settings values (`run_now`
-   `backend/ontology/services/refresh.py:224-229`); scheduled runs use
-   notebook widget defaults.
+1. **Resolved (MV-D109 P5), deploy-verify pending.** ~~The nightly schedule
+   does no work by default.~~ The job's `catalog_allowlist` still defaults to
+   `"[]"` (`databricks.yml:277`), but a nightly run with an empty allowlist now
+   reads this workspace's saved Settings from the Delta row
+   `genie_ont_settings_mirror` (DDL `ontology/ddl.py:345`; read
+   `mirror_read_sql` `ontology/settings_mirror.py:170`, called from
+   `jobs/run_ontology_materialize.py:187`) and scopes to the saved catalogs. The
+   app writes that row as the SP after every successful Settings save
+   (`write_mirror` `backend/ontology/services/settings_mirror.py:69`, called from
+   `backend/ontology/routers/settings.py:39`). With no row, an unreadable row or
+   bad JSON the run falls through to today's `skipped` and logs why
+   (`Nightly settings source` `jobs/run_ontology_materialize.py:203`).
+2. **Resolved (MV-D109 P5), deploy-verify pending.** ~~Scheduled runs ignore
+   Settings.~~ Still 8 declared job parameters, but a param-less nightly run
+   takes every Settings-derived knob from the mirror row
+   (`resolve_nightly_settings` `ontology/settings_mirror.py:163`, gate
+   `gate_reason` `:129`, routed through `_w`
+   `jobs/run_ontology_materialize.py:210`). It maps exactly the 16 keys an
+   on-demand `_launch` forwards, with the same encodings (`settings_to_widgets`
+   `ontology/settings_mirror.py:114`; pinned by
+   `test_mirror_widgets_equal_on_demand_launch_params`). External context stays
+   off nightly, as on demand (item 3). A run with an explicit allowlist keeps
+   full control of every knob.
 3. **The external-context toggle is inert for runs.** It is persisted
    (`ont_upsert_settings`
    `backend/ontology/services/ont_settings.py:180-209`) but not forwarded by

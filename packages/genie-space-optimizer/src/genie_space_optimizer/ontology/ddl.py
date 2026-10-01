@@ -335,6 +335,28 @@ CONTEXT_TABLES: tuple[str, ...] = (
 CONTEXT_PACK_KEYS: tuple[str, ...] = ("metastore_id", "company_key", "version")
 CONTEXT_SOURCE_KEYS: tuple[str, ...] = ("metastore_id", "pack_id", "field_path")
 
+# ── Settings mirror (MV-D109 P5): the app's Settings, readable by the nightly job ──
+# Lakebase (``genie.genie_ont_settings``) stays the source of truth; only the app can
+# read it. The app ALSO writes this one Delta row per workspace (as the SP, after every
+# successful Settings save) so a param-less nightly run can scope to the saved
+# catalogs. The job only READS it (``settings_mirror.mirror_read_sql``); it never writes
+# it. Keyed on workspace_id alone (Settings are per-install); metastore_id is provenance.
+_GENIE_ONT_SETTINGS_MIRROR_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_ont_settings_mirror (
+    workspace_id   STRING    COMMENT 'Install key: one row per workspace (Settings are per-install); the PK',
+    metastore_id   STRING    COMMENT 'provenance: the app''s metastore at write time; NOT a key',
+    settings_json  STRING    COMMENT 'JSON: OntologySettings.model_dump(mode="json") as saved',
+    updated_by     STRING    COMMENT 'OBO email of the admin who saved (the write itself is SP)',
+    updated_at     TIMESTAMP
+) USING DELTA
+TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"""
+
+TABLE_ONT_SETTINGS_MIRROR = "genie_ont_settings_mirror"
+
+SETTINGS_TABLES: tuple[str, ...] = (
+    TABLE_ONT_SETTINGS_MIRROR,
+)
+
 _ONT_ALL_DDL: dict[str, str] = {
     TABLE_ONT_RUNS: _GENIE_ONT_RUNS_DDL,
     TABLE_ONT_TAG_GRAPH: _GENIE_ONT_TAG_GRAPH_DDL,
@@ -350,6 +372,7 @@ _ONT_ALL_DDL: dict[str, str] = {
     TABLE_ONT_CONTEXT_PACK: _GENIE_ONT_CONTEXT_PACK_DDL,
     TABLE_ONT_CONTEXT_SOURCES: _GENIE_ONT_CONTEXT_SOURCES_DDL,
     TABLE_ONT_EVAL: _GENIE_ONT_EVAL_DDL,
+    TABLE_ONT_SETTINGS_MIRROR: _GENIE_ONT_SETTINGS_MIRROR_DDL,
 }
 
 

@@ -1025,12 +1025,13 @@ def test_ddl_shape_all_tables_no_deferred_tokens():
     assert set(rendered) == (
         set(ddl.SNAPSHOT_TABLES) | set(ddl.PROPOSAL_TABLES)
         | set(ddl.PAGE_TABLES) | set(ddl.PHASE3_TABLES) | set(ddl.APPLY_TABLES)
-        | set(ddl.CONTEXT_TABLES) | set(ddl.EVAL_TABLES)
+        | set(ddl.CONTEXT_TABLES) | set(ddl.EVAL_TABLES) | set(ddl.SETTINGS_TABLES)
     )
     # 5 snapshot (+ graph_snapshot, Phase 3e) + 2 proposal + 1 page (now written)
     # + 2 still-empty (consents/suppressions) + 1 apply audit (Phase 5) + 2 context
-    # (Phase 4 Stage B) + 1 eval report (MV-D59, §10) = 14 total.
-    assert len(rendered) == 14
+    # (Phase 4 Stage B) + 1 eval report (MV-D59, §10) + 1 settings mirror (MV-D109 P5,
+    # app-written, job-read) = 15 total.
+    assert len(rendered) == 15
     joined = "\n".join(rendered.values()).lower()
     for stmt in rendered.values():
         assert stmt.startswith("CREATE TABLE IF NOT EXISTS maincat.gso_schema.")

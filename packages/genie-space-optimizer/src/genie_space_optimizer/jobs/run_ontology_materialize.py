@@ -152,25 +152,86 @@ warehouse_id = dbutils.widgets.get("warehouse_id").strip() or os.environ.get("GS
 llm_model = dbutils.widgets.get("llm_model").strip()
 if llm_model:
     os.environ["LLM_MODEL"] = llm_model
+
+# workspace_id is PROVENANCE (which install triggered this run), never a key. Resolved
+# BEFORE the Settings-derived parse: the nightly settings mirror is keyed by it.
+if not workspace_id:
+    w0 = make_workspace_client()
+    try:
+        workspace_id = str(w0.get_workspace_id())
+    except Exception:
+        workspace_id = "default"
+
+# Nightly settings mirror (MV-D109 P5). A param-less nightly run (trigger=nightly and an
+# empty allowlist widget) READS the app-written Settings row for this workspace and uses
+# it for EVERY Settings-derived knob, exactly as an on-demand run forwards them; any
+# other run uses the widgets. All-or-nothing: an explicit widget cannot be told from its
+# in-code default. A missing table / row / grant or bad JSON falls through to the widgets
+# (an empty allowlist ⇒ today's ``skipped``, MV-D43). The job never writes this table.
+from genie_space_optimizer.ontology import settings_mirror as _sm
+
+_overrides: dict[str, str] = {}
+_gate_widgets = {
+    "trigger": dbutils.widgets.get("trigger"),
+    "catalog_allowlist": dbutils.widgets.get("catalog_allowlist"),
+}
+_mirror_reason = _sm.gate_reason(_gate_widgets)
+_mirror_updated_at = None
+if _mirror_reason is None:
+    _mirror_row = None
+    try:
+        if not catalog:
+            raise RuntimeError("no catalog configured for the settings mirror read")
+        _mirror_rows = [
+            r.asDict(recursive=True)
+            for r in spark.sql(_sm.mirror_read_sql(catalog, schema, workspace_id)).collect()
+        ]
+        _mirror_row = _mirror_rows[0] if _mirror_rows else None
+    except Exception as e:  # noqa: BLE001 — an unreadable mirror never blocks the run
+        _mirror_reason = "read_failed"
+        _log(
+            "settings mirror read failed; using widgets", error=str(e),
+            hint=f"GRANT SELECT ON TABLE {catalog}.{schema}.{_sm.TABLE_ONT_SETTINGS_MIRROR} "
+            "TO the job's run_as identity",
+        )
+    if _mirror_reason is None:
+        _resolved, _mirror_reason = _sm.resolve_nightly_settings_with_reason(_gate_widgets, _mirror_row)
+        _overrides = _resolved or {}
+        if _overrides and _mirror_row:
+            _mirror_updated_at = str(_mirror_row.get("updated_at"))
+_log(
+    "Nightly settings source",
+    source="mirror" if _overrides else "widgets",
+    reason=_mirror_reason,
+    updated_at=_mirror_updated_at,
+)
+
+
+def _w(name: str) -> str:
+    """A Settings-derived widget value: the mirror override on a param-less nightly
+    run, else the widget. Infra widgets keep ``dbutils.widgets.get``."""
+    return _overrides.get(name, dbutils.widgets.get(name))
+
+
 try:
-    allowlist = [str(c).strip() for c in json.loads(dbutils.widgets.get("catalog_allowlist") or "[]") if str(c).strip()]
+    allowlist = [str(c).strip() for c in json.loads(_w("catalog_allowlist") or "[]") if str(c).strip()]
 except (TypeError, ValueError):
     allowlist = []
 
 # Stage 3 curation policy (MV-D57), each parsed defensively → in-code default (MV-D43).
 try:
-    facet_denylist = [str(c).strip() for c in json.loads(dbutils.widgets.get("domain_facet_denylist") or "[]") if str(c).strip()]
+    facet_denylist = [str(c).strip() for c in json.loads(_w("domain_facet_denylist") or "[]") if str(c).strip()]
 except (TypeError, ValueError):
     facet_denylist = []
 try:
-    domain_min_tables = int(dbutils.widgets.get("domain_min_tables").strip() or "3")
+    domain_min_tables = int(_w("domain_min_tables").strip() or "3")
 except (TypeError, ValueError):
     domain_min_tables = 3
 try:
-    domain_min_schemas = int(dbutils.widgets.get("domain_min_schemas").strip() or "2")
+    domain_min_schemas = int(_w("domain_min_schemas").strip() or "2")
 except (TypeError, ValueError):
     domain_min_schemas = 2
-domain_require_connection = (dbutils.widgets.get("domain_require_connection").strip().lower() or "true") != "false"
+domain_require_connection = (_w("domain_require_connection").strip().lower() or "true") != "false"
 
 # Stage 3.2 edge hygiene + Gate-B (MV-D61/62), each parsed defensively → in-code default
 # (MV-D43). A param-less run still applies the shipped default cuts (spec §3).
@@ -179,7 +240,7 @@ from genie_space_optimizer.ontology import schema_signals as _ss  # noqa: E402
 
 def _parse_str_list(name: str, default: list[str]) -> list[str]:
     try:
-        parsed = [str(c).strip() for c in json.loads(dbutils.widgets.get(name) or "[]") if str(c).strip()]
+        parsed = [str(c).strip() for c in json.loads(_w(name) or "[]") if str(c).strip()]
     except (TypeError, ValueError):
         return list(default)
     return parsed
@@ -187,14 +248,14 @@ def _parse_str_list(name: str, default: list[str]) -> list[str]:
 
 def _parse_int(name: str, default: int) -> int:
     try:
-        return int(dbutils.widgets.get(name).strip() or str(default))
+        return int(_w(name).strip() or str(default))
     except (TypeError, ValueError):
         return default
 
 
 def _parse_float(name: str, default: float) -> float:
     try:
-        return float(dbutils.widgets.get(name).strip() or str(default))
+        return float(_w(name).strip() or str(default))
     except (TypeError, ValueError):
         return default
 
@@ -234,12 +295,12 @@ try:
     }
 except (TypeError, ValueError, AttributeError):
     external_context_sources = {}
-company_name = dbutils.widgets.get("company_name").strip() or None
+company_name = _w("company_name").strip() or None
 external_context_hipaa_baa = (dbutils.widgets.get("external_context_hipaa_baa").strip().lower() or "false") == "true"
 
 # §9 industry-reference alignment (MV-D58), parsed defensively → DEFAULT OFF (MV-D43).
-industry_alignment_enabled = (dbutils.widgets.get("industry_alignment_enabled").strip().lower() or "false") == "true"
-industry_alignment_reference_model = dbutils.widgets.get("industry_alignment_reference_model").strip() or None
+industry_alignment_enabled = (_w("industry_alignment_enabled").strip().lower() or "false") == "true"
+industry_alignment_reference_model = _w("industry_alignment_reference_model").strip() or None
 
 
 def _resolve_metastore_id() -> str:
@@ -265,14 +326,6 @@ def _resolve_metastore_id() -> str:
         _log("CURRENT_METASTORE() read failed; using 'default'", error=str(e))
     return "default"
 
-
-# workspace_id is PROVENANCE (which install triggered this run), never a key.
-if not workspace_id:
-    w0 = make_workspace_client()
-    try:
-        workspace_id = str(w0.get_workspace_id())
-    except Exception:
-        workspace_id = "default"
 
 if not metastore_id:
     metastore_id = _resolve_metastore_id()

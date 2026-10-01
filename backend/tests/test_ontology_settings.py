@@ -203,6 +203,10 @@ def test_settings_router_wire_shape(monkeypatch):
 
     monkeypatch.setattr(ont_settings, "get_settings", _get)
     monkeypatch.setattr(ont_settings, "save_settings", _save)
+    # The PUT also mirrors Settings to Delta (MV-D109 P5); keep this wire-shape test offline.
+    from backend.ontology.services import settings_mirror
+
+    monkeypatch.setattr(settings_mirror, "write_mirror", lambda *a, **k: None)
 
     app = FastAPI()
     app.include_router(settings_router)
