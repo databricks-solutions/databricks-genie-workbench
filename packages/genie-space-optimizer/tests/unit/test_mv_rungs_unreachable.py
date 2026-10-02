@@ -1,8 +1,9 @@
-"""MV-D117 (C-8): no production caller builds a multi-hop MvProfiling.
+"""MV-D117 (C-8), MV-D124: no production caller builds a multi-hop MvProfiling.
 
-The nested and subquery-source rungs are not proven in Unity Catalog. They stay
-reachable only from tests until a live proof lands; this pin fails the moment a
-production call site starts passing join hops or attributes.
+Every join rung is proven in Unity Catalog and creatable (MV-D124), but no
+production caller passes join hops, so no proposal can reach a joined rung. This
+pin fails the moment a production call site starts passing join hops or
+attributes; it is lifted by the item that wires them from the space's join specs.
 """
 
 import ast

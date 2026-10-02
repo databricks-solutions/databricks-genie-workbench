@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -27,9 +28,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from backend.routers import auto_optimize
-from backend.services import mv_create
+from backend.services import mv_create, mv_entitlement
 from genie_space_optimizer.common import warehouse
-from genie_space_optimizer.common.config import MV_RENDER_VERSION
+from genie_space_optimizer.common.config import (
+    MV_CAPABILITY_NESTED_JOINS,
+    MV_PROVEN_JOIN_STRATEGIES,
+    MV_RENDER_VERSION,
+)
 from genie_space_optimizer.optimization import mv_yaml
 
 _REAL_LOAD_RUN_ENVELOPE = auto_optimize._load_run_envelope
@@ -39,8 +44,10 @@ _REAL_CONFIRM_METRIC_VIEW = mv_create._confirm_metric_view
 # ── Service: create_and_attach_for_run ─────────────────────────────────────
 
 
-def _verification(effective_mode="create_and_attach", downgrade_reason=None, verdict="SUFFICIENT"):
-    fresh = SimpleNamespace(capabilities=[], checked_as="analyst@example.com")
+def _verification(
+    effective_mode="create_and_attach", downgrade_reason=None, verdict="SUFFICIENT", capabilities=(),
+):
+    fresh = SimpleNamespace(capabilities=list(capabilities), checked_as="analyst@example.com")
     return SimpleNamespace(
         effective_mode=effective_mode,
         downgrade_reason=downgrade_reason,
@@ -546,26 +553,150 @@ def test_revalidation_downgrade_aborts_the_create(create_env, monkeypatch):
     assert upserts == []
 
 
-@pytest.mark.parametrize("strategy", ["nested", "subquery_source", "denormalized"])
-def test_a_body_needing_an_unproven_join_is_not_created(create_env, monkeypatch, strategy):
-    """MV-D117 (C-8): only a ``direct`` body is created until the join rungs are
-    proven in Unity Catalog."""
+def test_a_body_with_an_unknown_join_strategy_is_not_created(create_env, monkeypatch, caplog):
     executed, upserts = create_env
     monkeypatch.setattr(
         mv_create, "_load_ddl_artifact",
-        lambda *a, **k: dict(_ARTIFACT, join_strategy=strategy),
+        lambda *a, **k: dict(_ARTIFACT, join_strategy="cross"),
     )
     monkeypatch.setattr(
         mv_yaml, "validate",
         lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
     )
 
-    handoff = _run_create()
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
+        handoff = _run_create()
 
     assert not any("CREATE VIEW" in s for s in executed)
     assert handoff.attach_views == []
     assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "needs a join strategy not yet proven in Unity Catalog (1)"
+    )
+    assert mv_create.UNPROVEN_RUNG_REASON in caplog.text
     assert upserts == []
+
+
+# ── The join strategies proven live in Unity Catalog (MV-D124) ─────────────
+
+_RUNG_PROOF = (
+    Path(__file__).resolve().parents[2]
+    / "packages/genie-space-optimizer/tests/unit/data/mv_rung_proof_7eeb5f5b.json"
+)
+_REAL_VALIDATE = mv_yaml.validate
+# How mv_entitlement reports the runtime: a SQL warehouse gives a DBSQL version,
+# so every floor is UNKNOWN; a DBR 17.3 cluster grants the nested-join floor.
+_WAREHOUSE_CAPABILITIES = mv_entitlement._capability_rows("DBSQL", "2026.36", "wh1")
+_NESTED_GRANTED_CAPABILITIES = mv_entitlement._capability_rows("DBR", "17.3", "wh1")
+
+
+def _proven_body(strategy):
+    rungs = json.loads(_RUNG_PROOF.read_text())["rungs"]
+    return next(r for r in rungs if r["strategy"] == strategy)
+
+
+def _run_proven(monkeypatch, strategy, *, stored_strategy, capabilities):
+    """The run hook over a golden body, its tables covered, under the real validate."""
+    rung = _proven_body(strategy)
+    consent = _consent_covering(*rung["profiling"]["table_columns"])
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            **_ARTIFACT, "yaml_text": rung["yaml_text"], "join_strategy": stored_strategy,
+        },
+    )
+    monkeypatch.setattr(
+        mv_create, "verify_consent",
+        lambda **kw: (_verification(capabilities=capabilities), consent),
+    )
+    monkeypatch.setattr(mv_yaml, "validate", _REAL_VALIDATE)
+    return rung, _run_create()
+
+
+def test_the_probe_capability_rows_resolve_as_the_pins_assume():
+    nested = MV_CAPABILITY_NESTED_JOINS
+    assert {r.capability: r.status for r in _WAREHOUSE_CAPABILITIES}[nested] == "UNKNOWN"
+    assert {r.capability: r.status for r in _NESTED_GRANTED_CAPABILITIES}[nested] == "GRANTED"
+
+
+@pytest.mark.parametrize(
+    "strategy, capabilities",
+    [
+        ("denormalized", _WAREHOUSE_CAPABILITIES),
+        ("nested", _NESTED_GRANTED_CAPABILITIES),
+        ("subquery_source", _WAREHOUSE_CAPABILITIES),
+    ],
+)
+def test_run_hook_creates_a_body_at_each_proven_join_strategy(
+    create_env, monkeypatch, strategy, capabilities
+):
+    executed, upserts = create_env
+    assert strategy in MV_PROVEN_JOIN_STRATEGIES
+
+    rung, handoff = _run_proven(
+        monkeypatch, strategy, stored_strategy=strategy, capabilities=capabilities,
+    )
+
+    assert handoff.action_mode == "create_and_attach"
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert [s for s in executed if "CREATE VIEW" in s] == [
+        mv_yaml.create_ddl("finance.sales.revenue_metrics", rung["yaml_text"])
+    ]
+    assert upserts and upserts[0]["status"] == "CREATED"
+
+
+def test_run_hook_reads_a_missing_join_strategy_as_direct(create_env, monkeypatch):
+    executed, _upserts = create_env
+
+    rung, handoff = _run_proven(
+        monkeypatch, "direct", stored_strategy=None, capabilities=_WAREHOUSE_CAPABILITIES,
+    )
+
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert [s for s in executed if "CREATE VIEW" in s] == [
+        mv_yaml.create_ddl("finance.sales.revenue_metrics", rung["yaml_text"])
+    ]
+
+
+@pytest.mark.parametrize("stored_strategy", ["nested", "subquery_source"])
+def test_run_hook_refuses_a_nested_body_on_a_warehouse_below_the_rendered_rung(
+    create_env, monkeypatch, caplog, stored_strategy
+):
+    """The nested body needs a capability a warehouse does not grant, so it is
+    refused under its own label and under a ``subquery_source`` label alike."""
+    executed, upserts = create_env
+
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
+        _rung, handoff = _run_proven(
+            monkeypatch, "nested", stored_strategy=stored_strategy,
+            capabilities=_WAREHOUSE_CAPABILITIES,
+        )
+
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "re-validation demands a lower join strategy (1)"
+    )
+    assert mv_create.UNPROVEN_RUNG_REASON not in caplog.text
+    assert (
+        f"demands join strategy subquery_source (stored {stored_strategy}); "
+        "aborting create (MV-D22)"
+    ) in caplog.text
+    assert " below " not in caplog.text
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == []
+
+
+@pytest.mark.parametrize(
+    "strategy, unproven",
+    [
+        (None, False), ("", False), ("direct", False), ("denormalized", False),
+        ("nested", False), ("subquery_source", False), ("cross", True),
+    ],
+)
+def test_unproven_rung_refuses_only_a_strategy_outside_the_proven_set(strategy, unproven):
+    assert mv_create._unproven_rung(strategy) is unproven
 
 
 def test_revalidation_failure_drops_the_suggestion(create_env, monkeypatch):
@@ -1404,15 +1535,16 @@ def test_the_summary_names_no_view_or_sql(create_env, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "downgrade_to,stored,expected",
+    "downgrade_to,expected",
     [
-        ("subquery_source", "nested", True),   # forced below where it was rendered
-        (None, "nested", False),               # no downgrade demanded
-        ("subquery_source", "subquery_source", False),  # already at that rung
+        ("subquery_source", True),   # the body needs a capability the probe lacks
+        (None, False),               # no downgrade demanded
+        ("", False),
+        ("denormalized", True),      # any downgrade is refused, not only today's one
     ],
 )
-def test_rung_below(downgrade_to, stored, expected):
-    assert mv_create._rung_below(downgrade_to, stored) is expected
+def test_rung_below(downgrade_to, expected):
+    assert mv_create._rung_below(downgrade_to) is expected
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -2988,6 +3120,148 @@ def test_a_quoted_consent_securable_covers_by_its_parts():
     ]
     hyphenated = "version: 0.1\nsource: '`finance`.`sales-eu`.`orders`'\n"
     assert mv_create._uncovered_tables(hyphenated, _consent_covering("finance.sales-eu.orders")) == []
+
+
+# ── Coverage reads the tables inside a subquery source ──────────────────────
+
+_SUBQUERY_SOURCE = (
+    "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+    "FROM `finance`.`sales`.`orders` AS fact\n"
+    "LEFT JOIN (SELECT `branch_id`, MAX(`area_id`) AS `area_id`, MAX(`branch_name`) AS `branch_name` "
+    "FROM `finance`.`sales`.`branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch "
+    "ON fact.`branch_id` = dim_branch.`branch_id`\n"
+    "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `finance`.`sales`.`area` "
+    "GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`\n"
+)
+_SUBQUERY_TABLES = ("finance.sales.orders", "finance.sales.branch", "finance.sales.area")
+
+
+def _subquery_body(source=_SUBQUERY_SOURCE):
+    import yaml
+
+    return yaml.safe_dump({
+        "version": "1.1",
+        "source": source,
+        "dimensions": [
+            {"name": "branch_name", "expr": "source.`branch_name`"},
+            {"name": "area_name", "expr": "source.`area_name`"},
+        ],
+        "measures": [{"name": "total_amount", "expr": "SUM(source.`amount`)"}],
+    }, sort_keys=False)
+
+
+def _subquery_run(monkeypatch, consent, source=_SUBQUERY_SOURCE):
+    """The run hook over a stored ``subquery_source`` body; the rung is proven, so
+    the coverage gate is reached."""
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            **_ARTIFACT, "yaml_text": _subquery_body(source), "join_strategy": "subquery_source",
+        },
+    )
+    monkeypatch.setattr(mv_create, "verify_consent", lambda **kw: (_verification(), consent))
+    monkeypatch.setattr(
+        mv_yaml, "validate", lambda text, **kw: mv_yaml.ValidationReport(ok=True, downgrade_to=None),
+    )
+    return _run_create()
+
+
+def test_uncovered_tables_reads_every_table_inside_a_subquery_source():
+    body = _subquery_body()
+    assert mv_create._uncovered_tables(body, _consent_covering(*_SUBQUERY_TABLES)) == []
+    assert mv_create._uncovered_tables(
+        body, _consent_covering("finance.sales.orders", "finance.sales.branch")
+    ) == ["`finance`.`sales`.`area`"]
+    assert mv_create._uncovered_tables(
+        _subquery_body("SELECT fact.* FROM ((("), _consent_covering(*_SUBQUERY_TABLES)
+    ) is None
+
+
+def test_a_subquery_body_still_governs_no_table():
+    import yaml
+    from genie_space_optimizer.optimization.mv_scoring import _definition_tables
+
+    assert _definition_tables(yaml.safe_load(_subquery_body())) == ()
+
+
+def test_uncovered_tables_reads_a_query_in_a_nested_join():
+    body = (
+        "version: '1.1'\nsource: finance.sales.orders\njoins:\n"
+        "  - name: b\n    source: finance.sales.branch\n    on: source.branch_id = b.branch_id\n"
+        "    joins:\n"
+        "      - name: a\n"
+        "        source: SELECT area_id, area_name FROM finance.geo.area\n"
+        "        on: b.area_id = a.area_id\n"
+    )
+    assert mv_create._uncovered_tables(
+        body, _consent_covering("finance.sales.orders", "finance.sales.branch")
+    ) == ["`finance`.`geo`.`area`"]
+    assert mv_create._uncovered_tables(
+        body, _consent_covering("finance.sales.orders", "finance.sales.branch", "finance.geo.area")
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "SELECT * FROM sales.orders",
+        "SELECT * FROM finance.sales.orders AS o JOIN range(10) AS r ON 1 = 1",
+        "SELECT 1",
+    ],
+)
+def test_a_subquery_source_with_an_unreadable_table_is_refused(source):
+    body = f"version: '1.1'\nsource: {source}\n"
+    assert mv_create._uncovered_tables(body, _consent_covering("finance.sales.orders")) is None
+
+
+def test_a_query_join_under_an_empty_base_source_is_refused():
+    body = (
+        "version: '1.1'\njoins:\n"
+        "  - name: b\n    source: SELECT * FROM finance.sales.branch\n    on: source.id = b.id\n"
+    )
+    assert mv_create._uncovered_tables(body, _consent_covering("finance.sales.branch")) is None
+
+
+def test_run_hook_passes_coverage_for_a_subquery_body_the_consent_covers(create_env, monkeypatch):
+    executed, upserts = create_env
+    handoff = _subquery_run(monkeypatch, _consent_covering(*_SUBQUERY_TABLES))
+    assert handoff.action_mode == "create_and_attach"
+    assert handoff.attach_views == ["finance.sales.revenue_metrics"]
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
+    assert upserts and upserts[0]["status"] == "CREATED"
+    assert "access check" not in (handoff.downgrade_reason or "")
+
+
+def test_run_hook_refuses_a_subquery_body_with_an_inner_table_uncovered(
+    create_env, monkeypatch, caplog
+):
+    executed, upserts = create_env
+    consent = _consent_covering("finance.sales.orders", "finance.sales.branch")
+    assert mv_create._uncovered_tables(_subquery_body(), consent) == ["`finance`.`sales`.`area`"]
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
+        handoff = _subquery_run(monkeypatch, consent)
+    assert handoff.action_mode == "suggest_only"
+    assert handoff.downgrade_reason == (
+        "no metric view could be created for the selected candidates: "
+        "reads a table the access check did not cover (1)"
+    )
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == []
+    assert mv_create.UNCOVERED_TABLES_REASON in caplog.text
+    assert "SELECT" not in caplog.text and "area" not in caplog.text
+
+
+def test_run_hook_refuses_an_unparsable_subquery_body(create_env, monkeypatch, caplog):
+    executed, upserts = create_env
+    with caplog.at_level("WARNING", logger="backend.services.mv_create"):
+        handoff = _subquery_run(
+            monkeypatch, _consent_covering(*_SUBQUERY_TABLES), source="SELECT fact.* FROM (((",
+        )
+    assert handoff.action_mode == "suggest_only"
+    assert "reads a table the access check did not cover (1)" in (handoff.downgrade_reason or "")
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == []
+    assert "SELECT" not in caplog.text and "(((" not in caplog.text
 
 
 @pytest.mark.parametrize(

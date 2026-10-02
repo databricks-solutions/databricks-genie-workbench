@@ -2733,7 +2733,11 @@ MV_RENDER_VERSION = 2
 Version 2 (MV-D113) keeps literal case and temporal units and quotes every
 identifier. The backend replays only a body stamped at this version or later;
 an older persisted body is refused at approval and skipped at run time, never
-re-rendered (MV-D22)."""
+re-rendered (MV-D22).
+
+A change confined to the nested or subquery_source rung does not move this
+while no production caller can render those rungs
+(``tests/unit/test_mv_rungs_unreachable.py``): no stored body carries them."""
 
 
 # ── 24. Metric View Advisor runtime capability floors (MV-D8) ───────────
@@ -2855,6 +2859,17 @@ MV_JOIN_STRATEGIES: tuple[str, ...] = (
 ``direct`` is not a rung — it is the single-hop case where no ladder applies.
 The rung chosen and the reason are recorded on the proposal (``join_strategy``
 plus evidence) so a reviewer can see why a shape was reachable or was not."""
+
+# MV-D124: each strategy here was created and checked live in Unity Catalog; the
+# bodies are bound to the renderer by tests/unit/data/mv_rung_proof_7eeb5f5b.json.
+# A strategy is added only with a live proof and its golden.
+MV_PROVEN_JOIN_STRATEGIES: tuple[str, ...] = (
+    MV_JOIN_STRATEGY_DIRECT,
+    MV_JOIN_STRATEGY_DENORMALIZED,
+    MV_JOIN_STRATEGY_NESTED,
+    MV_JOIN_STRATEGY_SUBQUERY,
+)
+"""The join strategies a stored body may carry and still be created."""
 
 MV_COMMENT_SECTIONS: tuple[str, ...] = (
     "PURPOSE", "BEST FOR", "NOT FOR", "DIMENSIONS",

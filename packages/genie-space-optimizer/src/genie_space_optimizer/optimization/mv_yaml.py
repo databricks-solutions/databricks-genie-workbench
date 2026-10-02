@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -101,6 +102,7 @@ __all__ = [
     "generate",
     "quote_fqn",
     "quote_identifier",
+    "subquery_tables",
     "validate",
     "validate_registered",
 ]
@@ -508,6 +510,47 @@ def quote_fqn(name: str) -> str:
     return ".".join(quote_identifier(p) for p in parts)
 
 
+def subquery_tables(sql: str) -> tuple[str, ...] | None:
+    """Every table a query ``source`` reads, or ``None``.
+
+    Each table is returned as its three parts, each backtick-quoted, in the order
+    the text names them; a table named twice (in any case) is returned once, as
+    first spelled. ``None`` when the text is not exactly one query, reads no
+    table, or reads anything that is not a plain three-part name — a two-part or
+    four-part name, a table function, or ``IDENTIFIER(...)`` — so a caller that
+    checks each table can refuse what it cannot read.
+
+    The renderer emits no CTE, so a query with a ``WITH`` clause anywhere, nested
+    or recursive, is refused rather than scoped. An optimizer hint comment
+    (``/*+ ... */``) is refused too; the renderer emits none.
+    """
+    try:
+        statements = _parse_without_sqlglot_logs(str(sql or ""))
+    except Exception:  # noqa: BLE001 - an unreadable query is None, never raised
+        return None
+    if len(statements) != 1 or not isinstance(statements[0], exp.Query):
+        return None
+    tree = statements[0]
+    if tree.find(exp.With, exp.CTE, exp.Hint) is not None:
+        return None
+    tables: list[str] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def offset(table: exp.Table) -> int:
+        return min((p.meta.get("start", 0) for p in table.parts), default=0)
+
+    for table in sorted(tree.find_all(exp.Table), key=offset):
+        parts = table.parts
+        if len(parts) != 3 or not all(isinstance(p, exp.Identifier) and p.name for p in parts):
+            return None
+        names = tuple(p.name for p in parts)
+        key = tuple(n.lower() for n in names)
+        if key not in seen:
+            seen.add(key)
+            tables.append(".".join("`" + n.replace("`", "``") + "`" for n in names))
+    return tuple(tables) or None
+
+
 _SOURCE_ALIAS = "fact"
 """Alias for the fact relation inside a subquery source. Never appears in an
 emitted ``expr`` — the semantic layer always refers to the source as ``source``."""
@@ -830,12 +873,22 @@ def _deduplicated_relation(hop: JoinHop, profiling: MvProfiling) -> str:
     way to guarantee at most one match without a window function; the payload
     columns are attribute values, so collapsing duplicates is a deliberate
     last-writer choice recorded in the NOTE section of the comment.
+
+    The payload also carries the ``left_key`` of every hop whose ``parent`` is
+    this hop: the child's ``LEFT JOIN`` reads it from this relation, and Unity
+    Catalog refuses the body as an unresolved column when it is not projected.
+    Those keys follow the same last-writer ``MAX`` choice as the attributes.
     """
     payload = sorted(
         {
             a.column
             for a in profiling.attributes
             if a.hop_alias == hop.alias and a.column != hop.right_key
+        }
+        | {
+            child.left_key
+            for child in profiling.hops
+            if child.parent == hop.alias and child.left_key != hop.right_key
         }
     )
     projected = [quote_identifier(hop.right_key)] + [
@@ -2073,3 +2126,47 @@ def create_ddl(full_name: str, yaml_text: str, *, comment: str = "") -> str:
     statement.append("AS $$")
     statement.append(body + "$$")
     return "\n".join(statement)
+
+
+# ── sqlglot's own logger ─────────────────────────────────────────────────
+
+_SQLGLOT_LOGGER_NAME = "sqlglot"
+_sqlglot_quiet = threading.local()
+
+
+class _QuietSqlglotFilter(logging.Filter):
+    """Drops the ``sqlglot`` logger's records on a thread that is inside
+    :func:`_parse_without_sqlglot_logs`.
+
+    sqlglot's warnings quote the text they parse (an invalid JSON path argument,
+    say), and a stored body's literals must not reach a log. A logger filter runs
+    before any handler, the root's included. sqlglot 30.0.3 logs only through the
+    ``sqlglot`` logger, never a child, which ``test_mv_yaml`` pins. The flag is
+    per thread because the backend parses on worker threads: a record emitted on
+    any other thread passes.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(_sqlglot_quiet, "depth", 0)
+
+
+_QUIET_SQLGLOT_FILTER = _QuietSqlglotFilter()
+
+
+def _install_quiet_sqlglot_filter() -> None:
+    sqlglot_logger = logging.getLogger(_SQLGLOT_LOGGER_NAME)
+    if not any(isinstance(f, _QuietSqlglotFilter) for f in sqlglot_logger.filters):
+        sqlglot_logger.addFilter(_QUIET_SQLGLOT_FILTER)
+
+
+def _parse_without_sqlglot_logs(sql: str) -> list:
+    """``sqlglot.parse`` in the databricks dialect, with nothing sqlglot logs on
+    this thread meanwhile reaching a handler."""
+    _sqlglot_quiet.depth = getattr(_sqlglot_quiet, "depth", 0) + 1
+    try:
+        return sqlglot.parse(sql, read="databricks")
+    finally:
+        _sqlglot_quiet.depth -= 1
+
+
+_install_quiet_sqlglot_filter()

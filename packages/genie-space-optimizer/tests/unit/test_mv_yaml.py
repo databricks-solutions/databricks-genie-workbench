@@ -11,7 +11,9 @@ diff instead of re-baselining four near-identical documents.
 from __future__ import annotations
 
 import ast
+import logging
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -394,6 +396,194 @@ def test_subquery_rung_when_an_intermediate_key_is_not_proven():
 
     assert result.join_strategy == MV_JOIN_STRATEGY_SUBQUERY
     assert any("not proof" in reason for reason in result.evidence["unproven_keys"])
+
+
+# ── Subquery rung: the keys child hops join on ───────────────────────────
+
+M7F_ORDERS = "main.sales.m7f_orders"
+M7F_BRANCH = "main.sales.m7f_branch"
+M7F_AREA = "main.sales.m7f_area"
+
+# The body generate() rendered for the natural branch -> area request before the
+# branch relation projected area_id; Unity Catalog refused it with UNRESOLVED_COLUMN.
+PRE_FIX_NATURAL_SOURCE = (
+    "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+    "FROM `main`.`sales`.`m7f_orders` AS fact\n"
+    "LEFT JOIN (SELECT `branch_id`, MAX(`branch_name`) AS `branch_name` FROM `main`.`sales`.`m7f_branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch ON fact.`branch_id` = dim_branch.`branch_id`\n"
+    "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `main`.`sales`.`m7f_area` GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`"
+)
+
+
+def _unprojected_on_columns(source_sql: str, fact_columns: tuple[str, ...]) -> list[str]:
+    """Every ``alias.col`` in a join's ``ON`` that the alias's relation does not project."""
+    tree = sqlglot.parse_one(source_sql, read="databricks")
+    joins = tree.args.get("joins") or []
+    projected = {"fact": {c.lower() for c in fact_columns}}
+    for join in joins:
+        relation = join.this
+        assert isinstance(relation, sqlglot.exp.Subquery)
+        projected[relation.alias_or_name] = {
+            s.alias_or_name.lower() for s in relation.this.expressions
+        }
+    referenced = [
+        column
+        for join in joins
+        for column in join.args["on"].find_all(sqlglot.exp.Column)
+    ]
+    assert referenced
+    return [
+        f"{c.table}.{c.name}"
+        for c in referenced
+        if c.name.lower() not in projected.get(c.table, set())
+    ]
+
+
+def _subquery_profiling(
+    hops: tuple[JoinHop, ...],
+    attributes: tuple[RequestedAttribute, ...],
+    table_columns: dict[str, tuple[str, ...]],
+    uniqueness: dict | None = None,
+) -> MvProfiling:
+    return MvProfiling(
+        source_table=M7F_ORDERS,
+        table_columns={t: _columns(*cols) for t, cols in table_columns.items()},
+        uniqueness=uniqueness or {},
+        hops=hops,
+        attributes=attributes,
+        measures=(MeasureRequest(name="total_amount", expr="SUM(amount)"),),
+        capabilities={MV_CAPABILITY_NESTED_JOINS: "GRANTED"},
+        domain="m7f proof",
+    )
+
+
+ORDERS_COLUMNS = ("order_id", "branch_id", "amount")
+BRANCH_HOP = JoinHop(
+    alias="dim_branch",
+    table=M7F_BRANCH,
+    left_key="branch_id",
+    right_key="branch_id",
+    is_current_column="is_current",
+)
+AREA_HOP = JoinHop(
+    alias="dim_area", table=M7F_AREA, left_key="area_id", right_key="area_id", parent="dim_branch"
+)
+BRANCH_COLUMNS = ("branch_id", "area_id", "branch_name", "is_current")
+AREA_COLUMNS = ("area_id", "area_name")
+# A duplicate current branch key: the nested rung is refused even when granted.
+BRANCH_DUPLICATED = {
+    (M7F_BRANCH, "branch_id"): KeyUniqueness(
+        table=M7F_BRANCH, column="branch_id", kind=UNIQUENESS_EXACT, row_count=5, distinct_count=3
+    ),
+    (M7F_AREA, "area_id"): KeyUniqueness(
+        table=M7F_AREA, column="area_id", kind=UNIQUENESS_EXACT, row_count=2, distinct_count=2
+    ),
+}
+
+
+def _natural_branch_area(*extra: RequestedAttribute) -> MvProfiling:
+    return _subquery_profiling(
+        hops=(BRANCH_HOP, AREA_HOP),
+        attributes=(
+            RequestedAttribute(name="branch_name", column="branch_name", hop_alias="dim_branch"),
+            *extra,
+            RequestedAttribute(name="area_name", column="area_name", hop_alias="dim_area"),
+        ),
+        table_columns={
+            M7F_ORDERS: ORDERS_COLUMNS,
+            M7F_BRANCH: BRANCH_COLUMNS,
+            M7F_AREA: AREA_COLUMNS,
+        },
+        uniqueness=BRANCH_DUPLICATED,
+    )
+
+
+def test_the_on_column_check_flags_the_pre_fix_natural_body():
+    assert _unprojected_on_columns(PRE_FIX_NATURAL_SOURCE, ORDERS_COLUMNS) == [
+        "dim_branch.area_id"
+    ]
+
+
+def test_the_natural_depth_two_subquery_body_projects_the_child_join_key():
+    """The branch relation projects ``area_id``, the key ``dim_area``'s ON reads."""
+    result = generate(
+        _candidate(source_tables=(M7F_ORDERS,), concept="orders", measure_expr="SUM(amount)"),
+        _natural_branch_area(),
+    )
+
+    assert result.ok
+    assert result.join_strategy == MV_JOIN_STRATEGY_SUBQUERY
+    source_sql = yaml.safe_load(result.yaml_text)["source"].rstrip("\n")
+    assert _unprojected_on_columns(source_sql, ORDERS_COLUMNS) == []
+    assert source_sql == (
+        "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+        "FROM `main`.`sales`.`m7f_orders` AS fact\n"
+        "LEFT JOIN (SELECT `branch_id`, MAX(`area_id`) AS `area_id`, MAX(`branch_name`) AS `branch_name` FROM `main`.`sales`.`m7f_branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch ON fact.`branch_id` = dim_branch.`branch_id`\n"
+        "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `main`.`sales`.`m7f_area` GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`"
+    )
+    assert validate(result.yaml_text, capabilities={MV_CAPABILITY_NESTED_JOINS: "UNKNOWN"}).ok
+
+
+def test_a_depth_three_subquery_chain_projects_each_middle_key():
+    a_table, b_table, c_table = "main.sales.dim_a", "main.sales.dim_b", "main.sales.dim_c"
+    hops = (
+        JoinHop(alias="dim_a", table=a_table, left_key="a_id", right_key="a_id"),
+        JoinHop(alias="dim_b", table=b_table, left_key="b_id", right_key="b_id", parent="dim_a"),
+        JoinHop(alias="dim_c", table=c_table, left_key="c_id", right_key="c_id", parent="dim_b"),
+    )
+    profiling = _subquery_profiling(
+        hops=hops,
+        attributes=(RequestedAttribute(name="c_name", column="c_name", hop_alias="dim_c"),),
+        table_columns={
+            M7F_ORDERS: ("order_id", "a_id", "amount"),
+            a_table: ("a_id", "b_id"),
+            b_table: ("b_id", "c_id"),
+            c_table: ("c_id", "c_name"),
+        },
+    )
+    result = generate(
+        _candidate(source_tables=(M7F_ORDERS,), concept="orders", measure_expr="SUM(amount)"),
+        profiling,
+    )
+
+    assert result.join_strategy == MV_JOIN_STRATEGY_SUBQUERY
+    source_sql = yaml.safe_load(result.yaml_text)["source"]
+    assert _unprojected_on_columns(source_sql, ("order_id", "a_id", "amount")) == []
+    tree = sqlglot.parse_one(source_sql, read="databricks")
+    projections = {
+        join.this.alias_or_name: [s.alias_or_name for s in join.this.this.expressions]
+        for join in tree.args["joins"]
+    }
+    assert projections == {
+        "dim_a": ["a_id", "b_id"],
+        "dim_b": ["b_id", "c_id"],
+        "dim_c": ["c_id", "c_name"],
+    }
+
+
+def test_a_child_key_that_is_also_a_requested_attribute_is_projected_once():
+    branch_area_id = RequestedAttribute(
+        name="branch_area_id", column="area_id", hop_alias="dim_branch"
+    )
+    result = generate(
+        _candidate(source_tables=(M7F_ORDERS,), concept="orders", measure_expr="SUM(amount)"),
+        _natural_branch_area(branch_area_id),
+    )
+
+    source_sql = yaml.safe_load(result.yaml_text)["source"]
+    assert source_sql.count("MAX(`area_id`) AS `area_id`") == 1
+    assert _unprojected_on_columns(source_sql, ORDERS_COLUMNS) == []
+
+
+def test_a_hop_with_no_children_renders_its_relation_unchanged():
+    """The leaf relation is byte-identical to the pre-fix render."""
+    relation = mv_yaml_module._deduplicated_relation(AREA_HOP, _natural_branch_area())
+    leaf_line = PRE_FIX_NATURAL_SOURCE.splitlines()[-1]
+
+    assert relation == (
+        "(SELECT `area_id`, MAX(`area_name`) AS `area_name` "
+        "FROM `main`.`sales`.`m7f_area` GROUP BY `area_id`)"
+    )
+    assert f"LEFT JOIN {relation} AS dim_area" in leaf_line
 
 
 # ── rely.at_most_one_match ───────────────────────────────────────────────
@@ -1315,6 +1505,208 @@ def test_create_ddl_escapes_single_quotes_in_the_comment():
 def test_quote_fqn_quotes_each_part_and_is_idempotent(raw: str, quoted: str) -> None:
     assert quote_fqn(raw) == quoted
     assert quote_fqn(quote_fqn(raw)) == quoted
+
+
+_SUBQUERY_GOLDEN_SOURCE = (
+    "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+    "FROM `finance`.`sales`.`orders` AS fact\n"
+    "LEFT JOIN (SELECT `branch_id`, MAX(`area_id`) AS `area_id`, MAX(`branch_name`) AS `branch_name` "
+    "FROM `finance`.`sales`.`branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch "
+    "ON fact.`branch_id` = dim_branch.`branch_id`\n"
+    "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `finance`.`sales`.`area` "
+    "GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`\n"
+)
+
+
+def test_subquery_tables_reads_every_table_of_the_subquery_rung_source() -> None:
+    assert mv_yaml_module.subquery_tables(_SUBQUERY_GOLDEN_SOURCE) == (
+        "`finance`.`sales`.`orders`",
+        "`finance`.`sales`.`branch`",
+        "`finance`.`sales`.`area`",
+    )
+
+
+def test_subquery_tables_reads_backtick_quoted_names_as_their_parts() -> None:
+    assert mv_yaml_module.subquery_tables(
+        "SELECT * FROM `Finance`.`sales-eu`.`order lines` AS o JOIN main.sales.`we``ird` AS w ON o.id = w.id"
+    ) == ("`Finance`.`sales-eu`.`order lines`", "`main`.`sales`.`we``ird`")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        (
+            "WITH Recent AS (SELECT * FROM finance.sales.orders WHERE amount > 0) "
+            "SELECT * FROM recent JOIN finance.sales.branch AS b ON recent.branch_id = b.branch_id"
+        ),
+        "WITH t AS (SELECT * FROM t JOIN a.b.c ON 1=1) SELECT * FROM t",
+        "WITH a AS (SELECT * FROM b), b AS (SELECT * FROM x.y.z) SELECT * FROM a",
+        (
+            "SELECT * FROM a.b.c1 JOIN (WITH t AS (SELECT 1 FROM a.b.c2) SELECT * FROM t) u ON 1=1 "
+            "JOIN t ON 1=1"
+        ),
+        "WITH orders AS (SELECT * FROM a.b.secret) SELECT * FROM orders",
+        (
+            "WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 3) "
+            "SELECT * FROM a.b.c JOIN r ON 1=1"
+        ),
+    ],
+)
+def test_subquery_tables_refuses_a_query_with_a_cte(sql: str) -> None:
+    assert mv_yaml_module.subquery_tables(sql) is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT /*+ REPARTITION(3) */ * FROM a.b.c",
+        "SELECT /*+ BROADCAST(d) */ * FROM a.b.c JOIN x.y.z AS d ON 1=1",
+    ],
+)
+def test_subquery_tables_refuses_an_optimizer_hint(sql: str) -> None:
+    assert mv_yaml_module.subquery_tables(sql) is None
+
+
+def test_subquery_tables_reads_past_a_plain_comment() -> None:
+    assert mv_yaml_module.subquery_tables("SELECT * FROM a.b.c /* plain comment */") == (
+        "`a`.`b`.`c`",
+    )
+
+
+def test_subquery_tables_reads_a_nested_and_an_in_subquery() -> None:
+    sql = (
+        "SELECT * FROM (SELECT * FROM finance.sales.orders) AS o "
+        "WHERE o.branch_id IN (SELECT branch_id FROM finance.sales.branch)"
+    )
+    assert mv_yaml_module.subquery_tables(sql) == (
+        "`finance`.`sales`.`orders`",
+        "`finance`.`sales`.`branch`",
+    )
+
+
+def test_subquery_tables_returns_a_table_named_twice_once() -> None:
+    sql = (
+        "SELECT * FROM finance.sales.orders AS a "
+        "JOIN `FINANCE`.`Sales`.`Orders` AS b ON a.id = b.parent_id"
+    )
+    assert mv_yaml_module.subquery_tables(sql) == ("`finance`.`sales`.`orders`",)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM sales.orders",
+        "SELECT * FROM finance.sales.orders JOIN sales.branch ON 1 = 1",
+        "SELECT * FROM `a.b`.c",
+        "SELECT * FROM a.b.c.d",
+        "SELECT * FROM range(10)",
+        "SELECT * FROM IDENTIFIER('finance.sales.orders')",
+        "SELECT fact.* FROM (((",
+        "SELECT 1",
+        "SELECT * FROM VALUES (1) AS t(x)",
+        "SELECT * FROM finance.sales.orders; SELECT * FROM finance.sales.branch",
+        "finance.sales.orders",
+        "",
+    ],
+)
+def test_subquery_tables_is_none_when_a_table_cannot_be_read(sql: str) -> None:
+    assert mv_yaml_module.subquery_tables(sql) is None
+
+
+# sqlglot warns on an invalid JSON path and quotes the path in the message.
+_JSON_PATH_WARNING_SQL = "SELECT get_json_object(j, 'zq_secret bad[') FROM a.b.c"
+
+
+class _ListHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def sqlglot_handler():
+    sqlglot_logger = logging.getLogger("sqlglot")
+    handler = _ListHandler()
+    sqlglot_logger.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        sqlglot_logger.removeHandler(handler)
+
+
+def _messages(records) -> list[str]:
+    return [r.getMessage() for r in records]
+
+
+def test_subquery_tables_lets_no_sqlglot_record_reach_a_handler(caplog, sqlglot_handler) -> None:
+    assert logging.getLogger("sqlglot").propagate
+    with caplog.at_level(logging.DEBUG):
+        tables = mv_yaml_module.subquery_tables(_JSON_PATH_WARNING_SQL)
+
+    assert tables == ("`a`.`b`.`c`",)
+    assert "zq_secret" not in caplog.text
+    assert not any("zq_secret" in m for m in _messages(caplog.records))
+    assert sqlglot_handler.records == []
+
+
+def test_sqlglot_still_logs_the_literal_outside_subquery_tables(caplog, sqlglot_handler) -> None:
+    with caplog.at_level(logging.DEBUG):
+        assert mv_yaml_module.subquery_tables("SELECT fact.* FROM (((") is None
+        sqlglot.parse_one(_JSON_PATH_WARNING_SQL, read="databricks")
+
+    assert any("zq_secret" in m for m in _messages(caplog.records))
+    assert any("zq_secret" in m for m in _messages(sqlglot_handler.records))
+
+
+def test_another_threads_sqlglot_records_pass_while_subquery_tables_parses(
+    caplog, monkeypatch
+) -> None:
+    inside = threading.Event()
+    logged = threading.Event()
+    real_parse = sqlglot.parse
+
+    def parse_after_the_other_thread_logs(sql, **kwargs):
+        inside.set()
+        assert logged.wait(5)
+        return real_parse(sql, **kwargs)
+
+    def other_thread() -> None:
+        assert inside.wait(5)
+        logging.getLogger("sqlglot").warning("zq_other_thread")
+        logged.set()
+
+    monkeypatch.setattr(mv_yaml_module.sqlglot, "parse", parse_after_the_other_thread_logs)
+    worker = threading.Thread(target=other_thread)
+    with caplog.at_level(logging.DEBUG):
+        worker.start()
+        tables = mv_yaml_module.subquery_tables(_JSON_PATH_WARNING_SQL)
+        worker.join(5)
+
+    assert tables == ("`a`.`b`.`c`",)
+    assert _messages(r for r in caplog.records if r.name == "sqlglot") == ["zq_other_thread"]
+
+
+def test_the_quiet_sqlglot_filter_is_installed_once() -> None:
+    mv_yaml_module._install_quiet_sqlglot_filter()
+    mv_yaml_module._install_quiet_sqlglot_filter()
+
+    quiet = [
+        f for f in logging.getLogger("sqlglot").filters
+        if isinstance(f, mv_yaml_module._QuietSqlglotFilter)
+    ]
+    assert quiet == [mv_yaml_module._QUIET_SQLGLOT_FILTER]
+
+
+def test_sqlglot_logs_only_through_its_root_logger() -> None:
+    """A filter on the ``sqlglot`` logger does not see a child logger's records."""
+    names = set()
+    for path in Path(sqlglot.__file__).resolve().parent.rglob("*.py"):
+        names.update(re.findall(r"getLogger\(([^)]*)\)", path.read_text(encoding="utf-8")))
+
+    assert names == {'"sqlglot"'}
 
 
 def test_quote_identifier_doubles_inner_backticks() -> None:

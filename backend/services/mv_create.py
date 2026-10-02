@@ -47,6 +47,7 @@ from backend.services.auth import (
 from backend.services import mv_entitlement
 from genie_space_optimizer.common.config import (
     MV_JOIN_STRATEGY_DIRECT,
+    MV_PROVEN_JOIN_STRATEGIES,
     MV_PROVENANCE_OBO_CREATED,
     MV_PROVENANCE_USER_CREATED,
     MV_RENDER_VERSION,
@@ -100,17 +101,15 @@ def _source_tables_from_consent(consent: dict) -> list[str]:
     return list(dict.fromkeys(tables))
 
 
-def _rung_below(downgrade_to: str | None, stored_strategy: str | None) -> bool:
-    """True when revalidation demands a rung below where the YAML was rendered.
+def _rung_below(downgrade_to: str | None) -> bool:
+    """True when revalidation demands a rung below the body — the MV-D22 abort.
 
-    :func:`mv_yaml.validate` only ever returns ``downgrade_to = subquery_source``
-    (nested joins requested but the runtime does not report the floor as granted).
-    So a downgrade that differs from the stored strategy means the persisted YAML
-    claims a rung the fresh probe will not grant — the MV-D22 abort condition.
-    Under MV-D13 this cannot fire for warehouse-rendered YAML; the guard exists
-    so that stops being a silent dependency.
+    :func:`mv_yaml.validate` sets ``downgrade_to`` only when the body itself needs a
+    capability the fresh probe does not grant (nested joins without the floor
+    granted), so such a body is refused whatever its stored label says; the
+    label is not an input.
     """
-    return bool(downgrade_to) and downgrade_to != (stored_strategy or "")
+    return bool(downgrade_to)
 
 
 def _load_ddl_artifact(
@@ -168,21 +167,44 @@ def _uncovered_tables(yaml_text: str, consent: dict) -> list[str] | None:
     for this user. A join entry that is not a mapping is unreadable too, because
     ``_definition_tables`` skips it rather than reading any table under it.
 
+    A ``source`` (the base or any join, nested ones too) is a table name when
+    ``source_table_name`` reads it as one, the same parse ``_definition_tables``
+    uses. Any other source is read as a query through ``subquery_tables``, and
+    every table inside it is checked; a query that names no table, or anything
+    but a plain three-part name, refuses. A view over a query still governs
+    nothing (MV-D123): only this check reads inside it.
+
     Coverage compares the names as the body spells them, not as
     ``_definition_tables`` reads them: it drops the quoting, so
     `` `finance.sales`.orders `` would read as the three-part
     ``finance.sales.orders``.
     """
     import yaml
+    from genie_space_optimizer.optimization.mv_fingerprint import source_table_name
     from genie_space_optimizer.optimization.mv_scoring import _definition_tables
+    from genie_space_optimizer.optimization.mv_yaml import subquery_tables
 
     try:
         definition = yaml.safe_load(yaml_text)
         if not isinstance(definition, dict) or not _joins_are_mappings(definition):
             return None
-        if not _definition_tables(definition):
+        if not str(definition.get("source") or "").strip():
             return None
-        tables = _source_names(definition)
+        tables: list[str] = []
+        reads_a_query = False
+        for source in _source_names(definition):
+            if source_table_name(source):
+                read = (source,)
+            else:
+                reads_a_query = True
+                read = subquery_tables(source)
+                if read is None:
+                    return None
+            for table in read:
+                if table not in tables:
+                    tables.append(table)
+        if not reads_a_query and not _definition_tables(definition):
+            return None
     except Exception:  # noqa: BLE001 - an unreadable body is refused, not raised
         return None
     covered = {n for n in (_norm_table(t) for t in _source_tables_from_consent(consent)) if n}
@@ -246,9 +268,13 @@ def _norm_table(name: str) -> str | None:
 
 
 def _unproven_rung(stored_strategy: str | None) -> bool:
-    """Only single-source (``direct``) bodies are created until the join rungs are
-    proven in Unity Catalog (MV-D117)."""
-    return (stored_strategy or MV_JOIN_STRATEGY_DIRECT) != MV_JOIN_STRATEGY_DIRECT
+    """A body is created only at a join strategy proven in Unity Catalog (MV-D124).
+
+    A missing strategy is ``direct``; any other value outside
+    ``MV_PROVEN_JOIN_STRATEGIES``, an unknown one included, is refused. A proven
+    ``nested`` body still has to pass ``validate`` against the fresh probe, which
+    demands ``subquery_source`` when the nested-join capability is not granted."""
+    return (stored_strategy or MV_JOIN_STRATEGY_DIRECT) not in MV_PROVEN_JOIN_STRATEGIES
 
 
 class _ReplayBody(NamedTuple):
@@ -599,9 +625,9 @@ def create_and_attach_for_run(
                 )
                 skips["revalidation"] = skips.get("revalidation", 0) + 1
                 continue
-            if _rung_below(report.downgrade_to, stored_strategy):
+            if _rung_below(report.downgrade_to):
                 logger.warning(
-                    "Revalidation of suggestion %s demands rung %s below stored %s; "
+                    "Revalidation of suggestion %s demands join strategy %s (stored %s); "
                     "aborting create (MV-D22)",
                     suggestion_id, report.downgrade_to, stored_strategy,
                 )
@@ -1437,7 +1463,7 @@ def create_at_approval(
             reason="the metric view failed re-validation: "
             + ("; ".join(report.errors) or "no detail"),
         )
-    if _rung_below(report.downgrade_to, stored_strategy):
+    if _rung_below(report.downgrade_to):
         return MvCreateAtApprovalResult(
             created=False, degraded=False, suggestion_id=suggestion_id,
             reason="re-validation demands a join strategy below the rendered one; "

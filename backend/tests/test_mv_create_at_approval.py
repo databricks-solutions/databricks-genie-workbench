@@ -20,6 +20,7 @@ Tested at the seam (no Databricks). What matters:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -29,18 +30,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers import auto_optimize
-from backend.services import mv_create
+from backend.services import mv_create, mv_entitlement
 from genie_space_optimizer.common import warehouse
-from genie_space_optimizer.common.config import MV_RENDER_VERSION
+from genie_space_optimizer.common.config import MV_PROVEN_JOIN_STRATEGIES, MV_RENDER_VERSION
 from genie_space_optimizer.optimization import mv_yaml
 
 
 # ── Service: create_at_approval ─────────────────────────────────────────────
 
 
-def _verification(effective_mode="create_and_attach", downgrade_reason=None, verdict="SUFFICIENT"):
+def _verification(
+    effective_mode="create_and_attach", downgrade_reason=None, verdict="SUFFICIENT", capabilities=(),
+):
     fresh = SimpleNamespace(
-        capabilities=[],
+        capabilities=list(capabilities),
         checked_as="analyst@example.com",
         remediation_sql="GRANT ALL PRIVILEGES ON SCHEMA finance.sales TO `analyst@example.com`",
     )
@@ -440,14 +443,11 @@ def test_rung_below_refuses(approval_env, monkeypatch):
     assert not any("CREATE VIEW" in s for s in executed)
 
 
-@pytest.mark.parametrize("strategy", ["nested", "subquery_source", "denormalized"])
-def test_a_body_needing_an_unproven_join_is_not_created(approval_env, monkeypatch, strategy):
-    """MV-D117 (C-8): only a ``direct`` body is created until the join rungs are
-    proven in Unity Catalog."""
+def test_a_body_with_an_unknown_join_strategy_is_not_created(approval_env, monkeypatch):
     executed, upserts, advice_runs = approval_env
     monkeypatch.setattr(
         mv_create, "_load_ddl_artifact",
-        lambda *a, **k: dict(_ARTIFACT, join_strategy=strategy),
+        lambda *a, **k: dict(_ARTIFACT, join_strategy="cross"),
     )
 
     result = _create()
@@ -455,6 +455,109 @@ def test_a_body_needing_an_unproven_join_is_not_created(approval_env, monkeypatc
     assert result.created is False
     assert result.degraded is False
     assert result.reason == mv_create.UNPROVEN_RUNG_REASON
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []
+
+
+# ── The join strategies proven live in Unity Catalog (MV-D124) ─────────────
+
+_RUNG_PROOF = (
+    Path(__file__).resolve().parents[2]
+    / "packages/genie-space-optimizer/tests/unit/data/mv_rung_proof_7eeb5f5b.json"
+)
+_REAL_VALIDATE = mv_yaml.validate
+# How mv_entitlement reports the runtime: a SQL warehouse gives a DBSQL version,
+# so every floor is UNKNOWN; a DBR 17.3 cluster grants the nested-join floor.
+_WAREHOUSE_CAPABILITIES = mv_entitlement._capability_rows("DBSQL", "2026.36", "wh1")
+_NESTED_GRANTED_CAPABILITIES = mv_entitlement._capability_rows("DBR", "17.3", "wh1")
+
+
+def _proven_body(strategy):
+    rungs = json.loads(_RUNG_PROOF.read_text())["rungs"]
+    return next(r for r in rungs if r["strategy"] == strategy)
+
+
+def _approve_proven(monkeypatch, strategy, *, stored_strategy, capabilities):
+    """Approval of a golden body, its tables covered, under the real validate."""
+    rung = _proven_body(strategy)
+    consent = {
+        **_CONSENT,
+        "probe_results": {"privileges": [
+            {"privilege": "SELECT", "securable": t} for t in rung["profiling"]["table_columns"]
+        ]},
+    }
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            **_ARTIFACT, "yaml_text": rung["yaml_text"], "join_strategy": stored_strategy,
+        },
+    )
+    monkeypatch.setattr(
+        mv_create, "verify_consent",
+        lambda **kw: (_verification(capabilities=capabilities), consent),
+    )
+    monkeypatch.setattr(mv_yaml, "validate", _REAL_VALIDATE)
+    return rung, _create()
+
+
+@pytest.mark.parametrize(
+    "strategy, capabilities",
+    [
+        ("denormalized", _WAREHOUSE_CAPABILITIES),
+        ("nested", _NESTED_GRANTED_CAPABILITIES),
+        ("subquery_source", _WAREHOUSE_CAPABILITIES),
+    ],
+)
+def test_approval_creates_a_body_at_each_proven_join_strategy(
+    approval_env, monkeypatch, strategy, capabilities
+):
+    executed, upserts, advice_runs = approval_env
+    assert strategy in MV_PROVEN_JOIN_STRATEGIES
+
+    rung, result = _approve_proven(
+        monkeypatch, strategy, stored_strategy=strategy, capabilities=capabilities,
+    )
+
+    assert result.reason is None
+    assert result.created is True
+    assert result.full_name == "finance.sales.revenue_metrics"
+    assert [s for s in executed if "CREATE VIEW" in s] == [
+        mv_yaml.create_ddl("finance.sales.revenue_metrics", rung["yaml_text"])
+    ]
+    assert upserts and len(advice_runs) == 1
+
+
+def test_approval_reads_a_missing_join_strategy_as_direct(approval_env, monkeypatch):
+    executed, _upserts, _advice_runs = approval_env
+
+    rung, result = _approve_proven(
+        monkeypatch, "direct", stored_strategy=None, capabilities=_WAREHOUSE_CAPABILITIES,
+    )
+
+    assert result.created is True
+    assert [s for s in executed if "CREATE VIEW" in s] == [
+        mv_yaml.create_ddl("finance.sales.revenue_metrics", rung["yaml_text"])
+    ]
+
+
+@pytest.mark.parametrize("stored_strategy", ["nested", "subquery_source"])
+def test_approval_refuses_a_nested_body_on_a_warehouse_below_the_rendered_rung(
+    approval_env, monkeypatch, stored_strategy
+):
+    """The nested body needs a capability a warehouse does not grant, so it is
+    refused under its own label and under a ``subquery_source`` label alike."""
+    executed, upserts, advice_runs = approval_env
+
+    _rung, result = _approve_proven(
+        monkeypatch, "nested", stored_strategy=stored_strategy,
+        capabilities=_WAREHOUSE_CAPABILITIES,
+    )
+
+    assert result.created is False
+    assert result.degraded is False
+    assert result.reason == (
+        "re-validation demands a join strategy below the rendered one; not creating (MV-D22)"
+    )
     assert not any("CREATE VIEW" in s for s in executed)
     assert upserts == [] and advice_runs == []
 
@@ -1447,3 +1550,96 @@ def test_approval_refuses_a_body_reading_a_table_the_consent_did_not_cover(appro
     assert not result.remediation_sql
     assert not any("DESCRIBE" in s or "CREATE VIEW" in s for s in executed)
     assert upserts == [] and advice_runs == []
+
+
+# ── Coverage reads the tables inside a subquery source ──────────────────────
+
+_SUBQUERY_SOURCE = (
+    "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+    "FROM `finance`.`sales`.`orders` AS fact\n"
+    "LEFT JOIN (SELECT `branch_id`, MAX(`area_id`) AS `area_id`, MAX(`branch_name`) AS `branch_name` "
+    "FROM `finance`.`sales`.`branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch "
+    "ON fact.`branch_id` = dim_branch.`branch_id`\n"
+    "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `finance`.`sales`.`area` "
+    "GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`\n"
+)
+
+
+def _subquery_body(source=_SUBQUERY_SOURCE):
+    import yaml
+
+    return yaml.safe_dump({
+        "version": "1.1",
+        "source": source,
+        "dimensions": [
+            {"name": "branch_name", "expr": "source.`branch_name`"},
+            {"name": "area_name", "expr": "source.`area_name`"},
+        ],
+        "measures": [{"name": "total_amount", "expr": "SUM(source.`amount`)"}],
+    }, sort_keys=False)
+
+
+def _subquery_create(monkeypatch, *securables, source=_SUBQUERY_SOURCE):
+    """Approval of a stored ``subquery_source`` body; the rung is proven, so the
+    coverage gate is reached."""
+    consent = {
+        **_CONSENT,
+        "probe_results": {"privileges": [{"privilege": "SELECT", "securable": s} for s in securables]},
+    }
+    monkeypatch.setattr(mv_create, "verify_consent", lambda **kw: (_verification(), consent))
+    monkeypatch.setattr(
+        mv_create, "_load_ddl_artifact",
+        lambda *a, **k: {
+            **_ARTIFACT, "yaml_text": _subquery_body(source), "join_strategy": "subquery_source",
+        },
+    )
+    return _create()
+
+
+def test_approval_passes_coverage_for_a_subquery_body_the_consent_covers(approval_env, monkeypatch):
+    executed, upserts, advice_runs = approval_env
+    result = _subquery_create(
+        monkeypatch, "finance.sales.orders", "finance.sales.branch", "finance.sales.area",
+    )
+    assert result.reason != mv_create.UNCOVERED_TABLES_REASON
+    assert result.created is True
+    assert any("CREATE VIEW `finance`.`sales`.`revenue_metrics`" in s for s in executed)
+    assert upserts and len(advice_runs) == 1
+
+
+def test_approval_refuses_a_subquery_body_with_an_inner_table_uncovered(approval_env, monkeypatch):
+    executed, upserts, advice_runs = approval_env
+    consent = {
+        **_CONSENT,
+        "probe_results": {"privileges": [
+            {"privilege": "SELECT", "securable": s}
+            for s in ("finance.sales.orders", "finance.sales.branch")
+        ]},
+    }
+    assert mv_create._uncovered_tables(_subquery_body(), consent) == ["`finance`.`sales`.`area`"]
+    result = _subquery_create(monkeypatch, "finance.sales.orders", "finance.sales.branch")
+    assert result.created is False
+    assert result.degraded is False
+    assert result.reason == mv_create.UNCOVERED_TABLES_REASON
+    assert "SELECT" not in result.reason
+    assert not any("DESCRIBE" in s or "CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []
+
+
+def test_approval_refuses_an_unparsable_subquery_body(approval_env, monkeypatch):
+    executed, upserts, advice_runs = approval_env
+    result = _subquery_create(
+        monkeypatch, "finance.sales.orders", "finance.sales.branch", "finance.sales.area",
+        source="SELECT fact.* FROM (((",
+    )
+    assert result.created is False
+    assert result.reason == mv_create.UNCOVERED_TABLES_REASON
+    assert not any("CREATE VIEW" in s for s in executed)
+    assert upserts == [] and advice_runs == []
+
+
+def test_an_approved_subquery_body_still_governs_no_table():
+    import yaml
+    from genie_space_optimizer.optimization.mv_scoring import _definition_tables
+
+    assert _definition_tables(yaml.safe_load(_subquery_body())) == ()
