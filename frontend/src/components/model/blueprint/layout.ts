@@ -49,13 +49,31 @@ export interface IndexedMeasure {
   parentKind: "mv" | "config"
 }
 
+/**
+ * A box's measure chip ids, in measure order: `${boxId}::${name}`, with `#2`,
+ * `#3`… appended only to a repeated name. One calculation over two tables is
+ * two measures that may share a name (MV-D123); a box with unique names keeps
+ * the plain ids.
+ */
+export function measureChipIds(boxId: string, measures: readonly { name: string }[]): string[] {
+  const used = new Set<string>()
+  return measures.map((ms) => {
+    const base = `${boxId}::${ms.name}`
+    let id = base
+    for (let k = 2; used.has(id); k++) id = `${base}#${k}`
+    used.add(id)
+    return id
+  })
+}
+
 export function measureIndex(m: BlueprintModel): Record<string, IndexedMeasure> {
   const out: Record<string, IndexedMeasure> = {}
   for (const n of m.nodes) {
     if (n.kind === "table") continue
-    for (const ms of n.measures) {
-      out[`${n.id}::${ms.name}`] = { ...ms, id: `${n.id}::${ms.name}`, parent: n.id, parentKind: n.kind }
-    }
+    const ids = measureChipIds(n.id, n.measures)
+    n.measures.forEach((ms, i) => {
+      out[ids[i]] = { ...ms, id: ids[i], parent: n.id, parentKind: n.kind }
+    })
   }
   return out
 }

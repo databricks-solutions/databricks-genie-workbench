@@ -62,6 +62,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -80,10 +81,9 @@ from .mv_fingerprint import (
     CorpusScan,
     FingerprintRecurrence,
     corpus_scan,
-    tables_overlap,
 )
+from .mv_identity_v1 import v1_member_keys
 from .mv_scoring import (
-    FIELD_MEASURE,
     TIER_HIGH,
     TIER_MEDIUM,
     VERDICT_SUPPRESSED,
@@ -94,6 +94,7 @@ from .mv_scoring import (
     ScoredProposal,
     SourceColumnMetadata,
     example_question_sql_statements,
+    governs_measure,
     metric_view_fields,
     persist_proposal,
     score_candidate,
@@ -106,7 +107,9 @@ from .mv_state import (
     load_mv_suppressed_fingerprints,
     mv_bundle_fingerprint,
     mv_candidate_fingerprint,
+    rekey_mv_suppressions,
 )
+from .mv_tables import UNRESOLVED, ResolvedTables, TableResolver
 from .mv_signals import (
     REASON_NO_SCOPE,
     RunQuery,
@@ -1005,6 +1008,8 @@ def _candidate_signals(
     *,
     space_id: str,
     signal_reader: RunQuery | None,
+    resolver: TableResolver | None,
+    sole_row: bool,
 ) -> tuple[SignalResult, SignalResult]:
     """Run the L and D producers for one candidate over the injected reader.
 
@@ -1017,6 +1022,10 @@ def _candidate_signals(
     named fix, a batch ``demand_signals`` that reads once and returns a
     per-fingerprint map, is recorded in the gap report and is the right move only
     if that read ever shows up hot.
+
+    D resolves the history through the advisor's ``resolver``, and ``sole_row``
+    (whether this measure's calculation has one row in the advisor's scan)
+    decides whether a table-less history row counts toward it (MV-D123).
 
     A missing reader is not an error: L self-reports ``UNAVAILABLE`` and D is
     given the symmetric ``no_scope`` result here, so a workspace with no warehouse
@@ -1039,6 +1048,8 @@ def _candidate_signals(
             space_id=space_id,
             candidate_fingerprints=(measure.fingerprint,),
             candidate_source_tables=measure.source_tables,
+            candidate_sole_row=sole_row,
+            resolver=resolver,
             run_query=signal_reader,
         )
     return lineage, demand
@@ -1212,11 +1223,15 @@ def _advise(
     # (corpus_scan, score_candidate, generate, persist_proposal, …) stays a
     # module global here so behaviour — and the byte-unchanged in-job test
     # surface — is preserved.
+    resolver = TableResolver.from_config(load.applied_config)
+    if not resolver.has_table_list:
+        logger.info("mv_advisor: no applied config; tables read as written (MV-D123)")
     return advise_from_corpus(
         space_id=space_id,
         run_id=run_id,
         corpus_entries=(*load.entries, *curated),
         applied_config=load.applied_config,
+        resolver=resolver,
         benchmarks=benchmarks,
         wide_schema_inventory=wide_schema_inventory,
         metric_view_reader=lambda tables: metric_view_fields(
@@ -1250,6 +1265,9 @@ def _advise(
         # user rejected and the two surfaces agree on "rejected".
         read_suppressed_fingerprints=lambda: load_mv_suppressed_fingerprints(
             spark, catalog, schema, target_space_id=space_id
+        ),
+        rekey_suppressions=lambda rekeys: rekey_mv_suppressions(
+            spark, catalog=catalog, schema=schema, target_space_id=space_id, rekeys=rekeys,
         ),
         # MV-D122: a kept row (decided or created) keeps its stored name. A
         # superseded row keeps its key, so a CONFLICT upsert can still land on it.
@@ -1431,7 +1449,10 @@ def _unservable_reason(
 
     A profiled source proves the columns exist; an unprofiled one is accepted on the structural
     checks alone (MV-D113 d3). A column-free aggregate names its statement's table when there is
-    exactly one (MV-D117); over a join it names none, and is neither multi-table nor unresolved."""
+    exactly one (MV-D117); over a join it names none, and is neither multi-table nor unresolved.
+    A table the space does not resolve is refused before anything else (MV-D123, Ruling 5)."""
+    if measure.has_unresolved_tables:
+        return "unresolved_table"
     if not measure.source_tables and not measure.source_columns:
         return None
     if len(measure.source_tables) != 1:
@@ -1444,6 +1465,33 @@ def _unservable_reason(
         if not wanted <= known:
             return "column_not_on_source"
     return None
+
+
+def _rekey_v1_suppressions(
+    pairs: Sequence[tuple[str, str]],
+    rekey: Callable[[Mapping[str, str]], None],
+) -> None:
+    """Hand ``(v1, v2)`` pairs to the rekey writer, each v1 at most once per call.
+
+    A v1 key that grouped two catalogs' tables by leaf hid two v2 rows, so it is
+    copied onto each in its own call. A failed call logs its type only; the
+    measures it covered are already hidden.
+    """
+    batches: list[dict[str, str]] = []
+    for v1, v2 in dict.fromkeys(pairs):
+        batch = next((b for b in batches if v1 not in b), None)
+        if batch is None:
+            batch = {}
+            batches.append(batch)
+        batch[v1] = v2
+    for batch in batches:
+        try:
+            rekey(batch)
+        except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+            logger.warning(
+                "mv_advisor: could not copy %d v1 dismissal(s) onto their v2 keys (%s)",
+                len(batch), type(exc).__name__,
+            )
 
 
 def advise_from_corpus(
@@ -1463,8 +1511,10 @@ def advise_from_corpus(
     persist_proposal: Callable[[ScoredProposal, Any], bool],
     write_ddl_artifact: Callable[[ScoredProposal, Any], bool],
     read_suppressed_fingerprints: Callable[[], set[str]] | None = None,
+    rekey_suppressions: Callable[[Mapping[str, str]], None] | None = None,
     read_kept_names: Callable[[], Mapping[str, str]] | None = None,
     on_stage: Callable[[str], None] | None = None,
+    resolver: TableResolver | None = None,
 ) -> AdvisorOutcome:
     """Corpus-agnostic advisor orchestration (MV-D23 scope item 2).
 
@@ -1501,11 +1551,24 @@ def advise_from_corpus(
     It defaults to a no-op, so the in-job Spark caller passes nothing and is
     byte-unchanged; only the interactive SSE caller binds it. It is progress
     reporting, never control flow — an early SKIP simply stops emitting.
+
+    ``resolver`` holds the space's tables (MV-D123): both callers build it from
+    ``applied_config`` with ``TableResolver.from_config``. The scan, the governed
+    match and the conflict check compare tables through it by full name; ``None``
+    reads every name as written. A row whose tables do not resolve matches no
+    governed view, is not read for one, and is dropped as ``unresolved_table``.
+
+    ``rekey_suppressions`` (MV-D123 Ruling 8) receives ``{v1 key: v2 key}`` for
+    each measure hidden only by a dismissal recorded under its identity-v1 key,
+    so the dismissal is copied onto the key it has now. Both callers inject it
+    beside ``read_suppressed_fingerprints``; a failed copy still hides the
+    measure, and the next scan's v1 read hides it again.
     """
     emit_stage = on_stage or (lambda _stage: None)
+    space_tables = resolver or TableResolver.from_config(None)
 
     emit_stage(STAGE_SCANNING)
-    scan = corpus_scan(tuple(corpus_entries))
+    scan = corpus_scan(tuple(corpus_entries), resolver=resolver)
     if not scan.statements_scanned:
         return AdvisorOutcome(
             status=STATUS_SKIPPED,
@@ -1527,25 +1590,31 @@ def advise_from_corpus(
     oracle = LeakageOracle(BenchmarkCorpus.from_benchmarks(list(benchmarks or ())))
 
     limit = MV_ADVISOR_MAX_CANDIDATES if max_candidates is None else max_candidates
-    tables = {t for m in scan.measures for t in m.source_tables}
+
+    def row_tables(row: FingerprintRecurrence) -> ResolvedTables:
+        if row.has_unresolved_tables:
+            return UNRESOLVED
+        return space_tables.resolve_all(row.source_tables)
+
+    # Ruling 2: a table-less history row counts toward a measure only when its
+    # calculation has one row in this scan. An unresolved row is a row.
+    rows_per_calculation = Counter(m.fingerprint for m in scan.measures)
+
+    tables = {
+        t for m in scan.measures if not m.has_unresolved_tables for t in m.source_tables
+    }
     mv_fields = metric_view_reader(tables)
     # MV-D17 / blocker 4: a governed metric view already defines these, so seeding
     # them would only produce candidates the dedup gate blocks with the very MV
     # they came from. corpus_scan has no evidence-only channel — anything it scans
     # becomes a seed — so the exclusion is applied here, at the assembly site that
     # already holds the estate index, rather than by complicating the scan.
-    governed = [
-        field_
-        for field_ in mv_fields
-        if field_.kind == FIELD_MEASURE and field_.canonical_expr
-    ]
     seed_measures = tuple(
         m
         for m in scan.measures
         if not any(
-            field_.canonical_expr == m.canonical_expr
-            and tables_overlap(m.source_tables, field_.source_tables)
-            for field_ in governed
+            governs_measure(field_, m.canonical_expr, row_tables(m), resolver=space_tables)
+            for field_ in mv_fields
         )
     )
     if not seed_measures:
@@ -1597,13 +1666,15 @@ def advise_from_corpus(
     # path and the backend suggest route), so the two surfaces agree on what
     # "rejected" means; None means a caller that opted out of suppression (tests).
     suppressed = read_suppressed_fingerprints() if read_suppressed_fingerprints else set()
-    # MV-D116: before the split, a measure over several tables was one row keyed
-    # over all of them, and a rejection recorded that key. It still hides both halves.
-    merged_tables: dict[str, set[str]] = {}
-    rows_per_fingerprint: dict[str, int] = {}
-    for recurrence in scan.measures:
-        merged_tables.setdefault(recurrence.fingerprint, set()).update(recurrence.source_tables)
-        rows_per_fingerprint[recurrence.fingerprint] = rows_per_fingerprint.get(recurrence.fingerprint, 0) + 1
+    # MV-D123 Ruling 8: a dismissal recorded before identity v2 is under the v1
+    # key of the measure's occurrences, so those keys are read too, over the whole
+    # scan as v1 grouped it. The merged key MV-D116 kept is retired (Ruling 11).
+    v1_keys = (
+        v1_member_keys(space_id, dict(enumerate(scan.measure_occurrences)))
+        if suppressed
+        else {}
+    )
+    rekeys: list[tuple[str, str]] = []
 
     # MV-D29 shape firewall (Prompt 15.5): a recurring shape's components now
     # render literal-preserving (mv_fingerprint.render_components), so a
@@ -1658,12 +1729,15 @@ def advise_from_corpus(
         measure_fp = mv_candidate_fingerprint(
             space_id, measure.canonical_expr, measure.source_tables
         )
-        merged_fp = (
-            mv_candidate_fingerprint(space_id, measure.canonical_expr, merged_tables[measure.fingerprint])
-            if rows_per_fingerprint[measure.fingerprint] > 1
-            else measure_fp
+        v1_hits = (
+            ()
+            if measure_fp in suppressed
+            else sorted(
+                {v1_keys[i] for i in measure.occurrence_ids if v1_keys.get(i) in suppressed}
+            )
         )
-        if measure_fp in suppressed or merged_fp in suppressed:
+        rekeys.extend((v1, measure_fp) for v1 in v1_hits if v1 != measure_fp)
+        if measure_fp in suppressed or v1_hits:
             dropped_suppressed += 1
             logger.info(
                 "mv_advisor: dropped measure %s — per-measure fingerprint is "
@@ -1671,7 +1745,11 @@ def advise_from_corpus(
             )
             continue
         lineage_result, demand_result = _candidate_signals(
-            measure, space_id=space_id, signal_reader=signal_reader
+            measure,
+            space_id=space_id,
+            signal_reader=signal_reader,
+            resolver=resolver,
+            sole_row=rows_per_calculation[measure.fingerprint] == 1,
         )
         candidate = candidate_from_measure(
             measure,
@@ -1707,6 +1785,7 @@ def advise_from_corpus(
                 curated=measure.curated_provenance_count > 0,
             ),
             auth_identity="SP",
+            resolver=space_tables,
         )
         proposal = _with_signal_evidence(proposal, lineage_result, demand_result)
 
@@ -1733,6 +1812,9 @@ def advise_from_corpus(
         # Non-PROPOSE persistable (e.g. CONFLICT): keep the per-measure path,
         # rendered once every CONFLICT name is known.
         conflicts.append((proposal, candidate))
+
+    if rekeys and rekey_suppressions is not None:
+        _rekey_v1_suppressions(rekeys, rekey_suppressions)
 
     # MV-D122: two CONFLICT proposals never share a view name, and a kept row
     # (decided or created) keeps its stored name. When the kept names cannot be

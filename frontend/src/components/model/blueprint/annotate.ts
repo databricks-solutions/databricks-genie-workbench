@@ -7,7 +7,7 @@
  * backing data is present (§8) — nothing is invented.
  */
 import { shortName, type BlueprintGov, type BlueprintModel, type BlueprintTable } from "./model"
-import { measureIndex, nodeById, type Box } from "./layout"
+import { measureChipIds, measureIndex, nodeById, type Box } from "./layout"
 
 export interface HeadlineCounts {
   governed: number
@@ -153,13 +153,14 @@ export function rankInsights(m: BlueprintModel): Insight[] {
 
   for (const n of m.nodes) {
     if (n.kind === "table") continue
-    const collide = n.measures.find((ms) => ms.overlaps)
-    if (collide) {
+    const at = n.measures.findIndex((ms) => ms.overlaps)
+    if (at >= 0) {
+      const collide = n.measures[at]
       out.push({
         severity: "warn",
         title: "Name collision",
         detail: `${collide.name} duplicates a governed name under a different definition — one question, two numbers.`,
-        focus: `${n.id}::${collide.name}`,
+        focus: measureChipIds(n.id, n.measures)[at],
       })
       break
     }

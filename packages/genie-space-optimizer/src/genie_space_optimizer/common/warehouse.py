@@ -11,7 +11,7 @@ import base64
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -1194,6 +1194,56 @@ def wh_load_mv_suppressed_fingerprints(
         )
 
     return suppressed
+
+
+def wh_rekey_mv_suppressions(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    *,
+    catalog: str,
+    schema: str,
+    target_space_id: str,
+    rekeys: Mapping[str, str],
+) -> list[str]:
+    """Copy each v1 dismissal onto its v2 measure key — twin of
+    ``mv_state.rekey_mv_suppressions`` (MV-D123 Ruling 10), the same one MERGE.
+
+    Refuses a non-hex fingerprint with a ``ValueError`` before any SQL is built;
+    a failed write logs its type and returns ``[]``.
+    """
+    from genie_space_optimizer.common.config import (
+        TABLE_MV_CANDIDATES,
+        TABLE_MV_SUPPRESSIONS,
+    )
+    from genie_space_optimizer.optimization.mv_state import (
+        rekey_mv_suppressions_sql,
+        validated_rekeys,
+    )
+
+    pairs = validated_rekeys(target_space_id, rekeys)
+    if not pairs:
+        return []
+    sql = rekey_mv_suppressions_sql(
+        f"{catalog}.{schema}.{TABLE_MV_SUPPRESSIONS}",
+        f"{catalog}.{schema}.{TABLE_MV_CANDIDATES}",
+        target_space_id,
+        pairs,
+        _wh_literal,
+    )
+    try:
+        sql_warehouse_execute(ws, warehouse_id, sql)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "wh_rekey_mv_suppressions: write failed for space %s (%s)",
+            target_space_id, type(exc).__name__,
+        )
+        return []
+    written = sorted(set(pairs.values()))
+    logger.info(
+        "Rekey attempted for %d v1 suppression(s) onto %d v2 key(s) for space %s via SQL warehouse",
+        len(pairs), len(written), target_space_id,
+    )
+    return written
 
 
 def wh_upsert_mv_candidate(

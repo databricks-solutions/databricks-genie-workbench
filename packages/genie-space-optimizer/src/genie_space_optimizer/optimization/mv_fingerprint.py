@@ -52,12 +52,18 @@ import hashlib
 import logging
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from typing import Any, NamedTuple
 
 import sqlglot
 from sqlglot import expressions as exp
+
+from genie_space_optimizer.optimization.mv_tables import (
+    TABLELESS,
+    UNRESOLVED,
+    TableResolver,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +130,10 @@ class MeasureRef:
     is *never* an identity: ``fingerprint`` and every dedup/scoring key read
     ``canonical_expr`` only, so two measures differing only in a literal still
     share one fingerprint while their ``representative_expr`` differs.
+
+    ``has_unresolved_source`` marks an aggregate whose ``SELECT`` reads a
+    derived table or a CTE (MV-D123): it names no table, and is unresolved
+    rather than table-less.
     """
 
     canonical_expr: str
@@ -135,6 +145,7 @@ class MeasureRef:
     is_windowed: bool = False
     is_distinct: bool = False
     has_unresolved_columns: bool = False
+    has_unresolved_source: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -286,9 +297,10 @@ class FingerprintRecurrence:
     from the breadth question ``provenance_count`` would answer — damping raw
     recurrence by distinct-source breadth is a distinct, deferred fix (MV-D17).
 
-    For a measure, one row is one expression over one set of table names
-    (MV-D116): the same aggregate over two different tables is two rows sharing
-    a ``fingerprint``.
+    For a measure, one row is one calculation over one set of resolved tables
+    (MV-D123): the same aggregate over two tables is two rows sharing a
+    ``fingerprint``; given the space's tables, one table spelled any way is one
+    row. An unresolved row carries its spelled names, and is never servable.
     """
 
     fingerprint: str
@@ -312,9 +324,19 @@ class FingerprintRecurrence:
     """True when no occurrence of this measure resolved every column to a table
     (MV-D113, finding 9). One clean occurrence is enough: the advisor then knows
     which table the measure reads."""
+    has_unresolved_tables: bool = False
+    """True when the row's tables did not resolve (MV-D123, Ruling 2): a name the
+    space matches zero or several times, or an aggregate over a derived table or
+    CTE. ``source_tables`` then holds the names as spelled (Ruling 5)."""
+    occurrence_ids: tuple[int, ...] = field(default=(), compare=False)
+    """The row's measure occurrences, as indexes into
+    :attr:`CorpusScan.measure_occurrences`. Measures only. Meaningless outside
+    its scan, so :meth:`to_dict` leaves it out."""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        del payload["occurrence_ids"]
+        return payload
 
 
 @dataclass(frozen=True)
@@ -324,6 +346,10 @@ class CorpusScan:
     ``parse_failures`` is a first-class field rather than a log line: a scan
     that silently dropped half its corpus and a scan that found nothing look
     identical from the outside otherwise.
+
+    ``measure_occurrences`` is every extracted measure in extraction order —
+    statements in corpus order, then each statement's measures — with its table
+    names as spelled. A measure row's ``occurrence_ids`` index into it.
     """
 
     measures: tuple[FingerprintRecurrence, ...] = ()
@@ -333,6 +359,7 @@ class CorpusScan:
     shapes: tuple[ShapeMatch, ...] = ()
     statements_scanned: int = 0
     parse_failures: int = 0
+    measure_occurrences: tuple[MeasureRef, ...] = field(default=(), compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -432,7 +459,11 @@ def _resolve_projection_refs(tree: exp.Expression) -> None:
                 if name and not (isinstance(inner, exp.Column) and inner.name.lower() == name):
                     aliases[name] = inner
 
-        def resolve(node: exp.Expression | None) -> exp.Expression | None:
+        def resolve(
+            node: exp.Expression | None,
+            projections: list[exp.Expression] = projections,
+            aliases: dict[str, exp.Expression] = aliases,
+        ) -> exp.Expression | None:
             if node is None:
                 return None
             if isinstance(node, exp.Literal) and not node.is_string:
@@ -775,32 +806,6 @@ def _table_fqn(table: exp.Table) -> str:
     return ".".join(part.lower() for part in parts)
 
 
-def table_leaves(tables: Iterable[str]) -> frozenset[str]:
-    """Lowercase unqualified table names — the grain MV-D116 compares tables at.
-
-    One table spelled two ways (``samples.tpch.orders``, ``tpch.orders``) stays
-    one table. The same name in two catalogs also reads as one table.
-    """
-    leaves: set[str] = set()
-    for table in tables:
-        leaf = str(table or "").strip().rsplit(".", 1)[-1].strip().strip("`").lower()
-        if leaf:
-            leaves.add(leaf)
-    return frozenset(leaves)
-
-
-def same_tables(left: Iterable[str], right: Iterable[str]) -> bool:
-    """Whether two table sets name the same tables. An unknown side matches."""
-    left_leaves, right_leaves = table_leaves(left), table_leaves(right)
-    return not left_leaves or not right_leaves or left_leaves == right_leaves
-
-
-def tables_overlap(left: Iterable[str], right: Iterable[str]) -> bool:
-    """Whether two table sets share a table. An unknown side overlaps."""
-    left_leaves, right_leaves = table_leaves(left), table_leaves(right)
-    return not left_leaves or not right_leaves or bool(left_leaves & right_leaves)
-
-
 def source_table_name(source: Any) -> str:
     """The table a metric view ``source:`` names, or ``""`` for a query source."""
     text = str(source or "").strip()
@@ -818,7 +823,8 @@ def _relation_map(tree: exp.Expression) -> tuple[dict[str, str], tuple[str, ...]
 
     Built from the *original* tree, before canonicalization renames anything —
     positional aliases are for rendering, while source attribution needs the
-    real names.
+    real names. An aliased table answers only to its alias, as in Spark, so
+    its own name stays free to be a column (MV-D123).
     """
     by_alias: dict[str, str] = {}
     tables: list[str] = []
@@ -830,8 +836,58 @@ def _relation_map(tree: exp.Expression) -> tuple[dict[str, str], tuple[str, ...]
             tables.append(fqn)
         if table.alias:
             by_alias[table.alias.lower()] = fqn
-        by_alias.setdefault(table.name.lower(), fqn)
+        else:
+            by_alias.setdefault(table.name.lower(), fqn)
     return by_alias, tuple(tables)
+
+
+def _derived_relations(
+    node: exp.Expression, cte_names: frozenset[str],
+) -> frozenset[str] | None:
+    """The names of the derived tables and CTEs the ``SELECT`` holding ``node``
+    reads, or None when it reads neither."""
+    select = _enclosing_select(node)
+    if select is None:
+        return None
+    from_ = select.args.get("from_")
+    relations = [from_.this] if isinstance(from_, exp.From) else []
+    relations.extend(join.this for join in select.args.get("joins") or ())
+    names: set[str] = set()
+    found = False
+    for relation in relations:
+        if isinstance(relation, exp.Subquery):
+            found = True
+            names.add((relation.alias or "").lower())
+        elif (
+            isinstance(relation, exp.Table)
+            and not relation.db
+            and relation.name.lower() in cte_names
+        ):
+            found = True
+            names.add((relation.alias or relation.name).lower())
+    return frozenset(names - {""}) if found else None
+
+
+def _reads_derived_source(
+    node: exp.Expression, derived: frozenset[str], by_alias: Mapping[str, str],
+) -> bool:
+    """Whether a measure in a ``SELECT`` that reads a derived relation could take
+    its table from one (MV-D123): it reads no column, a column a derived name
+    qualifies, or an unqualified column. A column a real table qualifies keeps
+    that table."""
+    columns = list(node.find_all(exp.Column))
+    if not columns:
+        return True
+    for column in columns:
+        if _struct_access_relation(column, by_alias):
+            continue
+        qualifier = (column.table or "").lower()
+        if not qualifier or qualifier in derived:
+            return True
+        db = (column.db or "").lower()
+        if db in derived and qualifier not in by_alias:
+            return True
+    return False
 
 
 _SOURCE_RELATION = "source"
@@ -964,6 +1020,9 @@ def extract_measures(sql: str) -> tuple[MeasureRef, ...]:
         return ()
 
     by_alias, tables = _relation_map(tree)
+    cte_names = frozenset(
+        (cte.alias_or_name or "").lower() for cte in tree.find_all(exp.CTE)
+    )
     resolved = tree.copy()
     _resolve_projection_refs(resolved)
 
@@ -972,12 +1031,20 @@ def extract_measures(sql: str) -> tuple[MeasureRef, ...]:
         node: exp.Expression = aggregate
         if isinstance(aggregate.parent, exp.Filter):
             node = aggregate.parent
+        derived = _derived_relations(aggregate, cte_names)
         node = node.copy()
+        unresolved_source = derived is not None and _reads_derived_source(
+            node, derived, by_alias,
+        )
 
         columns, sources, unresolved = _attribute_columns(
             node, by_alias, tables, struct_access=True,
         )
-        if not columns and not sources and len(tables) == 1:
+        if unresolved_source:
+            # A derived relation's rows are not its inner table's, so the
+            # aggregate is never credited to that table (MV-D123).
+            sources = ()
+        elif not columns and not sources and len(tables) == 1:
             # A column-free aggregate counts the rows of the statement's only
             # table, so that table is its source (MV-D117).
             sources = (tables[0],)
@@ -998,6 +1065,7 @@ def extract_measures(sql: str) -> tuple[MeasureRef, ...]:
                 is_windowed=isinstance(aggregate.parent, exp.Window),
                 is_distinct=bool(aggregate.find(exp.Distinct)),
                 has_unresolved_columns=unresolved,
+                has_unresolved_source=unresolved_source,
             )
         )
     return tuple(measures)
@@ -1340,18 +1408,20 @@ class _Bucket:
         "clean_seen",
         "columns",
         "curated_provenance_ids",
+        "fingerprint",
         "first_seen",
         "first_ts",
-        "fingerprint",
         "kind",
         "last_seen",
         "last_ts",
+        "occurrence_ids",
         "provenance_ids",
         "recurrence",
         "representative_expr",
         "shapes",
         "tables",
         "unresolved_seen",
+        "unresolved_tables",
     )
 
     def __init__(
@@ -1380,6 +1450,8 @@ class _Bucket:
         self.last_ts: datetime | None = None
         self.clean_seen = False
         self.unresolved_seen = False
+        self.unresolved_tables = False
+        self.occurrence_ids: list[int] = []
 
     def observe(
         self,
@@ -1432,36 +1504,76 @@ class _Bucket:
             shapes=tuple(sorted(self.shapes)),
             representative_expr=self.representative_expr,
             has_unresolved_columns=self.unresolved_seen and not self.clean_seen,
+            has_unresolved_tables=self.unresolved_tables,
+            occurrence_ids=tuple(self.occurrence_ids),
         )
 
 
 class _MeasureOccurrence(NamedTuple):
+    index: int
     measure: MeasureRef
     provenance: Provenance
     shape_kinds: frozenset[str]
 
 
-def _measure_buckets(occurrences: dict[str, list[_MeasureOccurrence]]) -> list[_Bucket]:
-    """One bucket per expression — or per table grain when it spans several (MV-D116).
+def _spelled(group: Iterable[_MeasureOccurrence]) -> frozenset[str]:
+    return frozenset(t for occurrence in group for t in occurrence.measure.source_tables)
 
-    With at most one distinct non-empty set of table names, the bucket holds every
-    occurrence in corpus order, exactly as before MV-D116. With several, each set
-    gets its own bucket, and occurrences that resolved to no table form a
-    table-less remainder rather than being guessed into one.
+
+def _leaf_grain(tables: Iterable[str]) -> frozenset[str]:
+    """Lowercase unqualified table names: the no-table-list grouping only (Ruling 4)."""
+    leaves: set[str] = set()
+    for table in tables:
+        leaf = str(table or "").strip().rsplit(".", 1)[-1].strip().strip("`").lower()
+        if leaf:
+            leaves.add(leaf)
+    return frozenset(leaves)
+
+
+def _measure_buckets(
+    occurrences: dict[str, list[_MeasureOccurrence]], resolver: TableResolver,
+) -> list[_Bucket]:
+    """One bucket per calculation and table set (MV-D123, Ruling 2).
+
+    With the space's table list, each resolved set is its own row, over its full
+    names. With none (Ruling 4), names are read as written and grouped by leaf as
+    before identity v2, each row over the union of its spellings. Either way, an
+    unresolved occurrence never joins another row: those with the same spelled
+    names form their own row, over those names. A table-less occurrence joins the
+    one row its calculation has, in corpus order; with two or more rows it joins
+    none, and the table-less occurrences form a remainder rather than being
+    guessed into one.
     """
+    by_leaf = not resolver.has_table_list
     buckets: list[_Bucket] = []
     for fingerprint, found in occurrences.items():
-        groups: dict[frozenset[str], list[_MeasureOccurrence]] = {}
+        named: dict[frozenset[str], list[_MeasureOccurrence]] = {}
+        unresolved: dict[frozenset[str], list[_MeasureOccurrence]] = {}
+        tableless: list[_MeasureOccurrence] = []
         for occurrence in found:
-            groups.setdefault(table_leaves(occurrence.measure.source_tables), []).append(occurrence)
-        named = [leaves for leaves in groups if leaves]
-        if len(named) <= 1:
-            partitions = [found]
-        else:
-            partitions = [groups[leaves] for leaves in named]
-            if frozenset() in groups:
-                partitions.append(groups[frozenset()])
-        for partition in partitions:
+            measure = occurrence.measure
+            if measure.has_unresolved_source:
+                state = UNRESOLVED
+            elif by_leaf:
+                state = _leaf_grain(measure.source_tables) or TABLELESS
+            else:
+                state = resolver.resolve_all(measure.source_tables)
+            if state is UNRESOLVED:
+                unresolved.setdefault(frozenset(measure.source_tables), []).append(occurrence)
+            elif state is TABLELESS:
+                tableless.append(occurrence)
+            else:
+                named.setdefault(state, []).append(occurrence)
+        partitions = [
+            (_spelled(group) if by_leaf else tables, group, False)
+            for tables, group in named.items()
+        ]
+        partitions.extend((spelled, group, True) for spelled, group in unresolved.items())
+        if len(partitions) == 1 and not partitions[0][2] and tableless:
+            partitions = [(partitions[0][0], found, False)]
+        elif tableless:
+            partitions.append((frozenset(), tableless, False))
+        for tables, partition, is_unresolved in partitions:
             first = partition[0].measure
             bucket = _Bucket(
                 fingerprint,
@@ -1469,15 +1581,17 @@ def _measure_buckets(occurrences: dict[str, list[_MeasureOccurrence]]) -> list[_
                 "measure",
                 first.representative_expr,
             )
+            bucket.unresolved_tables = is_unresolved
+            bucket.tables.update(tables)
             for occurrence in partition:
                 measure = occurrence.measure
                 bucket.observe(
                     occurrence.provenance,
                     measure.source_columns,
-                    measure.source_tables,
                     unresolved=measure.has_unresolved_columns,
                 )
                 bucket.shapes.update(occurrence.shape_kinds)
+                bucket.occurrence_ids.append(occurrence.index)
             buckets.append(bucket)
     return buckets
 
@@ -1501,6 +1615,7 @@ def _rank(buckets: Iterable[_Bucket]) -> tuple[FingerprintRecurrence, ...]:
             -row.provenance_count,
             row.fingerprint,
             row.source_tables,
+            row.has_unresolved_tables,
         )
     )
     return tuple(frozen)
@@ -1519,17 +1634,27 @@ def _iter_entries(corpus: Iterable[Any]) -> Iterable[tuple[str, Provenance]]:
         yield sql, _coerce_provenance(provenance)
 
 
-def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
+def corpus_scan(
+    corpus: Iterable[Any], *, resolver: TableResolver | None = None,
+) -> CorpusScan:
     """Scan ``(sql, provenance)`` pairs into recurrence-ranked fingerprints.
 
     ``provenance`` may be a plain id string, a :class:`Provenance`, or a mapping
     with ``id`` / ``kind`` / ``seen_at``; a bare SQL string is accepted as an
     entry with no provenance. Results are ranked by recurrence, then by distinct
-    provenance count, then by fingerprint, then by source tables (the rows of a
-    measure split by its tables share a fingerprint, MV-D116) — total and
-    deterministic, so two scans of one corpus produce byte-identical output.
+    provenance count, then by fingerprint, then by source tables and whether they
+    resolved (the rows of a measure split by its tables share a fingerprint) —
+    total and deterministic, so two scans of one corpus produce byte-identical
+    output.
+
+    ``resolver`` resolves each measure's spelled table names against the space's
+    own tables before grouping (MV-D123). ``None``, like a resolver with no table
+    list, reads every name as written and groups as before identity v2 (Ruling 4).
     """
+    if resolver is None:
+        resolver = TableResolver.from_config(None)
     measure_occurrences: dict[str, list[_MeasureOccurrence]] = {}
+    extracted: list[MeasureRef] = []
     dimensions: dict[str, _Bucket] = {}
     filters: dict[str, _Bucket] = {}
     join_keys: dict[str, _Bucket] = {}
@@ -1580,8 +1705,10 @@ def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
             )
 
         for measure in extract_measures(sql):
+            extracted.append(measure)
             measure_occurrences.setdefault(measure.fingerprint, []).append(
                 _MeasureOccurrence(
+                    len(extracted) - 1,
                     measure,
                     provenance,
                     frozenset(shape_kinds_by_expr.get(measure.canonical_expr, ())),
@@ -1615,13 +1742,14 @@ def corpus_scan(corpus: Iterable[Any]) -> CorpusScan:
     )
 
     return CorpusScan(
-        measures=_rank(_measure_buckets(measure_occurrences)),
+        measures=_rank(_measure_buckets(measure_occurrences, resolver)),
         dimensions=_rank(dimensions.values()),
         filters=_rank(filters.values()),
         join_keys=_rank(join_keys.values()),
         shapes=tuple(ranked_shapes),
         statements_scanned=scanned,
         parse_failures=failures,
+        measure_occurrences=tuple(extracted),
     )
 
 
@@ -1664,10 +1792,7 @@ __all__ = [
     "extract_measures",
     "parse_statement",
     "render_expr",
-    "same_tables",
     "shapes_in_statement",
     "source_table_name",
     "statement_grain",
-    "table_leaves",
-    "tables_overlap",
 ]

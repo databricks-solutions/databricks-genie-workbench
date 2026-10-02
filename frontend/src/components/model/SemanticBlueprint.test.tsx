@@ -13,6 +13,7 @@ import { fromSemanticGraph, parseOnColumns } from "./blueprint/model"
 import {
   derivePlacement,
   layoutBoxes,
+  measureChipIds,
   measureIndex,
   nodeHeight,
   rankLabel,
@@ -492,3 +493,48 @@ describe("Phase 3 — Join Advisor validated-seed (§7)", () => {
 function Mid() {
   return <SemanticBlueprint nodes={star.nodes} edges={star.edges} />
 }
+
+// MV-D123: one calculation over two tables is two measures with one label.
+describe("same-label measures in one box", () => {
+  const twoTables: SemanticGraphResponse = {
+    space_id: "s",
+    proposals: [],
+    nodes: [
+      { id: "east.sales.orders", kind: "table", label: "orders", col: 0, row: 0, coverage: 1 },
+      { id: "west.sales.orders", kind: "table", label: "orders", col: 0, row: 1, coverage: 1 },
+      { id: "measure:a", kind: "measure", label: "total", col: 1, row: 0, governance: "curated", expr: "SUM(`amount`)" },
+      { id: "measure:b", kind: "measure", label: "total", col: 1, row: 1, governance: "curated", expr: "SUM(`amount`)" },
+    ],
+    edges: [
+      { from: "measure:a", to: "east.sales.orders", kind: "derives" },
+      { from: "measure:b", to: "west.sales.orders", kind: "derives" },
+    ],
+  }
+
+  it("indexes both halves, each with its own table", () => {
+    const idx = measureIndex(fromSemanticGraph(twoTables))
+    expect(idx["Space config::total"].src).toEqual(["east.sales.orders"])
+    expect(idx["Space config::total#2"].src).toEqual(["west.sales.orders"])
+  })
+
+  it("keeps plain ids in a box whose names are unique", () => {
+    expect(measureChipIds("b", [{ name: "x" }, { name: "y" }])).toEqual(["b::x", "b::y"])
+    expect(measureChipIds("b", [{ name: "x" }, { name: "x#2" }, { name: "x" }])).toEqual(["b::x", "b::x#2", "b::x#3"])
+  })
+
+  it("draws each half's lineage to its own table, and the box's to both rows", () => {
+    const m = fromSemanticGraph(twoTables)
+    const p = derivePlacement(m, "fact")
+    const box = layoutBoxes(m, p, "mid")
+    const edges = resolveEdges(m, p, box, "mid")
+    const chipPos = {
+      "Space config::total": { x: box["Space config"].x, y: 120 },
+      "Space config::total#2": { x: box["Space config"].x, y: 150 },
+    }
+    expect(lineagePaths(m, p, box, edges, "Space config::total#2", chipPos).map((x) => x.srcId)).toEqual([
+      "west.sales.orders",
+    ])
+    const fromBox = lineagePaths(m, p, box, edges, "Space config", chipPos)
+    expect(fromBox.map((x) => x.srcId).sort()).toEqual(["east.sales.orders", "west.sales.orders"])
+  })
+})

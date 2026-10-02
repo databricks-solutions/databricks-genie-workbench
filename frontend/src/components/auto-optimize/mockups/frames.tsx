@@ -76,6 +76,7 @@ import { DeepLinkLoadFailedFrame, DeepLinkNoAccessFrame, ScoreViewerAllowlistFra
 import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
 import { EnrichmentWinTerminalFrame } from "./MvM7dFidelityFrames"
 import { IqScanReshapedListFrame, ModelTabStaleGhostFrame, RunOutputStaleNoPreviewFrame } from "./MvM7e1FidelityFrames"
+import { ModelTabOneCalculationTwoTablesFrame } from "./MvM7e2FidelityFrames"
 
 export interface MockupFrame {
   /** Stable slug used for the exported HTML filename. */
@@ -201,4 +202,6 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m7e1-b-run-output-stale-no-preview", title: "M7e1-b · Run output — the stale card has no config preview or Lift label; the summary counts current proposals", element: <RunOutputStaleNoPreviewFrame /> },
   // m7e1-c renders withOverlay through SemanticGraph, which the deployed Model tab does not mount today.
   { id: "m7e1-c-model-stale-no-ghost", title: "M7e1-c · Model tab — overlay ON, only the current proposal draws a ghost (path not mounted in the deployed tab today)", element: <ModelTabStaleGhostFrame /> },
+  // PR #332 M7e-2 — identity v2 (MV-D123): the REAL deployed Model tab view (SemanticBlueprint).
+  { id: "m7e2-a-model-one-calculation-two-tables", title: "M7e2-a · Model tab — one calculation over two tables is two measures (MV-D123)", element: <ModelTabOneCalculationTwoTablesFrame /> },
 ]

@@ -33,6 +33,7 @@ _WAREHOUSE_MV_FUNCTIONS = (
     "wh_load_mv_created_objects",
     "wh_load_mv_consent_by_run",
     "wh_read_join_advice",
+    "wh_rekey_mv_suppressions",
 )
 
 
@@ -381,6 +382,13 @@ _WAREHOUSE_READS = {
     ),
     "wh_read_join_advice": (
         lambda: warehouse.wh_read_join_advice(MagicMock(), "wh", run_id="r1", **_LOCATION),
+        [],
+    ),
+    "wh_rekey_mv_suppressions": (
+        lambda: warehouse.wh_rekey_mv_suppressions(
+            MagicMock(), "wh", **_LOCATION, target_space_id="space-1",
+            rekeys={"1" * 64: "a" * 64},
+        ),
         [],
     ),
 }

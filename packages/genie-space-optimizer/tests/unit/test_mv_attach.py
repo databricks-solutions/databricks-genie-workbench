@@ -1191,7 +1191,7 @@ def _revenue_bundle_evidence() -> dict[str, Any]:
 
 
 def test_unqualified_sql_over_the_candidates_table_selects_the_row() -> None:
-    """m-4: the statement's table set is the leaf; the candidate recorded the FQN."""
+    """m-4: the unqualified table resolves through the space to the full name the key is over."""
     spark = FakeDeltaSpark()
     _seed(spark, dedup_fingerprint="bundle-fp", evidence=_revenue_bundle_evidence())
     baseline = _baseline_output([
@@ -1212,27 +1212,266 @@ def test_the_same_expression_over_another_table_does_not_select() -> None:
     assert outcome.skip_reason == mv_attach.SKIP_NO_AFFECTED_QUESTIONS
 
 
-def test_without_candidate_tables_the_fallback_does_not_run() -> None:
-    """Legacy or CONFLICT rows record no ``source_tables``, so only the exact match runs."""
+def test_without_candidate_tables_an_unqualified_statement_still_selects() -> None:
+    """A legacy row records no ``source_tables``; the statement's table resolves through the space (MV-D123)."""
     spark = FakeDeltaSpark()
     evidence = _revenue_bundle_evidence()
     del evidence["source_tables"]
     _seed(spark, dedup_fingerprint="bundle-fp", evidence=evidence)
-    baseline = _baseline_output([_row("rev_001", "BAD", sql=UNQUALIFIED_REVENUE_SQL)])
-    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=_FakeRunner([]))
-    assert outcome.skip_reason == mv_attach.SKIP_NO_AFFECTED_QUESTIONS
-
-
-def test_a_bare_expression_with_no_from_selects_through_the_fallback() -> None:
-    """MV-D118 Ruling 6: a statement that resolves no table matches by design."""
-    spark = FakeDeltaSpark()
-    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_revenue_bundle_evidence())
     baseline = _baseline_output([
-        _row("rev_001", "BAD", sql="SELECT SUM(amount)"), _row("rev_002", "GOOD"),
+        _row("rev_001", "BAD", sql=UNQUALIFIED_REVENUE_SQL), _row("rev_002", "GOOD"),
     ])
     runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
     outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
     assert outcome.affected_question_count == 1
+
+
+# ── MV-D123: the statement's tables resolve against the space's own identifiers ──
+
+FACT_ORDERS = "main.sales.fact_orders"
+FACT_RETURNS = "main.sales.fact_returns"
+
+
+def _space_config(*tables: str) -> dict[str, Any]:
+    config = _config()
+    config["data_sources"]["tables"] = [{"identifier": t} for t in tables]
+    return config
+
+
+def _amount_fingerprint(table: str) -> str:
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+
+    (measure,) = extract_measures(f"SELECT SUM(amount) FROM {table}")
+    assert measure.source_tables == (table,)
+    return mv_state.mv_candidate_fingerprint(SPACE_ID, measure.canonical_expr, (table,))
+
+
+def _member_evidence(member_fp: str) -> dict[str, Any]:
+    """A bundle row as a legacy writer left it: member keys, no ``source_tables``."""
+    return {
+        "bundle": True,
+        "benchmark_question_ids": [],
+        "measures": [{"dedup_fingerprint": member_fp, "benchmark_question_ids": []}],
+    }
+
+
+def test_an_unqualified_statement_selects_a_conflict_row() -> None:
+    """MV-D118's reach residual: a CONFLICT row records no ``source_tables``.
+
+    Its key is MV-D7 over the full name, and ``FROM fact_orders`` resolves to that
+    name through the space, so the recomputed key is the row's own.
+    """
+    spark = FakeDeltaSpark()
+    _seed(spark, benchmark_questions=None)
+    mv_state.upsert_mv_candidate(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID, target_space_id=SPACE_ID,
+        suggestion_id=SUGGESTION_ID, dedup_fingerprint=_amount_fingerprint(FACT_ORDERS),
+        candidate_type="CONFLICT",
+        evidence={"benchmark_questions": [], "lineage_source_tables": [FACT_ORDERS]},
+    )
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql=UNQUALIFIED_REVENUE_SQL), _row("rev_002", "GOOD"),
+    ])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    assert outcome.affected_question_count == 1
+    assert json.loads(_created_row(spark)["lift_report_json"])["question_subset"] == ["rev_001"]
+
+
+def test_a_same_leaf_table_in_another_catalog_does_not_select() -> None:
+    """Two catalogs are two tables, and a leaf both catalogs carry resolves to neither."""
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_revenue_bundle_evidence())
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql="SELECT SUM(amount) FROM other.sales.fact_orders"),
+        _row("rev_002", "BAD", sql=UNQUALIFIED_REVENUE_SQL),
+    ])
+    outcome = _run_phase(
+        spark, config=_space_config(FACT_ORDERS, "other.sales.fact_orders"),
+        baseline=baseline, runner=_FakeRunner([]),
+    )
+    assert outcome.skip_reason == mv_attach.SKIP_NO_AFFECTED_QUESTIONS
+
+
+def test_a_bare_no_from_expression_selects_a_single_table_candidate() -> None:
+    """MV-D118 Ruling 6, kept by MV-D123 Ruling 2: a table-less statement joins its calculation's one table."""
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_member_evidence(_revenue_fingerprint()))
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql="SELECT SUM(amount)"), _row("rev_002", "GOOD"),
+    ])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+    outcome = _run_phase(
+        spark, config=_space_config(FACT_ORDERS, FACT_RETURNS), baseline=baseline, runner=runner,
+    )
+    assert outcome.affected_question_count == 1
+
+
+def test_a_bare_no_from_expression_does_not_select_when_the_calculation_has_two_tables() -> None:
+    """Ruling 2: with the calculation on two of the views' tables, a table-less statement joins neither."""
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_revenue_bundle_evidence())
+    mv_state.upsert_mv_created_object(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID,
+        suggestion_id=SUGGESTION_ORDERS, full_name=MV_ORDERS, created_by=USER,
+        status="CREATED",
+    )
+    mv_state.upsert_mv_candidate(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID, target_space_id=SPACE_ID,
+        suggestion_id=SUGGESTION_ORDERS, dedup_fingerprint="bundle-fp-2",
+        candidate_type="NEW_METRIC_VIEW",
+        evidence={
+            **_member_evidence(_amount_fingerprint(FACT_RETURNS)),
+            "source_tables": [FACT_RETURNS],
+        },
+    )
+    baseline = _baseline_output([
+        _row("rev_001", "BAD", sql="SELECT SUM(amount)"),
+        # Positive control: each view's qualified statement still selects on its own.
+        _row("rev_002", "BAD", sql=REVENUE_SQL),
+        _row("rev_003", "BAD", sql=f"SELECT SUM(amount) FROM {FACT_RETURNS}"),
+    ])
+    runner = _FakeRunner([_row(q, "GOOD") for q in ("rev_001", "rev_002", "rev_003")])
+    _run_phase(
+        spark, config=_space_config(FACT_ORDERS, FACT_RETURNS), baseline=baseline,
+        runner=runner, attach_views=json.dumps([MV_NAME, MV_ORDERS]),
+    )
+    assert json.loads(_created_row(spark)["lift_report_json"])["question_subset"] == [
+        "rev_002", "rev_003",
+    ]
+
+
+@pytest.mark.parametrize("sql", [
+    REVENUE_SQL,
+    "SELECT SUM(amount) FROM `Main`.`Sales`.`Fact_Orders`",
+    "SELECT SUM(amount) FROM sales.fact_orders",
+])
+def test_v1_keyed_member_fingerprints_still_match_qualified_statements(sql: str) -> None:
+    """Ruling 1: a v1 key over one three-part table is its v2 key, so an approved row keeps matching."""
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+    from genie_space_optimizer.optimization.mv_identity_v1 import v1_member_keys
+
+    v1_key = v1_member_keys(SPACE_ID, {0: extract_measures(REVENUE_SQL)[0]})[0]
+    assert v1_key == _amount_fingerprint(FACT_ORDERS)
+    spark = FakeDeltaSpark()
+    _seed(spark, dedup_fingerprint="bundle-fp", evidence=_member_evidence(v1_key))
+    baseline = _baseline_output([_row("rev_001", "BAD", sql=sql), _row("rev_002", "GOOD")])
+    runner = _FakeRunner([_row("rev_001", "GOOD"), _row("rev_002", "GOOD")])
+    outcome = _run_phase(spark, config=_config(), baseline=baseline, runner=runner)
+    assert outcome.affected_question_count == 1
+
+
+# ── MV-D123 Ruling 9: an approved v1-keyed bundle beside its v2 successor ──
+
+_ORDERS_VIEW = "main.sales.fact_orders_metrics"
+
+
+def _orders_member_key(aggregate: str) -> str:
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+
+    (measure,) = extract_measures(f"SELECT {aggregate} FROM {FACT_ORDERS}")
+    return mv_state.mv_candidate_fingerprint(SPACE_ID, measure.canonical_expr, (FACT_ORDERS,))
+
+
+def _seed_orders_bundle(spark: FakeDeltaSpark, member_keys: list[str]) -> str:
+    from genie_space_optimizer.optimization.mv_scoring import suggestion_id_for
+
+    bundle_key = mv_state.mv_bundle_fingerprint(SPACE_ID, member_keys, [FACT_ORDERS])
+    suggestion_id = suggestion_id_for(bundle_key)
+    mv_state.upsert_mv_candidate(
+        spark, catalog=CATALOG, schema=SCHEMA, run_id=RUN_ID, target_space_id=SPACE_ID,
+        suggestion_id=suggestion_id, dedup_fingerprint=bundle_key,
+        candidate_type="NEW_METRIC_VIEW", proposed_object=_ORDERS_VIEW,
+        evidence={
+            "bundle": True,
+            "benchmark_question_ids": [],
+            "source_tables": [FACT_ORDERS],
+            "measures": [{"dedup_fingerprint": k, "benchmark_question_ids": []} for k in member_keys],
+        },
+    )
+    return suggestion_id
+
+
+def test_an_approved_v1_bundle_is_measured_on_its_own_members_beside_its_successor() -> None:
+    """The approval is found by its stored ``suggestion_id`` and measured on its
+    stored member keys; the reshaped successor and an older pending row of the
+    same view are not read in its place."""
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+    from genie_space_optimizer.optimization.mv_identity_v1 import v1_member_keys
+
+    (v1_sum,) = v1_member_keys(SPACE_ID, {0: extract_measures(REVENUE_SQL)[0]}).values()
+    total, rows, biggest = (_orders_member_key(a) for a in ("SUM(amount)", "COUNT(*)", "MAX(amount)"))
+    assert v1_sum == total
+    spark = FakeDeltaSpark()
+    approved = _seed_orders_bundle(spark, [v1_sum])
+    mv_state.record_mv_candidate_decision(
+        spark, catalog=CATALOG, schema=SCHEMA, target_space_id=SPACE_ID,
+        dedup_fingerprint=mv_state.mv_bundle_fingerprint(SPACE_ID, [v1_sum], [FACT_ORDERS]),
+        decision="approved", decided_by=USER,
+    )
+    pending = _seed_orders_bundle(spark, [total, rows])
+    successor = _seed_orders_bundle(spark, [total, rows, biggest])
+    baseline = _baseline_output([
+        _row("q_sum", "BAD", sql=UNQUALIFIED_REVENUE_SQL),
+        _row("q_rows", "BAD", sql="SELECT COUNT(*) FROM fact_orders"),
+        _row("q_max", "BAD", sql="SELECT MAX(amount) FROM sales.fact_orders"),
+    ])
+
+    def affected(suggestion_id: str) -> list[str]:
+        return mv_attach._affected_question_ids(
+            spark, space_id=SPACE_ID, catalog=CATALOG, schema=SCHEMA,
+            suggestion_ids=[suggestion_id], baseline_eval=baseline, config=_config(),
+        )
+
+    loaded = {r["suggestion_id"]: r for r in mv_state.load_mv_candidates(
+        spark, CATALOG, SCHEMA, target_space_id=SPACE_ID,
+    )}
+    assert loaded[approved]["decision"] == "approved"
+    assert len({approved, pending, successor}) == 3
+    assert affected(approved) == ["q_sum"]
+    assert affected(pending) == ["q_sum", "q_rows"]
+    assert affected(successor) == ["q_sum", "q_rows", "q_max"]
+
+
+# ── MV-D123: statements the matcher must not select ──
+
+
+def _affected_by_orders_member(aggregate: str, rows: list[dict[str, Any]]) -> list[str]:
+    spark = FakeDeltaSpark()
+    suggestion_id = _seed_orders_bundle(spark, [_orders_member_key(aggregate)])
+    return mv_attach._affected_question_ids(
+        spark, space_id=SPACE_ID, catalog=CATALOG, schema=SCHEMA,
+        suggestion_ids=[suggestion_id], baseline_eval=_baseline_output(rows), config=_config(),
+    )
+
+
+@pytest.mark.parametrize("sql", [
+    f"WITH x AS (SELECT * FROM {FACT_ORDERS}) SELECT COUNT(*) FROM x",
+    f"SELECT COUNT(*) FROM (SELECT * FROM {FACT_ORDERS}) s",
+], ids=["cte", "derived"])
+def test_a_row_count_over_a_cte_or_derived_table_does_not_select(sql: str) -> None:
+    """Ruling 27: the row count names no table and is unresolved, not table-less.
+
+    Read as table-less, it would key over the space's one table and match the
+    orders row count, so only the matcher's unresolved-source guard keeps it out.
+    """
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+
+    (measure,) = extract_measures(sql)
+    assert measure.has_unresolved_source and measure.source_tables == ()
+    assert _affected_by_orders_member("COUNT(*)", [
+        _row("q_derived", "BAD", sql=sql),
+        _row("q_rows", "BAD", sql="SELECT COUNT(*) FROM fact_orders"),
+    ]) == ["q_rows"]
+
+
+def test_an_unqualified_statement_over_a_table_the_space_does_not_list_does_not_select() -> None:
+    """Ruling 38: ``fact_returns`` is not a space table, so it is unresolved; read as
+    table-less, it would key over the space's one table and match the orders member."""
+    assert _affected_by_orders_member("SUM(amount)", [
+        _row("q_unlisted", "BAD", sql="SELECT SUM(amount) FROM fact_returns"),
+        _row("q_listed", "BAD", sql=UNQUALIFIED_REVENUE_SQL),
+    ]) == ["q_listed"]
 
 
 @pytest.mark.parametrize("key", ["expected_sql", "inputs/expected_response"])

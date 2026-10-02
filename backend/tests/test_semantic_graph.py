@@ -77,12 +77,18 @@ _SPACE = {
 
 # A DESCRIBE-derived governed measure (Prompt 12b Debt 2). Field-shaped mapping;
 # _field_attr reads either a mapping or a MetricViewField object.
-def _governed(field_name: str, canonical_expr: str = "", mv_fqn: str = "finance.sales.orders_metrics"):
+def _governed(
+    field_name: str,
+    canonical_expr: str = "",
+    mv_fqn: str = "finance.sales.orders_metrics",
+    source_tables: tuple[str, ...] = (),
+):
     return {
         "mv_fqn": mv_fqn,
         "field_name": field_name,
         "kind": "measure",
         "canonical_expr": canonical_expr,
+        "source_tables": source_tables,
     }
 
 
@@ -272,11 +278,185 @@ def test_build_graph_governed_absorbs_its_curated_twin():
         },
     }
     nodes, _e, _s, _r = _build(
-        space, [], governed_fields=[_governed("revenue", "sum(rev)", mv_fqn="finance.sales.m")]
+        space,
+        [],
+        governed_fields=[
+            _governed(
+                "revenue", "sum(rev)", mv_fqn="finance.sales.m",
+                source_tables=("finance.sales.orders",),
+            )
+        ],
     )
     measures = [n for n in nodes if n.kind == "measure"]
     assert len(measures) == 1
     assert measures[0].governance == "governed"
+
+
+_TWO_CATALOGS = {
+    "data_sources": {
+        "tables": [
+            {"identifier": "east.sales.orders"},
+            {"identifier": "west.sales.orders"},
+        ],
+    },
+}
+
+
+def _with_sql(space: dict, *, snippets=(), examples=()) -> dict:
+    return {
+        **space,
+        "instructions": {
+            "sql_snippets": {
+                "measures": [
+                    {"id": f"m{i}", "display_name": name, "sql": [sql]}
+                    for i, (name, sql) in enumerate(snippets)
+                ]
+            },
+            "example_question_sqls": [
+                {"id": f"q{i}", "sql": [sql]} for i, sql in enumerate(examples)
+            ],
+        },
+    }
+
+
+def _measures(nodes):
+    return [n for n in nodes if n.kind == "measure"]
+
+
+def test_one_calculation_over_two_tables_is_two_nodes():
+    """MV-D123 (R3): one calculation over two tables is two measures, at the curated
+    rung and across the governed/curated rungs — each keeps its own lineage."""
+    space = _with_sql(
+        _TWO_CATALOGS,
+        examples=(
+            "SELECT SUM(o.amount) FROM east.sales.orders o",
+            "SELECT SUM(amount) FROM west.sales.orders",
+        ),
+    )
+    nodes, edges, _s, _r = _build(space, [])
+    curated = _measures(nodes)
+    assert [n.label for n in curated] == ["sum · amount", "sum · amount"]
+    lineage = sorted(
+        (e.from_, e.to) for e in edges if e.kind == "derives"
+    )
+    assert len({m for m, _t in lineage}) == 2
+    assert sorted(t for _m, t in lineage) == ["east.sales.orders", "west.sales.orders"]
+
+    governed_space = _with_sql(
+        {"data_sources": {**_TWO_CATALOGS["data_sources"], "metric_views": [{"identifier": "east.sales.m"}]}},
+        examples=("SELECT SUM(amount) FROM west.sales.orders",),
+    )
+    nodes, _e, _s, _r = _build(
+        governed_space,
+        [],
+        governed_fields=[
+            _governed("revenue", "sum(amount)", mv_fqn="east.sales.m", source_tables=("east.sales.orders",))
+        ],
+    )
+    assert sorted((n.governance, n.label) for n in _measures(nodes)) == [
+        ("curated", "sum · amount"),
+        ("governed", "revenue"),
+    ]
+
+
+def test_a_tableless_curated_measure_joins_the_sole_node():
+    """Ruling 2: a snippet names no table, so it joins the one node its calculation has."""
+    space = _with_sql(
+        _TWO_CATALOGS,
+        snippets=(("revenue", "SUM(amount)"),),
+        examples=("SELECT SUM(amount) FROM east.sales.orders",),
+    )
+    nodes, _e, _s, _r = _build(space, [])
+    assert [n.label for n in _measures(nodes)] == ["revenue"]
+
+
+def test_a_tableless_curated_measure_joins_neither_of_two():
+    """Ruling 2: with the calculation over two tables, the snippet is guessed into neither."""
+    space = _with_sql(
+        _TWO_CATALOGS,
+        snippets=(("revenue", "SUM(amount)"),),
+        examples=(
+            "SELECT SUM(amount) FROM east.sales.orders",
+            "SELECT SUM(amount) FROM west.sales.orders",
+        ),
+    )
+    nodes, edges, _s, _r = _build(space, [])
+    assert sorted(n.label for n in _measures(nodes)) == ["revenue", "sum · amount", "sum · amount"]
+    revenue = next(n for n in _measures(nodes) if n.label == "revenue")
+    assert not any(e.kind == "derives" and e.from_ == revenue.id for e in edges)
+
+
+def test_an_unresolved_governed_measure_absorbs_nothing():
+    """A governed view over a query source names no table it can be matched on, so a
+    table-less snippet with its calculation is not guessed into it (MV-D123)."""
+    space = {
+        "data_sources": {
+            "tables": [{"identifier": "finance.sales.orders"}],
+            "metric_views": [{"identifier": "finance.sales.m"}],
+        },
+        "instructions": {
+            "sql_snippets": {
+                "measures": [{"id": "m1", "display_name": "revenue", "sql": ["SUM(o.rev)"]}]
+            }
+        },
+    }
+    nodes, _e, _s, _r = _build(
+        space, [], governed_fields=[_governed("revenue", "sum(rev)", mv_fqn="finance.sales.m")]
+    )
+    assert sorted(n.governance for n in _measures(nodes)) == ["curated", "governed"]
+
+
+_JOINED = {
+    "data_sources": {
+        "tables": [{"identifier": "finance.sales.orders"}, {"identifier": "finance.ref.customers"}],
+        "metric_views": [{"identifier": "finance.sales.m"}],
+    }
+}
+_JOINED_REVENUE = _governed(
+    "revenue", "sum(amount)", mv_fqn="finance.sales.m",
+    source_tables=("finance.sales.orders", "finance.ref.customers"),
+)
+
+
+def test_a_joined_governed_view_absorbs_its_single_table_curated_twin():
+    """The advisor's rule (``governs_measure``): one canonical expression over a
+    shared table is governed, so the curated twin over orders alone draws no chip,
+    and the table-less snippet joins the one node left."""
+    space = _with_sql(
+        _JOINED,
+        snippets=(("revenue_snippet", "SUM(amount)"),),
+        examples=("SELECT SUM(amount) FROM finance.sales.orders",),
+    )
+    nodes, _e, _s, _r = _build(space, [], governed_fields=[_JOINED_REVENUE])
+    assert [(n.governance, n.label) for n in _measures(nodes)] == [("governed", "revenue")]
+
+
+def test_a_governed_view_does_not_absorb_a_twin_over_another_table():
+    space = _with_sql(
+        {"data_sources": {**_TWO_CATALOGS["data_sources"], "metric_views": [{"identifier": "east.sales.m"}]}},
+        examples=("SELECT SUM(amount) FROM west.sales.orders",),
+    )
+    nodes, _e, _s, _r = _build(
+        space, [],
+        governed_fields=[
+            _governed("revenue", "sum(amount)", mv_fqn="east.sales.m", source_tables=("east.sales.orders",))
+        ],
+    )
+    assert sorted((n.governance, n.label) for n in _measures(nodes)) == [
+        ("curated", "sum · amount"),
+        ("governed", "revenue"),
+    ]
+
+
+def test_a_curated_measure_over_a_cte_stays_its_own_node():
+    """An aggregate over a CTE names no table it can be matched on (UNRESOLVED), so
+    no governed view absorbs it."""
+    space = _with_sql(
+        _JOINED,
+        examples=("WITH t AS (SELECT amount FROM finance.sales.orders) SELECT SUM(amount) FROM t",),
+    )
+    nodes, _e, _s, _r = _build(space, [], governed_fields=[_JOINED_REVENUE])
+    assert sorted(n.governance for n in _measures(nodes)) == ["curated", "governed"]
 
 
 def test_build_graph_adds_ungoverned_from_proposal_evidence():
@@ -861,6 +1041,43 @@ def test_semantic_graph_reads_base_from_the_obo_tolerant_config_path(client, mon
     # Edges serialize with the "from" alias, not "from_".
     assert all("from" in e for e in data["edges"])
     assert data["proposals"] == []
+
+
+def test_the_graph_builds_its_resolver_from_the_space_config(client, monkeypatch):
+    """Ruling 3/4: the route resolves a spelled table through the fetched space's own
+    tables, so a one-part ``orders`` is ``finance.sales.orders`` when the space lists
+    exactly that one, and resolves to nothing when it lists two."""
+    examples = (
+        "SELECT SUM(o.qty) FROM orders o",
+        "SELECT SUM(qty) FROM finance.sales.orders",
+    )
+    one = _with_sql({"data_sources": {"tables": [{"identifier": "finance.sales.orders"}]}}, examples=examples)
+    two = _with_sql(
+        {"data_sources": {"tables": [{"identifier": "finance.sales.orders"}, {"identifier": "other.sales.orders"}]}},
+        examples=examples,
+    )
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
+
+    def measure_labels(space):
+        monkeypatch.setattr(auto_optimize, "get_serialized_space", lambda space_id: space)
+        resp = client.get("/api/auto-optimize/spaces/space-1/semantic-graph")
+        assert resp.status_code == 200
+        return [n["label"] for n in resp.json()["nodes"] if n["kind"] == "measure"]
+
+    assert measure_labels(one) == ["sum · qty"]
+    assert measure_labels(two) == ["sum · qty", "sum · qty"]
+
+
+@pytest.mark.parametrize(
+    "space",
+    [{}, {"data_sources": {}}, {"data_sources": {"tables": [], "metric_views": []}, "instructions": {}}],
+)
+def test_the_graph_answers_a_degenerate_space_config(client, monkeypatch, space):
+    monkeypatch.setattr(auto_optimize, "get_serialized_space", lambda space_id: space)
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [])
+    resp = client.get("/api/auto-optimize/spaces/space-1/semantic-graph")
+    assert resp.status_code == 200
+    assert [n for n in resp.json()["nodes"] if n["kind"] == "measure"] == []
 
 
 def test_semantic_graph_lens_free_response_is_backward_compatible(client, monkeypatch):

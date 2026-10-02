@@ -15,6 +15,7 @@ Two things matter and are tested at the seam, not end to end (no Databricks):
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -3012,3 +3013,283 @@ def test_valid_uc_identifier_splits_backtick_aware(full_name, valid):
 )
 def test_uc_name_parts_refuses_a_dot_inside_a_quoted_part(name, parts):
     assert mv_create._uc_name_parts(name) == parts
+
+
+# ── MV-D123 Ruling 9: approved and created proposals keep working across identity v2 ──
+
+_ORDERS = "main.sales.orders"
+_ORDERS_VIEW = "main.sales.orders_metrics"
+_ORDERS_SPACE = {"data_sources": {"tables": [{"identifier": _ORDERS}]}}
+_RUN_LIST = "/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-proposals"
+_SPACE_LIST = "/api/auto-optimize/spaces/space-1/mv-proposals"
+_CREATED_RUN = "44444444-4444-4444-8444-444444444444"
+
+
+def _v1_member_keys(*statements: str) -> list[str]:
+    """The member keys a v1 scan wrote: the frozen v1 grouping over the names as spelled."""
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+    from genie_space_optimizer.optimization.mv_identity_v1 import v1_member_keys
+
+    refs = [ref for sql in statements for ref in extract_measures(sql)]
+    return sorted(set(v1_member_keys("space-1", dict(enumerate(refs))).values()))
+
+
+def _v2_member_keys(*statements: str) -> list[str]:
+    """The member keys a v2 scan writes: the live grouping over the space's tables."""
+    from genie_space_optimizer.optimization.mv_fingerprint import corpus_scan
+    from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+    from genie_space_optimizer.optimization.mv_tables import TableResolver
+
+    scan = corpus_scan(
+        [(sql, f"p{i}") for i, sql in enumerate(statements)],
+        resolver=TableResolver.from_config(_ORDERS_SPACE),
+    )
+    return sorted(
+        mv_candidate_fingerprint("space-1", m.canonical_expr, m.source_tables) for m in scan.measures
+    )
+
+
+def _orders_bundle(member_keys: list[str], updated_at: str, **extra) -> dict:
+    from genie_space_optimizer.optimization.mv_scoring import suggestion_id_for
+    from genie_space_optimizer.optimization.mv_state import mv_bundle_fingerprint
+
+    bundle_key = mv_bundle_fingerprint("space-1", member_keys, [_ORDERS])
+    suggestion_id = suggestion_id_for(bundle_key)
+    return {
+        "target_space_id": "space-1", "candidate_type": "NEW_METRIC_VIEW",
+        "approved_for_rerun": False, "conflicts": [], "decision": None,
+        "suggestion_id": suggestion_id, "dedup_fingerprint": bundle_key,
+        "proposed_object": _ORDERS_VIEW, "updated_at": updated_at,
+        "yaml_text": f"version: '1.1'  # {suggestion_id}\n",
+        "evidence": {
+            "render_version": MV_RENDER_VERSION, "join_strategy": "direct",
+            "source_tables": [_ORDERS],
+            "measures": [{"dedup_fingerprint": k, "role": "anchor"} for k in member_keys],
+        },
+        **extra,
+    }
+
+
+def _approved_beside_its_successor() -> tuple[dict, dict, dict]:
+    """An approved v1 bundle, an older pending v1 row and a v2 re-scan's reshaped row of one view."""
+    approved = _orders_bundle(
+        _v1_member_keys(f"SELECT SUM(amount) FROM {_ORDERS}"), "2026-10-01T09:00:00",
+        decision="approved", approved_for_rerun=True,
+    )
+    pending = _orders_bundle(
+        _v1_member_keys(f"SELECT SUM(amount) FROM {_ORDERS}", f"SELECT COUNT(*) FROM {_ORDERS}"),
+        "2026-10-01T10:00:00",
+    )
+    successor = _orders_bundle(
+        _v2_member_keys(
+            "SELECT SUM(amount) FROM orders",
+            "SELECT COUNT(*) FROM orders",
+            "SELECT MAX(amount) FROM sales.orders",
+        ),
+        "2026-10-01T11:00:00",
+    )
+    assert len({approved["suggestion_id"], pending["suggestion_id"], successor["suggestion_id"]}) == 3
+    return approved, pending, successor
+
+
+def _created_ledger(rows: list[dict]):
+    """A fake warehouse read over created-objects ledger rows, asked by id or by (run, id)."""
+
+    def _query(ws, warehouse_id, sql):
+        import re as _re
+
+        assert "genie_opt_mv_created_objects" in sql
+        pair = _re.search(r"run_id = '([^']*)' AND suggestion_id = '([^']*)'", sql)
+        if pair:
+            return pd.DataFrame(
+                [r for r in rows if (r["run_id"], r["suggestion_id"]) == pair.groups()]
+            )
+        asked = set(_re.findall(r"'(sug_[0-9a-f]{12})'", sql))
+        return pd.DataFrame({"suggestion_id": sorted(asked & {r["suggestion_id"] for r in rows})})
+
+    return _query
+
+
+@pytest.mark.parametrize("url", [_RUN_LIST, _SPACE_LIST], ids=["run-list", "space-list"])
+def test_an_approved_v1_bundle_is_listed_beside_its_v2_successor(client, monkeypatch, url):
+    """The approved row stays; the older pending row leaves beside the newer one."""
+    approved, pending, successor = _approved_beside_its_successor()
+    _stub_space_list(monkeypatch, [approved, pending, successor])
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", _created_ledger([]))
+
+    resp = client.get(url)
+
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [
+        approved["suggestion_id"], successor["suggestion_id"],
+    ]
+
+
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+def test_the_approved_v1_bundle_resolves_in_the_decision_route(client, monkeypatch, decision):
+    approved, pending, successor = _approved_beside_its_successor()
+    recorded: list[dict] = []
+    suppressed: list[dict] = []
+    monkeypatch.setattr(
+        warehouse, "wh_load_mv_candidates", lambda *a, **k: [successor, pending, approved],
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_record_mv_candidate_decision",
+        lambda ws, warehouse_id, **kw: recorded.append(kw),
+    )
+    monkeypatch.setattr(
+        warehouse, "wh_suppress_mv_measures",
+        lambda ws, warehouse_id, **kw: suppressed.append(kw),
+    )
+
+    resp = client.post(
+        f"/api/auto-optimize/mv/proposals/{approved['suggestion_id']}/decision",
+        json={"space_id": "space-1", "decision": decision},
+    )
+
+    assert resp.status_code == 200
+    assert [r["dedup_fingerprint"] for r in recorded] == [approved["dedup_fingerprint"]]
+    fanned_out = [fp for call in suppressed for fp in call["measure_fingerprints"]]
+    stored_members = [m["dedup_fingerprint"] for m in approved["evidence"]["measures"]]
+    assert fanned_out == ([] if decision == "approved" else stored_members)
+
+
+@pytest.mark.parametrize("with_artifacts", [True, False], ids=["artifact", "candidate-row"])
+def test_the_approved_v1_bundle_resolves_in_mv_ddl(client, monkeypatch, with_artifacts):
+    approved, pending, successor = _approved_beside_its_successor()
+    rows = [successor, pending, approved]
+    artifacts = [
+        {"artifact_json": json.dumps({
+            **{k: r[k] for k in ("suggestion_id", "dedup_fingerprint", "proposed_object", "yaml_text")},
+            "render_version": MV_RENDER_VERSION,
+        })}
+        for r in rows
+    ] if with_artifacts else []
+    monkeypatch.setattr(auto_optimize, "_gso_sp_application_id", lambda: "")
+    monkeypatch.setattr(auto_optimize, "_delta_query", lambda sql, *, strict=False: artifacts)
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: rows)
+
+    resp = client.get(
+        "/api/auto-optimize/runs/11111111-1111-4111-8111-111111111111/mv-ddl",
+        params={"suggestion_id": approved["suggestion_id"]},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["suggestion_id"] == approved["suggestion_id"]
+    assert body["dedup_fingerprint"] == approved["dedup_fingerprint"]
+    assert body["yaml_text"] == approved["yaml_text"]
+
+
+def test_a_created_v1_row_resolves_by_its_stored_suggestion_id(client, monkeypatch):
+    """Create-at-approval records no decision, so the ledger's stored id is what
+    keeps the row listed beside its successor and what the drop finds. The
+    successor's id holds no ledger row: nothing is carried to the new key."""
+    approved, _, successor = _approved_beside_its_successor()
+    created = {**approved, "decision": None, "approved_for_rerun": False}
+    ledger = [{
+        "run_id": _CREATED_RUN, "suggestion_id": created["suggestion_id"],
+        "full_name": _ORDERS_VIEW, "created_by": "analyst@example.com",
+        "status": "DETACHED", "provenance": "OBO_CREATED",
+    }]
+    executed: list[str] = []
+    _stub_space_list(monkeypatch, [created, successor])
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", _created_ledger(ledger))
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_execute", lambda ws, warehouse_id, sql: executed.append(sql),
+    )
+    monkeypatch.setattr(
+        auto_optimize, "require_obo_workspace_client", lambda: _obo_as("analyst@example.com"),
+    )
+
+    listed = client.get(_SPACE_LIST)
+    assert [p["suggestion_id"] for p in listed.json()["proposals"]] == [
+        created["suggestion_id"], successor["suggestion_id"],
+    ]
+
+    stray = client.post(
+        f"/api/auto-optimize/mv/created/{successor['suggestion_id']}/drop",
+        json={"run_id": _CREATED_RUN, "confirm": True},
+    )
+    assert stray.status_code == 404
+    assert executed == []
+
+    dropped = client.post(
+        f"/api/auto-optimize/mv/created/{created['suggestion_id']}/drop",
+        json={"run_id": _CREATED_RUN, "confirm": True},
+    )
+    assert dropped.status_code == 200
+    assert executed[0] == "DROP VIEW IF EXISTS `main`.`sales`.`orders_metrics`"
+    assert f"suggestion_id = '{created['suggestion_id']}'" in executed[1]
+    assert "'DROPPED'" in executed[1]
+
+
+@pytest.mark.parametrize("source", [_ORDERS, "'`main`.`sales`.`orders`'"])
+def test_the_claim_over_a_three_part_source_recomputes_the_stored_member_keys(monkeypatch, source):
+    """Ruling 8: the claim keys the view's measures over its own ``source:``, which
+    is already three-part, so the v1 and v2 member keys are the ones it recomputes."""
+    v1 = _v1_member_keys(*(
+        f"SELECT {aggregate} FROM {_ORDERS}" for aggregate in ("SUM(amount)", "COUNT(*)", "MAX(amount)")
+    ))
+    v2 = _v2_member_keys(
+        "SELECT SUM(amount) FROM orders",
+        "SELECT COUNT(*) FROM sales.orders",
+        "SELECT MAX(amount) FROM `Main`.`Sales`.`Orders`",
+    )
+    assert v1 == v2 and len(v2) == 3
+    row = _orders_bundle(v2, "2026-10-01T11:00:00")
+    monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [row])
+    yaml_text = (
+        'version: "1.1"\n'
+        f"source: {source}\n"
+        "measures:\n"
+        "- name: total\n  expr: SUM(source.amount)\n"
+        "- name: orders\n  expr: COUNT(*)\n"
+        "- name: biggest\n  expr: MAX(source.`amount`)\n"
+    )
+
+    ok, reason = mv_create._claim_matches_view(
+        _SP_WS, "wh1", catalog="main", schema="gso",
+        space_id="space-1", suggestion_id=row["suggestion_id"], yaml_text=yaml_text,
+    )
+
+    assert ok is True and reason is None
+
+
+def test_the_claim_refuses_a_stored_member_key_v2_cannot_reproduce(monkeypatch):
+    """Ruling 8's negative control: a v1 key over a spelled union (``main.sales.orders``
+    and ``orders`` in one leaf bucket) is not what the view's ``source:`` recomputes."""
+    (drifted,) = _v1_member_keys(f"SELECT SUM(amount) FROM {_ORDERS}", "SELECT SUM(amount) FROM orders")
+    (reproducible,) = _v2_member_keys(f"SELECT SUM(amount) FROM {_ORDERS}")
+    assert drifted != reproducible
+    yaml_text = (
+        'version: "1.1"\n'
+        f"source: {_ORDERS}\n"
+        "measures:\n"
+        "- name: total\n  expr: SUM(source.amount)\n"
+    )
+
+    def claim(member_key: str) -> tuple[bool, str | None]:
+        row = _orders_bundle([member_key], "2026-10-01T11:00:00")
+        monkeypatch.setattr(warehouse, "wh_load_mv_candidates", lambda *a, **k: [row])
+        return mv_create._claim_matches_view(
+            _SP_WS, "wh1", catalog="main", schema="gso",
+            space_id="space-1", suggestion_id=row["suggestion_id"], yaml_text=yaml_text,
+        )
+
+    assert claim(reproducible) == (True, None)
+    ok, reason = claim(drifted)
+    assert ok is False
+    assert "measure fingerprint mismatch" in reason
+
+
+@pytest.mark.parametrize("url", [_RUN_LIST, _SPACE_LIST], ids=["run-list", "space-list"])
+def test_a_v1_pending_row_beside_its_v2_successor_is_not_listed(client, monkeypatch, url):
+    _, pending, successor = _approved_beside_its_successor()
+    _stub_space_list(monkeypatch, [pending, successor])
+    monkeypatch.setattr(warehouse, "sql_warehouse_query", _created_ledger([]))
+
+    resp = client.get(url)
+
+    assert resp.status_code == 200
+    assert [p["suggestion_id"] for p in resp.json()["proposals"]] == [successor["suggestion_id"]]

@@ -159,15 +159,7 @@ def test_the_colliding_measure_now_splits_by_table(baseline):
     assert merged["candidate_fingerprint"] not in {r["candidate_fingerprint"] for r in split}
 
 
-def test_the_merged_key_the_advisor_rebuilds_is_the_one_recorded_at_base(baseline):
-    merged = next(r for r in baseline["scan"] if r["canonical_expr"] == COLLIDING_EXPR)
-    union = {
-        table
-        for m in corpus_scan(corpus()).measures
-        if m.fingerprint == merged["fingerprint"]
-        for table in m.source_tables
-    }
-    assert mv_candidate_fingerprint(SPACE, COLLIDING_EXPR, union) == merged["candidate_fingerprint"]
+# MV-D123: test_the_merged_key_the_advisor_rebuilds_is_the_one_recorded_at_base is replaced by the v2 baseline's map (test_mv_identity_v2_baseline.py).
 
 
 LINEITEM = "samples.tpch.lineitem"

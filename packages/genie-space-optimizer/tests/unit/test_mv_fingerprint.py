@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 import sqlglot
-
 from genie_space_optimizer.optimization import mv_fingerprint as mf
 from genie_space_optimizer.optimization.mv_fingerprint import (
     NUMERIC_PLACEHOLDER,
@@ -38,14 +37,17 @@ from genie_space_optimizer.optimization.mv_fingerprint import (
     extract_join_keys,
     extract_measures,
     render_expr,
-    same_tables,
     shapes_in_statement,
     source_table_name,
     statement_grain,
-    table_leaves,
-    tables_overlap,
 )
+from genie_space_optimizer.optimization.mv_identity_v1 import v1_member_keys
 from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+from genie_space_optimizer.optimization.mv_tables import (
+    TableResolver,
+    fq_tables_overlap,
+    same_fq_tables,
+)
 
 LINEITEM = "samples.tpch.lineitem"
 ORDERS = "samples.tpch.orders"
@@ -446,6 +448,87 @@ def test_a_relation_aliased_source_reads_its_struct_field():
     assert m.has_unresolved_columns is False
 
 
+def test_a_count_over_a_derived_table_names_no_table():
+    """MV-D123 (R4): the outer COUNT(*) counts the derived rows, not orders'."""
+    (m,) = extract_measures(
+        "SELECT COUNT(*) AS n FROM (SELECT DISTINCT customer_id FROM main.s.orders) sub"
+    )
+    assert m.canonical_expr == "count(?n)"
+    assert m.source_tables == ()
+    assert m.has_unresolved_source is True
+
+
+def test_a_count_over_a_cte_names_no_table():
+    (m,) = extract_measures(
+        "WITH buyers AS (SELECT DISTINCT customer_id FROM main.s.orders) "
+        "SELECT COUNT(*) AS n FROM buyers"
+    )
+    assert m.canonical_expr == "count(?n)"
+    assert m.source_tables == ()
+    assert m.has_unresolved_source is True
+
+
+VIP_JOIN = (
+    "FROM main.s.orders o JOIN (SELECT o_custkey FROM main.s.vip) d "
+    "ON o.o_custkey = d.o_custkey"
+)
+
+
+def test_a_real_table_column_beside_a_derived_join_keeps_its_table():
+    (m,) = extract_measures(f"SELECT SUM(o.amount) {VIP_JOIN}")
+    assert m.canonical_expr == "sum(amount)"
+    assert m.source_tables == ("main.s.orders",)
+    assert m.has_unresolved_source is False
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT SUM(amount) {VIP_JOIN}",
+        f"SELECT COUNT(*) {VIP_JOIN}",
+        f"SELECT SUM(d.o_custkey) {VIP_JOIN}",
+        (
+            "WITH v AS (SELECT o_custkey FROM main.s.vip) "
+            "SELECT SUM(v.o_custkey) FROM main.s.orders o JOIN v ON o.o_custkey = v.o_custkey"
+        ),
+    ],
+    ids=["unqualified", "row_count", "derived_alias", "cte_name"],
+)
+def test_a_measure_that_could_read_a_derived_join_names_no_table(sql):
+    (m,) = extract_measures(sql)
+    assert m.source_tables == ()
+    assert m.has_unresolved_source is True
+
+
+def test_an_aliased_table_registers_only_its_alias():
+    """MV-D123 (R6): once orders is ``o``, ``payload`` names no relation, so
+    ``o.payload.fee`` is field fee of struct column payload on orders."""
+    (m,) = extract_measures(
+        "SELECT SUM(o.payload.fee) FROM main.s.orders o "
+        "JOIN main.s.payload p ON o.order_id = p.order_id"
+    )
+    assert m.canonical_expr == "sum(payload.fee)"
+    assert m.source_tables == ("main.s.orders",)
+    assert m.source_columns == ("payload",)
+    assert m.has_unresolved_columns is False
+    assert m.has_unresolved_source is False
+
+
+def test_an_unaliased_table_still_qualifies_by_name():
+    (joined,) = extract_measures(
+        "SELECT SUM(o.payload.fee) FROM main.s.orders o "
+        "JOIN main.s.items i ON o.order_id = i.order_id"
+    )
+    assert joined.canonical_expr == "sum(payload.fee)"
+    assert joined.source_tables == ("main.s.orders",)
+
+    (named,) = extract_measures("SELECT SUM(orders.amount) FROM main.s.orders")
+    assert named.canonical_expr == "sum(amount)"
+    assert named.source_tables == ("main.s.orders",)
+    assert named.has_unresolved_columns is False
+    assert named.has_unresolved_source is False
+
+
 SOURCE_SCHEMA = "main.source.orders"
 
 
@@ -740,6 +823,16 @@ def test_corpus_scan_counts_recurrence_and_distinct_provenance() -> None:
     assert top.kind == "measure"
 
 
+def test_a_z_suffixed_stamp_parses_as_utc() -> None:
+    """GSO declares Python 3.10, whose ``fromisoformat`` refuses a trailing ``Z``."""
+    from datetime import timedelta
+
+    parsed = mf._parse_timestamp("2026-08-10T00:00:00Z")
+    assert parsed is not None
+    assert parsed.utcoffset() == timedelta(0)
+    assert parsed == mf._parse_timestamp("2026-08-10T00:00:00+00:00")
+
+
 def test_corpus_scan_counts_curated_provenance_as_a_subset_of_distinct(
 ) -> None:
     """MV-D17: only sources whose kind is ``curated`` raise the curated count.
@@ -791,6 +884,7 @@ def test_fingerprint_recurrence_to_dict_key_set_is_pinned() -> None:
         "shapes",
         "representative_expr",
         "has_unresolved_columns",
+        "has_unresolved_tables",
     }
 
 
@@ -1108,35 +1202,60 @@ AMOUNT_JOIN = (
 )
 
 
-def test_table_leaves_are_lowercase_unqualified_names():
-    assert table_leaves(["Main.Sales.Orders", "`cat`.`sch`.`Refunds`", "orders", ""]) == frozenset(
-        {"orders", "refunds"}
-    )
+# MV-D123 Ruling 16: the leaf helpers (table_leaves, same_tables, tables_overlap) are gone;
+# their pins read through the space's resolver and same_fq_tables / fq_tables_overlap.
+_SPACE_TABLES = TableResolver.from_config(
+    {"data_sources": {"tables": [
+        {"identifier": "main.sales.orders"}, {"identifier": "main.sales.refunds"},
+    ]}}
+)
+
+
+def test_one_table_spelled_three_ways_resolves_to_one_full_name():
+    assert _SPACE_TABLES.resolve_all(
+        ["Main.Sales.Orders", "`sales`.`orders`", "orders", ""]
+    ) == frozenset({"main.sales.orders"})
 
 
 @pytest.mark.parametrize(
     "left,right,expected",
     [
-        (("main.sales.orders",), ("tpch.orders",), True),
-        (("main.sales.orders",), ("main.sales.refunds",), False),
-        (("main.sales.orders", "main.sales.fx"), ("main.sales.orders",), False),
-        ((), ("main.sales.refunds",), True),
+        (["main.sales.orders"], ["orders"], True),
+        (["main.sales.orders"], ["tpch.orders"], False),  # unresolved: never matches
+        (["c1.s.orders"], ["c2.s.orders"], False),  # one leaf, two catalogs: two tables
+        (["main.sales.orders"], ["main.sales.refunds"], False),
+        (["main.sales.orders", "main.sales.fx"], ["main.sales.orders"], False),
+        (["fx"], ["fx"], False),  # an unknown side matches nothing, not even itself
     ],
 )
-def test_same_tables(left, right, expected):
-    assert same_tables(left, right) is expected
+def test_same_fq_tables(left, right, expected):
+    assert same_fq_tables(
+        _SPACE_TABLES.resolve_all(left), _SPACE_TABLES.resolve_all(right), tableless_matches=True,
+    ) is expected
 
 
 @pytest.mark.parametrize(
     "left,right,expected",
     [
-        (("main.sales.orders",), ("main.sales.orders", "main.sales.customers"), True),
-        (("main.sales.orders",), ("main.sales.refunds",), False),
-        (("main.sales.orders",), (), True),
+        (["orders"], ["main.sales.orders", "main.sales.customers"], True),
+        (["main.sales.orders"], ["main.sales.refunds"], False),
+        (["c1.s.orders"], ["c2.s.orders", "c2.s.refunds"], False),
+        (["tpch.orders"], ["main.sales.orders"], False),
     ],
 )
-def test_tables_overlap(left, right, expected):
-    assert tables_overlap(left, right) is expected
+def test_fq_tables_overlap(left, right, expected):
+    assert fq_tables_overlap(
+        _SPACE_TABLES.resolve_all(left), _SPACE_TABLES.resolve_all(right), tableless_matches=True,
+    ) is expected
+
+
+@pytest.mark.parametrize("tableless_matches", [True, False])
+def test_a_tableless_side_follows_the_sole_row_rule(tableless_matches):
+    """Ruling 2: a table-less side matches only when its calculation has one row."""
+    named = _SPACE_TABLES.resolve_all(["main.sales.refunds"])
+    tableless = _SPACE_TABLES.resolve_all([])
+    assert same_fq_tables(tableless, named, tableless_matches=tableless_matches) is tableless_matches
+    assert fq_tables_overlap(named, tableless, tableless_matches=tableless_matches) is tableless_matches
 
 
 def test_source_table_name_reads_a_table_and_refuses_a_query():
@@ -1201,3 +1320,199 @@ def test_split_measures_rank_the_same_whatever_the_corpus_order():
     first = corpus_scan(entries).measures
     assert first == corpus_scan(list(reversed(entries))).measures
     assert [m.source_tables for m in first] == [("main.sales.orders",), ("main.sales.refunds",)]
+
+
+# ── MV-D123: identity v2 groups by calculation and resolved tables ───────
+
+
+def _resolver(*identifiers: str) -> TableResolver:
+    return TableResolver.from_config(
+        {"data_sources": {"tables": [{"identifier": t} for t in identifiers]}}
+    )
+
+
+SALES_SPACE = _resolver("main.sales.orders", "main.sales.refunds")
+TABLELESS_TAX = "SELECT SUM(tax) AS t"
+
+
+def test_two_catalogs_on_one_leaf_are_two_rows():
+    scan = corpus_scan(
+        [
+            ("SELECT SUM(amount) FROM c1.s.orders", "a1"),
+            ("SELECT SUM(amount) FROM c2.s.orders", "a2"),
+        ],
+        resolver=_resolver("c1.s.orders", "c2.s.orders"),
+    )
+    assert sorted(m.source_tables for m in scan.measures) == [("c1.s.orders",), ("c2.s.orders",)]
+    assert len({m.fingerprint for m in scan.measures}) == 1
+    assert not any(m.has_unresolved_tables for m in scan.measures)
+
+
+def test_three_spellings_of_one_table_are_one_row():
+    scan = corpus_scan(
+        [
+            ("SELECT SUM(amount) FROM main.sales.orders", "a1"),
+            ("SELECT SUM(amount) FROM sales.orders", "a2"),
+            ("SELECT SUM(`o`.amount) FROM `Orders` `o`", "a3"),
+        ],
+        resolver=SALES_SPACE,
+    )
+    (measure,) = scan.measures
+    assert measure.source_tables == ("main.sales.orders",)
+    assert measure.recurrence == 3
+    assert measure.provenance_ids == ("a1", "a2", "a3")
+    assert not measure.has_unresolved_tables
+
+
+def test_an_ambiguous_leaf_forms_its_own_unresolved_row():
+    scan = corpus_scan(
+        [
+            ("SELECT SUM(weight) FROM east.ops.shipments", "e1"),
+            ("SELECT SUM(weight) FROM shipments", "s1"),
+            ("SELECT SUM(weight) FROM shipments", "s2"),
+        ],
+        resolver=_resolver("east.ops.shipments", "west.ops.shipments"),
+    )
+    by_tables = {m.source_tables: m for m in scan.measures}
+    assert set(by_tables) == {("east.ops.shipments",), ("shipments",)}
+    unresolved = by_tables[("shipments",)]
+    assert unresolved.has_unresolved_tables
+    assert unresolved.provenance_ids == ("s1", "s2")
+    assert not by_tables[("east.ops.shipments",)].has_unresolved_tables
+    assert by_tables[("east.ops.shipments",)].provenance_ids == ("e1",)
+
+
+def test_a_tableless_occurrence_joins_the_sole_row():
+    scan = corpus_scan(
+        [
+            ("SELECT SUM(tax) FROM main.sales.orders", "a1"),
+            ("SELECT SUM(tax) FROM orders", "a2"),
+            (TABLELESS_TAX, "t1"),
+        ],
+        resolver=SALES_SPACE,
+    )
+    (measure,) = scan.measures
+    assert measure.source_tables == ("main.sales.orders",)
+    assert measure.provenance_ids == ("a1", "a2", "t1")
+
+
+def test_a_tableless_occurrence_joins_none_of_two():
+    scan = corpus_scan(
+        [
+            ("SELECT SUM(tax) FROM orders", "a1"),
+            ("SELECT SUM(tax) FROM refunds", "r1"),
+            (TABLELESS_TAX, "t1"),
+        ],
+        resolver=SALES_SPACE,
+    )
+    by_tables = {m.source_tables: m for m in scan.measures}
+    assert set(by_tables) == {("main.sales.orders",), ("main.sales.refunds",), ()}
+    assert by_tables[()].provenance_ids == ("t1",)
+    assert not by_tables[()].has_unresolved_tables
+    assert by_tables[("main.sales.orders",)].provenance_ids == ("a1",)
+
+
+def test_an_unresolved_occurrence_is_never_absorbed():
+    scan = corpus_scan(
+        [
+            ("SELECT COUNT(*) FROM main.sales.orders", "a1"),
+            ("SELECT COUNT(*) FROM (SELECT DISTINCT customer_id FROM main.sales.orders) d", "d1"),
+            ("SELECT SUM(amount) FROM main.sales.orders", "s1"),
+            ("SELECT SUM(amount) FROM sales.ghosts", "g1"),
+        ],
+        resolver=SALES_SPACE,
+    )
+    rows = {(m.canonical_expr, m.source_tables, m.has_unresolved_tables): m for m in scan.measures}
+    assert set(rows) == {
+        ("count(?n)", ("main.sales.orders",), False),
+        ("count(?n)", (), True),
+        ("sum(amount)", ("main.sales.orders",), False),
+        ("sum(amount)", ("sales.ghosts",), True),
+    }
+    assert rows[("count(?n)", ("main.sales.orders",), False)].provenance_ids == ("a1",)
+    assert rows[("count(?n)", (), True)].provenance_ids == ("d1",)
+    assert rows[("sum(amount)", ("sales.ghosts",), True)].provenance_ids == ("g1",)
+
+
+def test_an_unresolved_row_is_a_row_the_tableless_rule_counts():
+    """Ruling 2: with two or more rows a table-less occurrence joins none, and an
+    unresolved row is one of them — its table may be the one the occurrence read."""
+    scan = corpus_scan(
+        [
+            ("SELECT SUM(weight) FROM east.ops.shipments", "e1"),
+            ("SELECT SUM(weight) FROM shipments", "s1"),
+            ("SELECT SUM(weight) AS w", "t1"),
+        ],
+        resolver=_resolver("east.ops.shipments", "west.ops.shipments"),
+    )
+    by_tables = {m.source_tables: m for m in scan.measures}
+    assert set(by_tables) == {("east.ops.shipments",), ("shipments",), ()}
+    assert by_tables[()].provenance_ids == ("t1",)
+    assert not by_tables[()].has_unresolved_tables
+
+
+def test_without_a_table_list_the_scan_reads_as_today():
+    """Ruling 4: no table list reads every name as written and groups as v1 did —
+    one leaf is one row over its spellings, two catalogs included — so every row
+    keeps the key v1 gave it."""
+    corpus = [
+        ("SELECT SUM(amount) FROM main.sales.orders", "a1"),
+        ("SELECT SUM(amount) FROM sales.orders", "a2"),
+        ("SELECT SUM(amount) FROM orders", "a3"),
+        ("SELECT SUM(weight) FROM east.ops.shipments", "e1"),
+        ("SELECT SUM(weight) FROM west.ops.shipments", "w1"),
+        ("SELECT SUM(tax) FROM refunds", "r1"),
+        (TABLELESS_TAX, "t1"),
+    ]
+    scan = corpus_scan(corpus)
+    assert scan == corpus_scan(corpus, resolver=TableResolver.from_config(None))
+    assert sorted(m.source_tables for m in scan.measures) == [
+        ("east.ops.shipments", "west.ops.shipments"),
+        ("main.sales.orders", "orders", "sales.orders"),
+        ("refunds",),
+    ]
+    assert not any(m.has_unresolved_tables for m in scan.measures)
+    v1_keys = v1_member_keys("space", dict(enumerate(scan.measure_occurrences)))
+    assert set(v1_keys) == {i for m in scan.measures for i in m.occurrence_ids}
+    for measure in scan.measures:
+        key = mv_candidate_fingerprint("space", measure.canonical_expr, measure.source_tables)
+        assert {v1_keys[i] for i in measure.occurrence_ids} == {key}
+
+
+def test_without_a_table_list_a_derived_row_count_is_still_unresolved():
+    """Ruling 6 is the extractor's: a derived-table aggregate is never absorbed,
+    with or without the space's table list."""
+    scan = corpus_scan(
+        [
+            ("SELECT COUNT(*) FROM main.sales.orders", "a1"),
+            ("SELECT COUNT(*) FROM (SELECT DISTINCT customer_id FROM main.sales.orders) d", "d1"),
+        ]
+    )
+    by_tables = {m.source_tables: m for m in scan.measures}
+    assert set(by_tables) == {("main.sales.orders",), ()}
+    assert by_tables[()].has_unresolved_tables
+    assert by_tables[()].provenance_ids == ("d1",)
+
+
+def test_each_row_carries_the_ids_of_its_occurrences():
+    corpus = [
+        ("SELECT SUM(tax) FROM orders", "a1"),
+        "not sql at all (",
+        ("SELECT SUM(tax), COUNT(*) FROM refunds", "r1"),
+        (TABLELESS_TAX, "t1"),
+    ]
+    scan = corpus_scan(corpus, resolver=SALES_SPACE)
+    assert [m.canonical_expr for m in scan.measure_occurrences] == [
+        "sum(tax)",
+        "sum(tax)",
+        "count(?n)",
+        "sum(tax)",
+    ]
+    assert scan.measure_occurrences[0].source_tables == ("orders",)
+    ids = {(m.canonical_expr, m.source_tables): m.occurrence_ids for m in scan.measures}
+    assert ids == {
+        ("sum(tax)", ("main.sales.orders",)): (0,),
+        ("sum(tax)", ("main.sales.refunds",)): (1,),
+        ("count(?n)", ("main.sales.refunds",)): (2,),
+        ("sum(tax)", ()): (3,),
+    }

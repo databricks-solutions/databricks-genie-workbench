@@ -44,6 +44,7 @@ from genie_space_optimizer.optimization.mv_signals import (
     lineage_signal,
     warehouse_reader,
 )
+from genie_space_optimizer.optimization.mv_tables import TableResolver
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
@@ -123,6 +124,7 @@ def test_demand_computed_from_matching_traffic() -> None:
     res = demand_signal(
         space_id="sp1",
         candidate_fingerprints={_revenue_fingerprint()},
+        candidate_source_tables=(LINEITEM,),
         run_query=reader,
         now=NOW,
     )
@@ -144,6 +146,7 @@ def test_demand_read_is_space_scoped_and_windowed() -> None:
     demand_signal(
         space_id="sp1",
         candidate_fingerprints={_revenue_fingerprint()},
+        candidate_source_tables=(LINEITEM,),
         run_query=reader,
         now=NOW,
     )
@@ -171,6 +174,7 @@ def test_demand_empty_when_traffic_never_re_derives_the_measure() -> None:
     res = demand_signal(
         space_id="sp1",
         candidate_fingerprints={_revenue_fingerprint()},
+        candidate_source_tables=(LINEITEM,),
         run_query=reader,
         now=NOW,
     )
@@ -217,12 +221,21 @@ def _amount_rows() -> list[dict[str, Any]]:
     ]
 
 
-def _amount_demand(tables: tuple[str, ...]) -> SignalResult:
+def _amount_demand(
+    tables: tuple[str, ...],
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    sql: str = ORDERS_AMOUNT,
+    sole_row: bool = False,
+    resolver: TableResolver | None = None,
+) -> SignalResult:
     return demand_signal(
         space_id="sp1",
-        candidate_fingerprints={corpus_scan([ORDERS_AMOUNT]).measures[0].fingerprint},
+        candidate_fingerprints={corpus_scan([sql]).measures[0].fingerprint},
         candidate_source_tables=tables,
-        run_query=_Reader(rows=_amount_rows()),
+        candidate_sole_row=sole_row,
+        resolver=resolver,
+        run_query=_Reader(rows=_amount_rows() if rows is None else rows),
         now=NOW,
     )
 
@@ -237,8 +250,107 @@ def test_demand_over_a_table_nobody_queried_is_empty() -> None:
     assert _amount_demand(("main.sales.returns",)).status == MV_SIGNAL_EMPTY
 
 
-def test_demand_without_candidate_tables_counts_every_table() -> None:
-    assert _amount_demand(()).payload.frequency == 3
+# ── D: a history row counts only toward the measure over its tables (MV-D123) ──
+
+SALES_SPACE = TableResolver.from_config(
+    {"data_sources": {"tables": [
+        {"identifier": "main.sales.orders"},
+        {"identifier": "main.sales.refunds"},
+    ]}}
+)
+
+
+def _history_row(sid: str, sql: str) -> dict[str, Any]:
+    return {"statement_id": sid, "executed_by": f"{sid}@example.com",
+            "start_time": "2026-08-20T10:00:00Z", "total_duration_ms": 100,
+            "statement_text": sql}
+
+
+def test_a_tableless_history_row_counts_only_toward_a_sole_row() -> None:
+    rows = _amount_rows() + [_history_row("t1", "SELECT SUM(amount)")]
+    orders = ("main.sales.orders",)
+    sole = _amount_demand(orders, rows=rows, sole_row=True, resolver=SALES_SPACE)
+    split = _amount_demand(orders, rows=rows, sole_row=False, resolver=SALES_SPACE)
+    assert (sole.payload.frequency, sole.payload.distinct_users) == (2, 2)
+    assert (split.payload.frequency, split.payload.distinct_users) == (1, 1)
+
+
+def test_a_tableless_history_row_counts_toward_a_sole_row_when_history_saw_two_tables() -> None:
+    """Ruling 36: history saw the calculation on two tables, so its own scan joins
+    neither a ``FROM``-less row nor a row over a join of both tables to either.
+    Each still counts toward a candidate that is its calculation's sole row in
+    the advisor's scan, and toward neither half otherwise."""
+    rows = [
+        _history_row("o1", ORDERS_AMOUNT),
+        _history_row("r1", REFUNDS_AMOUNT),
+        _history_row(
+            "j1",
+            "SELECT SUM(amount) FROM main.sales.orders o "
+            "JOIN main.sales.refunds r ON o.id = r.order_id",
+        ),
+        _history_row("t1", "SELECT SUM(amount)"),
+    ]
+    history = corpus_scan(
+        [(r["statement_text"], r["statement_id"]) for r in rows], resolver=SALES_SPACE,
+    )
+    assert sorted((m.source_tables, tuple(sorted(m.provenance_ids))) for m in history.measures) == [
+        ((), ("j1", "t1")),
+        (("main.sales.orders",), ("o1",)),
+        (("main.sales.refunds",), ("r1",)),
+    ]
+    for half in ("main.sales.orders", "main.sales.refunds"):
+        sole = _amount_demand((half,), rows=rows, sole_row=True, resolver=SALES_SPACE)
+        split = _amount_demand((half,), rows=rows, sole_row=False, resolver=SALES_SPACE)
+        assert (sole.payload.frequency, sole.payload.distinct_users) == (3, 3)
+        assert (split.payload.frequency, split.payload.distinct_users) == (1, 1)
+
+
+def test_a_tableless_history_row_counts_toward_neither_half() -> None:
+    rows = [_history_row("t1", "SELECT SUM(amount)")]
+    for half in (("main.sales.orders",), ("main.sales.refunds",)):
+        result = _amount_demand(half, rows=rows, sole_row=False, resolver=SALES_SPACE)
+        assert result.status == MV_SIGNAL_EMPTY
+
+
+def test_an_unqualified_history_row_resolves_through_the_space() -> None:
+    rows = [
+        _history_row("u1", "SELECT SUM(amount) FROM orders"),
+        _history_row("u2", "SELECT SUM(amount) FROM sales.orders"),
+        _history_row("u3", "SELECT SUM(amount) FROM other.orders"),
+    ]
+    result = _amount_demand(("main.sales.orders",), rows=rows, resolver=SALES_SPACE)
+    assert result.status == MV_SIGNAL_COMPUTED
+    assert (result.payload.frequency, result.payload.distinct_users) == (2, 2)
+
+
+def test_an_ambiguous_history_row_counts_toward_nothing() -> None:
+    two_catalogs = TableResolver.from_config(
+        {"data_sources": {"tables": [
+            {"identifier": "c1.sales.orders"},
+            {"identifier": "c2.sales.orders"},
+        ]}}
+    )
+    rows = [_history_row("a1", "SELECT SUM(amount) FROM orders")]
+    for table in ("c1.sales.orders", "c2.sales.orders"):
+        result = _amount_demand((table,), rows=rows, sole_row=True, resolver=two_catalogs)
+        assert result.status == MV_SIGNAL_EMPTY
+
+
+def test_an_unresolved_history_row_without_tables_counts_toward_nothing() -> None:
+    """A COUNT(*) over a derived table is unresolved with no tables (MV-D123
+    Ruling 6). Read as table-less it would count toward a sole row of its
+    calculation over any table."""
+    derived = "SELECT COUNT(*) FROM (SELECT DISTINCT o_custkey FROM main.sales.orders) sub"
+    (row,) = corpus_scan([derived], resolver=SALES_SPACE).measures
+    assert (row.source_tables, row.has_unresolved_tables) == ((), True)
+    result = _amount_demand(
+        ("main.sales.orders",),
+        rows=[_history_row("d1", derived)],
+        sql="SELECT COUNT(*) FROM main.sales.orders",
+        sole_row=True,
+        resolver=SALES_SPACE,
+    )
+    assert result.status == MV_SIGNAL_EMPTY
 
 
 def test_demand_unavailable_on_empty_statement_text_cmk_redaction() -> None:
@@ -304,6 +416,7 @@ def test_demand_never_carries_a_history_literal() -> None:
     res = demand_signal(
         space_id="sp1",
         candidate_fingerprints={_revenue_fingerprint()},
+        candidate_source_tables=(LINEITEM,),
         run_query=reader,
         now=NOW,
     )

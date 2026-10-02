@@ -74,7 +74,7 @@ from .applier import apply_patch_set, rollback
 from .champion import BaselineReset, baseline_reset_from_stage_rows
 from .eval_runner import FULL, EvalRunResult, LiftReport, lift_report
 from .mv_advisor import _generated_sql_of
-from .mv_fingerprint import extract_measures, same_tables
+from .mv_fingerprint import extract_measures
 from .mv_state import (
     load_mv_candidates,
     load_mv_consent,
@@ -82,6 +82,7 @@ from .mv_state import (
     mv_candidate_fingerprint,
     update_mv_created_object_status,
 )
+from .mv_tables import TABLELESS, UNRESOLVED, TableResolver
 from .state import (
     load_stages,
     update_iteration_observed_config,
@@ -393,25 +394,32 @@ def _measure_matches(
     *,
     space_id: str,
     fingerprints: set[str],
-    table_sets: Sequence[tuple[str, ...]],
+    resolver: TableResolver,
+    space_tables: Sequence[str],
 ) -> bool:
-    """Whether one extracted measure is one of the candidate's measures.
+    """Whether one extracted measure is one of the candidate's measures (MV-D123).
 
-    Exact first: the advisor's own fingerprint over the statement's tables. Then
-    each table set the candidate recorded, when the statement's tables are the same
-    tables by leaf or unresolved (``same_tables``): an unqualified or bare statement
-    names the table the candidate fingerprinted by its full name.
+    The statement's tables resolve against the space's own identifiers, and the
+    advisor's MV-D7 key is recomputed over the resolved names: ``FROM fact_orders``
+    and ``main.sales.fact_orders`` are one table, and one leaf in two catalogs is
+    two. An unresolved table never matches. A statement that names no table
+    matches by Ruling 2 over the member calculations: its calculation is keyed over
+    each of the space's tables, and it matches only when exactly one of those keys
+    is a member's. Every approvable member is over one table (``not_single_table``).
     """
     canonical = getattr(measure, "canonical_expr", "")
-    if not canonical:
+    if not canonical or measure.has_unresolved_source:
         return False
-    if mv_candidate_fingerprint(space_id, canonical, measure.source_tables) in fingerprints:
-        return True
-    return any(
-        same_tables(measure.source_tables, tables)
-        and mv_candidate_fingerprint(space_id, canonical, tables) in fingerprints
-        for tables in table_sets
-    )
+    tables = resolver.resolve_all(measure.source_tables)
+    if tables is UNRESOLVED:
+        return False
+    if tables is not TABLELESS:
+        return mv_candidate_fingerprint(space_id, canonical, tables) in fingerprints
+    hits = [
+        table for table in space_tables
+        if mv_candidate_fingerprint(space_id, canonical, (table,)) in fingerprints
+    ]
+    return len(hits) == 1
 
 
 def _measure_matched_ids(
@@ -419,11 +427,12 @@ def _measure_matched_ids(
     *,
     space_id: str,
     fingerprints: set[str],
-    table_sets: Sequence[tuple[str, ...]] = (),
+    resolver: TableResolver,
+    space_tables: Sequence[str],
 ) -> set[str]:
     """Baseline questions whose generated or expected SQL uses a member measure.
 
-    The fingerprint is the advisor's own (mv_advisor.py:1521-1523), so "uses this
+    The fingerprint is the advisor's own (mv_advisor.py:1726-1728), so "uses this
     measure" means exactly what it meant when the view was proposed. Expected SQL
     is read here to choose ids and nothing else — no SQL leaves this function.
     """
@@ -443,7 +452,8 @@ def _measure_matched_ids(
                 continue
             if any(
                 _measure_matches(
-                    m, space_id=space_id, fingerprints=fingerprints, table_sets=table_sets,
+                    m, space_id=space_id, fingerprints=fingerprints,
+                    resolver=resolver, space_tables=space_tables,
                 )
                 for m in measures
             ):
@@ -460,6 +470,7 @@ def _affected_question_ids(
     schema: str,
     suggestion_ids: Sequence[str],
     baseline_eval: Mapping[str, Any],
+    config: Mapping[str, Any] | None,
 ) -> list[str]:
     """The live benchmark questions the proposals these objects came from affect.
 
@@ -477,8 +488,9 @@ def _affected_question_ids(
     on any live question whose baseline generated or expected SQL uses one of
     its measures. The measure match is what gives a curated (IQ-scan) candidate,
     which records no benchmark question at all, a subset to be measured on.
-    MV-D118: a statement that names the candidate's tables unqualified, or names
-    none, matches by the candidate's recorded table sets (``_measure_matches``).
+    MV-D123: a statement's tables resolve through ``config``, the space's own
+    identifiers, so an unqualified statement matches a CONFLICT or legacy row,
+    which records no table set, by key (``_measure_matches``).
     """
     wanted = {str(sid) for sid in suggestion_ids if str(sid)}
     if not wanted:
@@ -495,7 +507,6 @@ def _affected_question_ids(
 
     recorded: set[str] = set()
     fingerprints: set[str] = set()
-    table_sets: set[tuple[str, ...]] = set()
     for candidate in candidates:
         if str(candidate.get("suggestion_id") or "") not in wanted:
             continue
@@ -505,12 +516,6 @@ def _affected_question_ids(
         evidence = candidate.get("evidence")
         if not isinstance(evidence, Mapping):
             continue
-        tables = tuple(
-            str(t).strip() for t in evidence.get("source_tables") or () if str(t).strip()
-        )
-        if tables:
-            table_sets.add(tables)
-            table_sets.update((t,) for t in tables)
         for key in ("benchmark_question_ids", "benchmark_questions"):
             recorded.update(str(q).strip() for q in evidence.get(key) or () if str(q).strip())
         for member in evidence.get("measures") or ():
@@ -522,8 +527,14 @@ def _affected_question_ids(
                     str(q).strip() for q in member.get("benchmark_question_ids") or () if str(q).strip()
                 )
     rows = [r for r in baseline_eval.get("rows") or () if isinstance(r, Mapping)]
+    resolver = TableResolver.from_config(config)
+    space_tables = sorted({
+        name for name in map(resolver.resolve, attached_identifiers(config))
+        if isinstance(name, str)
+    })
     matched = _measure_matched_ids(
-        rows, space_id=space_id, fingerprints=fingerprints, table_sets=sorted(table_sets),
+        rows, space_id=space_id, fingerprints=fingerprints,
+        resolver=resolver, space_tables=space_tables,
     )
     return [qid for qid in _live_question_ids(baseline_eval) if qid in recorded or qid in matched]
 
@@ -757,6 +768,7 @@ def _attach_and_measure(
             schema=schema,
             suggestion_ids=suggestion_ids,
             baseline_eval=baseline_eval,
+            config=config,
         )
         if not affected:
             return _skip(SKIP_NO_AFFECTED_QUESTIONS, suggestion_ids=suggestion_ids)

@@ -112,6 +112,72 @@ def test_service_ensures_tables_before_creating_the_advice_run(monkeypatch):
     assert run_id
 
 
+_SPACE_TABLES_CONFIG = {
+    "data_sources": {"tables": [{"identifier": "main.sales.orders"}]},
+    "instructions": {},
+}
+
+
+def _capturing_advise(captured: list[dict]):
+    def _capture(**k):
+        captured.append(k)
+        return mv_advisor.AdvisorOutcome(
+            status=mv_advisor.STATUS_SKIPPED, skip_reason=mv_advisor.SKIP_NO_CANDIDATES,
+        )
+
+    return _capture
+
+
+def test_both_callers_pass_the_space_tables(monkeypatch):
+    """MV-D123 Ruling 4: the in-job phase and the IQ Scan service each give
+    ``advise_from_corpus`` a resolver built from the space's ``applied_config``,
+    and a rekey writer bound to their own store."""
+    captured: list[dict] = []
+    rekeyed: list[tuple[str, dict]] = []
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", _capturing_advise(captured))
+
+    monkeypatch.setattr(
+        mv_advisor, "load_iteration_zero_corpus",
+        lambda *a, **k: mv_advisor.CorpusLoad(
+            entries=(("SELECT 1", "q1"),), rows_seen=1, rows_with_sql=1,
+            applied_config=_SPACE_TABLES_CONFIG,
+        ),
+    )
+    monkeypatch.setattr(mv_advisor, "curated_corpus_entries", lambda *a, **k: ())
+    monkeypatch.setattr(mv_advisor, "write_stage", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mv_advisor, "rekey_mv_suppressions",
+        lambda spark, **k: rekeyed.append(("spark", k["rekeys"])) or [],
+    )
+    mv_advisor.run_mv_advisor_phase(
+        MagicMock(), run_id="r1", space_id="space-1", catalog="main", schema="gso",
+        enabled=True,
+    )
+
+    monkeypatch.setattr(warehouse, "wh_ensure_optimization_tables", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_create_advice_run", lambda *a, **k: None)
+    monkeypatch.setattr(warehouse, "wh_write_stage", lambda *a, **k: None)
+    monkeypatch.setattr(mv_advisor, "space_corpus_entries", lambda cfg: ())
+    monkeypatch.setattr(mv_advisor, "estate_metric_view_yamls", lambda *a, **k: {})
+    monkeypatch.setattr(
+        warehouse, "wh_rekey_mv_suppressions",
+        lambda ws, wid, **k: rekeyed.append(("warehouse", k["rekeys"])) or [],
+    )
+    mv_suggest.suggest_for_space(
+        sp_ws=MagicMock(), catalog="main", schema="gso", warehouse_id="wh1",
+        llm_model="m", space_id="space-1", applied_config=_SPACE_TABLES_CONFIG,
+        triggered_by="analyst@example.com",
+    )
+
+    assert len(captured) == 2
+    for kwargs in captured:
+        resolver = kwargs["resolver"]
+        assert resolver.has_table_list
+        assert resolver.resolve("orders") == "main.sales.orders"
+        kwargs["rekey_suppressions"]({"1" * 64: "a" * 64})
+    assert rekeyed == [("spark", {"1" * 64: "a" * 64}), ("warehouse", {"1" * 64: "a" * 64})]
+
+
 def test_service_injects_the_suppression_reader(monkeypatch):
     """MV-D30 as-implemented (Prompt 15.3): the backend (IQ Scan) caller must
     inject ``read_suppressed_fingerprints`` — the warehouse twin of the ledger

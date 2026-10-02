@@ -45,6 +45,7 @@ from genie_space_optimizer.optimization.mv_scoring import (
     tier_for,
     trusted_asset_definitions,
 )
+from genie_space_optimizer.optimization.mv_tables import TableResolver
 
 GOVERNED_FIELDS = mv_scoring.SEMANTIC_REF_GOVERNED_MV_FIELDS
 COLUMN_METADATA = mv_scoring.SEMANTIC_REF_SOURCE_COLUMN_METADATA
@@ -1119,13 +1120,43 @@ def test_a_governed_measure_over_the_same_table_still_blocks():
     assert outcome.verdict == mv_scoring.VERDICT_BLOCKED
 
 
-def test_a_governed_view_over_a_query_source_blocks_as_before():
+def test_a_governed_query_source_matches_nothing():
+    """MV-D123 (owner): a query source names no table, and an unknown table never
+    matches — it no longer blocks a candidate over any table."""
     fields = metric_view_fields(
         governed_amount_yaml(source="SELECT * FROM main.sales.orders WHERE amount > 0")
     )
     assert fields[0].source_tables == ()
-    outcome = dedup_gate(amount_candidate(("main.sales.refunds",)), mv_fields=fields)
-    assert outcome.verdict == mv_scoring.VERDICT_BLOCKED
+    for tables in (("main.sales.orders",), ("main.sales.refunds",), ()):
+        outcome = dedup_gate(amount_candidate(tables), mv_fields=fields)
+        assert outcome.verdict == mv_scoring.VERDICT_PROPOSE, tables
+
+
+_C1_ORDERS = TableResolver.from_config({"data_sources": {"tables": [{"identifier": "c1.s.orders"}]}})
+
+
+def test_the_governed_match_needs_the_same_full_tables():
+    """Two catalogs are two tables (MV-D123): a governed view over ``c2.s.orders``
+    does not block a candidate the space resolves to ``c1.s.orders``."""
+    for source, verdict in (
+        ("c2.s.orders", mv_scoring.VERDICT_PROPOSE),
+        ("c1.s.orders", mv_scoring.VERDICT_BLOCKED),
+    ):
+        outcome = dedup_gate(
+            amount_candidate(("orders",)),
+            mv_fields=metric_view_fields(governed_amount_yaml(source=source)),
+            resolver=_C1_ORDERS,
+        )
+        assert outcome.verdict == verdict, source
+
+
+def test_a_governed_view_over_a_name_the_space_cannot_resolve_matches_nothing():
+    outcome = dedup_gate(
+        amount_candidate(("c1.s.orders",)),
+        mv_fields=metric_view_fields(governed_amount_yaml(source="s.shipments")),
+        resolver=_C1_ORDERS,
+    )
+    assert outcome.verdict == mv_scoring.VERDICT_PROPOSE
 
 
 def _tables_of(definition):
@@ -1196,6 +1227,48 @@ def test_a_trusted_asset_over_another_table_is_not_a_conflict():
     assert orders.verdict == mv_scoring.VERDICT_PROPOSE
     refunds = dedup_gate(amount_candidate(("main.sales.refunds",)), instructions=assets)
     assert refunds.verdict == mv_scoring.VERDICT_CONFLICT
+
+
+def _divergent_amount_asset(sql_from):
+    return trusted_asset_definitions(
+        {"instructions": {"example_question_sqls": [
+            {"id": "a1", "sql": f"SELECT SUM(ABS(amount)) {sql_from}"}
+        ]}}
+    )
+
+
+def test_the_conflict_check_needs_the_same_full_tables():
+    """A trusted asset over ``c2.s.orders`` makes no claim about ``c1.s.orders``;
+    the same asset spelled ``FROM orders`` resolves through the space to it."""
+    other = dedup_gate(
+        amount_candidate(("orders",)),
+        instructions=_divergent_amount_asset("FROM c2.s.orders"),
+        resolver=_C1_ORDERS,
+    )
+    assert other.verdict == mv_scoring.VERDICT_PROPOSE
+    same = dedup_gate(
+        amount_candidate(("c1.s.orders",)),
+        instructions=_divergent_amount_asset("FROM orders"),
+        resolver=_C1_ORDERS,
+    )
+    assert same.verdict == mv_scoring.VERDICT_CONFLICT
+
+
+@pytest.mark.parametrize(
+    "sql_from",
+    [
+        "FROM shipments",
+        "FROM (SELECT amount FROM c1.s.orders) sub",
+    ],
+    ids=["name_the_space_cannot_resolve", "derived_table"],
+)
+def test_an_unresolved_trusted_asset_conflicts_with_nothing(sql_from):
+    outcome = dedup_gate(
+        amount_candidate(("c1.s.orders",)),
+        instructions=_divergent_amount_asset(sql_from),
+        resolver=_C1_ORDERS,
+    )
+    assert outcome.verdict == mv_scoring.VERDICT_PROPOSE
 
 
 # ── Proposal assembly ────────────────────────────────────────────────────
@@ -1463,6 +1536,7 @@ def test_conflict_entries_carry_canonical_literal_free_expressions() -> None:
         mv_fields=metric_view_fields(
             {
                 GOVERNED_MV: {
+                    "source": ORDERS,
                     "measures": [
                         {
                             "name": "finished_orders",
@@ -1503,7 +1577,7 @@ def test_definitions_differing_only_in_an_erased_literal_are_not_flagged() -> No
     outcome = dedup_gate(
         candidate(measure_expr=f_orders),
         mv_fields=metric_view_fields(
-            {GOVERNED_MV: {"measures": [{"name": "finished_orders", "expr": f_orders}]}}
+            {GOVERNED_MV: {"source": ORDERS, "measures": [{"name": "finished_orders", "expr": f_orders}]}}
         ),
         instructions=(
             InstructionDefinition(source="text_instruction[2]", concept="revenue", expr=o_orders),

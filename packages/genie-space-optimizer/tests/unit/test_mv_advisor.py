@@ -36,6 +36,7 @@ from genie_space_optimizer.optimization.mv_scoring import (
 )
 from genie_space_optimizer.optimization.mv_signals import SignalResult
 from genie_space_optimizer.optimization.mv_state import mv_candidate_fingerprint
+from genie_space_optimizer.optimization.mv_tables import TableResolver
 
 SPACE_ID = "01f04ac8c1f11c9a9e5b3b2b0e5d5c11"
 LINEITEM = "samples.tpch.lineitem"
@@ -2166,6 +2167,38 @@ def test_the_demand_read_is_scoped_to_the_measures_tables(monkeypatch) -> None:
     assert seen and all(tables == (LINEITEM,) for tables in seen)
 
 
+def test_the_demand_read_gets_the_space_resolver_and_the_sole_row_flag(monkeypatch) -> None:
+    """MV-D123 (R5): demand resolves history through the advisor's resolver, and a
+    calculation over two tables is not a sole row, so a table-less history row
+    counts toward neither half."""
+    seen: dict[tuple[str, ...], tuple[object, object]] = {}
+
+    def fake_demand(**kwargs):
+        seen[tuple(kwargs["candidate_source_tables"])] = (
+            kwargs.get("candidate_sole_row"), kwargs.get("resolver"),
+        )
+        return SignalResult(DemandSignal(), config.MV_SIGNAL_EMPTY, "stub")
+
+    monkeypatch.setattr(mv_advisor, "demand_signal", fake_demand)
+    resolver = TableResolver.from_config(
+        {"data_sources": {"tables": [
+            {"identifier": t} for t in ("main.sales.orders", "main.sales.refunds", LINEITEM)
+        ]}}
+    )
+    _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=_split_amount_corpus() + [(REVENUE_SQL, f"b{i}") for i in range(8)],
+        signal_reader=lambda sql: [],
+        resolver=resolver,
+    )
+    assert seen == {
+        ("main.sales.orders",): (False, resolver),
+        ("main.sales.refunds",): (False, resolver),
+        (LINEITEM,): (True, resolver),
+    }
+
+
 def _amount_corpus(table):
     sql = f"SELECT SUM(amount) AS total, region FROM {table} GROUP BY region"
     return [(sql, f"{table}_{i}") for i in range(8)]
@@ -2205,17 +2238,7 @@ def _split_amount_corpus():
     return _amount_corpus("main.sales.orders") + _amount_corpus("main.sales.refunds")
 
 
-def test_a_rejection_of_the_merged_measure_keeps_both_halves_hidden():
-    merged_key = mv_candidate_fingerprint(
-        SPACE_ID, "sum(amount)", ("main.sales.orders", "main.sales.refunds")
-    )
-    outcome = _advise_from_corpus_directly(
-        persist_proposal=lambda proposal, rendered: True,
-        write_ddl_artifact=lambda proposal, rendered: True,
-        corpus_entries=_split_amount_corpus(),
-        read_suppressed_fingerprints=lambda: {merged_key},
-    )
-    assert outcome.candidates_dropped_suppressed == 2
+# MV-D123: test_a_rejection_of_the_merged_measure_keeps_both_halves_hidden is replaced by test_a_rejection_under_the_retired_merged_key_no_longer_hides.
 
 
 def test_a_rejection_of_one_half_hides_only_that_half():
@@ -2229,20 +2252,303 @@ def test_a_rejection_of_one_half_hides_only_that_half():
     assert outcome.candidates_dropped_suppressed == 1
 
 
-def test_a_rejection_of_the_merged_measure_hides_the_half_a_governed_view_leaves():
-    merged_key = mv_candidate_fingerprint(
-        SPACE_ID, "sum(amount)", ("main.sales.orders", "main.sales.refunds")
-    )
-    outcome = _advise_from_corpus_directly(
+# MV-D123: test_a_rejection_of_the_merged_measure_hides_the_half_a_governed_view_leaves is replaced by test_a_rejection_under_the_retired_merged_key_no_longer_hides.
+
+
+# ── MV-D123: identity v2 in the advisor ──────────────────────────────────
+
+ORDERS, REFUNDS = "main.sales.orders", "main.sales.refunds"
+SALES_CONFIG = {"data_sources": {"tables": [
+    {"identifier": t}
+    for t in (ORDERS, REFUNDS, "east.ops.shipments", "west.ops.shipments")
+]}}
+
+
+def _advise_over_the_space(**overrides):
+    kwargs = dict(
         persist_proposal=lambda proposal, rendered: True,
         write_ddl_artifact=lambda proposal, rendered: True,
-        corpus_entries=_split_amount_corpus(),
-        metric_view_reader=lambda tables: _orders_amount_fields(),
-        read_suppressed_fingerprints=lambda: {merged_key},
+        applied_config=SALES_CONFIG,
+        resolver=TableResolver.from_config(SALES_CONFIG),
+    )
+    kwargs.update(overrides)
+    return _advise_from_corpus_directly(**kwargs)
+
+
+def _amount_spelled_two_ways():
+    return _amount_corpus(ORDERS) + [
+        ("SELECT SUM(amount) AS total, region FROM orders GROUP BY region", f"bare_{i}")
+        for i in range(8)
+    ]
+
+
+V1_ORDERS_AMOUNT = mv_candidate_fingerprint(SPACE_ID, "sum(amount)", (ORDERS, "orders"))
+V2_ORDERS_AMOUNT = mv_candidate_fingerprint(SPACE_ID, "sum(amount)", (ORDERS,))
+
+
+def test_a_measure_suppressed_under_its_v1_key_stays_hidden_and_is_rekeyed():
+    rekeys: list[dict] = []
+    outcome = _advise_over_the_space(
+        corpus_entries=_amount_spelled_two_ways(),
+        read_suppressed_fingerprints=lambda: {V1_ORDERS_AMOUNT},
+        rekey_suppressions=lambda mapping: rekeys.append(dict(mapping)),
+    )
+    assert V1_ORDERS_AMOUNT != V2_ORDERS_AMOUNT
+    assert rekeys == [{V1_ORDERS_AMOUNT: V2_ORDERS_AMOUNT}]
+    assert outcome.candidates_dropped_suppressed == 1
+    assert outcome.proposals == ()
+
+
+def test_a_failed_rekey_still_hides_the_measure(caplog):
+    def _boom(mapping):
+        raise RuntimeError("zq_rekey_sentinel")
+
+    with caplog.at_level("DEBUG"):
+        outcome = _advise_over_the_space(
+            corpus_entries=_amount_spelled_two_ways(),
+            read_suppressed_fingerprints=lambda: {V1_ORDERS_AMOUNT},
+            rekey_suppressions=_boom,
+        )
+    assert outcome.candidates_dropped_suppressed == 1
+    assert outcome.proposals == ()
+    assert any("RuntimeError" in r.getMessage() for r in caplog.records)
+    assert not [r for r in caplog.records if "zq_rekey_sentinel" in r.getMessage()]
+    assert not [r for r in caplog.records if r.exc_info]
+
+
+def test_a_v2_suppression_hides_without_a_rekey():
+    rekeys: list[dict] = []
+    outcome = _advise_over_the_space(
+        corpus_entries=_amount_spelled_two_ways(),
+        read_suppressed_fingerprints=lambda: {V2_ORDERS_AMOUNT, V1_ORDERS_AMOUNT},
+        rekey_suppressions=lambda mapping: rekeys.append(dict(mapping)),
     )
     assert outcome.candidates_dropped_suppressed == 1
-    assert outcome.candidates_scored == 0
-    assert outcome.proposals == ()
+    assert rekeys == []
+
+
+def test_a_rejection_under_the_retired_merged_key_no_longer_hides():
+    """The accepted cost of MV-D123 (Ruling 11): a rejection recorded under the
+    union of a split measure's tables matches neither half's key, v1 or v2."""
+    rekeys: list[dict] = []
+    merged_key = mv_candidate_fingerprint(SPACE_ID, "sum(amount)", (ORDERS, REFUNDS))
+    outcome = _advise_over_the_space(
+        corpus_entries=_split_amount_corpus(),
+        read_suppressed_fingerprints=lambda: {merged_key},
+        rekey_suppressions=lambda mapping: rekeys.append(dict(mapping)),
+    )
+    assert outcome.candidates_dropped_suppressed == 0
+    assert outcome.candidates_scored == 2
+    assert rekeys == []
+
+
+C8_SINGLE = "SELECT SUM(unit_price * quantity) AS v FROM main.sales.orders"
+C8_JOIN = (
+    "SELECT SUM(o.unit_price * r.quantity) AS v FROM main.sales.orders o "
+    "JOIN main.sales.refunds r ON o.order_id = r.order_id"
+)
+
+
+def test_a_join_measure_is_not_hidden_by_a_union_key():
+    """R9: the join measure's own key is the union of its tables, which was the
+    single-table half's merged key; rejecting it no longer hides that half."""
+    join_key = mv_candidate_fingerprint(SPACE_ID, "sum(unit_price * quantity)", (ORDERS, REFUNDS))
+    outcome = _advise_over_the_space(
+        corpus_entries=[(C8_SINGLE, f"s{i}") for i in range(8)]
+        + [(C8_JOIN, f"j{i}") for i in range(8)],
+        read_suppressed_fingerprints=lambda: {join_key},
+        rekey_suppressions=lambda mapping: None,
+    )
+    assert outcome.candidates_dropped_suppressed == 0
+    (bundle,) = outcome.proposals
+    assert bundle.evidence["source_tables"] == [ORDERS]
+    assert [m["dedup_fingerprint"] for m in bundle.evidence["measures"]] == [
+        mv_candidate_fingerprint(SPACE_ID, "sum(unit_price * quantity)", (ORDERS,))
+    ]
+
+
+def _amount_fields_over(source):
+    return metric_view_fields({"finance.sales.order_metrics": {
+        "source": source,
+        "measures": [{"name": "total_amount", "expr": "SUM(amount)"}],
+    }})
+
+
+def test_the_governed_match_needs_the_same_full_tables():
+    config = {"data_sources": {"tables": [{"identifier": "c1.s.orders"}]}}
+    bare = [("SELECT SUM(amount) AS total, region FROM orders GROUP BY region", f"o{i}") for i in range(8)]
+    other_catalog = _advise_over_the_space(
+        corpus_entries=bare,
+        applied_config=config,
+        resolver=TableResolver.from_config(config),
+        metric_view_reader=lambda tables: _amount_fields_over("c2.s.orders"),
+    )
+    assert other_catalog.candidates_scored == 1
+    assert other_catalog.proposals[0].verdict == mv_scoring.VERDICT_PROPOSE
+    same_table = _advise_over_the_space(
+        corpus_entries=bare,
+        applied_config=config,
+        resolver=TableResolver.from_config(config),
+        metric_view_reader=lambda tables: _amount_fields_over("c1.s.orders"),
+    )
+    assert same_table.skip_reason == mv_advisor.SKIP_NO_CANDIDATES
+
+
+def test_a_governed_query_source_matches_nothing():
+    """Owner ruling (MV-D123): a governed view over a query names no table the
+    advisor can resolve, and an unknown table never matches."""
+    outcome = _advise_over_the_space(
+        corpus_entries=_amount_corpus(ORDERS),
+        metric_view_reader=lambda tables: _amount_fields_over(
+            "SELECT * FROM main.sales.orders WHERE amount > 0"
+        ),
+    )
+    assert outcome.candidates_scored == 1
+    assert outcome.proposals[0].verdict == mv_scoring.VERDICT_PROPOSE
+
+
+AMBIGUOUS_SHIPMENTS = [("SELECT MIN(weight) AS lightest FROM shipments", f"w{i}") for i in range(8)]
+
+
+def test_an_unresolved_row_is_not_read_for_governed_views_nor_excluded_by_one():
+    seen: list[set] = []
+    governed = metric_view_fields({"ops.metrics.lightest": {
+        "source": "east.ops.shipments",
+        "measures": [{"name": "lightest", "expr": "MIN(weight)"}],
+    }})
+    outcome = _advise_over_the_space(
+        corpus_entries=AMBIGUOUS_SHIPMENTS + _amount_corpus(ORDERS),
+        metric_view_reader=lambda tables: seen.append(set(tables)) or governed,
+    )
+    assert seen == [{ORDERS}]
+    assert outcome.candidates_dropped_unresolved == 1
+
+
+def test_the_dual_read_skips_an_unresolved_row():
+    rekeys: list[dict] = []
+    spelled_key = mv_candidate_fingerprint(SPACE_ID, "min(weight)", ("shipments",))
+    outcome = _advise_over_the_space(
+        corpus_entries=AMBIGUOUS_SHIPMENTS + _amount_corpus(ORDERS),
+        read_suppressed_fingerprints=lambda: {spelled_key},
+        rekey_suppressions=lambda mapping: rekeys.append(dict(mapping)),
+    )
+    assert outcome.candidates_dropped_unresolved == 1
+    assert outcome.candidates_dropped_suppressed == 0
+    assert rekeys == []
+
+
+def test_the_in_job_caller_passes_the_space_tables_and_the_rekey_writer(monkeypatch) -> None:
+    """Ruling 4's pin, in-job half (the IQ Scan half is in backend/tests/test_mv_suggest.py)."""
+    captured: dict = {}
+    written: list[dict] = []
+
+    def fake_advise(**kwargs):
+        captured.update(kwargs)
+        return AdvisorOutcome(status=mv_advisor.STATUS_COMPLETE)
+
+    monkeypatch.setattr(mv_advisor, "advise_from_corpus", fake_advise)
+    monkeypatch.setattr(
+        mv_advisor, "rekey_mv_suppressions", lambda spark, **kw: written.append(kw) or [],
+    )
+    patch_writes(monkeypatch)
+    advise(monkeypatch, [{**iteration(recurring()), "config_json": json.dumps(SALES_CONFIG)}])
+
+    resolver = captured["resolver"]
+    assert resolver.has_table_list
+    assert resolver.resolve("orders") == ORDERS
+    captured["rekey_suppressions"]({V1_ORDERS_AMOUNT: V2_ORDERS_AMOUNT})
+    assert written == [{
+        "catalog": "main", "schema": "genie_space_optimizer", "target_space_id": SPACE_ID,
+        "rekeys": {V1_ORDERS_AMOUNT: V2_ORDERS_AMOUNT},
+    }]
+
+
+NO_TABLE_LIST_LOG = "mv_advisor: no applied config; tables read as written (MV-D123)"
+
+
+@pytest.mark.parametrize("config_json", [None, json.dumps(SALES_CONFIG)], ids=["no-config", "config"])
+def test_the_in_job_caller_logs_once_when_it_reads_tables_as_written(
+    monkeypatch, caplog, config_json,
+) -> None:
+    """Ruling 4: no applied config means no table list, so demand and grouping read
+    names as written; the run says so once, with a fixed reason and nothing else."""
+    monkeypatch.setattr(
+        mv_advisor, "advise_from_corpus",
+        lambda **kw: AdvisorOutcome(status=mv_advisor.STATUS_COMPLETE),
+    )
+    patch_writes(monkeypatch)
+    row = iteration(recurring())
+    if config_json is not None:
+        row["config_json"] = config_json
+    with caplog.at_level("DEBUG"):
+        advise(monkeypatch, [row])
+
+    logged = [r for r in caplog.records if NO_TABLE_LIST_LOG in r.getMessage()]
+    if config_json is not None:
+        assert logged == []
+        return
+    (record,) = logged
+    assert record.levelname == "INFO"
+    assert record.getMessage() == NO_TABLE_LIST_LOG
+    assert not record.args and not record.exc_info
+
+
+# ── MV-D123 Ruling 9: an approved bundle keeps its key; a reshape is a new row ──
+
+ORDERS_AMOUNT_SQL = f"SELECT SUM(amount) AS total, region FROM {ORDERS} GROUP BY region"
+RESHAPING_SQL = (
+    "SELECT COUNT(*) AS n, region FROM orders GROUP BY region",
+    "SELECT MAX(amount) AS biggest, region FROM sales.orders GROUP BY region",
+)
+
+
+def _v1_orders_bundle_key() -> tuple[str, str]:
+    """The member and MV-D30 keys a v1 scan wrote for the orders view, through the frozen v1 grouping."""
+    from genie_space_optimizer.optimization.mv_fingerprint import extract_measures
+    from genie_space_optimizer.optimization.mv_identity_v1 import v1_member_keys
+    from genie_space_optimizer.optimization.mv_state import mv_bundle_fingerprint
+
+    (member,) = v1_member_keys(SPACE_ID, dict(enumerate(extract_measures(ORDERS_AMOUNT_SQL)))).values()
+    return member, mv_bundle_fingerprint(SPACE_ID, [member], [ORDERS])
+
+
+def test_a_v2_rescan_of_an_approved_v1_bundle_reproduces_its_key():
+    """Ruling 1: an equal-content row keeps its key, so the approval keeps its row."""
+    member, bundle_key = _v1_orders_bundle_key()
+    (proposal,) = _advise_over_the_space(
+        corpus_entries=[(ORDERS_AMOUNT_SQL, f"a{i}") for i in range(8)],
+    ).proposals
+    assert proposal.dedup_fingerprint == bundle_key
+    assert proposal.suggestion_id == suggestion_id_for(bundle_key)
+    assert [m["dedup_fingerprint"] for m in proposal.evidence["measures"]] == [member]
+
+
+def test_a_reshaping_v2_rescan_writes_a_new_row_for_the_same_view():
+    """Rulings 7 and 9: the v1 reading (no table list, Ruling 4) left the other
+    spellings of orders out of the view; v2 resolves them, so the bundle's
+    membership and key change and its view does not. The approved measure keeps
+    its key, and only the new row is written."""
+    member, bundle_key = _v1_orders_bundle_key()
+    corpus = [(ORDERS_AMOUNT_SQL, f"a{i}") for i in range(8)] + [
+        (sql, f"r{j}_{i}") for j, sql in enumerate(RESHAPING_SQL) for i in range(8)
+    ]
+    (v1_reading,) = _advise_from_corpus_directly(
+        persist_proposal=lambda proposal, rendered: True,
+        write_ddl_artifact=lambda proposal, rendered: True,
+        corpus_entries=corpus,
+    ).proposals
+    assert v1_reading.dedup_fingerprint == bundle_key
+
+    persisted: list[str] = []
+    (successor,) = _advise_over_the_space(
+        corpus_entries=corpus,
+        persist_proposal=lambda proposal, rendered: persisted.append(proposal.dedup_fingerprint) or True,
+    ).proposals
+    assert successor.dedup_fingerprint != bundle_key
+    assert successor.proposed_object == v1_reading.proposed_object == "main.sales.orders_metrics"
+    members = [m["dedup_fingerprint"] for m in successor.evidence["measures"]]
+    assert len(members) == 3 and member in members
+    assert persisted == [successor.dedup_fingerprint]
 
 
 def assert_every_surfaced_proposal_is_servable(outcome, *, has_body) -> None:
@@ -2627,6 +2933,47 @@ def test_an_unresolved_column_is_dropped_with_its_own_code() -> None:
         has_unresolved_columns=True,
     )
     assert mv_advisor._unservable_reason(measure, {}) == "unresolved_column"
+
+
+@pytest.mark.parametrize(
+    "source_tables,source_columns",
+    [
+        (("main.sales.orders", "shipments"), ("qty",)),
+        (("shipments",), ("qty",)),
+        ((), ()),
+    ],
+    ids=["beside_a_resolved_table", "alone", "derived_row_count"],
+)
+def test_unresolved_table_is_checked_first(source_tables, source_columns) -> None:
+    """Ruling 5: before not_single_table, unresolved_column and the table-less pass."""
+    measure = FingerprintRecurrence(
+        fingerprint="fp_t",
+        canonical_expr="sum(qty)",
+        kind="SUM",
+        recurrence=8,
+        provenance_ids=("q1",),
+        provenance_count=1,
+        source_columns=source_columns,
+        source_tables=source_tables,
+        has_unresolved_columns=True,
+        has_unresolved_tables=True,
+    )
+    assert mv_advisor._unservable_reason(measure, {"shipments": set()}) == "unresolved_table"
+
+
+def test_a_derived_row_count_is_dropped_as_an_unresolved_table(caplog) -> None:
+    caplog.set_level("INFO")
+    sql = "SELECT COUNT(*) FROM (SELECT DISTINCT customer_id FROM main.sales.orders) d"
+    outcome = _advise_from_corpus_directly(
+        persist_proposal=_noop_persist,
+        write_ddl_artifact=_noop_persist,
+        corpus_entries=[(sql, f"d{i}") for i in range(8)],
+    )
+    assert outcome.skip_reason == "NO_SERVABLE_MEASURES"
+    assert outcome.candidates_dropped_unresolved == 1
+    text = " ".join(r.getMessage() for r in caplog.records if "finding 9" in r.getMessage())
+    assert "unresolved_table" in text
+    assert "customer_id" not in text and "COUNT" not in text
 
 
 def test_the_unresolved_drop_logs_ids_and_codes_only(caplog) -> None:

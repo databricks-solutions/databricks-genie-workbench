@@ -31,7 +31,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +43,7 @@ from genie_space_optimizer.common.config import (
 )
 from genie_space_optimizer.common.delta_helpers import (
     _fqn,
+    _sql_literal,
     merge_row,
     read_table,
     run_query,
@@ -562,6 +563,118 @@ def load_mv_suppressed_fingerprints(
     return suppressed
 
 
+MV_SUPPRESSION_REASON_REKEYED_V1 = "rekeyed_v1"
+
+_MEASURE_FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def validated_rekeys(target_space_id: Any, rekeys: Mapping[Any, Any]) -> dict[str, str]:
+    """Return ``rekeys`` minus identity pairs, or refuse it before any SQL exists.
+
+    The space id must be a non-empty string and every key and value 64 lowercase
+    hex characters; anything else raises a ``ValueError`` that names no value.
+    """
+    if not isinstance(target_space_id, str) or not target_space_id:
+        raise ValueError("target_space_id is required to rekey suppressions")
+    pairs = dict(rekeys.items())
+    for value in (*pairs, *pairs.values()):
+        if not isinstance(value, str) or not _MEASURE_FINGERPRINT_RE.fullmatch(value):
+            raise ValueError("measure fingerprints must be 64 lowercase hex characters")
+    return {v1: v2 for v1, v2 in sorted(pairs.items()) if v1 != v2}
+
+
+def rekey_mv_suppressions_sql(
+    sup_fqn: str,
+    cand_fqn: str,
+    target_space_id: str,
+    rekeys: Mapping[str, str],
+    literal: Callable[[Any], str],
+) -> str:
+    """The one MERGE that copies v1 dismissals onto their v2 keys (MV-D123 Ruling 10).
+
+    Shared by :func:`rekey_mv_suppressions` and its warehouse twin, each passing
+    its own literal helper; ``rekeys`` must come from :func:`validated_rekeys`.
+    The source is every non-expired ledger row and every ``rejected`` candidate
+    row under a v1 key, grouped to one row per v2 key: the window is NULL when
+    any copied window is NULL and otherwise the latest, so a copy never widens a
+    dismissal. ``WHEN NOT MATCHED`` only — an existing v2 row is never touched.
+    """
+    space = literal(target_space_id)
+    v1_list = ", ".join(literal(v1) for v1 in rekeys)
+    mapping = " UNION ALL ".join(
+        f"SELECT {literal(v1)} AS v1, {literal(v2)} AS v2" for v1, v2 in rekeys.items()
+    )
+    return (
+        f"MERGE INTO {sup_fqn} AS t USING ("
+        f"SELECT {space} AS target_space_id, m.v2 AS measure_fingerprint, "
+        "CASE WHEN COUNT(*) = COUNT(v.suppressed_until) THEN MAX(v.suppressed_until) END "
+        "AS suppressed_until, "
+        "MIN(v.originating_suggestion_id) AS originating_suggestion_id "
+        "FROM ("
+        "SELECT measure_fingerprint AS v1, suppressed_until, originating_suggestion_id "
+        f"FROM {sup_fqn} WHERE target_space_id = {space} "
+        f"AND measure_fingerprint IN ({v1_list}) "
+        "AND (suppressed_until IS NULL OR suppressed_until > current_timestamp()) "
+        "UNION ALL "
+        "SELECT dedup_fingerprint AS v1, CAST(NULL AS TIMESTAMP) AS suppressed_until, "
+        "suggestion_id AS originating_suggestion_id "
+        f"FROM {cand_fqn} WHERE target_space_id = {space} AND decision = 'rejected' "
+        f"AND dedup_fingerprint IN ({v1_list})"
+        f") AS v JOIN ({mapping}) AS m ON v.v1 = m.v1 GROUP BY m.v2"
+        ") AS s "
+        "ON t.target_space_id = s.target_space_id "
+        "AND t.measure_fingerprint = s.measure_fingerprint "
+        "WHEN NOT MATCHED THEN INSERT (target_space_id, measure_fingerprint, "
+        "suppressed_until, originating_suggestion_id, reason, created_at, updated_at) "
+        "VALUES (s.target_space_id, s.measure_fingerprint, s.suppressed_until, "
+        f"s.originating_suggestion_id, {literal(MV_SUPPRESSION_REASON_REKEYED_V1)}, "
+        "current_timestamp(), current_timestamp())"
+    )
+
+
+def rekey_mv_suppressions(
+    spark: SparkSession,
+    *,
+    catalog: str,
+    schema: str,
+    target_space_id: str,
+    rekeys: Mapping[str, str],
+) -> list[str]:
+    """Copy each v1 dismissal onto its v2 measure key (MV-D123 Ruling 10).
+
+    ``rekeys`` maps a v1 key the advisor found suppressed to the v2 key of the
+    measure it hid. Every key must be 64 lowercase hex characters, or the call
+    refuses with a ``ValueError`` before any SQL is built. One ``MERGE`` per
+    call; a failed write logs its type and returns ``[]`` — the caller has
+    already hidden the measure, and the next scan's dual read retries the copy.
+    Returns the v2 keys the statement was asked to write.
+    """
+    pairs = validated_rekeys(target_space_id, rekeys)
+    if not pairs:
+        return []
+    sql = rekey_mv_suppressions_sql(
+        _fqn(catalog, schema, TABLE_MV_SUPPRESSIONS),
+        _fqn(catalog, schema, TABLE_MV_CANDIDATES),
+        target_space_id,
+        pairs,
+        _sql_literal,
+    )
+    try:
+        run_query(spark, sql)
+    except Exception as exc:  # noqa: BLE001 - best-effort; logged by type only
+        logger.warning(
+            "rekey_mv_suppressions: write failed for space %s (%s)",
+            target_space_id, type(exc).__name__,
+        )
+        return []
+    written = sorted(set(pairs.values()))
+    logger.info(
+        "Rekey attempted for %d v1 suppression(s) onto %d v2 key(s) for space %s",
+        len(pairs), len(written), target_space_id,
+    )
+    return written
+
+
 # ── Consents ─────────────────────────────────────────────────────────────
 
 
@@ -907,6 +1020,7 @@ __all__ = [
     "MV_CONSENT_VERDICTS",
     "MV_CREATED_OBJECT_STATUSES",
     "MV_ON_REGRESSION_ACTIONS",
+    "MV_SUPPRESSION_REASON_REKEYED_V1",
     "created_suggestion_ids",
     "load_mv_candidates",
     "load_mv_consent",
@@ -917,9 +1031,12 @@ __all__ = [
     "mv_bundle_fingerprint",
     "mv_candidate_fingerprint",
     "record_mv_candidate_decision",
+    "rekey_mv_suppressions",
+    "rekey_mv_suppressions_sql",
     "suppress_mv_measures",
     "update_mv_created_object_status",
     "upsert_mv_candidate",
     "upsert_mv_consent",
     "upsert_mv_created_object",
+    "validated_rekeys",
 ]

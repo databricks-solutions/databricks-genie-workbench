@@ -121,6 +121,7 @@ def suggest_for_space(
         wh_ensure_optimization_tables,
         wh_load_mv_candidates,
         wh_load_mv_suppressed_fingerprints,
+        wh_rekey_mv_suppressions,
         wh_supersede_legacy_mv_candidates,
         wh_upsert_mv_candidate,
         wh_write_stage,
@@ -138,6 +139,7 @@ def suggest_for_space(
         metric_view_fields,
     )
     from genie_space_optimizer.optimization.mv_signals import warehouse_reader
+    from genie_space_optimizer.optimization.mv_tables import TableResolver
 
     # Invariant (one migration applicator): the shared bootstrapper ensures the
     # additive columns exist BEFORE the first advice INSERT / candidate upsert.
@@ -258,6 +260,7 @@ def suggest_for_space(
             run_id=run_id,
             corpus_entries=corpus,
             applied_config=applied_config,
+            resolver=TableResolver.from_config(applied_config),
             benchmarks=(),
             wide_schema_inventory=None,
             metric_view_reader=_reader,
@@ -275,6 +278,12 @@ def suggest_for_space(
             read_suppressed_fingerprints=lambda: wh_load_mv_suppressed_fingerprints(
                 sp_ws, warehouse_id, catalog=catalog, schema=schema,
                 target_space_id=space_id,
+            ),
+            # MV-D123: a measure hidden only under its v1 key has the dismissal
+            # copied onto its v2 key, as the in-job advisor does.
+            rekey_suppressions=lambda rekeys: wh_rekey_mv_suppressions(
+                sp_ws, warehouse_id, catalog=catalog, schema=schema,
+                target_space_id=space_id, rekeys=rekeys,
             ),
             # MV-D122: the kept rows' view names (decided or created), read
             # strictly, as the in-job advisor reads them.

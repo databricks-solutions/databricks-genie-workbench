@@ -90,6 +90,13 @@ from genie_space_optimizer.integration import (
     IntegrationConfig,
 )
 from genie_space_optimizer.optimization.champion import baseline_reset_from_stage_rows
+from genie_space_optimizer.optimization.mv_tables import (
+    TABLELESS,
+    UNRESOLVED,
+    ResolvedTables,
+    TableResolver,
+    fq_tables_overlap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3101,15 +3108,30 @@ def _mv_source_tables_from_yaml(yaml_text: str | None) -> list[str] | None:
     return out or None
 
 
-def _concept_key(canonical_expr: str, name: str) -> str:
-    """Concept identity (Prompt 12b Debt 3, MV-D21 for concepts).
+def _concept_key(
+    canonical_expr: str,
+    name: str,
+    tables: ResolvedTables = TABLELESS,
+    spelled: tuple[str, ...] = (),
+) -> str:
+    """Concept identity (Prompt 12b Debt 3, MV-D21 for concepts; MV-D123).
 
     The canonicalized measure expression when it parses — ``canonicalize_expr``
     strips table qualifiers and literals, so ``SUM(o.rev - o.cost)`` and
-    ``SUM(ord.rev - ord.cost)`` are ONE concept, the same identity the
+    ``SUM(ord.rev - ord.cost)`` are ONE calculation, the same identity the
     fingerprint engine hashes. An expression that will not parse falls back to
-    the lower-cased display name so a name-only curated snippet still dedups."""
-    return (canonical_expr or "").strip() or (name or "").strip().lower()
+    the lower-cased display name so a name-only curated snippet still dedups.
+
+    Identity v2 adds the sorted resolved tables, so one calculation over two
+    tables is two concepts. A table-less concept is its calculation alone. An
+    unresolved one is keyed by its spelled names and never shares a key with a
+    resolved one."""
+    calculation = (canonical_expr or "").strip() or (name or "").strip().lower()
+    if tables is TABLELESS:
+        return calculation
+    if tables is UNRESOLVED:
+        return f"{calculation} @ ?{','.join(sorted(spelled))}"
+    return f"{calculation} @ {','.join(sorted(tables))}"
 
 
 def _synth_measure_name(
@@ -3131,14 +3153,15 @@ def _synth_measure_name(
     return (fallback or "").strip()
 
 
-def _curated_sql_measures(space_data: dict) -> list[tuple[str, str, str, tuple[str, ...]]]:
+def _curated_sql_measures(space_data: dict) -> list[tuple[str, str, str, tuple[str, ...], bool]]:
     """Curated measure concepts harvested from ``example_question_sqls`` (Debt 1).
 
     Reuses the curated-harvest reader ``mv_scoring.example_question_sql_statements``
     (the single reader ``trusted_asset_definitions`` also uses, so the ladder and
     the advisor cannot drift over what a curated asset is) and
     ``mv_fingerprint.extract_measures`` — the one sanctioned parser. Returns
-    ``(canonical_expr, name, display_expr, source_tables)`` tuples:
+    ``(canonical_expr, name, display_expr, source_tables, unresolved_source)``
+    tuples, one per calculation and spelled table set:
 
     - ``canonical_expr`` is the dedup identity (qualifier-stripped, literals as
       placeholders) — the same key the fingerprint engine hashes.
@@ -3151,6 +3174,9 @@ def _curated_sql_measures(space_data: dict) -> list[tuple[str, str, str, tuple[s
     - ``source_tables`` are the tables the aggregate provably reads, so
       Space-config lineage can be drawn from real table identities rather than
       re-parsing a canonical expression that has had its qualifiers stripped.
+    - ``unresolved_source`` is ``MeasureRef.has_unresolved_source``: the
+      aggregate reads a derived table or CTE, so ``source_tables=()`` names no
+      table it can be matched on (MV-D123).
 
     Best-effort and read-only: a statement that will not parse simply contributes
     no concept (MV-D16(b): nothing here re-enters the advisor corpus)."""
@@ -3159,21 +3185,22 @@ def _curated_sql_measures(space_data: dict) -> list[tuple[str, str, str, tuple[s
         example_question_sql_statements,
     )
 
-    out: list[tuple[str, str, str, tuple[str, ...]]] = []
-    seen: set[str] = set()
+    out: list[tuple[str, str, str, tuple[str, ...], bool]] = []
+    seen: set[tuple[str, tuple[str, ...], bool]] = set()
     for _identifier, sql in example_question_sql_statements(space_data):
         for measure in extract_measures(sql):
             canon = measure.canonical_expr
-            if not canon or canon in seen:
+            identity = (canon, tuple(measure.source_tables), measure.has_unresolved_source)
+            if not canon or identity in seen:
                 continue
-            seen.add(canon)
+            seen.add(identity)
             name = _synth_measure_name(
                 measure.aggregate,
                 measure.source_columns,
                 measure.representative_expr or measure.canonical_expr,
             )
             display_expr = measure.representative_expr or measure.canonical_expr
-            out.append((canon, name, display_expr, tuple(measure.source_tables)))
+            out.append((canon, name, display_expr, identity[1], identity[2]))
     return out
 
 
@@ -3215,7 +3242,9 @@ def _build_semantic_graph(
 
     ``governed_fields`` is the DESCRIBE-derived measure read — a sequence of
     ``mv_scoring.MetricViewField`` (or field-shaped mappings for tests) with
-    ``mv_fqn`` / ``field_name`` / ``canonical_expr``. Only ``FIELD_MEASURE`` kinds
+    ``mv_fqn`` / ``field_name`` / ``canonical_expr`` / ``source_tables``. Measures
+    are keyed by calculation and resolved tables (MV-D123), resolved through
+    ``space_data``'s own identifiers. Only ``FIELD_MEASURE`` kinds
     reach here; an empty sequence is the honest "no governed chips" fallback the
     deleted ``_is_measure_column`` probe used to produce, now truthful instead of
     speculative.
@@ -3431,17 +3460,21 @@ def _build_semantic_graph(
         if participating.get(n.id):
             n.columns = participating[n.id]
 
-    # Governance ladder, deduped by concept identity (Debt 3): governed wins over
-    # curated wins over ungoverned. ``key_by_node`` maps a measure node id to its
-    # concept key so the coverage lens can match statements to measures.
+    # Governance ladder, deduped by concept identity (Debt 3, MV-D123): governed
+    # wins over curated wins over ungoverned. Governed and curated concepts are
+    # keyed by calculation and resolved tables; ``key_by_node`` maps a measure
+    # node id to its calculation so the coverage lens can match statements to
+    # measures.
     governed_keys: set[str] = set()
     curated_keys: set[str] = set()
     ungoverned_keys: set[str] = set()
+    higher_calculations: set[str] = set()
     key_by_node: dict[str, str] = {}
     used_ids: set[str] = set()
 
     def _measure_node(
         *, key: str, label: str, governance: str, origin: str,
+        calculation: str | None = None,
         benchmark_ids: list[str] | None = None,
         expr: str | None = None, description: str | None = None,
     ) -> str | None:
@@ -3453,7 +3486,7 @@ def _build_semantic_graph(
         if node_id in used_ids:
             return None
         used_ids.add(node_id)
-        key_by_node[node_id] = key
+        key_by_node[node_id] = calculation if calculation is not None else key
         nodes.append(MvSemanticGraphNode(
             id=node_id, kind="measure", label=label, col=3, row=0,
             governance=governance, origin=origin,
@@ -3462,43 +3495,27 @@ def _build_semantic_graph(
         ))
         return node_id
 
-    # Governed chips: the DESCRIBE-enumerated MV measures (Debt 2). Identity is
-    # the canonicalized expr; membership ties each to its owning MV node.
-    governed_owner_by_label: dict[str, str] = {}
+    # Tables come from the space's own identifiers (Ruling 3). A governed chip
+    # reads its view's ``source`` and joins; a view over a query names none, so it
+    # is unresolved and keyed apart under its own name.
+    resolver = TableResolver.from_config(space_data)
+    governed_entries: list[tuple[Any, str, str, str, ResolvedTables, tuple[str, ...]]] = []
     for field_ in governed_fields:
         fqn = _field_attr(field_, "mv_fqn")
         name = _field_attr(field_, "field_name") or _field_attr(field_, "name")
         canonical = _field_attr(field_, "canonical_expr")
         if not name:
             continue
-        key = _concept_key(canonical, name)
-        if key in governed_keys:
-            continue
-        governed_keys.add(key)
-        owner = mv_id_by_fqn.get(_norm_fqn(fqn))
-        origin = f"{_short_name(fqn)} (attached MV)" if fqn else "attached MV"
-        # The canonical expression is what the DESCRIBE read proves this governed
-        # measure computes; a comment/description rides along when the field has one.
-        gov_desc = _field_attr(field_, "description") or _field_attr(field_, "comment")
-        node_id = _measure_node(
-            key=key, label=name, governance="governed", origin=origin,
-            expr=canonical or None, description=gov_desc or None,
-        )
-        if node_id and owner:
-            edges.append(MvSemanticGraphEdge(**{"from": node_id, "to": owner}, kind="membership"))
-        # Prompt 12f: remember who governs each NAME, so a loose measure that
-        # reuses the name under a different expression can be flagged as an
-        # overlap below rather than sitting silently beside its governed twin.
-        governed_owner_by_label.setdefault(name.lower(), owner or fqn or "an attached metric view")
+        spelled = _field_tables(field_)
+        tables = resolver.resolve_all(spelled) if spelled else UNRESOLVED
+        governed_entries.append((field_, fqn, name, canonical, tables, spelled or (fqn,)))
 
     # Curated concepts: structured sql_snippets.measures, plus measures harvested
-    # from example_question_sqls (Debt 1). Both keyed by canonical expr so two
-    # spellings of one measure are one chip and a governed measure absorbs its
-    # curated twin.
-    # Each entry: (concept_key, label, expr, source_tables). ``source_tables`` is
-    # the parser-proven lineage for a harvested curated measure; snippet measures
-    # carry none here and fall back to the expr-parse lineage below.
-    curated_sources: list[tuple[str, str, str | None, tuple[str, ...]]] = []
+    # from example_question_sqls (Debt 1). A snippet names no table (Ruling 13).
+    # Each entry: (canonical, label, expr, source_tables, tables). ``source_tables``
+    # is the parser-proven lineage for a harvested curated measure; snippet
+    # measures carry none here and fall back to the expr-parse lineage below.
+    curated_entries: list[tuple[str, str, str | None, tuple[str, ...], ResolvedTables]] = []
     for i, m in enumerate(snippet_measures):
         label = m.get("display_name") or m.get("id") or f"measure_{i}"
         expr = m.get("sql")
@@ -3509,21 +3526,95 @@ def _build_semantic_graph(
         if expr:
             from genie_space_optimizer.optimization.mv_fingerprint import canonicalize_expr
             canonical = canonicalize_expr(expr)
-        curated_sources.append((_concept_key(canonical, label), label, expr, ()))
-    for canonical, name, display_expr, src_tables in _curated_sql_measures(space_data):
+        curated_entries.append((canonical, label, expr, (), TABLELESS))
+    for canonical, name, display_expr, src_tables, unresolved in _curated_sql_measures(space_data):
         # A harvested curated measure has no author name — show the synthesized
         # ``aggregate · column`` label, keep the literal-preserving expression for
-        # the detail inset, and carry its proven source tables for lineage. The
-        # dedup key stays ``canonical`` so identity is unchanged.
-        curated_sources.append((_concept_key(canonical, name), name, display_expr, src_tables))
+        # the detail inset, and carry its proven source tables for lineage.
+        tables = UNRESOLVED if unresolved else resolver.resolve_all(src_tables)
+        curated_entries.append((canonical, name, display_expr, src_tables, tables))
 
-    # measure node id → parser-proven source tables, consumed by the lineage pass.
+    # A governed measure absorbs a curated one over tables under the advisor's
+    # rule (``mv_scoring.governs_measure``): the same canonical expression and a
+    # shared table, so a view over ``orders JOIN customers`` governs the measure
+    # over ``orders``. An unresolved side matches nothing. A table-less curated
+    # measure stays on Ruling 2's ladder below.
+    def _governed_twin(canonical: str, tables: ResolvedTables) -> bool:
+        return bool(canonical) and tables is not TABLELESS and any(
+            governed_canonical == canonical
+            and fq_tables_overlap(tables, governed_tables, tableless_matches=True)
+            for _f, _fqn, _n, governed_canonical, governed_tables, _s in governed_entries
+        )
+
+    absorbed = [_governed_twin(canonical, tables) for canonical, _l, _e, _s, tables in curated_entries]
+
+    # Ruling 2: a table-less concept joins the one node its calculation has over
+    # tables, and with two or more (an unresolved one counts) it joins none.
+    rows_by_calculation: dict[str, dict[str, bool]] = {}
+
+    def _note_row(canonical: str, name: str, tables: ResolvedTables, spelled: tuple[str, ...]) -> None:
+        if tables is not TABLELESS:
+            rows = rows_by_calculation.setdefault(_concept_key(canonical, name), {})
+            rows[_concept_key(canonical, name, tables, spelled)] = tables is UNRESOLVED
+
+    for _field, _fqn, name, canonical, tables, spelled in governed_entries:
+        _note_row(canonical, name, tables, spelled)
+    for (canonical, label, _expr, src_tables, tables), is_absorbed in zip(curated_entries, absorbed):
+        if not is_absorbed:
+            _note_row(canonical, label, tables, src_tables)
+
+    def _ladder_key(canonical: str, name: str, tables: ResolvedTables, spelled: tuple[str, ...]) -> str:
+        calculation = _concept_key(canonical, name)
+        if tables is not TABLELESS:
+            return _concept_key(canonical, name, tables, spelled)
+        rows = rows_by_calculation.get(calculation, {})
+        if len(rows) == 1 and not next(iter(rows.values())):
+            return next(iter(rows))
+        return calculation
+
+    # Governed chips: the DESCRIBE-enumerated MV measures (Debt 2); membership
+    # ties each to its owning MV node.
+    governed_owner_by_label: dict[str, str] = {}
+    for field_, fqn, name, canonical, tables, spelled in governed_entries:
+        key = _ladder_key(canonical, name, tables, spelled)
+        if key in governed_keys:
+            continue
+        governed_keys.add(key)
+        higher_calculations.add(_concept_key(canonical, name))
+        owner = mv_id_by_fqn.get(_norm_fqn(fqn))
+        origin = f"{_short_name(fqn)} (attached MV)" if fqn else "attached MV"
+        # The canonical expression is what the DESCRIBE read proves this governed
+        # measure computes; a comment/description rides along when the field has one.
+        gov_desc = _field_attr(field_, "description") or _field_attr(field_, "comment")
+        node_id = _measure_node(
+            key=key, label=name, governance="governed", origin=origin,
+            calculation=_concept_key(canonical, name),
+            expr=canonical or None, description=gov_desc or None,
+        )
+        if node_id and owner:
+            edges.append(MvSemanticGraphEdge(**{"from": node_id, "to": owner}, kind="membership"))
+        # Prompt 12f: remember who governs each NAME, so a loose measure that
+        # reuses the name under a different expression can be flagged as an
+        # overlap below rather than sitting silently beside its governed twin.
+        governed_owner_by_label.setdefault(name.lower(), owner or fqn or "an attached metric view")
+
+    # Curated chips: two spellings of one measure over one table are one chip,
+    # and a governed measure absorbs its curated twin (above, or by key for a
+    # table-less one). measure node id → parser-proven source tables, consumed by
+    # the lineage pass.
     curated_src_tables: dict[str, tuple[str, ...]] = {}
-    for key, label, expr, src_tables in curated_sources:
+    for (canonical, label, expr, src_tables, tables), is_absorbed in zip(curated_entries, absorbed):
+        if is_absorbed:
+            continue
+        key = _ladder_key(canonical, label, tables, src_tables)
         if key in governed_keys or key in curated_keys:
             continue
         curated_keys.add(key)
-        node_id = _measure_node(key=key, label=label, governance="curated", origin="curated SQL", expr=expr)
+        higher_calculations.add(_concept_key(canonical, label))
+        node_id = _measure_node(
+            key=key, label=label, governance="curated", origin="curated SQL",
+            calculation=_concept_key(canonical, label), expr=expr,
+        )
         if node_id and src_tables:
             curated_src_tables[node_id] = src_tables
 
@@ -3537,7 +3628,7 @@ def _build_semantic_graph(
         if not name:
             continue
         key = _concept_key("", name)
-        if key in governed_keys or key in curated_keys or key in ungoverned_keys:
+        if key in higher_calculations or key in ungoverned_keys:
             continue
         if name in higher_labels:
             continue
@@ -3627,6 +3718,14 @@ def _field_attr(field_: Any, name: str) -> str:
     if isinstance(field_, dict):
         return str(field_.get(name) or "")
     return str(getattr(field_, name, "") or "")
+
+
+def _field_tables(field_: Any) -> tuple[str, ...]:
+    """A MetricViewField's ``source_tables`` (object or mapping), blanks dropped."""
+    raw = field_.get("source_tables") if isinstance(field_, dict) else getattr(field_, "source_tables", ())
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(str(t).strip() for t in raw if str(t or "").strip())
 
 
 def _apply_coverage(

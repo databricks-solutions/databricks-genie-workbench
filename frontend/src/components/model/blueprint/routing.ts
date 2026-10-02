@@ -7,7 +7,7 @@
  * geometry of the placed boxes — deterministic, no mutation of the model (§8).
  */
 import type { BlueprintJoin, BlueprintModel } from "./model"
-import { colY, measureIndex, nodeById, type Box, type BlueprintZoom, type Placement } from "./layout"
+import { colY, measureChipIds, measureIndex, nodeById, type Box, type BlueprintZoom, type Placement } from "./layout"
 
 export interface ResolvedEdge extends BlueprintJoin {
   leftId: string
@@ -307,8 +307,9 @@ export function lineagePaths(
       // measures yields two distinct lines to two distinct rows — that is honest.
       mode = "measure"
       const pairs: { tid: string; dy: number }[] = []
-      node.measures.forEach((mm) => {
-        const cp = chipPos[`${node.id}::${mm.name}`]
+      const chipIds = measureChipIds(node.id, node.measures)
+      node.measures.forEach((mm, i) => {
+        const cp = chipPos[chipIds[i]]
         const dy = cp ? cp.y : (destBox as Box).y + (destBox as Box).h / 2
         mm.src.filter((t) => box[t]).forEach((tid) => pairs.push({ tid, dy }))
       })

@@ -82,6 +82,7 @@ import {
 import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
 import { EnrichmentWinTerminalFrame } from "./MvM7dFidelityFrames"
 import { IqScanReshapedListFrame, ModelTabStaleGhostFrame, RunOutputStaleNoPreviewFrame } from "./MvM7e1FidelityFrames"
+import { ModelTabOneCalculationTwoTablesFrame, OneCalculationTwoTablesCanvas } from "./MvM7e2FidelityFrames"
 import { LIFT_NOT_MEASURED, STALE_PROPOSAL_NOTICE, staleRescanSentence } from "../mvFormat"
 import { RETURN_TO_AGENTS, SPACE_NO_ACCESS_TITLE } from "@/lib/space-access"
 
@@ -787,6 +788,49 @@ describe("M7e-1 — the reshaped list and the stale-proposal gaps (MV-D122)", ()
       "m7e1-b-run-output-stale-no-preview",
       "m7e1-c-model-stale-no-ghost",
     ])
+  })
+})
+
+describe("M7e-2 — one calculation over two tables is two measures (MV-D123)", () => {
+  const html = render(<ModelTabOneCalculationTwoTablesFrame />)
+  const chips = html.match(/<g data-chip="measure"[\s\S]*?<\/g>/g) ?? []
+
+  // The merge key is guarded by backend/tests/test_semantic_graph.py::
+  // test_one_calculation_over_two_tables_is_two_nodes; this pins the deployed canvas draws both.
+  it("m7e2-a: two measure chips in Space config, with one label", () => {
+    expect(chips).toHaveLength(2)
+    for (const chip of chips) expect(chip).toContain(">sum · amount</text>")
+    expect(html).toContain("Space config")
+    expect(html.split(">orders</text>").length - 1).toBe(2)
+  })
+
+  it("no confidence (MV-D35)", () => {
+    expect(html.toLowerCase()).not.toContain("confidence")
+  })
+
+  const chipIds = chips.map((chip) => /data-chip-id="([^"]*)"/.exec(chip)?.[1])
+
+  it("m7e2-a: the two chips carry distinct ids, the first one plain", () => {
+    expect(chipIds).toEqual(["Space config::sum · amount", "Space config::sum · amount#2"])
+  })
+
+  it("m7e2-a: selecting the second chip leaves the first unselected", () => {
+    const sel = render(<OneCalculationTwoTablesCanvas selected="Space config::sum · amount#2" />)
+    const selChips = sel.match(/<g data-chip="measure"[\s\S]*?<\/g>/g) ?? []
+    expect(selChips).toHaveLength(2)
+    expect(selChips[0]).toContain('fill-opacity="0.14"')
+    expect(selChips[0]).not.toContain("var(--color-accent)")
+    expect(selChips[1]).toContain('fill-opacity="0.3"')
+    expect(selChips[1]).toContain('stroke="var(--color-accent)"')
+  })
+
+  // The duplicate-key and click pins need a client mount: MvM7e2FidelityFrames.test.tsx.
+
+  it("is registered after the M7e-1 frames", () => {
+    const ids = MOCKUP_FRAMES.map((f) => f.id)
+    expect(ids.indexOf("m7e2-a-model-one-calculation-two-tables")).toBe(
+      ids.indexOf("m7e1-c-model-stale-no-ghost") + 1,
+    )
   })
 })
 

@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 import sqlglot
 
+from genie_space_optimizer.common import warehouse
 from genie_space_optimizer.common.config import (
     TABLE_MV_CANDIDATES,
     TABLE_MV_CONSENTS,
@@ -747,6 +748,246 @@ def test_created_suggestion_ids_is_empty_when_none_is_in_the_ledger(monkeypatch)
     monkeypatch.setattr(mv_state, "run_query", lambda spark, query: pd.DataFrame())
 
     assert mv_state.created_suggestion_ids(FakeDeltaSpark(), "cat", "sch", [_SUG_A]) == set()
+
+
+# ── The v1 dismissal rekey (MV-D123 Ruling 10), both twins ───────────────
+
+_REKEY_SPACE = "01f04ac8c1f11c9a9e5b3b2b0e5d5c11"
+
+
+def _hex(char: str) -> str:
+    return char * 64
+
+
+def _spark_rekey(monkeypatch, *, target_space_id=_REKEY_SPACE, rekeys) -> list[str]:
+    seen: list[str] = []
+    monkeypatch.setattr(
+        mv_state, "run_query", lambda spark, query: (seen.append(query), pd.DataFrame())[1],
+    )
+    mv_state.rekey_mv_suppressions(
+        FakeDeltaSpark(), catalog="cat", schema="sch",
+        target_space_id=target_space_id, rekeys=rekeys,
+    )
+    return seen
+
+
+def _warehouse_rekey(monkeypatch, *, target_space_id=_REKEY_SPACE, rekeys) -> list[str]:
+    seen: list[str] = []
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute", lambda ws, wid, sql: seen.append(sql))
+    monkeypatch.setattr(
+        warehouse, "sql_warehouse_query",
+        lambda *a, **k: pytest.fail("the rekey reads before it writes"),
+    )
+    warehouse.wh_rekey_mv_suppressions(
+        object(), "wh", catalog="cat", schema="sch",
+        target_space_id=target_space_id, rekeys=rekeys,
+    )
+    return seen
+
+
+_REKEY_TWINS = {
+    "spark": (_spark_rekey, mv_state, "_sql_literal"),
+    "warehouse": (_warehouse_rekey, warehouse, "_wh_literal"),
+}
+
+
+def _replay_rekey(sql: str, *, suppressions, candidates) -> dict[str, tuple]:
+    """Run the MERGE's INSERT-only semantics against sqlite and return the
+    suppressions table keyed by fingerprint.
+
+    sqlite has no MERGE, so the statement is taken apart: its single clause must
+    be ``WHEN NOT MATCHED THEN INSERT`` with no condition, and that INSERT is run
+    over the USING subquery for every source row the ON clause finds no target
+    for. The subquery itself is the warehouse's own SQL, transpiled.
+    """
+    import sqlite3
+
+    merge = sqlglot.parse_one(sql, read="databricks")
+    assert isinstance(merge, sqlglot.exp.Merge)
+    assert merge.this.name == "genie_opt_mv_suppressions"
+    (when,) = merge.args["whens"].expressions
+    assert when.args["matched"] is False
+    assert when.args.get("condition") is None
+    insert = when.args["then"]
+
+    def _unqualified(node):
+        if isinstance(node, sqlglot.exp.Table):
+            node.set("catalog", None)
+            node.set("db", None)
+        return node
+
+    using = merge.args["using"].transform(_unqualified).sql(dialect="sqlite")
+    on = merge.args["on"].sql(dialect="sqlite")
+    columns = ", ".join(c.name for c in insert.this.expressions)
+    values = ", ".join(v.sql(dialect="sqlite") for v in insert.expression.expressions)
+
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "CREATE TABLE genie_opt_mv_suppressions (target_space_id, measure_fingerprint, "
+        "suppressed_until, originating_suggestion_id, reason, created_at, updated_at)"
+    )
+    db.execute(
+        "CREATE TABLE genie_opt_mv_candidates "
+        "(target_space_id, dedup_fingerprint, decision, suggestion_id)"
+    )
+    db.executemany(
+        "INSERT INTO genie_opt_mv_suppressions VALUES (?, ?, ?, ?, ?, 'old', 'old')", suppressions,
+    )
+    db.executemany("INSERT INTO genie_opt_mv_candidates VALUES (?, ?, ?, ?)", candidates)
+    db.execute(
+        f"INSERT INTO genie_opt_mv_suppressions ({columns}) SELECT {values} FROM {using} "
+        f"WHERE NOT EXISTS (SELECT 1 FROM genie_opt_mv_suppressions AS t WHERE {on})"
+    )
+    rows = db.execute(
+        "SELECT measure_fingerprint, suppressed_until, originating_suggestion_id, reason "
+        "FROM genie_opt_mv_suppressions WHERE target_space_id = ?", (_REKEY_SPACE,),
+    ).fetchall()
+    return {row[0]: row[1:] for row in rows}
+
+
+@pytest.mark.parametrize("twin", sorted(_REKEY_TWINS))
+def test_rekey_copies_the_window_and_never_widens_it(monkeypatch, twin) -> None:
+    rekey, _module, _helper = _REKEY_TWINS[twin]
+    soon, later, past, kept = (
+        "2990-01-01 00:00:00", "2999-01-01 00:00:00", "2000-01-01 00:00:00",
+        "2500-01-01 00:00:00",
+    )
+    suppressions = [
+        (_REKEY_SPACE, _hex("1"), None, "sug_000000000001", "bundle_rejected"),
+        (_REKEY_SPACE, _hex("2"), later, "sug_000000000002", "bundle_rejected"),
+        (_REKEY_SPACE, _hex("3"), soon, "sug_000000000003", "bundle_rejected"),
+        (_REKEY_SPACE, _hex("4"), later, "sug_000000000004", "bundle_rejected"),
+        (_REKEY_SPACE, _hex("5"), past, "sug_000000000005", "bundle_rejected"),
+        (_REKEY_SPACE, _hex("7"), later, "sug_000000000007", "bundle_rejected"),
+        (_REKEY_SPACE, _hex("f"), kept, "sug_00000000000f", "bundle_rejected"),
+        ("another_space", _hex("8"), later, "sug_000000000008", "bundle_rejected"),
+    ]
+    candidates = [
+        (_REKEY_SPACE, _hex("6"), "rejected", "sug_000000000006"),
+        (_REKEY_SPACE, _hex("9"), "approved", "sug_000000000009"),
+    ]
+    rekeys = {
+        _hex("1"): _hex("a"), _hex("2"): _hex("a"),  # a NULL window stays NULL
+        _hex("3"): _hex("b"), _hex("4"): _hex("b"),  # the later of two windows
+        _hex("5"): _hex("c"),  # an expired window is not copied
+        _hex("6"): _hex("d"),  # a legacy rejected candidate row is indefinite
+        _hex("7"): _hex("f"),  # an existing v2 row is untouched
+        _hex("8"): _hex("e"), _hex("9"): _hex("e"),  # another space; not rejected
+    }
+
+    (statement,) = rekey(monkeypatch, rekeys=rekeys)
+    table = _replay_rekey(statement, suppressions=suppressions, candidates=candidates)
+
+    assert table[_hex("a")] == (None, "sug_000000000001", "rekeyed_v1")
+    assert table[_hex("b")] == (later, "sug_000000000003", "rekeyed_v1")
+    assert _hex("c") not in table
+    assert table[_hex("d")] == (None, "sug_000000000006", "rekeyed_v1")
+    assert _hex("e") not in table
+    assert table[_hex("f")] == (kept, "sug_00000000000f", "bundle_rejected")
+    for v1 in "123457f":
+        assert _hex(v1) in table
+
+
+@pytest.mark.parametrize("twin", sorted(_REKEY_TWINS))
+def test_one_v1_key_over_two_v2_halves_writes_both_copies(monkeypatch, twin) -> None:
+    """MV-D123: a v1 bucket that held two catalogs on one leaf hid two v2 rows.
+
+    The advisor hands each v1 key to the writer at most once per call, so the
+    MERGE copies the dismissal onto both halves; one ``{v1: v2}`` map keeps one.
+    """
+    from genie_space_optimizer.optimization import mv_advisor
+
+    rekey, _module, _helper = _REKEY_TWINS[twin]
+    batches: list[dict[str, str]] = []
+    statements: list[str] = []
+
+    def writer(batch) -> None:
+        batches.append(dict(batch))
+        statements.extend(rekey(monkeypatch, rekeys=batch))
+
+    mv_advisor._rekey_v1_suppressions(
+        [(_hex("1"), _hex("a")), (_hex("1"), _hex("b")), (_hex("2"), _hex("c"))], writer,
+    )
+
+    assert batches == [{_hex("1"): _hex("a"), _hex("2"): _hex("c")}, {_hex("1"): _hex("b")}]
+    suppressions = [
+        (_REKEY_SPACE, _hex("1"), None, "sug_000000000001", "bundle_rejected"),
+        (_REKEY_SPACE, _hex("2"), None, "sug_000000000002", "bundle_rejected"),
+    ]
+    table: dict[str, tuple] = {}
+    for statement in statements:
+        table.update(_replay_rekey(statement, suppressions=suppressions, candidates=[]))
+    assert table[_hex("a")] == (None, "sug_000000000001", "rekeyed_v1")
+    assert table[_hex("b")] == (None, "sug_000000000001", "rekeyed_v1")
+    assert table[_hex("c")] == (None, "sug_000000000002", "rekeyed_v1")
+
+
+@pytest.mark.parametrize("twin", sorted(_REKEY_TWINS))
+@pytest.mark.parametrize(
+    "rekeys",
+    [
+        {_hex("1") + "' OR '1'='1": _hex("a")},
+        {_hex("1"): _hex("A")},
+        {_hex("1")[:63]: _hex("a")},
+        {_hex("1"): _hex("a") + "\n"},
+        {_hex("1"): None},
+        {None: _hex("a")},
+    ],
+)
+def test_rekey_refuses_a_fingerprint_that_is_not_hex_before_any_sql(
+    monkeypatch, twin, rekeys,
+) -> None:
+    rekey, _module, _helper = _REKEY_TWINS[twin]
+    with pytest.raises(ValueError) as raised:
+        rekey(monkeypatch, rekeys={_hex("2"): _hex("b"), **rekeys})
+    assert "OR" not in str(raised.value)
+
+
+@pytest.mark.parametrize("twin", sorted(_REKEY_TWINS))
+def test_rekey_refuses_a_missing_space_and_writes_nothing_for_no_rekeys(monkeypatch, twin) -> None:
+    rekey, _module, _helper = _REKEY_TWINS[twin]
+    with pytest.raises(ValueError):
+        rekey(monkeypatch, target_space_id="", rekeys={_hex("1"): _hex("a")})
+    assert rekey(monkeypatch, rekeys={}) == []
+    assert rekey(monkeypatch, rekeys={_hex("1"): _hex("1")}) == []
+
+
+@pytest.mark.parametrize("twin", sorted(_REKEY_TWINS))
+def test_rekey_passes_every_value_through_the_literal_helper(monkeypatch, twin) -> None:
+    rekey, module, helper = _REKEY_TWINS[twin]
+    original = getattr(module, helper)
+    quoted: list[Any] = []
+    monkeypatch.setattr(
+        module, helper, lambda value, **kw: (quoted.append(value), original(value, **kw))[1],
+    )
+    space = "space-'o"
+    rekey(monkeypatch, target_space_id=space, rekeys={_hex("1"): _hex("a"), _hex("2"): _hex("b")})
+    assert {space, _hex("1"), _hex("2"), _hex("a"), _hex("b"), "rekeyed_v1"} <= set(quoted)
+
+
+@pytest.mark.parametrize("twin", sorted(_REKEY_TWINS))
+def test_a_failed_rekey_logs_the_type_only(monkeypatch, caplog, twin) -> None:
+    def _boom(*_a, **_k):
+        raise RuntimeError("zq_rekey_sentinel")
+
+    monkeypatch.setattr(mv_state, "run_query", _boom)
+    monkeypatch.setattr(warehouse, "sql_warehouse_execute", _boom)
+    with caplog.at_level("DEBUG"):
+        if twin == "spark":
+            written = mv_state.rekey_mv_suppressions(
+                FakeDeltaSpark(), catalog="cat", schema="sch",
+                target_space_id=_REKEY_SPACE, rekeys={_hex("1"): _hex("a")},
+            )
+        else:
+            written = warehouse.wh_rekey_mv_suppressions(
+                object(), "wh", catalog="cat", schema="sch",
+                target_space_id=_REKEY_SPACE, rekeys={_hex("1"): _hex("a")},
+            )
+    assert written == []
+    assert caplog.records
+    assert all("RuntimeError" in r.getMessage() for r in caplog.records)
+    assert "zq_rekey_sentinel" not in caplog.text
+    assert not [r for r in caplog.records if r.exc_info]
 
 
 # ── Consents round-trip ─────────────────────────────────────────────────

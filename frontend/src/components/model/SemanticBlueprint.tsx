@@ -26,6 +26,7 @@ import {
   COL_TOP,
   derivePlacement,
   layoutBoxes,
+  measureChipIds,
   measureIndex,
   nodeById,
   nodeWidth,
@@ -464,6 +465,7 @@ export function BlueprintCanvas({ model, zoom, selected, layoutMode, onSelect, o
       const mv = n as BlueprintMv
       const isMv = mv.kind === "mv"
       const sel = selected === n.id
+      const chipIds = measureChipIds(n.id, mv.measures)
       parts.push(
         <g key={n.id} opacity={dimmed ? 0.4 : 1} data-node={mv.kind} data-node-id={n.id} onClick={pick(n.id)} {...dragProps(n.id)}>
           <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={10}
@@ -478,7 +480,7 @@ export function BlueprintCanvas({ model, zoom, selected, layoutMode, onSelect, o
           </text>
           {zoom !== "far" &&
             mv.measures.map((ms, i) => {
-              const mid = `${n.id}::${ms.name}`
+              const mid = chipIds[i]
               const my = b.y + 44 + i * 22
               const selM = selected === mid
               chipPos[mid] = { x: b.x + 8, y: my + 9 }
@@ -784,6 +786,7 @@ function DetailInset({ model, selected }: { model: BlueprintModel; selected: str
       const targets = new Set(joins.map((j) => j.to))
       const root = joins.map((j) => j.from).find((f) => !targets.has(f)) ?? srcSet[0]
       const gN = mv.measures.filter((mm) => mm.gov === "governed").length
+      const rowIds = measureChipIds(n.id, mv.measures)
       head = (
         <>
           <span className="font-mono text-[13px] font-semibold text-primary">{shortName(n.id)}</span>
@@ -813,8 +816,8 @@ function DetailInset({ model, selected }: { model: BlueprintModel; selected: str
             </InsetSection>
           )}
           <InsetSection title={`Measures (${mv.measures.length})`}>
-            {mv.measures.map((mm) => (
-              <MeasureRow key={mm.name} name={mm.name} gov={mm.gov} expr={mm.expr} />
+            {mv.measures.map((mm, i) => (
+              <MeasureRow key={rowIds[i]} name={mm.name} gov={mm.gov} expr={mm.expr} />
             ))}
           </InsetSection>
           {(mv.mv_filter || mv.materialization) && (
@@ -837,6 +840,7 @@ function DetailInset({ model, selected }: { model: BlueprintModel; selected: str
       )
     } else {
       const cfg = n as BlueprintMv
+      const rowIds = measureChipIds(n.id, cfg.measures)
       head = (
         <>
           <span className="font-mono text-[13px] font-semibold text-primary">Space config</span>
@@ -846,8 +850,8 @@ function DetailInset({ model, selected }: { model: BlueprintModel; selected: str
       body = (
         <>
           <InsetSection title={`Measures (${cfg.measures.length})`}>
-            {cfg.measures.map((mm) => (
-              <MeasureRow key={mm.name} name={mm.name} gov={mm.gov} expr={mm.expr} />
+            {cfg.measures.map((mm, i) => (
+              <MeasureRow key={rowIds[i]} name={mm.name} gov={mm.gov} expr={mm.expr} />
             ))}
           </InsetSection>
           <InsetSection title="Note">

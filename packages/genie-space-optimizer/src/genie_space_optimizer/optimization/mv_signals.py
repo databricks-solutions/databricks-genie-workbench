@@ -67,13 +67,14 @@ from genie_space_optimizer.common.config import (
     MV_SIGNAL_UNAVAILABLE,
 )
 
-from .mv_fingerprint import Provenance, corpus_scan, same_tables
+from .mv_fingerprint import Provenance, corpus_scan
 from .mv_scoring import (
     REFERENCE_GOVERNED_MV,
     REFERENCE_LINEAGE_FOOTPRINT,
     DemandSignal,
     LineageOverlap,
 )
+from .mv_tables import TableResolver, same_fq_tables
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -373,6 +374,8 @@ def demand_signal(
     space_id: str,
     candidate_fingerprints: Iterable[str],
     candidate_source_tables: Iterable[str] = (),
+    candidate_sole_row: bool = False,
+    resolver: TableResolver | None = None,
     run_query: RunQuery,
     lookback_days: int = MV_DEMAND_HISTORY_LOOKBACK_DAYS,
     now: datetime | None = None,
@@ -386,8 +389,13 @@ def demand_signal(
     ``distinct_users`` = distinct ``executed_by``, ``cost_ms`` = summed
     ``total_duration_ms``, ``age_days`` from the most recent occurrence.
 
-    ``candidate_source_tables`` scopes the match: only traffic over the same table
-    names counts (MV-D116); empty counts every table.
+    ``candidate_source_tables`` scopes the match: only traffic over the same tables
+    counts (MV-D116), compared by full name after ``resolver`` resolves each
+    statement's tables against the space's own (MV-D123; ``None`` reads names as
+    written). A history row whose tables do not resolve counts toward nothing. A
+    table-less history row counts only when ``candidate_sole_row`` says the
+    candidate's calculation has one row in the advisor's scan, so it never counts
+    toward both halves of a measure split by its tables (Ruling 2).
 
     This is a *distinct population* from the **Y** signal (MV-D15): Y counts the
     benchmark-derived corpus scored by the advisor, D counts real query-history
@@ -440,12 +448,16 @@ def demand_signal(
             f"{REASON_EMPTY_STATEMENT_TEXT}: statement_text blank on all rows (CMK redaction?)",
         )
 
-    scan = corpus_scan(entries)
+    scan = corpus_scan(entries, resolver=resolver)
+    candidate_tables = tuple(candidate_source_tables)
     matched = [
         m
         for m in scan.measures
         if m.fingerprint in fingerprints
-        and same_tables(m.source_tables, candidate_source_tables)
+        and not m.has_unresolved_tables
+        and same_fq_tables(
+            m.source_tables, candidate_tables, tableless_matches=candidate_sole_row
+        )
     ]
     if not matched:
         # Traffic exists, but none of it re-derives this candidate's measure.

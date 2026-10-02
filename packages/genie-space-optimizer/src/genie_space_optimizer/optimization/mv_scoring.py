@@ -97,7 +97,6 @@ from .mv_fingerprint import (
     canonicalize_expr,
     extract_measures,
     source_table_name,
-    tables_overlap,
 )
 from .mv_state import (
     MV_CANDIDATE_TYPES,
@@ -105,6 +104,7 @@ from .mv_state import (
     supersede_legacy_mv_candidates,
     upsert_mv_candidate,
 )
+from .mv_tables import UNRESOLVED, ResolvedTables, TableResolver, fq_tables_overlap
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -322,6 +322,9 @@ class InstructionDefinition:
     measure_columns: frozenset[str] = frozenset()
     aggregate: str = ""
     source_tables: tuple[str, ...] = ()
+    has_unresolved_source: bool = False
+    """The measure reads a column no named table provides, such as a derived
+    relation's (MV-D123); such a definition conflicts with nothing."""
 
 
 class SemanticReference(Protocol):
@@ -874,8 +877,8 @@ def _definition_tables(definition: Mapping[str, Any]) -> tuple[str, ...]:
     """The tables a metric view reads: its ``source`` and every join's, nested ones too.
 
     A query as the ``source`` or as any join's source makes the whole set unknown
-    (``()``), which the governed match treats as matching any table, so a view over
-    a subquery blocks as before MV-D116. A join with no ``source`` adds no table, and
+    (``()``), which the governed match treats as unresolved (MV-D123), so a view
+    over a subquery governs nothing. A join with no ``source`` adds no table, and
     neither does a ``joins`` value that is not a list.
     """
 
@@ -1023,7 +1026,12 @@ def trusted_asset_definitions(
         for measure in measures:
             if not measure.canonical_expr:
                 continue
-            key = (source, measure.canonical_expr, tuple(sorted(measure.source_tables)))
+            key = (
+                source,
+                measure.canonical_expr,
+                tuple(sorted(measure.source_tables)),
+                measure.has_unresolved_source,
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -1036,6 +1044,7 @@ def trusted_asset_definitions(
                     measure_columns=frozenset(measure.source_columns),
                     aggregate=measure.aggregate,
                     source_tables=tuple(measure.source_tables),
+                    has_unresolved_source=measure.has_unresolved_source,
                 )
             )
     return tuple(out)
@@ -1068,11 +1077,45 @@ def _expr_columns(expr: str) -> frozenset[str]:
     return frozenset(columns)
 
 
+_AS_WRITTEN = TableResolver(None)
+
+
+def _resolved_tables(
+    tables: Sequence[str], resolver: TableResolver | None
+) -> ResolvedTables:
+    return (resolver or _AS_WRITTEN).resolve_all(tables)
+
+
+def governs_measure(
+    field_: MetricViewField,
+    canonical_expr: str,
+    tables: ResolvedTables,
+    *,
+    resolver: TableResolver | None = None,
+) -> bool:
+    """Whether a governed measure already governs a measure over ``tables`` (MV-D123).
+
+    The same canonical expression over a shared full table. The view's tables
+    resolve through the space's own; a view over a query names no table, so it,
+    and a view or measure whose tables do not resolve, governs nothing. A
+    table-less measure is governed by any matching expression, as before.
+    """
+    if field_.kind != FIELD_MEASURE or not field_.canonical_expr:
+        return False
+    if field_.canonical_expr != canonical_expr:
+        return False
+    governed = (
+        _resolved_tables(field_.source_tables, resolver) if field_.source_tables else UNRESOLVED
+    )
+    return fq_tables_overlap(tables, governed, tableless_matches=True)
+
+
 def dedup_gate(
     candidate: MetricViewCandidate,
     *,
     mv_fields: Sequence[MetricViewField] = (),
     instructions: Sequence[InstructionDefinition] = (),
+    resolver: TableResolver | None = None,
 ) -> DedupOutcome:
     """POV Part 3 and Part 5 gate: block, offer alternatives, or flag a conflict.
 
@@ -1106,20 +1149,20 @@ def dedup_gate(
       instruction naming "revenue" is not yet a definition of *this* expression;
       an instruction alone is what the advisor exists to act on rather than
       escalate.
+
+    Tables compare by full name (MV-D123): ``resolver`` holds the space's tables,
+    and ``None`` reads every name as written.
     """
     canonical = candidate.canonical_measure_expr
     if not canonical:
         return DedupOutcome()
 
     measures = [f for f in mv_fields if f.kind == FIELD_MEASURE]
-    exact = [
-        f
-        for f in measures
-        if f.canonical_expr
-        and f.canonical_expr == canonical
-        and tables_overlap(candidate.source_tables, f.source_tables)
-    ]
-    by_measure, by_concept = _conflicting_definitions(candidate, canonical, instructions)
+    tables = _resolved_tables(candidate.source_tables, resolver)
+    exact = [f for f in measures if governs_measure(f, canonical, tables, resolver=resolver)]
+    by_measure, by_concept = _conflicting_definitions(
+        candidate, canonical, instructions, resolver
+    )
     conflicting = by_measure + (by_concept if exact else ())
 
     if conflicting:
@@ -1143,6 +1186,7 @@ def _conflicting_definitions(
     candidate: MetricViewCandidate,
     canonical: str,
     instructions: Sequence[InstructionDefinition],
+    resolver: TableResolver | None,
 ) -> tuple[tuple[InstructionDefinition, ...], tuple[InstructionDefinition, ...]]:
     """Definitions that disagree with the candidate, split by how they matched.
 
@@ -1163,7 +1207,7 @@ def _conflicting_definitions(
         existing = definition.canonical_expr or canonicalize_expr(definition.expr)
         if not existing or existing == canonical:
             continue
-        if _defines_same_quantity(definition, candidate):
+        if _defines_same_quantity(definition, candidate, resolver):
             by_measure.append(definition)
         elif bool(concept) and (definition.concept or "").strip().lower() == concept:
             by_concept.append(definition)
@@ -1173,6 +1217,7 @@ def _conflicting_definitions(
 def _defines_same_quantity(
     definition: InstructionDefinition,
     candidate: MetricViewCandidate,
+    resolver: TableResolver | None,
 ) -> bool:
     """Whether a definition and a candidate aggregate the same columns the same way.
 
@@ -1180,15 +1225,26 @@ def _defines_same_quantity(
     provenance, and treating unknown as a match would let one unparsed asset
     conflict with every candidate in the space.
 
-    The two must also share a table (MV-D116): ``SUM(amount)`` over refunds is
-    not a claim about ``SUM(amount)`` over orders. An unknown table side overlaps,
-    so a definition whose tables were not resolved conflicts as before.
+    The two must also share a full table (MV-D123): ``SUM(amount)`` over
+    ``c2.s.orders`` is not a claim about ``SUM(amount)`` over ``c1.s.orders``.
+    Both sides resolve through the space's tables; a definition that names a
+    table the space cannot resolve, or reads a derived relation, conflicts with
+    nothing, and a table-less side still overlaps.
     """
     left = _bare_columns(definition.measure_columns)
     right = _bare_columns(candidate.measure_columns)
     if not left or not right or left != right:
         return False
-    if not tables_overlap(definition.source_tables, candidate.source_tables):
+    definition_tables = (
+        UNRESOLVED
+        if definition.has_unresolved_source
+        else _resolved_tables(definition.source_tables, resolver)
+    )
+    if not fq_tables_overlap(
+        definition_tables,
+        _resolved_tables(candidate.source_tables, resolver),
+        tableless_matches=True,
+    ):
         return False
     aggregate = (definition.aggregate or "").strip().lower()
     return bool(aggregate) and aggregate == _leading_aggregate(
@@ -1396,6 +1452,7 @@ def score_candidate(
     statuses: Mapping[str, str] | None = None,
     auth_identity: str = "OBO",
     generated_at: str | None = None,
+    resolver: TableResolver | None = None,
 ) -> ScoredProposal:
     """Run the gate, blend the signals, and assemble the proposal payload.
 
@@ -1403,9 +1460,11 @@ def score_candidate(
     candidate skips the embedding call entirely (there is nothing to propose, so
     paying for FMAPI round trips would be waste), while L, Y and D are pure
     arithmetic and are always computed so a blocked row still carries the
-    evidence that explains it.
+    evidence that explains it. ``resolver`` is passed to :func:`dedup_gate`.
     """
-    outcome = dedup_gate(candidate, mv_fields=mv_fields, instructions=instructions)
+    outcome = dedup_gate(
+        candidate, mv_fields=mv_fields, instructions=instructions, resolver=resolver
+    )
 
     if outcome.verdict == VERDICT_BLOCKED:
         semantic = SemanticMatch()
@@ -1629,6 +1688,7 @@ __all__ = [
     "TRUSTED_ASSET_SOURCE_PREFIX",
     "dedup_gate",
     "example_question_sql_statements",
+    "governs_measure",
     "trusted_asset_definitions",
     "demand_decay",
     "demand_score",

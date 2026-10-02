@@ -186,10 +186,14 @@ Metric view advice is available from two surfaces:
 Recommendations bundle compatible measures at one grain and show validation facts
 and evidence rather than presenting the ranking score as a probability. A measure
 is identified by its expression and the tables it reads, so the same aggregate over
-two tables is two suggestions, each in its own table's view. A row count such as
-`COUNT(*)` belongs to the one table its query reads, and joins that table's view;
-over a join it names no table and isn't proposed. An older
-rejection of the combined measure still hides both suggestions. A user can
+two tables is two suggestions, each in its own table's view. A table named without
+its catalog or schema counts as that table when the Agent has exactly one table by
+that name; otherwise the measure is not proposed. A row count such as `COUNT(*)`
+belongs to the one table its query reads, and joins that table's view; over a join
+it names no table and isn't proposed. Over a derived table or a CTE it names no table
+either, and isn't proposed. A rejection recorded before this change still hides its
+measure, except one recorded under a retired merged key, or over a derived-table
+`COUNT(*)` or a struct-field measure, which can show its measure once more. A user can
 approve a recommendation from the card, choose the target schema, and complete a
 fresh entitlement check. Workbench then creates the metric view under that user's
 OBO identity and attaches it to the live Genie Agent in the same request. If
