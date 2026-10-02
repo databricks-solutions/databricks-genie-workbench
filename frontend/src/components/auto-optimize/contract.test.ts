@@ -48,6 +48,38 @@ describe("GSO v2 frontend contract", () => {
       benchmark_policy: "review_only",
     })
     expect("deploy_target" in req).toBe(false)
+    // Blank/absent guidance never travels (Semantic Blueprint §7 pass-through).
+    expect("operator_guidance" in req).toBe(false)
+  })
+
+  it("includes trimmed operator guidance when provided", () => {
+    const req = buildOptimizationTriggerRequest({
+      spaceId: "space-1",
+      applyMode: "genie_config",
+      selectedLevers: new Set([1]),
+      selectedModel: null,
+      targetAccuracy: 0.9,
+      maxAttempts: 3,
+      benchmarkPolicy: "review_only",
+      operatorGuidance: "  Prefer orders_v2.  ",
+    })
+    expect(req.operator_guidance).toBe("Prefer orders_v2.")
+  })
+
+  it("omits operator guidance when blank or whitespace", () => {
+    for (const operatorGuidance of ["", "   "]) {
+      const req = buildOptimizationTriggerRequest({
+        spaceId: "space-1",
+        applyMode: "genie_config",
+        selectedLevers: new Set([1]),
+        selectedModel: null,
+        targetAccuracy: 0.9,
+        maxAttempts: 3,
+        benchmarkPolicy: "review_only",
+        operatorGuidance,
+      })
+      expect("operator_guidance" in req).toBe(false)
+    }
   })
 
   it("keeps the loop-state legacy fallback contract explicit", () => {

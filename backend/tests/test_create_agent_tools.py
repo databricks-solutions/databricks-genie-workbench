@@ -397,7 +397,7 @@ class TestUpdateSpaceDescription:
         class FakeClient:
             api_client = FakeAPI()
 
-        monkeypatch.setattr("backend.services.auth.get_workspace_client", lambda: FakeClient())
+        monkeypatch.setattr("backend.services.auth.require_obo_workspace_client", lambda: FakeClient())
         monkeypatch.setattr("backend.services.auth.get_databricks_host", lambda: "https://example.com")
         monkeypatch.setattr("backend.services.create_agent_tools.get_sql_warehouse_id", lambda: None)
 
@@ -460,6 +460,33 @@ class TestUpdateSpaceDescription:
 
         result = _update_space("space1")
         assert result["success"] is False
+
+    def test_update_without_a_user_token_never_writes_as_the_sp(self, monkeypatch):
+        """The model can name any space; the PATCH must run as the user or not at all."""
+        from backend.services import auth
+        from backend.services.create_agent_tools import _update_space
+
+        sp_calls = []
+
+        class RecordingSP:
+            class api_client:
+                @staticmethod
+                def do(method, path, body=None, **kwargs):
+                    sp_calls.append((method, path))
+                    return {}
+
+        monkeypatch.setattr(auth, "_get_default_client", lambda: RecordingSP())
+        monkeypatch.setattr(auth, "get_service_principal_client", lambda: RecordingSP())
+        monkeypatch.setattr("backend.services.auth.get_databricks_host", lambda: "https://example.com")
+        token = auth._obo_client.set(None)
+        try:
+            result = _update_space("space1", display_name="Hijacked")
+        finally:
+            auth._obo_client.reset(token)
+
+        assert result["success"] is False
+        assert "requires user authorization" in result["error"]
+        assert sp_calls == []
 
 
 class TestPresentPlanSuggestedDescription:

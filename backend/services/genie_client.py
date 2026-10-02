@@ -11,14 +11,115 @@ import os
 import time
 from copy import deepcopy
 from typing import Any
+from urllib.parse import quote, urlsplit
+
+import requests
 
 from dotenv import load_dotenv
 
-from backend.services.auth import get_workspace_client, get_service_principal_client, is_running_on_databricks_apps
+from backend.services.auth import (
+    get_workspace_client,
+    get_service_principal_client,
+    is_running_on_databricks_apps,
+    require_obo_workspace_client,
+)
+from backend.services.version_control import contracts as vc
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+class GenieTransport:
+    """Explicit-executor VC transport; legacy read helpers remain separate."""
+
+    def __init__(self, *, executor, authenticate, coordination, registry, flags=None,
+                 warehouse_id=None, parent_path=None):
+        self.executor = executor
+        self.authenticate = authenticate
+        self.coordination = coordination
+        self.registry = registry
+        self.flags = flags
+        self.warehouse_id = warehouse_id
+        self.parent_path = parent_path
+        parsed = urlsplit(executor.host)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                or parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.port):
+            raise ValueError("Explicit HTTPS workspace origin required")
+        self.host = executor.host.rstrip("/")
+
+    def get(self, binding, executor):
+        # Value-equality (not object identity): every caller re-derives a freshly
+        # *verified* executor per operation (identity.executor runs a live SCIM Me
+        # check each time), so the same verified principal is a new object each call.
+        # The transport always authenticates as `self.executor` (its own pinned,
+        # verified credential) in `_request`, so requiring the exact instance would
+        # make the promotion observer path impossible while adding no security --
+        # a value match on (workspace/host/principal/execution_ref) is the real pin.
+        if executor != self.executor:
+            raise PermissionError("Transport is pinned to its verified executor")
+        self._binding(binding)
+        response = self._request("GET", self._path(binding), query={"include_serialized_space": "true"})
+        if "serialized_space" not in response:
+            raise ValueError("Full serialized state is required")
+        return response
+
+    def create_once(self, payload, claim):
+        binding = self.registry.resolve(claim.binding_id)
+        if binding.space_id is not None or not self.warehouse_id:
+            raise PermissionError("Create requires provisional identity and explicit warehouse")
+        body = {"title": payload.title, "description": payload.description,
+                "serialized_space": json.dumps(vc.to_wire(payload.serialized_space)),
+                "warehouse_id": self.warehouse_id}
+        if self.parent_path is not None:
+            body["parent_path"] = self.parent_path
+        response = self._write("POST", "/api/2.0/genie/spaces", binding, body, claim)
+        if not isinstance(response.get("space_id"), str) or not response["space_id"]:
+            raise RuntimeError("Possible create orphan: missing physical identity")
+        return vc.CreateResponse(response["space_id"], response)
+
+    def patch_config_once(self, binding, serialized_space, claim):
+        self._write("PATCH", self._path(binding), binding,
+                    {"serialized_space": json.dumps(serialized_space)}, claim)
+
+    def patch_description_once(self, binding, description, claim):
+        self._write("PATCH", self._path(binding), binding, {"description": description}, claim)
+
+    @staticmethod
+    def _path(binding):
+        if not binding.space_id:
+            raise PermissionError("Physical binding required before GET or PATCH")
+        return f"/api/2.0/genie/spaces/{quote(binding.space_id, safe='')}"
+
+    def _binding(self, binding):
+        if (binding.workspace_id != self.executor.workspace_id
+                or self.registry.resolve(binding.binding_id) != binding):
+            raise PermissionError("Binding or explicit target executor mismatch")
+
+    def _write(self, method, path, binding, body, claim):
+        if self.flags is None or self.flags.enabled("vc_writes_enabled") is not True:
+            raise PermissionError("VC transport writes disabled")
+        self._binding(binding)
+        if (not isinstance(claim, vc.AdmissionClaim) or claim.binding_id != binding.binding_id
+                or claim.binding_revision != binding.binding_revision):
+            raise PermissionError("Bound admission claim required")
+        return self._request(method, path, body=body, claim=claim)
+
+    def _request(self, method, path, *, body=None, query=None, claim=None):
+        headers = self.authenticate(self.executor)
+        if not isinstance(headers, dict) or not headers.get("Authorization"):
+            raise PermissionError("Explicit executor authentication unavailable")
+        with requests.Session() as session:
+            session.trust_env = False
+            session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
+            if claim is not None:
+                self.coordination.assert_owner(claim)
+            response = session.request(method, self.host + path, headers=headers, json=body,
+                params=query, timeout=(10, 60), allow_redirects=False)
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("Redirect refused; mutation outcome requires verification")
+            response.raise_for_status()
+            return response.json() if response.content else {}
 
 
 def _enum_value_upper(value: Any) -> str:
@@ -156,24 +257,13 @@ def call_with_sp_fallback(fn, *, what: str = "genie API call"):
         raise
 
 
-def get_genie_space(
+def get_genie_space_with_sp_fallback(
     genie_space_id: str | None = None,
 ) -> dict:
-    """Fetch and parse a Genie Agent's serialized configuration.
+    """Fetch a Genie Agent, retrying as the service principal on an OAuth scope error.
 
-    Uses the Databricks SDK's API client which automatically handles
-    OBO authentication when running on Databricks Apps, ensuring that
-    the user's permissions are checked. Users without access to the Genie
-    Space will receive a 403/404 error.
-
-    Args:
-        genie_space_id: The Genie Agent ID (defaults to GENIE_SPACE_ID env var)
-
-    Returns:
-        Parsed serialized space configuration as a dictionary
-
-    Raises:
-        Exception: If the API request fails (e.g., 403 for no access)
+    GenieWatch only (outside the MV-D109 control plane). User paths call
+    :func:`get_genie_space`, which never answers as the service principal.
     """
     genie_space_id = genie_space_id or os.environ.get("GENIE_SPACE_ID")
     if not genie_space_id:
@@ -200,6 +290,23 @@ def get_genie_space(
         raise ValueError(f"Unable to get agent [{genie_space_id}]. {e}")
 
 
+def get_genie_space(genie_space_id: str | None = None) -> dict:
+    """Fetch a Genie Agent with its serialized configuration, as the signed-in user.
+
+    Never falls back to the service principal (MV-D109). Raises ``RuntimeError``
+    without a user token and ``ValueError`` when Genie refuses the read.
+    """
+    genie_space_id = genie_space_id or os.environ.get("GENIE_SPACE_ID")
+    if not genie_space_id:
+        raise ValueError("genie_space_id is required")
+    client = require_obo_workspace_client()
+    try:
+        return _get_space_with_client(client, genie_space_id)
+    except Exception as e:
+        logger.error(f"Failed to fetch Genie Agent {genie_space_id}: {e}")
+        raise ValueError(f"Unable to get agent [{genie_space_id}]. {e}")
+
+
 def _get_space_with_client(client, genie_space_id: str) -> dict:
     """Fetch a single Genie Agent using the given client."""
     response = client.api_client.do(
@@ -210,12 +317,15 @@ def _get_space_with_client(client, genie_space_id: str) -> dict:
     return response
 
 
-def list_genie_spaces() -> list[dict]:
+def list_genie_spaces(*, sp_fallback: bool = True) -> list[dict]:
     """Fetch all Genie Agents from the Databricks API with cursor pagination.
 
     Returns list of dicts with: id, display_name, description, create_time, update_time
     Raises an Exception on failure (callers should handle as appropriate).
+    ``sp_fallback=False`` lists only what the caller can see (MV-D109).
     """
+    if not sp_fallback:
+        return _list_spaces_with_client(require_obo_workspace_client())
     return call_with_sp_fallback(_list_spaces_with_client, what="list_genie_spaces")
 
 

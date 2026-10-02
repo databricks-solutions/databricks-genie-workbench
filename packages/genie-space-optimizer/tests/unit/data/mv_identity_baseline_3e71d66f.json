@@ -1,0 +1,850 @@
+{
+  "applied_config": {
+    "data_sources": {
+      "tables": [
+        {
+          "identifier": "east.ops.shipments"
+        },
+        {
+          "identifier": "main.sales.orders"
+        },
+        {
+          "identifier": "main.sales.payload"
+        },
+        {
+          "identifier": "main.sales.refunds"
+        },
+        {
+          "identifier": "samples.tpch.customer"
+        },
+        {
+          "identifier": "samples.tpch.lineitem"
+        },
+        {
+          "identifier": "samples.tpch.part"
+        },
+        {
+          "identifier": "west.ops.shipments"
+        }
+      ]
+    }
+  },
+  "bundles": [
+    {
+      "dedup_fingerprint": "027971b368d3567fdfa2957bdea07b593a136159ee44c0b228b6457051c2cb68",
+      "member_exprs": {
+        "5e09a7a3360f4006ea1144cc3b7515058e345a561889782029811261eb4ba50c": "SUM(`c_acctbal`)"
+      },
+      "members": [
+        "5e09a7a3360f4006ea1144cc3b7515058e345a561889782029811261eb4ba50c"
+      ],
+      "role": "control",
+      "source_tables": [
+        "samples.tpch.customer"
+      ],
+      "suggestion_id": "sug_027971b368d3"
+    },
+    {
+      "dedup_fingerprint": "19ce06a38d83338784bdad903ad85314459de8d8ffb02accd648cc7b8002045d",
+      "member_exprs": {
+        "50e9fb2ffaa04e2110b573e9ddd0ee50c194f7bf7861e89c8aacd62f57e687c8": "AVG(`p_size`)",
+        "d5962a1fcd266824f87f379b27af9da4ba91aa558536b530c0f249d865b7b498": "SUM(`p_retailprice`)"
+      },
+      "members": [
+        "50e9fb2ffaa04e2110b573e9ddd0ee50c194f7bf7861e89c8aacd62f57e687c8",
+        "d5962a1fcd266824f87f379b27af9da4ba91aa558536b530c0f249d865b7b498"
+      ],
+      "role": "mover",
+      "source_tables": [
+        "samples.tpch.part"
+      ],
+      "suggestion_id": "sug_19ce06a38d83"
+    },
+    {
+      "dedup_fingerprint": "62398c8c4a723936380710f8ff7f09372c1960dda6ff0ffeef9af4375daf299f",
+      "member_exprs": {
+        "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a": "SUM(`l_quantity`)",
+        "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef": "COUNT(`l_orderkey`)"
+      },
+      "members": [
+        "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+        "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef"
+      ],
+      "role": "control",
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ],
+      "suggestion_id": "sug_62398c8c4a72"
+    },
+    {
+      "dedup_fingerprint": "63ebba01a8419ac44a63961c47a6684e2ca8ebd1d914bac98541e0bfb0aefe13",
+      "member_exprs": {
+        "1edd8af554874788bee1223b11ef6fabce978155a0d287a4ace20ea501226fa0": "SUM(`fee`)"
+      },
+      "members": [
+        "1edd8af554874788bee1223b11ef6fabce978155a0d287a4ace20ea501226fa0"
+      ],
+      "role": "mover",
+      "source_tables": [
+        "main.sales.payload"
+      ],
+      "suggestion_id": "sug_63ebba01a841"
+    },
+    {
+      "dedup_fingerprint": "85a1925f7eed538a574c41fb184f6e5cfedac4d1392390526e11824e256721bb",
+      "member_exprs": {
+        "0a1d03bafd417fc0d6e3edb3d1267e2c8ccf5bb6983d9c61a1bce0b114111fba": "SUM(`tax`)"
+      },
+      "members": [
+        "0a1d03bafd417fc0d6e3edb3d1267e2c8ccf5bb6983d9c61a1bce0b114111fba"
+      ],
+      "role": "mover",
+      "source_tables": [
+        "main.sales.refunds"
+      ],
+      "suggestion_id": "sug_85a1925f7eed"
+    },
+    {
+      "dedup_fingerprint": "ffed4e76ac156e516b4c7c9a28ba4cc6939254e74631a6c16ee85344ac81ff4a",
+      "member_exprs": {
+        "8ea0fac6f5daf50a41f3b734a06bcfc107ba536b7be0550e85209a4ac5823e94": "COUNT(*)",
+        "acce2775eee1d717d5bd8772ebb79c10eb4b4554eb344dbcaff80e9a5efdc919": "SUM(`unit_price` * `quantity`)",
+        "ee25a314228aaa5905ceb48ac84e4c48716cfe06d020e74677d298e04620fa9a": "SUM(`tax`)"
+      },
+      "members": [
+        "8ea0fac6f5daf50a41f3b734a06bcfc107ba536b7be0550e85209a4ac5823e94",
+        "acce2775eee1d717d5bd8772ebb79c10eb4b4554eb344dbcaff80e9a5efdc919",
+        "ee25a314228aaa5905ceb48ac84e4c48716cfe06d020e74677d298e04620fa9a"
+      ],
+      "role": "mover",
+      "source_tables": [
+        "main.sales.orders"
+      ],
+      "suggestion_id": "sug_ffed4e76ac15"
+    }
+  ],
+  "cap": 12,
+  "captured_at_head": "3e71d66f",
+  "corpus_order": [
+    "control_customer_balance",
+    "control_lineitem_quantity",
+    "control_lineitem_count",
+    "two_catalogs_east",
+    "two_catalogs_west",
+    "orders_spelled_three_part",
+    "orders_spelled_two_part",
+    "orders_spelled_one_part",
+    "unqualified_unique_leaf",
+    "unqualified_ambiguous_leaf",
+    "derived_table_row_count",
+    "cte_row_count",
+    "struct_field_beside_payload_join",
+    "split_tax_orders",
+    "split_tax_refunds",
+    "tableless_history_row",
+    "c8_join_measure",
+    "c8_single_table_measure",
+    "cap_tail_part_price",
+    "cap_tail_part_size",
+    "cap_tail_part_top_price"
+  ],
+  "scan": [
+    {
+      "candidate_fingerprint": "3fb8a89e547298694763f0a651127bc7161c7cd053fa44432ba23d8ba8db2825",
+      "canonical_expr": "sum(amount)",
+      "fingerprint": "26a1a7f50fcbd9eed1d7de0b385de83147d1dc36dc0da2968fc2e3263f9c0632",
+      "from_statements": [
+        "orders_spelled_one_part",
+        "orders_spelled_three_part",
+        "orders_spelled_two_part"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "3fb8a89e547298694763f0a651127bc7161c7cd053fa44432ba23d8ba8db2825",
+      "provenance_count": 24,
+      "recurrence": 24,
+      "source_tables": [
+        "main.sales.orders",
+        "orders",
+        "sales.orders"
+      ],
+      "suggestion_id": "sug_3fb8a89e5472"
+    },
+    {
+      "candidate_fingerprint": "3fa002c106c2efd2f5fbd8466f23af3672c986f0bf79b7403ace47fe875d1e43",
+      "canonical_expr": "sum(weight)",
+      "fingerprint": "7cb062879b2f3f1b4fa98ff2e980b69baaa3f9f9fc132fbc6a9fde04ed0423cb",
+      "from_statements": [
+        "two_catalogs_east",
+        "two_catalogs_west"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "3fa002c106c2efd2f5fbd8466f23af3672c986f0bf79b7403ace47fe875d1e43",
+      "provenance_count": 16,
+      "recurrence": 16,
+      "source_tables": [
+        "east.ops.shipments",
+        "west.ops.shipments"
+      ],
+      "suggestion_id": "sug_3fa002c106c2"
+    },
+    {
+      "candidate_fingerprint": "8ea0fac6f5daf50a41f3b734a06bcfc107ba536b7be0550e85209a4ac5823e94",
+      "canonical_expr": "count(?n)",
+      "fingerprint": "d6fcc43e79446e3e5a87d48247f71b63c39fc32add5c97e4c6f6ec9fe68378a2",
+      "from_statements": [
+        "cte_row_count",
+        "derived_table_row_count"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "8ea0fac6f5daf50a41f3b734a06bcfc107ba536b7be0550e85209a4ac5823e94",
+      "provenance_count": 16,
+      "recurrence": 16,
+      "source_tables": [
+        "main.sales.orders"
+      ],
+      "suggestion_id": "sug_8ea0fac6f5da"
+    },
+    {
+      "candidate_fingerprint": "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef",
+      "canonical_expr": "count(l_orderkey)",
+      "fingerprint": "21e5b6a187a4d9736186cba336c7993ed64999fea34366a5e3852bde987c1a4b",
+      "from_statements": [
+        "control_lineitem_count"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef",
+      "provenance_count": 12,
+      "recurrence": 12,
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ],
+      "suggestion_id": "sug_70a0dc2f8318"
+    },
+    {
+      "candidate_fingerprint": "5e09a7a3360f4006ea1144cc3b7515058e345a561889782029811261eb4ba50c",
+      "canonical_expr": "sum(c_acctbal)",
+      "fingerprint": "3b66fe7d789552facfda9b2767d32f9a8cf02f4a23df583a66cfe062f0651421",
+      "from_statements": [
+        "control_customer_balance"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "5e09a7a3360f4006ea1144cc3b7515058e345a561889782029811261eb4ba50c",
+      "provenance_count": 12,
+      "recurrence": 12,
+      "source_tables": [
+        "samples.tpch.customer"
+      ],
+      "suggestion_id": "sug_5e09a7a3360f"
+    },
+    {
+      "candidate_fingerprint": "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+      "canonical_expr": "sum(l_quantity)",
+      "fingerprint": "449958ffe459bb03d935328c841975bfb786a3432b0b82007aeb9108fffafcee",
+      "from_statements": [
+        "control_lineitem_quantity"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+      "provenance_count": 12,
+      "recurrence": 12,
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ],
+      "suggestion_id": "sug_1f0ed1d158d5"
+    },
+    {
+      "candidate_fingerprint": "29be97e56430c8c5b6c44eda0ef532ececee4cae8808e46ceb3580a4ee1f4eb9",
+      "canonical_expr": "min(weight)",
+      "fingerprint": "079c1c81f2817ea64a14bd1f93284982d1cbb0db4cceacdd5963af4950f92d91",
+      "from_statements": [
+        "unqualified_ambiguous_leaf"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "29be97e56430c8c5b6c44eda0ef532ececee4cae8808e46ceb3580a4ee1f4eb9",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "shipments"
+      ],
+      "suggestion_id": "sug_29be97e56430"
+    },
+    {
+      "candidate_fingerprint": "1edd8af554874788bee1223b11ef6fabce978155a0d287a4ace20ea501226fa0",
+      "canonical_expr": "sum(fee)",
+      "fingerprint": "7f14604a80e344665820650191a5a9c22e3b02ce33e4223530c307c21dd7b974",
+      "from_statements": [
+        "struct_field_beside_payload_join"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "1edd8af554874788bee1223b11ef6fabce978155a0d287a4ace20ea501226fa0",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "main.sales.payload"
+      ],
+      "suggestion_id": "sug_1edd8af55487"
+    },
+    {
+      "candidate_fingerprint": "7604ad8486bf294d65789203f68425447394dcd2f64d6d21e6d9a7a4efbfdd7f",
+      "canonical_expr": "sum(tax)",
+      "fingerprint": "8047937ca893e55fededa7d88c9fdfc6aed10f19f54c58cf804bc78ff4bad3a3",
+      "from_statements": [
+        "tableless_history_row"
+      ],
+      "has_unresolved_columns": true,
+      "merged_fingerprint": "5739cfc4ee8b2b4b4ebca411b06978bb3e59f74da1f98f702a02492dfdbd6f1e",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [],
+      "suggestion_id": "sug_7604ad8486bf"
+    },
+    {
+      "candidate_fingerprint": "ee25a314228aaa5905ceb48ac84e4c48716cfe06d020e74677d298e04620fa9a",
+      "canonical_expr": "sum(tax)",
+      "fingerprint": "8047937ca893e55fededa7d88c9fdfc6aed10f19f54c58cf804bc78ff4bad3a3",
+      "from_statements": [
+        "split_tax_orders"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "5739cfc4ee8b2b4b4ebca411b06978bb3e59f74da1f98f702a02492dfdbd6f1e",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "main.sales.orders"
+      ],
+      "suggestion_id": "sug_ee25a314228a"
+    },
+    {
+      "candidate_fingerprint": "0a1d03bafd417fc0d6e3edb3d1267e2c8ccf5bb6983d9c61a1bce0b114111fba",
+      "canonical_expr": "sum(tax)",
+      "fingerprint": "8047937ca893e55fededa7d88c9fdfc6aed10f19f54c58cf804bc78ff4bad3a3",
+      "from_statements": [
+        "split_tax_refunds"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "5739cfc4ee8b2b4b4ebca411b06978bb3e59f74da1f98f702a02492dfdbd6f1e",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "main.sales.refunds"
+      ],
+      "suggestion_id": "sug_0a1d03bafd41"
+    },
+    {
+      "candidate_fingerprint": "acce2775eee1d717d5bd8772ebb79c10eb4b4554eb344dbcaff80e9a5efdc919",
+      "canonical_expr": "sum(unit_price * quantity)",
+      "fingerprint": "964de74f009effd3c86f6cf8c212e6431d182b0b7537c38205131ce764961bef",
+      "from_statements": [
+        "c8_single_table_measure"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "86b4e59acdd0c031817c919f77f0efb6621360e6bc5887a85f65e84c5ccfa578",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "main.sales.orders"
+      ],
+      "suggestion_id": "sug_acce2775eee1"
+    },
+    {
+      "candidate_fingerprint": "86b4e59acdd0c031817c919f77f0efb6621360e6bc5887a85f65e84c5ccfa578",
+      "canonical_expr": "sum(unit_price * quantity)",
+      "fingerprint": "964de74f009effd3c86f6cf8c212e6431d182b0b7537c38205131ce764961bef",
+      "from_statements": [
+        "c8_join_measure"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "86b4e59acdd0c031817c919f77f0efb6621360e6bc5887a85f65e84c5ccfa578",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "main.sales.orders",
+        "main.sales.refunds"
+      ],
+      "suggestion_id": "sug_86b4e59acdd0"
+    },
+    {
+      "candidate_fingerprint": "69c89dff4b00d3887396843486af43d54492e8e09b12ffe9d9d4aacd0a2ad276",
+      "canonical_expr": "max(refund_amount)",
+      "fingerprint": "96737b97e78c93b680bda74c7cef992fb5cf2a749007e770678b4fc1c755ea43",
+      "from_statements": [
+        "unqualified_unique_leaf"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "69c89dff4b00d3887396843486af43d54492e8e09b12ffe9d9d4aacd0a2ad276",
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_tables": [
+        "refunds"
+      ],
+      "suggestion_id": "sug_69c89dff4b00"
+    },
+    {
+      "candidate_fingerprint": "50e9fb2ffaa04e2110b573e9ddd0ee50c194f7bf7861e89c8aacd62f57e687c8",
+      "canonical_expr": "avg(p_size)",
+      "fingerprint": "22136c90999a66b7adab4ca272785d5e213b31364ababb8fe7aba60cb0d4ed51",
+      "from_statements": [
+        "cap_tail_part_size"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "50e9fb2ffaa04e2110b573e9ddd0ee50c194f7bf7861e89c8aacd62f57e687c8",
+      "provenance_count": 6,
+      "recurrence": 6,
+      "source_tables": [
+        "samples.tpch.part"
+      ],
+      "suggestion_id": "sug_50e9fb2ffaa0"
+    },
+    {
+      "candidate_fingerprint": "d5962a1fcd266824f87f379b27af9da4ba91aa558536b530c0f249d865b7b498",
+      "canonical_expr": "sum(p_retailprice)",
+      "fingerprint": "55a1c0a8a18025457825906dabe7eec869957b17ac4783dd0099091248976c0b",
+      "from_statements": [
+        "cap_tail_part_price"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "d5962a1fcd266824f87f379b27af9da4ba91aa558536b530c0f249d865b7b498",
+      "provenance_count": 6,
+      "recurrence": 6,
+      "source_tables": [
+        "samples.tpch.part"
+      ],
+      "suggestion_id": "sug_d5962a1fcd26"
+    },
+    {
+      "candidate_fingerprint": "0cc53d427c284662b586592f0d8ba287d4205287dcce6d69b2c2951768737e39",
+      "canonical_expr": "max(p_retailprice)",
+      "fingerprint": "cd47232135c99fdac12d2c6edef3d0f5d08580677713f68a828a7769a95a7d23",
+      "from_statements": [
+        "cap_tail_part_top_price"
+      ],
+      "has_unresolved_columns": false,
+      "merged_fingerprint": "0cc53d427c284662b586592f0d8ba287d4205287dcce6d69b2c2951768737e39",
+      "provenance_count": 6,
+      "recurrence": 6,
+      "source_tables": [
+        "samples.tpch.part"
+      ],
+      "suggestion_id": "sug_0cc53d427c28"
+    }
+  ],
+  "space_id": "01f04ac8c1f11c9a9e5b3b2b0e5d5c11",
+  "sqlglot": "30.0.3",
+  "statements": {
+    "c8_join_measure": {
+      "expected_v2": "same key; no longer the orders half's merged key",
+      "repeats": 8,
+      "residual": "R9 C-8 join measure",
+      "role": "control",
+      "sql": "SELECT SUM(o.unit_price * r.quantity) AS v FROM main.sales.orders o JOIN main.sales.refunds r ON o.order_id = r.order_id",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(unit_price * quantity)",
+          "expr_fingerprint": "964de74f009effd3c86f6cf8c212e6431d182b0b7537c38205131ce764961bef",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "quantity",
+            "unit_price"
+          ],
+          "spelled_source_tables": [
+            "main.sales.orders",
+            "main.sales.refunds"
+          ]
+        }
+      ]
+    },
+    "c8_single_table_measure": {
+      "expected_v2": "same key; merged key retired",
+      "repeats": 8,
+      "residual": "R9 C-8 single-table half",
+      "role": "control",
+      "sql": "SELECT SUM(unit_price * quantity) AS v FROM main.sales.orders",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(unit_price * quantity)",
+          "expr_fingerprint": "964de74f009effd3c86f6cf8c212e6431d182b0b7537c38205131ce764961bef",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "quantity",
+            "unit_price"
+          ],
+          "spelled_source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ]
+    },
+    "cap_tail_part_price": {
+      "expected_v2": "same key; the part bundle's membership moves at the cap",
+      "repeats": 6,
+      "residual": "R2 cap-near split",
+      "role": "control",
+      "sql": "SELECT SUM(p_retailprice) AS p FROM samples.tpch.part",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(p_retailprice)",
+          "expr_fingerprint": "55a1c0a8a18025457825906dabe7eec869957b17ac4783dd0099091248976c0b",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "p_retailprice"
+          ],
+          "spelled_source_tables": [
+            "samples.tpch.part"
+          ]
+        }
+      ]
+    },
+    "cap_tail_part_size": {
+      "expected_v2": "same key; the part bundle's membership moves at the cap",
+      "repeats": 6,
+      "residual": "R2 cap-near split",
+      "role": "control",
+      "sql": "SELECT AVG(p_size) AS s FROM samples.tpch.part",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "avg(p_size)",
+          "expr_fingerprint": "22136c90999a66b7adab4ca272785d5e213b31364ababb8fe7aba60cb0d4ed51",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "p_size"
+          ],
+          "spelled_source_tables": [
+            "samples.tpch.part"
+          ]
+        }
+      ]
+    },
+    "cap_tail_part_top_price": {
+      "expected_v2": "same key; the part bundle's membership moves at the cap",
+      "repeats": 6,
+      "residual": "R2 cap-near split",
+      "role": "control",
+      "sql": "SELECT MAX(p_retailprice) AS p FROM samples.tpch.part",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "max(p_retailprice)",
+          "expr_fingerprint": "cd47232135c99fdac12d2c6edef3d0f5d08580677713f68a828a7769a95a7d23",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "p_retailprice"
+          ],
+          "spelled_source_tables": [
+            "samples.tpch.part"
+          ]
+        }
+      ]
+    },
+    "control_customer_balance": {
+      "expected_v2": "same key",
+      "repeats": 12,
+      "residual": "three-part control",
+      "role": "control",
+      "sql": "SELECT SUM(c_acctbal) AS bal FROM samples.tpch.customer",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(c_acctbal)",
+          "expr_fingerprint": "3b66fe7d789552facfda9b2767d32f9a8cf02f4a23df583a66cfe062f0651421",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "c_acctbal"
+          ],
+          "spelled_source_tables": [
+            "samples.tpch.customer"
+          ]
+        }
+      ]
+    },
+    "control_lineitem_count": {
+      "expected_v2": "same key",
+      "repeats": 12,
+      "residual": "three-part control",
+      "role": "control",
+      "sql": "SELECT COUNT(l_orderkey) AS n, l_shipmode FROM samples.tpch.lineitem GROUP BY l_shipmode",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "count(l_orderkey)",
+          "expr_fingerprint": "21e5b6a187a4d9736186cba336c7993ed64999fea34366a5e3852bde987c1a4b",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "l_orderkey"
+          ],
+          "spelled_source_tables": [
+            "samples.tpch.lineitem"
+          ]
+        }
+      ]
+    },
+    "control_lineitem_quantity": {
+      "expected_v2": "same key",
+      "repeats": 12,
+      "residual": "three-part control",
+      "role": "control",
+      "sql": "SELECT SUM(l_quantity) AS q, l_shipmode FROM samples.tpch.lineitem GROUP BY l_shipmode",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(l_quantity)",
+          "expr_fingerprint": "449958ffe459bb03d935328c841975bfb786a3432b0b82007aeb9108fffafcee",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "l_quantity"
+          ],
+          "spelled_source_tables": [
+            "samples.tpch.lineitem"
+          ]
+        }
+      ]
+    },
+    "cte_row_count": {
+      "expected_v2": "unresolved, never on main.sales.orders",
+      "repeats": 8,
+      "residual": "R4 CTE COUNT(*)",
+      "role": "mover",
+      "sql": "WITH buyers AS (SELECT DISTINCT customer_id FROM main.sales.orders) SELECT COUNT(*) AS n FROM buyers",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "count(?n)",
+          "expr_fingerprint": "d6fcc43e79446e3e5a87d48247f71b63c39fc32add5c97e4c6f6ec9fe68378a2",
+          "has_unresolved_columns": false,
+          "source_columns": [],
+          "spelled_source_tables": []
+        }
+      ]
+    },
+    "derived_table_row_count": {
+      "expected_v2": "unresolved, never on main.sales.orders",
+      "repeats": 8,
+      "residual": "R4 derived-table COUNT(*)",
+      "role": "mover",
+      "sql": "SELECT COUNT(*) AS n FROM (SELECT DISTINCT customer_id FROM main.sales.orders) sub",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "count(?n)",
+          "expr_fingerprint": "d6fcc43e79446e3e5a87d48247f71b63c39fc32add5c97e4c6f6ec9fe68378a2",
+          "has_unresolved_columns": false,
+          "source_columns": [],
+          "spelled_source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ]
+    },
+    "orders_spelled_one_part": {
+      "expected_v2": "one row over main.sales.orders",
+      "repeats": 8,
+      "residual": "one table spelled three-, two- and one-part",
+      "role": "mover",
+      "sql": "SELECT SUM(amount) AS total FROM orders",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(amount)",
+          "expr_fingerprint": "26a1a7f50fcbd9eed1d7de0b385de83147d1dc36dc0da2968fc2e3263f9c0632",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "amount"
+          ],
+          "spelled_source_tables": [
+            "orders"
+          ]
+        }
+      ]
+    },
+    "orders_spelled_three_part": {
+      "expected_v2": "one row over main.sales.orders",
+      "repeats": 8,
+      "residual": "one table spelled three-, two- and one-part",
+      "role": "mover",
+      "sql": "SELECT SUM(amount) AS total, region FROM main.sales.orders GROUP BY region",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(amount)",
+          "expr_fingerprint": "26a1a7f50fcbd9eed1d7de0b385de83147d1dc36dc0da2968fc2e3263f9c0632",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "amount"
+          ],
+          "spelled_source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ]
+    },
+    "orders_spelled_two_part": {
+      "expected_v2": "one row over main.sales.orders",
+      "repeats": 8,
+      "residual": "one table spelled three-, two- and one-part",
+      "role": "mover",
+      "sql": "SELECT SUM(amount) AS total FROM sales.orders",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(amount)",
+          "expr_fingerprint": "26a1a7f50fcbd9eed1d7de0b385de83147d1dc36dc0da2968fc2e3263f9c0632",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "amount"
+          ],
+          "spelled_source_tables": [
+            "sales.orders"
+          ]
+        }
+      ]
+    },
+    "split_tax_orders": {
+      "expected_v2": "same key",
+      "repeats": 8,
+      "residual": "R5 split measure, orders half",
+      "role": "control",
+      "sql": "SELECT SUM(tax) AS t FROM main.sales.orders",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(tax)",
+          "expr_fingerprint": "8047937ca893e55fededa7d88c9fdfc6aed10f19f54c58cf804bc78ff4bad3a3",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "tax"
+          ],
+          "spelled_source_tables": [
+            "main.sales.orders"
+          ]
+        }
+      ]
+    },
+    "split_tax_refunds": {
+      "expected_v2": "same key",
+      "repeats": 8,
+      "residual": "R5 split measure, refunds half",
+      "role": "control",
+      "sql": "SELECT SUM(tax) AS t FROM main.sales.refunds",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(tax)",
+          "expr_fingerprint": "8047937ca893e55fededa7d88c9fdfc6aed10f19f54c58cf804bc78ff4bad3a3",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "tax"
+          ],
+          "spelled_source_tables": [
+            "main.sales.refunds"
+          ]
+        }
+      ]
+    },
+    "struct_field_beside_payload_join": {
+      "expected_v2": "sum(payload.fee) over main.sales.orders",
+      "repeats": 8,
+      "residual": "R6 o.payload.fee beside JOIN payload p",
+      "role": "mover",
+      "sql": "SELECT SUM(o.payload.fee) AS fees FROM main.sales.orders o JOIN main.sales.payload p ON o.order_id = p.order_id",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(fee)",
+          "expr_fingerprint": "7f14604a80e344665820650191a5a9c22e3b02ce33e4223530c307c21dd7b974",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "fee"
+          ],
+          "spelled_source_tables": [
+            "main.sales.payload"
+          ]
+        }
+      ]
+    },
+    "tableless_history_row": {
+      "expected_v2": "same table-less key; joins neither half",
+      "repeats": 8,
+      "residual": "R5 table-less history row",
+      "role": "control",
+      "sql": "SELECT SUM(tax) AS t",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(tax)",
+          "expr_fingerprint": "8047937ca893e55fededa7d88c9fdfc6aed10f19f54c58cf804bc78ff4bad3a3",
+          "has_unresolved_columns": true,
+          "source_columns": [
+            "tax"
+          ],
+          "spelled_source_tables": []
+        }
+      ]
+    },
+    "two_catalogs_east": {
+      "expected_v2": "own row over east.ops.shipments",
+      "repeats": 8,
+      "residual": "R1 two catalogs on one leaf",
+      "role": "mover",
+      "sql": "SELECT SUM(weight) AS w FROM east.ops.shipments",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(weight)",
+          "expr_fingerprint": "7cb062879b2f3f1b4fa98ff2e980b69baaa3f9f9fc132fbc6a9fde04ed0423cb",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "weight"
+          ],
+          "spelled_source_tables": [
+            "east.ops.shipments"
+          ]
+        }
+      ]
+    },
+    "two_catalogs_west": {
+      "expected_v2": "own row over west.ops.shipments",
+      "repeats": 8,
+      "residual": "R1 two catalogs on one leaf",
+      "role": "mover",
+      "sql": "SELECT SUM(weight) AS w FROM west.ops.shipments",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "sum(weight)",
+          "expr_fingerprint": "7cb062879b2f3f1b4fa98ff2e980b69baaa3f9f9fc132fbc6a9fde04ed0423cb",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "weight"
+          ],
+          "spelled_source_tables": [
+            "west.ops.shipments"
+          ]
+        }
+      ]
+    },
+    "unqualified_ambiguous_leaf": {
+      "expected_v2": "same key over the spelled name, refused as unresolved_table",
+      "repeats": 8,
+      "residual": "unqualified ambiguous leaf",
+      "role": "control",
+      "sql": "SELECT MIN(weight) AS lightest FROM shipments",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "min(weight)",
+          "expr_fingerprint": "079c1c81f2817ea64a14bd1f93284982d1cbb0db4cceacdd5963af4950f92d91",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "weight"
+          ],
+          "spelled_source_tables": [
+            "shipments"
+          ]
+        }
+      ]
+    },
+    "unqualified_unique_leaf": {
+      "expected_v2": "row over main.sales.refunds",
+      "repeats": 8,
+      "residual": "unqualified unique leaf",
+      "role": "mover",
+      "sql": "SELECT MAX(refund_amount) AS m FROM refunds",
+      "v1_occurrence_inputs": [
+        {
+          "canonical_expr": "max(refund_amount)",
+          "expr_fingerprint": "96737b97e78c93b680bda74c7cef992fb5cf2a749007e770678b4fc1c755ea43",
+          "has_unresolved_columns": false,
+          "source_columns": [
+            "refund_amount"
+          ],
+          "spelled_source_tables": [
+            "refunds"
+          ]
+        }
+      ]
+    }
+  }
+}

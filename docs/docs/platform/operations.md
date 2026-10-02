@@ -119,9 +119,14 @@ If a job with matching settings already exists, it is reused rather than duplica
 1. Delete the job in the Databricks UI
 2. Rerun `notebooks/install.py`, or `./scripts/deploy.sh --update` for the local terminal path
 
-### `ensure_job_run_as` Self-Healing
+### Job `run_as` Verification
 
-At app startup, `_ensure_gso_job_run_as()` checks that the optimization job's `run_as` matches the current app SP. If they don't match (e.g., the app was redeployed with a different SP), the job is automatically updated. This avoids manual reconfiguration when the app identity changes.
+At app startup, `_verify_gso_job_run_as()` in `backend/main.py` checks that the optimization job's `run_as` is the current app SP. It only verifies — it never updates the job. The deployer sets `run_as` (`databricks.yml` on the local terminal path, `scripts/deploy_lib/gso_job.py` on the notebook path), so a mismatch is fixed by redeploying the job (rerun `notebooks/install.py`, or `./scripts/deploy.sh --update`).
+
+- **Readable and wrong** (e.g., the app was redeployed with a different SP): the app fails to boot until the job is redeployed.
+- **Unreadable** (Jobs API error): the app still boots, after three reads with 2 s and 4 s backoff (each read has a 1 s SDK retry window and a 30 s HTTP timeout, so this can delay boot by up to about 100 s), and logs `Optimizer Job run_as unreadable after 3 attempt(s)`. Only `POST /api/auto-optimize/trigger` is disabled: it returns 503 `The optimizer job's identity could not be verified. Try again shortly.` and re-checks once per attempt, so it recovers without a restart. If the re-check then finds the wrong `run_as`, it returns 503 `The optimizer job's run_as does not match the app service principal` — redeploy the job.
+- **`GSO_JOB_ID` empty**: the app boots, and `/trigger` returns 503 `Auto-Optimize is not configured. Set GSO_CATALOG and GSO_JOB_ID.` (`auto_optimize.py`, `_is_configured`).
+- **`GSO_JOB_ID` set but not a positive integer**: the app boots, and `/trigger` returns 503 `The optimizer job is not configured (GSO_JOB_ID must be the Job's numeric id). Redeploy before starting a run.` — redeploy so the job id is injected.
 
 ### Bundle Management (local terminal path only)
 

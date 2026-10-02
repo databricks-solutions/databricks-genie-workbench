@@ -73,6 +73,21 @@ resources:
           default: ""
         - name: workload_warehouse_ids
           default: "[]"
+        # Metric view advisor parameters (MV-D5 four-place lockstep). Only the
+        # optimize task consumes them (run_optimize.py). enable_metric_view_suggestions
+        # gates the advisor phase; mv_attach_views / mv_consent_id drive the MV-D16
+        # attach phase; mv_action_mode / mv_min_confidence are declared-but-unconsumed
+        # today (a later prompt wires them — see run_optimize.py and gap report §2.2).
+        - name: enable_metric_view_suggestions
+          default: "false"
+        - name: mv_action_mode
+          default: "suggest_only"
+        - name: mv_attach_views
+          default: ""
+        - name: mv_consent_id
+          default: ""
+        - name: mv_min_confidence
+          default: "75"
       tasks:
         # Every task carries the full job-parameter set as base_parameters so
         # there is NO inter-task task-value plumbing (D9). run_id/catalog/schema
@@ -134,6 +149,15 @@ resources:
               target_accuracy: "{{job.parameters.target_accuracy}}"
               benchmark_policy: "{{job.parameters.benchmark_policy}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
+              # Metric view advisor phase inputs (MV-D5). Passing these as
+              # base_parameters is what makes the run_optimize.py widgets receive
+              # real job values — a declared job parameter omitted here silently
+              # resolves to the widget default (the trap Prompt 8 exists to close).
+              enable_metric_view_suggestions: "{{job.parameters.enable_metric_view_suggestions}}"
+              mv_action_mode: "{{job.parameters.mv_action_mode}}"
+              mv_attach_views: "{{job.parameters.mv_attach_views}}"
+              mv_consent_id: "{{job.parameters.mv_consent_id}}"
+              mv_min_confidence: "{{job.parameters.mv_min_confidence}}"
           environment_key: default
           timeout_seconds: 14400
           max_retries: 0

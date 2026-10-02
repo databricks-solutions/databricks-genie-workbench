@@ -69,7 +69,7 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 - Registers `OBOAuthMiddleware` for user identity on all `/api/*` routes
 - Mounts routers with their prefixes
 - Serves `frontend/dist/` as static files (SPA with fallback to `index.html`)
-- On startup, ensures the GSO job's `run_as` matches the app's SP via `_ensure_gso_job_run_as()`
+- On startup, verifies (never repairs) that the GSO job's `run_as` is the app's SP via `_verify_gso_job_run_as()`; a wrong `run_as` fails boot, an unreadable one disables only `POST /api/auto-optimize/trigger` (503) until it verifies
 
 ### Routers
 
@@ -77,7 +77,7 @@ The backend is a FastAPI application (`backend/main.py`) that provides REST API 
 |--------|--------|---------|
 | `analysis.py` | `/api` | Space fetch/parse, app settings, debug auth |
 | `spaces.py` | `/api` | Space listing, scanning, history, starring |
-| `admin.py` | `/api/admin` | Org-wide dashboard, leaderboard, alerts |
+| `admin.py` | `/api/admin` | Dashboard, leaderboard, and alerts over the agents the caller can see |
 | `auth.py` | `/api/auth` | Current user info, health check |
 | `create.py` | `/api/create` | Create agent chat, UC discovery, wizard, session management |
 | `auto_optimize.py` | `/api/auto-optimize` | GSO trigger, run management, results, patches, and benchmark changes |
@@ -138,8 +138,8 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 | View | Component | Description |
 |------|-----------|-------------|
 | `list` | `SpaceList` | Browse and search Genie Agents with IQ scores |
-| `detail` | `SpaceDetail` | Space detail with tabs: Score, Optimize, History |
-| `admin` | `AdminDashboard` | Org-wide stats, leaderboard, alerts, plus lazy-loaded GenieWatch sub-tabs |
+| `detail` | `SpaceDetail` | Space detail with tabs: Score, Model, Optimize, History |
+| `admin` | `AdminDashboard` | Genie Agent health & observability: an overview (stats, leaderboard, alerts) over the agents the caller can see, plus lazy-loaded GenieWatch sub-tabs. Cost and Resources stay workspace-wide (system tables read as the service principal); Feedback reads the same tables but keeps only the agents GenieWatch lists; the Agents sub-tab lists OBO-first |
 | `create` | `CreateAgentChat` | Conversational agent for building new Genie Agents |
 | `how-it-works` | `HowItWorks` | In-app explanation of the Workbench workflow |
 
@@ -147,6 +147,7 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 
 - `components/ui/` — design system primitives (button, card, badge, etc.) using `class-variance-authority`
 - `components/auto-optimize/` — components for the GSO optimization UI
+- `components/model/` — the Model tab: `SemanticModelTab` and `SemanticBlueprint` (the interactive Semantic Blueprint canvas), plus the pure `blueprint/` modules (`model` adapter, `layout`, `routing`, `cardinality`, `annotate`, `advisor`). `SemanticBlueprint` replaced the earlier classic node-graph canvas as the only Model-tab view
 - `pages/` — `SpaceList`, `SpaceDetail`, `AdminDashboard`, `HowItWorks`, `HistoryTab`, `IQScoreTab`
 - `watch/` — GenieWatch UI with its own `api.ts` (base `/api/watch`), types, components, and pages; namespaced to avoid colliding with the workbench API surface, and lazy-loaded as `AdminDashboard` sub-tabs
 - `hooks/` — `useAnalysis`, `useTheme`

@@ -1,0 +1,33 @@
+{
+  "type": "PackageManifest",
+  "examples": [
+    {
+      "schema_version": "VC/1.0",
+      "space_key": "sales",
+      "source_version_id": "00000000-0000-4000-8000-000000000002",
+      "raw_source_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_fingerprints": {
+        "config": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "benchmark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metadata": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalizer_version": "vc-c14n/1"
+      },
+      "artifact_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mapping_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transformer_version": "vc-transform/1",
+      "required_sources": [
+        "sales.orders"
+      ],
+      "validation_policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "benchmark_policy_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "ownership": {
+        "team": "analytics"
+      },
+      "file_digests": {
+        "artifact.json": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "mapping.json": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "package_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ]
+}

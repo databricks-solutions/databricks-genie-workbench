@@ -1,0 +1,357 @@
+{
+  "type": "DiffItem",
+  "examples": [
+    {
+      "category": "sources",
+      "path": "/sources",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "sources",
+      "path": "/sources",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "sources",
+      "path": "/sources",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "columns",
+      "path": "/columns",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "columns",
+      "path": "/columns",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "columns",
+      "path": "/columns",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "instructions",
+      "path": "/instructions",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "instructions",
+      "path": "/instructions",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "instructions",
+      "path": "/instructions",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "joins",
+      "path": "/joins",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "joins",
+      "path": "/joins",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "joins",
+      "path": "/joins",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "filters",
+      "path": "/filters",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "filters",
+      "path": "/filters",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "filters",
+      "path": "/filters",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "parameters",
+      "path": "/parameters",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "parameters",
+      "path": "/parameters",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "parameters",
+      "path": "/parameters",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "sql",
+      "path": "/sql",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "sql",
+      "path": "/sql",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "sql",
+      "path": "/sql",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "benchmarks",
+      "path": "/benchmarks",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "benchmarks",
+      "path": "/benchmarks",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "benchmarks",
+      "path": "/benchmarks",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "questions",
+      "path": "/questions",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "questions",
+      "path": "/questions",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "questions",
+      "path": "/questions",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "metadata",
+      "path": "/metadata",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "metadata",
+      "path": "/metadata",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "metadata",
+      "path": "/metadata",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "bindings",
+      "path": "/bindings",
+      "change": "added",
+      "before": null,
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    },
+    {
+      "category": "bindings",
+      "path": "/bindings",
+      "change": "removed",
+      "before": {
+        "value": "old"
+      },
+      "after": null,
+      "review_required": true
+    },
+    {
+      "category": "bindings",
+      "path": "/bindings",
+      "change": "modified",
+      "before": {
+        "value": "old"
+      },
+      "after": {
+        "value": "new"
+      },
+      "review_required": true
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "submitted": {
+    "data_sources": {
+      "tables": [
+        {
+          "identifier": "cat.sch.sales"
+        }
+      ],
+      "metric_views": [
+        {
+          "identifier": "cat.sch.revenue_summary"
+        }
+      ]
+    }
+  },
+  "observed": {
+    "data_sources": {
+      "tables": [
+        {
+          "identifier": "cat.sch.revenue_summary"
+        },
+        {
+          "identifier": "cat.sch.sales"
+        }
+      ]
+    }
+  }
+}

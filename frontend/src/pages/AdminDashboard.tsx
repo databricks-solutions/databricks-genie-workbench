@@ -1,5 +1,5 @@
 /**
- * AdminDashboard - Org-wide statistics, leaderboard, alerts, and the
+ * AdminDashboard - Statistics, leaderboard and alerts over the caller's own agents, and the
  * GenieWatch observability surface (sub-tabs: Agents / Cost / Resources / Settings).
  */
 import { Suspense, lazy, useEffect, useState } from "react"
@@ -128,7 +128,7 @@ function AdminOverview({ onSelectSpace }: { onSelectSpace?: (spaceId: string, di
           curve, Top Agents, and Needs Attention below. */}
       {stats && (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          <StatCard label="Total Agents" value={stats.total_spaces} icon={<BarChart2 className="w-4 h-4" />} />
+          <StatCard label="Agents you can see" value={stats.total_spaces} icon={<BarChart2 className="w-4 h-4" />} />
           <StatCard label="Scanned" value={stats.scanned_spaces} sub={`${stats.total_spaces > 0 ? Math.round(stats.scanned_spaces / stats.total_spaces * 100) : 0}% coverage`} icon={<BarChart2 className="w-4 h-4" />} />
           {MATURITY_STATES.map(({ label, icon }) => (
             <StatCard
@@ -274,7 +274,7 @@ export function AdminDashboard({ onSelectSpace, initialSubTab }: AdminDashboardP
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-display font-bold text-primary">Admin Dashboard</h2>
-          <p className="text-muted mt-1">Org-wide Genie Agent health &amp; observability</p>
+          <p className="text-muted mt-1">Genie Agent health &amp; observability</p>
         </div>
       </div>
 

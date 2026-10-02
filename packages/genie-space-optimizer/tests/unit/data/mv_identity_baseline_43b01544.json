@@ -1,0 +1,118 @@
+{
+  "bundles": [
+    {
+      "dedup_fingerprint": "027971b368d3567fdfa2957bdea07b593a136159ee44c0b228b6457051c2cb68",
+      "members": [
+        "5e09a7a3360f4006ea1144cc3b7515058e345a561889782029811261eb4ba50c"
+      ],
+      "source_tables": [
+        "samples.tpch.customer"
+      ],
+      "suggestion_id": "sug_027971b368d3"
+    },
+    {
+      "dedup_fingerprint": "1888ea0675865724e3d7c919ae33293fab612335f13e03fc27add63792e1b4eb",
+      "members": [
+        "890f4953fc8f0636f3daf7a2a593f785ca74e680d563fb5e586cee0b0938f826"
+      ],
+      "source_tables": [
+        "main.sales.orders"
+      ],
+      "suggestion_id": "sug_1888ea067586"
+    },
+    {
+      "dedup_fingerprint": "62398c8c4a723936380710f8ff7f09372c1960dda6ff0ffeef9af4375daf299f",
+      "members": [
+        "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+        "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef"
+      ],
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ],
+      "suggestion_id": "sug_62398c8c4a72"
+    }
+  ],
+  "captured_at_head": "43b01544",
+  "scan": [
+    {
+      "candidate_fingerprint": "c0e9b05a3b33e7ae7c5739c9d94d5fc497b7ffc5f6e57cc6f0fbbed11b04ed9e",
+      "canonical_expr": "count(?n)",
+      "fingerprint": "d6fcc43e79446e3e5a87d48247f71b63c39fc32add5c97e4c6f6ec9fe68378a2",
+      "has_unresolved_columns": false,
+      "provenance_count": 24,
+      "recurrence": 24,
+      "source_columns": [],
+      "source_tables": []
+    },
+    {
+      "candidate_fingerprint": "890f4953fc8f0636f3daf7a2a593f785ca74e680d563fb5e586cee0b0938f826",
+      "canonical_expr": "sum(amount)",
+      "fingerprint": "26a1a7f50fcbd9eed1d7de0b385de83147d1dc36dc0da2968fc2e3263f9c0632",
+      "has_unresolved_columns": false,
+      "provenance_count": 16,
+      "recurrence": 16,
+      "source_columns": [
+        "amount"
+      ],
+      "source_tables": [
+        "main.sales.orders"
+      ]
+    },
+    {
+      "candidate_fingerprint": "70a0dc2f83187d95c6286eca665f47c897b4b7bcf1544c5a4f9e7859800bbaef",
+      "canonical_expr": "count(l_orderkey)",
+      "fingerprint": "21e5b6a187a4d9736186cba336c7993ed64999fea34366a5e3852bde987c1a4b",
+      "has_unresolved_columns": false,
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_columns": [
+        "l_orderkey"
+      ],
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ]
+    },
+    {
+      "candidate_fingerprint": "5e09a7a3360f4006ea1144cc3b7515058e345a561889782029811261eb4ba50c",
+      "canonical_expr": "sum(c_acctbal)",
+      "fingerprint": "3b66fe7d789552facfda9b2767d32f9a8cf02f4a23df583a66cfe062f0651421",
+      "has_unresolved_columns": false,
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_columns": [
+        "c_acctbal"
+      ],
+      "source_tables": [
+        "samples.tpch.customer"
+      ]
+    },
+    {
+      "candidate_fingerprint": "1f0ed1d158d52dd23ae48135355d192cecfe65b7ad9cbe51de8d20dfcf88c94a",
+      "canonical_expr": "sum(l_quantity)",
+      "fingerprint": "449958ffe459bb03d935328c841975bfb786a3432b0b82007aeb9108fffafcee",
+      "has_unresolved_columns": false,
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_columns": [
+        "l_quantity"
+      ],
+      "source_tables": [
+        "samples.tpch.lineitem"
+      ]
+    },
+    {
+      "candidate_fingerprint": "e32ae24a87f0857bda0dc93afa736a4f087f628b683d5b4890ee610147ba1ed5",
+      "canonical_expr": "sum(fee)",
+      "fingerprint": "7f14604a80e344665820650191a5a9c22e3b02ce33e4223530c307c21dd7b974",
+      "has_unresolved_columns": true,
+      "provenance_count": 8,
+      "recurrence": 8,
+      "source_columns": [
+        "fee"
+      ],
+      "source_tables": []
+    }
+  ],
+  "space_id": "01f04ac8c1f11c9a9e5b3b2b0e5d5c11",
+  "sqlglot": "30.0.3"
+}

@@ -170,6 +170,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
         baselineScore: run.baselineScore,
         optimizedScore: run.optimizedScore,
         bestIteration: run.bestIteration,
+        bestEvalScope: run.bestEvalScope,
         status: run.status,
       })
     : presentBaselineScore(null)
@@ -178,6 +179,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
         baselineScore: run.baselineScore,
         optimizedScore: run.optimizedScore,
         bestIteration: run.bestIteration,
+        bestEvalScope: run.bestEvalScope,
         status: run.status,
         convergenceReason: run.convergenceReason,
       })
@@ -295,7 +297,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                         <div className="space-y-6">
                           {/* Charts */}
                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            <IterationChart iterations={iterations} />
+                            <IterationChart iterations={iterations} metricViewAttachAccuracy={run.metricViewAttachAccuracy ?? null} />
                             <StageTimeline stages={run.stages ?? []} />
                           </div>
                           {/* Publish/audit summary headline — LLM paragraph +

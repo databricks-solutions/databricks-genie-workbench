@@ -2,29 +2,46 @@
  * SQL code block with syntax highlighting and collapsible behavior.
  */
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Highlight, themes } from "prism-react-renderer"
 import { ChevronDown, ChevronUp, Copy, Check } from "lucide-react"
+import { format as formatSql, type SqlLanguage } from "sql-formatter"
 import { useTheme } from "@/hooks/useTheme"
 
 interface SqlCodeBlockProps {
   code: string
   maxLines?: number
+  // When true, pretty-print `code` with sql-formatter before display/copy. A parse
+  // failure falls back to the raw text (never throws — snippets can be partial SQL).
+  format?: boolean
+  // sql-formatter dialect; Databricks SQL is closest to "spark".
+  language?: SqlLanguage
+  // Header label; defaults to "SQL". Used to surface the associated question/name.
+  label?: string
 }
 
-export function SqlCodeBlock({ code, maxLines = 10 }: SqlCodeBlockProps) {
+export function SqlCodeBlock({ code, maxLines = 10, format = false, language = "spark", label = "SQL" }: SqlCodeBlockProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
   const { resolvedTheme } = useTheme()
 
-  const lines = code.split("\n")
+  const code_ = useMemo(() => {
+    if (!format) return code
+    try {
+      return formatSql(code, { language })
+    } catch {
+      return code
+    }
+  }, [code, format, language])
+
+  const lines = code_.split("\n")
   const totalLines = lines.length
   const hasMoreLines = totalLines > maxLines
-  const displayCode = isExpanded ? code : lines.slice(0, maxLines).join("\n")
+  const displayCode = isExpanded ? code_ : lines.slice(0, maxLines).join("\n")
   const hiddenLines = totalLines - maxLines
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(code)
+    await navigator.clipboard.writeText(code_)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -36,7 +53,7 @@ export function SqlCodeBlock({ code, maxLines = 10 }: SqlCodeBlockProps) {
     <div className="rounded-lg overflow-hidden border border-default">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 bg-elevated border-b border-default">
-        <span className="text-sm font-medium text-secondary">SQL</span>
+        <span className="text-sm font-medium text-secondary truncate" title={label}>{label}</span>
         <button
           onClick={handleCopy}
           className="p-1.5 rounded hover:bg-sunken text-muted hover:text-secondary transition-colors"

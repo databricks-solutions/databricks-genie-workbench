@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useEffect, useState } from "react"
 import { RotateCcw, Loader2, AlertCircle, AlertTriangle, CheckCircle2, Info, Trash2 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
@@ -51,7 +52,7 @@ interface RunHistoryTableProps {
   onLiveStateChanged?: (runId: string) => Promise<boolean>
 }
 
-const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
+export const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
   CONVERGED: "success",
   APPLIED: "success",
   STALLED: "warning",

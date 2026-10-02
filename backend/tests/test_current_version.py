@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
@@ -157,6 +158,47 @@ def _stub_live(monkeypatch, space: dict | None, *, update_time: str | None = Non
 
 
 # ── Status branches ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("live_instruction", ["Be helpful", "External edit"])
+def test_current_version_has_no_managed_mutation(client, monkeypatch, live_instruction):
+    from backend.services import genie_client
+
+    # Task 17: this adapter only reads managed Genie state; zombie reconciliation
+    # may update optimizer telemetry, not config/description, and needs no gate.
+    space = _space()
+    _stub_delta(monkeypatch, runs=[_run_row("r1", started_at="2026-07-01 10:00:00",
+                                         config_snapshot=_snapshot_wrapper(space))])
+    workspace = Mock()
+    workspace.config.token = "read-only-current-version"
+    workspace.api_client.do.return_value = {
+        "serialized_space": json.dumps(_space(instruction=live_instruction))}
+    for module in (auto_optimize, genie_client):
+        monkeypatch.setattr(module, "get_workspace_client", lambda: workspace)
+        monkeypatch.setattr(module, "get_service_principal_client", lambda: workspace)
+    # M1c-D3: get_genie_space is strict OBO — supply the user client there.
+    monkeypatch.setattr(genie_client, "require_obo_workspace_client", lambda: workspace)
+    writes = []
+    for owner, names in (
+        (genie_client.GenieTransport, ("create_once", "patch_config_once", "patch_description_once")),
+        (auto_optimize, ("trigger_optimization", "apply_optimization", "revert_optimization", "discard_optimization")),
+    ):
+        for name in names:
+            write = Mock(side_effect=AssertionError("Current-version must not mutate managed state"))
+            monkeypatch.setattr(owner, name, write)
+            writes.append(write)
+    response = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version?refresh=true")
+    assert response.status_code == 200
+    assert response.json()["status"] == ("matched" if live_instruction == "Be helpful" else "history_incomplete")
+    workspace.api_client.do.assert_called_once_with(
+        method="GET", path=f"/api/2.0/genie/spaces/{SPACE_ID}",
+        query={"include_serialized_space": "true"})
+    workspace.genie.assert_not_called()
+    assert not workspace.genie.mock_calls
+    workspace.jobs.assert_not_called()
+    assert not workspace.jobs.mock_calls
+    for write in writes:
+        write.assert_not_called()
 
 
 def test_unconfigured_returns_no_known_versions(client, monkeypatch) -> None:
@@ -597,3 +639,71 @@ def test_invalidate_live_fingerprint_for_run_clears_cache(client, monkeypatch) -
     assert auto_optimize._live_fp_cache["other-space:p1"] == (
         float("inf"), "keep-config-fp", "keep-benchmark-fp", None,
     )
+
+
+from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
+
+
+def test_advice_runs_are_not_matchable_versions(client, monkeypatch) -> None:
+    space = _space()
+    advice = {
+        **_run_row("advice-1", started_at="2026-07-02 10:00:00",
+                   config_snapshot=_snapshot_wrapper(space)),
+        "run_kind": "mv_advice",
+    }
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql:
+            return []
+        if "genie_opt_runs" in sql:
+            rows = [advice]
+            if MV_ADVICE_RUN_EXCLUSION in sql:
+                rows = [row for row in rows if row.get("run_kind") != "mv_advice"]
+            return rows
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    _stub_live(monkeypatch, space)
+    data = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version").json()
+    assert data["status"] == "no_known_versions"
+
+
+def test_runs_table_without_run_kind_still_matches(client, monkeypatch) -> None:
+    space = _space()
+    runs = [_run_row("r1", started_at="2026-07-01 10:00:00",
+                     config_snapshot=_snapshot_wrapper(space))]
+    runs_queries: list[str] = []
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql:
+            return []
+        if "genie_opt_runs" in sql:
+            runs_queries.append(sql)
+            if "run_kind" in sql:
+                raise RuntimeError(
+                    "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column with name `run_kind` cannot be resolved.")
+            return runs
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    _stub_live(monkeypatch, space)
+    data = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version").json()
+    assert data["status"] == "matched"
+    assert len(runs_queries) == 2
+
+
+def test_runs_query_failure_is_unavailable_not_retried_unfiltered(client, monkeypatch) -> None:
+    runs_queries: list[str] = []
+
+    def fake(sql: str, *, strict: bool = False) -> list[dict]:
+        if "genie_opt_iterations" in sql:
+            return []
+        if "genie_opt_runs" in sql:
+            runs_queries.append(sql)
+            raise RuntimeError("warehouse unavailable")
+        return []
+
+    monkeypatch.setattr(auto_optimize, "_delta_query", fake)
+    data = client.get(f"/api/auto-optimize/spaces/{SPACE_ID}/current-version").json()
+    assert data["status"] == "unavailable"
+    assert len(runs_queries) == 1

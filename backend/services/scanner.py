@@ -27,9 +27,32 @@ from genie_space_optimizer.iq_scan.scoring import (  # noqa: F401
     _check,
     calculate_score,
     get_maturity_label,
+    viewer_safe_text,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _viewer_texts(items: list | None) -> list[str]:
+    # Blank, not dropped: findings[i] pairs with next_steps[i] in the UI.
+    return [viewer_safe_text(item) or "" for item in items or []]
+
+
+def redact_for_viewer(scan_result: dict | None) -> dict | None:
+    """The stored scan for a caller below Can Edit: findings, warnings and check
+    details only in the scorer's viewer-safe forms (MV-D119)."""
+    if not scan_result:
+        return scan_result
+    return {
+        **scan_result,
+        "findings": _viewer_texts(scan_result.get("findings")),
+        "warnings": _viewer_texts(scan_result.get("warnings")),
+        "checks": [
+            {**check, "detail": viewer_safe_text(check.get("detail"))}
+            for check in scan_result.get("checks") or []
+            if isinstance(check, dict)
+        ],
+    }
 
 
 # Terminal GSO run statuses whose ``best_accuracy`` is meaningful for the IQ
@@ -193,13 +216,19 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
                 if catalog and wh_id:
                     try:
                         from genie_space_optimizer.common.warehouse import sql_warehouse_query
+                        from genie_space_optimizer.common.config import MV_ADVICE_RUN_EXCLUSION
                         from backend.services.auth import get_service_principal_client
                         ws = get_service_principal_client()
+                        # MV-D23 guardrail (ii): exclude sentinel advice runs so a
+                        # standalone suggest never poses as this space's latest
+                        # optimization run (it has no best_accuracy). Same pinned
+                        # predicate as the history surface.
                         df = sql_warehouse_query(
                             ws, wh_id,
                             f"SELECT run_id, space_id, status, best_accuracy, completed_at, started_at "
                             f"FROM {catalog}.{schema}.genie_opt_runs "
-                            f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+                            f"WHERE space_id = '{space_id}' AND {MV_ADVICE_RUN_EXCLUSION} "
+                            f"ORDER BY started_at DESC"
                         )
                         if not df.empty:
                             runs = df.to_dict(orient="records")

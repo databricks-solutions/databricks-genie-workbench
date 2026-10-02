@@ -38,6 +38,12 @@ WATCH_SYSTEM_GRANTS: list[tuple[str, str, str]] = [
     ("TABLE",   "system.billing.list_prices",     "SELECT"),
     ("TABLE",   "system.access.audit",            "SELECT"),
     ("TABLE",   "system.access.table_lineage",    "SELECT"),
+    # column_lineage powers the MV advisor's L signal at column grain (MV-D19).
+    # Public Preview with one-year retention (POV Caveat 8); when the grant or
+    # data is absent the L producer reports UNAVAILABLE with the reason named
+    # (MV-D15), never a silent zero — so this row is the upgrade path, not a
+    # hard dependency.
+    ("TABLE",   "system.access.column_lineage",   "SELECT"),
     # workspaces_latest is optional / newer; absence is handled in code.
     ("TABLE",   "system.access.workspaces_latest", "SELECT"),
 ]

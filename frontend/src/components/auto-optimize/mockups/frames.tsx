@@ -1,0 +1,207 @@
+/**
+ * MV-advisor mockups — REVIEW SCAFFOLD, NOT PRODUCTION CODE (see mvMockData.ts).
+ *
+ * Single registry of every mockup frame, consumed by both mockups.test.tsx
+ * (copy assertions) and frontend/scripts/mockups/emit.tsx (static HTML export).
+ * Frames graduate to production and drop out here as Prompts 11 / 13 / 13.5 land
+ * the real panels (frames 4–5 are gone; the output panels ship in production).
+ */
+import type { ReactElement } from "react"
+import {
+  DenialConfigFrame,
+  FirstRunConfigFrame,
+  RerunConfigFrame,
+} from "./MvRunConfigMockups"
+import {
+  ModelNodeDetailFrame,
+  ModelTabEmptyFrame,
+  ModelTabPopulatedFrame,
+  ModelTabProposalOverlayFrame,
+} from "./MvSemanticModelFrame"
+import {
+  IqScanAdvisoryEmptyFrame,
+  IqScanAdvisoryFoundFrame,
+  IqScanAdvisoryNotEntitledFrame,
+} from "./MvIqScanAdvisoryMockups"
+import {
+  ByoEntryPointsFrame,
+  ByoRefusedFrame,
+  ByoVerifiedFrame,
+} from "./MvByoRegistrationMockups"
+import { Iq158CardFrame, IqScanCuratedLowFrame, RunOutput158Frame } from "./Mv158FidelityFrames"
+import { AttachedProposalCardFrame } from "./MvAttachAtApprovalFidelityFrames"
+import { ModelV7ContractFrame } from "./MvSemanticV7ContractFrame"
+import { RealModel3Frame, RealModel10Frame, RealModel30Frame, RealModelOverlayFrame, RealModelV7Frame } from "./Mv12fFidelityFrames"
+import {
+  BlueprintScale30Frame,
+  BlueprintStarColumnsFrame,
+  BlueprintStarMeasureLineageFrame,
+  BlueprintStarMvSelectedFrame,
+  BlueprintStarOverviewFrame,
+  BlueprintStarStandardFrame,
+  BlueprintUnknownRolesFrame,
+  BlueprintWideTableFrame,
+} from "./SemanticBlueprintFidelityFrames"
+import {
+  VcCheckingFrame,
+  VcEditorFrame,
+  VcEntitlementFrame,
+  VcNoAccessFrame,
+  VcViewerEmptyFrame,
+  VcViewerFrame,
+} from "./VcAccessFidelityFrames"
+import {
+  CheckingFrame,
+  ModelViewerFrame,
+  NoAccessPageFrame,
+  OptimizeViewerEmptyFrame,
+  OptimizeViewerFrame,
+  ScoreEditorFrame,
+  ScoreUnknownFrame,
+  ScoreViewerFrame,
+  ScoreViewerUnscannedFrame,
+  SpaceCardRefusedFrame,
+} from "./SpaceAccessFidelityFrames"
+import {
+  AttachedNotCreatedFrame,
+  SelectionNoneFrame,
+  SelectionSubsetFrame,
+  SelectionTwoSchemasFrame,
+  SelectionTwoSchemasSuggestOnlyFrame,
+} from "./MvSelectionFidelityFrames"
+import { IqScanUnservableFrame } from "./MvRenderFidelityFrames"
+import { IqScanApprovedStaleFrame, IqScanLowStaleFrame, IqScanStaleFrame, RunOutputCurrentCalloutFrame, RunOutputStaleFrame } from "./MvStaleBodyFidelityFrames"
+import { BaselineRetainedFrame, KeptAttachRunningFrame, KeptAttachTerminalFrame, SingularGainCardFrame } from "./MvM6cFidelityFrames"
+import { DeepLinkLoadFailedFrame, DeepLinkNoAccessFrame, ScoreViewerAllowlistFrame } from "./SpaceAccessM7bFrames"
+import { AttachedSomeoneElsesViewFrame, CreatedTerminalOwnerFrame } from "./MvAttachOwnerM7cFrames"
+import { EnrichmentWinTerminalFrame } from "./MvM7dFidelityFrames"
+import { IqScanReshapedListFrame, ModelTabStaleGhostFrame, RunOutputStaleNoPreviewFrame } from "./MvM7e1FidelityFrames"
+import { ModelTabOneCalculationTwoTablesFrame } from "./MvM7e2FidelityFrames"
+
+export interface MockupFrame {
+  /** Stable slug used for the exported HTML filename. */
+  id: string
+  /** Human title shown in the HTML export header. */
+  title: string
+  element: ReactElement
+}
+
+export const MOCKUP_FRAMES: MockupFrame[] = [
+  { id: "1-runconfig-first-run", title: "1 · Run config — first run (Create and attach disabled)", element: <FirstRunConfigFrame /> },
+  { id: "2-runconfig-rerun", title: "2 · Run config — re-run (approved for this Agent, granted)", element: <RerunConfigFrame /> },
+  { id: "3-runconfig-denial", title: "3 · Run config — denial", element: <DenialConfigFrame /> },
+  // Frames 4–5 (run output panels) graduated to production at Prompt 13 and were
+  // removed from this registry (see MvSuggestOnlyPanel / MvCreateAttachPanel).
+  // Model tab (Prompt 12.0). Frame 6 was retired into these — 9c is its
+  // descendant (proposal overlay). Kept in frame 6's old array slot so the
+  // emitter's export ordering is unchanged (MOCKUP_FRAMES is order-driven, not
+  // id-sorted); the 9-family numbering follows frame 8 (BYO).
+  { id: "9a-model-populated", title: "9a · Model tab — populated (governance ladder, joins)", element: <ModelTabPopulatedFrame /> },
+  { id: "9b-model-empty", title: "9b · Model tab — never optimized (empty, honest ladder)", element: <ModelTabEmptyFrame /> },
+  { id: "9c-model-proposal-overlay", title: "9c · Model tab — proposal overlay ON", element: <ModelTabProposalOverlayFrame /> },
+  { id: "9d-model-node-detail", title: "9d · Model tab — node detail (measure + join)", element: <ModelNodeDetailFrame /> },
+  // Prompt 12f step 0 — the committed v7 semantic-canvas CONTRACT (the frame the
+  // v3 note called "the visual contract" but that was never committed). Prompt
+  // 12f step 1 reconciles the deployed SemanticGraph to this.
+  { id: "9e-model-v7-contract", title: "9e · Model tab — v7 contract (dedup canvas, boxed measures, curator inset)", element: <ModelV7ContractFrame /> },
+  // Prompt 12f step 1 — fidelity-gate exports of the REAL SemanticGraph against
+  // the 9e contract: the selected-MV scenario + the 3/10/30 scale fixtures.
+  { id: "9f-model-real-v7", title: "9f · Model tab — REAL component, v7 scenario (Revenue selected)", element: <RealModelV7Frame /> },
+  { id: "9g-model-real-3", title: "9g · Model tab — REAL component, 3 tables (expanded)", element: <RealModel3Frame /> },
+  { id: "9h-model-real-10", title: "9h · Model tab — REAL component, 10 tables", element: <RealModel10Frame /> },
+  { id: "9i-model-real-30", title: "9i · Model tab — REAL component, 30 tables (collapsed)", element: <RealModel30Frame /> },
+  // Round-6 — REAL component with the proposal overlay ON (keep-measures + a
+  // dashed "would govern →" link to a visible ghost proposed-MV card).
+  { id: "9j-model-real-overlay", title: "9j · Model tab — REAL component, proposal overlay ON (keep + link)", element: <RealModelOverlayFrame /> },
+  { id: "7a-iqscan-found", title: "7a · IQ Scan — proposals found", element: <IqScanAdvisoryFoundFrame /> },
+  { id: "7b-iqscan-empty", title: "7b · IQ Scan — empty (authored copy, needs review)", element: <IqScanAdvisoryEmptyFrame /> },
+  { id: "7c-iqscan-not-entitled", title: "7c · IQ Scan — not entitled", element: <IqScanAdvisoryNotEntitledFrame /> },
+  { id: "8a-byo-entry-points", title: "8a · BYO registration — entry points (MV-D24)", element: <ByoEntryPointsFrame /> },
+  { id: "8b-byo-verified", title: "8b · BYO registration — verified (USER_CREATED, no Drop)", element: <ByoVerifiedFrame /> },
+  { id: "8c-byo-refused", title: "8c · BYO registration — refused (not a metric view / not visible)", element: <ByoRefusedFrame /> },
+  // Prompt 15.8 fidelity-gate exports — the REAL production surfaces (facts row,
+  // one shared [Create this metric view] accept flow, no "%"/"confidence").
+  { id: "15.8a-iq-scan-card", title: "15.8a · IQ scan — facts-lead card + accept flow (production)", element: <Iq158CardFrame /> },
+  { id: "15.8b-run-output", title: "15.8b · Run output — suggest-only panel, count truth + ranked (production)", element: <RunOutput158Frame /> },
+  // MV-D100 — a curated, fact-passing LOW promoted into the default list wearing
+  // a factual "Curated" chip (not a strength/confidence badge, MV-D35), with the
+  // evidence-limited honesty in the "curated SQL only" caption.
+  { id: "15.11-iq-scan-curated-low", title: "15.11 · IQ scan — curated fact-passing LOW surfaced by default (MV-D100)", element: <IqScanCuratedLowFrame /> },
+  // Attach-at-approval (MV-D34) — the REAL card for a proposal already shelved on
+  // the Agent config: the "Attached" header badge + the accept flow's attached
+  // terminal with the SP grant an optimization run needs to read it.
+  { id: "15.10-attached-proposal", title: "15.10 · IQ scan — already attached (create-and-attach-at-approval)", element: <AttachedProposalCardFrame /> },
+  // Semantic Blueprint (v4) Phase-1 fidelity frames — the visual contract for the
+  // blueprint rebuild (semantic-graph-v4-blueprint-note.md §5.9 / §11.4), static
+  // captures of the north-star prototype's states through the pure reference math
+  // in blueprintMath.ts. Gated by mockups.test.tsx before SemanticBlueprint.tsx.
+  { id: "11a-blueprint-star", title: "11a · Blueprint — star, Standard, fact-center (crow's-foot, hops, callouts, headline)", element: <BlueprintStarStandardFrame /> },
+  { id: "11b-blueprint-columns", title: "11b · Blueprint — star, Columns LOD (join-key rows, column-accurate ports)", element: <BlueprintStarColumnsFrame /> },
+  { id: "11c-blueprint-measure-lineage", title: "11c · Blueprint — Space-config measure selected (dashed lineage → sources)", element: <BlueprintStarMeasureLineageFrame /> },
+  { id: "11d-blueprint-mv-selected", title: "11d · Blueprint — metric view selected (member boundary, dotted uses-lineage)", element: <BlueprintStarMvSelectedFrame /> },
+  { id: "11e-blueprint-unknown-roles", title: "11e · Blueprint — unknown roles (neutral TABLE, connectivity headers)", element: <BlueprintUnknownRolesFrame /> },
+  { id: "11f-blueprint-wide-table", title: "11f · Blueprint — single wide table (no joins is a valid model)", element: <BlueprintWideTableFrame /> },
+  { id: "11g-blueprint-30-tables", title: "11g · Blueprint — 30-table snowflake (bridges at density)", element: <BlueprintScale30Frame /> },
+  { id: "11h-blueprint-overview", title: "11h · Blueprint — star, Overview band (no measure chips)", element: <BlueprintStarOverviewFrame /> },
+  // PR #332 M1b — Version Control access states (VC-D-authz1): the REAL header, notices,
+  // permission state and rail. Capture and selection render only for Can Edit.
+  { id: "m1b-0-vc-checking", title: "M1b-0 · Version Control — checking access (no write affordance yet)", element: <VcCheckingFrame /> },
+  { id: "m1b-a-vc-editor", title: "M1b-a · Version Control — Can Edit (capture, select, compare)", element: <VcEditorFrame /> },
+  { id: "m1b-b-vc-viewer", title: "M1b-b · Version Control — Can View (history only, read-only rail)", element: <VcViewerFrame /> },
+  { id: "m1b-c-vc-viewer-empty", title: "M1b-c · Version Control — Can View, nothing captured yet", element: <VcViewerEmptyFrame /> },
+  { id: "m1b-d-vc-no-access", title: "M1b-d · Version Control — no access (permission state)", element: <VcNoAccessFrame /> },
+  { id: "m1b-e-vc-entitlement", title: "M1b-e · Version Control — refused for a missing entitlement (Genie's reason)", element: <VcEntitlementFrame /> },
+  // PR #332 M1c-2 — agent-page access states (M1c-D5/D6): the REAL notices, read-only Score
+  // tab, locked sections, Optimize viewer list and list card. Writes render only for Can Edit.
+  { id: "m1c2-a-score-editor", title: "M1c2-a · Score — Can Edit (reference: today's tab)", element: <ScoreEditorFrame /> },
+  { id: "m1c2-b-score-viewer", title: "M1c2-b · Score — Can View (stored score, no scan, configuration locked)", element: <ScoreViewerFrame /> },
+  { id: "m1c2-c-score-viewer-unscanned", title: "M1c2-c · Score — Can View, never scanned", element: <ScoreViewerUnscannedFrame /> },
+  { id: "m1c2-d-score-unknown", title: "M1c2-d · Score — access unconfirmed (read-only, with the reason)", element: <ScoreUnknownFrame /> },
+  { id: "m1c2-e-no-access", title: "M1c2-e · Agent page — no access (permission state, no tabs)", element: <NoAccessPageFrame /> },
+  { id: "m1c2-f-model-viewer", title: "M1c2-f · Model — Can View (locked)", element: <ModelViewerFrame /> },
+  { id: "m1c2-g-checking", title: "M1c2-g · Model / Optimize — checking access", element: <CheckingFrame /> },
+  { id: "m1c2-h-optimize-viewer", title: "M1c2-h · Optimize — Can View (active status and run list, no actions)", element: <OptimizeViewerFrame /> },
+  { id: "m1c2-i-optimize-viewer-empty", title: "M1c2-i · Optimize — Can View, no runs yet", element: <OptimizeViewerEmptyFrame /> },
+  { id: "m1c2-j-list-scan-refused", title: "M1c2-j · Space list — scan refused below Can Edit", element: <SpaceCardRefusedFrame /> },
+  // PR #332 M2 — the selection decides the create target (MV-D112): the REAL run-setup
+  // section, and the run-output panel for a view the app attached but did not create.
+  { id: "m2-a-selection-subset", title: "M2-a · Run setup — two of three selected, one schema, permission checked", element: <SelectionSubsetFrame /> },
+  { id: "m2-b-selection-none", title: "M2-b · Run setup — create and attach with nothing selected", element: <SelectionNoneFrame /> },
+  { id: "m2-c-selection-two-schemas", title: "M2-c · Run setup — selection spans two schemas", element: <SelectionTwoSchemasFrame /> },
+  { id: "m2-d-attached-not-created", title: "M2-d · Run output — attached at approval, not created by the app (USER_CREATED)", element: <AttachedNotCreatedFrame /> },
+  { id: "m2-e-selection-two-schemas-suggest-only", title: "M2-e · Run setup — Suggest only, the default selection spans two schemas", element: <SelectionTwoSchemasSuggestOnlyFrame /> },
+  { id: "m3-a-iqscan-empty-unservable", title: "M3-a · IQ scan — recurring measures, none single-table (NO_SERVABLE_MEASURES)", element: <IqScanUnservableFrame /> },
+  // PR #332 M6b — a proposal whose body predates the M3 render (MV-D117): the REAL cards
+  // rank it last, drop its create actions and show the re-scan notice.
+  { id: "m6b-a-iqscan-stale", title: "M6b-a · IQ scan — a pre-M3 proposal ranks last with a re-scan notice (MV-D117)", element: <IqScanStaleFrame /> },
+  { id: "m6b-b-run-output-stale", title: "M6b-b · Run output — the same, suggest-only panel", element: <RunOutputStaleFrame /> },
+  { id: "m6b-c-approved-stale", title: "M6b-c · IQ scan — approved before M3, re-scan to create", element: <IqScanApprovedStaleFrame /> },
+  { id: "m6b-d-run-output-current-callout", title: "M6b-d · Run output — two independent current proposals beside a stale one", element: <RunOutputCurrentCalloutFrame /> },
+  { id: "m6b-e-iqscan-low-stale", title: "M6b-e · IQ scan — the lower-ranked disclosure, one current and one stale proposal", element: <IqScanLowStaleFrame /> },
+  // PR #332 M6c — the run headline after a kept metric-view attach (MV-D118): the REAL
+  // ScoreSummary and convergence-reason copy.
+  { id: "m6c-a-kept-attach-terminal", title: "M6c-a · Run headline — a kept metric view is the improvement (MV-D118)", element: <KeptAttachTerminalFrame /> },
+  { id: "m6c-b-kept-attach-running", title: "M6c-b · Run headline — the same, mid-run", element: <KeptAttachRunningFrame /> },
+  { id: "m6c-c-baseline-retained", title: "M6c-c · Run headline — control: a full-scope iteration 0 still reads Baseline retained", element: <BaselineRetainedFrame /> },
+  { id: "m6c-d-singular-gain-card", title: "M6c-d · IQ scan — a one-measure proposal reads in the singular", element: <SingularGainCardFrame /> },
+  // PR #332 M7b — the viewer Score tab through the scorer's allowlist, and the deep-link
+  // states (MV-D119): the REAL IQScoreTab and SpaceDetailLoadError.
+  { id: "m7b-a-score-viewer-allowlist", title: "M7b-a · Score — Can View, a finding with no viewer-safe form (remediation kept)", element: <ScoreViewerAllowlistFrame /> },
+  { id: "m7b-b-deep-link-no-access", title: "M7b-b · Deep link — no access (no agent name; Return to Agents)", element: <DeepLinkNoAccessFrame /> },
+  { id: "m7b-c-deep-link-load-failed", title: "M7b-c · Deep link — load failed (not an access answer)", element: <DeepLinkLoadFailedFrame /> },
+  // PR #332 M7c — the created terminal after attach-at-approval (MV-D120): the REAL
+  // MvCreatedTerminal in the IQ card, for the caller's own view and someone else's.
+  { id: "m7c-a-created-terminal-owner", title: "M7c-a · IQ scan — created and attached, the GRANT for its owner", element: <CreatedTerminalOwnerFrame /> },
+  { id: "m7c-b-attached-someone-elses-view", title: "M7c-b · IQ scan — an existing view someone else owns, attached; no GRANT offered", element: <AttachedSomeoneElsesViewFrame /> },
+  // PR #332 M7d — the run headline for an iteration-0 enrichment win (MV-D121): the REAL
+  // ScoreSummary and convergence-reason copy.
+  { id: "m7d-a-enrichment-win-terminal", title: "M7d-a · Run headline — an iteration-0 enrichment win is the improvement (MV-D121)", element: <EnrichmentWinTerminalFrame /> },
+  // PR #332 M7e-1 — the reshaped list and the stale-proposal gaps (MV-D122): the REAL
+  // IQ cards and summary, the suggest-only panel, and withOverlay through SemanticGraph.
+  { id: "m7e1-a-iqscan-reshaped-list", title: "M7e1-a · IQ scan — after a reshape, one card for the view (MV-D122)", element: <IqScanReshapedListFrame /> },
+  { id: "m7e1-b-run-output-stale-no-preview", title: "M7e1-b · Run output — the stale card has no config preview or Lift label; the summary counts current proposals", element: <RunOutputStaleNoPreviewFrame /> },
+  // m7e1-c renders withOverlay through SemanticGraph, which the deployed Model tab does not mount today.
+  { id: "m7e1-c-model-stale-no-ghost", title: "M7e1-c · Model tab — overlay ON, only the current proposal draws a ghost (path not mounted in the deployed tab today)", element: <ModelTabStaleGhostFrame /> },
+  // PR #332 M7e-2 — identity v2 (MV-D123): the REAL deployed Model tab view (SemanticBlueprint).
+  { id: "m7e2-a-model-one-calculation-two-tables", title: "M7e2-a · Model tab — one calculation over two tables is two measures (MV-D123)", element: <ModelTabOneCalculationTwoTablesFrame /> },
+]

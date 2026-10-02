@@ -1,17 +1,31 @@
-import { useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { LucideIcon } from "lucide-react"
-import { AlertTriangle, Database, ListChecks, Rocket, Settings2, Target } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Database, ListChecks, MessageSquareText, Rocket, Settings2, Target } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
-import { triggerAutoOptimize } from "@/lib/api"
+import { fetchSpaceMvProposals, probeMvEntitlement, triggerAutoOptimize } from "@/lib/api"
 import { PermissionAlert } from "@/components/auto-optimize/PermissionAlert"
+import { MvSuggestSection } from "@/components/auto-optimize/MvSuggestSection"
 import { ModelPicker } from "@/components/ModelPicker"
 import {
   buildOptimizationTriggerRequest,
+  collectMvSourceTables,
+  deriveMvTarget,
+  mvSelectionMessage,
+  mvStartBlockReason,
   parseMaxAttempts,
   parseTargetAccuracy,
+  selectedMvProposals,
 } from "@/components/auto-optimize/optimizationRequest"
-import type { GSOPermissionCheck } from "@/types"
+import type { GSOPermissionCheck, MvProbeResult, MvProposal } from "@/types"
+
+// Prefill carried from a suggest-only run's "Re-run with this metric view"
+// action (MV-D1). It opens the MV section in create_and_attach mode; the actual
+// create still passes the OBO probe gate at start, so this only pre-selects.
+export interface MvRerunPrefill {
+  mode: "create_and_attach"
+  suggestionId?: string | null
+}
 
 interface OptimizationConfigProps {
   spaceId: string
@@ -23,6 +37,15 @@ interface OptimizationConfigProps {
   permsLoading: boolean
   healthIssues?: string[]
   onRefreshPermissions?: () => void
+  initialMv?: MvRerunPrefill | null
+}
+
+// One entitlement answer, tagged with the selection it was asked for.
+interface MvProbeState {
+  key: string
+  probe: MvProbeResult | null
+  error: string | null
+  loading: boolean
 }
 
 // Levers 1–6 scope the bounded native patch/eval attempts. There is no
@@ -40,6 +63,9 @@ const LEVERS = [
 const DEFAULT_TARGET_PERCENT = "90"
 const DEFAULT_MAX_ATTEMPTS = "3"
 const MAX_WORKLOAD_WAREHOUSES = 20
+// Each permission check records a consent row (/mv/probe), so the check waits
+// for the selection to settle instead of firing on every toggle.
+export const MV_PROBE_DEBOUNCE_MS = 400
 
 // Shared section header for the two configuration columns and their subsections.
 function PillarHeader({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
@@ -51,7 +77,7 @@ function PillarHeader({ icon: Icon, children }: { icon: LucideIcon; children: Re
   )
 }
 
-export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTriggerError, hasActiveRun, permissions, permsLoading, healthIssues, onRefreshPermissions }: OptimizationConfigProps) {
+export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTriggerError, hasActiveRun, permissions, permsLoading, healthIssues, onRefreshPermissions, initialMv }: OptimizationConfigProps) {
   const [selectedLevers, setSelectedLevers] = useState<Set<number>>(new Set(LEVERS.map((l) => l.id)))
   const [applyMode] = useState<"genie_config" | "both">("genie_config")
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
@@ -59,14 +85,162 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [maxAttemptsInput, setMaxAttemptsInput] = useState(DEFAULT_MAX_ATTEMPTS)
   const [workloadWarehouseIds, setWorkloadWarehouseIds] = useState<Set<string>>(new Set())
   const [allowBenchmarkRepair, setAllowBenchmarkRepair] = useState(false)
+  // Per-run free-text guidance to the optimizer (Semantic Blueprint §7). Pass-through
+  // advice only — never persisted and never a config edit; the builder omits it when
+  // blank. Capped to 4000 chars to match the backend field and keep the prompt small.
+  const [operatorGuidance, setOperatorGuidance] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Metric view advisor state (Prompt 11, MV-D1/D23). All local, no store — the
+  // section fetches its own space-scoped proposals and OBO probe lazily when the
+  // toggle first expands. Empty approved set ⇒ first-run; a non-empty set ⇒
+  // re-run, where the probe gates "Create and attach".
+  // A "Re-run with this metric view" prefill opens the section in create_and_attach
+  // mode; otherwise the section starts collapsed and suggest_only (first-run).
+  const [mvEnabled, setMvEnabled] = useState(!!initialMv)
+  const [mvProposals, setMvProposals] = useState<MvProposal[]>([])
+  const [mvProposalsLoaded, setMvProposalsLoaded] = useState(false)
+  const [mvProposalsLoading, setMvProposalsLoading] = useState(false)
+  // Re-entry guard for the proposals fetch. It MUST be a ref, not the
+  // mvProposalsLoading state: keeping the loading flag out of the effect's guard
+  // and deps is what stops the effect from setting a dependency it depends on,
+  // re-running, and cancelling its own in-flight request (the finally then never
+  // reset loading → permanent spinner). The state below stays render-only.
+  const mvProposalsInFlight = useRef(false)
+  // Prompt 15.6 finding 6 — the check must resolve to found / none /
+  // failed-with-reason within a bounded time (fetchSpaceMvProposals already
+  // carries the 30s fetch timeout). On failure we surface the reason instead of
+  // silently degrading to "first-run" (which reads as "no proposals" — a lie).
+  const [mvProposalsError, setMvProposalsError] = useState<string | null>(null)
+  const [mvSelectedIds, setMvSelectedIds] = useState<Set<string>>(new Set())
+  const [mvMode, setMvMode] = useState<"suggest_only" | "create_and_attach">(
+    initialMv?.mode ?? "suggest_only",
+  )
+  // The consent covers exactly the selected proposals' schema and source tables,
+  // so each selection gets its own probe. The in-flight guard is a ref for the
+  // same reason as mvProposalsInFlight above.
+  const [mvProbeState, setMvProbeState] = useState<MvProbeState | null>(null)
+  const mvProbeInFlight = useRef<string | null>(null)
+  const mvProbeSeq = useRef(0)
+  const mvProbeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const hasHealthIssues = (healthIssues?.length ?? 0) > 0
   const targetAccuracy = parseTargetAccuracy(targetPercent)
   const maxAttempts = parseMaxAttempts(maxAttemptsInput)
   const knobsValid = targetAccuracy !== null && maxAttempts !== null
   const canStart = permissions?.can_start === true && !hasHealthIssues
+
+  const mvSelected = useMemo(() => selectedMvProposals(mvProposals, mvSelectedIds), [mvProposals, mvSelectedIds])
+  const mvTarget = useMemo(() => deriveMvTarget(mvSelected), [mvSelected])
+  const mvSourceTables = useMemo(() => collectMvSourceTables(mvSelected), [mvSelected])
+  const mvProbeKey = mvTarget ? `${spaceId}|${mvTarget.catalog}.${mvTarget.schema}|${mvSourceTables.join(",")}` : null
+  const mvProbeCurrent = mvProbeState && mvProbeState.key === mvProbeKey ? mvProbeState : null
+  const mvProbe = mvProbeCurrent?.probe ?? null
+  const mvProbeLoading = mvProbeKey !== null && (mvProbeCurrent === null || mvProbeCurrent.loading)
+  const mvProbeError = mvProbeCurrent?.error ?? null
+  const mvGranted = mvProbe?.verdict === "SUFFICIENT"
+
+  // Load the space's proposals the first time the section expands (MV-D23 —
+  // space-scoped, never keyed on a prior run). A "Re-run with this metric view"
+  // prefill lists approved-for-rerun proposals and selects them all. A
+  // "Review in run setup" deep-link (Prompt 15.6 finding 6) carries a specific
+  // suggestionId that may not be approved yet, so it loads UNFILTERED and
+  // preselects only that suggestion; the create still gates on the probe +
+  // MV-D1 approval at start, so this only pre-populates the setup.
+  const prefillSuggestionId = initialMv?.suggestionId ?? null
+  useEffect(() => {
+    if (!mvEnabled || mvProposalsLoaded || mvProposalsInFlight.current) return
+    let cancelled = false
+    mvProposalsInFlight.current = true
+    setMvProposalsLoading(true)
+    setMvProposalsError(null)
+    fetchSpaceMvProposals(spaceId, prefillSuggestionId ? undefined : true)
+      .then((res) => {
+        if (cancelled) return
+        setMvProposals(res.proposals)
+        if (prefillSuggestionId) {
+          const hit = res.proposals.some((p) => p.suggestion_id === prefillSuggestionId)
+          setMvSelectedIds(new Set(hit ? [prefillSuggestionId] : []))
+        } else {
+          setMvSelectedIds(new Set(res.proposals.map((p) => p.suggestion_id)))
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setMvProposals([])
+        setMvProposalsError(
+          e instanceof Error ? e.message : "Couldn't check this Agent for existing proposals.",
+        )
+      })
+      .finally(() => {
+        // The in-flight guard always clears — even when cancelled — so a later
+        // spaceId/prefill change can re-fetch. The render flags stay behind the
+        // cancelled guard: on a real cancel a fresh effect run owns them.
+        mvProposalsInFlight.current = false
+        if (cancelled) return
+        setMvProposalsLoading(false)
+        setMvProposalsLoaded(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mvEnabled, mvProposalsLoaded, spaceId, prefillSuggestionId])
+
+  // Probe entitlement for the selection's target and source tables (re-run).
+  // A changed selection re-probes once it settles; only the latest request's
+  // answer is kept. The selection reads as loading at once, so Start is blocked
+  // while the timer runs. The timer lives in a ref, not in this effect's cleanup:
+  // setting the loading state re-runs the effect, and the cleanup would cancel
+  // the timer it had just scheduled.
+  useEffect(() => {
+    const wanted = mvEnabled && mvProposalsLoaded && mvTarget ? mvProbeKey : null
+    if (mvProbeTimer.current && mvProbeInFlight.current !== wanted) {
+      // A probe not yet sent for a selection that is no longer current is never
+      // sent, and its loading state goes with it so the selection can re-probe.
+      clearTimeout(mvProbeTimer.current)
+      mvProbeTimer.current = null
+      mvProbeInFlight.current = null
+      setMvProbeState(null)
+    }
+    if (!mvEnabled || !mvProposalsLoaded || !mvTarget || !mvProbeKey) return
+    if (mvProbeState?.key === mvProbeKey || mvProbeInFlight.current === mvProbeKey) return
+    const key = mvProbeKey
+    const token = ++mvProbeSeq.current
+    mvProbeInFlight.current = key
+    setMvProbeState({ key, probe: null, error: null, loading: true })
+    mvProbeTimer.current = setTimeout(() => {
+      mvProbeTimer.current = null
+      probeMvEntitlement({
+        catalog: mvTarget.catalog,
+        schema: mvTarget.schema,
+        space_id: spaceId,
+        source_tables: mvSourceTables,
+      })
+        .then((res) => {
+          if (mvProbeSeq.current === token) setMvProbeState({ key, probe: res, error: null, loading: false })
+        })
+        .catch((e) => {
+          if (mvProbeSeq.current === token) {
+            setMvProbeState({
+              key,
+              probe: null,
+              error: e instanceof Error ? e.message : "Entitlement probe failed.",
+              loading: false,
+            })
+          }
+        })
+        .finally(() => {
+          if (mvProbeSeq.current === token) mvProbeInFlight.current = null
+        })
+    }, MV_PROBE_DEBOUNCE_MS)
+  }, [mvEnabled, mvProposalsLoaded, mvTarget, mvProbeKey, mvProbeState?.key, mvSourceTables, spaceId])
+
+  useEffect(() => () => {
+    if (mvProbeTimer.current) clearTimeout(mvProbeTimer.current)
+    mvProbeTimer.current = null
+    mvProbeInFlight.current = null
+  }, [])
 
   function toggleLever(id: number) {
     setSelectedLevers((prev) => {
@@ -77,6 +251,20 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     })
   }
 
+  function toggleMvProposal(suggestionId: string) {
+    setMvSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(suggestionId)) next.delete(suggestionId)
+      else next.add(suggestionId)
+      return next
+    })
+  }
+
+  function handleCopyGrant() {
+    const sql = mvProbe?.remediation_sql
+    if (sql) void navigator.clipboard?.writeText(sql).catch(() => {})
+  }
+
   async function handleStart() {
     if (targetAccuracy === null || maxAttempts === null) {
       setError("Enter a target accuracy between 80–100% and a max attempts of 1 or more.")
@@ -85,6 +273,10 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     setLoading(true)
     setError(null)
     onTriggerStart?.()
+    // create_and_attach only survives when the probe still says SUFFICIENT;
+    // anything else sends suggest_only with no consent (downgrade-never-upgrade).
+    const effectiveMvMode =
+      mvEnabled && mvMode === "create_and_attach" && mvGranted ? "create_and_attach" : "suggest_only"
     try {
       const result = await triggerAutoOptimize(
         buildOptimizationTriggerRequest({
@@ -96,6 +288,24 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           maxAttempts,
           workloadWarehouseIds: Array.from(workloadWarehouseIds).sort(),
           benchmarkPolicy: allowBenchmarkRepair ? "repair_allowed" : "review_only",
+          operatorGuidance,
+          mv: mvEnabled
+            ? {
+                enabled: true,
+                mode: effectiveMvMode,
+                minConfidence: null,
+                approvedSuggestionIds: mvSelected.map((p) => p.suggestion_id).sort(),
+                consent:
+                  effectiveMvMode === "create_and_attach" && mvProbe
+                    ? {
+                        granted_by: mvProbe.checked_as,
+                        granted_at: mvProbe.checked_at,
+                        probe_id: mvProbe.probe_id,
+                      }
+                    : null,
+                materialize: false,
+              }
+            : undefined,
         }),
       )
       onStarted(result.runId)
@@ -107,6 +317,14 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
       setLoading(false)
     }
   }
+
+  const mvStartBlock = mvStartBlockReason({
+    enabled: mvEnabled,
+    mode: mvMode,
+    proposals: mvProposals,
+    selected: mvSelected,
+    probeLoading: mvProbeLoading,
+  })
 
   return (
     <Card>
@@ -245,7 +463,13 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
               Query usage signal
             </div>
             {permissions.query_usage_signal?.system_table_available ? (
-              <p className="text-xs text-muted">System query history available. GSO will use aggregated human-query behavior for column ranking.</p>
+              <div className="flex items-start gap-2 text-xs text-muted">
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                <p>
+                  <span className="font-medium text-success-foreground">Active — no action needed.</span>{" "}
+                  System query history is available; GSO will use aggregated human-query behavior for column ranking.
+                </p>
+              </div>
             ) : permissions.query_usage_signal && permissions.query_usage_signal.warehouses.length > 0 ? (
               <>
                 <p className="text-xs text-muted">
@@ -311,6 +535,48 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           </div>
         )}
 
+        <MvSuggestSection
+          enabled={mvEnabled}
+          onToggle={setMvEnabled}
+          disabled={loading || hasActiveRun}
+          proposalsLoading={mvProposalsLoading}
+          proposalsError={mvProposalsError}
+          proposals={mvProposals}
+          selectedProposalIds={mvSelectedIds}
+          onToggleProposal={toggleMvProposal}
+          mode={mvMode}
+          onModeChange={setMvMode}
+          target={mvTarget}
+          probe={mvProbe}
+          probeLoading={mvProbeLoading}
+          probeError={mvProbeError}
+          onCopyGrant={handleCopyGrant}
+          selectionMessage={mvSelectionMessage(mvSelected, mvMode)}
+        />
+
+        {/* Operator guidance (Semantic Blueprint §7): optional free-text hints for
+            this run. Advice only — the optimizer honours it within its allowed
+            patches and never over benchmark evidence. Pass-through, not persisted. */}
+        <div className="space-y-2 border-t border-default pt-4">
+          <PillarHeader icon={MessageSquareText}>Guidance to the optimizer</PillarHeader>
+          <p className="text-xs text-muted">
+            Optional plain-English hints for this run (e.g. &ldquo;prefer the orders_v2 table&rdquo;,
+            &ldquo;revenue is net of refunds&rdquo;). Treated as advice, not rules — the optimizer
+            still validates every change against the benchmark. Not saved after the run.
+          </p>
+          <textarea
+            value={operatorGuidance}
+            onChange={(e) => setOperatorGuidance(e.target.value)}
+            disabled={loading || hasActiveRun}
+            maxLength={4000}
+            rows={3}
+            aria-label="Guidance to the optimizer"
+            placeholder="Add any context that would help the optimizer for this run…"
+            className="min-h-20 w-full resize-y rounded-md border border-default bg-surface p-2 text-sm text-primary placeholder:text-muted disabled:opacity-50"
+          />
+          <p className="text-right text-[11px] text-muted">{operatorGuidance.length}/4000</p>
+        </div>
+
         {/* Alerts + launch — a full-width footer separated by a hairline so the
             CTA reads as the form's conclusion. */}
         <div className="space-y-4 border-t border-default pt-4">
@@ -343,9 +609,9 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           <div className="flex justify-end">
             <button
               onClick={handleStart}
-              disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid}
+              disabled={loading || hasActiveRun || selectedLevers.size === 0 || !canStart || !knobsValid || mvStartBlock !== null}
               className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white font-semibold hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title={!canStart ? "Required permissions are missing" : !knobsValid ? "Enter valid stopping criteria" : undefined}
+              title={!canStart ? "Required permissions are missing" : !knobsValid ? "Enter valid stopping criteria" : mvStartBlock ?? undefined}
             >
               <Rocket className="w-4 h-4" />
               {loading ? "Starting..." : "Start Optimization"}

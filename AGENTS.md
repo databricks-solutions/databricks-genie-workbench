@@ -8,7 +8,9 @@ Databricks App for creating, scoring, and optimizing Genie Agents. FastAPI backe
 - **DO NOT run `databricks bundle init`.** It overwrites the project's `databricks.yml` and destroys the existing configuration.
 - **DO NOT use `npm install` in build or deploy scripts** — always use `npm ci`. `npm install` can silently upgrade packages within `^` ranges; `npm ci` enforces the exact lockfile.
 - **DO NOT edit `requirements.txt` manually.** It is generated from `uv.lock` as a pip-compatible reference but is excluded from deployment via `.databricksignore`. The platform uses `uv sync` (pyproject.toml + uv.lock) for hash-verified installs.
-- **Backend logic has offline unit tests** in `backend/tests/` (`./scripts/test.sh`) — run these locally. But integration/E2E testing (auth, Lakebase, serving endpoints) is done by deploying to a real Databricks workspace, not by running the server locally.
+- **Backend logic has offline unit tests** in `backend/tests/` (`./scripts/test.sh`, which also runs the GSO suite) — run these locally. But integration/E2E testing (auth, Lakebase, serving endpoints) is done by deploying to a real Databricks workspace, not by running the server locally.
+- **DO NOT run `pytest` without the dev extra.** `./scripts/test.sh` is the invocation; direct calls need `uv run --frozen --extra dev pytest`. Bare `uv run --frozen pytest` omits `pytest-asyncio`, which `asyncio_mode = "auto"` requires, and 12 async backend tests fail on uncollectable coroutines. Those failures are an invocation defect and must not be reported as pre-existing.
+- **`uv lock --check` fails structurally on this repo** — the GSO package version is dynamic (git-describe), so the resolved version changes on every commit and the check reports the lockfile as needing an update even on a clean tree. Expected, not drift. Verify the lockfile with `git status` on `uv.lock` instead, and never commit a `uv.lock` dirtied by a version-only re-resolve.
 
 ## Commands
 
@@ -35,11 +37,18 @@ cd frontend && npm run lint              # ESLint
 uv lock --upgrade-package <package-name>
 uv export --frozen --no-dev --no-hashes --format requirements-txt > requirements.txt
 
-# Backend unit tests (offline, no running server — pytest in backend/tests/)
-./scripts/test.sh                 # Run full backend suite (installs dev deps if missing)
+# Offline unit tests (no running server) — backend/tests/ + GSO's tests/
+./scripts/test.sh                 # Run BOTH suites (backend + genie-space-optimizer)
 ./scripts/test.sh -v              # Verbose
 ./scripts/test.sh -k scanner      # Run a single test file/selection (e.g. test_scanner.py)
+./scripts/test.sh backend/tests   # Naming any path runs only that path
 # Configured in pyproject.toml: testpaths=backend/tests, asyncio_mode=auto
+#
+# Use the script. Calling pytest directly needs `uv run --frozen --extra dev`:
+# asyncio_mode=auto requires pytest-asyncio, and without the dev extra pytest
+# warns "Unknown config option: asyncio_mode" and 12 async backend tests fail on
+# uncollectable coroutines. Those failures are an invocation defect, not a code
+# defect — do not chase them, and do not record them as pre-existing.
 
 # Integration/E2E tests (require running backend at localhost:8000)
 python tests/test_e2e_local.py    # E2E create agent tests

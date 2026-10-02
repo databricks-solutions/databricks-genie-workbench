@@ -1,0 +1,1882 @@
+"""Tests for the single metric view YAML renderer and its static validator.
+
+Golden coverage is organised around the thing that varies: the multi-hop ladder
+rung. One rung-by-rung golden pins the ``source`` / ``joins`` region each rung
+produces (the only region a rung decides), and one whole-document golden pins
+everything else — comment structure, field ordering, quoting of ``version`` and
+``'on'``, format blocks. Splitting it that way keeps a rung change readable in a
+diff instead of re-baselining four near-identical documents.
+"""
+
+from __future__ import annotations
+
+import ast
+import logging
+import re
+import threading
+from pathlib import Path
+
+import pytest
+import sqlglot
+import yaml
+
+from genie_space_optimizer.common.config import (
+    MV_CAPABILITY_NESTED_JOINS,
+    MV_COMMENT_SECTIONS,
+    MV_ECHO_CHECK_COMPARED,
+    MV_ECHO_CHECK_NOT_COMPARED,
+    MV_JOIN_STRATEGY_DENORMALIZED,
+    MV_JOIN_STRATEGY_DIRECT,
+    MV_JOIN_STRATEGY_NESTED,
+    MV_JOIN_STRATEGY_SUBQUERY,
+    MV_RENDER_VERSION,
+    MV_SYNONYMS_MAX,
+    MV_SYNONYMS_MIN,
+)
+from genie_space_optimizer.optimization import mv_yaml as mv_yaml_module
+from genie_space_optimizer.optimization.leakage import BenchmarkCorpus, LeakageOracle
+from genie_space_optimizer.optimization.mv_fingerprint import (
+    SHAPE_CONDITIONAL_COUNT,
+    SHAPE_GUIDANCE,
+    SHAPE_PCT_OF_TOTAL,
+    SHAPE_RATIO,
+    ShapeMatch,
+)
+from genie_space_optimizer.optimization.mv_scoring import (
+    VERDICT_CONFLICT,
+    VERDICT_PROPOSE,
+    DedupOutcome,
+    MetricViewCandidate,
+)
+from genie_space_optimizer.optimization.mv_yaml import (
+    UNIQUENESS_EXACT,
+    UNIQUENESS_SAMPLED,
+    UNIQUENESS_UC_CONSTRAINT,
+    ColumnFacts,
+    JoinHop,
+    KeyUniqueness,
+    MeasureRequest,
+    MvProfiling,
+    RequestedAttribute,
+    create_ddl,
+    generate,
+    quote_fqn,
+    quote_identifier,
+    validate,
+)
+
+FACT = "main.sales.fact_orders"
+DIM_CUSTOMER = "main.sales.dim_customer"
+DIM_NATION = "main.sales.dim_nation"
+
+
+def _columns(*names: str) -> tuple[ColumnFacts, ...]:
+    return tuple(ColumnFacts(name=n) for n in names)
+
+
+def _candidate(**overrides) -> MetricViewCandidate:
+    kwargs = dict(
+        space_id="space-abc",
+        concept="revenue",
+        measure_expr="SUM(net_revenue)",
+        source_tables=(FACT,),
+        benchmark_question_ids=("rev_001",),
+    )
+    kwargs.update(overrides)
+    return MetricViewCandidate(**kwargs)
+
+
+def _profiling(
+    *,
+    hops: tuple[JoinHop, ...] = (),
+    attributes: tuple[RequestedAttribute, ...] = (),
+    uniqueness: dict | None = None,
+    capabilities: dict | None = None,
+    dim_customer_columns: tuple[str, ...] = (
+        "customer_id",
+        "customer_name",
+        "market_segment",
+        "nation_id",
+        "customer_balance",
+        "is_current",
+    ),
+) -> MvProfiling:
+    return MvProfiling(
+        source_table=FACT,
+        table_columns={
+            FACT: _columns("order_id", "customer_id", "order_date", "net_revenue", "status"),
+            DIM_CUSTOMER: _columns(*dim_customer_columns),
+            DIM_NATION: _columns("nation_id", "nation_name", "region_id"),
+        },
+        uniqueness=uniqueness or {},
+        hops=hops,
+        attributes=attributes,
+        measures=(
+            MeasureRequest(
+                name="total_revenue",
+                expr="SUM(net_revenue)",
+                comment="Net revenue after discounts.",
+            ),
+        ),
+        capabilities=capabilities or {},
+        domain="sales",
+    )
+
+
+CUSTOMER_HOP = JoinHop(
+    alias="dim_customer",
+    table=DIM_CUSTOMER,
+    left_key="customer_id",
+    right_key="customer_id",
+    is_current_column="is_current",
+    description="customer attributes",
+)
+NATION_HOP = JoinHop(
+    alias="dim_nation",
+    table=DIM_NATION,
+    left_key="nation_id",
+    right_key="nation_id",
+    parent="dim_customer",
+    description="nation attributes",
+)
+
+ORDER_DATE_ATTR = RequestedAttribute(name="order_date", column="order_date")
+SEGMENT_ATTR = RequestedAttribute(
+    name="market_segment", column="market_segment", hop_alias="dim_customer"
+)
+NATION_ATTR = RequestedAttribute(
+    name="nation_name", column="nation_name", hop_alias="dim_nation"
+)
+
+PROVEN = {
+    (DIM_CUSTOMER, "customer_id"): KeyUniqueness(
+        table=DIM_CUSTOMER,
+        column="customer_id",
+        kind=UNIQUENESS_EXACT,
+        row_count=150_000,
+        distinct_count=150_000,
+    ),
+    (DIM_NATION, "nation_id"): KeyUniqueness(
+        table=DIM_NATION,
+        column="nation_id",
+        kind=UNIQUENESS_EXACT,
+        row_count=25,
+        distinct_count=25,
+    ),
+}
+
+
+def _joins_region(yaml_text: str) -> str:
+    """The ``source`` + ``joins`` region — the part a ladder rung decides."""
+    lines = yaml_text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("source:"))
+    end = next(
+        (i for i, line in enumerate(lines) if line.startswith("dimensions:")), len(lines)
+    )
+    return "\n".join(lines[start:end]).rstrip()
+
+
+# ── Ladder rung goldens ──────────────────────────────────────────────────
+
+
+def test_direct_rung_golden_whole_document():
+    """A single-hop proposal: the whole document is pinned.
+
+    This is the golden that guards everything a rung does not decide — quoted
+    ``version``, the quoted ``'on'`` key, comment section order, dimension and
+    measure field order, and the currency format block.
+    """
+    result = generate(
+        _candidate(),
+        _profiling(
+            hops=(CUSTOMER_HOP,),
+            attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR),
+            uniqueness=PROVEN,
+        ),
+    )
+
+    assert result.ok
+    assert result.join_strategy == MV_JOIN_STRATEGY_DIRECT
+    assert result.yaml_text == (
+        'version: \'1.1\'\n'
+        'comment: |\n'
+        '  PURPOSE: revenue metrics over fact_orders\n'
+        '\n'
+        '  BEST FOR: total revenue overall | total revenue by order date | total revenue by market segment | total revenue trend over time\n'
+        '\n'
+        '  NOT FOR: Row-level inspection or record lookup (query main.sales.fact_orders directly instead)\n'
+        '\n'
+        '  DIMENSIONS: order_date, market_segment\n'
+        '\n'
+        '  MEASURES: total_revenue\n'
+        '\n'
+        '  SOURCE: fact_orders (sales domain)\n'
+        '\n'
+        '  JOINS: dim_customer (customer attributes)\n'
+        '\n'
+        '  NOTE: Joined dimensions are current-version only where the dimension is versioned\n'
+        "source: '`main`.`sales`.`fact_orders`'\n"
+        'joins:\n'
+        '  - name: dim_customer\n'
+        "    source: '`main`.`sales`.`dim_customer`'\n"
+        "    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\n"
+        '    rely:\n'
+        '      at_most_one_match: true\n'
+        'dimensions:\n'
+        '  - name: order_date\n'
+        '    expr: source.`order_date`\n'
+        '    comment: Order Date for slicing revenue.\n'
+        '    display_name: Order Date\n'
+        '    synonyms:\n'
+        '      - order date\n'
+        '      - date\n'
+        '      - revenue order date\n'
+        '      - revenue\n'
+        '  - name: market_segment\n'
+        '    expr: dim_customer.`market_segment`\n'
+        '    comment: Market Segment for slicing revenue.\n'
+        '    display_name: Market Segment\n'
+        '    synonyms:\n'
+        '      - market segment\n'
+        '      - segment\n'
+        '      - revenue market segment\n'
+        '      - revenue\n'
+        'measures:\n'
+        '  - name: total_revenue\n'
+        '    expr: SUM(source.`net_revenue`)\n'
+        '    comment: Net revenue after discounts.\n'
+        '    display_name: Total Revenue\n'
+        '    format:\n'
+        '      type: currency\n'
+        '      currency_code: USD\n'
+        '      decimal_places:\n'
+        '        type: exact\n'
+        '        places: 2\n'
+        '      abbreviation: compact\n'
+        '    synonyms:\n'
+        '      - total revenue\n'
+        '      - revenue\n'
+        '      - revenue total revenue\n'
+    )
+    assert validate(result.yaml_text).ok
+
+
+def test_denormalized_rung_collapses_the_far_hop():
+    """Rung 1: the far attribute is carried on the near dimension, so the hop goes."""
+    nation_denormalized = RequestedAttribute(
+        name="nation_name",
+        column="nation_name",
+        hop_alias="dim_nation",
+        denormalized_on="dim_customer",
+        denormalized_column="customer_nation_name",
+    )
+    profiling = _profiling(
+        hops=(CUSTOMER_HOP, NATION_HOP),
+        attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR, nation_denormalized),
+        uniqueness=PROVEN,
+        dim_customer_columns=(
+            "customer_id",
+            "market_segment",
+            "nation_id",
+            "customer_nation_name",
+            "is_current",
+        ),
+    )
+    result = generate(_candidate(), profiling)
+
+    assert result.ok
+    assert result.join_strategy == MV_JOIN_STRATEGY_DENORMALIZED
+    assert _joins_region(result.yaml_text) == (
+        "source: '`main`.`sales`.`fact_orders`'\n"
+        "joins:\n"
+        "  - name: dim_customer\n"
+        "    source: '`main`.`sales`.`dim_customer`'\n"
+        "    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\n"
+        "    rely:\n"
+        "      at_most_one_match: true"
+    )
+    definition = yaml.safe_load(result.yaml_text)
+    nation = next(d for d in definition["dimensions"] if d["name"] == "nation_name")
+    assert nation["expr"] == "dim_customer.`customer_nation_name`"
+    assert [j["name"] for j in definition["joins"]] == ["dim_customer"]
+    assert validate(result.yaml_text).ok
+
+
+def test_nested_rung_requires_capability_and_proven_keys():
+    """Rung 2: nested joins, with the documented ``parent.child.column`` reference."""
+    profiling = _profiling(
+        hops=(CUSTOMER_HOP, NATION_HOP),
+        attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR, NATION_ATTR),
+        uniqueness=PROVEN,
+        capabilities={MV_CAPABILITY_NESTED_JOINS: "GRANTED"},
+    )
+    result = generate(_candidate(), profiling)
+
+    assert result.ok
+    assert result.join_strategy == MV_JOIN_STRATEGY_NESTED
+    assert _joins_region(result.yaml_text) == (
+        "source: '`main`.`sales`.`fact_orders`'\n"
+        "joins:\n"
+        "  - name: dim_customer\n"
+        "    source: '`main`.`sales`.`dim_customer`'\n"
+        "    'on': source.`customer_id` = dim_customer.`customer_id` AND dim_customer.`is_current` = true\n"
+        "    rely:\n"
+        "      at_most_one_match: true\n"
+        "    joins:\n"
+        "      - name: dim_nation\n"
+        "        source: '`main`.`sales`.`dim_nation`'\n"
+        "        'on': dim_customer.`nation_id` = dim_nation.`nation_id`\n"
+        "        rely:\n"
+        "          at_most_one_match: true"
+    )
+    definition = yaml.safe_load(result.yaml_text)
+    nation = next(d for d in definition["dimensions"] if d["name"] == "nation_name")
+    assert nation["expr"] == "dim_customer.dim_nation.`nation_name`"
+    assert validate(result.yaml_text, capabilities=profiling.capabilities).ok
+
+
+def test_subquery_rung_when_nested_capability_is_unknown():
+    """Rung 3: no nested capability, so the chain is pre-joined in the source."""
+    profiling = _profiling(
+        hops=(CUSTOMER_HOP, NATION_HOP),
+        attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR, NATION_ATTR),
+        uniqueness=PROVEN,
+        capabilities={MV_CAPABILITY_NESTED_JOINS: "UNKNOWN"},
+    )
+    result = generate(_candidate(), profiling)
+
+    assert result.ok
+    assert result.join_strategy == MV_JOIN_STRATEGY_SUBQUERY
+    definition = yaml.safe_load(result.yaml_text)
+    assert "joins" not in definition
+
+    source_sql = definition["source"]
+    assert "FROM `main`.`sales`.`fact_orders` AS fact" in source_sql
+    assert "LEFT JOIN" in source_sql
+    assert "GROUP BY `customer_id`" in source_sql
+    assert "GROUP BY `nation_id`" in source_sql
+    assert "WHERE `is_current` = true" in source_sql
+    assert sqlglot.parse_one(source_sql, read="databricks") is not None
+
+    nation = next(d for d in definition["dimensions"] if d["name"] == "nation_name")
+    assert nation["expr"] == "source.`nation_name`"
+    assert validate(result.yaml_text, capabilities=profiling.capabilities).ok
+
+
+def test_an_unqualified_source_is_a_failed_render_not_a_raise():
+    """``quote_fqn`` raises on an empty source; ``generate`` must return a
+    failed render so the error never crosses the advisor phase boundary."""
+    from dataclasses import replace
+
+    result = generate(_candidate(), replace(_profiling(), source_table=""))
+
+    assert not result.ok
+    assert result.rejections
+
+
+def test_subquery_rung_when_an_intermediate_key_is_not_proven():
+    """Capability alone is not enough — an unproven key also drops to rung 3."""
+    sampled = dict(PROVEN)
+    sampled[(DIM_NATION, "nation_id")] = KeyUniqueness(
+        table=DIM_NATION,
+        column="nation_id",
+        kind=UNIQUENESS_SAMPLED,
+        row_count=25,
+        distinct_count=25,
+    )
+    result = generate(
+        _candidate(),
+        _profiling(
+            hops=(CUSTOMER_HOP, NATION_HOP),
+            attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR, NATION_ATTR),
+            uniqueness=sampled,
+            capabilities={MV_CAPABILITY_NESTED_JOINS: "GRANTED"},
+        ),
+    )
+
+    assert result.join_strategy == MV_JOIN_STRATEGY_SUBQUERY
+    assert any("not proof" in reason for reason in result.evidence["unproven_keys"])
+
+
+# ── Subquery rung: the keys child hops join on ───────────────────────────
+
+M7F_ORDERS = "main.sales.m7f_orders"
+M7F_BRANCH = "main.sales.m7f_branch"
+M7F_AREA = "main.sales.m7f_area"
+
+# The body generate() rendered for the natural branch -> area request before the
+# branch relation projected area_id; Unity Catalog refused it with UNRESOLVED_COLUMN.
+PRE_FIX_NATURAL_SOURCE = (
+    "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+    "FROM `main`.`sales`.`m7f_orders` AS fact\n"
+    "LEFT JOIN (SELECT `branch_id`, MAX(`branch_name`) AS `branch_name` FROM `main`.`sales`.`m7f_branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch ON fact.`branch_id` = dim_branch.`branch_id`\n"
+    "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `main`.`sales`.`m7f_area` GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`"
+)
+
+
+def _unprojected_on_columns(source_sql: str, fact_columns: tuple[str, ...]) -> list[str]:
+    """Every ``alias.col`` in a join's ``ON`` that the alias's relation does not project."""
+    tree = sqlglot.parse_one(source_sql, read="databricks")
+    joins = tree.args.get("joins") or []
+    projected = {"fact": {c.lower() for c in fact_columns}}
+    for join in joins:
+        relation = join.this
+        assert isinstance(relation, sqlglot.exp.Subquery)
+        projected[relation.alias_or_name] = {
+            s.alias_or_name.lower() for s in relation.this.expressions
+        }
+    referenced = [
+        column
+        for join in joins
+        for column in join.args["on"].find_all(sqlglot.exp.Column)
+    ]
+    assert referenced
+    return [
+        f"{c.table}.{c.name}"
+        for c in referenced
+        if c.name.lower() not in projected.get(c.table, set())
+    ]
+
+
+def _subquery_profiling(
+    hops: tuple[JoinHop, ...],
+    attributes: tuple[RequestedAttribute, ...],
+    table_columns: dict[str, tuple[str, ...]],
+    uniqueness: dict | None = None,
+) -> MvProfiling:
+    return MvProfiling(
+        source_table=M7F_ORDERS,
+        table_columns={t: _columns(*cols) for t, cols in table_columns.items()},
+        uniqueness=uniqueness or {},
+        hops=hops,
+        attributes=attributes,
+        measures=(MeasureRequest(name="total_amount", expr="SUM(amount)"),),
+        capabilities={MV_CAPABILITY_NESTED_JOINS: "GRANTED"},
+        domain="m7f proof",
+    )
+
+
+ORDERS_COLUMNS = ("order_id", "branch_id", "amount")
+BRANCH_HOP = JoinHop(
+    alias="dim_branch",
+    table=M7F_BRANCH,
+    left_key="branch_id",
+    right_key="branch_id",
+    is_current_column="is_current",
+)
+AREA_HOP = JoinHop(
+    alias="dim_area", table=M7F_AREA, left_key="area_id", right_key="area_id", parent="dim_branch"
+)
+BRANCH_COLUMNS = ("branch_id", "area_id", "branch_name", "is_current")
+AREA_COLUMNS = ("area_id", "area_name")
+# A duplicate current branch key: the nested rung is refused even when granted.
+BRANCH_DUPLICATED = {
+    (M7F_BRANCH, "branch_id"): KeyUniqueness(
+        table=M7F_BRANCH, column="branch_id", kind=UNIQUENESS_EXACT, row_count=5, distinct_count=3
+    ),
+    (M7F_AREA, "area_id"): KeyUniqueness(
+        table=M7F_AREA, column="area_id", kind=UNIQUENESS_EXACT, row_count=2, distinct_count=2
+    ),
+}
+
+
+def _natural_branch_area(*extra: RequestedAttribute) -> MvProfiling:
+    return _subquery_profiling(
+        hops=(BRANCH_HOP, AREA_HOP),
+        attributes=(
+            RequestedAttribute(name="branch_name", column="branch_name", hop_alias="dim_branch"),
+            *extra,
+            RequestedAttribute(name="area_name", column="area_name", hop_alias="dim_area"),
+        ),
+        table_columns={
+            M7F_ORDERS: ORDERS_COLUMNS,
+            M7F_BRANCH: BRANCH_COLUMNS,
+            M7F_AREA: AREA_COLUMNS,
+        },
+        uniqueness=BRANCH_DUPLICATED,
+    )
+
+
+def test_the_on_column_check_flags_the_pre_fix_natural_body():
+    assert _unprojected_on_columns(PRE_FIX_NATURAL_SOURCE, ORDERS_COLUMNS) == [
+        "dim_branch.area_id"
+    ]
+
+
+def test_the_natural_depth_two_subquery_body_projects_the_child_join_key():
+    """The branch relation projects ``area_id``, the key ``dim_area``'s ON reads."""
+    result = generate(
+        _candidate(source_tables=(M7F_ORDERS,), concept="orders", measure_expr="SUM(amount)"),
+        _natural_branch_area(),
+    )
+
+    assert result.ok
+    assert result.join_strategy == MV_JOIN_STRATEGY_SUBQUERY
+    source_sql = yaml.safe_load(result.yaml_text)["source"].rstrip("\n")
+    assert _unprojected_on_columns(source_sql, ORDERS_COLUMNS) == []
+    assert source_sql == (
+        "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+        "FROM `main`.`sales`.`m7f_orders` AS fact\n"
+        "LEFT JOIN (SELECT `branch_id`, MAX(`area_id`) AS `area_id`, MAX(`branch_name`) AS `branch_name` FROM `main`.`sales`.`m7f_branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch ON fact.`branch_id` = dim_branch.`branch_id`\n"
+        "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `main`.`sales`.`m7f_area` GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`"
+    )
+    assert validate(result.yaml_text, capabilities={MV_CAPABILITY_NESTED_JOINS: "UNKNOWN"}).ok
+
+
+def test_a_depth_three_subquery_chain_projects_each_middle_key():
+    a_table, b_table, c_table = "main.sales.dim_a", "main.sales.dim_b", "main.sales.dim_c"
+    hops = (
+        JoinHop(alias="dim_a", table=a_table, left_key="a_id", right_key="a_id"),
+        JoinHop(alias="dim_b", table=b_table, left_key="b_id", right_key="b_id", parent="dim_a"),
+        JoinHop(alias="dim_c", table=c_table, left_key="c_id", right_key="c_id", parent="dim_b"),
+    )
+    profiling = _subquery_profiling(
+        hops=hops,
+        attributes=(RequestedAttribute(name="c_name", column="c_name", hop_alias="dim_c"),),
+        table_columns={
+            M7F_ORDERS: ("order_id", "a_id", "amount"),
+            a_table: ("a_id", "b_id"),
+            b_table: ("b_id", "c_id"),
+            c_table: ("c_id", "c_name"),
+        },
+    )
+    result = generate(
+        _candidate(source_tables=(M7F_ORDERS,), concept="orders", measure_expr="SUM(amount)"),
+        profiling,
+    )
+
+    assert result.join_strategy == MV_JOIN_STRATEGY_SUBQUERY
+    source_sql = yaml.safe_load(result.yaml_text)["source"]
+    assert _unprojected_on_columns(source_sql, ("order_id", "a_id", "amount")) == []
+    tree = sqlglot.parse_one(source_sql, read="databricks")
+    projections = {
+        join.this.alias_or_name: [s.alias_or_name for s in join.this.this.expressions]
+        for join in tree.args["joins"]
+    }
+    assert projections == {
+        "dim_a": ["a_id", "b_id"],
+        "dim_b": ["b_id", "c_id"],
+        "dim_c": ["c_id", "c_name"],
+    }
+
+
+def test_a_child_key_that_is_also_a_requested_attribute_is_projected_once():
+    branch_area_id = RequestedAttribute(
+        name="branch_area_id", column="area_id", hop_alias="dim_branch"
+    )
+    result = generate(
+        _candidate(source_tables=(M7F_ORDERS,), concept="orders", measure_expr="SUM(amount)"),
+        _natural_branch_area(branch_area_id),
+    )
+
+    source_sql = yaml.safe_load(result.yaml_text)["source"]
+    assert source_sql.count("MAX(`area_id`) AS `area_id`") == 1
+    assert _unprojected_on_columns(source_sql, ORDERS_COLUMNS) == []
+
+
+def test_a_hop_with_no_children_renders_its_relation_unchanged():
+    """The leaf relation is byte-identical to the pre-fix render."""
+    relation = mv_yaml_module._deduplicated_relation(AREA_HOP, _natural_branch_area())
+    leaf_line = PRE_FIX_NATURAL_SOURCE.splitlines()[-1]
+
+    assert relation == (
+        "(SELECT `area_id`, MAX(`area_name`) AS `area_name` "
+        "FROM `main`.`sales`.`m7f_area` GROUP BY `area_id`)"
+    )
+    assert f"LEFT JOIN {relation} AS dim_area" in leaf_line
+
+
+# ── rely.at_most_one_match ───────────────────────────────────────────────
+
+
+def test_rely_is_omitted_unless_uniqueness_is_exactly_proven():
+    """Sampled and UC-declared evidence are both refused as proof."""
+    for kind in (UNIQUENESS_SAMPLED, UNIQUENESS_UC_CONSTRAINT):
+        profiling = _profiling(
+            hops=(CUSTOMER_HOP,),
+            attributes=(SEGMENT_ATTR,),
+            uniqueness={
+                (DIM_CUSTOMER, "customer_id"): KeyUniqueness(
+                    table=DIM_CUSTOMER,
+                    column="customer_id",
+                    kind=kind,
+                    row_count=1000,
+                    distinct_count=1000,
+                )
+            },
+        )
+        definition = yaml.safe_load(generate(_candidate(), profiling).yaml_text)
+        assert "rely" not in definition["joins"][0], kind
+
+
+def test_exact_evidence_showing_duplicates_is_not_proof():
+    profiling = _profiling(
+        hops=(CUSTOMER_HOP,),
+        attributes=(SEGMENT_ATTR,),
+        uniqueness={
+            (DIM_CUSTOMER, "customer_id"): KeyUniqueness(
+                table=DIM_CUSTOMER,
+                column="customer_id",
+                kind=UNIQUENESS_EXACT,
+                row_count=1200,
+                distinct_count=1000,
+            )
+        },
+    )
+    definition = yaml.safe_load(generate(_candidate(), profiling).yaml_text)
+    assert "rely" not in definition["joins"][0]
+
+
+# ── Transitive joins ─────────────────────────────────────────────────────
+
+
+TRANSITIVE_YAML = """
+version: '1.1'
+comment: |
+  PURPOSE: p
+
+  BEST FOR: a
+
+  NOT FOR: b
+
+  DIMENSIONS: c
+
+  MEASURES: d
+
+  SOURCE: e
+
+  JOINS: f
+
+  NOTE: g
+source: main.sales.fact_orders
+joins:
+  - name: dim_customer
+    source: main.sales.dim_customer
+    'on': source.customer_id = dim_customer.customer_id
+  - name: dim_nation
+    source: main.sales.dim_nation
+    'on': dim_customer.nation_id = dim_nation.nation_id
+dimensions:
+  - name: nation_name
+    expr: dim_nation.nation_name
+    synonyms: [nation, country, nation name]
+measures:
+  - name: total_revenue
+    expr: SUM(source.net_revenue)
+    synonyms: [revenue, sales, total revenue]
+"""
+
+
+def test_transitive_sibling_join_is_caught():
+    """The whole point of the left-head check: a sibling reference is rejected."""
+    report = validate(TRANSITIVE_YAML)
+
+    assert not report.ok
+    assert any("transitive join" in error for error in report.errors)
+    assert any("dim_nation" in error for error in report.errors)
+
+
+def test_reversed_operand_order_is_a_warning_not_an_error():
+    """``dim.pk = source.fk`` is accepted by metric views, so it must not fail."""
+    reversed_yaml = TRANSITIVE_YAML.replace(
+        "'on': dim_customer.nation_id = dim_nation.nation_id",
+        "'on': dim_nation.nation_id = source.nation_id",
+    ).replace("expr: dim_nation.nation_name", "expr: dim_nation.nation_name")
+
+    report = validate(reversed_yaml)
+
+    assert report.ok, report.errors
+    assert any("on the left" in warning for warning in report.warnings)
+
+
+def test_nested_join_may_reference_its_parent_alias():
+    nested_yaml = TRANSITIVE_YAML.replace(
+        "  - name: dim_nation\n"
+        "    source: main.sales.dim_nation\n"
+        "    'on': dim_customer.nation_id = dim_nation.nation_id\n",
+        "",
+    ).replace(
+        "    'on': source.customer_id = dim_customer.customer_id\n",
+        "    'on': source.customer_id = dim_customer.customer_id\n"
+        "    joins:\n"
+        "      - name: dim_nation\n"
+        "        source: main.sales.dim_nation\n"
+        "        'on': dim_customer.nation_id = dim_nation.nation_id\n",
+    )
+
+    report = validate(nested_yaml, capabilities={MV_CAPABILITY_NESTED_JOINS: "GRANTED"})
+
+    assert report.ok, report.errors
+    assert report.downgrade_to is None
+
+
+def test_nested_join_without_capability_asks_for_a_downgrade():
+    nested_yaml = TRANSITIVE_YAML.replace(
+        "  - name: dim_nation\n"
+        "    source: main.sales.dim_nation\n"
+        "    'on': dim_customer.nation_id = dim_nation.nation_id\n",
+        "",
+    ).replace(
+        "    'on': source.customer_id = dim_customer.customer_id\n",
+        "    'on': source.customer_id = dim_customer.customer_id\n"
+        "    joins:\n"
+        "      - name: dim_nation\n"
+        "        source: main.sales.dim_nation\n"
+        "        'on': dim_customer.nation_id = dim_nation.nation_id\n",
+    )
+
+    report = validate(nested_yaml, capabilities={MV_CAPABILITY_NESTED_JOINS: "UNKNOWN"})
+
+    assert report.ok
+    assert report.downgrade_to == MV_JOIN_STRATEGY_SUBQUERY
+
+
+def test_capability_rows_may_be_typed_objects():
+    """The probe's typed rows work without this package importing the backend."""
+
+    class Row:
+        capability = MV_CAPABILITY_NESTED_JOINS
+        status = "GRANTED"
+
+    nested_yaml = TRANSITIVE_YAML.replace(
+        "  - name: dim_nation\n"
+        "    source: main.sales.dim_nation\n"
+        "    'on': dim_customer.nation_id = dim_nation.nation_id\n",
+        "",
+    ).replace(
+        "    'on': source.customer_id = dim_customer.customer_id\n",
+        "    'on': source.customer_id = dim_customer.customer_id\n"
+        "    joins:\n"
+        "      - name: dim_nation\n"
+        "        source: main.sales.dim_nation\n"
+        "        'on': dim_customer.nation_id = dim_nation.nation_id\n",
+    )
+
+    report = validate(nested_yaml, capabilities=[Row()])
+
+    assert report.downgrade_to is None
+
+
+# ── Format types ─────────────────────────────────────────────────────────
+
+
+def test_percent_and_decimal_are_rejected_at_generation_time():
+    for bad, correction in (("percent", "percentage"), ("decimal", "number")):
+        profiling = _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,))
+        profiling = MvProfiling(
+            source_table=profiling.source_table,
+            table_columns=profiling.table_columns,
+            uniqueness=profiling.uniqueness,
+            hops=profiling.hops,
+            attributes=profiling.attributes,
+            measures=(
+                MeasureRequest(
+                    name="conversion_rate",
+                    expr="SUM(net_revenue)",
+                    format_type=bad,
+                ),
+            ),
+            capabilities=profiling.capabilities,
+            domain=profiling.domain,
+        )
+
+        result = generate(_candidate(), profiling)
+
+        assert not result.ok
+        assert any(bad in reason for reason in result.rejections)
+        assert any(correction in reason for reason in result.rejections)
+
+
+def test_validate_rejects_unsupported_format_type_in_foreign_yaml():
+    bad_yaml = TRANSITIVE_YAML.replace(
+        "'on': dim_customer.nation_id = dim_nation.nation_id",
+        "'on': source.nation_id = dim_nation.nation_id",
+    ).replace(
+        "    expr: SUM(source.net_revenue)\n",
+        "    expr: SUM(source.net_revenue)\n    format:\n      type: integer\n",
+    )
+
+    report = validate(bad_yaml)
+
+    assert not report.ok
+    assert any("integer" in error and "number" in error for error in report.errors)
+
+
+# ── Shapes ───────────────────────────────────────────────────────────────
+
+
+def test_pct_of_total_uses_a_fixed_lod_dimension_never_measure_over_measure():
+    shape = ShapeMatch(
+        kind=SHAPE_PCT_OF_TOTAL,
+        canonical_expr="sum(net_revenue)",
+        fingerprint="fp-pct",
+        guidance=SHAPE_GUIDANCE[SHAPE_PCT_OF_TOTAL],
+        components=(("measure", "SUM(net_revenue)"),),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[shape],
+    )
+
+    assert result.ok
+    definition = yaml.safe_load(result.yaml_text)
+
+    lod = next(
+        d for d in definition["dimensions"] if d["expr"].endswith("OVER ()")
+    )
+    assert lod["expr"] == "SUM(source.`net_revenue`) OVER ()"
+
+    share = next(m for m in definition["measures"] if m["name"] == "revenue_pct_of_total")
+    assert "ANY_VALUE(" in share["expr"]
+    assert share["expr"].count("MEASURE(") == 1
+    assert share["format"]["type"] == "percentage"
+
+    for measure in definition["measures"]:
+        assert measure["expr"].count("MEASURE(") <= 1, measure["name"]
+
+
+def test_ratio_shape_emits_atomic_measures_plus_a_composed_one():
+    shape = ShapeMatch(
+        kind=SHAPE_RATIO,
+        canonical_expr="sum(a)/count(1)",
+        fingerprint="fp-ratio",
+        guidance=SHAPE_GUIDANCE[SHAPE_RATIO],
+        components=(("numerator", "SUM(net_revenue)"), ("denominator", "COUNT(1)")),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[shape],
+    )
+
+    assert result.ok
+    definition = yaml.safe_load(result.yaml_text)
+    names = [m["name"] for m in definition["measures"]]
+    assert "revenue_rate_numerator" in names
+    assert "revenue_rate_denominator" in names
+
+    composed = next(m for m in definition["measures"] if m["name"] == "revenue_rate")
+    assert composed["expr"] == (
+        "MEASURE(`revenue_rate_numerator`) / MEASURE(`revenue_rate_denominator`)"
+    )
+
+
+def test_two_same_kind_shapes_get_unique_names_and_validate():
+    """Two ratios in one bundle once rendered identical ``<concept>_rate*`` names,
+    so UC rejected the create for duplicate measure names
+    (METRIC_VIEW_INVALID_VIEW_DEFINITION — deployed review). The second shape's
+    base is now de-duplicated, so every measure/dimension name is unique and the
+    body validates."""
+    ratio_a = ShapeMatch(
+        kind=SHAPE_RATIO,
+        canonical_expr="sum(a)/count(1)",
+        fingerprint="fp-ratio-a",
+        guidance=SHAPE_GUIDANCE[SHAPE_RATIO],
+        components=(("numerator", "SUM(net_revenue)"), ("denominator", "COUNT(1)")),
+    )
+    ratio_b = ShapeMatch(
+        kind=SHAPE_RATIO,
+        canonical_expr="sum(b)/count(1)",
+        fingerprint="fp-ratio-b",
+        guidance=SHAPE_GUIDANCE[SHAPE_RATIO],
+        components=(("numerator", "SUM(net_revenue)"), ("denominator", "COUNT(1)")),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[ratio_a, ratio_b],
+    )
+
+    assert result.ok, result.rejections
+    definition = yaml.safe_load(result.yaml_text)
+    names = [m["name"] for m in definition["measures"]] + [
+        d["name"] for d in definition["dimensions"]
+    ]
+    assert len(names) == len(set(names)), names
+    assert "revenue_rate" in names
+    assert "revenue_rate_2" in names
+    assert "revenue_rate_2_numerator" in names
+
+
+def test_shape_reading_a_foreign_column_is_dropped():
+    """A recurring shape is mined from the whole corpus, so it can reference a
+    column this source lacks. Deployed review: that produced a kitchen-sink view
+    over foreign columns. A shape whose expression reads a column not in the
+    source (and not read by any of the view's measures) is now dropped."""
+    foreign = ShapeMatch(
+        kind=SHAPE_RATIO,
+        canonical_expr="sum(a)/sum(b)",
+        fingerprint="fp-foreign",
+        guidance=SHAPE_GUIDANCE[SHAPE_RATIO],
+        # total_amount / property_id are NOT columns of fact_orders.
+        components=(("numerator", "SUM(total_amount)"), ("denominator", "COUNT(DISTINCT property_id)")),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[foreign],
+    )
+
+    assert result.ok, result.rejections
+    definition = yaml.safe_load(result.yaml_text)
+    names = [m["name"] for m in definition["measures"]]
+    # Only the primary measure survives; the foreign-column ratio is gone.
+    assert names == ["total_revenue"], names
+
+
+def test_pct_of_total_with_a_non_aggregate_base_is_dropped_not_broken():
+    """The fixed-LOD grand total is ``<agg> OVER ()`` — valid only for a bare
+    aggregate base. A base with trailing arithmetic once rendered
+    ``COUNT(*) * 100.0 OVER ()`` and failed at UC with PARSE_SYNTAX_ERROR
+    (deployed review). Such a shape is now dropped rather than rendered."""
+    scaled = ShapeMatch(
+        kind=SHAPE_PCT_OF_TOTAL,
+        canonical_expr="count(*) * ?n",
+        fingerprint="fp-scaled",
+        guidance=SHAPE_GUIDANCE[SHAPE_PCT_OF_TOTAL],
+        components=(("measure", "COUNT(*) * 100.0"),),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[scaled],
+    )
+
+    assert result.ok, result.rejections
+    definition = yaml.safe_load(result.yaml_text)
+    names = [m["name"] for m in definition["measures"]] + [
+        d["name"] for d in definition["dimensions"]
+    ]
+    assert not any("pct_of_total" in n for n in names), names
+    # And nothing malformed slipped through: every expr parses.
+    assert validate(result.yaml_text).ok
+
+
+def test_validate_rejects_an_unparseable_expression():
+    """The gate SQL-parses every expr, so a malformed ``... OVER ()`` (the
+    deployed-review parse error) is rejected locally, not at UC create."""
+    bad_yaml = (
+        "version: '1.1'\n"
+        "comment: |\n"
+        "  DOMAIN: sales\n"
+        "  GRAIN: order\n"
+        "  BEST FOR: totals\n"
+        "  NOT FOR: forecasts\n"
+        "source: finance.sales.orders\n"
+        "dimensions:\n"
+        "  - name: grand_total\n"
+        "    expr: COUNT(*) * 100.0 OVER ()\n"
+        "measures:\n"
+        "  - name: total\n"
+        "    expr: SUM(net_revenue)\n"
+    )
+    report = validate(bad_yaml)
+    assert not report.ok
+    assert any("not parseable" in e and "grand_total" in e for e in report.errors), report.errors
+
+
+def test_validate_rejects_duplicate_measure_or_dimension_names():
+    """The local validator is the gate: a body with a repeated name is rejected
+    here rather than at UC create time, and the offending name is named."""
+    dup_yaml = (
+        "version: '1.1'\n"
+        "comment: |\n"
+        "  DOMAIN: sales\n"
+        "  GRAIN: order\n"
+        "  BEST FOR: totals\n"
+        "  NOT FOR: forecasts\n"
+        "source: finance.sales.orders\n"
+        "dimensions:\n"
+        "  - name: region\n"
+        "    expr: region\n"
+        "measures:\n"
+        "  - name: region\n"
+        "    expr: SUM(net_revenue)\n"
+    )
+    report = validate(dup_yaml)
+    assert not report.ok
+    assert any("unique" in e and "region" in e for e in report.errors), report.errors
+
+
+def test_conditional_count_uses_filter_not_case():
+    shape = ShapeMatch(
+        kind=SHAPE_CONDITIONAL_COUNT,
+        canonical_expr="count(case when status = ? then 1 end)",
+        fingerprint="fp-cond",
+        guidance=SHAPE_GUIDANCE[SHAPE_CONDITIONAL_COUNT],
+        components=(("condition", "status = 'F'"), ("name", "fulfilled_orders")),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        shapes=[shape],
+    )
+
+    assert result.ok
+    definition = yaml.safe_load(result.yaml_text)
+    measure = next(m for m in definition["measures"] if m["name"] == "fulfilled_orders")
+    assert measure["expr"] == "COUNT(1) FILTER (WHERE source.`status` = 'F')"
+    assert "CASE" not in measure["expr"].upper()
+
+
+# ── Additive measures ────────────────────────────────────────────────────
+
+
+def test_measure_over_a_joined_dimension_column_is_a_conflict():
+    """Aggregating a dimension column across a join inflates it silently."""
+    profiling = _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,))
+    profiling = MvProfiling(
+        source_table=profiling.source_table,
+        table_columns=profiling.table_columns,
+        hops=profiling.hops,
+        attributes=profiling.attributes,
+        measures=(MeasureRequest(name="total_balance", expr="SUM(customer_balance)"),),
+        domain=profiling.domain,
+    )
+
+    result = generate(_candidate(measure_expr=""), profiling)
+
+    assert result.verdict == VERDICT_CONFLICT
+    assert not result.yaml_text
+    assert result.conflicts[0]["joined_table"] == DIM_CUSTOMER
+    assert result.conflicts[0]["column"] == "customer_balance"
+
+
+# ── Comment ──────────────────────────────────────────────────────────────
+
+
+def test_comment_carries_all_eight_sections_and_cross_references_the_adjacent_view():
+    dedup = DedupOutcome(
+        verdict=VERDICT_PROPOSE,
+        alternatives=({"pointer": "main.sales.mv_revenue.total_revenue"},),
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        dedup=dedup,
+    )
+
+    comment = yaml.safe_load(result.yaml_text)["comment"]
+    for section in MV_COMMENT_SECTIONS:
+        assert f"{section}:" in comment
+    assert "main.sales.mv_revenue" in comment
+
+
+def test_benchmark_verbatim_best_for_line_is_rejected():
+    """A BEST FOR line that echoes a benchmark question never ships."""
+    corpus = BenchmarkCorpus.from_benchmarks(
+        [
+            {
+                "id": "rev_001",
+                "question": "What is the total revenue by market segment?",
+                "expected_sql": "SELECT 1",
+            }
+        ]
+    )
+    oracle = LeakageOracle(corpus)
+
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        oracle=oracle,
+    )
+
+    assert not result.ok
+    assert any("BEST FOR" in reason for reason in result.rejections)
+
+
+def test_a_line_at_exactly_the_threshold_is_rejected():
+    """The echo comparison is inclusive, and this test is what pins it.
+
+    ``leakage.contains_question`` compares ``score >= threshold``, so a line
+    landing on exactly 0.90 is a rejection. MV-D8 originally read ">0.9" and was
+    corrected to the code rather than the reverse; an operator flipped back to
+    ``>`` fails here.
+    """
+    shared = "revenue margin freight discount segment nation quarter shipment supplier"
+    oracle = LeakageOracle(
+        BenchmarkCorpus.from_benchmarks(
+            [{"id": "b1", "question": shared, "expected_sql": "SELECT 1"}]
+        )
+    )
+    # Nine shared content tokens over a ten-token union is 0.90 exactly — the
+    # threshold itself. Dropping one shared token instead gives 8/10 = 0.80.
+    at_threshold = f"{shared} returns"
+    below_threshold = "revenue margin freight discount segment nation quarter shipment returns"
+
+    rejected_at, compared_at = mv_yaml_module._comment_echoes([at_threshold], oracle=oracle)
+    rejected_below, compared_below = mv_yaml_module._comment_echoes(
+        [below_threshold], oracle=oracle
+    )
+
+    assert rejected_at and compared_at
+    assert not rejected_below and compared_below
+
+
+def test_an_unconfigured_echo_check_reports_that_it_compared_nothing():
+    """A firewall that cannot run must not read like a firewall that found nothing.
+
+    The oracle is optional input, so the vacuous case is the *common* one, and a
+    caller reading only ``ok`` would record a clean pass the check never earned.
+    """
+    profiling = _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN)
+
+    without = generate(_candidate(), profiling)
+    assert without.ok
+    assert without.echo_check == MV_ECHO_CHECK_NOT_COMPARED
+    assert not without.echo_checked
+    assert without.evidence["echo_check"] == MV_ECHO_CHECK_NOT_COMPARED
+
+    with_oracle = generate(
+        _candidate(),
+        profiling,
+        oracle=LeakageOracle(
+            BenchmarkCorpus.from_benchmarks(
+                [{"id": "x", "question": "How many suppliers ship from Peru?",
+                  "expected_sql": "SELECT 1"}]
+            )
+        ),
+    )
+    assert with_oracle.ok
+    assert with_oracle.echo_check == MV_ECHO_CHECK_COMPARED
+    assert with_oracle.echo_checked
+
+
+def test_validate_reports_the_vacuous_echo_check_as_a_warning():
+    """``validate`` carries the same distinction, for YAML it did not render."""
+    yaml_text = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+    ).yaml_text
+
+    bare = validate(yaml_text)
+    assert bare.ok
+    assert bare.echo_check == MV_ECHO_CHECK_NOT_COMPARED
+    assert not bare.echo_checked
+    assert any("did not run" in w for w in bare.warnings)
+
+    checked = validate(
+        yaml_text,
+        oracle=LeakageOracle(
+            BenchmarkCorpus.from_benchmarks(
+                [{"id": "x", "question": "How many suppliers ship from Peru?",
+                  "expected_sql": "SELECT 1"}]
+            )
+        ),
+    )
+    assert checked.ok
+    assert checked.echo_check == MV_ECHO_CHECK_COMPARED
+    assert not any("did not run" in w for w in checked.warnings)
+
+
+def test_validate_catches_an_echoed_best_for_line_in_foreign_yaml():
+    """The recovered-intent path is what protects LLM-authored YAML.
+
+    ``generate`` checks the lines it just built; YAML arriving from elsewhere has
+    no such provenance, so the intents are parsed back out of the comment.
+    """
+    yaml_text = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+    ).yaml_text
+    best_for = mv_yaml_module._best_for_from_comment(yaml.safe_load(yaml_text))
+    assert best_for, "the comment must expose its BEST FOR intents"
+
+    report = validate(
+        yaml_text,
+        oracle=LeakageOracle(
+            BenchmarkCorpus.from_benchmarks(
+                [{"id": "leak", "question": best_for[0], "expected_sql": "SELECT 1"}]
+            )
+        ),
+    )
+
+    assert not report.ok
+    assert any("BEST FOR" in e for e in report.errors)
+    assert report.echo_check == MV_ECHO_CHECK_COMPARED
+
+
+def test_unrelated_benchmarks_do_not_block_generation():
+    corpus = BenchmarkCorpus.from_benchmarks(
+        [{"id": "x", "question": "How many suppliers ship from Peru?", "expected_sql": "SELECT 1"}]
+    )
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+        oracle=LeakageOracle(corpus),
+    )
+
+    assert result.ok
+
+
+# ── Unsupported fields and synonyms ──────────────────────────────────────
+
+
+def test_generated_yaml_never_contains_an_unsupported_field():
+    result = generate(
+        _candidate(),
+        _profiling(
+            hops=(CUSTOMER_HOP, NATION_HOP),
+            attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR, NATION_ATTR),
+            uniqueness=PROVEN,
+            capabilities={MV_CAPABILITY_NESTED_JOINS: "GRANTED"},
+        ),
+    )
+    definition = yaml.safe_load(result.yaml_text)
+
+    assert "name" not in definition
+    assert "time_dimension" not in definition
+    assert "window_measures" not in definition
+    assert "fields" not in definition
+
+    def _check(joins):
+        for join in joins:
+            assert "join_type" not in join
+            assert "table" not in join
+            _check(join.get("joins") or [])
+
+    _check(definition["joins"])
+
+
+def test_validate_flags_unsupported_top_level_and_join_fields():
+    report = validate(
+        TRANSITIVE_YAML.replace(
+            "'on': dim_customer.nation_id = dim_nation.nation_id",
+            "'on': source.nation_id = dim_nation.nation_id",
+        ).replace(
+            "source: main.sales.fact_orders\n",
+            "source: main.sales.fact_orders\nname: should_not_be_here\ntime_dimension: order_date\n",
+        ).replace(
+            "    source: main.sales.dim_nation\n",
+            "    source: main.sales.dim_nation\n    join_type: inner\n",
+        )
+    )
+
+    assert not report.ok
+    joined = " ".join(report.errors)
+    assert "unsupported top-level field 'name'" in joined
+    assert "unsupported top-level field 'time_dimension'" in joined
+    assert "unsupported field 'join_type'" in joined
+
+
+# A valid nested-join document, used to prove the unsupported-field rules are
+# bound to a *path* rather than to a bare key name. Nested so the same key can be
+# planted at the top level, at a first-level join and at a deeper one.
+PATH_BASE_YAML = """
+version: '1.1'
+comment: |
+  PURPOSE: p
+
+  BEST FOR: a
+
+  NOT FOR: b
+
+  DIMENSIONS: c
+
+  MEASURES: d
+
+  SOURCE: e
+
+  JOINS: f
+
+  NOTE: g
+source: main.sales.fact_orders
+joins:
+  - name: dim_customer
+    source: main.sales.dim_customer
+    'on': source.customer_id = dim_customer.customer_id
+    joins:
+      - name: dim_nation
+        source: main.sales.dim_nation
+        'on': dim_customer.nation_id = dim_nation.nation_id
+dimensions:
+  - name: nation_name
+    expr: dim_customer.dim_nation.nation_name
+    synonyms: [nation, country, nation name]
+measures:
+  - name: total_revenue
+    expr: SUM(source.net_revenue)
+    synonyms: [revenue, sales, total revenue]
+"""
+
+_NESTED_GRANTED = {MV_CAPABILITY_NESTED_JOINS: "GRANTED"}
+
+
+def test_the_path_base_document_is_valid_before_anything_is_planted():
+    """Positive control. Without it, a rejection below proves nothing."""
+    report = validate(PATH_BASE_YAML, capabilities=_NESTED_GRANTED)
+
+    assert report.ok, report.errors
+
+
+def test_validate_rejects_a_numeric_placeholder_in_an_emitted_expr():
+    """MV-D29 / MV-D8 gate: the exact defect Scenario D's BYO leg hit live. A
+    body rendered from the erased canonical form carries ``?n``, parses as the
+    identifier ``n - l_discount`` inside a CREATE VIEW, and fails with
+    INVALID_IDENTIFIER. ``validate`` must catch it statically, before any
+    warehouse round-trip."""
+    planted = PATH_BASE_YAML.replace(
+        "expr: SUM(source.net_revenue)",
+        "expr: SUM(source.l_extendedprice * (?n - source.l_discount))",
+    )
+    report = validate(planted, capabilities=_NESTED_GRANTED)
+
+    assert not report.ok
+    joined = " ".join(report.errors)
+    assert "placeholder" in joined
+    assert "?n" in joined
+    assert "MV-D29" in joined
+
+
+def test_validate_rejects_a_string_placeholder_in_an_emitted_expr():
+    planted = PATH_BASE_YAML.replace(
+        "expr: SUM(source.net_revenue)",
+        "expr: SUM(CASE WHEN source.status = ?s THEN 1 END)",
+    )
+    report = validate(planted, capabilities=_NESTED_GRANTED)
+
+    assert not report.ok
+    assert any("?s" in e for e in report.errors)
+
+
+def test_validate_accepts_a_literal_bearing_measure_expr():
+    """The complement: a real numeric literal (the POV's ``1 - l_discount``) is
+    not a placeholder and must pass. The gate rejects ``?n``/``?s`` tokens, not
+    honest constants — otherwise MV-D29's fix would trade one false gate for
+    another."""
+    planted = PATH_BASE_YAML.replace(
+        "expr: SUM(source.net_revenue)",
+        "expr: SUM(source.l_extendedprice * (1 - source.l_discount))",
+    )
+    report = validate(planted, capabilities=_NESTED_GRANTED)
+
+    assert report.ok, report.errors
+
+
+def test_window_measures_is_rejected_at_the_top_level_and_ignored_below_it():
+    """The unsupported *array* form is a top-level key; ``window:`` per measure is not.
+
+    Two rules share the word: the top-level ``window_measures`` array fails to
+    create, while a per-measure ``window`` property is supported. A check keyed on
+    the bare name could not tell them apart, so this pins that the top-level rule
+    is applied only to top-level keys.
+    """
+    planted_at_top = PATH_BASE_YAML.replace(
+        "source: main.sales.fact_orders\n",
+        "source: main.sales.fact_orders\nwindow_measures:\n  - name: rolling_revenue\n",
+    )
+    report = validate(planted_at_top, capabilities=_NESTED_GRANTED)
+    assert not report.ok
+    assert any("unsupported top-level field 'window_measures'" in e for e in report.errors)
+
+    # The supported per-measure form, one level down, must survive untouched.
+    per_measure_window = PATH_BASE_YAML.replace(
+        "    expr: SUM(source.net_revenue)\n",
+        "    expr: SUM(source.net_revenue)\n    window: [order_date]\n",
+    )
+    report = validate(per_measure_window, capabilities=_NESTED_GRANTED)
+    assert report.ok, report.errors
+    assert not any("window" in e for e in report.errors)
+
+
+def test_table_is_rejected_inside_any_join_and_allowed_at_legal_positions():
+    """``joins[].table`` is the wrong relation key; the word itself is not banned."""
+    at_first_level = PATH_BASE_YAML.replace(
+        "    source: main.sales.dim_customer\n",
+        "    source: main.sales.dim_customer\n    table: main.sales.dim_customer\n",
+    )
+    report = validate(at_first_level, capabilities=_NESTED_GRANTED)
+    assert not report.ok
+    assert any(
+        "join 'dim_customer': unsupported field 'table'" in e
+        and "the relation key is 'source'" in e
+        for e in report.errors
+    )
+
+    # Depth matters: the walk recurses, so a nested join is checked identically.
+    at_nested_level = PATH_BASE_YAML.replace(
+        "        source: main.sales.dim_nation\n",
+        "        source: main.sales.dim_nation\n        table: main.sales.dim_nation\n",
+    )
+    report = validate(at_nested_level, capabilities=_NESTED_GRANTED)
+    assert not report.ok
+    assert any("join 'dim_nation': unsupported field 'table'" in e for e in report.errors)
+
+    # Legal positions for the same word: a field name, a synonym, and a relation
+    # name. None of these is the join key, so none may be rejected.
+    legal = (
+        PATH_BASE_YAML.replace("main.sales.fact_orders", "main.sales.fact_order_table")
+        .replace("  - name: nation_name\n", "  - name: table\n")
+        .replace("synonyms: [nation, country, nation name]", "synonyms: [table, tables, source table]")
+    )
+    report = validate(legal, capabilities=_NESTED_GRANTED)
+    assert report.ok, report.errors
+
+
+def test_every_generated_field_has_synonyms_within_bounds():
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR), uniqueness=PROVEN),
+    )
+    definition = yaml.safe_load(result.yaml_text)
+
+    for entry in list(definition["dimensions"]) + list(definition["measures"]):
+        synonyms = entry["synonyms"]
+        assert MV_SYNONYMS_MIN <= len(synonyms) <= MV_SYNONYMS_MAX, entry["name"]
+        assert len(set(synonyms)) == len(synonyms), entry["name"]
+
+
+def test_validate_rejects_out_of_bounds_synonyms():
+    report = validate(
+        TRANSITIVE_YAML.replace(
+            "'on': dim_customer.nation_id = dim_nation.nation_id",
+            "'on': source.nation_id = dim_nation.nation_id",
+        ).replace("synonyms: [nation, country, nation name]", "synonyms: [nation]")
+    )
+
+    assert not report.ok
+    assert any("expected between" in error for error in report.errors)
+
+
+# ── Validation of malformed input ────────────────────────────────────────
+
+
+def test_validate_rejects_unparseable_and_empty_input():
+    assert not validate("").ok
+    assert not validate("version: '1.1'\n  bad indent: [").ok
+    assert not validate("- just\n- a\n- list\n").ok
+
+
+def test_validate_requires_the_quoted_version_string():
+    report = validate(TRANSITIVE_YAML.replace("version: '1.1'", "version: 1.1"))
+
+    assert not report.ok
+    assert any("version must be the quoted string" in error for error in report.errors)
+
+
+# ── DDL wrapper ──────────────────────────────────────────────────────────
+
+
+def test_create_ddl_round_trips_the_yaml_body_through_sqlglot():
+    """sqlglot has no grammar for WITH METRICS, so this pins body survival.
+
+    The statement parses as an opaque ``Command``; what matters is that
+    re-rendering it does not mangle or drop the YAML payload.
+    """
+    result = generate(
+        _candidate(),
+        _profiling(hops=(CUSTOMER_HOP,), attributes=(SEGMENT_ATTR,), uniqueness=PROVEN),
+    )
+    ddl = create_ddl("main.sales.mv_revenue", result.yaml_text, comment="revenue metrics")
+
+    assert "CREATE VIEW `main`.`sales`.`mv_revenue`" in ddl
+    assert "WITH METRICS" in ddl
+    assert "LANGUAGE YAML" in ddl
+
+    parsed = sqlglot.parse_one(ddl, read="databricks")
+    rendered = parsed.sql(dialect="databricks")
+    assert "SUM(source.`net_revenue`)" in rendered
+    assert "dim_customer.`market_segment`" in rendered
+
+    body = ddl.split("AS $$\n", 1)[1].rsplit("$$", 1)[0]
+    assert yaml.safe_load(body) == yaml.safe_load(result.yaml_text)
+
+
+def test_create_ddl_escapes_single_quotes_in_the_comment():
+    ddl = create_ddl("c.s.v", "version: '1.1'\n", comment="it's fine")
+
+    assert "COMMENT 'it''s fine'" in ddl
+
+
+# ── MV-D113 finding 10: every interpolated identifier is quoted ──
+
+
+@pytest.mark.parametrize(
+    ("raw", "quoted"),
+    [
+        ("main.sales.orders", "`main`.`sales`.`orders`"),
+        ("`main`.`sales`.`orders`", "`main`.`sales`.`orders`"),
+        ("main.sales.`order lines`", "`main`.`sales`.`order lines`"),
+        ("main.sales.we`ird", "`main`.`sales`.`we``ird`"),
+        ("`a.b`.c.d", "`a.b`.`c`.`d`"),
+    ],
+)
+def test_quote_fqn_quotes_each_part_and_is_idempotent(raw: str, quoted: str) -> None:
+    assert quote_fqn(raw) == quoted
+    assert quote_fqn(quote_fqn(raw)) == quoted
+
+
+_SUBQUERY_GOLDEN_SOURCE = (
+    "SELECT fact.*, dim_branch.`branch_name` AS `branch_name`, dim_area.`area_name` AS `area_name`\n"
+    "FROM `finance`.`sales`.`orders` AS fact\n"
+    "LEFT JOIN (SELECT `branch_id`, MAX(`area_id`) AS `area_id`, MAX(`branch_name`) AS `branch_name` "
+    "FROM `finance`.`sales`.`branch` WHERE `is_current` = true GROUP BY `branch_id`) AS dim_branch "
+    "ON fact.`branch_id` = dim_branch.`branch_id`\n"
+    "LEFT JOIN (SELECT `area_id`, MAX(`area_name`) AS `area_name` FROM `finance`.`sales`.`area` "
+    "GROUP BY `area_id`) AS dim_area ON dim_branch.`area_id` = dim_area.`area_id`\n"
+)
+
+
+def test_subquery_tables_reads_every_table_of_the_subquery_rung_source() -> None:
+    assert mv_yaml_module.subquery_tables(_SUBQUERY_GOLDEN_SOURCE) == (
+        "`finance`.`sales`.`orders`",
+        "`finance`.`sales`.`branch`",
+        "`finance`.`sales`.`area`",
+    )
+
+
+def test_subquery_tables_reads_backtick_quoted_names_as_their_parts() -> None:
+    assert mv_yaml_module.subquery_tables(
+        "SELECT * FROM `Finance`.`sales-eu`.`order lines` AS o JOIN main.sales.`we``ird` AS w ON o.id = w.id"
+    ) == ("`Finance`.`sales-eu`.`order lines`", "`main`.`sales`.`we``ird`")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        (
+            "WITH Recent AS (SELECT * FROM finance.sales.orders WHERE amount > 0) "
+            "SELECT * FROM recent JOIN finance.sales.branch AS b ON recent.branch_id = b.branch_id"
+        ),
+        "WITH t AS (SELECT * FROM t JOIN a.b.c ON 1=1) SELECT * FROM t",
+        "WITH a AS (SELECT * FROM b), b AS (SELECT * FROM x.y.z) SELECT * FROM a",
+        (
+            "SELECT * FROM a.b.c1 JOIN (WITH t AS (SELECT 1 FROM a.b.c2) SELECT * FROM t) u ON 1=1 "
+            "JOIN t ON 1=1"
+        ),
+        "WITH orders AS (SELECT * FROM a.b.secret) SELECT * FROM orders",
+        (
+            "WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 3) "
+            "SELECT * FROM a.b.c JOIN r ON 1=1"
+        ),
+    ],
+)
+def test_subquery_tables_refuses_a_query_with_a_cte(sql: str) -> None:
+    assert mv_yaml_module.subquery_tables(sql) is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT /*+ REPARTITION(3) */ * FROM a.b.c",
+        "SELECT /*+ BROADCAST(d) */ * FROM a.b.c JOIN x.y.z AS d ON 1=1",
+    ],
+)
+def test_subquery_tables_refuses_an_optimizer_hint(sql: str) -> None:
+    assert mv_yaml_module.subquery_tables(sql) is None
+
+
+def test_subquery_tables_reads_past_a_plain_comment() -> None:
+    assert mv_yaml_module.subquery_tables("SELECT * FROM a.b.c /* plain comment */") == (
+        "`a`.`b`.`c`",
+    )
+
+
+def test_subquery_tables_reads_a_nested_and_an_in_subquery() -> None:
+    sql = (
+        "SELECT * FROM (SELECT * FROM finance.sales.orders) AS o "
+        "WHERE o.branch_id IN (SELECT branch_id FROM finance.sales.branch)"
+    )
+    assert mv_yaml_module.subquery_tables(sql) == (
+        "`finance`.`sales`.`orders`",
+        "`finance`.`sales`.`branch`",
+    )
+
+
+def test_subquery_tables_returns_a_table_named_twice_once() -> None:
+    sql = (
+        "SELECT * FROM finance.sales.orders AS a "
+        "JOIN `FINANCE`.`Sales`.`Orders` AS b ON a.id = b.parent_id"
+    )
+    assert mv_yaml_module.subquery_tables(sql) == ("`finance`.`sales`.`orders`",)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM sales.orders",
+        "SELECT * FROM finance.sales.orders JOIN sales.branch ON 1 = 1",
+        "SELECT * FROM `a.b`.c",
+        "SELECT * FROM a.b.c.d",
+        "SELECT * FROM range(10)",
+        "SELECT * FROM IDENTIFIER('finance.sales.orders')",
+        "SELECT fact.* FROM (((",
+        "SELECT 1",
+        "SELECT * FROM VALUES (1) AS t(x)",
+        "SELECT * FROM finance.sales.orders; SELECT * FROM finance.sales.branch",
+        "finance.sales.orders",
+        "",
+    ],
+)
+def test_subquery_tables_is_none_when_a_table_cannot_be_read(sql: str) -> None:
+    assert mv_yaml_module.subquery_tables(sql) is None
+
+
+# sqlglot warns on an invalid JSON path and quotes the path in the message.
+_JSON_PATH_WARNING_SQL = "SELECT get_json_object(j, 'zq_secret bad[') FROM a.b.c"
+
+
+class _ListHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def sqlglot_handler():
+    sqlglot_logger = logging.getLogger("sqlglot")
+    handler = _ListHandler()
+    sqlglot_logger.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        sqlglot_logger.removeHandler(handler)
+
+
+def _messages(records) -> list[str]:
+    return [r.getMessage() for r in records]
+
+
+def test_subquery_tables_lets_no_sqlglot_record_reach_a_handler(caplog, sqlglot_handler) -> None:
+    assert logging.getLogger("sqlglot").propagate
+    with caplog.at_level(logging.DEBUG):
+        tables = mv_yaml_module.subquery_tables(_JSON_PATH_WARNING_SQL)
+
+    assert tables == ("`a`.`b`.`c`",)
+    assert "zq_secret" not in caplog.text
+    assert not any("zq_secret" in m for m in _messages(caplog.records))
+    assert sqlglot_handler.records == []
+
+
+def test_sqlglot_still_logs_the_literal_outside_subquery_tables(caplog, sqlglot_handler) -> None:
+    with caplog.at_level(logging.DEBUG):
+        assert mv_yaml_module.subquery_tables("SELECT fact.* FROM (((") is None
+        sqlglot.parse_one(_JSON_PATH_WARNING_SQL, read="databricks")
+
+    assert any("zq_secret" in m for m in _messages(caplog.records))
+    assert any("zq_secret" in m for m in _messages(sqlglot_handler.records))
+
+
+def test_another_threads_sqlglot_records_pass_while_subquery_tables_parses(
+    caplog, monkeypatch
+) -> None:
+    inside = threading.Event()
+    logged = threading.Event()
+    real_parse = sqlglot.parse
+
+    def parse_after_the_other_thread_logs(sql, **kwargs):
+        inside.set()
+        assert logged.wait(5)
+        return real_parse(sql, **kwargs)
+
+    def other_thread() -> None:
+        assert inside.wait(5)
+        logging.getLogger("sqlglot").warning("zq_other_thread")
+        logged.set()
+
+    monkeypatch.setattr(mv_yaml_module.sqlglot, "parse", parse_after_the_other_thread_logs)
+    worker = threading.Thread(target=other_thread)
+    with caplog.at_level(logging.DEBUG):
+        worker.start()
+        tables = mv_yaml_module.subquery_tables(_JSON_PATH_WARNING_SQL)
+        worker.join(5)
+
+    assert tables == ("`a`.`b`.`c`",)
+    assert _messages(r for r in caplog.records if r.name == "sqlglot") == ["zq_other_thread"]
+
+
+def test_the_quiet_sqlglot_filter_is_installed_once() -> None:
+    mv_yaml_module._install_quiet_sqlglot_filter()
+    mv_yaml_module._install_quiet_sqlglot_filter()
+
+    quiet = [
+        f for f in logging.getLogger("sqlglot").filters
+        if isinstance(f, mv_yaml_module._QuietSqlglotFilter)
+    ]
+    assert quiet == [mv_yaml_module._QUIET_SQLGLOT_FILTER]
+
+
+def test_sqlglot_logs_only_through_its_root_logger() -> None:
+    """A filter on the ``sqlglot`` logger does not see a child logger's records."""
+    names = set()
+    for path in Path(sqlglot.__file__).resolve().parent.rglob("*.py"):
+        names.update(re.findall(r"getLogger\(([^)]*)\)", path.read_text(encoding="utf-8")))
+
+    assert names == {'"sqlglot"'}
+
+
+def test_quote_identifier_doubles_inner_backticks() -> None:
+    assert quote_identifier("Order Amount") == "`Order Amount`"
+    assert quote_identifier("we`ird") == "`we``ird`"
+    assert quote_identifier("`we``ird`") == "`we``ird`"
+
+
+def test_create_ddl_quotes_every_name_part() -> None:
+    ddl = create_ddl("main.sales.orders_metrics", 'version: "1.1"\nsource: x\n')
+    assert ddl.splitlines()[0] == "CREATE VIEW `main`.`sales`.`orders_metrics`"
+
+
+@pytest.mark.parametrize("name", ["", "main..orders_metrics"])
+def test_create_ddl_refuses_an_empty_name_part(name: str) -> None:
+    with pytest.raises(ValueError):
+        create_ddl(name, 'version: "1.1"\nsource: x\n')
+
+
+def test_generated_body_quotes_source_and_a_spaced_column() -> None:
+    measure = MeasureRequest(name="order_amount", expr="SUM(`Order Amount`)")
+    profiling = MvProfiling(
+        source_table="main.sales.orders",
+        table_columns={"main.sales.orders": _columns("Order Amount", "status")},
+        measures=(measure,),
+        domain="sales",
+    )
+    rendered = generate(_candidate(measure_expr="SUM(`Order Amount`)"), profiling)
+    assert rendered.ok, rendered.rejections
+    doc = yaml.safe_load(rendered.yaml_text)
+    assert doc["source"] == "`main`.`sales`.`orders`"
+    assert doc["measures"][0]["expr"] == "SUM(source.`Order Amount`)"
+
+
+def test_generated_body_keeps_a_struct_field_path() -> None:
+    """MV-D117 (C-7): a qualified struct column is left as rendered."""
+    measure = MeasureRequest(name="total_fee", expr="SUM(source.`payload`.`fee`)")
+    profiling = MvProfiling(
+        source_table="main.sales.orders",
+        table_columns={"main.sales.orders": _columns("payload", "status")},
+        measures=(measure,),
+        domain="sales",
+    )
+    rendered = generate(_candidate(measure_expr="SUM(source.`payload`.`fee`)"), profiling)
+    assert rendered.ok, rendered.rejections
+    doc = yaml.safe_load(rendered.yaml_text)
+    assert doc["measures"][0]["expr"] == "SUM(source.`payload`.`fee`)"
+
+
+def test_generated_evidence_carries_the_render_version() -> None:
+    """MV-D113: every rendered body is stamped so Task 6 can refuse a pre-M3 replay."""
+    rendered = generate(
+        _candidate(),
+        _profiling(
+            hops=(CUSTOMER_HOP,),
+            attributes=(ORDER_DATE_ATTR, SEGMENT_ATTR),
+            uniqueness=PROVEN,
+        ),
+    )
+    assert rendered.ok, rendered.rejections
+    assert rendered.evidence["render_version"] == MV_RENDER_VERSION
+
+
+# ── The sole-renderer property ───────────────────────────────────────────
+
+
+def test_mv_yaml_is_the_only_module_that_renders_yaml():
+    """Pins the claim in this module's docstring instead of trusting it.
+
+    "One renderer" is only worth stating if it is enforced. A second
+    ``yaml.dump`` anywhere in the package is a second set of quoting and field
+    ordering rules, which is how the emitted schema starts to drift from the
+    schema the validator checks.
+    """
+    package_root = Path(mv_yaml_module.__file__).resolve().parents[1]
+    offenders: list[str] = []
+
+    for path in sorted(package_root.rglob("*.py")):
+        if path.name == "mv_yaml.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"\byaml\s*\.\s*(dump|dump_all|safe_dump|safe_dump_all)\s*\(", source):
+            offenders.append(str(path.relative_to(package_root)))
+
+    assert offenders == [], f"YAML is rendered outside mv_yaml.py: {offenders}"
+
+
+# The sanctioned non-mv_yaml occurrences of metric-view DDL text, pinned by exact
+# location. Not a substring exemption: the phrase is allowed at *these lines* and
+# nowhere else, so a new assembly site fails even if it copies this wording. If an
+# edit shifts these lines, re-pin deliberately — that is the same discipline
+# MV-D9 applies to quoted anchors.
+SANCTIONED_DDL_TEXT_SITES: dict[tuple[str, int], str] = {
+    ("optimization/ddl.py", 266): (
+        "created_by          STRING        NOT NULL COMMENT 'Identity that executed "
+        "CREATE VIEW ... WITH METRICS. Always the consenting user under OBO — never "
+        "the service principal',"
+    ),
+}
+
+
+def _executable_string_lines(source: str) -> set[int]:
+    """Physical line numbers covered by string literals that are not docstrings.
+
+    Docstrings and ``#`` comments describe DDL; an executable string *is* DDL, or
+    becomes it. Only the latter can put a statement on a warehouse, so only the
+    latter needs pinning. f-string segments count — assembling the statement with
+    an f-string is the evasion this distinction has to catch.
+    """
+    tree = ast.parse(source)
+    docstring_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", [])
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstring_ids.add(id(body[0].value))
+        # A bare string expression statement is a field/constant docstring.
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            if isinstance(node.value.value, str):
+                docstring_ids.add(id(node.value))
+
+    covered: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in docstring_ids:
+                continue
+            covered.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return covered
+
+
+def test_mv_yaml_is_the_only_module_that_builds_metric_view_ddl():
+    """The YAML guard above stops a second renderer; this stops a second *statement*.
+
+    ``create_ddl`` is the only sanctioned assembler of
+    ``CREATE VIEW ... WITH METRICS LANGUAGE YAML``. An f-string in any other module
+    would bypass every check in this file — the validator never sees text that was
+    never rendered here — so the phrase is forbidden in executable strings package
+    wide, with the known documentation sites pinned by location.
+    """
+    package_root = Path(mv_yaml_module.__file__).resolve().parents[1]
+    phrases = ("WITH METRICS", "CREATE VIEW")
+    unpinned: list[str] = []
+    stale_pins = dict(SANCTIONED_DDL_TEXT_SITES)
+
+    for path in sorted(package_root.rglob("*.py")):
+        if path.name == "mv_yaml.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        if not any(phrase in source for phrase in phrases):
+            continue
+        executable = _executable_string_lines(source)
+        rel = str(path.relative_to(package_root))
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if not any(phrase in line for phrase in phrases):
+                continue
+            if lineno not in executable:
+                continue  # a docstring or comment describing DDL, not building it
+            pinned = stale_pins.pop((rel, lineno), None)
+            if pinned is None:
+                unpinned.append(f"{rel}:{lineno}: {line.strip()[:100]}")
+            elif pinned != line.strip():
+                unpinned.append(
+                    f"{rel}:{lineno}: pinned text no longer matches — re-pin.\n"
+                    f"  pinned: {pinned}\n  actual: {line.strip()}"
+                )
+
+    assert unpinned == [], "metric-view DDL is assembled outside mv_yaml.py:\n" + "\n".join(unpinned)
+    assert stale_pins == {}, f"pinned DDL sites no longer exist — remove the pin: {sorted(stale_pins)}"

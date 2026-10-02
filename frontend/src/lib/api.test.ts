@@ -6,6 +6,7 @@ import {
   getAutoOptimizePublishRecord,
   getAutoOptimizeRevertOptions,
   getModels,
+  getSpaceAccess,
   removeAutoOptimizeRunFromHistory,
   revertAutoOptimizeRun,
   streamAgentChat,
@@ -365,5 +366,15 @@ describe("model selection API payloads", () => {
     expect(onError).toHaveBeenCalledWith(
       "Invalid Create Agent message_delta event: content must be a string.",
     )
+  })
+})
+
+describe("getSpaceAccess", () => {
+  it("reads the signed-in user's level from the space access route", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({ space_id: "space 1", level: "view" })))
+    vi.stubGlobal("fetch", fetchMock)
+    await expect(getSpaceAccess("space 1")).resolves.toEqual({ space_id: "space 1", level: "view" })
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/spaces/space%201/access")
   })
 })

@@ -1,0 +1,65 @@
+{
+  "type": "OperationHandle",
+  "examples": [
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "requested",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "preimage_captured",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "apply_attempted",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "applied_unverified",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "applied_partial",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "confirmed",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "conflicted",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "quarantined",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "failed",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "compensation_attempted",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "compensated",
+      "job_run_id": null
+    },
+    {
+      "operation_id": "00000000-0000-4000-8000-000000000003",
+      "status": "noop",
+      "job_run_id": null
+    }
+  ]
+}
