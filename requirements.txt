@@ -525,7 +525,7 @@ tzdata==2025.3
     #   pandas
     #   psycopg
     #   whenever
-urllib3==2.6.3
+urllib3==2.8.0
     # via
     #   botocore
     #   databricks-agents
