@@ -44,10 +44,12 @@ import {
 } from "./SemanticBlueprintFidelityFrames"
 import {
   VcCheckingFrame,
+  VcEditorExplainerFrame,
   VcEditorFrame,
   VcEntitlementFrame,
   VcNoAccessFrame,
   VcViewerEmptyFrame,
+  VcViewerExplainerFrame,
   VcViewerFrame,
 } from "./VcAccessFidelityFrames"
 import {
@@ -151,6 +153,9 @@ export const MOCKUP_FRAMES: MockupFrame[] = [
   { id: "m1b-c-vc-viewer-empty", title: "M1b-c · Version Control — Can View, nothing captured yet", element: <VcViewerEmptyFrame /> },
   { id: "m1b-d-vc-no-access", title: "M1b-d · Version Control — no access (permission state)", element: <VcNoAccessFrame /> },
   { id: "m1b-e-vc-entitlement", title: "M1b-e · Version Control — refused for a missing entitlement (Genie's reason)", element: <VcEntitlementFrame /> },
+  // The capture explainer tooltip held open: its own surface and width, below the icon.
+  { id: "vc-tip-a-editor-explainer", title: "VC tip-a · Version Control — Can Edit, capture explainer open", element: <VcEditorExplainerFrame /> },
+  { id: "vc-tip-b-viewer-explainer", title: "VC tip-b · Version Control — Can View, capture explainer open", element: <VcViewerExplainerFrame /> },
   // PR #332 M1c-2 — agent-page access states (M1c-D5/D6): the REAL notices, read-only Score
   // tab, locked sections, Optimize viewer list and list card. Writes render only for Can Edit.
   { id: "m1c2-a-score-editor", title: "M1c2-a · Score — Can Edit (reference: today's tab)", element: <ScoreEditorFrame /> },

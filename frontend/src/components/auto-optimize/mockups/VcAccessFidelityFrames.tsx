@@ -42,6 +42,28 @@ export function VcViewerFrame() {
   )
 }
 
+export function VcEditorExplainerFrame() {
+  return (
+    <div className="space-y-3">
+      <VersionControlHeader access="edit" onCapture={noop} explainerOpen />
+      <VersionPanes
+        rail={<History page={page} onNext={noop} onSelect={noop} compareIds={[]} onToggleCompare={noop} />}
+        detail={<DetailPlaceholder>{EDITOR_DETAIL_HINT}</DetailPlaceholder>}
+      />
+    </div>
+  )
+}
+
+export function VcViewerExplainerFrame() {
+  return (
+    <div className="space-y-3">
+      <VersionControlHeader access="view" onCapture={noop} explainerOpen />
+      <AccessNotice access="view" />
+      <VersionPanes rail={<History page={page} onNext={noop} emptyHint={VIEWER_EMPTY_HINT} />} detail={<DetailPlaceholder>{VIEWER_DETAIL_HINT}</DetailPlaceholder>} />
+    </div>
+  )
+}
+
 export function VcViewerEmptyFrame() {
   return (
     <div className="space-y-3">

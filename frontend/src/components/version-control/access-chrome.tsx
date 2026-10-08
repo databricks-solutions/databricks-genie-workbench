@@ -11,9 +11,10 @@ interface HeaderProps {
   capturing?: boolean
   syncing?: boolean
   onCapture?: () => void
+  explainerOpen?: boolean
 }
 
-export function VersionControlHeader({ access, capturing = false, syncing = false, onCapture }: HeaderProps) {
+export function VersionControlHeader({ access, capturing = false, syncing = false, onCapture, explainerOpen = false }: HeaderProps) {
   const explainer = captureExplainer(access)
   const busy = capturing || syncing
   return (
@@ -23,8 +24,8 @@ export function VersionControlHeader({ access, capturing = false, syncing = fals
           <GitBranch className="w-4 h-4" />
         </span>
         <h3 className="text-lg font-display font-semibold text-primary">Version Control</h3>
-        <Tooltip content={<span className="block max-w-xs text-left">{explainer}</span>}>
-          <span aria-label={explainer} className="text-muted hover:text-secondary transition-colors cursor-help">
+        <Tooltip side="bottom" content={explainer} defaultOpen={explainerOpen}>
+          <span tabIndex={0} aria-label={explainer} className="text-muted hover:text-secondary transition-colors cursor-help">
             <Info className="w-4 h-4" />
           </span>
         </Tooltip>
